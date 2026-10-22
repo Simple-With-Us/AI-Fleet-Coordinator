@@ -78,7 +78,7 @@ def read_signals(run: Runner, wanted: list[dict], *, monotonic: Callable[[], flo
     out: dict = {"status": "ok", "reason": None, "by_ident": {}, "reads": 0, "skipped": 0}
     if not wanted:
         return out
-    exe = which("agent-sync")
+    exe = which("simple-chat")
     if exe is None:
         out.update(status="absent", reason="agent-sync is not installed", skipped=len(wanted))
         return out

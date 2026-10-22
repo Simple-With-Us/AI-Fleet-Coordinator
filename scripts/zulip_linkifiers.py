@@ -305,7 +305,7 @@ def team_drift(linear_keys: list[str]) -> tuple[list[str], list[str]]:
 
 def linear_team_keys() -> list[str] | None:
     """Every Linear team key, read with the board CLI (its own seat credentials), or None when unavailable."""
-    if not shutil.which("board"):
+    if not shutil.which("simple-board"):
         return None
     try:
         proc = subprocess.run(

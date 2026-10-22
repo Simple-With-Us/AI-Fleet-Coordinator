@@ -24,13 +24,13 @@ umask 077
 mkdir -p "$AGENT_SYNC_STATE_DIR"
 if [ ! -e "$AGENT_SYNC_CONFIG" ]; then
     cp "$here/listener.toml" "$AGENT_SYNC_CONFIG"
-    echo "agent-sync: seeded $AGENT_SYNC_CONFIG from the image's sample; run agent-sync daemon init to pin the owner" >&2
+    echo "simple-chat: seeded $AGENT_SYNC_CONFIG from the image's sample; run simple-chat daemon init to pin the owner" >&2
 fi
 if [ -n "${INFISICAL_CLIENT_ID:-}" ] && [ -n "${INFISICAL_CLIENT_SECRET:-}" ] && [ -n "${INFISICAL_PROJECT_ID:-}" ]; then
-    exec python3 "$here/infisical_env.py" "$here/../../agent-sync" "$@"
+    exec python3 "$here/infisical_env.py" "$here/../../simple-chat" "$@"
 fi
 if [ -n "${INFISICAL_CLIENT_ID:-}${INFISICAL_CLIENT_SECRET:-}${INFISICAL_PROJECT_ID:-}" ]; then
-    echo "agent-sync: Infisical not used (INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET and INFISICAL_PROJECT_ID must all be set); starting with the container environment" >&2
+    echo "simple-chat: Infisical not used (INFISICAL_CLIENT_ID, INFISICAL_CLIENT_SECRET and INFISICAL_PROJECT_ID must all be set); starting with the container environment" >&2
 fi
 unset INFISICAL_CLIENT_ID INFISICAL_CLIENT_SECRET
-exec "$here/../../agent-sync" "$@"
+exec "$here/../../simple-chat" "$@"

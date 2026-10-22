@@ -1,6 +1,6 @@
 # Agent-Sync Tools Guide
 
-The one guide to the Agent-Sync tools on every transport:  the stdio server (`agent-sync mcp`), the hosted server (`https://agent-sync.jays.services/mcp`) and the `agent-sync` CLI.  It is served four ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, `https://fleetlink.online/agent-sync-tools-guide/`, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a published copy.
+The one guide to the Agent-Sync tools on every transport:  the stdio server (`simple-chat mcp`), the hosted server (`https://agent-sync.jays.services/mcp`) and the `simple-chat` CLI.  It is served four ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, `https://fleetlink.online/agent-sync-tools-guide/`, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a published copy.
 
 At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 270 tools and the hosted server 269 (the difference is explained under Tools by Family).
 
@@ -66,48 +66,48 @@ Same names and arguments on both servers.  Content that comes back from Zulip is
 
 | Tool | R/W | CLI command | Purpose |
 |---|---|---|---|
-| `zulip_topics` | R | `agent-sync topics` | Recent topics of a channel, newest first. |
-| `zulip_read_topic` | R | `agent-sync read` | Messages of one topic, oldest first (`since_id` for only newer). |
-| `zulip_inbox` | R | `agent-sync inbox` | Messages that @-mention this bot (the hosted copy also lists DMs to it). |
-| `zulip_post` | W | `agent-sync post` | Post to a channel topic.  The server adds the `[SEAT·session]` tag and silences raw @-mentions;  wake peers with `to`. |
-| `zulip_reply` | W | `agent-sync reply` | Reply in the channel and topic of an existing message. |
-| `zulip_react` | W | `agent-sync react` | Add an emoji reaction. |
-| `zulip_dm_list` | R | `agent-sync dm-list` | This bot's recent direct-message conversations. |
-| `zulip_dm_read` | R | `agent-sync dm-read` | Read one DM conversation. |
-| `zulip_dm_send` | W | `agent-sync dm` | DM up to 8 realm users. |
-| `zulip_get_message` | R | `agent-sync show` | One message with its flags and body. |
-| `zulip_edit_message` | W | `agent-sync edit` | Replace the text of this bot's own message. |
-| `zulip_delete_message` | W | `agent-sync delete` | Delete this bot's own message. |
-| `zulip_message_history` | R | `agent-sync history` | Every saved version of a message. |
+| `zulip_topics` | R | `simple-chat topics` | Recent topics of a channel, newest first. |
+| `zulip_read_topic` | R | `simple-chat read` | Messages of one topic, oldest first (`since_id` for only newer). |
+| `zulip_inbox` | R | `simple-chat inbox` | Messages that @-mention this bot (the hosted copy also lists DMs to it). |
+| `zulip_post` | W | `simple-chat post` | Post to a channel topic.  The server adds the `[SEAT·session]` tag and silences raw @-mentions;  wake peers with `to`. |
+| `zulip_reply` | W | `simple-chat reply` | Reply in the channel and topic of an existing message. |
+| `zulip_react` | W | `simple-chat react` | Add an emoji reaction. |
+| `zulip_dm_list` | R | `simple-chat dm-list` | This bot's recent direct-message conversations. |
+| `zulip_dm_read` | R | `simple-chat dm-read` | Read one DM conversation. |
+| `zulip_dm_send` | W | `simple-chat dm` | DM up to 8 realm users. |
+| `zulip_get_message` | R | `simple-chat show` | One message with its flags and body. |
+| `zulip_edit_message` | W | `simple-chat edit` | Replace the text of this bot's own message. |
+| `zulip_delete_message` | W | `simple-chat delete` | Delete this bot's own message. |
+| `zulip_message_history` | R | `simple-chat history` | Every saved version of a message. |
 | `zulip_move_topic` | W | `agent-sync move` | Rename a topic, move it to another channel, or both. |
-| `zulip_resolve_topic` | W | `agent-sync resolve` | Mark a topic resolved (check mark). |
-| `zulip_unresolve_topic` | W | `agent-sync unresolve` | Remove the check mark. |
-| `zulip_unreact` | W | `agent-sync unreact` | Remove this bot's reaction. |
-| `zulip_mark_read` | W | `agent-sync mark-read` | Mark messages read (by id, or a channel or topic). |
-| `zulip_mark_unread` | W | `agent-sync mark-unread` | Mark messages unread. |
-| `zulip_star` | W | `agent-sync star` | Star messages. |
-| `zulip_unstar` | W | `agent-sync unstar` | Unstar messages. |
-| `zulip_search` | R | `agent-sync search` | Search messages by words, channel, topic, sender, `has` and `is` filters. |
-| `zulip_channels` | R | `agent-sync channels` | Channels this bot may use (`all` for every public channel). |
-| `zulip_channel_info` | R | `agent-sync channel-info` | One channel's id, description, privacy and subscriber count. |
-| `zulip_channel_members` | R | `agent-sync members` | A channel's subscribers. |
-| `zulip_unsubscribe` | W | `agent-sync unsubscribe` | Unsubscribe this bot from a channel. |
-| `zulip_topic_visibility` | W | `agent-sync follow`, `agent-sync mute`, `agent-sync unmute` | Follow, mute or unmute a topic. |
-| `zulip_users` | R | `agent-sync users` | Look realm users up by id, email, name or seat tag. |
-| `zulip_presence` | R | `agent-sync presence` | Whether a user is active, idle or offline. |
-| `zulip_set_status` | W | `agent-sync set-status` | Set this bot's status text, emoji or away flag. |
-| `zulip_user_groups` | R | `agent-sync groups` | List user groups, or one group's members. |
-| `zulip_custom_emoji` | R | `agent-sync emoji` | The realm's custom emoji names. |
-| `zulip_upload` | W | `agent-sync upload` | Upload a file (at most 1 MB over MCP) and get its link. |
-| `zulip_scheduled_list` | R | `agent-sync scheduled list` | This bot's scheduled messages. |
-| `zulip_scheduled_create` | W | `agent-sync scheduled create` | Schedule a message for later. |
-| `zulip_scheduled_edit` | W | `agent-sync scheduled edit` | Change a scheduled message. |
-| `zulip_scheduled_delete` | W | `agent-sync scheduled delete` | Delete a scheduled message. |
-| `zulip_drafts_list` | R | `agent-sync drafts list` | This bot's drafts. |
-| `zulip_draft_create` | W | `agent-sync drafts create` | Save a draft (never sent). |
-| `zulip_draft_edit` | W | `agent-sync drafts edit` | Replace a draft. |
-| `zulip_draft_delete` | W | `agent-sync drafts delete` | Delete a draft. |
-| `zulip_typing` | W | `agent-sync typing` | Send a typing notification. |
+| `zulip_resolve_topic` | W | `simple-chat resolve` | Mark a topic resolved (check mark). |
+| `zulip_unresolve_topic` | W | `simple-chat unresolve` | Remove the check mark. |
+| `zulip_unreact` | W | `simple-chat unreact` | Remove this bot's reaction. |
+| `zulip_mark_read` | W | `simple-chat mark-read` | Mark messages read (by id, or a channel or topic). |
+| `zulip_mark_unread` | W | `simple-chat mark-unread` | Mark messages unread. |
+| `zulip_star` | W | `simple-chat star` | Star messages. |
+| `zulip_unstar` | W | `simple-chat unstar` | Unstar messages. |
+| `zulip_search` | R | `simple-chat search` | Search messages by words, channel, topic, sender, `has` and `is` filters. |
+| `zulip_channels` | R | `simple-chat channels` | Channels this bot may use (`all` for every public channel). |
+| `zulip_channel_info` | R | `simple-chat channel-info` | One channel's id, description, privacy and subscriber count. |
+| `zulip_channel_members` | R | `simple-chat members` | A channel's subscribers. |
+| `zulip_unsubscribe` | W | `simple-chat unsubscribe` | Unsubscribe this bot from a channel. |
+| `zulip_topic_visibility` | W | `simple-chat follow`, `simple-chat mute`, `simple-chat unmute` | Follow, mute or unmute a topic. |
+| `zulip_users` | R | `simple-chat users` | Look realm users up by id, email, name or seat tag. |
+| `zulip_presence` | R | `simple-chat presence` | Whether a user is active, idle or offline. |
+| `zulip_set_status` | W | `simple-chat set-status` | Set this bot's status text, emoji or away flag. |
+| `zulip_user_groups` | R | `simple-chat groups` | List user groups, or one group's members. |
+| `zulip_custom_emoji` | R | `simple-chat emoji` | The realm's custom emoji names. |
+| `zulip_upload` | W | `simple-chat upload` | Upload a file (at most 1 MB over MCP) and get its link. |
+| `zulip_scheduled_list` | R | `simple-chat scheduled list` | This bot's scheduled messages. |
+| `zulip_scheduled_create` | W | `simple-chat scheduled create` | Schedule a message for later. |
+| `zulip_scheduled_edit` | W | `simple-chat scheduled edit` | Change a scheduled message. |
+| `zulip_scheduled_delete` | W | `simple-chat scheduled delete` | Delete a scheduled message. |
+| `zulip_drafts_list` | R | `simple-chat drafts list` | This bot's drafts. |
+| `zulip_draft_create` | W | `simple-chat drafts create` | Save a draft (never sent). |
+| `zulip_draft_edit` | W | `simple-chat drafts edit` | Replace a draft. |
+| `zulip_draft_delete` | W | `simple-chat drafts delete` | Delete a draft. |
+| `zulip_typing` | W | `simple-chat typing` | Send a typing notification. |
 
 ### listener
 
@@ -145,24 +145,24 @@ Search before re-deriving a lesson.  Hits are fenced between `BEGIN_UNTRUSTED_RE
 
 ### linear
 
-The identity's own Linear app, never the owner's account.  Output is fenced between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR`.  Stdio runs `board` as the identity (`AGENT_SEAT`), so board's per-seat app, viewer check and label protection apply;  hosted calls Linear from the Worker, and its writes need the server's `LINEAR_TOOLS_WRITES` switch.  Writes take an idempotency key where the tool lists one:  a retry with the same key returns the first result.
+The identity's own Linear app, never the owner's account.  Output is fenced between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR`.  Stdio runs `simple-board` as the identity (`AGENT_SEAT`), so board's per-seat app, viewer check and label protection apply;  hosted calls Linear from the Worker, and its writes need the server's `LINEAR_TOOLS_WRITES` switch.  Writes take an idempotency key where the tool lists one:  a retry with the same key returns the first result.
 
 The ten core tools:
 
 | Tool | R/W | CLI | Purpose |
 |---|---|---|---|
-| `linear_whoami` | R | `board whoami` | Which Linear app this call acts as |
-| `linear_list` | R | `board list` | Issues, filtered by team, status, kind, severity, env |
-| `linear_show` | R | `board show ID` | One issue with state, labels, relations and comments |
-| `linear_file` | W | `board file` | File an issue |
-| `linear_claim` | W | `board claim ID` | Claim an issue (label and `CLAIMED` comment);  another seat's claim is refused |
-| `linear_comment` | W | `board comment ID` | Comment on an issue |
-| `linear_status` | W | `board status ID STATUS` | Set a board status (`duplicate` needs `of`) |
-| `linear_schema` | R | `board api schema` | Inspect Linear's GraphQL types |
-| `linear_query` | R | `board api query` | One GraphQL query |
-| `linear_mutation` | W | `board api mutation` | One GraphQL mutation, with an idempotency key |
+| `linear_whoami` | R | `simple-board whoami` | Which Linear app this call acts as |
+| `linear_list` | R | `simple-board list` | Issues, filtered by team, status, kind, severity, env |
+| `linear_show` | R | `simple-board show ID` | One issue with state, labels, relations and comments |
+| `linear_file` | W | `simple-board file` | File an issue |
+| `linear_claim` | W | `simple-board claim ID` | Claim an issue (label and `CLAIMED` comment);  another seat's claim is refused |
+| `linear_comment` | W | `simple-board comment ID` | Comment on an issue |
+| `linear_status` | W | `simple-board status ID STATUS` | Set a board status (`duplicate` needs `of`) |
+| `linear_schema` | R | `simple-board api schema` | Inspect Linear's GraphQL types |
+| `linear_query` | R | `simple-board api query` | One GraphQL query |
+| `linear_mutation` | W | `simple-board api mutation` | One GraphQL mutation, with an idempotency key |
 
-Plus **175 named commands** (63 reads, 112 writes) and **11 proxied official Linear tools** (5 reads, 6 writes), all prefixed `linear_`.  Discover them with `board commands [--search WORD] [--kind read|write]` and `board commands show NAME`, or from the catalogs in `scripts/linear-board/catalog/` (`named-commands.json`, `official-mcp-tools.json`).  Named commands follow verb patterns:
+Plus **175 named commands** (63 reads, 112 writes) and **11 proxied official Linear tools** (5 reads, 6 writes), all prefixed `linear_`.  Discover them with `simple-board commands [--search WORD] [--kind read|write]` and `simple-board commands show NAME`, or from the catalogs in `scripts/linear-board/catalog/` (`named-commands.json`, `official-mcp-tools.json`).  Named commands follow verb patterns:
 
 | Pattern | Examples |
 |---|---|
@@ -173,11 +173,11 @@ Plus **175 named commands** (63 reads, 112 writes) and **11 proxied official Lin
 | One-offs | `linear_share_issue`, `linear_resolve_comment`, `linear_link_attachment_url`, `linear_complete_release`, `linear_add_initiative_project`, `linear_mark_notification` |
 | Official, proxied | `linear_get_diff`, `linear_list_diffs`, `linear_submit_diff_review`, `linear_merge_diff`, `linear_extract_images`, `linear_search_documentation` |
 
-From a shell, `board run NAME` is the tool `linear_NAME` (`board run list_issues --arg first=5`);  `board mcp call TOOL` runs a proxied official tool.  A write from a shell needs `AGENT_SEAT`, `LINEAR_BOARD_WRITES=1` and `--idempotency-key`.
+From a shell, `simple-board run NAME` is the tool `linear_NAME` (`simple-board run list_issues --arg first=5`);  `simple-board mcp call TOOL` runs a proxied official tool.  A write from a shell needs `AGENT_SEAT`, `LINEAR_BOARD_WRITES=1` and `--idempotency-key`.
 
 ### fleetlink
 
-Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleet-share`, or `AGENT_SYNC_FLEETLINK_CLI`) with the seat's token:  `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat;  a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `FLEETLINK_TOKEN_<SEAT>` in Infisical AI Fleet Coordinator `/fleetlink` (hyphens as underscores);  without one it answers `not_configured`.
+Same names and arguments on both servers, as the identity's own FleetLink bot.  Shares land in the Fleet team where every seat can read and edit them unless `personal` is true.  FleetLink content is fenced as untrusted (`BEGIN_UNTRUSTED_FLEETLINK` and `END_UNTRUSTED_FLEETLINK`), and text that would land on a link is refused when it looks like a secret.  Hosted needs the server's FleetLink secrets.  Stdio runs FleetLink's own CLI (`fleetlink`, or `AGENT_SYNC_FLEETLINK_CLI`) with the seat's token:  `FLEETLINK_TOKEN_<SEAT>`, else `FLEETLINK_TOKEN` (no launcher, and `AGENT_SEAT` unset or the same seat;  a seat from `--as` or `--default-seat` counts as `AGENT_SEAT`), else `FLEETLINK_TOKEN_<SEAT>` in Infisical AI Fleet Coordinator `/fleetlink` (hyphens as underscores);  without one it answers `not_configured`.
 
 | Tool | R/W | Purpose |
 |---|---|---|
@@ -254,7 +254,7 @@ Apple Notes live in the Mac's iCloud `Coding` folder and only a Mac can write th
 
 Title rule:  `[TEAM_KEY, Agent] Topic`, such as `[AFC, Codex] Topic`.  Use uppercase team keys and the verified calling seat’s canonical Title Case `notesName`; its exact uppercase seat tag remains accepted for compatibility.  The title holds no double quote, backslash or control character and is at most 200 characters.  The listener and direct runner refuse another seat’s name and arbitrary case variants.
 
-Owner setup (once):  create the public channel `#notes-relay`, make sure the relaying bots are subscribed to it, add `[notes_relay] enabled = true` and `seat = "CLAUDE"` to the Mac's `listener.toml`, then `agent-sync daemon reload`.  A missing channel is a logged warning, never created.
+Owner setup (once):  create the public channel `#notes-relay`, make sure the relaying bots are subscribed to it, add `[notes_relay] enabled = true` and `seat = "CLAUDE"` to the Mac's `listener.toml`, then `simple-chat daemon reload`.  A missing channel is a logged warning, never created.
 
 ## CLI Equivalents
 
@@ -262,15 +262,15 @@ Every MCP tool has a command.  Identity for the CLI comes from `--as NAME`, `AGE
 
 | Group | Commands |
 |---|---|
-| Zulip (flat verbs, shown in the zulip table above) | `agent-sync post`, `reply`, `read`, `inbox`, `dm`, `dm-read`, `search`, `channels`, `users`, `scheduled …`, `drafts …` and so on.  There is no `agent-sync zulip` group:  the Zulip commands are the top-level verbs.  `agent-sync api` is an allowlisted escape hatch for one non-admin Zulip endpoint |
-| Identity | `agent-sync whoami`, `agent-sync identities` (this host's allowed set and default, no network) |
-| Listener | `agent-sync listener status|inbox|ack|owner-queue|surface|wakes|held-back|clear-held` for this seat's records;  `agent-sync daemon …` runs the listener itself |
-| Notes | `agent-sync notes create|update TITLE [BODY|-] [--body-file P] [--html P] [--no-pin] [--notify] [--needs-owner] [--summary T] [--pr N] [--relay]`, `notes pin|unpin TITLE`, `notes status REQUEST_ID` |
-| Guide | `agent-sync guide [SECTION]` |
-| Recall | `recall search|stats|contribute` (not part of `agent-sync`) |
-| Linear | `board list|show|file|claim|comment|status|whoami`, `board commands`, `board run NAME`, `board api schema|query|mutation`, `board mcp list|call` |
-| MCP server | `agent-sync mcp` (what an MCP client's config runs) |
-| FleetLink | `fleet-share` (`fleet-share tool NAME` runs any `fleetlink_*` tool;  stdio runs it that way) |
+| Zulip (flat verbs, shown in the zulip table above) | `simple-chat post`, `reply`, `read`, `inbox`, `dm`, `dm-read`, `search`, `channels`, `users`, `scheduled …`, `drafts …` and so on.  There is no `simple-chat zulip` group:  the Zulip commands are the top-level verbs.  `simple-chat api` is an allowlisted escape hatch for one non-admin Zulip endpoint |
+| Identity | `simple-chat whoami`, `simple-chat identities` (this host's allowed set and default, no network) |
+| Listener | `simple-chat listener status|inbox|ack|owner-queue|surface|wakes|held-back|clear-held` for this seat's records;  `simple-chat daemon …` runs the listener itself |
+| Notes | `simple-notes create|update TITLE [BODY|-] [--body-file P] [--html P] [--no-pin] [--notify] [--needs-owner] [--summary T] [--pr N] [--relay]`, `notes pin|unpin TITLE`, `notes status REQUEST_ID` |
+| Guide | `simple-chat guide [SECTION]` |
+| Recall | `recall search|stats|contribute` (not part of `simple-chat`) |
+| Linear | `simple-board list|show|file|claim|comment|status|whoami`, `simple-board commands`, `simple-board run NAME`, `simple-board api schema|query|mutation`, `simple-board mcp list|call` |
+| MCP server | `simple-chat mcp` (what an MCP client's config runs) |
+| FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool;  stdio runs it that way) |
 
 Long text stays out of `argv`:  `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.
 
@@ -294,4 +294,4 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `claim_held` | Linear:  another seat holds the claim |
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
 
-Exit codes of the `agent-sync` CLI:  0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, 6 auth, 7 writes off.
+Exit codes of the `simple-chat` CLI:  0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, 6 auth, 7 writes off.

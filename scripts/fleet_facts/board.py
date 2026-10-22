@@ -58,7 +58,7 @@ def board_command() -> str | None:
     override = os.environ.get("FLEET_FACTS_BOARD")
     if override:
         return which(override)
-    return which("board")
+    return which("simple-board")
 
 
 class BoardWriteRefused(RuntimeError):

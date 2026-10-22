@@ -145,6 +145,7 @@ class Runtime:
     stdin: TextIO
     stdout: TextIO
     stderr: TextIO
+    prog: str = "simple-chat"  # the command's own name: every error line is prefixed with it
     home: Path | None = None
     sleep: Callable[[float], None] = time.sleep
     stop: threading.Event | None = None
@@ -218,7 +219,7 @@ class Agent:
         # only the full id can name the session it came from (and it is written into the session's
         # state file, so a resume-wake can map one to the other).
         self.session_id = session_id
-        # `credentials` is set only by `agent-sync mcp`, for an identity whose key comes from its own per-seat
+        # `credentials` is set only by `simple-chat mcp`, for an identity whose key comes from its own per-seat
         # environment variables (the server instance, AFC-331);  the CLI's parser never sets it.
         given = getattr(args, "credentials", None)
         self.creds = (
@@ -320,7 +321,7 @@ class Agent:
         self.rt.out(text)
 
     def err(self, text: str) -> None:
-        self.rt.err("agent-sync: " + text)
+        self.rt.err(self.rt.prog + ": " + text)
 
     def emit_json(self, obj: Any) -> None:
         self.out(json.dumps(obj, ensure_ascii=False) + "\n")
@@ -764,10 +765,68 @@ def _common_parent() -> argparse.ArgumentParser:
     return parent
 
 
-def build_parser() -> argparse.ArgumentParser:
+class _NullParser(argparse.ArgumentParser):
+    """A parser that accepts and ignores every registration.
+
+    `build_parser` builds one parser per command out of the same registration code, so a verb that
+    belongs to another command (`simple-notes` has no `post`) is registered into one of these and
+    silently dropped instead of needing an `if` at every call site."""
+
+    def __init__(self) -> None:
+        super().__init__(prog="", add_help=False)
+
+    def add_parser(self, name: str, **kwargs: Any) -> argparse.ArgumentParser:  # noqa: D102
+        return _NullParser()
+
+    def add_subparsers(self, **kwargs: Any) -> argparse.ArgumentParser:  # noqa: D102
+        return self
+
+    def add_argument(self, *args: Any, **kwargs: Any) -> None:  # noqa: D102
+        return None
+
+    def add_argument_group(self, *args: Any, **kwargs: Any) -> Any:  # noqa: D102
+        return self
+
+    def add_mutually_exclusive_group(self, *args: Any, **kwargs: Any) -> Any:  # noqa: D102
+        return self
+
+    def set_defaults(self, **kwargs: Any) -> None:  # noqa: D102
+        return None
+
+
+class _FilteringSubparsers:
+    """Wraps argparse's subparsers action so only `allowed` top-level verbs survive.
+
+    A verb outside the set is registered into a `_NullParser`, so the shared registration code in
+    `build_parser` needs no per-verb branching and each command's `--help` lists only its own
+    verbs."""
+
+    def __init__(self, sub: Any, allowed: frozenset[str]) -> None:
+        self._sub = sub
+        self._allowed = allowed
+
+    def add_parser(self, name: str, **kwargs: Any) -> argparse.ArgumentParser:
+        if name not in self._allowed:
+            return _NullParser()
+        return self._sub.add_parser(name, **kwargs)
+
+    def add_subparsers(self, **kwargs: Any) -> Any:
+        return self._sub.add_subparsers(**kwargs)
+
+    def __getattr__(self, item: str) -> Any:
+        return getattr(self._sub, item)
+
+
+def build_parser(
+    prog: str = "simple-chat",
+    verbs: frozenset[str] | None = None,
+    *,
+    listener_verbs: frozenset[str] | None = None,
+    notes_verbs: frozenset[str] | None = None,
+) -> argparse.ArgumentParser:
     common = _common_parent()
     parser = argparse.ArgumentParser(
-        prog="agent-sync",
+        prog=prog,
         parents=[common],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Coordinate with the fleet on Zulip.  Every post goes to a channel and a topic, "
@@ -775,8 +834,13 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="Exit codes: 0 ok, 2 usage, 3 credentials or realm, 4 wait timeout, 5 Zulip API error, "
         "6 network error, 7 verify-owner-msg did not verify.  See scripts/agent_sync/README.md.",
     )
-    parser.add_argument("--version", action="version", version="agent-sync %s" % __version__)
+    parser.add_argument("--version", action="version", version="%s %s" % (prog, __version__))
     sub = parser.add_subparsers(dest="command", metavar="COMMAND", required=True)
+    # The wrapper spans every source that registers onto `sub`, so a verb this command owns from
+    # any of them survives; each source narrows its own registration further where it needs to.
+    owned = [v for v in (verbs, listener_verbs, notes_verbs) if v is not None]
+    if owned:
+        sub = _FilteringSubparsers(sub, frozenset().union(*owned))
 
     def add(name: str, summary: str) -> argparse.ArgumentParser:
         return sub.add_parser(name, parents=[common], help=summary, description=summary)
@@ -1122,8 +1186,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     zulip_cli.add_parsers(sub, common)
-    listener_cli.add_parsers(sub, common)
-    notes_cli.add_parsers(sub, common)
+    listener_cli.add_parsers(sub, common, verbs=listener_verbs)
+    notes_cli.add_parsers(sub, common, verbs=notes_verbs)
     return parser
 
 
@@ -1458,12 +1522,12 @@ def _compose(
     return body
 
 
-def _check_hint(channel: str, topic: str) -> str:
+def _check_hint(channel: str, topic: str, prog: str = "simple-chat") -> str:
     """The command that shows whether a post landed.  Channel and topic can come from another
     member's message (reply), so they are shell-quoted: an agent that runs the hint runs only that."""
     return _visible(
-        "agent-sync read --channel %s --topic %s --include-self"
-        % (shlex.quote(channel), shlex.quote(topic))
+        "%s read --channel %s --topic %s --include-self"
+        % (prog, shlex.quote(channel), shlex.quote(topic))
     )
 
 
@@ -1486,7 +1550,7 @@ def _send(agent: Agent, channel: str, topic: str, body: str) -> int:
         if exc.maybe_sent:
             raise NetworkError(
                 "%s  The message was not retried.  Check whether it posted: %s"
-                % (exc, _check_hint(channel, topic)),
+                % (exc, _check_hint(channel, topic, agent.rt.prog)),
                 timeout=exc.timeout,
                 maybe_sent=True,
             ) from None
@@ -1497,7 +1561,7 @@ def _send(agent: Agent, channel: str, topic: str, body: str) -> int:
         ):  # a gateway timeout says nothing about whether Zulip stored the post
             raise ApiError(
                 "%s  Zulip may or may not have received the message, and it was not retried.  Check whether it posted: %s"
-                % (exc.msg, _check_hint(channel, topic)),
+                % (exc.msg, _check_hint(channel, topic, agent.rt.prog)),
                 code=exc.code,
                 status=exc.status,
             ) from None
@@ -1575,7 +1639,7 @@ def _fleet_refused_error(exc: ApiError) -> ApiError:
         'can_mention_many_users_group (Organization permissions, "Who can notify a large number of users with '
         'a wildcard mention"), which only Jay can change.  The fleet expects role:members, which includes every '
         "fleet bot, so if it has been narrowed, ask Jay to restore it.  Until then, "
-        "post in #%s \u203a %s with --to NAME for each bot that must act, and use `agent-sync dm --owner` for an "
+        "post in #%s \u203a %s with --to NAME for each bot that must act, and use `simple-chat dm --owner` for an "
         "emergency."
         % (FLEET_WAKE_MENTION, exc.msg, ROUTER.FLEET_WAKE_CHANNEL, ROUTER.FLEET_WAKE_TOPIC),
         code=exc.code,
@@ -1604,13 +1668,13 @@ def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
 
 def _owner_config(agent: Agent) -> Any:
     """The installed listener config with an owner pinned in it, else UsageError (exit 2).  The one way the
-    CLI learns who the owner is:  `daemon.owner_user_id` in listener.toml (pinned by `agent-sync daemon
+    CLI learns who the owner is:  `daemon.owner_user_id` in listener.toml (pinned by `simple-chat daemon
     init`, never derived at runtime and never taken from the command line)."""
     cfg = listener_cli._load(agent.rt)
     if cfg.owner_user_id <= 0:
         raise UsageError(
             "no owner to message:  daemon.owner_user_id is not pinned in %s "
-            "(run agent-sync daemon init)" % listener_cli._config_path(agent.rt)
+            "(run %s daemon init)" % (agent.rt.prog, listener_cli._config_path(agent.rt))
         )
     return cfg
 
@@ -1629,7 +1693,7 @@ def _owner_mention(agent: Agent, owner_id: int) -> str:
     if user is None:
         raise UsageError(
             "the pinned owner (daemon.owner_user_id %d) is not a user in this realm;  re-run "
-            "agent-sync daemon init" % owner_id
+            "%s daemon init" % (owner_id, agent.rt.prog)
         )
     if not user.get("is_active", True):
         raise UsageError(
@@ -1638,7 +1702,7 @@ def _owner_mention(agent: Agent, owner_id: int) -> str:
     if user.get("is_bot"):
         raise UsageError(
             "the pinned owner (daemon.owner_user_id %d) is a bot, not the owner's own account;  "
-            "re-run agent-sync daemon init" % owner_id
+            "re-run %s daemon init" % (owner_id, agent.rt.prog)
         )
     name = str(user.get("full_name") or "").strip()
     if not name:
@@ -1801,7 +1865,7 @@ def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
     body = _compose(agent, text, labels=to.labels, mentions=[], no_tag=args.no_tag)
     where = to.describe()
     check = (
-        "Check your direct messages with %s in Zulip (or `agent-sync dm-read`) before sending it again."
+        "Check your direct messages with %s in Zulip (or `simple-chat dm-read`) before sending it again."
         % (where if to.owner_only else "them")
     )
     try:
@@ -2398,7 +2462,7 @@ def cmd_identities(rt: Runtime, args: argparse.Namespace) -> int:
         for name in allowed:
             rt.out("%s\n" % name)
     if registry_problem:
-        rt.err("agent-sync: %s" % registry_problem)
+        rt.err("%s: %s" % (rt.prog, registry_problem))
         return 3
     return 0
 
@@ -2513,10 +2577,85 @@ LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
     "guide": notes_cli.cmd_guide,
 }
 
+# `simple-notes` verbs.  They are top-level commands, so they land in LOCAL_COMMANDS beside the
+# listener verbs; MCP reaches the same handler through the `notes` group.
+NOTES_VERBS = ("create", "update", "pin", "unpin", "status")
+for _action in NOTES_VERBS:
+    LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
+
+# `status` is a verb of two commands:  the listener's on `simple-chat`, the notes relay's on
+# `simple-notes`.  A bare name cannot pick one, so each command overrides it for its own verbs.
+DISPATCH_OVERRIDES: dict[str, dict[str, Callable[[Runtime, argparse.Namespace], int]]] = {
+    "simple-notes": {"status": notes_cli.cmd_notes},
+    "simple-chat": {"status": listener_cli.cmd_status},
+}
+
+# Every top-level verb `simple-chat` owns:  the Zulip/chat verbs, the stdio MCP server, the tools
+# guide, identity listing and the attach/detach hooks.  The listener verbs (daemon, listener,
+# status, wakes) are held here until the Operator/eavesdropper workstream gives them their own
+# command; they are not renamed in this change.
+CHAT_VERBS = frozenset(
+    {
+        "whoami",
+        "channels",
+        "topics",
+        "subscribe",
+        "unsubscribe",
+        "post",
+        "reply",
+        "dm",
+        "dm-list",
+        "dm-read",
+        "read",
+        "wait",
+        "listen",
+        "inbox",
+        "follow",
+        "mute",
+        "unmute",
+        "resolve",
+        "unresolve",
+        "react",
+        "unreact",
+        "star",
+        "unstar",
+        "verify-owner-msg",
+        "mcp",
+        "guide",
+        "identities",
+    }
+    | set(zulip_cli.COMMANDS)
+)
+
+# The listener/daemon verbs.  They stay on `simple-chat` until the Operator/eavesdropper
+# workstream gives them their own command; this change does not rename them.
+LISTENER_VERBS = frozenset({"attach", "detach", "daemon", "listener", "status", "wakes"})
+
+# Which verb set each entry point owns, per registration source.  `main(prog=...)` and
+# `build_parser_for` read this, so the four CLIs stay four commands with four separate helps.
+COMMAND_SPECS: dict[str, dict[str, frozenset[str]]] = {
+    "simple-chat": {"chat": CHAT_VERBS, "listener": LISTENER_VERBS, "notes": frozenset()},
+    "simple-notes": {"chat": frozenset(), "listener": frozenset(), "notes": frozenset(NOTES_VERBS)},
+}
+
+
+def build_parser_for(prog: str) -> argparse.ArgumentParser:
+    """The parser for one entry point: only that command's verbs, under its own name."""
+    spec = COMMAND_SPECS.get(prog)
+    if spec is None:
+        return build_parser(prog)
+    return build_parser(
+        prog,
+        spec["chat"],
+        listener_verbs=spec["listener"],
+        notes_verbs=spec["notes"],
+    )
+
 
 def main(
     argv: Sequence[str] | None = None,
     *,
+    prog: str = "simple-chat",
     env: Mapping[str, str] | None = None,
     stdin: TextIO | None = None,
     stdout: TextIO | None = None,
@@ -2532,6 +2671,7 @@ def main(
         stdin=stdin or sys.stdin,
         stdout=stdout or sys.stdout,
         stderr=stderr or sys.stderr,
+        prog=prog,
         home=home,
         sleep=sleep or time.sleep,
         stop=stop,
@@ -2553,7 +2693,7 @@ def main(
             stdout=rt.stdout,
             stderr=rt.stderr,
         )
-    parser = build_parser()
+    parser = build_parser_for(prog)
     try:
         with contextlib.redirect_stdout(rt.stdout), contextlib.redirect_stderr(rt.stderr):
             args = parser.parse_args(argv)
@@ -2570,8 +2710,10 @@ def main(
     # the command is a write.  Only a verified key counts for the failure paths:  before that nothing was sent.
     audit: tuple[int, str | None] | None = None
     try:
-        if args.command in LOCAL_COMMANDS:
-            return LOCAL_COMMANDS[args.command](rt, args)
+        overrides = DISPATCH_OVERRIDES.get(prog, {})
+        handler = overrides.get(args.command) or LOCAL_COMMANDS.get(args.command)
+        if handler is not None:
+            return handler(rt, args)
         if args.command == "inbox" and args.local:
             return listener_cli.cmd_inbox_local(rt, args)
         if (
@@ -2590,7 +2732,7 @@ def main(
         audit = (code, None)
         return code
     except Z.AgentSyncError as exc:
-        rt.err("agent-sync: %s" % exc)
+        rt.err("%s: %s" % (rt.prog, exc))
         if agent is not None and agent._verified:
             audit = (exc.exit_code, None)
         return exc.exit_code
@@ -2605,7 +2747,7 @@ def main(
         return 0
     except Exception as exc:  # noqa: BLE001 - last resort: say what failed, never print a traceback
         text = "%s: %s" % (type(exc).__name__, exc)
-        rt.err("agent-sync: internal error: %s" % (agent.client.scrub(text) if agent else text))
+        rt.err("%s: internal error: %s" % (rt.prog, agent.client.scrub(text) if agent else text))
         if agent is not None and agent._verified:
             # Anything unexpected after the key was verified (a failed print, a full disk) may have followed a write that
             # landed:  the outcome is unknown, and only the exception's type name is recorded.

@@ -15,7 +15,7 @@ The real guard is the stream check:  the `system` `init` event must list no MCP 
 tools other than the harness's own `StructuredOutput` (which `--json-schema` adds), and no
 `system` hook event may appear at any point; otherwise the process group is killed and the wake
 refused.  The final `result` must show exactly one model in `modelUsage`.  A run is pinned to
-the realpath of the claude binary that passed `agent-sync daemon test-wake --run` and was then
+the realpath of the claude binary that passed `simple-chat daemon test-wake --run` and was then
 confirmed with `--pin`; after an update changes it, wakes fall back to inbox-only until the test
 passes again.  The pinned realpath is what runs, never the PATH symlink.
 
@@ -948,8 +948,8 @@ def muse_pinned(paths: L.SeatPaths, muse: str | None) -> bool:
 #:  what `test-wake`'s default "auto" resolves to;  the fallback pin carries `--runtime fallback`
 #:  because it is read for a seat whose wake is something else.
 MUSE_PIN_REMEDIATION = (
-    "`agent-sync daemon test-wake --seat %s --run`, then "
-    "`agent-sync daemon test-wake --seat %s --pin`"
+    "`simple-chat daemon test-wake --seat %s --run`, then "
+    "`simple-chat daemon test-wake --seat %s --pin`"
 )
 
 #:  A pin cannot be verified at all while the contract or the schema is unreadable, so the
@@ -957,7 +957,7 @@ MUSE_PIN_REMEDIATION = (
 #:  again.
 MUSE_PIN_UNREADABLE_REMEDIATION = (
     "restore the wake contract and result schema, then run "
-    "`agent-sync daemon test-wake --seat %s --run` and `--pin`"
+    "`simple-chat daemon test-wake --seat %s --run` and `--pin`"
 )
 
 
@@ -1588,8 +1588,8 @@ def mcode_pinned(paths: L.SeatPaths, mcode: str | None, model: str = MCODE_DEFAU
 #:  without it a seat with wake = claude/muse and fallback = "mcode" would re-test and re-pin the
 #:  PRIMARY runtime, leave this pin stale, and keep the fallback refused.
 MCODE_PIN_REMEDIATION = (
-    "`agent-sync daemon test-wake --seat %s --runtime fallback --run`, then "
-    "`agent-sync daemon test-wake --seat %s --runtime fallback --pin`"
+    "`simple-chat daemon test-wake --seat %s --runtime fallback --run`, then "
+    "`simple-chat daemon test-wake --seat %s --runtime fallback --pin`"
 )
 
 #:  A pin cannot be verified at all while the contract or the schema is unreadable, so the
@@ -1599,8 +1599,8 @@ MCODE_PIN_REMEDIATION = (
 #:  string is safe to follow even when only the red line was copied.
 MCODE_PIN_UNREADABLE_REMEDIATION = (
     "restore the wake contract and result schema, then run "
-    "`agent-sync daemon test-wake --seat %s --runtime fallback --run` and "
-    "`agent-sync daemon test-wake --seat %s --runtime fallback --pin`"
+    "`simple-chat daemon test-wake --seat %s --runtime fallback --run` and "
+    "`simple-chat daemon test-wake --seat %s --runtime fallback --pin`"
 )
 
 

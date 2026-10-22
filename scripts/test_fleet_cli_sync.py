@@ -23,7 +23,7 @@ SPEC.loader.exec_module(S)
 POLICY = '''import hashlib,json
 MAX_BUNDLE_BYTES=8*1024*1024
 def allowed_path(path):
-    if path in {"scripts/agent-sync","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/agent-sync-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
+    if path in {"scripts/simple-chat","scripts/fleet-cli-release.py","fleet-apps.json","docs/protocols/agent-sync-partition.toml","scripts/linear-board/board","scripts/linear-board/board-ids.txt"}: return True
     parts=path.split("/")
     if len(parts)==3 and parts[:2]==["scripts","agent_sync"] and parts[2].endswith(".py"): return True
     if len(parts)==4 and parts[:3]==["scripts","agent_sync","mcp"] and (parts[3].endswith(".py") or parts[3] in {"tools.json","fixtures.jsonl"}): return True
@@ -73,7 +73,7 @@ class Fixture(unittest.TestCase):
         self.git("init", "-q")
         self.git("remote", "add", "origin", "git@github.com:Simple-With-Us/AI-Fleet-Coordinator.git")
         self.put("scripts/fleet-cli-release.py", POLICY)
-        self.put("scripts/agent-sync", "#!/usr/bin/env python3\nprint('fixture')\n", executable=True)
+        self.put("scripts/simple-chat", "#!/usr/bin/env python3\nprint('fixture')\n", executable=True)
         self.put("scripts/agent_sync/core.py", "VALUE = 1\n")
         self.put("fleet-apps.json", "{}\n")
         self.put("docs/private-fixture.md", "PRIVATE_FIXTURE_MUST_NOT_SHIP\n")
@@ -119,9 +119,9 @@ class SourceTests(Fixture):
 
     def test_only_published_allowlisted_blobs_and_regular_modes_ship(self):
         bundle, raw, receiver = S.build_bundle(self.repo)
-        self.assertEqual(set(bundle["files"]), {"scripts/fleet-cli-release.py", "scripts/agent-sync",
+        self.assertEqual(set(bundle["files"]), {"scripts/fleet-cli-release.py", "scripts/simple-chat",
                                                 "scripts/agent_sync/core.py", "fleet-apps.json"})
-        self.assertEqual(bundle["files"]["scripts/agent-sync"]["mode"], 0o755)
+        self.assertEqual(bundle["files"]["scripts/simple-chat"]["mode"], 0o755)
         self.assertEqual(bundle["files"]["fleet-apps.json"]["mode"], 0o644)
         self.assertEqual(bundle["source_commit"], self.git("rev-parse", "HEAD"))
         self.assertNotIn(b"PRIVATE_FIXTURE_MUST_NOT_SHIP", raw)

@@ -1674,7 +1674,7 @@ class ThreadedRunTests(DaemonHarness):
 
         process_env = self.env()
         process_env["PATH"] = os.environ.get("PATH", "/usr/bin:/bin")
-        process = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parents[2] / "agent-sync"), "daemon", "run"],
+        process = subprocess.Popen([sys.executable, str(Path(__file__).resolve().parents[2] / "simple-chat"), "daemon", "run"],
                                    env=process_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         out = err = ""
         try:

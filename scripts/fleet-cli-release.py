@@ -43,7 +43,7 @@ RECALL_MODULES = (
     "search_log",
     "telemetry",
 )
-# `agent-sync` reads the NOTES_RELAY_CONSUMER knob through these fleet_knobs modules (stdlib only;  the package's
+# `simple-chat` reads the NOTES_RELAY_CONSUMER knob through these fleet_knobs modules (stdlib only;  the package's
 # tests, its inventory CLI and its README stay out).  Without them a host silently falls back to the default consumer.
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
@@ -56,7 +56,9 @@ AFC331_FILES = (
 )
 EXACT = frozenset(
     {
-        "scripts/agent-sync",
+        "scripts/simple-chat",
+        "scripts/simple-notes",
+        "scripts/simple-board",
         "scripts/linear-board/board",
         "scripts/linear-board/board-ids.txt",
         "fleet-apps.json",
@@ -81,7 +83,7 @@ EXACT = frozenset(
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
-        # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `agent-sync mcp` reads it at startup.
+        # The fleetlink_* tool contract (generated from the hosted src/fleetlink.js):  `simple-chat mcp` reads it at startup.
         "scripts/agent_sync/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  the operator registry outbox exporter, shipped as a data file beside the Python modules.
         "scripts/agent_sync/operator_sheets_export.mjs",
@@ -91,7 +93,9 @@ EXACT = frozenset(
 # release by this set, so a release that predates the AFC-331 tools stays valid and can be rolled back to.
 BASE_REQUIRED = frozenset(
     {
-        "scripts/agent-sync",
+        "scripts/simple-chat",
+        "scripts/simple-notes",
+        "scripts/simple-board",
         "scripts/linear-board/board",
         "fleet-apps.json",
         *("scripts/linear-board/catalog/" + name for name in LINEAR_CATALOG),
@@ -112,11 +116,11 @@ TOOL_REQUIRED = frozenset(
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
         *AFC331_FILES,
-        # The listener_* MCP tools (AFC-330):  `agent-sync mcp` reads it at startup.
+        # The listener_* MCP tools (AFC-330):  `simple-chat mcp` reads it at startup.
         "scripts/agent_sync/mcp/listener-tools.json",
         # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
-        # The fleetlink_* MCP tools:  `agent-sync mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
+        # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
         "scripts/agent_sync/mcp/fleetlink-tools.json",
     }
@@ -246,7 +250,8 @@ def point(base: Path, name: str, release: Path) -> None:
 def smoke(release: Path, home: Path) -> None:
     for path in release.rglob("*"):
         if path.is_file() and (
-            path.suffix == ".py" or path.name in ("board", "agent-sync", "recall")
+            path.suffix == ".py"
+            or path.name in ("board", "simple-chat", "simple-notes", "simple-board", "recall")
         ):
             try:
                 compile(path.read_bytes(), str(path), "exec")
@@ -255,10 +260,11 @@ def smoke(release: Path, home: Path) -> None:
     # Only an empty temporary HOME and a minimal environment reach the smoke processes.
     env = {"HOME": str(home), "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "AGENT_SEAT": "CODEX"}
     cases = [
-        ("agent_sync_version", "scripts/agent-sync", ["--version"], 0),
-        ("agent_sync_mcp_help", "scripts/agent-sync", ["mcp", "--help"], 0),
-        ("board_help", "scripts/linear-board/board", ["--help"], 0),
-        ("board_missing_credentials", "scripts/linear-board/board", ["whoami"], 4),
+        ("simple_chat_version", "scripts/simple-chat", ["--version"], 0),
+        ("simple_chat_mcp_help", "scripts/simple-chat", ["mcp", "--help"], 0),
+        ("simple_notes_version", "scripts/simple-notes", ["--version"], 0),
+        ("simple_board_help", "scripts/simple-board", ["--help"], 0),
+        ("simple_board_missing_credentials", "scripts/simple-board", ["whoami"], 4),
         ("recall_help", "scripts/recall", ["--help"], 0),
         ("lane_help", "scripts/fleet_lanes/bin/lane", ["--help"], 0),
         ("fleet_mode_block", "scripts/fleet-mode", [], 0),
@@ -316,12 +322,13 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
     """Every managed command wrapper a release provides, by path."""
     bin_dir = home / ".local/bin"
     return {
-        bin_dir / "board": (wrapper(home, "scripts/linear-board/board"), 0o755),
-        bin_dir / "agent-sync": (wrapper(home, "scripts/agent-sync"), 0o755),
-        bin_dir / "agent-sync-codex-mcp": (
+        bin_dir / "simple-board": (wrapper(home, "scripts/simple-board"), 0o755),
+        bin_dir / "simple-chat": (wrapper(home, "scripts/simple-chat"), 0o755),
+        bin_dir / "simple-notes": (wrapper(home, "scripts/simple-notes"), 0o755),
+        bin_dir / "simple-chat-codex-mcp": (
             wrapper(
                 home,
-                "scripts/agent-sync",
+                "scripts/simple-chat",
                 ["mcp", "--default-seat", "CODEX", "--codex-thread-meta"],
                 True,
             ),
@@ -365,7 +372,7 @@ def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
     except (ValueError, UnicodeError):
         raise Refused("invalid_codex_config") from None
     expected = {
-        "command": str(bin_dir / "agent-sync-codex-mcp"),
+        "command": str(bin_dir / "simple-chat-codex-mcp"),
         "env_vars": [
             "AGENT_LAUNCHER",
             "AGENT_LAUNCH_SEAT",

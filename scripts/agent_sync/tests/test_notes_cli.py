@@ -31,7 +31,7 @@ class NotesCliTests(Harness):
         run = FakeRun()
         a, b = self.direct(run)
         with a, b:
-            result = self.run_cli("notes", "create", TITLE, "--json", stdin="body from stdin\n")
+            result = self.run_cli("create", TITLE, "--json", stdin="body from stdin\n", prog="simple-notes")
         self.assertEqual(result.code, 0, result.err)
         info = json.loads(result.out)
         self.assertEqual(
@@ -49,7 +49,7 @@ class NotesCliTests(Harness):
         run = FakeRun(stderr="pin skipped: Pin Coding Note Shortcut failed; note saved unpinned\n")
         a, b = self.direct(run)
         with a, b:
-            result = self.run_cli("notes", "create", TITLE, "--json", stdin="body\n")
+            result = self.run_cli("create", TITLE, "--json", stdin="body\n", prog="simple-notes")
         self.assertEqual(result.code, 0, result.err)
         info = json.loads(result.out)
         self.assertEqual(info["status"], "done")
@@ -59,13 +59,11 @@ class NotesCliTests(Harness):
         clean_run = FakeRun()
         a, b = self.direct(clean_run)
         with a, b:
-            clean = self.run_cli(
-                "notes", "create", TITLE, "--json", "--request-id", "clean-request-01", stdin="body\n"
-            )
+            clean = self.run_cli("create", TITLE, "--json", "--request-id", "clean-request-01", stdin="body\n", prog="simple-notes")
         self.assertNotIn("pin_skipped", json.loads(clean.out))
         a, b = self.direct(FakeRun(stderr="pin skipped: the Shortcut list could not be read; note saved unpinned\n"))
         with a, b:
-            text = self.run_cli("notes", "create", TITLE, "--request-id", "text-request-01", stdin="body\n")
+            text = self.run_cli("create", TITLE, "--request-id", "text-request-01", stdin="body\n", prog="simple-notes")
         self.assertIn("pin skipped:  the Shortcut list could not be read", text.out)
 
     def test_the_body_comes_from_a_private_file_or_an_html_file_and_flags_pass_through(self):
@@ -77,9 +75,7 @@ class NotesCliTests(Harness):
         html.write_text("<div><p>hi</p></div>")
         a, b = self.direct(run)
         with a, b:
-            first = self.run_cli(
-                "notes",
-                "update",
+            first = self.run_cli("update",
                 TITLE,
                 "--body-file",
                 str(body),
@@ -88,13 +84,12 @@ class NotesCliTests(Harness):
                 "--summary",
                 "short",
                 "--pr",
-                "46",
-            )
-            second = self.run_cli("notes", "create", TITLE, "--html", str(html))
+                "46", prog="simple-notes")
+            second = self.run_cli("create", TITLE, "--html", str(html), prog="simple-notes")
             wide = self.tmp / "wide.md"
             wide.write_text("x")
             wide.chmod(0o644)
-            third = self.run_cli("notes", "create", TITLE, "--body-file", str(wide))
+            third = self.run_cli("create", TITLE, "--body-file", str(wide), prog="simple-notes")
         self.assertEqual((first.code, second.code), (0, 0), first.err + second.err)
         self.assertEqual(run.calls[0]["input"], b"# From a file")
         self.assertEqual(
@@ -121,21 +116,13 @@ class NotesCliTests(Harness):
         run = FakeRun()
         a, b = self.direct(run)
         with a, b:
-            leak = self.run_cli(
-                "notes", "create", TITLE, "--summary", "token " + "ghp_" + "EXAMPLE0" * 5, stdin="x"
-            )
+            leak = self.run_cli("create", TITLE, "--summary", "token " + "ghp_" + "EXAMPLE0" * 5, stdin="x", prog="simple-notes")
             self.assertEqual(leak.code, 2)
             self.assertIn("summary looks like it contains", leak.err)
             self.assertEqual(run.calls, [])
-            first = self.run_cli(
-                "notes", "create", TITLE, "--request-id", "cli-once-0001", "--json", stdin="x"
-            )
-            again = self.run_cli(
-                "notes", "create", TITLE, "--request-id", "cli-once-0001", "--json", stdin="x"
-            )
-            fresh = self.run_cli(
-                "notes", "create", TITLE, "--request-id", "cli-once-0002", "--json", stdin="x"
-            )
+            first = self.run_cli("create", TITLE, "--request-id", "cli-once-0001", "--json", stdin="x", prog="simple-notes")
+            again = self.run_cli("create", TITLE, "--request-id", "cli-once-0001", "--json", stdin="x", prog="simple-notes")
+            fresh = self.run_cli("create", TITLE, "--request-id", "cli-once-0002", "--json", stdin="x", prog="simple-notes")
         self.assertEqual(
             [json.loads(r.out)["duplicate"] for r in (first, again, fresh)], [False, True, False]
         )
@@ -143,7 +130,7 @@ class NotesCliTests(Harness):
         self.assertEqual(json.loads(again.out)["status"], "done")
 
     def test_a_failed_status_check_is_a_read_and_leaves_no_audit_row(self):
-        failed = self.run_cli("notes", "status", "nobody-asked-01")
+        failed = self.run_cli("status", "nobody-asked-01", prog="simple-notes")
         self.assertNotEqual(failed.code, 0)
         self.assertEqual(self.audit_rows(), [], "status is a read, whether it succeeds or fails")
 
@@ -153,14 +140,11 @@ class NotesCliTests(Harness):
 
         a, b = self.direct(interrupted)
         with a, b:
-            first = self.run_cli(
-                "notes",
-                "create",
+            first = self.run_cli("create",
                 TITLE,
                 "--request-id",
                 "interrupt-request-1",
-                stdin="secret-looking body",
-            )
+                stdin="secret-looking body", prog="simple-notes")
         self.assertEqual(first.code, 130)
         rows = self.audit_rows()
         self.assertEqual(
@@ -170,9 +154,7 @@ class NotesCliTests(Harness):
         run = FakeRun()
         a, b = self.direct(run)
         with a, b:
-            retry = self.run_cli(
-                "notes", "create", TITLE, "--request-id", "interrupt-request-1", stdin="again"
-            )
+            retry = self.run_cli("create", TITLE, "--request-id", "interrupt-request-1", stdin="again", prog="simple-notes")
         self.assertNotEqual(retry.code, 0)
         self.assertEqual(run.calls, [], "the interrupted write may have landed:  its id is refused")
 
@@ -196,15 +178,12 @@ class NotesCliTests(Harness):
             with self.subTest(label):
                 before = len(self.audit_rows())
                 with mock.patch.object(T.Tools, "call", replacement):
-                    result = self.run_cli(
-                        "notes",
-                        "create",
+                    result = self.run_cli("create",
                         TITLE,
                         "--relay",
                         "--request-id",
                         "relay-%s-001" % label,
-                        stdin="body",
-                    )
+                        stdin="body", prog="simple-notes")
                 self.assertEqual(result.code, code, result.err)
                 rows = self.audit_rows()[before:]
                 self.assertEqual(
@@ -222,18 +201,18 @@ class NotesCliTests(Harness):
 
         before = len(self.audit_rows())
         with mock.patch.object(T.Tools, "call", interrupted):
-            self.assertEqual(self.run_cli("notes", "status", "nobody-asked-02").code, 130)
+            self.assertEqual(self.run_cli("status", "nobody-asked-02", prog="simple-notes").code, 130)
         self.assertEqual(len(self.audit_rows()), before)
 
     def test_an_oversized_body_is_a_usage_error_not_cut_short(self):
         run = FakeRun()
         a, b = self.direct(run)
         with a, b:
-            over = self.run_cli("notes", "create", TITLE, stdin="x" * (N.MARKDOWN_MAX + 1))
+            over = self.run_cli("create", TITLE, stdin="x" * (N.MARKDOWN_MAX + 1), prog="simple-notes")
             body = self.tmp / "long.html"
             body.write_text("y" * (N.MARKDOWN_MAX + 1))
-            over_html = self.run_cli("notes", "create", TITLE, "--html", str(body))
-            exact = self.run_cli("notes", "create", TITLE, stdin="x" * N.MARKDOWN_MAX)
+            over_html = self.run_cli("create", TITLE, "--html", str(body), prog="simple-notes")
+            exact = self.run_cli("create", TITLE, stdin="x" * N.MARKDOWN_MAX, prog="simple-notes")
         self.assertEqual((over.code, over_html.code), (2, 2), over.err + over_html.err)
         self.assertIn("longer than", over.err)
         self.assertEqual(exact.code, 0, exact.err)
@@ -244,13 +223,10 @@ class NotesCliTests(Harness):
         run = FakeRun()
         a, b = self.direct(run)
         with a, b:
-            result = self.run_cli(
-                "notes",
-                "create",
+            result = self.run_cli("create",
                 TITLE,
                 stdin="x",
-                env=dict(self.env(), FLEET_APPS_JSON="/nonexistent/fleet-apps.json"),
-            )
+                env=dict(self.env(), FLEET_APPS_JSON="/nonexistent/fleet-apps.json"), prog="simple-notes")
         self.assertNotEqual(result.code, 0)
         self.assertIn("seat registry", result.err)
         self.assertEqual(run.calls, [])
@@ -261,17 +237,13 @@ class NotesCliTests(Harness):
 
         a, b = self.direct(hang)
         with a, b:
-            first = self.run_cli(
-                "notes", "create", TITLE, "--request-id", "cli-timeout-001", stdin="x"
-            )
+            first = self.run_cli("create", TITLE, "--request-id", "cli-timeout-001", stdin="x", prog="simple-notes")
         self.assertEqual(first.code, 5)
         self.assertIn("may or may not", first.err)
         run = FakeRun()
         a, b = self.direct(run)
         with a, b:
-            retry = self.run_cli(
-                "notes", "create", TITLE, "--request-id", "cli-timeout-001", stdin="x"
-            )
+            retry = self.run_cli("create", TITLE, "--request-id", "cli-timeout-001", stdin="x", prog="simple-notes")
         self.assertEqual(retry.code, 5)
         self.assertIn("may have been interrupted", retry.err)
         self.assertEqual(run.calls, [])
@@ -294,17 +266,15 @@ class NotesCliTests(Harness):
         a, b = self.direct(hang)
         with a, b:
             self.assertEqual(
-                self.run_cli(
-                    "notes", "create", TITLE, "--request-id", "audit-timeout-01", stdin=body
-                ).code,
+                self.run_cli("create", TITLE, "--request-id", "audit-timeout-01", stdin=body, prog="simple-notes").code,
                 5,
             )
         a, b = self.direct(FakeRun(code=3))
         with a, b:
-            self.assertEqual(self.run_cli("notes", "pin", TITLE).code, 5)
+            self.assertEqual(self.run_cli("pin", TITLE, prog="simple-notes").code, 5)
         a, b = self.direct(FakeRun())
         with a, b:
-            self.assertEqual(self.run_cli("notes", "create", TITLE, stdin=body).code, 0)
+            self.assertEqual(self.run_cli("create", TITLE, stdin=body, prog="simple-notes").code, 0)
         rows = self.audit_rows()
         self.assertEqual(
             [(r["tool"], r["outcome"]) for r in rows],
@@ -322,26 +292,26 @@ class NotesCliTests(Harness):
         run = FakeRun()
         a, b = self.direct(run)
         with a, b:
-            self.assertEqual(self.run_cli("notes", "pin", TITLE).code, 0)
-            self.assertEqual(self.run_cli("notes", "unpin", TITLE).code, 0)
+            self.assertEqual(self.run_cli("pin", TITLE, prog="simple-notes").code, 0)
+            self.assertEqual(self.run_cli("unpin", TITLE, prog="simple-notes").code, 0)
         self.assertEqual([c["argv"][1] for c in run.calls], ["--pin-only", "--unpin-only"])
 
     def test_a_bad_title_and_the_script_failing_are_usage_and_api_exits(self):
         a, b = self.direct(FakeRun())
         with a, b:
-            self.assertEqual(self.run_cli("notes", "create", "no bracket", stdin="x").code, 2)
+            self.assertEqual(self.run_cli("create", "no bracket", stdin="x", prog="simple-notes").code, 2)
             self.assertEqual(
-                self.run_cli("notes", "create", '[AFC, CLAUDE] "q"', stdin="x").code, 2
+                self.run_cli("create", '[AFC, CLAUDE] "q"', stdin="x", prog="simple-notes").code, 2
             )
-            wrong = self.run_cli("notes", "create", "[AFC, CODEX] not mine", stdin="x")
+            wrong = self.run_cli("create", "[AFC, CODEX] not mine", stdin="x", prog="simple-notes")
             self.assertEqual(wrong.code, 2)
             self.assertIn("Agent in the title", wrong.err)
-            leak = self.run_cli("notes", "create", TITLE, stdin="token " + "ghp_" + "EXAMPLE0" * 5)
+            leak = self.run_cli("create", TITLE, stdin="token " + "ghp_" + "EXAMPLE0" * 5, prog="simple-notes")
             self.assertEqual(leak.code, 2)
             self.assertIn("looks like it contains", leak.err)
         a, b = self.direct(FakeRun(code=3))
         with a, b:
-            result = self.run_cli("notes", "pin", TITLE)
+            result = self.run_cli("pin", TITLE, prog="simple-notes")
         self.assertEqual(result.code, 5)
         self.assertIn("no note with that title", result.err)
 
@@ -350,15 +320,12 @@ class NotesCliTests(Harness):
         # print JSON, or a successful post reported "the post command printed no message id" (AFC-331).
         a, b = self.direct(FakeRun())
         with a, b:
-            sent = self.run_cli(
-                "notes",
-                "create",
+            sent = self.run_cli("create",
                 TITLE,
                 "--relay",
                 "--request-id",
                 "cli-plain-0001",
-                stdin="relayed body",
-            )
+                stdin="relayed body", prog="simple-notes")
         self.assertEqual(sent.code, 0, sent.err)
         self.assertNotIn("printed no message id", sent.err)
         self.assertEqual(
@@ -369,16 +336,13 @@ class NotesCliTests(Harness):
     def test_relay_posts_the_envelope_as_the_identity_and_status_reads_it_back(self):
         a, b = self.direct(FakeRun())
         with a, b:
-            sent = self.run_cli(
-                "notes",
-                "create",
+            sent = self.run_cli("create",
                 TITLE,
                 "--relay",
                 "--request-id",
                 "cli-request-0001",
                 "--json",
-                stdin="relayed body",
-            )
+                stdin="relayed body", prog="simple-notes")
         self.assertEqual(sent.code, 0, sent.err)
         info = json.loads(sent.out)
         self.assertEqual(
@@ -388,22 +352,22 @@ class NotesCliTests(Harness):
         posted = next(m for m in self.fake.messages if m["id"] == info["message_id"])
         self.assertEqual(posted["display_recipient"], N.RELAY_CHANNEL)
         self.assertEqual(N.parse_message(posted["content"])["markdown"], "relayed body")
-        queued = self.run_cli("notes", "status", "cli-request-0001", "--json")
+        queued = self.run_cli("status", "cli-request-0001", "--json", prog="simple-notes")
         self.assertEqual(json.loads(queued.out)["status"], "queued")
         self.fake.reactions.add((posted["id"], 11, "check"))  # a peer:  not the consumer
         self.assertEqual(
-            json.loads(self.run_cli("notes", "status", "cli-request-0001", "--json").out)["status"],
+            json.loads(self.run_cli("status", "cli-request-0001", "--json", prog="simple-notes").out)["status"],
             "queued",
         )
         self.fake.reactions.add((posted["id"], 10, "check"))  # CLAUDE, the default consumer
-        done = self.run_cli("notes", "status", "cli-request-0001")
+        done = self.run_cli("status", "cli-request-0001", prog="simple-notes")
         self.assertEqual(done.code, 0)
         self.assertIn("done", done.out)
 
     def test_the_cli_refuses_a_non_agent_identity(self):
         a, b = self.direct(FakeRun())
         with a, b:
-            result = self.run_cli("notes", "pin", TITLE, "--identity", "SENTRY")
+            result = self.run_cli("pin", TITLE, "--identity", "SENTRY", prog="simple-notes")
         self.assertEqual(result.code, 3)
         self.assertEqual(self.fake.messages, [])
 
@@ -424,7 +388,7 @@ class NotesCliTests(Harness):
             return real(self_, agent, **kw)
 
         with mock.patch.object(T.Tools, "__init__", spy):
-            self.run_cli("notes", "status", "cli-owner-0001", "--json")
+            self.run_cli("status", "cli-owner-0001", "--json", prog="simple-notes")
         self.assertEqual(seen.get("owner_user_id"), 4242)
 
     def test_the_guide_command_prints_the_guide_or_a_section(self):

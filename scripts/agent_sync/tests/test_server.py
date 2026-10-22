@@ -1778,7 +1778,7 @@ class ContainerTests(unittest.TestCase):
         users = [l.split()[1] for l in lines if l.startswith("USER ")]
         self.assertEqual(users, ["agentsync"], "the daemon runs as a non-root user")
         self.assertIn("COPY scripts/agent_sync /app/scripts/agent_sync", lines)
-        self.assertIn("COPY scripts/agent-sync /app/scripts/agent-sync", lines)
+        self.assertIn("COPY scripts/simple-chat /app/scripts/simple-chat", lines)
         self.assertIn(
             "COPY docs/protocols/agent-sync-partition.toml /app/docs/protocols/agent-sync-partition.toml",
             lines,
@@ -1808,7 +1808,7 @@ class ContainerTests(unittest.TestCase):
         ignore = (SERVER_DIR / "Dockerfile.dockerignore").read_text().splitlines()
         self.assertEqual(ignore[[i for i, l in enumerate(ignore) if not l.startswith("#")][0]], "*")
         for keep in (
-            "!scripts/agent-sync",
+            "!scripts/simple-chat",
             "!scripts/agent_sync/",
             "!docs/protocols/agent-sync-partition.toml",
             "!fleet-apps.json",
@@ -1822,7 +1822,7 @@ class ContainerTests(unittest.TestCase):
             C.partition_path({}, "/app"), "/app/docs/protocols/agent-sync-partition.toml"
         )
         self.assertTrue((SERVER_DIR / "entrypoint.sh").stat().st_mode & stat.S_IXUSR)
-        self.assertTrue((REPO / "scripts" / "agent-sync").stat().st_mode & stat.S_IXUSR)
+        self.assertTrue((REPO / "scripts" / "simple-chat").stat().st_mode & stat.S_IXUSR)
 
     def test_the_entrypoint_seeds_the_config_once_and_runs_agent_sync(self) -> None:
         data = self.tmp / "data"

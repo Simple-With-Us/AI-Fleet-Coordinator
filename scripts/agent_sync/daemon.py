@@ -103,7 +103,7 @@ PLUGIN_MANIFEST = os.path.join(
 # A process's environment is fixed when it starts:  `daemon reload` re-reads listener.toml only.
 ENV_RESTART_HINT = (
     "environment variables are read once, when the listener starts:  restart it (on the server, "
-    "restart or redeploy the app) after adding or changing one; agent-sync daemon reload re-reads "
+    "restart or redeploy the app) after adding or changing one; simple-chat daemon reload re-reads "
     "only listener.toml"
 )
 
@@ -625,7 +625,7 @@ class Daemon:
         self.wake_path = wake_path or A.default_wake_path(self.home)
         self.agents_runner = agents_runner or self._run_agents
         self.board_runner = board_runner
-        self.board_bin = board_bin or shutil.which("board", path=self.wake_path) or "board"
+        self.board_bin = board_bin or shutil.which("simple-board", path=self.wake_path) or "simple-board"
         self.start_time = start_time or _process_start
         self.http_timeout = http_timeout
         self.events_timeout = events_timeout
@@ -770,7 +770,7 @@ class Daemon:
             text = self.scrub("%s: %s" % (getattr(exc_type, "__name__", "Error"), exc))
             self.log.write("uncaught", where=where, error=text)
             try:
-                self.stderr.write("agent-sync daemon: %s: %s\n" % (where, text))
+                self.stderr.write("simple-chat daemon: %s: %s\n" % (where, text))
                 self.stderr.flush()
             except (OSError, ValueError):
                 pass

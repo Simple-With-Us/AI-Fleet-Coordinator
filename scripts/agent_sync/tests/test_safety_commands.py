@@ -290,7 +290,7 @@ class BodyFileTests(BodyFileHarness):
     def test_a_path_with_a_newline_cannot_forge_an_error_line(self) -> None:
         result = self.run_cli("post", "--topic", "t", "--body-file", str(self.tmp / "a\nagent-sync: forged"))
         self.assertEqual(result.code, 2)
-        self.assertEqual(len([line for line in result.err.splitlines() if line.startswith("agent-sync:")]), 1)
+        self.assertEqual(len([line for line in result.err.splitlines() if line.startswith("simple-chat:")]), 1)
 
     def test_the_hand_built_namespaces_of_the_mcp_layer_still_work(self) -> None:
         # mcp/tools.py builds its own Namespace:  no body_file, no to_owner, text as a one-item list

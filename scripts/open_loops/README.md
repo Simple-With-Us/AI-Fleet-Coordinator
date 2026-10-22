@@ -100,7 +100,7 @@ characters for today's real data, against a 137 KB facts file), with the same li
 
 `send` is BF-Deployer's only way to the owner.  In order, stopping at the first refusal:
 
-1. `agent-sync whoami --json` must say seat and bot seat BF-DEPLOYER, verified, with a user id.  Anything else is exit 3.
+1. `simple-chat whoami --json` must say seat and bot seat BF-DEPLOYER, verified, with a user id.  Anything else is exit 3.
 2. The DM file (a regular file you own that nobody else can write) is linted against the facts:
    * under 4,000 characters (at most 3,999);
    * no `@**` or `@_**`, and no `/poll` or `/todo` line;
@@ -115,14 +115,14 @@ characters for today's real data, against a 137 KB facts file), with the same li
 3. The heartbeat topic is `<C2 ID> open-loops heartbeat`, and the C2 umbrella id does not exist until the live steps
    file it.  It comes from `--c2-id`, `OPEN_LOOPS_C2_ID` or the `c2-id` file `install.sh --c2-id` writes.  With none,
    `send` is refused (exit 2) **before** anything goes out, because a digest with no heartbeat hides a missing twin.
-4. `agent-sync dm-read --with owner --json --limit 30` (`dm-read` has no `--owner`):  if a message **this bot sent**
+4. `simple-chat dm-read --with owner --json --limit 30` (`dm-read` has no `--owner`):  if a message **this bot sent**
    (its `sender_id` equal to `whoami`'s user id) already carries this facts id, the DM is not sent again;  so is another
    id minted the same day, unless `--again`.  If `dm-read` fails or prints something that is not JSON lines, the send
    stops (exit 5):  "could not check" must not become "send twice".
-5. `agent-sync dm --owner --session openloop --json --body-file F` sends the linted, gap-converted text from a private
+5. `simple-chat dm --owner --session openloop --json --body-file F` sends the linted, gap-converted text from a private
    copy (0600 in a 0700 folder), so the bytes that were checked are the bytes that are sent.  The text is never on a
    command line.  Exit 6 from agent-sync (the request may have been delivered) is reported as such and not retried.
-6. `agent-sync post --session openloop --topic "<C2 ID> open-loops heartbeat" --json --body-file F`, no mention:  the
+6. `simple-chat post --session openloop --topic "<C2 ID> open-loops heartbeat" --json --body-file F`, no mention:  the
    facts id, the DM's character count, the sources that were ok and the ones Missing.  When the DM was already out the
    heartbeat is posted only if the topic does not already carry this facts id.
 
@@ -137,7 +137,7 @@ runs each through `agent_sync.cli.build_parser()`.  The fake agent-sync the test
 
 * **Heartbeat reader.**  `send` writes the `<C2 ID> open-loops heartbeat` topic, but nothing reads it back:  the plan's
   "the next gather reports a missing twin" and the digest's "did not arrive" line need a `heartbeats` source that reads
-  the topic through `agent-sync read`.  It is a follow-up to this unit (C2-2 or its own item), not part of C2-1.
+  the topic through `simple-chat read`.  It is a follow-up to this unit (C2-2 or its own item), not part of C2-1.
 
 ## What the routine texts (C2-2) rely on
 

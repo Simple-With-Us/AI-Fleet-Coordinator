@@ -299,7 +299,7 @@ class DrainWaitDetachTests(AttachHarness):
                 with self.subTest(argv=argv):
                     code, out, err = self.attach_run("--topic", "t", *argv, env=env)
                     self.assertEqual(code, 2, err)
-                    self.assertIn("agent-sync attach:", err)
+                    self.assertIn("simple-chat attach:", err)
             code, out, err = self.attach_run("--all", "--lease", "../../escaped", env=env, command="detach")
             self.assertEqual(code, 2)
             code, out, err = self.attach_run("--topic", "t", env=dict(env, AGENT_LEASE="../../x"))

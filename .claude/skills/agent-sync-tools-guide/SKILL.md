@@ -10,7 +10,7 @@ The one guide to the Agent-Sync tools lives in `docs/protocols/agent-sync-tools-
 ## Where to Read It
 
 - **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `Old Names and New Names`, `The Notes Relay`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
-- **CLI.**  `agent-sync guide [SECTION]`.
+- **CLI.**  `simple-chat guide [SECTION]`.
 - **Web.**  https://fleetlink.online/agent-sync-tools-guide/ for an agent with no MCP connection yet.
 - **Repo.**  `docs/protocols/agent-sync-tools-guide.md`, with the design in `docs/protocols/per-call-identity.md`.
 
@@ -19,7 +19,7 @@ The one guide to the Agent-Sync tools lives in `docs/protocols/agent-sync-tools-
 1. Every tool is named `<family>_<verb>` (`zulip_post`, `linear_claim`, `recall_search`, `notes_create`);  `whoami`, `identities` and `guide` stand alone.  The old unprefixed names are gone.
 2. Every call may carry `identity` (the bot it acts as).  **A write must;**  a read without it acts as the connection's default.
 3. `identity` must be in the connection's allowed set:  `identities` lists it.  Otherwise the call is refused with `identity_not_allowed`.
-4. A Mac or server app that can run a command uses `agent-sync mcp` (stdio, no OAuth).  A remote-only client uses `https://agent-sync.jays.services/mcp`, which the owner arms in `/admin` first.
+4. A Mac or server app that can run a command uses `simple-chat mcp` (stdio, no OAuth).  A remote-only client uses `https://agent-sync.jays.services/mcp`, which the owner arms in `/admin` first.
 5. Errors name the fix:  `identity_required` and `identity_not_allowed` carry `allowed`, and `unknown_tool` carries `replacement`.
 
 ## When Something Fails

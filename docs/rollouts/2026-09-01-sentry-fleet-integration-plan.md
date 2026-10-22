@@ -18,7 +18,7 @@ Owner asked how to better integrate Sentry across development, hosting, and oper
 
 - Sentry MCP `find_organizations` / `find_projects` / `find_monitors` / `find_uptime_monitors` / `find_alert_rules` / `search_issues` / `find_releases` on 2026-09-01.
 - Repo grep for `@sentry`, `SENTRY_DSN`, Cocoa `SentryTelemetry.swift`, `sentry-ci-report.yml`.
-- `board list --search sentry`.
+- `simple-board list --search sentry`.
 
 ## Follow-ups
 

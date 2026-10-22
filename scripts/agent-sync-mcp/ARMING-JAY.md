@@ -208,7 +208,7 @@ Jet can now be woken when someone @-mentions it (or DMs openai-dot-bot) in Zulip
 
 **1. Turn on the listener's half (Coolify, once).**  Three parts, then one restart.
 
-a.  In the agent-sync listener app on Coolify, under Environment Variables (runtime only), add:
+a.  In the simple-chat listener app on Coolify, under Environment Variables (runtime only), add:
 
 | Variable | Value |
 |---|---|
@@ -236,7 +236,7 @@ PY
 
 It changes only the `[seat.JET]` section (it refuses if that section is not the expected one, and a second run changes nothing), and it keeps the file's owner and mode.  Keep `timeout_seconds` at 15 or more:  the Agent-Sync server answers only after it has tried ChatGPT (about 10 seconds at most), and a shorter timeout would cut it off.
 
-c.  **Restart** the app in Coolify (a reload does not read new environment variables).  Then, in the terminal, `agent-sync status` must show JET `connected` with `wake http` and no red line.  A red "environment variable not set" means part (a) did not land.
+c.  **Restart** the app in Coolify (a reload does not read new environment variables).  Then, in the terminal, `simple-chat status` must show JET `connected` with `wake http` and no red line.  A red "environment variable not set" means part (a) did not land.
 
 Until all three are done, a Jet mention is still captured in Jet's inbox and simply wakes nothing.
 

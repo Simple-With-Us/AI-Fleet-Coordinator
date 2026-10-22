@@ -198,7 +198,7 @@ def run_send(dm_file: str, facts_file: str, *, c2_id: str | None, dry_run: bool 
 def _send(dm_file: str, facts_file: str, c2_id: str | None, dry_run: bool, again: bool, run: Runner, out: TextIO) -> int:
     facts = load_facts(facts_file)
     text = read_private_file(dm_file, "the DM file")
-    exe = which("agent-sync")
+    exe = which("simple-chat")
     if exe is None:
         raise Refusal(EXIT_REFUSED, "agent-sync is not installed")
     me = _whoami(run, exe)["user_id"]
