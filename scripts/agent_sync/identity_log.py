@@ -48,14 +48,20 @@ def client_label(info: Any) -> dict[str, str | None] | None:
 
 def append(env: Mapping[str, str], home: Path | None, *, transport: str, default_identity: str | None,
            identity: str | None, tool: str, outcome: str, message_id: int | None = None,
-           client: Mapping[str, Any] | None = None, clock: Any = time.time) -> bool:
-    """Append one row.  True when it was written."""
+           client: Mapping[str, Any] | None = None, seat: str | None = None,
+           clock: Any = time.time) -> bool:
+    """Append one row.  True when it was written.
+
+    `seat` is the seat the caller was authenticated as, which is not always the identity it acted
+    as (a grant for one seat may act as another), so a row keeps both.
+    """
     row = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(clock())),
         "transport": transport,
         "pid": os.getpid(),
         "client": client_label(client) if client is not None else None,
         "default_identity": safe_text(default_identity),
+        "seat": safe_text(seat),
         "identity": safe_text(identity),
         "tool": safe_text(tool),
         "outcome": safe_text(outcome),

@@ -128,12 +128,27 @@ def _validate_entry(key: str, entry: Any) -> dict[str, Any]:
 
 
 def load(root: str) -> dict[str, Any]:
-    """The queue, with every entry validated.  An absent or unreadable file is an empty queue;  a
-    malformed entry raises ValueError rather than being read as a pending wake."""
-    data = L.read_json(state_path(root))
-    entries = data.get("entries") if isinstance(data, dict) else None
-    if not isinstance(entries, Mapping):
+    """The queue, with every entry validated.
+
+    An **absent** file is an empty queue:  that is the state before the first question is ever
+    asked.  A file that exists but cannot be read as a queue raises ValueError instead, because
+    discarding it would silently forget every pending clarifying question — and a forgotten wake is
+    one that is never routed and never dropped.  A malformed entry raises ValueError naming the
+    entry and the field rather than being read as a pending wake."""
+    path = state_path(root)
+    if not os.path.exists(path):
         return {"entries": {}}
+    data = L.read_json(path)
+    if not isinstance(data, dict) or not data:
+        # `read_json` answers {} for unreadable, corrupt and non-object content alike, so this is
+        # exactly the case where the file is present but its contents cannot be trusted.
+        raise ValueError("clarify: the queue file is unreadable or malformed, not an empty queue")
+    unknown = sorted(set(data) - {"entries"})
+    if unknown:
+        raise ValueError("clarify: the queue file has an unknown section %s" % unknown[0])
+    entries = data.get("entries")
+    if not isinstance(entries, Mapping):
+        raise ValueError("clarify: the queue file has no entries object")
     return {
         "entries": {str(key): _validate_entry(str(key), value) for key, value in entries.items()}
     }
@@ -222,7 +237,17 @@ def answer(root: str, *, message_id: int, seat: str, now: float) -> str:
     Returns `routed` when the reply answers a still-pending question (Operator now routes the wake
     to `seat`), and `ignored` when the entry is unknown or already dropped — a late reply never
     revives a dropped wake.  The state check and the write share one lock, so an expiry racing this
-    reply cannot overwrite the answer."""
+    reply cannot overwrite the answer.
+
+    The answering seat is scanned like every other caller-supplied text, for the same reason
+    `ask` scans the sender:  a credential-shaped seat label must not become secret material in
+    clarify.json.  The refusal names the field and the message id, never the value."""
+    if not isinstance(seat, str):
+        raise ValueError("clarify: the answering seat must be a string")
+    label = seat[:MAX_SEAT]
+    kind = secretscan.scan(label) if label else None
+    if kind:
+        raise ClarifyRefused("answering_seat", kind, message_id=message_id)
     key = str(int(message_id))
     with L.locked(state_path(root)):
         data = load(root)
@@ -231,7 +256,7 @@ def answer(root: str, *, message_id: int, seat: str, now: float) -> str:
             return "ignored"
         entry["state"] = ROUTED
         entry["answered_at"] = round(float(now), 3)
-        entry["answering_seat"] = seat[:MAX_SEAT]
+        entry["answering_seat"] = label
         save(root, data)
         return "routed"
 

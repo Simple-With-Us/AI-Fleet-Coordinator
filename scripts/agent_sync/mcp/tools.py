@@ -1582,7 +1582,15 @@ class Tools:
 
         Every path that builds a `direct` target goes through here, so the rule cannot be stepped
         around by delivering the same message later:  a scheduled or draft direct message is the same
-        act as sending it now.  A refusal is audited (ids and the reason only) before it is raised."""
+        act as sending it now.  A refusal is audited (ids and the reason only) before it is raised.
+
+        The rule's own switch is read first, because `check_new_dm` short-circuits on it:  with the
+        block off there is nothing to decide, and reading the conversation from Zulip first would
+        cost a network round-trip per direct-message write (and would turn an outage into a retryable
+        failure) for a result that is then thrown away."""
+        env = getattr(getattr(self.agent, "rt", None), "env", None) or os.environ
+        if not DMP.rule_enabled(env):
+            return
         ids = [int(p["user_id"]) for p in people]
         try:
             existing = self._dm_exists(ids)
@@ -1596,7 +1604,6 @@ class Tools:
                 "cannot decide; retry once the connection is back",
                 retryable=True,
             ) from exc
-        env = getattr(getattr(self.agent, "rt", None), "env", None) or os.environ
         try:
             DMP.check_new_dm(
                 env,
@@ -1617,6 +1624,7 @@ class Tools:
                 None,
                 transport=TRANSPORT,
                 identity=self.agent.tag,
+                authenticated_seat=self.seat,
                 recipients=people,
                 reason=refused.reason,
                 message=str(refused),

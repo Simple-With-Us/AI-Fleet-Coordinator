@@ -208,8 +208,14 @@ def audit_refusal(
     recipients: Sequence[Mapping[str, Any]],
     reason: str,
     message: str,
+    authenticated_seat: str | None = None,
 ) -> bool:
-    """Append the refusal to the identity audit log.  Ids and the reason only, never a body."""
+    """Append the refusal to the identity audit log.  Ids and the reason only, never a body.
+
+    `authenticated_seat` is the seat the grant was issued to and `identity` the bot tag it acted
+    as.  Both are persisted, because a grant for one seat may act as another:  an admin reading a
+    refusal row needs both to know which grant was used and what it claimed to be.
+    """
     return AUDIT.append(
         env or {},
         home,
@@ -219,6 +225,7 @@ def audit_refusal(
         tool="zulip_dm_send",
         outcome="dm_refused:%s" % reason,
         client={"note": message[:160]},
+        seat=authenticated_seat,
     )
 
 

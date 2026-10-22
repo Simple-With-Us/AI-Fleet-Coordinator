@@ -20,7 +20,11 @@ import { ERROR_META_KEY } from "../src/contract.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { testEnv } from "./helpers.mjs";
 
-const OPERATOR_USER_ID = 1217148;
+// A synthetic Operator id, never the production one:  the fake operator user below is given this
+// id and the harness pins OPERATOR_ZULIP_USER_ID to the same value, so `config.operatorUserId` and
+// the conversation opener stay the same id without either being a live user (mirrors
+// SYNTHETIC_OPERATOR_ID in scripts/agent_sync/tests/test_dm_rule.py).
+const OPERATOR_USER_ID = 999000001;
 const SIDE_CHATS_STREAM_ID = 646987;
 
 function memoryGate(clock) {
@@ -40,7 +44,7 @@ function harness({ seat = "GROK-WEB" } = {}) {
   const fake = new FakeZulip();
   const clock = { now: Date.parse("2026-10-22T10:00:00Z") };
   const logs = [];
-  const config = loadConfig(testEnv({ AGENT_SYNC_DM_RULE: "on", HOSTED_SEATS: "JET,GROK-WEB" }));
+  const config = loadConfig(testEnv({ AGENT_SYNC_DM_RULE: "on", HOSTED_SEATS: "JET,GROK-WEB", OPERATOR_ZULIP_USER_ID: String(OPERATOR_USER_ID) }));
   const user = (name) => fake.users.find((u) => u.full_name === name);
   const operator = fake.addUser("operator-bot@zulip.test", "Operator");
   operator.is_bot = true;

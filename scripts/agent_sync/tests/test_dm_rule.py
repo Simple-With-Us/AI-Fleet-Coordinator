@@ -101,6 +101,7 @@ class SeatDmRefusedTests(unittest.TestCase):
             written = DMP.audit_refusal(
                 {"AGENT_SYNC_STATE_DIR": tmp}, None, transport="stdio", identity="CLAUDE",
                 recipients=[bot(7)], reason="seat", message="this seat may not open a new direct message",
+                authenticated_seat="GROK-WEB",
             )
             self.assertTrue(written)
             row = json.loads((Path(tmp) / "logs" / "identity.jsonl").read_text().strip())
@@ -108,6 +109,10 @@ class SeatDmRefusedTests(unittest.TestCase):
             self.assertEqual(row["outcome"], "dm_refused:seat")
             self.assertEqual(row["identity"], "CLAUDE")
             self.assertEqual(row["transport"], "stdio")
+            # A grant for one seat may act as another, so the row keeps the seat that authenticated
+            # the call next to the identity it claimed:  the rendered error carries both as well.
+            self.assertEqual(row["seat"], "GROK-WEB")
+            self.assertEqual(row["identity"], "CLAUDE", "the acting identity is kept separately")
 
     def test_a_reply_inside_a_dm_operator_opened_is_allowed(self) -> None:
         # Nothing to refuse:  the conversation is Operator's and the seat is answering in it.
@@ -213,25 +218,40 @@ class TimeoutDropTests(unittest.TestCase):
 
 
 class OperatorOpenedDmTests(unittest.TestCase):
+    """Synthetic ids throughout:  `operator_user_id` is passed in, so no fixture needs the live
+    Operator user id and `operator_opened_dm` never falls back to the pinned production one."""
+
     def test_only_a_conversation_operator_opened_counts(self) -> None:
-        people = [bot(DMP.Z.OPERATOR_USER_ID)]
-        opened = [{"type": "private", "id": 5, "sender_id": DMP.Z.OPERATOR_USER_ID,
-                   "display_recipient": [{"id": DMP.Z.OPERATOR_USER_ID}, {"id": 7}]}]
-        self.assertTrue(DMP.operator_opened_dm(people, opened, self_id=7))
+        people = [bot(SYNTHETIC_OPERATOR_ID)]
+        op = {"operator_user_id": SYNTHETIC_OPERATOR_ID, "self_id": 7}
+        opened = [{"type": "private", "id": 5, "sender_id": SYNTHETIC_OPERATOR_ID,
+                   "display_recipient": [{"id": SYNTHETIC_OPERATOR_ID}, {"id": 7}]}]
+        self.assertTrue(DMP.operator_opened_dm(people, opened, **op))
         # A seat opened it:  that is a new DM the rule refuses.
         seat_opened = [{"type": "private", "id": 5, "sender_id": 7,
-                        "display_recipient": [{"id": DMP.Z.OPERATOR_USER_ID}, {"id": 7}]}]
-        self.assertFalse(DMP.operator_opened_dm(people, seat_opened, self_id=7))
+                        "display_recipient": [{"id": SYNTHETIC_OPERATOR_ID}, {"id": 7}]}]
+        self.assertFalse(DMP.operator_opened_dm(people, seat_opened, **op))
         # No messages yet:  nothing exists to reply inside.
-        self.assertFalse(DMP.operator_opened_dm(people, [], self_id=7))
+        self.assertFalse(DMP.operator_opened_dm(people, [], **op))
 
     def test_a_group_conversation_is_not_the_one_to_one_dm(self) -> None:
         # A conversation that merely contains the same people is a different conversation:  answering
         # in it is not the reply-inside-an-Operator-DM the rule allows, so it must not open the door.
-        people = [bot(DMP.Z.OPERATOR_USER_ID)]
-        group = [{"type": "private", "id": 5, "sender_id": DMP.Z.OPERATOR_USER_ID,
-                  "display_recipient": [{"id": DMP.Z.OPERATOR_USER_ID}, {"id": 7}, {"id": 11}]}]
-        self.assertFalse(DMP.operator_opened_dm(people, group, self_id=7))
+        people = [bot(SYNTHETIC_OPERATOR_ID)]
+        group = [{"type": "private", "id": 5, "sender_id": SYNTHETIC_OPERATOR_ID,
+                  "display_recipient": [{"id": SYNTHETIC_OPERATOR_ID}, {"id": 7}, {"id": 11}]}]
+        self.assertFalse(DMP.operator_opened_dm(people, group,
+                                                operator_user_id=SYNTHETIC_OPERATOR_ID, self_id=7))
+
+    def test_an_omitted_self_id_can_never_match_the_exact_pair(self) -> None:
+        # Pin the fail-closed direction:  without this seat's own id the exact 1:1 pair is unknown,
+        # so nothing is Operator's.  Widening back to a subset match would re-open the group hole
+        # the test above closes, and both production callers (mcp/tools.py, cli.py) pass self_id.
+        people = [bot(SYNTHETIC_OPERATOR_ID)]
+        opened = [{"type": "private", "id": 5, "sender_id": SYNTHETIC_OPERATOR_ID,
+                   "display_recipient": [{"id": SYNTHETIC_OPERATOR_ID}, {"id": 7}]}]
+        self.assertFalse(DMP.operator_opened_dm(people, opened,
+                                                operator_user_id=SYNTHETIC_OPERATOR_ID))
 
 
 class RefusalExitCodeTests(unittest.TestCase):
@@ -294,6 +314,45 @@ class ToolRefusalContextTests(unittest.TestCase):
                 tools._target({"user_ids": [9]})
             self.assertEqual(caught.exception.code, "dm_not_allowed")
 
+    def test_the_rule_off_never_reads_zulip(self) -> None:
+        # With the block off there is nothing to decide, so the conversation lookup must not happen:
+        # it costs a round-trip per direct-message write and turns an outage into a retryable
+        # failure for a result that `check_new_dm` would discard.  The hosted twin short-circuits
+        # the same way on config.dmRule (hosted-tools.js dmRuleCheck).
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._tools(tmp)
+            tools.agent.rt.env = {"HOME": tmp, "AGENT_SYNC_DM_RULE": "off"}
+            reads: list[Any] = []
+            tools._dm_exists = lambda ids: reads.append(ids) or []
+            tools._people = lambda ids, emails, active=True: [{"user_id": int(i)} for i in ids]
+            self.assertEqual(tools._target({"user_ids": [9]}), {"type": "direct", "to": [9]})
+            self.assertEqual(reads, [], "an unread conversation must not be read when the rule is off")
+
+    def test_the_rule_on_still_reads_the_conversation(self) -> None:
+        # The short-circuit above must not weaken the block:  with the rule on (the default) the
+        # conversation is read and a new DM is still refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._tools(tmp)
+            reads: list[Any] = []
+            tools._dm_exists = lambda ids: reads.append(ids) or []
+            with self.assertRaises(T.ToolError) as caught:
+                tools._check_dm_rule([{"user_id": 9, "is_bot": True}], {})
+            self.assertEqual(caught.exception.code, "dm_not_allowed")
+            self.assertEqual(len(reads), 1, "the rule decides from the real conversation")
+
+    def test_a_transient_zulip_outage_is_retryable_not_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._tools(tmp)
+
+            def boom(ids: Any) -> Any:
+                raise DMP.Z.NetworkError("connection reset")
+
+            tools._dm_exists = boom
+            with self.assertRaises(T.ToolError) as caught:
+                tools._check_dm_rule([{"user_id": 9, "is_bot": True}], {})
+            self.assertEqual(caught.exception.code, "unavailable")
+            self.assertTrue(caught.exception.retryable, "an outage must not become a terminal refusal")
+
 
 class ClarifyQueueHardeningTests(unittest.TestCase):
     """The queue is durable, validated, scanned and written under one lock."""
@@ -311,6 +370,73 @@ class ClarifyQueueHardeningTests(unittest.TestCase):
                             timeout_seconds=60.0, question="which seat?  token=abcdefghijklmnopqrstuvwx")
             self.assertEqual(caught.exception.field, "question")
             self.assertEqual(clarify.pending_entries(root), [])
+
+    def test_an_answering_seat_carrying_a_secret_is_never_stored(self) -> None:
+        # `ask` scans the sender and the question; the seat a reply claims to be is caller text too,
+        # and it lands in clarify.json, so it is scanned the same way before anything is written.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(tmp)
+            clarify.ask(root, message_id=5, sender_user_id=7, sender="Jay", now=0.0, timeout_seconds=60.0)
+            with self.assertRaises(clarify.ClarifyRefused) as caught:
+                clarify.answer(root, message_id=5, seat="CODEX token=abcdefghijklmnopqrstuvwx", now=1.0)
+            self.assertEqual(caught.exception.field, "answering_seat")
+            self.assertEqual(caught.exception.message_id, 5)
+            self.assertEqual([e["state"] for e in clarify.pending_entries(root)], [clarify.PENDING],
+                             "a refused answer leaves the question pending, never routed")
+            with open(clarify.state_path(root), encoding="utf-8") as fh:
+                self.assertNotIn("token=", fh.read(), "the refused value never reaches the file")
+
+    def test_a_non_string_answering_seat_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(tmp)
+            clarify.ask(root, message_id=5, sender_user_id=7, sender="Jay", now=0.0, timeout_seconds=60.0)
+            with self.assertRaises(ValueError):
+                clarify.answer(root, message_id=5, seat=7, now=1.0)  # type: ignore[arg-type]
+
+    def test_a_malformed_queue_file_is_refused_instead_of_emptied(self) -> None:
+        # An absent file is an empty queue, but a file that exists and cannot be read as one must
+        # raise:  silently emptying it forgets every pending question, and a forgotten wake is never
+        # routed and never dropped.
+        for raw, expected in (
+            # `read_json` collapses a non-object root and a parse failure to the same {}, so the
+            # caller is told the file cannot be trusted rather than which way it went wrong.
+            ("[1, 2, 3]", "unreadable or malformed"),
+            ("", "unreadable or malformed"),
+            ("{ not json", "unreadable or malformed"),
+            ('{"entries": "nope"}', "no entries object"),
+            ('{"entries": {}, "other": {}}', "unknown section"),
+        ):
+            with self.subTest(raw=raw):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = clarify.state_path(str(tmp))
+                    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as fh:
+                        fh.write(raw)
+                    with self.assertRaises(ValueError) as caught:
+                        clarify.load(str(tmp))
+                    self.assertIn(expected, str(caught.exception))
+
+    def test_an_absent_queue_file_is_still_an_empty_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(clarify.load(str(tmp)), {"entries": {}})
+
+    def test_every_write_completes_under_the_lock_it_already_holds(self) -> None:
+        # `save` writes through the atomic writer while the caller holds the per-path lock.  If the
+        # writer ever took that same lock, this would hang on the flock or deadlock the thread lock,
+        # so the whole path runs on a worker thread with a timeout and is asserted to finish.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = str(tmp)
+
+            def whole_cycle() -> list[Any]:
+                clarify.ask(root, message_id=9, sender_user_id=7, sender="Jay", now=0.0, timeout_seconds=60.0)
+                routed = clarify.answer(root, message_id=9, seat="CODEX", now=1.0)
+                dropped = clarify.expire(root, now=10_000.0)
+                return [routed, dropped]
+
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                routed, dropped = pool.submit(whole_cycle).result(timeout=30)
+            self.assertEqual(routed, "routed", "ask/answer must persist, not hang on the lock")
+            self.assertEqual(dropped, [], "an answered question is never dropped")
 
     def test_a_malformed_entry_is_refused_by_name(self) -> None:
         import json
