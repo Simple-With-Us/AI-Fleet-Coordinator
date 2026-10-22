@@ -188,7 +188,7 @@ The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes
 
 Jay approved a spike with Jet first (Thu, Oct 22, about 6:40am):  can Jet's ChatGPT conversation hold a second MCP Events subscription, `fleet.spike.ping`, and be woken by it, while `zulip.mention` keeps working?  No WhatsApp code, credential or poller.  Spec section 3.12, item 16.  Two Worker secrets, both set with Step 1's environment, and no var, binding-class or migration change:
 
-- `SPIKE_HMAC_KEY`:  the key that signs `POST /internal/spike/<SEAT>`.  Its own value, never `JET_ROUTINE_KEY` or any `WAKE_HMAC_KEY_<SEAT>`;  the Worker answers 404 when the two are equal.
+- `SPIKE_HMAC_KEY`:  the key that signs `POST /internal/spike/<SEAT>`.  Its own value, never `JET_ROUTINE_KEY` or any `WAKE_HMAC_KEY_<SEAT>`;  the Worker answers 404 when it equals any of them.
 - `SPIKE_EXTRA_EVENTS`:  `on` offers the spike event and opens the route.  It is a secret binding rather than a `wrangler.jsonc` var on purpose, so another agent's deploy from `main` does not turn it off while the spike runs.
 
 **Turn it on.**  Deploy the merged code (Step 1) first, then make the key in a 0600 file that is never printed, and set both secrets from standard input:
@@ -205,22 +205,29 @@ printf on | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put SPI
 
 `wrangler secret put` deploys a new version at once.  Check:  `/health` answers `{"ok":true}`, an unsigned `POST /internal/spike/JET` answers 401 (404 means the flag, the key or JET's wake key is missing, or the two keys are equal), an unsigned `POST /internal/wake/JET` still answers 401, and a connected JET chat's `events/list` shows `zulip.mention` then `fleet.spike.ping`.  `server/discover` does not change (`events: {}`).
 
-**Fire one ping.**  Only after Jet says it subscribed.  The body is exactly four fields, and the signature is the lowercase hex HMAC-SHA256 of the raw bytes:
+**Fire one ping.**  Only after Jet says it subscribed.  The body is exactly four fields, and the signature is the lowercase hex HMAC-SHA256 of the raw bytes.  The key comes from an inherited `SPIKE_HMAC_KEY` first, else from `$KEYFILE` (the only other place it lives, because no Infisical writer takes it), and is never printed, not even in part.  The script exits non-zero on anything but a 2xx:
 
 ```bash
-SPIKE_HMAC_KEY="$(cat "$KEYFILE")" python3 -I - <<'PY'
-import hmac, hashlib, json, os, time, urllib.request, uuid
-body = json.dumps({"contract": "agent-sync-spike/1", "seat": "JET", "spike_id": str(uuid.uuid4()), "sent_at": int(time.time())}).encode()
-sig = hmac.new(os.environ["SPIKE_HMAC_KEY"].encode(), body, hashlib.sha256).hexdigest()
+SPIKE_HMAC_KEY="${SPIKE_HMAC_KEY:-$(cat "$KEYFILE")}" python3 -I - <<'PY'
+import hmac, hashlib, json, os, sys, time, urllib.error, urllib.request, uuid
+key = os.environ.get("SPIKE_HMAC_KEY", "")
+if len(key) < 32: sys.exit("SPIKE_HMAC_KEY is missing or shorter than 32 characters")
+spike_id = str(uuid.uuid4())
+body = json.dumps({"contract": "agent-sync-spike/1", "seat": "JET", "spike_id": spike_id, "sent_at": int(time.time())}).encode()
+sig = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
 req = urllib.request.Request("https://agents.simplewithus.com/internal/spike/JET", data=body, method="POST",
                              headers={"Content-Type": "application/json", "X-Agent-Sync-Spike-Signature": sig})
 try:
-    with urllib.request.urlopen(req, timeout=20) as r: print(r.status, r.read().decode())
-except urllib.error.HTTPError as e: print(e.code, e.read().decode())
+    with urllib.request.urlopen(req, timeout=25) as r: print(spike_id, r.status, r.read().decode()[:300])
+except urllib.error.HTTPError as e:
+    kind = "outcome_unknown" if e.code >= 500 else "retry_later" if e.code in (408, 429) else "refused"
+    sys.exit(f"{spike_id} HTTP {e.code} {kind}:  {e.read().decode()[:200]}")
+except (urllib.error.URLError, TimeoutError) as e:
+    sys.exit(f"{spike_id} no answer (outcome_unknown):  {type(e).__name__}")
 PY
 ```
 
-The answer holds counts only:  202 `{"ok": true, "subscribers": 1, "delivered": 1, "outcome": "delivered"}` means ChatGPT's callback took it, not that Jet's conversation ran a turn (only Jet can say that).  `no_subscriber` means Jet has no live spike subscription.  At most 3 pings an hour per seat (429 after that), and a repeated `spike_id` is a 200 duplicate that sends nothing.
+The answer holds counts only:  202 `{"ok": true, "subscribers": 1, "delivered": 1, "outcome": "delivered"}` means ChatGPT's callback took it, not that Jet's conversation ran a turn (only Jet can say that).  `no_subscriber` means Jet has no live spike subscription.  At most 3 pings an hour per seat (429 after that), and a repeated `spike_id` is a 200 duplicate that sends nothing.  An `outcome_unknown` (a 5xx, a timeout, no answer) may have been delivered:  ask Jet before firing again, and a new ping always takes a new `spike_id`.
 
 **Turn it off** when Jay says so, fastest first (same environment as Step 1;  confirm each delete when wrangler asks):
 
