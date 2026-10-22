@@ -751,3 +751,75 @@ class WakeLetterTests(DaemonHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaggedLetterTests(DaemonHarness):
+    """A letter is read off a trigger only in the shape the owner ruled.
+
+    The letter sits next to the mention, the way the owner ruled:  "@**MiniMax** Z".
+    A capital letter in ordinary prose is never an address, and a bare letter with no
+    mention is not an address at all.
+    """
+
+    def bot(self, d, seat="CLAUDE", name="Claude", uid=1212600, email="claude-bot@simplewithus.zulipchat.com"):
+        runner = d.seats["CLAUDE"]
+        runner.users[uid] = {
+            "user_id": uid,
+            "full_name": name,
+            "email": email,
+            "is_bot": True,
+            "is_active": True,
+            "bot_owner_id": d.config.owner_user_id,
+        }
+        d.fleet_tags = frozenset({seat})
+        return runner
+
+    def test_a_letter_next_to_the_mention_is_read(self) -> None:
+        d = self.daemon()
+        self.bot(d)
+        history = [{"id": 1, "content": "@**Claude** Z what is the state of the closeout?"}]
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history), "Z")
+
+    def test_the_id_form_of_the_mention_is_read_too(self) -> None:
+        d = self.daemon()
+        self.bot(d)
+        history = [{"id": 1, "content": "@**Claude|1212600** Z what is the state of the closeout?"}]
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history), "Z")
+
+    def test_a_capital_letter_in_prose_is_not_an_address(self) -> None:
+        d = self.daemon()
+        self.bot(d)
+        history = [{"id": 1, "content": "@**Claude** the plan is A and B, so pick one"}]
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history), "")
+
+    def test_a_bare_letter_with_no_mention_is_not_an_address(self) -> None:
+        d = self.daemon()
+        self.bot(d)
+        history = [{"id": 1, "content": "is Z still running?"}]
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history), "")
+
+    def test_a_mention_of_another_seat_is_not_an_address(self) -> None:
+        d = self.daemon()
+        self.bot(d)
+        history = [{"id": 1, "content": "@**Codex** Z is that yours?"}]
+        self.assertEqual(d.tagged_letter(d.seats["CLAUDE"], history), "")
+
+    def test_the_candidate_query_finds_the_live_holder(self) -> None:
+        d = self.daemon()
+        db = OR.registry_db_path(d.root, d.env)
+        OR.register_session(
+            db,
+            platform="minimax",
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id="mvs_abc",
+            seat="MM",
+            source="test",
+            title="Work",
+        )
+        found = d.operator_candidates("minimax", "A")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["native_session_id"], "mvs_abc")
+        self.assertEqual(found[0]["ref"], "MM A")
+        # A letter nobody holds has no candidates, and the query never mints one.
+        self.assertEqual(d.operator_candidates("minimax", "Z"), [])

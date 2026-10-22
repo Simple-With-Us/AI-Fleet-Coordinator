@@ -695,6 +695,122 @@ def resolve_ref(db_path: str, platform: str, ref: str) -> dict[str, Any] | None:
     return resolve_label(db_path, platform, letter, generation)
 
 
+def candidates_for(
+    db_path: str,
+    platform: str,
+    letter: str,
+) -> list[dict[str, Any]]:
+    """The live holders of one letter on one platform.
+
+    This is the query a candidate list needs:  the sessions that could hold the letter
+    the sender used.  It is read-only and it never allocates, so a letter nobody holds
+    simply has no candidates rather than a new one.
+    """
+    want = str(letter or "").strip().upper()
+    if not want or want not in LETTERS:
+        return []
+    if not db_path or not os.path.isfile(str(db_path)):
+        return []
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception:
+        return []
+    try:
+        rows = registry._conn.execute(
+            "SELECT a.letter AS label, a.generation AS generation, a.record_id AS record_id,"
+            " s.seat AS seat, s.native_session_id AS native_session_id, s.title AS title,"
+            " s.verified_host AS verified_host, s.profile_scope AS profile_scope,"
+            " s.state AS state"
+            " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE a.platform = ? AND a.letter = ? AND a.retired_at IS NULL"
+            " ORDER BY s.registered_at DESC, a.record_id ASC",
+            (normalize_platform(platform), want),
+        ).fetchall()
+    except Exception:
+        return []
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    out = []
+    for row in rows:
+        found = dict(row)
+        label = str(found.get("label") or "")
+        generation = int(found.get("generation") or 0)
+        seat = str(found.get("seat") or "")
+        out.append(
+            {
+                "label": label,
+                "generation": generation,
+                "ref": cross_seat_ref(seat, label, generation),
+                "record_id": found.get("record_id"),
+                "seat": seat,
+                "native_session_id": str(found.get("native_session_id") or ""),
+                "title": str(found.get("title") or ""),
+                "platform": normalize_platform(platform),
+                "location": str(found.get("verified_host") or ""),
+                "scope": str(found.get("profile_scope") or ""),
+            }
+        )
+    return out
+
+
+def candidates_for_letter(db_path: str, letter: str) -> list[dict[str, Any]]:
+    """The live holders of one letter on every platform.
+
+    A letter used without a platform is the ambiguous case:  the same letter can be
+    live on more than one platform, because the namespace is per platform.  This is the
+    query that finds them.
+    """
+    want = str(letter or "").strip().upper()
+    if not want or want not in LETTERS or not db_path or not os.path.isfile(str(db_path)):
+        return []
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception:
+        return []
+    try:
+        rows = registry._conn.execute(
+            "SELECT a.platform AS platform, a.letter AS label, a.generation AS generation,"
+            " a.record_id AS record_id, s.seat AS seat, s.native_session_id AS native_session_id,"
+            " s.title AS title, s.verified_host AS verified_host, s.profile_scope AS profile_scope"
+            " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE a.letter = ? AND a.retired_at IS NULL"
+            " ORDER BY a.platform ASC, s.registered_at DESC, a.record_id ASC",
+            (want,),
+        ).fetchall()
+    except Exception:
+        return []
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    out = []
+    for row in rows:
+        found = dict(row)
+        label = str(found.get("label") or "")
+        generation = int(found.get("generation") or 0)
+        seat = str(found.get("seat") or "")
+        platform = normalize_platform(str(found.get("platform") or ""))
+        out.append(
+            {
+                "label": label,
+                "generation": generation,
+                "ref": cross_seat_ref(seat, label, generation),
+                "record_id": found.get("record_id"),
+                "seat": seat,
+                "native_session_id": str(found.get("native_session_id") or ""),
+                "title": str(found.get("title") or ""),
+                "platform": platform,
+                "location": str(found.get("verified_host") or ""),
+                "scope": str(found.get("profile_scope") or ""),
+            }
+        )
+    return out
+
+
 # ---- read-only lookup for the wake path (AFC-412 wake wiring) ------------------------
 
 

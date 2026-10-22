@@ -56,6 +56,7 @@ from . import muse_bridge as MB
 from . import muse_bridge_mac as MBM
 from . import notes as NOTES
 from . import notes_relay as NR
+from . import operator_candidates as OC
 from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
@@ -3151,6 +3152,11 @@ class Daemon:
             limit=int(runner.cfg.held_back["items_in_wake"]),
         )
         chat_context = self.chat_context(runner, pending, history)
+        letter = self.tagged_letter(runner, history)
+        if letter:
+            # The letter is the seat's own platform, because the letter namespace is per
+            # platform and the mention named this seat.
+            self.ask_operator_for_candidates(runner, pending, letter, "minimax")
         prompt = W.build_prompt(
             seat=runner.seat,
             pending=pending,
@@ -3163,6 +3169,7 @@ class Daemon:
             route=self.route_gate(runner, pending),
             held_back=held,
             chats=chat_context,
+            tagged_address=letter or None,
         )
         held_count = held["count"] if held else 0
         is_muse = runner.cfg.wake == "muse"
@@ -3590,6 +3597,91 @@ class Daemon:
             for row_id in row_ids:
                 labels[row_id] = (str(entry.get("label") or ""), str(entry.get("ref") or ""))
         return labels
+
+    def tagged_letter(self, runner: Any, history: list[Mapping[str, Any]]) -> str:
+        """The session letter a trigger addressed, when it carried one.
+
+        The letter sits next to the mention, the way the owner ruled:  "@**MiniMax** Z".
+        Only that shape counts, so a capital letter in ordinary prose is never read as an
+        address, and a bare letter with no mention is not an address at all.
+        """
+        bots = (
+            R.fleet_bots_by_seat(
+                runner.users,
+                self.fleet_tags,
+                self.config.owner_user_id,
+                outgoing_webhook_seats=self.config.outgoing_webhook_seats,
+            ).get(runner.seat)
+            or []
+        )
+        for bot in bots:
+            name = str(bot.get("full_name") or "")
+            if not name:
+                continue
+            for mention in ("@**%s**" % name, "@**%s|%d**" % (name, int(bot["user_id"]))):
+                for message in history:
+                    # A fetched message is a Zulip message, so its text is "content".
+                    body = str(message.get("content") or "")
+                    index = body.find(mention)
+                    if index < 0:
+                        continue
+                    match = re.match(r"\s+([A-Z])(?![A-Za-z0-9])", body[index + len(mention) :])
+                    if match:
+                        return match.group(1)
+        return ""
+
+    def operator_candidates(self, platform: str, letter: str) -> list[dict[str, Any]]:
+        """The live sessions that could hold one letter."""
+        db_path = OR.registry_db_path(self.root, self.env)
+        if platform:
+            return OR.candidates_for(db_path, platform, letter)
+        return OR.candidates_for_letter(db_path, letter)
+
+    def ask_operator_for_candidates(
+        self,
+        runner: Any,
+        pending: Any,
+        letter: str,
+        platform: str,
+    ) -> None:
+        """Ask the Operator for the candidate list when a tagged letter is not one session.
+
+        The ask never blocks:  the seat answers in its own thread and names the letter it
+        used, and the Operator's own DM to the sender carries the list, so the seat's
+        thread stays clean.  The ask is made only when the letter does not name exactly
+        one session, because a letter that does name one needs no list.
+        """
+        candidates = self.operator_candidates(platform, letter)
+        if len(candidates) == 1:
+            return
+        recipient = getattr(pending, "sender_id", None)
+        if not recipient:
+            self.log.write("operator-candidate-list", seat=runner.seat, letter=letter,
+                           status="skipped", reason="no sender")
+            return
+        try:
+            outcome = OC.send_candidate_list(
+                seat=runner.seat,
+                platform=platform or "minimax",
+                letters=[letter],
+                candidates=candidates,
+                recipient=int(recipient),
+                env=self.env,
+                home=self.home,
+                owner_user_id=self.config.owner_user_id,
+            )
+        except Exception as exc:
+            self.log.write("operator-candidate-list", seat=runner.seat, letter=letter,
+                           status="failed", error=type(exc).__name__)
+            return
+        self.log.write(
+            "operator-candidate-list",
+            seat=runner.seat,
+            letter=letter,
+            status=str(outcome.get("status") or ""),
+            reason=str(outcome.get("reason") or ""),
+            candidates=len(candidates),
+        )
 
     def chat_context(
         self, runner: SeatRunner, pending: W.Pending, history: list[dict[str, Any]] | None = None

@@ -67,7 +67,7 @@ class CandidateListTests(unittest.TestCase):
             "HOME": str(self.tmp),
             "AGENT_SYNC_STATE_DIR": str(self.state),
             "AGENT_SYNC_INFISICAL": "1",
-            "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID": AFC_PROJECT,
+            "INFISICAL_FLEET_OPS_PROJECT_ID": AFC_PROJECT,
             "OPERATOR_ZULIP_USER_ID": str(OPERATOR_ID),
             "OPERATOR_ZULIP_EMAIL": OPERATOR_EMAIL,
             "ZULIP_SITE": self.fake.url,
