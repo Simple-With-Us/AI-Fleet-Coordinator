@@ -6,7 +6,13 @@ from dataclasses import replace
 from pathlib import Path
 
 OPERATOR = "OPERATOR"
-PROJECT_ENV = "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID"
+#: The Operator's own three names live in the Fleet-OPS project (the approved
+#: credential source, OPS-818 rule 8) in /zulip_operator - verified present there
+#: 2026-10-21.  An earlier revision pinned this read to the AFC project ("the
+#: Notes-service store"), where the names do not exist, so the read kept failing
+#: (Kodus on #791).  The project comes from the same INFISICAL_FLEET_OPS_PROJECT_ID
+#: setting every other fleet credential read uses (zulip.ENV_INFISICAL_PROJECT).
+PROJECT_ENV = "INFISICAL_FLEET_OPS_PROJECT_ID"
 #: The Infisical folder that holds the Operator's own three names.  The seat keys
 #: are in /zulip; the Operator keeps its own folder, so the read has to name the
 #: folder or the names are not there to be found.
@@ -53,8 +59,8 @@ def operator_credentials(env, home=None, fetch=None):
     if not project:
         raise Z.CredentialError("Set " + PROJECT_ENV)
     names = ("ZULIP_OPERATOR_EMAIL", "ZULIP_OPERATOR_API_KEY")
-    where = "OPERATOR service: configured Notes credential store keys {}; no fallback".format(
-        ", ".join(names)
+    where = "OPERATOR service: Fleet-OPS {} keys {}; no fallback".format(
+        OPERATOR_INFISICAL_PATH, ", ".join(names)
     )
     if not Z.infisical_enabled(env):
         raise Z.CredentialError(f"cannot read {where}: AGENT_SYNC_INFISICAL turns Infisical off")
@@ -63,7 +69,7 @@ def operator_credentials(env, home=None, fetch=None):
             values = fetch(names)
         else:
             child = dict(env)
-            child[Z.ENV_INFISICAL_PROJECT] = project  # the Notes-service store, pinned
+            child[Z.ENV_INFISICAL_PROJECT] = project  # Fleet-OPS, where /zulip_operator lives
             try:
                 values = Z._default_infisical_fetch(
                     names,
@@ -86,7 +92,9 @@ def operator_credentials(env, home=None, fetch=None):
             selected, email_env=names[0], key_env=names[1], site_env="ZULIP_SITE", label=OPERATOR
         )
         # The values came from fleet-secrets, not the ambient environment:  report that provenance.
-        creds = replace(creds, source=f"infisical AFC prod {Z.INFISICAL_PATH} {names[1]}")
+        creds = replace(
+            creds, source=f"infisical Fleet-OPS prod {OPERATOR_INFISICAL_PATH} {names[1]}"
+        )
         if creds.email.casefold() != expected_email:
             raise Z.CredentialError(f"{where}: not the pinned service bot")
         return creds

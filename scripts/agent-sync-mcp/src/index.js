@@ -6,7 +6,7 @@
 // tools from tools.json, each seat posting as its own Zulip bot (Phase 2).
 //
 // Request order, outermost first:
-//   1. Host check (404 for anything but agent-sync.jays.services) and a path
+//   1. Host check (404 for anything but agents.simplewithus.com) and a path
 //      allowlist (404 for everything else).  GET /health is a static 200.
 //   2. /oauth/token:  rate limit, Content-Type and Authorization checked the
 //      way the library reads them, client_id allowlist before any fetch, blank
@@ -18,6 +18,9 @@
 //   5. /internal/wake/<SEAT>:  the server listener's signed wake (src/wake.js),
 //      handled before the OAuth library and outside Cloudflare Access.  It
 //      fans out an MCP event to that seat's subscriptions (src/events.js).
+//   6. /internal/spike/<SEAT> (AFC-477, temporary):  one signed, hand-fired
+//      `fleet.spike.ping` to that seat's spike subscription (src/spike.js),
+//      a 404 unless SPIKE_EXTRA_EVENTS is "on" and SPIKE_HMAC_KEY is set.
 
 import { OAuthProvider, OAuthError, AuthorizationError, CimdFetchError } from "@cloudflare/workers-oauth-provider";
 import { SeatGate } from "./seat-gate.js";
@@ -68,8 +71,9 @@ import { LinearClient, linearClientFromEnv, LINEAR_SEATS, linearSecretNames } fr
 import { ZulipClient } from "./zulip.js";
 import { listenerClientFromEnv } from "./listener.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
-import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS } from "./events.js";
+import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "./events.js";
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
+import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 
 export { SeatGate };
 
@@ -409,7 +413,7 @@ async function serveWake(request, env, ctx, config) {
     return jsonResponse({ ok: true, disabled: true, subscribers: 0 }, 202);
   }
   const seatGate = gate(env, seat);
-  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id, messageId: wake.message_id });
+  const claim = await seatGate.eventClaimWake({ wakeId: wake.wake_id, messageId: wake.message_id, name: EVENT_NAME });
   let result = claim;
   if (claim.verdict === "go") {
     // The answer waits for the deliveries, and waitUntil keeps them (and the
@@ -420,6 +424,64 @@ async function serveWake(request, env, ctx, config) {
   }
   console.log(JSON.stringify({ event: "wake", seat, verdict: claim.verdict, outcome: result.outcome ?? null, subscribers: claim.subs?.length ?? 0, delivered: result.delivered ?? 0, message_id: wake.message_id }));
   const reply = wakeReply(result);
+  return jsonResponse(reply.body, reply.status, reply.retryAfterS ? { "Retry-After": String(reply.retryAfterS) } : {});
+}
+
+// ---------------------------------------------------------------- /internal/spike/<SEAT> (AFC-477)
+
+/**
+ * One hand-fired `fleet.spike.ping` (src/spike.js).  Every way it is not set
+ * up is a 404:  SPIKE_EXTRA_EVENTS not "on", no SPIKE_HMAC_KEY, a seat that is
+ * not hosted or has no wake key (no events are offered to it), or a
+ * SPIKE_HMAC_KEY equal to any seat's wake key, which must never sign a spike.
+ * Then the signature, freshness and shape, then SeatGate.spikeClaim (dedupe,
+ * rate limit, pause), then delivery inside this request.  The answer holds
+ * counts only (spikeReply).
+ */
+async function serveSpike(request, env, ctx, config) {
+  const started = Date.now();
+  if (!config.spikeExtraEvents) return notFound();
+  const seat = spikePathSeat(new URL(request.url).pathname);
+  if (!seat || !config.hostedSeats.includes(seat) || !Object.hasOwn(WAKE_SECRETS, seat)) return notFound();
+  const wakeKey = typeof env[WAKE_SECRETS[seat]] === "string" ? env[WAKE_SECRETS[seat]].trim() : "";
+  const key = spikeKey(env.SPIKE_HMAC_KEY);
+  if (!wakeKey || !key) return notFound();
+  // SPIKE_HMAC_KEY must never equal any seat's wake key, not only this seat's.
+  const wakeKeys = Object.values(WAKE_SECRETS).map((name) => (typeof env[name] === "string" ? env[name].trim() : "")).filter(Boolean);
+  if (wakeKeys.includes(key)) {
+    console.log(JSON.stringify({ event: "spike_refused", seat, reason: "key_reused" }));
+    return notFound();
+  }
+  if (request.method !== "POST") return textResponse("Method Not Allowed", 405, { Allow: "POST" });
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > SPIKE_MAX_BODY) return textResponse("Payload Too Large", 413);
+  const bytes = await readBodyBytes(request, SPIKE_MAX_BODY);
+  if (bytes === null) return textResponse("Payload Too Large", 413);
+  const checked = await verifySpike({ bytes, signature: request.headers.get(SPIKE_SIGNATURE_HEADER), key, seat });
+  if (!checked.ok) {
+    console.log(JSON.stringify({ event: "spike_refused", seat, reason: checked.reason }));
+    return checked.status === 404 ? notFound() : textResponse(checked.status === 401 ? "Unauthorized" : checked.status === 413 ? "Payload Too Large" : "Bad Request", checked.status);
+  }
+  const spike = checked.spike;
+  if (config.mcpDisabled) {
+    console.log(JSON.stringify({ event: "spike", seat, verdict: "mcp_disabled" }));
+    return jsonResponse({ ok: true, disabled: true, subscribers: 0, delivered: 0 }, 202);
+  }
+  const seatGate = gate(env, seat);
+  const claim = await seatGate.spikeClaim({ spikeId: spike.spike_id, max: SPIKE_RATE_LIMIT, windowMs: SPIKE_RATE_WINDOW_MS });
+  let result = claim;
+  if (claim.verdict === "go") {
+    const work = deliverSpike({ gate: seatGate, spike, subs: claim.subs, fetchFn: (...a) => fetch(...a), deadline: started + WAKE_BUDGET_MS });
+    ctx.waitUntil(work.catch(() => {}));
+    result = { verdict: "go", ...(await work) };
+    try {
+      await seatGate.audit({ event: "spike_settled", spike_ref: spike.spike_id.slice(0, 8), outcome: result.outcome, delivered: result.delivered });
+    } catch {
+      console.log(JSON.stringify({ event: "spike_settle_audit_failed" }));
+    }
+  }
+  console.log(JSON.stringify({ event: "spike", seat, verdict: claim.verdict, outcome: result.outcome ?? null, subscribers: result.subscribers ?? 0, delivered: result.delivered ?? 0 }));
+  const reply = spikeReply(result);
   return jsonResponse(reply.body, reply.status, reply.retryAfterS ? { "Retry-After": String(reply.retryAfterS) } : {});
 }
 
@@ -936,6 +998,10 @@ export default {
       console.log(JSON.stringify({ event: "config_error", message: logSafe(error?.message, 200) }));
       return textResponse("Server misconfigured", 500);
     }
+    // Hard cutover (owner ruling, Oct 22, 2026):  the old agent-sync.jays.services
+    // host is not answered, aliased or redirected.  It fails this single-host
+    // check exactly like any unknown Host, so a request there gets a clean 404
+    // rather than a working fallback.  The route is gone from wrangler.jsonc too.
     if (!hostAllowed(request, config.host)) return notFound();
     const route = classifyPath(new URL(request.url).pathname);
     if (!route) return notFound();
@@ -947,9 +1013,10 @@ export default {
     }
     if (route === "mcp" && config.mcpDisabled) {
       await recordDiagnostic(env, { kind: "mcp", reason: "mcp_disabled", status: 503 });
-      return textResponse("The agent-sync MCP server is turned off.", 503, { "Retry-After": "3600" });
+      return textResponse("The ST-MCP server is turned off.", 503, { "Retry-After": "3600" });
     }
     if (route === "wake") return serveWake(request, env, ctx, config);
+    if (route === "spike") return serveSpike(request, env, ctx, config);
     if (route === "token") {
       const gated = await gateToken(request, env, config);
       if (gated instanceof Response) return gated;
