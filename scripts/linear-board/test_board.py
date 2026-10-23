@@ -4051,6 +4051,58 @@ class OwnershipTests(BoardTest):
         self.assertNotIn("(assignee", p.stdout)
         self.assertNotIn("(no Linear user", p.stdout)
 
+    def test_a_refused_assignee_clear_still_lands_the_status_change(self):
+        """Closing folds the clear into the mandatory state update;  when Linear
+        refuses it, the status retries without the owner instead of losing the
+        state change, the label removal, or the comment."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        iss["labels"].append(self.mock._label("needs-owner", None))
+        self.mock.fail_assignee_clear = True
+        p = self.board("status", iss["identifier"], "completed", extra=self.OWNED)
+        self.assertEqual(p.returncode, 0)
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertIn("assigneeId", first[1])
+        self.assertIsNone(first[1].get("assigneeId"))
+        self.assertNotIn("assigneeId", second[1])
+        self.assertIn("stateId", second[1])
+        self.assertIn("removedLabelIds", second[1])
+        self.assertEqual(iss["state"], "Done")
+        self.assertNotIn("needs-owner", self.label_names(iss))
+        self.assertTrue(any("Status: completed" in c for c in self.comments_of(iss)))
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.assertIn("refused the assignee clear", p.stderr)
+        self.assertIn("retrying the status change without it", p.stderr)
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("assignee clear refused", p.stderr)
+
+    def test_a_refused_assignee_clear_still_lands_the_duplicate_cleanup(self):
+        """The duplicate cleanup runs after the relation landed;  a refused clear
+        there must not fail the verb and skip the comment.  Labels still go, the
+        comment still posts, and only a label-removal failure aborts."""
+        iss = self.todo_issue()
+        canon = self.todo_issue(title="Canonical")
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        iss["labels"].append(self.mock._label("needs-owner", None))
+        self.mock.fail_assignee_clear = True
+        p = self.board(
+            "status", iss["identifier"], "duplicate", "--of", canon["identifier"], extra=self.OWNED
+        )
+        self.assertEqual(p.returncode, 0)
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertIn("assigneeId", first[1])
+        self.assertIsNone(first[1].get("assigneeId"))
+        self.assertNotIn("assigneeId", second[1])
+        self.assertIn("removedLabelIds", second[1])
+        self.assertEqual(iss["state"], "Duplicate")
+        self.assertNotIn("needs-owner", self.label_names(iss))
+        self.assertTrue(any("Duplicate of" in c for c in self.comments_of(iss)))
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.assertIn("refused the assignee clear", p.stderr)
+        self.assertIn("retrying the duplicate cleanup without it", p.stderr)
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("assignee clear refused", p.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

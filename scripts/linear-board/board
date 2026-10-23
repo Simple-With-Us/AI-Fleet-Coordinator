@@ -2331,6 +2331,32 @@ def comment_body(seat: str, sessions: list[str] | None, text: str, where: str | 
     return body + "".join("\n\n" + x for x in extra)
 
 
+def _update_with_best_effort_owner(L: Linear, issue_id: str, inp: dict, *, retry_noun: str,
+                                   owner: str | None = None) -> bool:
+    """One issueUpdate where assigneeId is optional.  Ownership is an enhancement on the
+    labels and the state change, never their replacement:  a refused assignee write must not
+    lose the mandatory part.  On GqlError with assigneeId in the input, drop it, retry once
+    without the owner field at all, and warn with allow-listed fields.  True when the owner
+    was dropped and the write landed;  a GqlError means the mandatory write itself failed."""
+    try:
+        L.call(M_UPDATE, {"id": issue_id, "input": inp})
+        return False
+    except GqlError as e:
+        if "assigneeId" not in inp:
+            raise
+        if owner:
+            warn(f"Linear refused the assignee {owner}; retrying {retry_noun} without an owner: "
+                 f"{gql_summary(e)}")
+        else:
+            warn(f"Linear refused the assignee clear; retrying {retry_noun} without it: "
+                 f"{gql_summary(e)}")
+        del inp["assigneeId"]
+        if not inp:
+            return True
+        L.call(M_UPDATE, {"id": issue_id, "input": inp})
+        return True
+
+
 def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     by = check_by(a.addressed_by, seat)
     sessions = auto_sessions(a.session_ids, seat, required=True)
@@ -2376,30 +2402,13 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
         # A steal by a seat with no Linear user still moves the claim, so the
         # old owner's assignee goes with it instead of lingering stale.
         inp["assigneeId"] = None
-    refused_owner = False
     try:
-        L.call(M_UPDATE, {"id": n["id"], "input": inp})
+        refused_owner = _update_with_best_effort_owner(
+            L, n["id"], inp, retry_noun="the claim", owner=owner)
+        if refused_owner:
+            owner = None
     except GqlError as e:
-        if "assigneeId" not in inp:
-            L.fail(f"Linear refused the claim: {gql_summary(e)}")
-        # Ownership is an enhancement on the claim label, never its replacement:
-        # a refused assignee write (an id Linear no longer knows, or a clear
-        # from a steal by a seat with no Linear user) must not lose the state
-        # change, the labels, or the CLAIMED comment.  Retry without the owner
-        # field at all;  the landing is reported only after the retry succeeds.
-        if owner:
-            warn(f"Linear refused the assignee {owner}; retrying the claim without an owner: "
-                 f"{gql_summary(e)}")
-        else:
-            warn("Linear refused the assignee clear; retrying the claim without it: "
-                 f"{gql_summary(e)}")
-        del inp["assigneeId"]
-        owner = None
-        try:
-            L.call(M_UPDATE, {"id": n["id"], "input": inp})
-        except GqlError as e2:
-            L.fail(f"Linear refused the claim: {gql_summary(e2)}")
-        refused_owner = True
+        L.fail(f"Linear refused the claim: {gql_summary(e)}")
     landed = f"{n['identifier']} is In Progress with {by}'s claim label"
     owner_note = ""
     if env("LINEAR_BOARD_OWNER") == "1":
@@ -2506,12 +2515,13 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
             dup_inp["assigneeId"] = None
         if dup_inp:
             try:
-                L.call(M_UPDATE, {"id": n["id"], "input": dup_inp})
+                refused_clear = _update_with_best_effort_owner(
+                    L, n["id"], dup_inp, retry_noun="the duplicate cleanup")
             except GqlError as e:
                 L.fail(f"Linear refused the duplicate cleanup update: {gql_summary(e)}")
             if drop:
                 L.landed.append(f"{n['identifier']} lost needs-owner and ask-capture")
-            if dup_claimed and env("LINEAR_BOARD_OWNER") == "1":
+            if dup_claimed and env("LINEAR_BOARD_OWNER") == "1" and not refused_clear:
                 L.landed.append(f"{n['identifier']} cleared its assignee")
         text = f"Duplicate of {canon['identifier']}"
         if a.resolution:
@@ -2554,9 +2564,9 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
         if claimed and env("LINEAR_BOARD_OWNER") == "1":
             inp["assigneeId"] = None
     try:
-        L.call(M_UPDATE, {"id": n["id"], "input": inp})
+        _update_with_best_effort_owner(L, n["id"], inp, retry_noun="the status change")
     except GqlError as e:
-        die(f"Linear refused the status change: {e}")
+        L.fail(f"Linear refused the status change: {gql_summary(e)}")
     L.landed.append(f"{n['identifier']} moved to {state_name}")
     if a.resolution:
         text = f"Resolution ({value}): {a.resolution.strip()}"
