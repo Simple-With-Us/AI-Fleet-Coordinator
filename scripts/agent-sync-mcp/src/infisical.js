@@ -42,14 +42,17 @@ export function _resetInfisicalForTests() {
   stats.fallbacks = 0;
 }
 
+import { INFISICAL_EXPECT_DEFAULT } from "./infisical-manifest.js";
+
 /** Declared-configured secrets:  comma list of `path:name` (e.g.
  * "/wake:WAKE_HMAC_KEY_JET").  A genuine 404 for a DECLARED secret throws
  * even on an optional read - an accidentally deleted configured secret fails
  * visibly instead of silently disabling the capability.  Absence of a name
  * from this list is what marks a capability intentionally absent. */
 function expectedSet(env) {
-  const raw = typeof env.INFISICAL_EXPECT === "string" ? env.INFISICAL_EXPECT : "";
-  return new Set(raw.split(",").map((e) => e.trim()).filter(Boolean));
+  const raw = typeof env.INFISICAL_EXPECT === "string" ? env.INFISICAL_EXPECT.trim() : "";
+  if (raw) return new Set(raw.split(",").map((e) => e.trim()).filter(Boolean));
+  return new Set(INFISICAL_EXPECT_DEFAULT);
 }
 
 /** The configured mode ("off" | "fallback" | "required") for callers that

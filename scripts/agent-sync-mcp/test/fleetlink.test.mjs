@@ -361,12 +361,13 @@ test("GB-ENGINEER is visibly off: denied even with the agent secret bound, no si
 
 test("resolveFleetlinkSeatTokens skips disabled seats and still denies them", async () => {
   let reads = 0;
-  const env = { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "ws", INFISICAL_SERVICE_TOKEN: "t", INFISICAL_ENVIRONMENT: "prod" };
+  const env = { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "ws", INFISICAL_SERVICE_TOKEN: "t", INFISICAL_ENVIRONMENT: "prod", INFISICAL_EXPECT: "/fleetlink:FLEETLINK_AGENT_SECRET" };
   const orig = globalThis.fetch;
   globalThis.fetch = async () => { reads++; return new Response("{}", { status: 404 }); };
   try {
     const r = await resolveFleetlinkSeatTokens(env, ["GB-ENGINEER", "GB-FIXER"]);
     assert.ok(r.deniedSeats.has("GB-ENGINEER") && !r.seatTokens.has("GB-ENGINEER"), "disabled seat denied");
+    assert.equal(reads, 1, "disabled seat is never even read; only GB-FIXER was fetched");
     assert.ok(FLEETLINK_SEATS_DISABLED.includes("GB-ENGINEER"));
   } finally { globalThis.fetch = orig; }
 });

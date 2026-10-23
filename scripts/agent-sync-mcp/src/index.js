@@ -63,10 +63,10 @@ import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sent
 import { gbBearerFromRequest, parseGbBearer, newGbBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
-import { IdentityRouter, loadDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
+import { IdentityRouter, loadDelegatedCredentials, resolveDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
 import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
-import { recallClientFromEnv } from "./recall.js";
+import { recallClientFromEnv, recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
 import { fleetlinkClientFromEnv, fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
 import { LinearClient, linearClientFromEnv, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat, LINEAR_SECRETS } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
@@ -241,6 +241,7 @@ async function serveMcp(request, env, ctx) {
   // gap observably and required mode throws visibly until it is populated.
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
+  const recallSecrets = await resolveRecallSecrets(env);
 
   const tools = new HostedTools({
     seat,
@@ -255,7 +256,7 @@ async function serveMcp(request, env, ctx) {
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     // Null when any recall secret is missing:  the recall tools then answer
     // not_configured and every other tool works as before (spec 1.1).
-    recall: recallClientFromEnv(env),
+    recall: recallClientFromResolved(recallSecrets, env),
     // Null when this seat has no Linear app credentials, or when the seat is
     // not on LINEAR_SEATS:  the Linear tools then answer not_configured and
     // every other tool works as before (AFC-289).
@@ -271,7 +272,7 @@ async function serveMcp(request, env, ctx) {
   // AFC-331:  every grant is routed by identity.  A CURSOR or GROK-WEB grant may act as either seat and as
   // every enabled Grok Bot persona;  any other grant only as its own seat (src/delegated-identities.js).
   const sharedGroup = SHARED_IDENTITY_SEATS.includes(seat);
-  const delegatedCredentials = sharedGroup ? loadDelegatedCredentials(env) : null;
+  const delegatedCredentials = sharedGroup ? await resolveDelegatedCredentials(env) : null;
   // Seat keys resolve through Infisical when INFISICAL_MODE allows (src/infisical.js);
   // prefetched so the router's synchronous identityStatus keeps its contract.
   const seatKeys = new Map(await Promise.all(Object.entries(SEAT_SECRETS).map(async ([identity, names]) =>
@@ -395,7 +396,7 @@ async function serveGbBearerMcp(request, env, token) {
   const parsed = parseGbBearer(token);
   if (!parsed) return refuse();
   const { identity } = parsed;
-  const credentials = loadDelegatedCredentials(env).roles.get(identity);
+  const credentials = (await resolveDelegatedCredentials(env)).roles.get(identity);
   if (!credentials) return refuse();
   const identityGate = gate(env, identity);
   const checked = await identityGate.gbBearerCheck(await sha256Hex(parsed.token));
@@ -413,6 +414,7 @@ async function serveGbBearerMcp(request, env, token) {
   const grantRef = await sha256Ref(`gb-bearer:${identity}`);
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
+  const recallSecrets = await resolveRecallSecrets(env);
   const tools = new HostedTools({
     seat: identity,
     callerSeat: identity,
@@ -424,7 +426,7 @@ async function serveGbBearerMcp(request, env, token) {
     paused: false,
     gate: identityGate,
     cf: { asn: request.cf?.asn, country: request.cf?.country },
-    recall: recallClientFromEnv(env),
+    recall: recallClientFromResolved(recallSecrets, env),
     fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     delegatedLinear: true,
@@ -603,7 +605,7 @@ async function serveLinearHealth(request, env, config) {
     if ([names.clientId, names.clientSecret].every((n) => typeof env[n] === "string" && env[n].trim() !== "")) identities.push(seat);
     else missing.push(seat);
   }
-  const delegated = loadDelegatedCredentials(env);
+  const delegated = await resolveDelegatedCredentials(env);
   for (const identity of delegated.roles.keys()) identities.push(identity);
   const rows = await Promise.all(identities.map(async (seat) => {
     try {
@@ -911,7 +913,7 @@ async function serveAdmin(request, env, config, oauth, email) {
     const calls = [];
     const statusErrors = [];
     const configured = (name) => typeof env[name] === "string" && env[name].trim() !== "";
-    const recallConfigured = recallClientFromEnv(env) !== null;
+    const recallConfigured = recallClientFromResolved(await resolveRecallSecrets(env), env) !== null;
     // Observability for the Infisical transition: the mode and the bounded
     // fallback counters render on the admin status payload (src/infisical.js).
     const infisical = { mode: String(env.INFISICAL_MODE ?? "off").trim().toLowerCase() || "off", ...infisicalStats() };
@@ -957,7 +959,7 @@ async function serveAdmin(request, env, config, oauth, email) {
     const globalValue = (i) => globalReads[i].status === "fulfilled" ? globalReads[i].value : [];
     const [refusals, tokenRefusals, runtimeErrors] = [0, 1, 2].map(globalValue);
     const diagnosticsUnavailable = globalReads.some((r) => r.status === "rejected");
-    const delegatedRoles = loadDelegatedCredentials(env).roles;
+    const delegatedRoles = (await resolveDelegatedCredentials(env)).roles;
     const gbBearers = await Promise.all(GB_IDENTITIES.map(async (identity) => {
       let status = null;
       try { status = await gate(env, identity).gbBearerStatus(); } catch { /* Shown as unknown. */ }
@@ -1054,7 +1056,7 @@ async function serveAdmin(request, env, config, oauth, email) {
       }
       case "mint_gb_bearer": {
         const identity = parsed.data.identity ?? "";
-        if (!GB_IDENTITIES.includes(identity) || !loadDelegatedCredentials(env).roles.has(identity)) return errorPage("Request Refused", "Unknown Grok Bot, or its credentials are not loaded.", 400);
+        if (!GB_IDENTITIES.includes(identity) || !(await resolveDelegatedCredentials(env)).roles.has(identity)) return errorPage("Request Refused", "Unknown Grok Bot, or its credentials are not loaded.", 400);
         const { token, hash } = await newGbBearer(identity);
         const expiresAt = Date.now() + GB_BEARER_TTL_MS;
         await gate(env, identity).gbBearerMint({ hash, by: email, expiresAt });

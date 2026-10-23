@@ -191,10 +191,80 @@ test("resolveFleetlinkSeatTokens: valid token used, malformed fails closed, abse
   assert.equal(client.credentialFor("ECHO"), null, "denied seat gets no credential - no agent-secret substitution");
 });
 
-test("resolveFleetlinkSeatTokens: required mode ignores the legacy bundle", async () => {
+test("resolveFleetlinkSeatTokens: required mode ignores the legacy bundle; declared-missing throws visibly", async () => {
   _resetInfisicalForTests();
   mockFetch([]);
   const env = { ...ENV, FLEETLINK_SEAT_TOKENS: '{"WISE":"fla_' + "b".repeat(64) + '"}' };
-  const r = await resolveFleetlinkSeatTokens(env, ["WISE"]);
+  await assert.rejects(() => resolveFleetlinkSeatTokens(env, ["WISE"]), /Infisical/, "WISE is declared in the default manifest: an accidental missing secret fails visibly, never silently");
+  // An intentionally-absent (undeclared) name is capability-off, no throw, no env read.
+  _resetInfisicalForTests();
+  mockFetch([]);
+  const env2 = { ...ENV, INFISICAL_EXPECT: "/fleetlink:FLEETLINK_AGENT_SECRET", FLEETLINK_SEAT_TOKENS: '{"WISE":"fla_' + "b".repeat(64) + '"}' };
+  const r = await resolveFleetlinkSeatTokens(env2, ["WISE"]);
   assert.equal(r.seatTokens.size, 0, "no env binding is read in required mode");
+});
+
+test("INFISICAL_EXPECT_DEFAULT: exactly the 72-copy manifest, drift-guarded against delegatedNames", async () => {
+  const { INFISICAL_EXPECT_DEFAULT } = await import("../src/infisical-manifest.js");
+  const { GB_IDENTITIES, delegatedNames } = await import("../src/delegated-identities.js");
+  assert.equal(INFISICAL_EXPECT_DEFAULT.length, 72);
+  assert.equal(new Set(INFISICAL_EXPECT_DEFAULT).size, 72, "no duplicates");
+  const set = new Set(INFISICAL_EXPECT_DEFAULT);
+  for (const identity of GB_IDENTITIES) {
+    const n = delegatedNames(identity);
+    for (const [path, name] of [["/zulip", n.zulipEmail], ["/zulip", n.zulipKey], ["/linear", n.linearClientId], ["/linear", n.linearClientSecret]]) {
+      assert.ok(set.has(`${path}:${name}`), `manifest declares ${path}:${name}`);
+    }
+  }
+  assert.ok(!set.has("/fleetlink:FLEETLINK_TOKEN_GB_ENGINEER"), "never-provisioned seat token is not declared");
+  assert.ok([...set].filter((e) => e.startsWith("/fleetlink:")).length === 18, "agent secret + 17 seat tokens");
+  assert.ok(![...set].some((e) => e.includes("SPIKE")), "ephemeral spike key is not durable storage");
+});
+
+test("resolveDelegatedCredentials: required mode assembles validated rows from Infisical", async () => {
+  _resetInfisicalForTests();
+  const { resolveDelegatedCredentials } = await import("../src/delegated-identities.js");
+  const { GB_IDENTITIES } = await import("../src/delegated-identities.js");
+  const calls = [];
+  mockFetch(GB_IDENTITIES.flatMap((identity) => {
+    const role = identity.slice(3).replaceAll("-", "_");
+    return [
+      [`secrets/raw/ZULIP_GB_${role}_EMAIL`, { body: { secret: { secretValue: `${role.toLowerCase()}-grok-bot@simplewithus.zulipchat.com` } } }],
+      [`secrets/raw/ZULIP_GB_${role}_API_KEY`, { body: { secret: { secretValue: `zk-${role}` } } }],
+      [`secrets/raw/LINEAR_GB_${role}_CLIENT_ID`, { body: { secret: { secretValue: `li-${role}` } } }],
+      [`secrets/raw/LINEAR_GB_${role}_CLIENT_SECRET`, { body: { secret: { secretValue: `ls-${role}` } } }],
+    ];
+  }));
+  const env = { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "ws-test", INFISICAL_SERVICE_TOKEN: "tok", INFISICAL_ENVIRONMENT: "prod" };
+  const r = await resolveDelegatedCredentials(env);
+  assert.equal(r.source, "infisical");
+  assert.equal(r.roles.size, GB_IDENTITIES.length, "every enabled persona assembled");
+  assert.equal(r.roles.get("GB-FIXER").email, "fixer-grok-bot@simplewithus.zulipchat.com", "completeRole validation applied");
+});
+
+test("resolveDelegatedCredentials: fallback with nothing resolved keeps the env bundle/legacy rows", async () => {
+  _resetInfisicalForTests();
+  const { resolveDelegatedCredentials, GB_IDENTITIES } = await import("../src/delegated-identities.js");
+  mockFetch(new Array(GB_IDENTITIES.length * 4).fill(["secrets/raw/", { status: 404, body: {} }]).map(([, v]) => ["secrets/raw/", v]));
+  const email = (i) => `${i.slice(3).toLowerCase().replaceAll("-", "")}-grok-bot@simplewithus.zulipchat.com`;
+  const bundle = JSON.stringify({ v: 1, r: Object.fromEntries(GB_IDENTITIES.map((i) => [i, [email(i), "zk", "li", "ls"]])) });
+  const env = { INFISICAL_MODE: "fallback", INFISICAL_WORKSPACE_ID: "ws-test", INFISICAL_SERVICE_TOKEN: "tok", INFISICAL_ENVIRONMENT: "prod", GB_IDENTITY_CREDENTIALS: bundle };
+  const r = await resolveDelegatedCredentials(env);
+  assert.equal(r.source, "bundle", "family-level fallback: bundle deployment never silently emptied");
+  assert.equal(r.roles.size, GB_IDENTITIES.length);
+});
+
+test("resolveRecallSecrets: required mode resolves all three; absent everywhere means unconfigured", async () => {
+  _resetInfisicalForTests();
+  const { resolveRecallSecrets, recallClientFromResolved } = await import("../src/recall.js");
+  mockFetch([
+    ["secrets/raw/RECALL_API_TOKEN", { body: { secret: { secretValue: "rt" } } }],
+    ["secrets/raw/RECALL_ACCESS_CLIENT_ID", { body: { secret: { secretValue: "rid" } } }],
+    ["secrets/raw/RECALL_ACCESS_CLIENT_SECRET", { body: { secret: { secretValue: "rs" } } }],
+  ]);
+  const env = { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "ws-test", INFISICAL_SERVICE_TOKEN: "tok", INFISICAL_ENVIRONMENT: "prod", RECALL_BASE_URL: "https://recall.jays.services" };
+  const r = await resolveRecallSecrets(env);
+  assert.deepEqual(r, { token: "rt", accessId: "rid", accessSecret: "rs" });
+  assert.ok(recallClientFromResolved(r, env, { fetch: async () => { throw new Error("unused"); } }), "client builds from resolved values");
+  assert.equal(recallClientFromResolved({ token: "", accessId: "", accessSecret: "" }, env), null, "absent everywhere = not configured, never throws");
 });
