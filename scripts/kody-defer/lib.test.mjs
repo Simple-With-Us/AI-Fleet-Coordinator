@@ -189,11 +189,11 @@ test('isBlockedSeverity defaults to critical and honors a csv list', () => {
 });
 
 test('refusal message is the exact critical string and capitalizes other severities', () => {
-  assert.equal(REFUSAL_MESSAGE, "Critical findings can't be deferred.  Fix this in the PR.");
-  assert.equal(REFUSAL_MESSAGE.includes('.  Fix'), true);
-  assert.equal(refusalMessage('high'), "High findings can't be deferred.  Fix this in the PR.");
-  assert.equal(refusalMessage('medium'), "Medium findings can't be deferred.  Fix this in the PR.");
-  assert.equal(MANUAL_RESOLVE_MESSAGE.includes('.  This thread'), true);
+  assert.equal(REFUSAL_MESSAGE, "Critical findings can't be deferred.&nbsp; Fix this in the PR.");
+  assert.equal(REFUSAL_MESSAGE.includes('.&nbsp; Fix'), true);
+  assert.equal(refusalMessage('high'), "High findings can't be deferred.&nbsp; Fix this in the PR.");
+  assert.equal(refusalMessage('medium'), "Medium findings can't be deferred.&nbsp; Fix this in the PR.");
+  assert.equal(MANUAL_RESOLVE_MESSAGE.includes('.&nbsp; This thread'), true);
   assert.equal(LABELS.deferred.name, 'kody-deferred');
   assert.equal(LABELS.deferred.color, 'D4A72C');
   assert.equal(LABELS.high.name, 'kody-high');
@@ -453,7 +453,7 @@ test('resolve failure posts a manual-resolve reply and exits ok', async () => {
   assert.match(replies[1].body.body, /manual resolve/);
   assert.match(replies[1].body.body, /could not resolve it/);
   assert.match(replies[1].body.body, /Resource not accessible by integration/);
-  assert.match(replies[1].body.body, /\. {2}The workflow/);
+  assert.match(replies[1].body.body, /\.&nbsp; The workflow/);
 });
 
 test('an existing Deferred to reply performs no writes', async () => {
