@@ -44,7 +44,7 @@ sys.path.insert(
     0, str(HERE.parent.parent)
 )  # scripts/, so `agent_sync` imports (the image keeps the repo layout)
 
-from agent_sync import config as C  # noqa: E402
+from agent_sync import config as C
 
 _HEADER_RE = re.compile(r"^\[([^\[\]]+)\]\s*(#.*)?$")
 # Settings sections copied from the sample only when the live file has none, and never replaced.
