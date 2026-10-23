@@ -14,11 +14,14 @@ Copies are POINT-IN-TIME: they do NOT track source rotation.  After a source
 rotation, re-run this script by hand; it overwrites destination values in place.
 
 Values transit this process's memory only: never printed, logged, or persisted.
-Step 0 fails safe: the read-tools token's own metadata must confirm every
-destination path is in scope, or the run aborts BEFORE any write; if the
-metadata endpoint is unsupported or errors, it aborts too (never guesses).
+Step 0 fails safe: the read-tools token's own metadata (GET /api/v2/service-token,
+verified against current Infisical docs; the old service-token-data path 404s)
+must confirm every destination path is in scope, or the run aborts BEFORE any
+write; an endpoint error OR an unrecognized schema aborts too (never guesses).
+Existing destinations are read first: an equal value is skipped, a DIFFERENT
+value stops the run for reconciliation - no blind overwrite.
 """
-import json, os, pathlib, sys, urllib.parse, urllib.request
+import json, os, pathlib, sys, urllib.error, urllib.parse, urllib.request
 
 AFC = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
 FLEETOPS = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
@@ -64,9 +67,43 @@ def read_secret(token, ws, path, name):
     q = urllib.parse.urlencode({"workspaceId": ws, "environment": ENV, "secretPath": path})
     return req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}?{q}", token)["secret"]["secretValue"]
 
+def read_secret_opt(token, ws, path, name):
+    """Read or None on 404.  Error BODIES are never surfaced: an HTTP error carries
+    only its status code so a server message can never leak a value."""
+    q = urllib.parse.urlencode({"workspaceId": ws, "environment": ENV, "secretPath": path})
+    try:
+        return req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}?{q}", token)["secret"]["secretValue"]
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+
 def upsert(token, ws, path, name, value):
     req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}", token,
         data={"workspaceId": ws, "environment": ENV, "secretPath": path, "secretValue": value, "type": "shared"})
+
+def token_data(token):
+    """Self-metadata for a SERVICE token.  Verified against current Infisical docs
+    (https://infisical.com/docs/api-reference/endpoints/service-tokens/get, GET
+    /api/v2/service-token; the old /api/v2/service-token-data path 404s).  The docs
+    leave `scopes` untyped and mark the endpoint deprecated, so the parser below is
+    STRICT: any shape other than a list of {environment, secretPath} strings aborts
+    fail-safe.  One live response with the real read-tools token is still required
+    at execution time; an unrecognized schema keeps this a blocker, never a pass."""
+    return json.load(urllib.request.urlopen(urllib.request.Request(
+        f"{BASE}/api/v2/service-token", headers={"Authorization": f"Bearer {token}"}), timeout=35))
+
+def parse_scopes(data):
+    """Return {(environment, secretPath)} or None when the schema is not exactly as expected."""
+    scopes = data.get("scopes")
+    if not isinstance(scopes, list):
+        return None
+    out = set()
+    for s in scopes:
+        if not isinstance(s, dict) or not isinstance(s.get("environment"), str) or not isinstance(s.get("secretPath"), str):
+            return None
+        out.add((s["environment"], s["secretPath"]))
+    return out
 
 def check_read_tools_scope():
     """Fail-safe gate: the read-tools token reports its own scopes; abort on any doubt."""
@@ -75,13 +112,18 @@ def check_read_tools_scope():
         print("GATE: READ_TOOLS_SERVICE_TOKEN not in env - cannot verify scope. Aborting (fail safe).")
         return False
     try:
-        data = json.load(urllib.request.urlopen(urllib.request.Request(
-            f"{BASE}/api/v2/service-token-data", headers={"Authorization": f"Bearer {st}"}), timeout=35))
+        data = token_data(st)
+    except urllib.error.HTTPError as e:
+        print(f"GATE: token metadata endpoint returned HTTP {e.code}. Aborting (fail safe).")
+        return False
     except Exception as e:
         print(f"GATE: token metadata endpoint unsupported/error ({type(e).__name__}). Aborting (fail safe).")
         return False
-    scopes = data.get("scopes") or []
-    granted = {(s.get("environment"), s.get("secretPath")) for s in scopes}
+    granted = parse_scopes(data)
+    if granted is None:
+        print("GATE: token metadata schema not the expected scopes list of {environment, secretPath}. "
+              "Aborting (fail safe); confirm the live schema before any run.")
+        return False
     needed = {(ENV, p) for _, _, _, p, _ in MAPPING}
     missing = sorted(needed - granted)
     if missing:
@@ -104,14 +146,35 @@ def main():
     if not check_read_tools_scope():
         sys.exit(1)
     token = login()
-    done = 0
+    done = skipped = 0
     for sws, spath, sname, dpath, dname in MAPPING:
-        value = read_secret(token, sws, spath, sname)  # in memory only
-        upsert(token, FLEETOPS, dpath, dname, value)
-        value = None
+        try:
+            value = read_secret(token, sws, spath, sname)  # in memory only
+            existing = read_secret_opt(token, FLEETOPS, dpath, dname)
+            if existing is not None and existing != value:
+                value = existing = None
+                print(f"COLLISION: Fleet-OPS {dpath}/{dname} already exists with a DIFFERENT value.")
+                print("Stopping for reconciliation - no overwrite is authorized by default. "
+                      "Reconcile the destination by hand, then re-run.")
+                sys.exit(2)
+            if existing is not None:
+                value = existing = None
+                skipped += 1
+                print(f"  already in sync: {dpath}/{dname}")  # names only, never values
+                continue
+            upsert(token, FLEETOPS, dpath, dname, value)
+            value = existing = None
+        except urllib.error.HTTPError as e:
+            print(f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): HTTP {e.code}. "
+                  f"{done} copied, {skipped} already in sync. Re-run reconciles; equal values are skipped.")
+            sys.exit(1)
+        except Exception as e:
+            print(f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): {type(e).__name__}. "
+                  f"{done} copied, {skipped} already in sync. Re-run reconciles; equal values are skipped.")
+            sys.exit(1)
         done += 1
         print(f"  copied {done}/72: {dpath}/{dname}")  # names only, never values
-    print("Done: 72 copies applied. Sources unmodified; nothing deleted.")
+    print(f"Done: {done} copies applied, {skipped} already in sync. Sources unmodified; nothing deleted.")
 
 if __name__ == "__main__":
     main()
