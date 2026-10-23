@@ -878,4 +878,4 @@ def compose_route(
     return "\n".join(lines)
 
 
-OWNER_ACK = "Queued for your confirmation in a Claude session."
+OWNER_ACK = "Queued for your confirmation in one of this seat's next sessions."
