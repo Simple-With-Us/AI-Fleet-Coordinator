@@ -1920,6 +1920,69 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertEqual(send.call_count, 0)
         self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
 
+    def test_a_first_run_with_no_registry_file_is_still_asked(self):
+        # A fresh host has no registry file at all:  a missing file reads as "no letters
+        # yet", not as an unavailable registry - and the wake path still never creates one.
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = daemon._registration_db()
+        self.assertFalse(os.path.exists(db))
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 1)
+        self.assertFalse(os.path.exists(db))
+        self.assertEqual(len(D.OREG.pending_entries(db)), 1)
+
+    def test_one_rows_send_failure_does_not_stop_the_batch(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        self.write_lease("L2", session_id="sess-bbbbbbbb", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        rows = [
+            {"id": "row-1", "platform": "claude", "profile_scope": "default",
+             "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "active"},
+            {"id": "row-2", "platform": "claude", "profile_scope": "default",
+             "session_id": "sess-bbbbbbbb", "seat": "CLAUDE", "status": "active"},
+        ]
+        with mock.patch.object(
+            D.ORASK, "send_location_question",
+            side_effect=[RuntimeError("boom"), {"status": "sent"}],
+        ) as send:
+            daemon.maybe_ask_registrations(rows, {})
+        self.assertEqual(send.call_count, 2)
+        pending = D.OREG.pending_entries(db)
+        self.assertEqual(len(pending), 2)
+        stamped = [e for e in pending if e.get("notified_at")]
+        self.assertEqual(len(stamped), 1)
+
+    def test_evidence_comes_from_the_validated_instance_not_the_environment(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        daemon.env["AGENT_SYNC_INSTANCE"] = "server"  # contradicts the validated config
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(D.OREG.pending_entries(db)[0].get("evidence_location"), "mac")
+
+    def test_a_broken_registry_fails_closed_and_names_the_path(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        db = daemon._registration_db()
+        with open(db, "wb") as handle:
+            handle.write(b"this is not a sqlite database")
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertFalse(consumed)
+        self.assertEqual(send.call_count, 0)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("operator-registration-registry-unavailable", log)
+        self.assertIn(db, log)
+        self.assertEqual(len(D.OREG.pending_entries(db)), 1)
+
     def test_a_failed_send_is_retried_on_the_next_pass(self):
         self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
         daemon = self.daemon()
@@ -1941,7 +2004,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         entry = self._pending_entry(daemon)
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
             consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"], "sender_id": 12},
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
                 2000.0,
                 channel="agent-sync",
                 topic="AFC Work",
@@ -1960,7 +2023,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         entry = self._pending_entry(daemon)
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
             consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"], "sender_id": 12},
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
                 2000.0,
                 channel="agent-sync",
                 topic="Elsewhere",
@@ -1980,7 +2043,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         # The answer contradicting the local-discovery evidence is a conflict:  nothing registers.
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
             consumed = daemon._maybe_registration_answer(
-                {"content": "server %s" % entry["entry_id"], "sender_id": 12},
+                {"content": "server %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
                 2000.0,
                 channel="agent-sync",
                 topic="AFC Work",
@@ -2006,7 +2069,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             ][0]
             self.assertEqual(remote_entry.get("evidence_location"), "")
             consumed = daemon._maybe_registration_answer(
-                {"content": "server %s" % remote_entry["entry_id"], "sender_id": 12},
+                {"content": "server %s" % remote_entry["entry_id"], "sender_id": 12, "client": "website"},
                 2000.0,
                 channel="agent-sync",
                 topic="Cursor Cloud",
@@ -2112,6 +2175,33 @@ class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
         )
         self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
 
+    def test_the_owner_through_an_unpinned_client_may_not_answer(self):
+        # An owner API key driving a script carries the owner's sender id but not a
+        # pinned owner client - the fleet-wide owner_of check must gate the answer.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "ZulipPython"},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertFalse(consumed)
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+
+    def test_no_pinned_owner_denies_even_the_chats_own_seat_bot(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242)
+        daemon.config.owner_user_id = 0
+        self.assertFalse(self._answer(daemon, entry, 4242))
+        self.assertFalse(self._answer(daemon, entry, 12))
+        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
+
     def test_an_answer_with_no_sender_is_not_consumed(self):
         daemon = self.daemon()
         entry = self._pending_entry(daemon)
@@ -2176,7 +2266,7 @@ class OperatorRegistrationRouteFollowTests(DaemonHarness):
         self.assertEqual(send.call_count, 0)  # already notified; the question moved with the topic
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
             consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry_id, "sender_id": 12},
+                {"content": "mac %s" % entry_id, "sender_id": 12, "client": "website"},
                 2000.0,
                 channel="agent-sync",
                 topic="AFC Work Renamed",

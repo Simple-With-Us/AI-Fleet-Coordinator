@@ -278,6 +278,33 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
         self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
         self.assertEqual(working.posts, [])
 
+    def test_a_rate_limit_is_retryable_and_the_key_is_released(self) -> None:
+        limited = _StubClient(
+            post_error=Z.ApiError("rate limited", code="RATE_LIMIT_HIT", status=429)
+        )
+        first = self.send(client=limited)
+        self.assertEqual(first["status"], "refused")
+        self.assertEqual(first["delivery_status"], OC.DELIVERY_RETRYABLE)
+        # The refusal was definite (no post happened), so the very next pass may post.
+        working = _StubClient(messages=[])
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(len(working.posts), 1)
+
+    def test_a_server_error_leaves_delivery_unknown_and_keeps_the_key(self) -> None:
+        failing = _StubClient(
+            post_error=Z.ApiError("internal error", status=503)
+        )
+        first = self.send(client=failing)
+        self.assertEqual(first["status"], "refused")
+        self.assertEqual(first["delivery_status"], OC.DELIVERY_UNKNOWN)
+        # A 5xx can follow a processed create, so no blind repost:  the read-back
+        # reconciliation decides - proven absent here, so exactly one resend.
+        working = _StubClient(messages=[])
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(len(working.posts), 1)
+
     def test_an_unknown_delivery_is_resent_once_proven_absent(self) -> None:
         failing = _StubClient(
             post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)

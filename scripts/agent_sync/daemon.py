@@ -4037,7 +4037,10 @@ class Daemon:
         """
         if platform == "cursor-cloud":
             return ""
-        instance = str(self.env.get("AGENT_SYNC_INSTANCE") or "").strip().lower()
+        # The daemon's own instance from validated config, not the raw environment:
+        # config load already refused anything outside INSTANCES, so this cannot be
+        # empty-or-foreign while the daemon runs.
+        instance = str(getattr(self.config, "instance", "") or "").strip().lower()
         return instance if instance in ("mac", "server") else ""
 
     def _registration_lease_topics(self, row: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -4115,6 +4118,21 @@ class Daemon:
             self._oreg_db = db
         return db
 
+    @staticmethod
+    def _registrations(db: str, platform: str, session_id: str) -> list[dict[str, Any]]:
+        """The registry scan for the ask/answer flow;  a MISSING file reads as empty.
+
+        First run:  nothing has ever registered, so the file does not exist yet, and the
+        registry layer fails closed on that (its wake-path rule:  never let a lookup
+        bring a registry into being).  At this boundary a missing file is the truthful
+        "no letters yet" - asking is harmless, and the answer path's register creates
+        the file.  A file that exists but cannot be read still raises
+        RegistryUnavailable:  that is a broken identity source, not an empty one.
+        """
+        if not os.path.isfile(str(db)):
+            return []
+        return OR.registrations_for_native_id(db, platform, session_id)
+
     def maybe_ask_registrations(
         self, rows: list[dict[str, Any]], labels: dict[str, tuple[str, str]]
     ) -> None:
@@ -4165,7 +4183,7 @@ class Daemon:
                         evidence_location=self._registration_evidence(platform),
                         route=self._registration_route(row, topics),
                         route_topics=topics,
-                        registrations=lambda pf, sid: OR.registrations_for_native_id(db, pf, sid),
+                        registrations=lambda pf, sid: self._registrations(db, pf, sid),
                     )
                 except Exception as exc:
                     self.log.write(
@@ -4204,17 +4222,30 @@ class Daemon:
                         session_id=session_id,
                     )
                     continue
-                sent = ORASK.send_location_question(
-                    question=out["question"],
-                    entry_id=entry["entry_id"],
-                    channel=str(route["channel"]),
-                    topic=str(route["topic"]),
-                    env=self.env,
-                    home=self.home,
-                    owner_user_id=owner,
-                )
-                if sent.get("status") == "sent":
-                    OREG.mark_notified(db, entry["entry_id"])
+                try:
+                    sent = ORASK.send_location_question(
+                        question=out["question"],
+                        entry_id=entry["entry_id"],
+                        channel=str(route["channel"]),
+                        topic=str(route["topic"]),
+                        env=self.env,
+                        home=self.home,
+                        owner_user_id=owner,
+                    )
+                    if sent.get("status") == "sent":
+                        OREG.mark_notified(db, entry["entry_id"])
+                except Exception as exc:
+                    # One row's failure never aborts the rest of the batch:  each
+                    # question is independent, and the un-stamped entry is retried on
+                    # the next pass.
+                    self.log.write(
+                        "operator-registration-ask",
+                        entry_id=entry.get("entry_id"),
+                        platform=platform,
+                        status="error",
+                        error=type(exc).__name__,
+                    )
+                    continue
                 self.log.write(
                     "operator-registration-ask",
                     entry_id=entry["entry_id"],
@@ -4248,12 +4279,14 @@ class Daemon:
         register a false one where evidence exists.
         """
         try:
+            # The cheap pure check comes first:  almost every routed message is not an
+            # answer, so the queue file is only opened for text that parses as one.
+            parsed = OREG.parse_answer(message.get("content"))
+            if parsed is None:
+                return False
             db = self._registration_db()
             pending = OREG.pending_entries(db)
             if not pending:
-                return False
-            parsed = OREG.parse_answer(message.get("content"))
-            if parsed is None:
                 return False
             entry = next(
                 (item for item in pending if item.get("entry_id") == parsed["entry_id"]), None
@@ -4272,10 +4305,18 @@ class Daemon:
             # may speak for the chat's location.
             sender = message.get("sender_id")
             owner = int(getattr(self.config, "owner_user_id", 0) or 0)
-            allowed = {owner} if owner else set()
-            bot_user_id = self._seat_bot_user_id(str(entry.get("seat") or ""))
-            if bot_user_id is not None:
-                allowed.add(bot_user_id)
+            # No pinned owner, no answer authority at all:  the seat-bot leg exists to
+            # speak for the owner's fleet, which is meaningless until an owner is pinned.
+            allowed: set[int] = set()
+            if owner:
+                # The owner leg keeps the fleet-wide client check:  an owner API key
+                # used by a script (sender id matches, client is not a pinned owner
+                # client) must not mint a durable session letter.
+                if self.owner_of(message):
+                    allowed.add(owner)
+                bot_user_id = self._seat_bot_user_id(str(entry.get("seat") or ""))
+                if bot_user_id is not None:
+                    allowed.add(bot_user_id)
             if not isinstance(sender, int) or isinstance(sender, bool) or sender not in allowed:
                 self.log.write(
                     "operator-registration-answer",
@@ -4288,7 +4329,7 @@ class Daemon:
                 db,
                 entry_id=parsed["entry_id"],
                 location=parsed["location"],
-                registrations=lambda pf, sid: OR.registrations_for_native_id(db, pf, sid),
+                registrations=lambda pf, sid: self._registrations(db, pf, sid),
                 register=lambda **identity: OR.register_session(
                     db, source="chat-topic-answer", issuer=OR.ISSUER_OPERATOR, **identity
                 ),
@@ -4310,6 +4351,17 @@ class Daemon:
                 delivery=sent.get("status"),
             )
             return True
+        except OR.RegistryUnavailable as exc:
+            # Fail closed and say so loudly:  no answer is registered while the identity
+            # source cannot be read (answer() checks before it registers, so nothing was
+            # written), and the named path makes the gap diagnosable.  Not SystemExit:
+            # a transiently locked SQLite must not kill the daemon for every seat.
+            self.log.write(
+                "operator-registration-registry-unavailable",
+                db=self._registration_db(),
+                error=str(exc)[:120],
+            )
+            return False
         except Exception as exc:
             self.log.write("operator-registration-answer", status="error", error=type(exc).__name__)
             return False

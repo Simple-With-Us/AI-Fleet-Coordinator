@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
+import time
 import unittest
 
 from agent_sync import operator_registration as OREG
@@ -371,6 +373,89 @@ class OperatorRegistrationRouteRefreshTest(unittest.TestCase):
         entry = OREG.pending_entries(self.db)[0]
         self.assertEqual(entry["route"], {"channel": "agent-sync", "topic": "AFC Work Renamed"})
         self.assertFalse(entry.get("route_lost"))
+
+class QueueValidationAndPruningTests(unittest.TestCase):
+    """Review findings:  full entry shape validation, bounded answer parsing, and
+    pruning of settled queue entries."""
+
+    def setUp(self) -> None:
+        self.dir = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.dir.name, "registry.db")
+
+    def tearDown(self) -> None:
+        self.dir.cleanup()
+
+    def _entry(self, **overrides):
+        entry = {
+            "entry_id": "reg-0123456789ab",
+            "platform": "claude",
+            "profile_scope": "default",
+            "session_id": "sess-aaaaaaaa",
+            "seat": "CLAUDE",
+            "state": OREG.STATE_ASKED,
+            "asked_at": 1000.0,
+            "deadline": 2000.0,
+        }
+        entry.update(overrides)
+        return entry
+
+    def _write_queue(self, entries) -> None:
+        path = OREG.queue_path(self.db)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as handle:
+            json.dump({"entries": entries}, handle)
+
+    def test_an_unknown_entry_field_is_rejected(self):
+        self._write_queue({"reg-0123456789ab": self._entry(notes="typo")})
+        with self.assertRaises(ValueError):
+            OREG.load(self.db)
+
+    def test_a_malformed_generation_is_rejected(self):
+        self._write_queue({"reg-0123456789ab": self._entry(generation=0)})
+        with self.assertRaises(ValueError):
+            OREG.load(self.db)
+
+    def test_an_unknown_location_is_rejected(self):
+        self._write_queue({"reg-0123456789ab": self._entry(location="moon")})
+        with self.assertRaises(ValueError):
+            OREG.load(self.db)
+
+    def test_a_malformed_route_shape_is_rejected(self):
+        self._write_queue(
+            {"reg-0123456789ab": self._entry(route={"channel": "c", "topic": "t", "extra": 1})}
+        )
+        with self.assertRaises(ValueError):
+            OREG.load(self.db)
+
+    def test_an_oversized_answer_is_not_parsed(self):
+        content = "pad " * 4000 + "mac reg-0123456789ab"
+        self.assertIsNone(OREG.parse_answer(content))
+        self.assertGreater(len(content.encode()), OREG.MAX_ANSWER_BYTES)
+
+    def test_two_refs_or_two_locations_early_exit(self):
+        self.assertIsNone(OREG.parse_answer("mac reg-0123456789ab reg-ffffffffffff"))
+        self.assertIsNone(OREG.parse_answer("mac server reg-0123456789ab"))
+
+    def test_the_sweep_prunes_old_settled_entries_and_keeps_the_rest(self):
+        now = time.time()
+        old = now - OREG.SETTLED_KEEP_SECONDS - 100
+        entries = {
+            "reg-0123456789ab": self._entry(
+                state=OREG.STATE_REGISTERED, answered_at=old, asked_at=old - 10, deadline=old
+            ),
+            "reg-aaaaaaaaaaaa": self._entry(
+                entry_id="reg-aaaaaaaaaaaa", state=OREG.STATE_REGISTERED, answered_at=now - 100
+            ),
+            "reg-bbbbbbbbbbbb": self._entry(
+                entry_id="reg-bbbbbbbbbbbb", state=OREG.STATE_ASKED, asked_at=old, deadline=now + 100
+            ),
+        }
+        self._write_queue(entries)
+        OREG.sweep(self.db, now=now)
+        kept = OREG.load(self.db)["entries"]
+        self.assertNotIn("reg-0123456789ab", kept)
+        self.assertIn("reg-aaaaaaaaaaaa", kept)
+        self.assertIn("reg-bbbbbbbbbbbb", kept)
 
 
 if __name__ == "__main__":

@@ -63,6 +63,10 @@ REASON_OTHER_LOCATION = "lettered_at_other_location"
 
 DEFAULT_TIMEOUT_SECONDS = 24 * 3600
 MAX_LABEL = 80
+MAX_ANSWER_BYTES = 8 * 1024
+# Settled entries stay long enough to answer "what happened" after a restart, then the
+# sweep prunes them so a long-lived daemon's queue file does not grow without bound.
+SETTLED_KEEP_SECONDS = 7 * 24 * 3600
 MAX_ID = 140
 
 
@@ -93,29 +97,89 @@ def _text(value: Any, field: str, limit: int) -> str:
     return label
 
 
+# Every field an entry may carry, with the shape each must have.  Anything else in the
+# file is corruption, not forward compatibility:  an unknown key is rejected rather than
+# carried, because a tolerated typo would silently drop a constraint a writer relied on.
+_ENTRY_ID_RE = re.compile(r"reg-[0-9a-f]{12}\Z")
+_ENTRY_STR_FIELDS = {
+    "requester": MAX_LABEL,
+    "evidence_location": MAX_LABEL,
+    "reason": MAX_LABEL,
+    "claimed_location": MAX_LABEL,
+    "location": MAX_LABEL,
+    "label": MAX_LABEL,
+}
+_ENTRY_TIME_FIELDS = ("asked_at", "deadline", "notified_at", "answered_at", "dropped_at")
+_ENTRY_KNOWN_KEYS = frozenset(
+    ("entry_id", "platform", "profile_scope", "session_id", "seat", "state", "route",
+     "route_lost", "generation")
+    + _ENTRY_TIME_FIELDS
+    + tuple(_ENTRY_STR_FIELDS)
+)
+
+
 def _validate_entry(key: str, entry: Any) -> dict[str, Any]:
     if not isinstance(entry, dict):
         raise ValueError("operator_registration: entry %s is not an object" % key)
+    unknown = sorted(str(field) for field in entry if field not in _ENTRY_KNOWN_KEYS)
+    if unknown:
+        raise ValueError(
+            "operator_registration: entry %s has unknown fields %s" % (key, ",".join(unknown))
+        )
     for field in ("entry_id", "platform", "profile_scope", "session_id", "seat", "state"):
         if not isinstance(entry.get(field), str) or not entry[field]:
             raise ValueError("operator_registration: entry %s has no %s" % (key, field))
+    for field in ("entry_id", "platform", "profile_scope", "session_id", "seat"):
+        if len(entry[field]) > MAX_LABEL and field != "session_id":
+            raise ValueError("operator_registration: entry %s has an overlong %s" % (key, field))
+    if not _ENTRY_ID_RE.fullmatch(entry["entry_id"]):
+        raise ValueError("operator_registration: entry %s has a malformed id" % key)
     if entry["entry_id"] != key:
         raise ValueError("operator_registration: entry %s carries a mismatched id" % key)
     if entry["state"] not in (STATE_ASKED, STATE_REGISTERED, STATE_CONFLICT, STATE_DROPPED):
         raise ValueError("operator_registration: entry %s has an unknown state" % key)
+    for field in _ENTRY_TIME_FIELDS:
+        if field in entry:
+            value = entry[field]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise ValueError(
+                    "operator_registration: entry %s has a malformed %s" % (key, field)
+                )
     for field in ("asked_at", "deadline"):
-        if not isinstance(entry.get(field), (int, float)):
+        if field not in entry:
             raise ValueError("operator_registration: entry %s has no %s" % (key, field))
-    if "notified_at" in entry and not isinstance(entry["notified_at"], (int, float)):
-        raise ValueError("operator_registration: entry %s has a malformed notified_at" % key)
+    for field, limit in _ENTRY_STR_FIELDS.items():
+        if field in entry and (
+            not isinstance(entry[field], str) or len(entry[field]) > limit
+        ):
+            raise ValueError(
+                "operator_registration: entry %s has a malformed %s" % (key, field)
+            )
+    if entry.get("evidence_location") and entry["evidence_location"] not in LOCATION_VALUES:
+        raise ValueError(
+            "operator_registration: entry %s has an unknown evidence_location" % key
+        )
+    if "location" in entry and entry["location"] not in LOCATION_VALUES:
+        raise ValueError("operator_registration: entry %s has an unknown location" % key)
+    if "generation" in entry and (
+        isinstance(entry["generation"], bool)
+        or not isinstance(entry["generation"], int)
+        or entry["generation"] < 1
+    ):
+        raise ValueError("operator_registration: entry %s has a malformed generation" % key)
+    if "route_lost" in entry and not isinstance(entry["route_lost"], bool):
+        raise ValueError("operator_registration: entry %s has a malformed route_lost" % key)
     if "route" in entry:
         route = entry["route"]
         if (
             not isinstance(route, dict)
+            or sorted(str(k) for k in route) != ["channel", "topic"]
             or not isinstance(route.get("channel"), str)
             or not route["channel"]
+            or len(route["channel"]) > MAX_LABEL
             or not isinstance(route.get("topic"), str)
             or not route["topic"]
+            or len(route["topic"]) > MAX_LABEL
         ):
             raise ValueError("operator_registration: entry %s has a malformed route" % key)
     return dict(entry)
@@ -475,7 +539,19 @@ def sweep(registry_db: str, *, now: float | None = None) -> list[dict[str, Any]]
                 entry["dropped_at"] = round(now, 3)
                 entry["reason"] = REASON_NO_REPLY
                 dropped.append(dict(entry))
-        if dropped:
+        settled = []
+        for entry_id, entry in data["entries"].items():
+            if entry["state"] == STATE_ASKED:
+                continue
+            touched = max(
+                float(entry.get(field) or 0)
+                for field in ("answered_at", "dropped_at", "notified_at", "asked_at")
+            )
+            if now - touched > SETTLED_KEEP_SECONDS:
+                settled.append(entry_id)
+        for entry_id in settled:
+            del data["entries"][entry_id]
+        if dropped or settled:
             save(registry_db, data)
     return dropped
 
@@ -503,14 +579,30 @@ def parse_answer(content: Any) -> dict[str, str] | None:
     message follows its normal path.  Matching is case-insensitive on whole tokens only,
     so "MacBook" is not "mac" and a server named "cloudbank" is not "cloud".
     """
-    if not isinstance(content, str) or not content.strip():
+    if not isinstance(content, str):
         return None
-    refs = _ENTRY_RE.findall(content)
-    if len(set(refs)) != 1:
+    # Bound the untrusted input before any regex touches it:  an answer is a short
+    # human reply, so anything past this is not one, and no matcher may materialize it.
+    if len(content.encode("utf-8", "ignore")) > MAX_ANSWER_BYTES:
         return None
-    words = re.findall(r"[A-Za-z]+", content.casefold())
-    locations = [word for word in words if word in LOCATION_VALUES]
-    if len(set(locations)) != 1:
+    if not content.strip():
+        return None
+    refs: list[str] = []
+    for match in _ENTRY_RE.finditer(content):
+        if match.group(0) not in refs:
+            refs.append(match.group(0))
+        if len(refs) > 1:
+            return None
+    if len(refs) != 1:
+        return None
+    locations: list[str] = []
+    for match in re.finditer(r"[A-Za-z]+", content.casefold()):
+        word = match.group(0)
+        if word in LOCATION_VALUES and word not in locations:
+            locations.append(word)
+        if len(locations) > 1:
+            return None
+    if len(locations) != 1:
         return None
     return {"entry_id": refs[0], "location": locations[0]}
 

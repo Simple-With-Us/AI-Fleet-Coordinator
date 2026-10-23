@@ -323,9 +323,30 @@ def send_location_question(
             delivery_status=OC.DELIVERY_RETRYABLE,
         )
     except Z.AgentSyncError as exc:
-        # Zulip answered and refused:  the question definitely did not go out, so the
-        # key is released and the refusal is terminal.
+        # Zulip answered.  What the answer means for a later pass differs by status:
+        # - 429 rate limit:  the post was rejected before processing (the client already
+        #   spent its bounded in-request retries), so it definitely did not go out - the
+        #   key is released and a later pass may retry.
+        # - 408 or 5xx:  the server failed mid-handling, so the question may already sit
+        #   in the topic - the key is KEPT, the outcome is unknown, and the read-back
+        #   reconciliation decides any resend.
+        # - 401/403:  the credential was rejected - terminal until the credential changes.
+        # - Any other definite 4xx/odd answer:  the post was rejected - terminal.
         status = getattr(exc, "status", getattr(exc, "status_code", None))
+        if isinstance(status, int) and status == 429:
+            OC._release(path, key, at, window)
+            return _outcome(
+                "refused",
+                "the location question was rate-limited and may be retried: %s" % exc,
+                delivery_status=OC.DELIVERY_RETRYABLE,
+            )
+        if isinstance(status, int) and (status == 408 or 500 <= status < 600):
+            OC._record(path, key, at, window, 0, None, OC.DELIVERY_UNKNOWN)
+            return _outcome(
+                "refused",
+                "the location question delivery is unknown (%s): %s" % (status, exc),
+                delivery_status=OC.DELIVERY_UNKNOWN,
+            )
         OC._release(path, key, at, window)
         if status in (401, 403):
             return _outcome(
