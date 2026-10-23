@@ -695,9 +695,7 @@ def from_env() -> Relay:
         # /github-apps (their verified live location);  GIT_RELAY_SECRETS_PATH
         # overrides it for a future folder move without a code change.
         app_minter = AppTokenMinter(
-            FleetSecretsSource(
-                path=os.environ.get("GIT_RELAY_SECRETS_PATH", "/github-apps")
-            ),
+            FleetSecretsSource(path=os.environ.get("GIT_RELAY_SECRETS_PATH", "/github-apps")),
             lambda method, path, bearer, payload=None: client._call(
                 method, path, payload, bearer=bearer
             ),
