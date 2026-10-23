@@ -189,6 +189,9 @@ class MockLinear:
             "displayName": "GB-Retired",
             "active": False,
         }
+        # When True the BoardUsers listing is refused, so ownership must degrade
+        # instead of aborting the verb.
+        self.fail_users = False
         self.issues: dict = {}
         self.comments: dict = {}
         self.relations: list = []
@@ -535,12 +538,14 @@ class MockLinear:
             ]
             return {"issueLabels": self.page(nodes, v.get("first"), v.get("after"))}, None
         if op == "BoardUsers":
+            if self.fail_users:
+                return None, [{"message": "users listing refused"}]
             nodes = [
                 {
-                    "id": u["id"],
-                    "name": u["name"],
-                    "displayName": u["displayName"],
-                    "active": u["active"],
+                    "id": u.get("id"),
+                    "name": u.get("name"),
+                    "displayName": u.get("displayName"),
+                    "active": u.get("active"),
                 }
                 for u in self.users.values()
             ]
@@ -3726,6 +3731,135 @@ class OwnershipTests(BoardTest):
         self.board("claim", iss["identifier"], "--by", "CLAUDE")
         self.board("status", iss["identifier"], "completed")
         self.assertEqual(sorted(self.mock.updates[-1][1]), ["stateId"])
+
+    def test_the_users_listing_is_gated_on_the_flag(self):
+        """With the flag off no board command touches the users listing, so a
+        refused listing cannot abort anything."""
+        self.mock.fail_users = True
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE")
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+        self.board("status", iss["identifier"], "completed")
+
+    def test_a_refused_users_listing_degrades_to_a_label_only_claim(self):
+        self.mock.fail_users = True
+        iss = self.todo_issue()
+        p = self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+        self.assertIn("ownership stays off", p.stderr)
+
+    def test_case_variants_of_one_seat_assign_nobody(self):
+        """Two names differing only in case match the seat ambiguously, so the
+        claim lands on the label rather than risking the wrong user."""
+        self.mock.users["claude"] = {
+            "id": "user-claude-lower",
+            "name": "claude",
+            "displayName": "claude",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+
+    def test_an_exact_name_wins_over_case_variants(self):
+        self.mock.users["CLAUDE"] = {
+            "id": "user-claude-upper",
+            "name": "CLAUDE",
+            "displayName": "CLAUDE",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude-upper")
+
+    def test_two_users_sharing_one_name_assign_nobody(self):
+        """Two active users under one name (either could be paginated first)
+        own nothing, so the claim cannot assign the wrong one by order."""
+        self.mock.users["dup-a"] = {
+            "id": "user-dup-a",
+            "name": "Dup",
+            "displayName": "Dup",
+            "active": True,
+        }
+        self.mock.users["dup-b"] = {
+            "id": "user-dup-b",
+            "name": "Dup",
+            "displayName": "Dup",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        self.board(
+            "claim", iss["identifier"], "--by", "DUP", extra=dict(self.OWNED, AGENT_SEAT="DUP")
+        )
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:DUP", self.label_names(iss))
+
+    def test_malformed_user_records_are_skipped(self):
+        """Records with an empty id, a blank name, or a non-boolean active
+        flag are skipped with one warning;  the valid users still resolve."""
+        self.mock.users["bad-id"] = {
+            "id": "",
+            "name": "BadId",
+            "displayName": "BadId",
+            "active": True,
+        }
+        self.mock.users["bad-name"] = {
+            "id": "user-bad-name",
+            "name": "   ",
+            "displayName": "bad",
+            "active": True,
+        }
+        self.mock.users["bad-active"] = {
+            "id": "user-bad-active",
+            "name": "BadActive",
+            "displayName": "BadActive",
+            "active": "yes",
+        }
+        self.mock.users["none-id"] = {
+            "id": None,
+            "name": "NoneId",
+            "displayName": "NoneId",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        p = self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude")
+        self.assertIn("unexpected shape", p.stderr)
+
+    def test_a_cached_answer_is_used_without_a_refresh(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        # Linear gains a case variant after the snapshot:  a refresh would see
+        # two matches and assign nobody, so a mirrored owner proves the cache
+        # answered without one.
+        self.mock.users["claude"] = {
+            "id": "user-claude-lower",
+            "name": "claude",
+            "displayName": "claude",
+            "active": True,
+        }
+        iss2 = self.todo_issue(title="Second probe")
+        self.board("claim", iss2["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude")
+
+    def test_a_refused_assignee_still_lands_the_claim(self):
+        """A user deactivated after the snapshot is refused by Linear;  the
+        claim retries without the owner instead of losing state and labels."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.mock.users["Claude"]["active"] = False
+        iss2 = self.todo_issue(title="Second probe")
+        p = self.board("claim", iss2["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertEqual(first[1].get("assigneeId"), "user-claude")
+        self.assertNotIn("assigneeId", second[1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss2))
+        self.assertTrue(any("CLAIMED" in c for c in self.comments_of(iss2)))
+        self.assertIsNone(iss2.get("assignee"))
+        self.assertIn("refused the assignee", p.stderr)
 
 
 if __name__ == "__main__":

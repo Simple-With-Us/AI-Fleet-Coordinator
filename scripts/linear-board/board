@@ -1475,11 +1475,38 @@ class Workspace:
                 flat.setdefault(str(lb["name"]).lower(), lb["id"])
         labels = dict(team_labels, **workspace_labels)  # a workspace label wins over a team label
         users: dict = {}
-        for u in self.L.paginate(Q_USERS, {}, ("users",), 250):
-            # A deactivated seat must never be written onto an issue:  its
-            # user stays visible in Linear but no longer owns work.
-            if u.get("active", True) and u.get("name"):
-                users.setdefault(str(u["name"]), u["id"])
+        if env("LINEAR_BOARD_OWNER") == "1":
+            # Ownership is the only consumer of the users map, so the listing is
+            # gated on its flag:  with the flag off no board command can fail on
+            # this optional query.  When the flag is on and Linear refuses the
+            # listing, ownership degrades to nothing (the claim label stays the
+            # record) instead of aborting the verb.
+            try:
+                raw = list(self.L.paginate(Q_USERS, {}, ("users",), 250))
+            except GqlError as e:
+                warn(f"Linear would not list the workspace users; ownership stays off: {e}")
+                raw = []
+            malformed = 0
+            for u in raw:
+                if not isinstance(u, dict):
+                    malformed += 1
+                    continue
+                uid, name, active = u.get("id"), u.get("name"), u.get("active")
+                if active is False:
+                    continue  # a deactivated seat owns nothing;  the normal case, not an error
+                if active is not True or not isinstance(uid, str) or not uid.strip() \
+                        or not isinstance(name, str) or not name.strip():
+                    malformed += 1
+                    continue
+                if name in users and users[name] != uid:
+                    # Two active users share one name:  neither owns anything, so a
+                    # claim can never assign the wrong one by pagination order.
+                    users[name] = None
+                else:
+                    users.setdefault(name, uid)
+            if malformed:
+                warn(f"Linear listed {malformed} user record(s) with an unexpected shape; "
+                     "they were skipped")
         self.teams, self.labels, self.flat, self.users, self.fresh = teams, labels, flat, users, True
         write_json_file(self._path(), {"api": self.L.url, "at": time.time(), "teams": teams, "labels": labels,
                                        "flat": flat, "users": users})
@@ -1554,15 +1581,28 @@ class Workspace:
         active user by that name.  Ownership is an enhancement on top of the
         claim label, never its replacement:  a seat that has no user of its own
         keeps working exactly as before, so this returns None instead of dying."""
-        if seat not in self.users and not self.fresh:
-            self._load(refresh=True)
+        found = self._match_user(seat)
+        if found is not None or self.fresh:
+            return found
+        self._load(refresh=True)
+        return self._match_user(seat)
+
+    def _match_user(self, seat: str) -> str | None:
+        """The cached user for `seat`:  an exact name first, else the
+        case-insensitive match only when it names exactly one user.  An
+        ambiguous seat (two users sharing a name, or two names differing only
+        in case) owns nothing, so a claim can never assign the wrong user by
+        pagination order."""
         if seat in self.users:
             return self.users[seat]
         lowered = seat.strip().lower()
+        uids = set()
         for name, uid in self.users.items():
             if name.strip().lower() == lowered:
-                return uid
-        return None
+                if uid is None:
+                    return None  # one of the matches is itself ambiguous
+                uids.add(uid)
+        return uids.pop() if len(uids) == 1 else None
 
 
 # ----------------------------------------------------------------- ids
@@ -2286,13 +2326,32 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
         # A steal by a seat with no Linear user still moves the claim, so the
         # old owner's assignee goes with it instead of lingering stale.
         inp["assigneeId"] = None
+    refused_owner = False
     try:
         L.call(M_UPDATE, {"id": n["id"], "input": inp})
     except GqlError as e:
-        L.fail(f"Linear refused the claim: {e}")
+        if not inp.get("assigneeId"):
+            L.fail(f"Linear refused the claim: {e}")
+        # Ownership is an enhancement on the claim label, never its replacement:
+        # a refused assignee (a user deactivated after the users snapshot, or an
+        # id Linear no longer knows) must not lose the state change, the labels,
+        # or the CLAIMED comment.  Land the claim without the owner.
+        refused_owner = True
+        warn(f"Linear refused the assignee {owner}; the claim landed without an owner: {e}")
+        del inp["assigneeId"]
+        owner = None
+        try:
+            L.call(M_UPDATE, {"id": n["id"], "input": inp})
+        except GqlError as e2:
+            L.fail(f"Linear refused the claim: {e2}")
     landed = f"{n['identifier']} is In Progress with {by}'s claim label"
     if env("LINEAR_BOARD_OWNER") == "1":
-        landed += f" and assignee {by}" if owner else " (no Linear user for the seat)"
+        if owner:
+            landed += f" and assignee {by}"
+        elif refused_owner:
+            landed += " (Linear refused the assignee; the label holds the claim)"
+        else:
+            landed += " (no Linear user for the seat)"
     L.landed.append(landed)
     text = "CLAIMED"
     if stolen:
