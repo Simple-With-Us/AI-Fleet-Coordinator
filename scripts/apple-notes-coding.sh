@@ -14,8 +14,11 @@
 #   apple-notes-coding.sh --update --pin --pr "46" "Title" "Body text"
 #   echo "body" | apple-notes-coding.sh "Title"
 #   apple-notes-coding.sh --session "$CLAUDE_CODE_SESSION_ID" "Title" "Body"   # create/update need a session id
+#   apple-notes-coding.sh --update --existing-only "Title" "Body"   # never creates:  a missing note exits 3
 #   apple-notes-coding.sh --pin-only "Exact Note Title"
 #   apple-notes-coding.sh --unpin-only "Exact Note Title"
+#   apple-notes-coding.sh --read "Exact Note Title"                 # or --read --title "Exact Note Title"
+#   apple-notes-coding.sh --list [--query TEXT] [--limit N]         # N from 1 to 500, 100 when not given
 #   APPLE_NOTES_PIN=0 apple-notes-coding.sh "Title" ...        # skip pinning
 #   APPLE_NOTES_PIN_RETRY=0 apple-notes-coding.sh "Title" ...  # pin Shortcut: one attempt, no retry
 #   APPLE_NOTES_ACTIVATE=1 apple-notes-coding.sh "Title" ... # bring Notes to front
@@ -51,9 +54,26 @@
 # run that hit its time bound is never repeated:  a hang is a picker waiting on the owner's screen, not a
 # race, and a second run only opens a second picker.
 #
+# Read and list (AFC-486, docs/protocols/operator-notes.md):  --read and --list need no session id, never write,
+# and never bring Notes forward.  They ask Notes through JXA with the title and the query in the environment, never
+# in the script source.  --read prints one JSON object on stdout:
+#   {"title", "id", "created", "modified", "body", "plaintext"}
+# where body is the note's HTML as Notes stores it, plaintext its text, and the dates ISO-8601 in UTC.  --list
+# prints {"notes": [{"title", "id", "created", "modified"}, ...], "total": n, "truncated": bool}, newest change
+# first;  --query keeps the titles that contain TEXT (case does not matter), total counts every note that matched,
+# and truncated says the limit cut the list.  Both print plain-ASCII JSON (anything past ASCII is a \u escape).
+# --existing-only (with --update only) makes an update of a missing note exit 3 instead of creating it.
+#
+# The action log (AFC-486):  every run that gets past argument parsing appends one JSON line to
+# $APPLE_NOTES_ACTION_LOG (default ~/Library/Logs/fleet/apple-notes-actions.jsonl, "off" turns it off):  what was
+# asked, how it ended and how long it took, never a note's text.  AGENT_NOTES_CALLER (default script),
+# AGENT_NOTES_REQUEST_ID and AGENT_NOTES_REQUESTER name who asked;  the callers in scripts/agent_sync/notes.py set
+# them.  A preview (APPLE_NOTES_PRINT_HTML=1 on a create or update) writes nothing to Notes and logs nothing.
+#
 # Exit codes:  0 done (a create/update whose pin was skipped is still 0), 2 usage or session error,
-# 3 --pin-only / --unpin-only found no note with that title, 4 --pin-only / --unpin-only did not pin or
-# unpin the note.
+# 3 --pin-only / --unpin-only / --read / --update --existing-only found no note with that title, 4 --pin-only /
+# --unpin-only did not pin or unpin the note.  Anything else is a failure the script did not plan for (an
+# osascript error, say), and the code is the failing command's own.
 # Canonical policy: /Users/jay/apps/AGENT-SYNC.md § Apple Notes.
 
 set -euo pipefail
@@ -104,6 +124,223 @@ _PIN_LOCK_HELD=0
 [[ "${APPLE_NOTES_NOTIFY:-0}" == "1" || "${APPLE_NOTES_NOTIFY:-}" == "true" ]] && WANT_NOTIFY=1
 [[ "${APPLE_NOTES_NEEDS_OWNER:-0}" == "1" || "${APPLE_NOTES_NEEDS_OWNER:-}" == "true" ]] && NEEDS_OWNER=1
 
+EXISTING_ONLY=0
+LIST_QUERY=""
+LIST_LIMIT=""
+_LIST_LIMIT_SET=0
+
+# ---- The action log (AFC-486) ----------------------------------------------------------------------------------
+# One JSON line per run, appended by _action_log_line from the EXIT trap, so a run that ends anywhere after the
+# argument parsing (a usage or session refusal, a missing note, a failed pin, a success) is logged exactly once.  The
+# line never holds a note's text:  the title, ids, sizes, a hash of the HTML written, counts and flags.  The writer is
+# a short /usr/bin/python3 step:  the directory is made mode 700, the file mode 600, the append and the rotation
+# (past 5 MB the file becomes .1, .1 becomes .2 and so on to .5, and the oldest is dropped) happen under one flock on
+# a hidden lock file next to the log, and the whole step is bounded by a 5 s alarm.  It runs isolated (-I):  it needs
+# the standard library only, and no PYTHONPATH or user site-packages can slow it or change it.  Whatever goes wrong
+# there is dropped:  a log that cannot be written never changes the exit code or the output.
+APPLE_NOTES_ACTION_LOG="${APPLE_NOTES_ACTION_LOG:-${HOME:-/tmp}/Library/Logs/fleet/apple-notes-actions.jsonl}"
+#  The start time, for duration_ms.  bash 3.2 (macOS) has no EPOCHREALTIME, so perl's clock stands in for it, and
+#  whole seconds when perl is missing too.
+_LOG_T0="${EPOCHREALTIME:-}"
+if [[ -z "$_LOG_T0" ]]; then
+  _LOG_T0="$(perl -MTime::HiRes=time -e 'printf("%.6f", time)' 2>/dev/null || date +%s)"
+fi
+_LOG_INPUT_BYTES=""
+_LOG_CHANGES_FILE=""
+_NOTES_OUT=""
+_TMP_MADE=0
+_TITLE_REJECTED=0
+NOTE_ID=""
+
+#  The session a non-writing run came from, for the log only:  the same order the write check uses, never an error,
+#  and nothing that is not shaped like a session id.
+_log_session() {
+  local s="${NOTE_SESSION:-}" v pat='^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$'
+  if [[ -z "$s" ]]; then
+    s="${SESSION_ARG:-${AGENT_SESSION:-}}"
+    if [[ -z "$s" ]] && declare -F _session_envs >/dev/null; then
+      for v in $(_session_envs "$(_session_seat)"); do
+        if [[ -n "${!v:-}" ]]; then s="${!v}"; break; fi
+      done
+    fi
+  fi
+  [[ "$s" =~ $pat ]] || s=""
+  printf '%s' "$s"
+}
+
+_action_log_line() {  # $1 = the exit code the script is leaving with
+  local log="${APPLE_NOTES_ACTION_LOG:-}" outcome title="" seat="" pin="" note_id="${NOTE_ID:-}" body_file=""
+  case "$log" in ""|[Oo][Ff][Ff]) return 0 ;; esac
+  if [[ "${APPLE_NOTES_PRINT_HTML:-0}" == "1" ]] && [[ "$MODE" == "create" || "$MODE" == "update" ]]; then
+    return 0
+  fi
+  [[ -x /usr/bin/python3 ]] || return 0
+  case "$1" in
+    0) outcome=done ;;
+    2) outcome=usage ;;
+    3) outcome=not_found ;;
+    4) outcome=pin_failed ;;
+    *) outcome=error ;;
+  esac
+  #  A title the secret scan refused is never written down, and neither is the seat read out of it.
+  if [[ "$_TITLE_REJECTED" != "1" ]]; then
+    title="$TITLE"
+    declare -F _session_seat >/dev/null && seat="$(_session_seat)"
+  fi
+  [[ -n "$seat" ]] || seat="$(printf '%s' "${AGENT_SEAT:-}" | tr '[:lower:]' '[:upper:]')"
+  #  _pin_rc is set by the pin block at the end:  0 pinned, 4 pinning switched off, anything else skipped.
+  case "$MODE" in
+    create|update|pin)
+      case "${_pin_rc:-}" in
+        "") ;;
+        0) pin=pinned ;;
+        4) pin=off ;;
+        *) pin=skipped ;;
+      esac
+      ;;
+  esac
+  [[ "$note_id" == "__APPLE_NOTES_NOT_FOUND__" ]] && note_id=""
+  [[ "$_TMP_MADE" == "1" ]] && body_file="${TMP:-}"
+  _NL_LOG="$log" _NL_EXIT="$1" _NL_OUTCOME="$outcome" _NL_MODE="$MODE" _NL_TITLE="$title" \
+  _NL_NOTE_ID="$note_id" _NL_T0="$_LOG_T0" _NL_SEAT="$seat" _NL_SESSION="$(_log_session)" \
+  _NL_CALLER="${AGENT_NOTES_CALLER:-script}" _NL_REQUEST_ID="${AGENT_NOTES_REQUEST_ID:-}" \
+  _NL_REQUESTER="${AGENT_NOTES_REQUESTER:-}" _NL_INPUT_BYTES="$_LOG_INPUT_BYTES" _NL_BODY_FILE="$body_file" \
+  _NL_CHANGES_FILE="$_LOG_CHANGES_FILE" _NL_OUT_FILE="$_NOTES_OUT" _NL_PIN="$pin" _NL_NOTIFY="$WANT_NOTIFY" \
+  _NL_NEEDS_OWNER="$NEEDS_OWNER" _NL_HTML="${HTML_PATH:+1}" _NL_EXISTING_ONLY="$EXISTING_ONLY" \
+  _NL_SUMMARY="${SUMMARY_TEXT:+1}" _NL_PR="$PR_NUMBERS" \
+  /usr/bin/python3 -I -c '
+import fcntl, hashlib, json, os, signal, socket, time, uuid
+from datetime import datetime
+
+signal.alarm(5)
+E = os.environ.get
+ROTATE_AT = 5 * 1024 * 1024
+KEEP = 5
+
+
+def num(name):
+    try:
+        return int(str(E(name, "")).strip())
+    except ValueError:
+        return None
+
+
+def short(name, cap):
+    value = E(name, "")
+    return value[:cap] if value else None
+
+
+mode = E("_NL_MODE", "")
+outcome = E("_NL_OUTCOME", "")
+writes = mode in ("create", "update")
+try:
+    duration = max(0, int(round((time.time() - float(E("_NL_T0", "").replace(",", "."))) * 1000)))
+except ValueError:
+    duration = None
+entry = {
+    "v": 1,
+    "id": uuid.uuid4().hex,
+    "ts": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+    "host": socket.gethostname().split(".")[0] or None,
+    "mode": mode or None,
+    "title": short("_NL_TITLE", 200),
+    "note_id": short("_NL_NOTE_ID", 200),
+    "exit": num("_NL_EXIT"),
+    "outcome": outcome,
+    "duration_ms": duration,
+    "seat": short("_NL_SEAT", 64),
+    "session": short("_NL_SESSION", 128),
+    "caller": short("_NL_CALLER", 40) or "script",
+    "request_id": short("_NL_REQUEST_ID", 128),
+    "requester": short("_NL_REQUESTER", 64),
+    "input_bytes": num("_NL_INPUT_BYTES") if writes else None,
+    "body_bytes": None,
+    "body_sha256": None,
+    "reformatted": None,
+    "pin": short("_NL_PIN", 16),
+    "flags": {
+        "notify": E("_NL_NOTIFY") == "1",
+        "needs_owner": E("_NL_NEEDS_OWNER") == "1",
+        "html": E("_NL_HTML") == "1",
+        "existing_only": E("_NL_EXISTING_ONLY") == "1",
+        "summary": E("_NL_SUMMARY") == "1",
+        "pr": short("_NL_PR", 80),
+    },
+}
+#  The size and hash of the HTML the script handed Notes:  enough to tell two writes apart, never the text.
+if writes and E("_NL_BODY_FILE") and outcome not in ("usage", "not_found"):
+    try:
+        with open(E("_NL_BODY_FILE"), "rb") as fh:
+            body = fh.read()
+        entry["body_bytes"] = len(body)
+        entry["body_sha256"] = hashlib.sha256(body).hexdigest()
+    except OSError:
+        pass
+if writes and E("_NL_CHANGES_FILE"):
+    try:
+        with open(E("_NL_CHANGES_FILE")) as fh:
+            dates, gaps = fh.read().split()
+        entry["reformatted"] = {"dates": int(dates), "gaps": int(gaps)}
+    except (OSError, ValueError):
+        pass
+if mode in ("read", "list"):
+    key = "bytes" if mode == "read" else "count"
+    entry[key] = None
+    if outcome == "done" and E("_NL_OUT_FILE"):
+        try:
+            with open(E("_NL_OUT_FILE"), encoding="utf-8") as fh:
+                data = json.load(fh)
+            if mode == "read":
+                entry["note_id"] = str(data.get("id") or "")[:200] or None
+                entry[key] = len(str(data.get("body") or "").encode("utf-8"))
+            else:
+                entry[key] = len(data.get("notes") or [])
+        except (OSError, ValueError, AttributeError):
+            pass
+
+path = os.path.abspath(os.path.expanduser(E("_NL_LOG", "")))
+folder = os.path.dirname(path)
+if not os.path.isdir(folder):
+    os.makedirs(folder, mode=0o700)
+    os.chmod(folder, 0o700)
+line = (json.dumps(entry, separators=(",", ":")) + "\n").encode("utf-8")
+lock = os.open(os.path.join(folder, "." + os.path.basename(path) + ".lock"), os.O_WRONLY | os.O_CREAT, 0o600)
+try:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        size = os.stat(path).st_size
+    except OSError:
+        size = 0
+    if size >= ROTATE_AT:
+        for n in range(KEEP, 0, -1):
+            older = path + "." + str(n - 1) if n > 1 else path
+            if os.path.exists(older):
+                os.replace(older, path + "." + str(n))
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, line)
+    finally:
+        os.close(fd)
+finally:
+    os.close(lock)
+' </dev/null >/dev/null 2>&1 || true
+}
+
+#  The one EXIT trap:  the log line first (it reads the temp files), then the temp files go.  It leaves with the
+#  code the script was leaving with, whatever the log did.
+_on_exit() {
+  local rc=$?
+  set +eu
+  _action_log_line "$rc" </dev/null >/dev/null 2>&1
+  if [[ "${_TMP_MADE:-0}" == "1" ]]; then
+    rm -f "$TMP" "$TITLE_FILE" 2>/dev/null
+  fi
+  [[ -z "${_LOG_CHANGES_FILE:-}" ]] || rm -f "$_LOG_CHANGES_FILE" 2>/dev/null
+  [[ -z "${_NOTES_OUT:-}" ]] || rm -f "$_NOTES_OUT" 2>/dev/null
+  exit "$rc"
+}
+
 # Robust argument parsing supporting flags in any order
 while [[ $# -gt 0 ]]; do
   case "${1:-}" in
@@ -117,6 +354,29 @@ while [[ $# -gt 0 ]]; do
       ;;
     --update)
       MODE=update
+      shift || true
+      ;;
+    --read)
+      MODE=read
+      shift || true
+      ;;
+    --list)
+      MODE=list
+      shift || true
+      ;;
+    --existing-only)
+      EXISTING_ONLY=1
+      shift || true
+      ;;
+    --query)
+      shift || true
+      LIST_QUERY="${1:-}"
+      shift || true
+      ;;
+    --limit)
+      shift || true
+      LIST_LIMIT="${1:-}"
+      _LIST_LIMIT_SET=1
       shift || true
       ;;
     --pin)
@@ -166,7 +426,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     -*)
       echo "unknown flag: $1" >&2
-      echo "usage: $0 [--update] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path|--session id] \"Title\" [body]" >&2
+      echo "usage: $0 [--update [--existing-only]] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path|--session id] \"Title\" [body]  |  $0 --read [--title] \"Title\"  |  $0 --list [--query text] [--limit 1-500]" >&2
       exit 2
       ;;
     *)
@@ -180,8 +440,37 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "$TITLE" ]]; then
-  echo "usage: $0 [--update] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path] \"Title\" [body]" >&2
+# From here on every exit goes through the trap:  one action-log line, then the temp files go.
+trap _on_exit EXIT
+
+if [[ "$EXISTING_ONLY" == "1" && "$MODE" != "update" ]]; then
+  echo "--existing-only goes with --update:  it makes an update of a missing note exit 3 instead of creating it" >&2
+  exit 2
+fi
+if [[ "$MODE" != "list" ]] && [[ -n "$LIST_QUERY" || "$_LIST_LIMIT_SET" == "1" ]]; then
+  echo "--query and --limit go with --list" >&2
+  exit 2
+fi
+if [[ "$MODE" == "list" ]]; then
+  _limit_re='^[1-9][0-9]{0,2}$'
+  if [[ "$_LIST_LIMIT_SET" != "1" ]]; then
+    LIST_LIMIT=100
+  elif [[ ! "$LIST_LIMIT" =~ $_limit_re ]] || (( LIST_LIMIT > 500 )); then
+    echo "--limit takes a whole number from 1 to 500" >&2
+    exit 2
+  fi
+  if [[ -n "$TITLE" || $# -gt 0 ]]; then
+    echo "--list takes no title:  --query keeps the titles that contain some text" >&2
+    exit 2
+  fi
+fi
+if [[ "$MODE" == "read" && $# -gt 0 ]]; then
+  echo "--read takes the title and nothing else" >&2
+  exit 2
+fi
+
+if [[ -z "$TITLE" && "$MODE" != "list" ]]; then
+  echo "usage: $0 [--update [--existing-only]] [--pin-only|--unpin-only|--pin|--activate|--notify|--needs-owner|--summary text|--pr \"18\"|--html path|--session id] \"Title\" [body]  |  $0 --read [--title] \"Title\"  |  $0 --list [--query text] [--limit 1-500]" >&2
   exit 2
 fi
 
@@ -197,6 +486,7 @@ _title_looks_secret() {
     '-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|ghp_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{30,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.|(api[_-]?key|secret|password|passwd|token)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_./+-]{12,}'
 }
 if _title_looks_secret "$TITLE"; then
+  _TITLE_REJECTED=1
   echo "apple-notes-coding: field 'title' rejected: it looks like it holds a credential.  The value is not echoed." >&2
   exit 2
 fi
@@ -287,6 +577,129 @@ if [[ "$MODE" == "create" || "$MODE" == "update" ]]; then
     echo "no session id.  Notes record the session they come from, so a headless resume can find this seat's session for the topic.  Pass --session <id>, or export AGENT_SESSION=<id>${_own:+ ($_seat sets $_own;  it is empty here)}.  Grok bots, MA, JET, WISE and ECHO have one thread with the owner and need none.  (seat: ${_seat:-unknown})" >&2
     exit 2
   fi
+fi
+
+# ---- Read and list (AFC-486) -----------------------------------------------------------------------------------
+# One JXA program serves both.  The heredoc is quoted, so nothing in it expands, and the title reaches it through
+# the environment (APPLE_NOTES_TITLE), never through its source.  The lookup is the one the update block's
+# `note noteTitle of codingFolder` makes, by exact name in the iCloud Coding folder.  Nothing here shows or
+# activates Notes.  A list reads each property of the whole folder in one AppleEvent (246 notes take about 70 ms),
+# and reads the ids again at the end:  a note written while the folder is read can reorder it, and then the four
+# lists no longer line up, so a changed folder is read again (three tries).  The output is plain ASCII, so it does
+# not hang on the encoding osascript writes in.
+_NOTES_NOT_FOUND="__APPLE_NOTES_NOT_FOUND__"
+_notes_jxa() {  # $1 = read or list, $2 = the title (read)
+  APPLE_NOTES_JXA_MODE="$1" APPLE_NOTES_TITLE="${2:-}" osascript -l JavaScript <<'JXA'
+ObjC.import('Foundation');
+
+function env(name) {
+  var value = ObjC.unwrap($.NSProcessInfo.processInfo.environment.objectForKey(name));
+  return (value === undefined || value === null) ? '' : String(value);
+}
+
+function ascii(text) {
+  return text.replace(/[^ -~]/g, function (c) {
+    return '\\u' + ('000' + c.charCodeAt(0).toString(16)).slice(-4);
+  });
+}
+
+function iso(when) {
+  return when ? when.toISOString() : null;
+}
+
+function run() {
+  var notFound = '__APPLE_NOTES_NOT_FOUND__';
+  var folder = Application('Notes').accounts.byName('iCloud').folders.byName('Coding');
+  if (env('APPLE_NOTES_JXA_MODE') === 'list') {
+    if (!folder.exists()) {
+      return '{"names":[],"ids":[],"created":[],"modified":[]}';
+    }
+    var notes = folder.notes;
+    for (var attempt = 0; attempt < 3; attempt++) {
+      var ids = notes.id();
+      var names = notes.name();
+      var created = notes.creationDate();
+      var modified = notes.modificationDate();
+      if (notes.id().join('\n') === ids.join('\n')) {
+        return ascii(JSON.stringify({
+          names: names, ids: ids, created: created.map(iso), modified: modified.map(iso)
+        }));
+      }
+    }
+    throw new Error('the Coding folder kept changing while it was read');
+  }
+  if (!folder.exists()) {
+    return notFound;
+  }
+  var note = folder.notes.byName(env('APPLE_NOTES_TITLE'));
+  if (!note.exists()) {
+    return notFound;
+  }
+  return ascii(JSON.stringify({
+    title: note.name(),
+    id: note.id(),
+    created: iso(note.creationDate()),
+    modified: iso(note.modificationDate()),
+    body: note.body(),
+    plaintext: note.plaintext()
+  }));
+}
+JXA
+}
+
+if [[ "$MODE" == "read" ]]; then
+  _NOTES_OUT=$(mktemp /tmp/apple-note-read.XXXXXX)
+  _jxa_rc=0
+  _notes_jxa read "$TITLE" >"$_NOTES_OUT" || _jxa_rc=$?
+  if [[ "$_jxa_rc" != "0" ]]; then
+    echo "notes: the read did not complete (osascript exit $_jxa_rc)" >&2
+    exit 1
+  fi
+  if grep -qxF "$_NOTES_NOT_FOUND" "$_NOTES_OUT"; then
+    echo "no note with that title in the Coding folder" >&2
+    exit 3
+  fi
+  cat "$_NOTES_OUT"
+  exit 0
+fi
+
+if [[ "$MODE" == "list" ]]; then
+  _NOTES_OUT=$(mktemp /tmp/apple-note-list.XXXXXX)
+  _jxa_rc=0
+  _notes_jxa list >"$_NOTES_OUT" || _jxa_rc=$?
+  if [[ "$_jxa_rc" != "0" ]]; then
+    echo "notes: the list did not complete (osascript exit $_jxa_rc)" >&2
+    exit 1
+  fi
+  #  The query, the sort and the limit, in place in the same file (the action log counts the rows from it).
+  _list_rc=0
+  APPLE_NOTES_QUERY="$LIST_QUERY" APPLE_NOTES_LIMIT="$LIST_LIMIT" /usr/bin/python3 -I -c '
+import json, os, sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as fh:
+    raw = json.load(fh)
+columns = [raw.get(key) or [] for key in ("names", "ids", "created", "modified")]
+if len(set(len(column) for column in columns)) != 1:
+    sys.exit("notes: the Coding folder changed while it was read;  run the list again")
+query = os.environ.get("APPLE_NOTES_QUERY", "").casefold()
+limit = int(os.environ.get("APPLE_NOTES_LIMIT") or 100)
+rows = [
+    {"title": title or "", "id": note_id or "", "created": created, "modified": modified}
+    for title, note_id, created, modified in zip(*columns)
+    if not query or query in (title or "").casefold()
+]
+rows.sort(key=lambda row: row["modified"] or "", reverse=True)
+with open(path, "w", encoding="utf-8") as fh:
+    json.dump({"notes": rows[:limit], "total": len(rows), "truncated": len(rows) > limit}, fh)
+    fh.write("\n")
+' "$_NOTES_OUT" || _list_rc=$?
+  if [[ "$_list_rc" != "0" ]]; then
+    echo "notes: the list could not be read back (exit $_list_rc)" >&2
+    exit 1
+  fi
+  cat "$_NOTES_OUT"
+  exit 0
 fi
 
 if [[ "$MODE" == "pin" || "$MODE" == "unpin" ]]; then
@@ -870,18 +1283,24 @@ sys.stdout.write("".join(out))
 
 BODY_HTML=""
 if [[ "$SKIP_BODY" == "0" ]]; then
+  #  _LOG_INPUT_BYTES is the size of the body as it arrived, for the action log;  working it out can never fail
+  #  the write.
   if [[ -n "$HTML_PATH" ]]; then
     [[ -f "$HTML_PATH" ]] || { echo "missing --html file: $HTML_PATH" >&2; exit 2; }
+    _LOG_INPUT_BYTES=$(wc -c <"$HTML_PATH" 2>/dev/null | tr -d ' ') || _LOG_INPUT_BYTES=""
     BODY_HTML=$(cat "$HTML_PATH" | IS_EXPLICIT_HTML=1 _convert_body_to_html)
   elif [[ -n "${1:-}" ]]; then
     BODY_TEXT="$1"
+    _LOG_INPUT_BYTES=$(printf '%s' "$BODY_TEXT" | wc -c | tr -d ' ') || _LOG_INPUT_BYTES=""
     BODY_HTML=$(printf '%s' "$BODY_TEXT" | _convert_body_to_html)
   elif [[ ! -t 0 ]]; then
     # Wait up to 0.5s for data to avoid hanging forever if called in an environment
     # with an open pipe but no data (e.g. task runners, cron).
     BODY_TEXT=$(/usr/bin/python3 -c 'import sys, select; r, _, _ = select.select([sys.stdin], [], [], 0.5); sys.stdout.write(sys.stdin.read()) if r else None' 2>/dev/null)
+    _LOG_INPUT_BYTES=$(printf '%s' "$BODY_TEXT" | wc -c | tr -d ' ') || _LOG_INPUT_BYTES=""
     BODY_HTML=$(printf '%s' "$BODY_TEXT" | _convert_body_to_html)
   else
+    _LOG_INPUT_BYTES=0
     BODY_HTML="<div></div>"
   fi
   BODY_HTML=$(printf '%s' "$BODY_HTML" | _html_sentence_gaps)
@@ -937,7 +1356,9 @@ _send_pushover_notification() {
 }
 
 if [[ "$SKIP_BODY" == "0" ]]; then
-BODY_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" NEEDS_OWNER="$NEEDS_OWNER" SUMMARY_TEXT="$SUMMARY_TEXT" PR_NUMBERS="$PR_NUMBERS" NOTE_SESSION="$NOTE_SESSION" /usr/bin/python3 -c "
+#  The counts of what the step below reformatted reach the action log through this file:  its stdout is the note.
+_LOG_CHANGES_FILE=$(mktemp /tmp/apple-notes-changes.XXXXXX 2>/dev/null) || _LOG_CHANGES_FILE=""
+BODY_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" NEEDS_OWNER="$NEEDS_OWNER" SUMMARY_TEXT="$SUMMARY_TEXT" PR_NUMBERS="$PR_NUMBERS" NOTE_SESSION="$NOTE_SESSION" NOTES_CHANGES_FILE="$_LOG_CHANGES_FILE" /usr/bin/python3 -c "
 import sys, re, html, os
 from datetime import datetime
 body = sys.stdin.read()
@@ -1126,6 +1547,14 @@ if _changes['dates']:
 if _changes['gaps']:
     n = _changes['gaps']
     sys.stderr.write('notes: reformatted:  ' + str(n) + ' sentence gap' + ('' if n == 1 else 's') + ' had one space and ' + ('was' if n == 1 else 'were') + ' widened;  put two spaces after a sentence' + chr(10))
+# The same counts for the action log (AFC-486), as two numbers in a file of their own.  A file that cannot be
+# written costs the log its reformatted field and nothing else.
+if os.environ.get('NOTES_CHANGES_FILE'):
+    try:
+        with open(os.environ['NOTES_CHANGES_FILE'], 'w') as _fh:
+            _fh.write(str(len(_changes['dates'])) + ' ' + str(_changes['gaps']) + chr(10))
+    except OSError:
+        pass
 
 extra_blocks = ''
 if needs_owner:
@@ -1152,13 +1581,17 @@ TMP=$(mktemp /tmp/apple-note.XXXXXX)
 printf '%s' "$FULL_HTML" >"$TMP"
 TITLE_FILE=$(mktemp /tmp/apple-note-title.XXXXXX)
 printf '%s' "$TITLE" >"$TITLE_FILE"
-trap 'rm -f "$TMP" "$TITLE_FILE"' EXIT
+#  _on_exit (the one EXIT trap, set after the argument parsing) removes both files, after the action log has read
+#  the size and hash of the HTML from $TMP.
+_TMP_MADE=1
 
 if [[ "$MODE" == "update" ]]; then
   #  Unquoted so ${NOTES_APPLE_EVENT_TIMEOUT_S} expands:  in a quoted heredoc osascript would
   #  receive the literal text and the "with timeout of" clause would not compile.  The block still
   #  reads its paths through "system attribute",  so nothing else here expands.
-  NOTE_ID=$(TITLE_FILE="$TITLE_FILE" TMP="$TMP" WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<EOF
+  #  --existing-only (AFC-486):  a missing note, or a missing Coding folder, answers the not-found sentinel instead
+  #  of being made, inside the same AppleEvent that would have written it, so no other write can land in between.
+  NOTE_ID=$(TITLE_FILE="$TITLE_FILE" TMP="$TMP" WANT_ACTIVATE="$WANT_ACTIVATE" EXISTING_ONLY="$EXISTING_ONLY" osascript <<EOF
 set titlePath to POSIX file (system attribute "TITLE_FILE")
 set noteTitle to read titlePath as «class utf8»
 set htmlPath to POSIX file (system attribute "TMP")
@@ -1173,6 +1606,7 @@ tell application "Notes"
     set codingFolder to folder "Coding" of account "iCloud"
   end try
   if codingFolder is missing value then
+    if (system attribute "EXISTING_ONLY") is "1" then return "__APPLE_NOTES_NOT_FOUND__"
     tell account "iCloud"
       set codingFolder to make new folder with properties {name:"Coding"}
     end tell
@@ -1182,6 +1616,7 @@ tell application "Notes"
     set targetNote to note noteTitle of codingFolder
   end try
   if targetNote is missing value then
+    if (system attribute "EXISTING_ONLY") is "1" then return "__APPLE_NOTES_NOT_FOUND__"
     -- create if missing
     set targetNote to make new note at codingFolder with properties {body:htmlBody}
   else
@@ -1197,6 +1632,11 @@ end tell
 end timeout
 EOF
 )
+  if [[ "$NOTE_ID" == "$_NOTES_NOT_FOUND" ]]; then
+    NOTE_ID=""
+    echo "no note with that title in the Coding folder" >&2
+    exit 3
+  fi
   echo "updated note id=$NOTE_ID in folder Coding"
 else
   NOTE_ID=$(WANT_ACTIVATE="$WANT_ACTIVATE" osascript <<EOF

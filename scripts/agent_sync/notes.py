@@ -1,34 +1,30 @@
-"""Apple Notes from any transport (AFC-331, docs/protocols/per-call-identity.md section 5).
+"""Apple Notes from any host (AFC-486, docs/protocols/operator-notes.md).
 
-Notes live in the Mac's iCloud `Coding` folder and only the Mac can write them, through
-scripts/apple-notes-coding.sh.  This module is the shared half of the two ways a request gets there:
+Notes live in the Mac's iCloud `Coding` folder and only the Mac can touch them, through
+scripts/apple-notes-coding.sh.  This module is the half every caller shares:
 
-  direct   the Mac runs the script itself (`run_direct`).  The title, flags and mode go on the command
-           line;  the body NEVER does:  markdown goes in on standard input and HTML through a mode-600
-           temporary file named by --html, so no note text appears in a process listing.
-  relay    everywhere else posts an envelope to `#notes-relay` as the claimed identity, topic = the note
-           title (cut to Zulip's 60 characters, the full title is inside the envelope).  The Mac
-           listener (notes_relay.py) validates it and runs the same direct path.
+  direct    the Mac runs the script itself (`run_direct`):  simple-notes and the stdio MCP on a Mac, and
+            the Mac runner (notes_runner.py) for everyone else.  The title, mode and flags go on the
+            command line;  the body NEVER does:  markdown goes in on standard input and HTML through a
+            mode-600 temporary file named by --html, so no note text appears in a process listing.
+  operator  every other host sends a request object to the Operator's notes queue (notes_client.py,
+            notes_queue.py), and the Mac runner takes it from there.  No Zulip message is involved.
 
-An envelope is one fenced JSON block in a message:
+A request is one JSON object (`v` 2):
 
-    ```json
-    {"v":1,"action":"create","title":"[AFC, CLAUDE] Topic","markdown":"...","flags":{"pin":true},
-     "request_id":"nr0123456789abcdef0123","identity":"CLAUDE"}
-    ```
+    {"v":2,"action":"update","request_id":"nr0123456789abcdef0123","identity":"CLAUDE",
+     "title":"[AFC, Claude] Topic","markdown":"...","flags":{"pin":true},"session":"..."}
 
-A create or update also carries `"session":"<id>"` (AFC-361, session_ids.py):  the writer's session id, which the script
-stamps in the note as a `Session:` line so a headless resume can find the session.  It is left out for the single-thread
-identities that need none.
+`check_request` validates one wherever it arrives (the caller, the Operator, the runner) and `make_request`
+builds one.  `request_problem` adds the rules that depend on who asks:  a create's title carries the caller's
+own agent name, and a create or update carries a session id (AFC-361) unless the caller is a single-thread
+identity.  Every other action may name any note in the Coding folder (owner, Oct 22:  agents fix formatting
+across every agent's notes), and an update of a note whose title does not carry the caller's name runs with
+--existing-only, so it never creates an untagged note.
 
-A body too large for one message goes up as an attached `.md` file and the envelope names it
-(`markdown_url`, `markdown_bytes`, `markdown_sha256`, `markdown` empty).
-
-What reaches the script is checked here, whoever sent it:  the title must start `[` and hold no quote,
-backslash or control character (the script puts it inside AppleScript source on its pin and notify
-paths), flags are a closed set, and a summary follows the title's character rule.  The listener adds the
-sender rules (a fleet agent bot, `identity` equal to the sender, the `Agent` in the title that sender's
-own name).
+Every title holds no quote, backslash or control character (the script puts it inside AppleScript source on
+its pin and notify paths) and never starts with `-`;  flags are a closed set, and a summary follows the
+title's character rule.  The script enforces the note's formatting and logs every run (`read_action_log`).
 
 Python 3.11+, standard library only.
 """
@@ -46,9 +42,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
-from collections.abc import Callable, Mapping
-from datetime import datetime
+from collections.abc import Callable, Iterable, Mapping
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -56,18 +53,19 @@ from zoneinfo import ZoneInfo
 from . import identity as I
 from . import session_ids as SID
 
-RELAY_CHANNEL = "notes-relay"
-ENVELOPE_VERSION = 1
-ACTIONS = ("create", "update", "pin", "unpin")
-TOPIC_MAX = 60  # Zulip's topic limit, in characters
+REQUEST_VERSION = 2
+ACTIONS = ("create", "update", "pin", "unpin", "read", "list")
+WRITE_ACTIONS = ("create", "update", "pin", "unpin")
+BODY_ACTIONS = ("create", "update")
+FORMATS = ("html", "text", "raw")
 TITLE_MAX = 200
 SUMMARY_MAX = 280
 PR_MAX = 40
-MARKDOWN_MAX = 500_000  # characters a tool accepts;  an upload carries at most UPLOAD_MAX bytes
+QUERY_MAX = 100
+LIST_DEFAULT, LIST_MAX = 100, 500
+MARKDOWN_MAX = 500_000  # characters a tool accepts
 BODY_TOO_LONG = "the note body is longer than %d characters;  nothing was written"
-UPLOAD_MAX = 1024 * 1024
-INLINE_JSON_MAX = 8500  # an envelope longer than this (as JSON) travels as an uploaded .md file
-ENVELOPE_PARSE_MAX = 20_000  # the longest message body the parser looks at
+READ_MAX = 2_000_000  # characters of a note a read returns;  past it the body is cut and `truncated` is true
 SCRIPT_NAME = "apple-notes-coding.sh"
 #  The helper wraps its Notes calls in a 900 s AppleEvent timeout (NOTES_APPLE_EVENT_TIMEOUT_S in
 #  scripts/apple-notes-coding.sh),  because a body the size of the master list takes longer than
@@ -82,16 +80,15 @@ SCRIPT_NAME = "apple-notes-coding.sh"
 #  instead of outliving it by the wait.
 #  scripts/test_apple_notes_timeout.py holds the two together (AFC-436).
 SCRIPT_TIMEOUT_S = 1200.0
+READ_TIMEOUT_S = 180.0  # a read or a list changes nothing, so it is not held to the write cap
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$")
-UPLOAD_PATH_RE = re.compile(r"^/user_uploads/[A-Za-z0-9_./-]{1,200}$")
+SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9_-]{0,31}$")
 FLAG_NAMES = ("pin", "notify", "needs_owner", "summary", "pr", "html")
-_TITLE_BAD_RE = re.compile(r'["\\\x00-\x1f\x7f\x85\u2028\u2029]')
+_TITLE_BAD_RE = re.compile(r'["\\\x00-\x1f\x7f\x85  ]')
 _PR_RE = re.compile(r"^[0-9#, ]{1,40}$")
 _BRACKET_RE = re.compile(
     r"\[([A-Z0-9]+(?:, [A-Z0-9]+)*), ([A-Za-z][A-Za-z0-9]*(?:[ -][A-Za-z0-9]+)*)\] \S.*"
 )
-_FENCE_OPEN = "```json\n"
-_FENCE_CLOSE = "\n```"
 
 # Script exit codes (scripts/apple-notes-coding.sh header).
 EXIT_USAGE, EXIT_NOT_FOUND, EXIT_PIN_FAILED = 2, 3, 4
@@ -112,22 +109,9 @@ CHILD_ENV_KEYS = (
     #  allow-list is otherwise the only thing that decides reachability, and this
     #  caller drives the script under a lock and the SCRIPT_TIMEOUT_S cap (AFC-431).
     "APPLE_NOTES_PIN_RETRY",
+    #  Not a credential:  where the script writes its action log (AFC-486), or `off`.
+    "APPLE_NOTES_ACTION_LOG",
 )
-
-# Reactions the listener sets and `notes_status` reads (Zulip unicode codes and the names tried to set them).
-DONE_EMOJI = ("check", "white_check_mark")
-REFUSED_EMOJI = ("cross_mark", "x")
-DONE_CODES = frozenset({"2705"})
-REFUSED_CODES = frozenset({"274c"})
-DONE_NAMES = frozenset({"check", "white_check_mark", "check_mark_button"})
-REFUSED_NAMES = frozenset({"cross_mark", "x", "negative_squared_cross_mark"})
-REFUSAL_PREFIX = "notes-relay refused "
-
-
-def refusal_label(request_id: str) -> str:
-    """The exact start of a refusal reply:  the prefix, the label and the colon that ends it.  Matching this and not
-    the bare prefix keeps request `abcdefgh` from matching the reply for `abcdefgh2`."""
-    return "%s%s:" % (REFUSAL_PREFIX, request_id)
 
 
 class NotesError(Exception):
@@ -145,9 +129,10 @@ class NotesError(Exception):
 # --------------------------------------------------------------------------------------------
 
 
-def check_title(raw: Any) -> str:
-    """The title as the script will see it, or NotesError.  It must start `[`, so a title can never read
-    as a flag or an empty note name, and holds no character that is special inside AppleScript source."""
+def check_title(raw: Any, action: str = "create") -> str:
+    """The title as the script will see it, or NotesError.  Any title holds no character that is special inside
+    AppleScript source and never starts with `-`, so it can never read as a flag.  A create's title must also read
+    `[TEAM_KEY, Agent] Topic`;  every other action names an existing note, whatever its title."""
     if not isinstance(raw, str):
         raise NotesError("invalid_argument", "argument 'title' must be a string")
     title = raw.strip()
@@ -158,27 +143,26 @@ def check_title(raw: Any) -> str:
             "invalid_argument",
             "argument 'title' is %d characters; at most %d" % (len(title), TITLE_MAX),
         )
-    if not title.startswith("["):
-        raise NotesError(
-            "invalid_argument",
-            "argument 'title' must start with [TEAM_KEY, Agent], such as \"[AFC, Claude] Topic\"",
-        )
     if _TITLE_BAD_RE.search(title):
         raise NotesError(
             "invalid_argument",
             "argument 'title' must not hold a double quote, a backslash or a control character",
         )
-    if title_agent(title) is None:
+    if title.startswith("-"):
+        raise NotesError("invalid_argument", "argument 'title' must not start with -")
+    if action == "create" and title_agent(title) is None:
         raise NotesError(
             "invalid_argument",
-            'argument \'title\' must read "[TEAM_KEY, Agent] Topic", such as "[AFC, Claude] Topic"',
+            'a new note\'s title must read "[TEAM_KEY, Agent] Topic", such as "[AFC, Claude] Topic"',
         )
     return title
 
 
 def check_flags(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     """A closed set of flags, each of its own type.  `pin` defaults to true (the script's own default);
-    `activate` is not a flag at all:  a relay request must never steal the owner's focus."""
+    `activate` is not a flag at all:  a request must never steal the owner's focus.  A flag set to its default
+    (pin true;  notify, needs_owner and html false) is left out, so the same request reads the same, and
+    request_digest matches, whether a tool's schema filled the default in or simple-notes left it unset."""
     flags = dict(raw or {})
     unknown = [name for name in flags if name not in FLAG_NAMES]
     if unknown:
@@ -197,7 +181,8 @@ def check_flags(raw: Mapping[str, Any] | None) -> dict[str, Any]:
         if name in flags:
             if not isinstance(flags[name], bool):
                 raise NotesError("invalid_argument", "flag '%s' must be true or false" % name)
-            out[name] = flags[name]
+            if flags[name] is not (name == "pin"):
+                out[name] = flags[name]  # only a value that differs from the default
     if "summary" in flags and flags["summary"] is not None:
         summary = flags["summary"]
         if (
@@ -224,14 +209,48 @@ def check_flags(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     return out
 
 
-def text_fields(envelope: Mapping[str, Any]) -> dict[str, str]:
-    """Every caller-written text of an envelope, for the secret scan:  title, body and the text flags.  The
+def check_format(raw: Any) -> str:
+    if raw is None:
+        return "html"
+    if raw not in FORMATS:
+        raise NotesError("invalid_argument", "argument 'format' must be one of %s" % ", ".join(FORMATS))
+    return str(raw)
+
+
+def check_query(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if not isinstance(raw, str) or len(raw) > QUERY_MAX or _TITLE_BAD_RE.search(raw):
+        raise NotesError(
+            "invalid_argument",
+            "argument 'query' must be text of at most %d characters with no double quote, backslash or "
+            "control character" % QUERY_MAX,
+        )
+    return raw.strip()
+
+
+def check_limit(raw: Any, default: int = LIST_DEFAULT, maximum: int = LIST_MAX) -> int:
+    if raw is None:
+        return default
+    if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= maximum:
+        raise NotesError("invalid_argument", "argument 'limit' must be an integer from 1 to %d" % maximum)
+    return raw
+
+
+def check_identity(raw: Any) -> str:
+    if not isinstance(raw, str) or not SEAT_RE.fullmatch(raw):
+        raise NotesError("invalid_argument", "the request names no valid identity")
+    return raw
+
+
+def text_fields(request: Mapping[str, Any]) -> dict[str, str]:
+    """Every caller-written text of a write, for the secret scan:  title, body and the text flags.  The
     summary reaches the script on its command line (--summary has no other channel in the script) and the
     owner's notification, so the scan is its guard."""
-    flags = envelope.get("flags") or {}
+    flags = request.get("flags") or {}
     fields = {
-        "title": str(envelope.get("title") or ""),
-        "markdown": str(envelope.get("markdown") or ""),
+        "title": str(request.get("title") or ""),
+        "markdown": str(request.get("markdown") or ""),
     }
     for name in ("summary", "pr"):
         if flags.get(name):
@@ -243,14 +262,14 @@ DIRECT_TTL = 24 * 3600.0
 
 
 def direct_once(
-    store: Any, envelope: Mapping[str, Any], send: Callable[[], dict[str, Any]]
+    store: Any, request: Mapping[str, Any], send: Callable[[], dict[str, Any]]
 ) -> dict[str, Any]:
     """Run `send` (the direct runner) once per request_id, under the persistent idempotency rows every stdio
     writer of this seat shares (idem.IdemStore).  A repeat of a finished request returns its first result with
     duplicate true.  A request that may have written (a timeout, a crash) is never repeated:  it is refused as
     outcome_unknown until the owner checks the note and sends it again under a new request_id.  A failure that
     provably wrote nothing drops its row, so the same id may be tried again."""
-    key = "k:notes-direct:%s" % envelope["request_id"]
+    key = "k:notes-direct:%s" % request["request_id"]
     verdict, row = store.begin(key, DIRECT_TTL, {"tool": "notes_direct"})
     if verdict == "busy":
         raise NotesError(
@@ -264,7 +283,7 @@ def direct_once(
             "outcome_unknown",
             "an earlier direct %s with this request_id may have been interrupted, so the "
             "note may or may not have been written.  Check the Coding folder, then send it again with a new "
-            "request_id." % envelope["action"],
+            "request_id." % request["action"],
         )
     try:
         result = send()
@@ -281,6 +300,19 @@ def direct_once(
     return dict(result, duplicate=False)
 
 
+def direct_status(store: Any, request_id: str) -> dict[str, Any] | None:
+    """What this Mac's idempotency rows say about a request it wrote directly:  None when it has no row."""
+    row = store.row("k:notes-direct:%s" % request_id)
+    if not isinstance(row, Mapping):
+        return None
+    state = row.get("state")
+    if state == "sent":
+        return dict(row.get("result") or {}, request_id=request_id, status="done", transport="direct")
+    if state == "unknown":
+        return {"request_id": request_id, "status": "unknown", "transport": "direct"}
+    return {"request_id": request_id, "status": "running", "transport": "direct"}
+
+
 def new_request_id() -> str:
     return "nr" + uuid.uuid4().hex[:20]
 
@@ -291,51 +323,6 @@ def check_request_id(raw: Any) -> str:
             "invalid_argument", "argument 'request_id' must be 8 to 64 letters, digits, - or _"
         )
     return raw
-
-
-def topic_for(title: str) -> str:
-    """The Zulip topic for a note title:  the title cut to 60 characters (the envelope keeps it whole)."""
-    one_line = " ".join(title.split())
-    return one_line if len(one_line) <= TOPIC_MAX else one_line[: TOPIC_MAX - 1].rstrip() + "…"
-
-
-# --------------------------------------------------------------------------------------------
-# The relay consumer's seat (a fleet knob)
-# --------------------------------------------------------------------------------------------
-
-CONSUMER_KNOB = "NOTES_RELAY_CONSUMER"
-DEFAULT_CONSUMER = "CLAUDE"
-# Tests replace this with a callable (local_seat, refresh) -> (seat, label, local_ignored);  None means the real knob.
-KNOB_RESOLVER: Callable[[str | None, bool], tuple[str, str, bool]] | None = None
-
-
-def _knob_resolver(local: str | None, refresh: bool) -> tuple[str, str, bool]:
-    from fleet_knobs import knobs  # scripts/fleet_knobs:  absent on a host that does not ship it
-
-    if refresh:
-        knobs.refresh()
-    knob = knobs.resolve(CONSUMER_KNOB, DEFAULT_CONSUMER, "str", local=local)
-    if knob.source == "infisical":
-        label = "infisical"
-    elif knob.source == "lkg":
-        label = "last-known-good copy (stale)"
-    else:
-        label = "default %s (%s)" % (DEFAULT_CONSUMER, knob.reason or "unset")
-    return str(knob.value), label, bool(knob.local_ignored)
-
-
-def relay_consumer(
-    local_seat: str | None = None, *, refresh: bool = False
-) -> tuple[str, str, bool]:
-    """(seat, label, local_ignored):  the seat whose bot is the Notes relay consumer, from the NOTES_RELAY_CONSUMER
-    fleet knob (Infisical, through scripts/fleet_knobs).  `local_seat` is the listener.toml `[notes_relay] seat`:
-    a str knob cannot be narrowed, so a local seat that differs is ignored (`local_ignored`) and Infisical's wins.
-    When Infisical is unreachable with no last-known-good copy, or fleet_knobs is not on this host, the answer is
-    the default, CLAUDE, and the label says so (`default CLAUDE (unreachable:...)`)."""
-    try:
-        return (KNOB_RESOLVER or _knob_resolver)(local_seat, refresh)
-    except Exception:  # noqa: BLE001 - a read of a non-secret knob must never stop a tool
-        return DEFAULT_CONSUMER, "default %s (fleet_knobs unavailable)" % DEFAULT_CONSUMER, False
 
 
 # --------------------------------------------------------------------------------------------
@@ -381,7 +368,7 @@ def title_problem(
     registry_path: str | None = None,
     env: Mapping[str, str] | None = None,
 ) -> str | None:
-    """None only when the title carries the sender's canonical display name or compatible uppercase seat tag."""
+    """None only when the title carries the identity's canonical display name or compatible uppercase seat tag."""
     parts = title_agent(title)
     if parts is None:
         return 'the title must read "[TEAM_KEY, Agent] Topic" with uppercase team keys and the canonical agent display name'
@@ -391,176 +378,325 @@ def title_problem(
 
 
 # --------------------------------------------------------------------------------------------
-# Envelopes
+# Requests
 # --------------------------------------------------------------------------------------------
+
+REQUEST_FIELDS = frozenset(
+    {"v", "action", "request_id", "identity", "title", "markdown", "flags", "session", "format", "query", "limit"}
+)
+_ACTION_FIELDS = {
+    "create": frozenset({"title", "markdown", "flags", "session"}),
+    "update": frozenset({"title", "markdown", "flags", "session"}),
+    "pin": frozenset({"title"}),
+    "unpin": frozenset({"title"}),
+    "read": frozenset({"title", "format"}),
+    "list": frozenset({"query", "limit"}),
+}
 
 
 def check_session(raw: Any) -> str:
-    """The envelope's session id (AFC-361), or NotesError.  The id is not secret:  it goes on the script's command line."""
+    """The request's session id (AFC-361), or NotesError.  The id is not secret:  it goes on the script's command line."""
     try:
-        return SID.check(raw, "the envelope's session")
+        return SID.check(raw, "the request's session")
     except ValueError as exc:
         raise NotesError("invalid_argument", str(exc)) from None
 
 
-def make_envelope(
+def make_request(
     action: str,
-    title: str,
-    markdown: str,
-    flags: Mapping[str, Any],
-    request_id: str,
     identity: str,
-    session: str | None = None,
+    *,
+    request_id: str,
+    title: Any = None,
+    markdown: Any = "",
+    flags: Mapping[str, Any] | None = None,
+    session: Any = None,
+    fmt: Any = None,
+    query: Any = None,
+    limit: Any = None,
 ) -> dict[str, Any]:
-    """The envelope for one request.  `session` (AFC-361) is the writer's session id, stamped in the note so a
-    headless resume can find the session;  it is left out when None (an exempt single-thread identity, or a pin)."""
+    """The request object for one call, validated.  Only the fields its action uses are set:  `session` (AFC-361) is
+    the writer's session id, stamped in the note so a headless resume can find the session, and is left out when None
+    (an exempt single-thread identity) and for every action but create and update."""
     if action not in ACTIONS:
         raise NotesError("invalid_argument", "action must be one of %s" % ", ".join(ACTIONS))
-    if isinstance(markdown, str) and len(markdown) > MARKDOWN_MAX:
-        raise NotesError("invalid_argument", BODY_TOO_LONG % MARKDOWN_MAX)
-    envelope = {
-        "v": ENVELOPE_VERSION,
+    request: dict[str, Any] = {
+        "v": REQUEST_VERSION,
         "action": action,
-        "title": check_title(title),
-        "markdown": markdown,
-        "flags": check_flags(flags),
         "request_id": check_request_id(request_id),
-        "identity": identity,
+        "identity": check_identity(identity),
     }
-    if session is not None:
-        envelope["session"] = check_session(session)
-    return envelope
+    if action != "list":
+        request["title"] = check_title(title, action)
+    if action in BODY_ACTIONS:
+        if not isinstance(markdown, str):
+            raise NotesError("invalid_argument", "the note body must be text")
+        if len(markdown) > MARKDOWN_MAX:
+            raise NotesError("invalid_argument", BODY_TOO_LONG % MARKDOWN_MAX)
+        request["markdown"] = markdown
+        request["flags"] = check_flags(flags)
+        if session is not None:
+            request["session"] = check_session(session)
+    elif markdown or flags:
+        raise NotesError("invalid_argument", "only create and update carry a body or flags")
+    if action == "read":
+        request["format"] = check_format(fmt)
+    elif fmt is not None:
+        raise NotesError("invalid_argument", "only read takes a format")
+    if action == "list":
+        request["query"] = check_query(query)
+        request["limit"] = check_limit(limit)
+    elif query is not None or limit is not None:
+        raise NotesError("invalid_argument", "only list takes a query or a limit")
+    return request
 
 
-def envelope_json(envelope: Mapping[str, Any]) -> str:
-    """One line of ASCII JSON, so the closing fence is always the only line break after the opening one."""
-    return json.dumps(dict(envelope), ensure_ascii=True, separators=(",", ":"))
-
-
-def render_message(envelope: Mapping[str, Any]) -> str:
-    return _FENCE_OPEN + envelope_json(envelope) + _FENCE_CLOSE
-
-
-def needs_upload(envelope: Mapping[str, Any]) -> bool:
-    return len(envelope_json(envelope)) > INLINE_JSON_MAX
-
-
-def with_upload(envelope: Mapping[str, Any], *, url: str, data: bytes) -> dict[str, Any]:
-    """The envelope with its markdown replaced by a reference to the uploaded file."""
-    if not UPLOAD_PATH_RE.match(url):
-        raise NotesError("internal", "Zulip returned an upload path this relay does not accept")
-    out = dict(envelope)
-    out["markdown"] = ""
-    out["markdown_url"] = url
-    out["markdown_bytes"] = len(data)
-    out["markdown_sha256"] = hashlib.sha256(data).hexdigest()
-    return out
-
-
-class EnvelopeError(Exception):
-    """A message that is not a well-formed envelope.  The message names the rule, never the content."""
-
-
-def parse_message(content: Any) -> dict[str, Any]:
-    """The envelope inside a relay message body (a tag line may come before the fence), validated for shape
-    and for everything check_title and check_flags enforce.  Raises EnvelopeError."""
-    if not isinstance(content, str) or not content:
-        raise EnvelopeError("the message is empty")
-    if len(content) > ENVELOPE_PARSE_MAX:
-        raise EnvelopeError("the message is too long to be an envelope")
-    start = content.find(_FENCE_OPEN)
-    end = content.rfind(_FENCE_CLOSE)
-    if start < 0 or end <= start:
-        raise EnvelopeError("the message holds no ```json fence")
-    try:
-        raw = json.loads(content[start + len(_FENCE_OPEN) : end])
-    except (ValueError, RecursionError):
-        raise EnvelopeError("the fenced JSON does not parse") from None
-    if not isinstance(raw, dict):
-        raise EnvelopeError("the fenced JSON is not an object")
-    allowed = {
-        "v",
-        "action",
-        "title",
-        "markdown",
-        "flags",
-        "request_id",
-        "identity",
-        "markdown_url",
-        "markdown_bytes",
-        "markdown_sha256",
-        "session",
-    }
-    extra = [key for key in raw if key not in allowed]
+def check_request(raw: Any) -> dict[str, Any]:
+    """A request object that arrived from elsewhere (JSON), validated for shape and for everything make_request
+    enforces.  A field this version does not know, or one the action does not use, is refused."""
+    if not isinstance(raw, Mapping):
+        raise NotesError("invalid_argument", "the request must be a JSON object")
+    extra = [key for key in raw if key not in REQUEST_FIELDS]
     if extra:
-        raise EnvelopeError("the envelope has a field this relay does not know")
-    if raw.get("v") != ENVELOPE_VERSION:
-        raise EnvelopeError("unsupported envelope version")
-    try:
-        identity = raw.get("identity")
-        if not isinstance(identity, str) or not identity:
-            raise NotesError("invalid_argument", "the envelope names no identity")
-        markdown = raw.get("markdown", "")
-        if not isinstance(markdown, str) or len(markdown) > MARKDOWN_MAX:
-            raise NotesError(
-                "invalid_argument",
-                "the envelope's markdown must be text of at most %d characters" % MARKDOWN_MAX,
-            )
-        envelope = make_envelope(
-            str(raw.get("action")),
-            raw.get("title"),
-            markdown,
-            raw.get("flags") or {},
-            raw.get("request_id"),
-            identity,
-            raw.get("session"),
-        )
-        if "markdown_url" not in raw and ("markdown_bytes" in raw or "markdown_sha256" in raw):
-            raise NotesError(
-                "invalid_argument", "markdown_bytes and markdown_sha256 need a markdown_url"
-            )
-        if "markdown_url" in raw:
-            url, size, digest = (
-                raw.get("markdown_url"),
-                raw.get("markdown_bytes"),
-                raw.get("markdown_sha256"),
-            )
-            if not isinstance(url, str) or not UPLOAD_PATH_RE.match(url) or ".." in url:
-                raise NotesError("invalid_argument", "markdown_url must be a /user_uploads/ path")
-            if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= UPLOAD_MAX:
-                raise NotesError("invalid_argument", "markdown_bytes must be 1 to %d" % UPLOAD_MAX)
-            if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-                raise NotesError("invalid_argument", "markdown_sha256 must be 64 hex characters")
-            if markdown:
-                raise NotesError(
-                    "invalid_argument", "an envelope with markdown_url carries no inline markdown"
-                )
-            envelope.update(markdown_url=url, markdown_bytes=size, markdown_sha256=digest)
-    except NotesError as exc:
-        raise EnvelopeError(exc.message) from None
-    return envelope
+        raise NotesError("invalid_argument", "the request has a field this version does not know")
+    if raw.get("v") != REQUEST_VERSION:
+        raise NotesError("invalid_argument", "unsupported request version")
+    action = raw.get("action")
+    if not isinstance(action, str) or action not in ACTIONS:
+        raise NotesError("invalid_argument", "action must be one of %s" % ", ".join(ACTIONS))
+    unused = [
+        key
+        for key in raw
+        if key not in {"v", "action", "request_id", "identity"} and key not in _ACTION_FIELDS[action]
+    ]
+    if unused:
+        raise NotesError("invalid_argument", "the request has a field %s does not use" % action)
+    return make_request(
+        action,
+        raw.get("identity"),
+        request_id=raw.get("request_id"),
+        title=raw.get("title"),
+        markdown=raw.get("markdown", "") if action in BODY_ACTIONS else "",
+        flags=raw.get("flags"),
+        session=raw.get("session"),
+        fmt=raw.get("format"),
+        query=raw.get("query"),
+        limit=raw.get("limit"),
+    )
 
 
-def resolve_upload(envelope: Mapping[str, Any], fetch: Callable[[str], bytes]) -> dict[str, Any]:
-    """The envelope with its markdown filled in from the uploaded file (size and digest checked)."""
-    if "markdown_url" not in envelope:
-        return dict(envelope)
-    data = fetch(str(envelope["markdown_url"]))
-    if len(data) != envelope.get("markdown_bytes") or len(data) > UPLOAD_MAX:
-        raise NotesError(
-            "invalid_argument", "the attached markdown is not the size the envelope names"
+def request_problem(
+    request: Mapping[str, Any],
+    identity: str,
+    *,
+    env: Mapping[str, str] | None = None,
+    registry_path: str | None = None,
+) -> str | None:
+    """None when `identity` may send this request:  it is the request's own identity, a create's title carries its
+    agent name, and a create or update carries a session id unless the identity is a single-thread one."""
+    if request.get("identity") != identity:
+        return "the request names identity %s, not %s" % (str(request.get("identity"))[:32], identity)
+    if request.get("action") == "create":
+        problem = title_problem(str(request.get("title") or ""), identity, registry_path=registry_path, env=env)
+        if problem:
+            return "%s;  a new note's title carries the Agent of the identity that creates it (%s)" % (
+                problem,
+                identity,
+            )
+    if request.get("action") in BODY_ACTIONS and not request.get("session") and not SID.is_exempt(identity):
+        return SID.refusal(identity, "relay")
+    return None
+
+
+def existing_only(
+    request: Mapping[str, Any],
+    *,
+    env: Mapping[str, str] | None = None,
+    registry_path: str | None = None,
+) -> bool:
+    """True for an update of a note whose title does not carry the requester's name:  it may change that note but must
+    never create it (owner, Oct 22:  any seat may update any Coding note, and only a create makes a new one)."""
+    if request.get("action") != "update":
+        return False
+    return (
+        title_problem(
+            str(request.get("title") or ""), str(request.get("identity") or ""), registry_path=registry_path, env=env
         )
-    if hashlib.sha256(data).hexdigest() != envelope.get("markdown_sha256"):
-        raise NotesError(
-            "invalid_argument", "the attached markdown does not match the envelope's digest"
+        is not None
+    )
+
+
+def request_digest(request: Mapping[str, Any]) -> str:
+    """One request's fingerprint:  a request_id sent again with a different request is a conflict, not a repeat."""
+    return hashlib.sha256(
+        json.dumps(dict(request), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+# --------------------------------------------------------------------------------------------
+# Provenance and the body a read returns
+# --------------------------------------------------------------------------------------------
+
+_FOOTER_TEXT = (
+    r"(?:Relayed for [^<\n]{1,80}? by the notes relay on|Written for [^<\n]{1,80}? through the Operator on)"
+)
+# The footer the way Notes stores it:  its own <div> (italic text, maybe a link), after an <hr> that Notes keeps as a
+# <div><br><br></div> and any spacer rows, at the very end of the body.
+_HTML_FOOTER_RE = re.compile(
+    r"(?:\s*(?:<div>(?:\s*<br\s*/?>)+\s*</div>|<hr\s*/?>))*\s*"
+    r"<(div|p)>(?:(?!<(?:div|p)>).){0,200}?" + _FOOTER_TEXT + r"(?:(?!<(?:div|p)>).){0,600}?</\1>"
+    r"(?:\s*<div>(?:\s*<br\s*/?>)+\s*</div>)*\s*$",
+    re.S | re.I,
+)
+_MD_FOOTER_RE = re.compile(r"\n*(?:-{3,}[ \t]*\n+)?\*" + _FOOTER_TEXT + r"[^\n]*\*\s*$")
+_TEXT_FOOTER_RE = re.compile(r"(?:\n[ \t￼]*)*\n?" + _FOOTER_TEXT + r"[^\n]*\s*$")
+_SPACER_TAIL_RE = re.compile(r"(?:\s*<div>(?:\s*<br\s*/?>)+\s*</div>)+\s*$", re.I)
+_STAMP_RE = re.compile(
+    r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, "
+    r"\d{1,2}:\d{2}[ap]m(?:\s*[·|—-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?$",
+    re.I,
+)
+_SESSION_ROW_RE = re.compile(r"^Session:\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,127}(?:\s+-\s+.{0,40})?$")
+_BANNER_PREFIXES = ("⚠️ NEEDS OWNER REVIEW", "📌 Mobile Quick View:")
+_LEAD_BLOCK_RE = re.compile(
+    r"\s*(<(div|p|h[1-6])\b[^>]*>(?:(?!<(?:div|p|h[1-6])\b).)*?</\2>)", re.S | re.I
+)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def strip_provenance(body: str, is_html: bool) -> str:
+    """The body without a trailing provenance line (the Operator's, or the old relay's):  an update replaces it rather
+    than piling one on another."""
+    if is_html:
+        out = _HTML_FOOTER_RE.sub("", body)
+        out = re.sub(
+            r"(?:\s*<hr\s*/?>)?\s*<p>\s*<i>\s*" + _FOOTER_TEXT + r".{0,600}?</i>\s*</p>\s*$", "", out, flags=re.S | re.I
         )
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        raise NotesError("invalid_argument", "the attached markdown is not UTF-8") from None
-    out = {key: value for key, value in envelope.items() if not key.startswith("markdown_")}
-    out["markdown"] = text
-    return out
+        return out
+    return _MD_FOOTER_RE.sub("", body)
+
+
+def with_provenance(request: Mapping[str, Any], requester: str, *, now: datetime | None = None) -> dict[str, Any]:
+    """The request with a last line saying who asked for the write (owner, Oct 18:  a note written on another host's
+    behalf says so).  Apple Notes has no authorship, so a title like `[TEAM_KEY, Agent]` is only text.  Pin, unpin,
+    read and list carry no body and are returned unchanged."""
+    if request.get("action") not in BODY_ACTIONS:
+        return dict(request)
+    moment = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/Chicago"))
+    when = "%s %d, %d" % (moment.strftime("%a, %b"), moment.day, moment.year)  # no %-d:  not portable
+    line = "Written for %s through the Operator on %s (request %s)." % (requester, when, request["request_id"])
+    body = str(request.get("markdown") or "")
+    if (request.get("flags") or {}).get("html"):
+        footer = "<hr><p><i>%s</i></p>" % html.escape(line)
+        return dict(request, markdown=strip_provenance(body, True) + footer)
+    footer = "\n\n---\n\n*%s*" % re.sub(r"([\\*_\[\]`])", r"\\\1", line)
+    return dict(request, markdown=recover_newlines(strip_provenance(body, False)) + footer)
+
+
+def recover_newlines(text: str) -> str:
+    """The Markdown recovery apple-notes-coding.sh applies to a body with few newlines, done here first.
+
+    The script restores a body that arrived with literal `\\n` escapes, and splits a collapsed one-line body
+    at its headings and bullets, but only while the body has (almost) no newlines.  The provenance footer adds
+    newlines, which would switch that recovery off, so it is applied before the footer is appended."""
+    if "\n" not in text and r"\n" in text:
+        text = text.replace(r"\n", "\n")
+    if text.count("\n") < 3:
+        text = re.sub(r"(?<=\S)\s+(#{1,4}\s+)", r"\n\n\1", text)
+        text = re.sub(r"(?<=\S)\s+([-\*]\s+)", r"\n\1", text)
+    return text
+
+
+def _block_text(block: str) -> str:
+    return " ".join(html.unescape(_TAG_RE.sub("", block)).split())
+
+
+def content_html(body: str, title: str) -> str:
+    """A stored note's HTML without what the script writes on every save:  the title row, the date row, the Session
+    row, the needs-owner and quick-view banners, one spacer, and the provenance line at the end.  What is left is the
+    note's content, ready to send back with update and html true."""
+    rest = body
+    seen_title = seen_stamp = seen_session = seen_spacer = False
+    for _ in range(10):
+        match = _LEAD_BLOCK_RE.match(rest)
+        if not match:
+            break
+        block = match.group(1)
+        text = _block_text(block)
+        header = not seen_spacer
+        if header and not seen_title and not seen_stamp and text == " ".join(title.split()):
+            seen_title = True
+        elif header and not seen_stamp and _STAMP_RE.match(text):
+            seen_stamp = True
+        elif header and seen_stamp and not seen_session and _SESSION_ROW_RE.match(text):
+            seen_session = True
+        elif text.startswith(_BANNER_PREFIXES):
+            pass  # the needs-owner and quick-view banners follow the spacer;  the flags write them again
+        elif header and (seen_title or seen_stamp) and not text and re.search(r"<br", block, re.I):
+            seen_spacer = True  # the one spacer after the header rows
+        else:
+            break
+        rest = rest[match.end() :]
+    rest = strip_provenance(rest, True)
+    rest = _SPACER_TAIL_RE.sub("", rest)
+    return rest.strip("\n")
+
+
+def content_text(plaintext: str, title: str) -> str:
+    """content_html for the plain-text form."""
+    lines = plaintext.replace("\r\n", "\n").split("\n")
+    index = 0
+    if index < len(lines) and " ".join(lines[index].split()) == " ".join(title.split()):
+        index += 1
+    if index < len(lines) and _STAMP_RE.match(lines[index].strip()):
+        index += 1
+        if index < len(lines) and _SESSION_ROW_RE.match(lines[index].strip()):
+            index += 1
+    if index < len(lines) and not lines[index].strip() and index > 0:
+        index += 1
+    while index < len(lines) and lines[index].strip().startswith(_BANNER_PREFIXES):
+        index += 1
+    text = "\n".join(lines[index:])
+    text = _TEXT_FOOTER_RE.sub("", text)
+    return text.rstrip()
+
+
+def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> dict[str, Any]:
+    """The `note` a read answers, from the script's --read output."""
+    title = str(raw.get("title") or "")
+    if fmt == "raw":
+        body = str(raw.get("body") or "")
+    elif fmt == "text":
+        body = content_text(str(raw.get("plaintext") or ""), title)
+    else:
+        body = content_html(str(raw.get("body") or ""), title)
+    truncated = len(body) > limit
+    if truncated:
+        body = body[:limit]
+    return {
+        "title": title,
+        "id": str(raw.get("id") or ""),
+        "created": str(raw.get("created") or ""),
+        "modified": str(raw.get("modified") or ""),
+        "format": fmt,
+        "body": body,
+        "bytes": len(body.encode("utf-8")),
+        "truncated": truncated,
+    }
+
+
+def list_result(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """The answer of a list, from the script's --list output, with every row reduced to its four text fields."""
+    rows = []
+    for row in raw.get("notes") or []:
+        if isinstance(row, Mapping):
+            rows.append({key: str(row.get(key) or "")[:400] for key in ("title", "id", "created", "modified")})
+    total = raw.get("total")
+    return {
+        "notes": rows,
+        "total": total if isinstance(total, int) and not isinstance(total, bool) else len(rows),
+        "truncated": bool(raw.get("truncated")),
+    }
 
 
 # --------------------------------------------------------------------------------------------
@@ -570,7 +706,7 @@ def resolve_upload(envelope: Mapping[str, Any], fetch: Callable[[str], bytes]) -
 Runner = Callable[..., "subprocess.CompletedProcess[bytes]"]
 _RUN_LOCK = (
     threading.Lock()
-)  # one osascript at a time:  Notes.app is a single shared document store
+)  # one osascript write at a time:  Notes.app is a single shared document store
 #  How long a request waits for that lock.  The lock is held for the whole write,  and the write
 #  budget is SCRIPT_TIMEOUT_S,  so a wedged write would hold it for that long;  the wait has its
 #  own bound,  and a request that cannot get the lock is told the notes are busy instead of
@@ -684,21 +820,40 @@ def direct_available(
 
 
 def build_argv(
-    script: Path, envelope: Mapping[str, Any], html_path: str | None
+    script: Path,
+    request: Mapping[str, Any],
+    html_path: str | None,
+    *,
+    existing: bool = False,
+    caller: str = "cli",
+    requester: str | None = None,
 ) -> tuple[list[str], dict[str, str]]:
-    """The command line and the extra environment for one request.  The title, mode and flags are the only
-    text on the command line;  `html_path` is a file path, never the body."""
-    action = envelope["action"]
-    flags = envelope.get("flags") or {}
+    """The command line and the extra environment for one request.  The title, mode, flags and a list's query are the
+    only text on the command line;  `html_path` is a file path, never the body."""
+    action = request["action"]
+    flags = request.get("flags") or {}
     argv = [str(script)]
-    extra: dict[str, str] = {}
+    extra: dict[str, str] = {
+        "AGENT_NOTES_CALLER": caller,
+        "AGENT_NOTES_REQUEST_ID": str(request["request_id"]),
+    }
+    if requester:
+        extra["AGENT_NOTES_REQUESTER"] = requester
     if action == "pin":
         argv += ["--pin-only"]
     elif action == "unpin":
         argv += ["--unpin-only"]
+    elif action == "read":
+        argv += ["--read"]
+    elif action == "list":
+        argv += ["--list", "--limit", str(request.get("limit") or LIST_DEFAULT)]
+        if request.get("query"):
+            argv += ["--query", str(request["query"])]
     else:
         if action == "update":
             argv += ["--update"]
+            if existing:
+                argv += ["--existing-only"]
         if flags.get("notify"):
             argv += ["--notify"]
         if flags.get("needs_owner"):
@@ -711,16 +866,18 @@ def build_argv(
             argv += ["--html", html_path]
         if flags.get("pin") is False:
             extra["APPLE_NOTES_PIN"] = "0"
-    if envelope.get("session") and action in ("create", "update"):
+    if request.get("session") and action in BODY_ACTIONS:
         argv += [
             "--session",
-            str(envelope["session"]),
+            str(request["session"]),
         ]  # AFC-361:  not secret, so argv;  the script stamps the Session line
-    if envelope.get("identity"):
-        # The identity the request was verified for (the tool's seat, or the relay sender's bot):  the script decides
-        # its single-thread exemption from this and from nothing the caller typed.  CHILD_ENV_KEYS strips AGENT_SEAT.
-        extra["AGENT_SEAT"] = str(envelope["identity"])
-    argv += ["--title", envelope["title"]]
+    if request.get("identity"):
+        # The identity the request was verified for (the caller's own seat, or the requester a runner acts for):  the
+        # script decides its single-thread exemption from this and from nothing the caller typed.  CHILD_ENV_KEYS strips
+        # AGENT_SEAT.
+        extra["AGENT_SEAT"] = str(request["identity"])
+    if action != "list":
+        argv += ["--title", request["title"]]
     return argv, extra
 
 
@@ -748,75 +905,44 @@ def _note_id(stdout: str) -> str | None:
     return match.group(1)[:200] if match else None
 
 
-PROVENANCE_SITE = "https://simplewithus.zulipchat.com"
-
-
-def with_provenance(
-    envelope: dict, identity: str, message_id: int, site: str = PROVENANCE_SITE
-) -> dict:
-    """The envelope with a footer saying who asked for the note and where (AFC-331, owner 2026-10-18).
-
-    Apple Notes has no authorship, so a title like `[TEAM_KEY, Agent]` is only text.  The relay stamps every note it
-    creates or updates with the requesting bot and a permalink to its #notes-relay message, so any relayed note can
-    be checked against Zulip, and a note without the footer is visibly unverified.  Pin and unpin carry no body."""
-    if envelope.get("action") not in ("create", "update"):
-        return envelope
-    url = "%s/#narrow/id/%d" % (site.rstrip("/"), int(message_id))
-    now = datetime.now(ZoneInfo("America/Chicago"))
-    when = "%s %d, %d" % (now.strftime("%a, %b"), now.day, now.year)  # no %-d:  not portable
-    if (envelope.get("flags") or {}).get("html"):
-        footer = (
-            '<hr><p><i>Relayed for %s by the notes relay on %s:  <a href="%s">request message</a>.</i></p>'
-            % (html.escape(identity), when, url)
-        )
-    else:
-        footer = "\n\n---\n\n*Relayed for %s by the notes relay on %s:  [request message](%s).*" % (
-            re.sub(r"([\\*_\[\]`])", r"\\\1", identity),
-            when,
-            url,
-        )
-        return dict(
-            envelope, markdown=recover_newlines(str(envelope.get("markdown") or "")) + footer
-        )
-    return dict(envelope, markdown=str(envelope.get("markdown") or "") + footer)
-
-
-def recover_newlines(text: str) -> str:
-    """The Markdown recovery apple-notes-coding.sh applies to a body with few newlines, done here first.
-
-    The script restores a body that arrived with literal `\\n` escapes, and splits a collapsed one-line body
-    at its headings and bullets, but only while the body has (almost) no newlines.  The provenance footer adds
-    newlines, which would switch that recovery off, so the relay applies it before appending the footer."""
-    if "\n" not in text and r"\n" in text:
-        text = text.replace(r"\n", "\n")
-    if text.count("\n") < 3:
-        text = re.sub(r"(?<=\S)\s+(#{1,4}\s+)", r"\n\n\1", text)
-        text = re.sub(r"(?<=\S)\s+([-\*]\s+)", r"\n\1", text)
-    return text
-
-
 def run_direct(
-    envelope: Mapping[str, Any],
+    request: Mapping[str, Any],
     script: Path,
     *,
     env: Mapping[str, str],
     runner: Runner | None = None,
-    timeout: float = SCRIPT_TIMEOUT_S,
+    timeout: float | None = None,
+    caller: str = "cli",
+    requester: str | None = None,
+    existing: bool | None = None,
 ) -> dict[str, Any]:
-    """Run the script for `envelope` (markdown already inline).  Returns {"status": "done", "note_id": ...},
-    plus "pin_skipped": "<reason>" when the note was written but its pin was skipped,
-    or raises NotesError.  The body goes on stdin (markdown) or in a mode-600 temporary file (HTML);  never
-    on the command line.  The timeout is the budget for the whole request:  the script gets it minus
-    the wait for the run lock."""
-    action = envelope["action"]
-    flags = envelope.get("flags") or {}
-    markdown = str(envelope.get("markdown") or "")
-    if len(markdown) > MARKDOWN_MAX:
+    """Run the script for `request`.  A write answers {"status": "done", "note_id": ...}, plus "pin_skipped":
+    "<reason>" when the note was written but its pin was skipped;  a read answers {"note": {...}} and a list
+    {"notes": [...], "total": n, "truncated": bool}.  Anything else raises NotesError.
+
+    `requester` is the seat a runner writes for:  a create or update then carries the provenance line.  `existing`
+    defaults to existing_only(request).  The body goes on stdin (markdown) or in a mode-600 temporary file (HTML),
+    never on the command line.  The timeout is the budget for the whole request:  a write's script gets it minus the
+    wait for the run lock."""
+    action = request["action"]
+    if existing is None:
+        existing = existing_only(request, env=env)
+    if action in BODY_ACTIONS:
+        is_html = bool((request.get("flags") or {}).get("html"))
+        if requester:
+            request = with_provenance(request, requester)
+        else:
+            request = dict(request, markdown=strip_provenance(str(request.get("markdown") or ""), is_html))
+    flags = request.get("flags") or {}
+    markdown = str(request.get("markdown") or "")
+    if len(markdown) > MARKDOWN_MAX + 1000:  # the provenance line may add a little to a full body
         raise NotesError("invalid_argument", BODY_TOO_LONG % MARKDOWN_MAX)
+    writes = action in WRITE_ACTIONS
+    budget = (SCRIPT_TIMEOUT_S if writes else READ_TIMEOUT_S) if timeout is None else timeout
     html_file: str | None = None
     stdin_data: bytes | None = None
     try:
-        if action in ("create", "update"):
+        if action in BODY_ACTIONS:
             if flags.get("html"):
                 fd, html_file = tempfile.mkstemp(prefix="agent-sync-note-", suffix=".html")
                 os.fchmod(fd, 0o600)
@@ -825,14 +951,16 @@ def run_direct(
                 stdin_data = b""
             else:
                 stdin_data = markdown.encode("utf-8")
-        argv, extra = build_argv(script, envelope, html_file)
+        argv, extra = build_argv(
+            script, request, html_file, existing=existing, caller=caller, requester=requester
+        )
         #  The lock wait is counted inside the cap:  the script gets the cap minus the wait,  so
         #  the whole request (the wait and the run) stays inside it.  A request that could wait
         #  the lock out and then take the full cap would outlive the budget the timeout test
-        #  holds together (AFC-436).
-        child_timeout = max(1.0, timeout - LOCK_WAIT_S)
+        #  holds together (AFC-436).  A read takes no lock:  it changes nothing.
+        child_timeout = max(1.0, budget - LOCK_WAIT_S) if writes else budget
         try:
-            if not _RUN_LOCK.acquire(timeout=LOCK_WAIT_S):
+            if writes and not _RUN_LOCK.acquire(timeout=LOCK_WAIT_S):
                 raise NotesError(
                     "unavailable",
                     "another notes write is still running, so this one was refused as busy; "
@@ -849,8 +977,13 @@ def run_direct(
                     check=False,
                 )
             finally:
-                _RUN_LOCK.release()
+                if writes:
+                    _RUN_LOCK.release()
         except subprocess.TimeoutExpired:
+            if not writes:
+                raise NotesError(
+                    "unavailable", "the notes script did not answer within %d seconds" % int(child_timeout)
+                ) from None
             # A timeout does not prove nothing was written (the script may have created the note and then hung),
             # so it is an unknown outcome, never a safe failure that a retry may repeat.
             raise NotesError(
@@ -874,6 +1007,16 @@ def run_direct(
     stdout = (proc.stdout or b"").decode("utf-8", "replace")
     stderr = " ".join((proc.stderr or b"").decode("utf-8", "replace").split())[:200]
     if code == 0:
+        if action in ("read", "list"):
+            try:
+                raw = json.loads(stdout)
+            except ValueError:
+                raise NotesError("internal", "the notes script's %s answer did not parse" % action) from None
+            if not isinstance(raw, Mapping):
+                raise NotesError("internal", "the notes script's %s answer is not an object" % action)
+            if action == "read":
+                return {"note": read_result(raw, str(request.get("format") or "html"))}
+            return list_result(raw)
         result: dict[str, Any] = {"status": "done"}
         note_id = _note_id(stdout)
         if note_id:
@@ -888,6 +1031,12 @@ def run_direct(
             "the notes script refused the request:  %s" % (stderr or "bad arguments"),
         )
     if code == EXIT_NOT_FOUND:
+        if existing:
+            raise NotesError(
+                "not_found",
+                "no note with that title in the Coding folder;  an update creates a note only when its title "
+                "carries your own agent name (use create for a new note)",
+            )
         raise NotesError("not_found", "no note with that title in the Coding folder")
     if code == EXIT_PIN_FAILED:
         #  The helper has no GUI fallback (owner 2026-10-20):  when the Shortcut does not pin or unpin,
@@ -907,3 +1056,165 @@ def run_direct(
         "internal",
         "the notes script exited with code %d%s" % (code, (":  " + stderr) if stderr else ""),
     )
+
+
+# --------------------------------------------------------------------------------------------
+# The action log (written by apple-notes-coding.sh, read here)
+# --------------------------------------------------------------------------------------------
+
+ACTION_LOG_REL = Path("Library") / "Logs" / "fleet" / "apple-notes-actions.jsonl"
+ACTION_LOG_ROTATIONS = 5
+LOG_FIELDS = (
+    "v",
+    "id",
+    "ts",
+    "host",
+    "mode",
+    "title",
+    "note_id",
+    "exit",
+    "outcome",
+    "duration_ms",
+    "seat",
+    "session",
+    "caller",
+    "request_id",
+    "requester",
+    "input_bytes",
+    "body_bytes",
+    "body_sha256",
+    "reformatted",
+    "pin",
+    "flags",
+    "count",
+    "bytes",
+    "received_at",
+)
+LOG_LINE_MAX = 4096
+LOG_SINCE_MAX_HOURS = 720
+
+
+def action_log_path(env: Mapping[str, str], home: Path) -> Path | None:
+    """Where the script writes its action log on this host, or None when it is switched off."""
+    override = (env.get("APPLE_NOTES_ACTION_LOG") or "").strip()
+    if override.lower() == "off":
+        return None
+    return Path(override).expanduser() if override else home / ACTION_LOG_REL
+
+
+def clean_log_entry(raw: Any) -> dict[str, Any] | None:
+    """One log line reduced to the known fields, each a short scalar (or the two small objects), or None when it is not
+    a log line at all.  The log holds no note text, and nothing that arrives through it can add any."""
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("id"), str) or not isinstance(raw.get("ts"), str):
+        return None
+    out: dict[str, Any] = {}
+    for key in LOG_FIELDS:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if key in ("reformatted", "flags"):
+            if isinstance(value, Mapping):
+                out[key] = {
+                    str(k)[:40]: v if isinstance(v, (bool, int)) or v is None else str(v)[:80]
+                    for k, v in list(value.items())[:12]
+                }
+            continue
+        if isinstance(value, bool) or value is None or isinstance(value, int):
+            out[key] = value
+        elif isinstance(value, float):
+            out[key] = int(value)
+        else:
+            out[key] = str(value)[:400 if key == "title" else 200]
+    return out
+
+
+def _entry_time(entry: Mapping[str, Any]) -> datetime | None:
+    try:
+        moment = datetime.fromisoformat(str(entry.get("ts") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
+def log_filter(
+    entries: Iterable[Mapping[str, Any]],
+    *,
+    since_hours: int = 24,
+    limit: int = 50,
+    seat: str | None = None,
+    action: str | None = None,
+    title: str | None = None,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """The entries that match, newest first, at most `limit`."""
+    floor = (now or datetime.now(timezone.utc)) - timedelta(hours=since_hours)
+    wanted_seat = seat.upper() if seat else None
+    needle = title.casefold() if title else None
+    picked: list[tuple[datetime, dict[str, Any]]] = []
+    for entry in entries:
+        moment = _entry_time(entry)
+        if moment is None or moment < floor:
+            continue
+        if wanted_seat and str(entry.get("seat") or "").upper() != wanted_seat:
+            continue
+        if action and entry.get("mode") != action:
+            continue
+        if needle and needle not in str(entry.get("title") or "").casefold():
+            continue
+        picked.append((moment, dict(entry)))
+    picked.sort(key=lambda item: item[0], reverse=True)
+    return [entry for _, entry in picked[:limit]]
+
+
+def iter_log_files(path: Path, rotations: int = ACTION_LOG_ROTATIONS) -> Iterable[dict[str, Any]]:
+    """Every entry of a log and its rotated copies (`.1` to `.<rotations>`), oldest file first.  A line that does not
+    parse is passed over:  the log is a record, and one bad line must not hide the rest."""
+    for index in range(rotations, -1, -1):
+        candidate = path if index == 0 else path.with_name("%s.%d" % (path.name, index))
+        try:
+            with open(candidate, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if len(line) > LOG_LINE_MAX * 4:
+                        continue
+                    try:
+                        entry = clean_log_entry(json.loads(line))
+                    except ValueError:
+                        continue
+                    if entry is not None:
+                        yield entry
+        except OSError:
+            continue
+
+
+def read_action_log(env: Mapping[str, str], home: Path, **filters: Any) -> list[dict[str, Any]]:
+    """This host's action log, filtered (log_filter's arguments)."""
+    path = action_log_path(env, home)
+    if path is None:
+        return []
+    return log_filter(iter_log_files(path), **filters)
+
+
+def check_log_args(args: Mapping[str, Any]) -> dict[str, Any]:
+    """The filters of a log call, validated (the notes_log tool's arguments)."""
+    since = args.get("since_hours", 24)
+    if isinstance(since, bool) or not isinstance(since, int) or not 1 <= since <= LOG_SINCE_MAX_HOURS:
+        raise NotesError("invalid_argument", "argument 'since_hours' must be an integer from 1 to %d" % LOG_SINCE_MAX_HOURS)
+    limit = check_limit(args.get("limit"), default=50, maximum=500)
+    seat = args.get("by_seat")
+    if seat is not None and (not isinstance(seat, str) or not SEAT_RE.fullmatch(seat.upper())):
+        raise NotesError("invalid_argument", "argument 'by_seat' must be a seat name such as CLAUDE")
+    action = args.get("action")
+    if action is not None and action not in ACTIONS:
+        raise NotesError("invalid_argument", "argument 'action' must be one of %s" % ", ".join(ACTIONS))
+    title = check_query(args.get("title")) or None
+    return {
+        "since_hours": since,
+        "limit": limit,
+        "seat": seat.upper() if isinstance(seat, str) else None,
+        "action": action,
+        "title": title,
+    }
+
+
+def iso_now(clock: Callable[[], float] = time.time) -> str:
+    return datetime.fromtimestamp(clock(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

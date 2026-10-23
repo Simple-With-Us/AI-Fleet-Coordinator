@@ -1,12 +1,15 @@
-"""`agent-sync notes create|update|pin|unpin|status` and `agent-sync guide` (AFC-331).
+"""`simple-notes create|update|pin|unpin|read|list|status|log|runner` and `simple-chat guide` (AFC-331, AFC-486).
 
-The CLI twin of the notes_* and guide tools.  On a Mac the script runs directly and no Zulip credential is
-needed;  with --relay (or off a Mac) the request goes to #notes-relay through the same code the MCP tool uses
-(mcp/tools.py), so the envelope, the upload rule and the idempotency are one implementation.  The body never
-reaches a command line of ours:  it comes from standard input or --body-file (or --html for an HTML file),
-and is handed to the script on stdin.
+The CLI twin of the notes_* tools:  one verb per tool and one option per argument (mcp/notes-tools.json is the
+contract;  tests/test_notes_parity.py keeps them equal).  It runs the same code as the tools (notes_client.call), so
+it works the same on every host:  on a Mac apple-notes-coding.sh runs directly and no credential is needed;
+anywhere else the request goes to the Operator's notes queue and the command waits for the Mac runner's result
+(up to --wait seconds, 300 by default).  No Zulip message is involved.  The body never reaches a command line of
+ours:  it comes from standard input or --body-file (or --html for an HTML file), and is handed to the script on stdin.
 
-Exit codes follow the CLI:  2 usage, 3 credentials, 5 the note or Zulip refused, 6 network.
+`runner` is the Mac runner itself (notes_runner.py), run by the LaunchAgent com.jay.operator-notes-runner.
+
+Exit codes follow the CLI:  2 usage, 3 credentials or configuration, 5 the note or the Operator refused, 6 network.
 
 Python 3.11+, standard library only.
 """
@@ -17,19 +20,24 @@ import argparse
 import contextlib
 import json
 import os
+import signal
+import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from . import bodyfile
-from . import config as C
 from . import identities as X
 from . import identity as I
 from . import notes as N
+from . import notes_client as NC
 from . import session_ids as SID
 from . import zulip as Z
 from .idem import IdemStore
 from .secretscan import scan as scan_text
 from .state import state_root
+
+CLI_WAIT_DEFAULT = 300
 
 
 def add_parsers(
@@ -43,7 +51,15 @@ def add_parsers(
     own `--help`.
     """
 
+    # `status` and `read` are also verbs of `simple-chat` (the listener's status, a topic's history).  They are
+    # registered only when the calling command's verb set asks for them, so the two never collide in one parser.
+    shared = frozenset({"status", "read"})
+
     def add(parent: Any, name: str, summary: str) -> argparse.ArgumentParser:
+        if name in shared and (verbs is None or name not in verbs):
+            from .cli import _NullParser
+
+            return _NullParser()
         return parent.add_parser(name, parents=[common], help=summary, description=summary)
 
     def identity_opt(p: argparse.ArgumentParser) -> None:
@@ -55,14 +71,38 @@ def add_parsers(
             help="the bot this request acts as (the same as --as)",
         )
 
+    def request_opts(p: argparse.ArgumentParser) -> None:
+        p.add_argument(
+            "--request-id",
+            dest="request_id",
+            metavar="ID",
+            default=None,
+            help="a unique id for this request (a retry with the same id never writes twice)",
+        )
+        p.add_argument(
+            "--wait",
+            dest="wait_seconds",
+            type=int,
+            metavar="SECONDS",
+            default=None,
+            help="off a Mac:  how long to wait for the Mac runner (default %d, 0 answers at once)" % CLI_WAIT_DEFAULT,
+        )
+        p.add_argument(
+            "--no-wait", dest="no_wait", action="store_true", help="off a Mac:  answer queued at once (--wait 0)"
+        )
+        identity_opt(p)
+
     p = add(sub, "guide", "print the Agent-Sync tools guide, or one ## section of it")
     p.add_argument(
         "section", nargs="?", metavar="SECTION", help="a section heading (case does not matter)"
     )
 
-    for action in ("create", "update"):
-        q = add(sub, action, "%s a note (body from stdin, --body-file or --html)" % action)
-        q.add_argument("title", metavar="TITLE", help="[TEAM_KEY, Agent] Topic")
+    for action, summary in (
+        ("create", "create a note (title [TEAM_KEY, Agent] Topic;  body from stdin, --body-file or --html)"),
+        ("update", "replace a note's body, any note in Coding (body from stdin, --body-file or --html)"),
+    ):
+        q = add(sub, action, summary)
+        q.add_argument("title", metavar="TITLE", help="the exact note title")
         q.add_argument(
             "body",
             nargs="*",
@@ -82,7 +122,7 @@ def add_parsers(
             dest="html_file",
             metavar="PATH",
             default=None,
-            help="the body is this HTML file",
+            help="the body is this HTML file (simple-notes read --format html gives one)",
         )
         q.add_argument("--no-pin", dest="no_pin", action="store_true", help="do not pin the note")
         q.add_argument(
@@ -100,38 +140,41 @@ def add_parsers(
         q.add_argument(
             "--pr", metavar="N", default=None, help="pull request numbers for the date line"
         )
-        q.add_argument(
-            "--relay", action="store_true", help="post a #notes-relay request even on a Mac"
-        )
-        q.add_argument(
-            "--request-id",
-            dest="request_id",
-            metavar="ID",
-            default=None,
-            help="a unique id for this request",
-        )
-        identity_opt(q)
+        request_opts(q)
     for action in ("pin", "unpin"):
-        q = add(sub, action, "%s the note with this exact title" % action)
+        q = add(sub, action, "%s the note with this exact title, any note in Coding" % action)
         q.add_argument("title", metavar="TITLE")
-        q.add_argument(
-            "--relay", action="store_true", help="post a #notes-relay request even on a Mac"
-        )
-        q.add_argument("--request-id", dest="request_id", metavar="ID", default=None)
-        identity_opt(q)
-    # `status` is also the listener's status verb.  The two never share a command any more, so
-    # `status` is registered only when the calling command's verb set asked for it (the unfiltered
-    # build keeps the listener's).
-    if verbs is not None and "status" in verbs:
-        q = add(sub, "status", "where a relayed request stands:  queued, done or refused")
-        q.add_argument("request_id", metavar="REQUEST_ID")
-        q.add_argument("--message-id", dest="message_id", type=int, default=None, metavar="ID")
-        identity_opt(q)
+        request_opts(q)
+    q = add(sub, "read", "print a note, any note in Coding (html is its content, ready for update --html)")
+    q.add_argument("title", metavar="TITLE")
+    q.add_argument("--format", choices=N.FORMATS, default=None, help="html (the default), text or raw")
+    request_opts(q)
+    q = add(sub, "list", "list the notes in Coding, newest change first")
+    q.add_argument("--query", metavar="TEXT", default=None, help="only titles that contain this text")
+    q.add_argument("--limit", type=int, metavar="N", default=None, help="at most this many (1 to %d, default %d)" % (N.LIST_MAX, N.LIST_DEFAULT))
+    request_opts(q)
+    q = add(sub, "log", "the action log of apple-notes-coding.sh, newest first (never note text)")
+    q.add_argument("--since-hours", dest="since_hours", type=int, metavar="H", default=None, help="entries from the last H hours (default 24)")
+    q.add_argument("--limit", type=int, metavar="N", default=None, help="at most N entries (default 50)")
+    q.add_argument("--by-seat", dest="by_seat", metavar="SEAT", default=None, help="only the entries this seat made")
+    q.add_argument("--action", choices=N.ACTIONS, default=None, help="only this mode")
+    q.add_argument("--title", metavar="TEXT", default=None, help="only entries whose title contains this text")
+    identity_opt(q)
+    q = add(sub, "runner", "the Mac runner for the Operator's notes queue (the LaunchAgent runs this)")
+    q.add_argument("--once", action="store_true", help="one pass, then exit")
+    q.add_argument("--claim-wait", dest="claim_wait", type=int, metavar="SECONDS", default=None, help="how long one claim waits for work (default 25)")
+    q = add(sub, "status", "where a request sent through the Operator stands")
+    q.add_argument("request_id", metavar="REQUEST_ID")
+    identity_opt(q)
 
 
 def _fail(exc: N.NotesError) -> Z.AgentSyncError:
-    if exc.code == "invalid_argument":
+    if exc.code in ("invalid_argument", "session_required"):
         return Z.UsageError(exc.message)
+    if exc.code in ("not_configured", "forbidden"):
+        return Z.CredentialError(exc.message)
+    if exc.code == "unavailable" and "could not be reached" in exc.message:
+        return Z.NetworkError(exc.message)
     return Z.ApiError(exc.message)
 
 
@@ -162,7 +205,7 @@ def _identity(rt: Any, args: argparse.Namespace) -> str:
         problem = X.agent_identity_problem(seat, registry=I.load_seat_registry(env=rt.env))
     except I.SeatRegistryError as exc:
         # Fail closed:  without the registry nothing proves this is a live agent identity, and the direct Mac
-        # path checks no Zulip credential that could catch it.
+        # path checks no credential that could catch it.
         problem = (
             "cannot read the seat registry, so %s cannot be checked as an agent identity (%s)"
             % (seat, exc)
@@ -210,14 +253,47 @@ def _action(args: argparse.Namespace) -> str:
     return getattr(args, "notes_action", None) or args.command
 
 
+def _home(rt: Any) -> Path:
+    return Path(rt.home) if rt.home is not None else Path(rt.env.get("HOME") or os.path.expanduser("~"))
+
+
+def _host(rt: Any, identity: str | None) -> NC.Host:
+    home = _home(rt)
+    store = IdemStore(str(state_root(rt.env, home) / identity / "mcp-idem.json")) if identity else None
+    return NC.Host(rt.env, home, store, caller="cli")
+
+
+def _wait(args: argparse.Namespace) -> int:
+    if getattr(args, "no_wait", False):
+        return 0
+    value = getattr(args, "wait_seconds", None)
+    if value is None:
+        return CLI_WAIT_DEFAULT
+    if not 0 <= value <= CLI_WAIT_DEFAULT:
+        raise Z.UsageError("--wait must be 0 to %d seconds" % CLI_WAIT_DEFAULT)
+    return value
+
+
+def _scan(request: dict[str, Any]) -> None:
+    for field, text in N.text_fields(request).items():
+        found = scan_text(text)
+        if found:
+            raise N.NotesError(
+                "invalid_argument", "refusing to write:  the %s looks like it contains %s" % (field, found)
+            )
+
+
 def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
-    """`notes create|update|pin|unpin|status`.  A write is audited exactly once, on every exit, in the `finally`
-    below (identity_log, outcome only, never the body):  the branches only record in `audit` what happened.  A status
-    check is a read and leaves no row."""
+    """Every `simple-notes` verb.  A write is audited exactly once, on every exit, in the `finally` below
+    (identity_log, outcome only, never the body):  the branches only record in `audit` what happened.  A read, a list,
+    a status check and the log leave no row."""
     from . import identity_log as AUDIT
 
+    action = _action(args)
+    if action == "runner":
+        return _cmd_runner(rt, args)
     audit: dict[str, Any] = {}
-    write = _action(args) != "status"
+    write = action in N.WRITE_ACTIONS
     try:
         return _cmd_notes(rt, args, audit)
     except (KeyboardInterrupt, SystemExit):
@@ -239,150 +315,139 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
                     transport="cli",
                     default_identity=audit["identity"],
                     identity=audit["identity"],
-                    tool="notes " + _action(args),
+                    tool="notes " + action,
                     outcome=audit["outcome"],
-                    message_id=audit.get("message_id")
-                    if isinstance(audit.get("message_id"), int)
-                    else None,
+                    message_id=None,
                 )
 
 
 def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
-    from . import cli as CLI
-    from .mcp import tools as T
-
     action = _action(args)
+    use_json = bool(getattr(args, "json", False))
+    if action == "log":
+        host = _host(rt, None)
+        try:
+            info = NC.log(
+                host,
+                {
+                    name: getattr(args, name)
+                    for name in ("since_hours", "limit", "by_seat", "action", "title")
+                    if getattr(args, name, None) is not None
+                },
+            )
+        except N.NotesError as exc:
+            raise _fail(exc) from None
+        _print_log(rt, info, use_json)
+        return 0
     identity = _identity(rt, args)
     audit["identity"] = identity
-    home = (
-        Path(rt.home)
-        if rt.home is not None
-        else Path(rt.env.get("HOME") or os.path.expanduser("~"))
-    )
-    use_json = bool(getattr(args, "json", False))
+    host = _host(rt, identity)
     if action == "status":
-        tool_name, call_args = "notes_status", {"request_id": args.request_id}
-        if args.message_id is not None:
-            call_args["message_id"] = args.message_id
-    else:
-        call_args = {"title": args.title, "transport": "relay" if args.relay else "auto"}
-        if args.request_id:
-            call_args["request_id"] = args.request_id
-        if action in ("create", "update"):
-            body, is_html = _body(rt, args)
-            call_args.update(
-                markdown=body,
-                html=is_html,
-                pin=not args.no_pin,
-                notify=args.notify,
-                needs_owner=args.needs_owner,
-            )
-            if args.summary:
-                call_args["summary"] = args.summary
-            if args.pr:
-                call_args["pr"] = args.pr
-            # AFC-361:  the session id, from the CLI's global --session ID or the environment, judged for the resolved
-            # identity.  The relay path below hands it to the same tool code.
-            try:
-                session = SID.require(identity, getattr(args, "session", None), rt.env, "cli")
-            except SID.SessionRequired as exc:
-                audit["outcome"] = "session_required"
-                raise Z.UsageError(str(exc)) from None
-            except ValueError as exc:
-                raise Z.UsageError(str(exc)) from None
-            if session:
-                call_args["session"] = session
-        tool_name = "notes_" + action
-    # Direct on a Mac:  no credential, no network.
-    if action != "status" and not args.relay:
-        script = N.direct_available(rt.env, home)
-        if script is not None:
-            audit["started"] = True
-            try:
-                envelope = N.make_envelope(
-                    action,
-                    args.title,
-                    call_args.get("markdown", ""),
-                    T.notes_flags(call_args, action),
-                    call_args.get("request_id") or N.new_request_id(),
-                    identity,
-                    call_args.get("session"),
-                )
-                problem = N.title_problem(envelope["title"], identity, env=rt.env)
-                if problem:
-                    raise N.NotesError(
-                        "invalid_argument",
-                        "%s;  the Agent in the title must be %s" % (problem, identity),
-                    )
-                for field, text in N.text_fields(envelope).items():
-                    found = scan_text(text)
-                    if found:
-                        raise N.NotesError(
-                            "invalid_argument",
-                            "refusing to write:  the %s looks like it contains %s" % (field, found),
-                        )
-
-                def send() -> dict[str, Any]:
-                    done = N.run_direct(envelope, script, env=rt.env)
-                    return {
-                        "request_id": envelope["request_id"],
-                        "action": action,
-                        "status": "done",
-                        "transport": "direct",
-                        **({"note_id": done["note_id"]} if done.get("note_id") else {}),
-                        **({"pin_skipped": done["pin_skipped"]} if done.get("pin_skipped") else {}),
-                    }
-
-                # The same persistent rows the MCP tools use (<state>/<SEAT>/mcp-idem.json):  a repeated --request-id
-                # writes the note once, and a timed-out write is refused until the owner has checked the note.
-                store = IdemStore(str(state_root(rt.env, home) / identity / "mcp-idem.json"))
-                result = N.direct_once(store, envelope, send)
-            except N.NotesError as exc:
-                # A failed write is audited too, by its code only (never the body):  an outcome_unknown timeout
-                # is exactly the row an owner looks for.
-                audit["outcome"] = exc.code
-                raise _fail(exc) from None
-            audit["outcome"] = "ok"
-            _print(rt, result, use_json)
-            return 0
-    # Relay (and status):  the MCP tool's own code over this identity's verified bot.
-    agent = CLI.Agent(rt, args)
-    CLI._check_agent_identity(rt, agent)
-    cfg = C.load(str(state_root(rt.env, home)))
-    consumer, consumer_label, _ = N.relay_consumer(cfg.notes_relay_seat)
-    tools = T.Tools(
-        agent,
-        me=agent.me(),
-        process_tag=agent.tag,
-        session_source="flag",
-        owner_user_id=cfg.owner_user_id,  # the pinned owner, or the OPERATOR consumer is never trusted
-        notes_consumer=consumer,
-        notes_consumer_label=consumer_label,
-        sleep=rt.sleep,
-        log=lambda text: None,
-    )
-    saved = (
-        rt.stdout,
-        rt.stderr,
-        rt.stdin,
-    )  # the tool layer swaps the runtime's streams for its own buffers
-    audit["started"] = True  # from here a write may be in flight
+        try:
+            info = NC.status(host, identity, args.request_id)
+        except N.NotesError as exc:
+            raise _fail(exc) from None
+        _print(rt, info, use_json)
+        return 0
+    session = None
+    markdown, flags = "", None
+    if action in N.BODY_ACTIONS:
+        body, is_html = _body(rt, args)
+        markdown = body
+        flags = {"html": is_html, "notify": args.notify, "needs_owner": args.needs_owner}
+        if args.no_pin:
+            flags["pin"] = False
+        if args.summary:
+            flags["summary"] = args.summary
+        if args.pr:
+            flags["pr"] = args.pr
+        flags = {name: value for name, value in flags.items() if value not in (False, None, "") or name == "pin"}
+        # AFC-361:  the session id, from the CLI's global --session ID or the environment, judged for the resolved
+        # identity.
+        try:
+            session = SID.require(identity, getattr(args, "session", None), rt.env, "cli")
+        except SID.SessionRequired as exc:
+            audit["outcome"] = "session_required"
+            raise Z.UsageError(str(exc)) from None
+        except ValueError as exc:
+            raise Z.UsageError(str(exc)) from None
+    wait = _wait(args)
     try:
-        result = tools.call(tool_name, call_args)
-    finally:
-        rt.stdout, rt.stderr, rt.stdin = saved
-    if result.get("isError"):
-        error = json.loads(result["content"][0]["text"])
-        message = str(error.get("message") or "the request failed")
-        audit["outcome"] = str(error.get("code"))
-        if error.get("code") == "invalid_argument":
-            raise Z.UsageError(message)
-        raise Z.ApiError(message)
-    info = result.get("structuredContent") or {}
-    audit["outcome"] = "ok"
-    audit["message_id"] = info.get("message_id")
-    _print(rt, info, use_json)
+        request = N.make_request(
+            action,
+            identity,
+            request_id=args.request_id or N.new_request_id(),
+            title=getattr(args, "title", None) if action != "list" else None,
+            markdown=markdown,
+            flags=flags,
+            session=session,
+            fmt=getattr(args, "format", None) if action == "read" else None,
+            query=getattr(args, "query", None) if action == "list" else None,
+            limit=getattr(args, "limit", None) if action == "list" else None,
+        )
+        if action in N.WRITE_ACTIONS:
+            audit["started"] = True
+        info = NC.call(host, identity, request, wait=wait, scan=_scan)
+    except N.NotesError as exc:
+        # A failed write is audited too, by its code only (never the body):  an outcome_unknown timeout is exactly
+        # the row an owner looks for.
+        audit["outcome"] = exc.code
+        raise _fail(exc) from None
+    audit["outcome"] = "ok" if info.get("status") == "done" else str(info.get("status"))
+    if action == "read":
+        _print_read(rt, info, use_json)
+    elif action == "list":
+        _print_list(rt, info, use_json)
+    else:
+        _print(rt, info, use_json)
     return 0
+
+
+def _cmd_runner(rt: Any, args: argparse.Namespace) -> int:
+    from . import notes_runner as RUN
+    from . import notes_wire as W
+
+    home = _home(rt)
+    try:
+        runner = RUN.runner_for(rt.env, home, log=lambda text: rt.err(text + "\n"))
+    except N.NotesError as exc:
+        raise _fail(exc) from None
+    wait = args.claim_wait if args.claim_wait is not None else W.CLAIM_WAIT_MAX
+    if not 0 <= wait <= W.CLAIM_WAIT_MAX:
+        raise Z.UsageError("--claim-wait must be 0 to %d seconds" % W.CLAIM_WAIT_MAX)
+    try:
+        runner.acquire()
+    except RUN.AlreadyRunning as exc:
+        raise Z.UsageError(str(exc)) from None
+    try:
+        if args.once:
+            try:
+                runner.ship_log()
+                handled = runner.once(wait)
+            except N.NotesError as exc:
+                raise _fail(exc) from None
+            rt.out("notes runner:  %s\n" % ("handled one request" if handled else "nothing queued"))
+            return 0
+        stop = threading.Event()
+        previous = {sig: signal.signal(sig, lambda *_: stop.set()) for sig in (signal.SIGTERM, signal.SIGINT)}
+        try:
+            runner.loop(stop, wait)
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+        return 0
+    finally:
+        runner.release()
+
+
+def _when(value: Any) -> str:
+    """An ISO time as the fleet writes it:  'Thu, Oct 22, 5:03pm' (America/Chicago)."""
+    from .cli import format_time
+
+    try:
+        return format_time(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except (TypeError, ValueError):
+        return str(value or "")
 
 
 def _print(rt: Any, info: dict[str, Any], use_json: bool) -> None:
@@ -392,10 +457,56 @@ def _print(rt: Any, info: dict[str, Any], use_json: bool) -> None:
     line = "%s:  %s" % (info.get("request_id"), info.get("status"))
     if info.get("transport"):
         line += " (%s)" % info["transport"]
-    if info.get("message_id"):
-        line += ", message %s" % info["message_id"]
-    if info.get("reason"):
-        line += ", reason:  %s" % info["reason"]
+    if info.get("note_id"):
+        line += ", note %s" % info["note_id"]
+    if info.get("duplicate"):
+        line += ", already done before"
+    error = info.get("error")
+    if isinstance(error, dict) and error.get("message"):
+        line += ", %s:  %s" % (error.get("code"), error["message"])
     if info.get("pin_skipped"):
         line += ", pin skipped:  %s" % info["pin_skipped"]
+    if info.get("status") in ("queued", "running"):
+        line += ";  the Mac runner has not finished it:  simple-notes status %s" % info.get("request_id")
     rt.out(line + "\n")
+
+
+def _print_read(rt: Any, info: dict[str, Any], use_json: bool) -> None:
+    note = info.get("note") if isinstance(info.get("note"), dict) else None
+    if use_json or note is None:
+        _print(rt, info, use_json)
+        return
+    body = str(note.get("body") or "")
+    rt.out(body if body.endswith("\n") else body + "\n")
+    if note.get("truncated"):
+        rt.err("notes:  the note is longer than %d characters;  the body was cut\n" % N.READ_MAX)
+
+
+def _print_list(rt: Any, info: dict[str, Any], use_json: bool) -> None:
+    if use_json or info.get("status") != "done":
+        _print(rt, info, use_json)
+        return
+    for row in info.get("notes") or []:
+        rt.out("%s  %s\n" % (_when(row.get("modified")), row.get("title")))
+    shown, total = len(info.get("notes") or []), info.get("total", 0)
+    if info.get("truncated"):
+        rt.out("(%d of %d shown;  raise --limit or narrow --query)\n" % (shown, total))
+
+
+def _print_log(rt: Any, info: dict[str, Any], use_json: bool) -> None:
+    if use_json:
+        rt.out(json.dumps(info, ensure_ascii=False) + "\n")
+        return
+    for entry in info.get("entries") or []:
+        parts = [
+            _when(entry.get("ts")),
+            str(entry.get("mode") or "?"),
+            str(entry.get("outcome") or entry.get("exit")),
+            str(entry.get("seat") or "-"),
+            str(entry.get("caller") or "-"),
+        ]
+        reformatted = entry.get("reformatted") if isinstance(entry.get("reformatted"), dict) else {}
+        if reformatted.get("dates") or reformatted.get("gaps"):
+            parts.append("reformatted %s dates, %s gaps" % (reformatted.get("dates", 0), reformatted.get("gaps", 0)))
+        rt.out("%s  %s\n" % ("  ".join(parts), entry.get("title") or ""))
+    rt.out("(%d entries from the %s log)\n" % (info.get("count", 0), info.get("source")))

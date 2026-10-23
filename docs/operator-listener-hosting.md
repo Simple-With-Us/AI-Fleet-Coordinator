@@ -48,11 +48,13 @@ scope):
   sends its session info to the Operator.  (Jay's phrase was "session
   letters";  exact meaning is being confirmed with him - treat as
   per-session identifiers for now.)
-- Open item Jay asked for:  an Apple Notes relay that works remotely.
-  Apple Notes stays Mac-bound, so a thin relay on the Mac (same pattern as
-  this alerter:  a small launchd unit behind the signed read API, or a
-  worker-side route) would expose Notes to the server-side plane without
-  moving it.  No design or build until Jay confirms the scope.
+- Apple Notes that work remotely:  built (AFC-486, Oct 22, Jay chose
+  "Replace via Operator").  Apple Notes stays Mac-bound;  the server-side
+  plane reaches it through the Operator's notes queue (`/notes/v1/` on the
+  listener API), and a thin seatless runner on the Mac
+  (`com.jay.operator-notes-runner`, same pattern as this alerter) claims
+  each request and runs the script.  No Zulip channel is involved:
+  `docs/protocols/operator-notes.md`.
 
 ## Headless wake:  launching Muse Code from a wake event
 

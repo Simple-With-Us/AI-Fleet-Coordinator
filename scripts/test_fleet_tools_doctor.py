@@ -1346,5 +1346,88 @@ class ReportAndRunTests(HomeCase):
         self.assertNotIn("release", runtime["detail"])
 
 
+class NotesServiceTests(unittest.TestCase):
+    """AFC-486:  the Notes rows Muster shows (category `service`)."""
+
+    PRINT = "gui/501/com.jay.operator-notes-runner = {\n\tstate = running\n\truns = 3\n\tlast exit code = 0\n}\n"
+    NOW = 1_800_000_000.0
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.state = root / "notes-runner.json"
+        self.log = root / "apple-notes-actions.jsonl"
+        for name, value in (("NOTES_RUNNER_STATE", self.state), ("NOTES_ACTION_LOG", self.log)):
+            patcher = mock.patch.object(doctor, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def iso(self, seconds_ago):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.NOW - seconds_ago))
+
+    def rows(self, host, answer=(0, PRINT), health=None, network=True):
+        report = doctor.Report()
+        doctor.check_notes(
+            report,
+            host,
+            {},
+            fake_runner([(("launchctl", "print"), answer)]),
+            network=network,
+            health=health or (lambda env: {}),
+            clock=lambda: self.NOW,
+        )
+        return {row["check"]: row for row in report.rows}
+
+    def test_a_runner_that_is_not_loaded_fails(self):
+        rows = self.rows("mac", answer=(113, ""))
+        self.assertEqual((rows["notes:runner"]["status"], rows["notes:runner"]["category"]), ("FAIL", "service"))
+
+    def test_a_loaded_runner_that_polls_is_current_and_a_silent_one_is_stale(self):
+        self.state.write_text(json.dumps({"last_poll_at": self.iso(30), "handled": 4}))
+        self.assertEqual(self.rows("mac")["notes:runner"]["state"], "current")
+        self.state.write_text(json.dumps({"last_poll_at": self.iso(3600), "last_error": "unavailable: x"}))
+        row = self.rows("mac")["notes:runner"]
+        self.assertEqual((row["status"], row["state"]), ("WARN", "stale"))
+        self.assertIn("last error", row["detail"])
+
+    def test_the_action_log_row_reports_unsent_lines(self):
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "unknown")  # no log yet
+        self.log.write_text('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n')
+        self.state.write_text(
+            json.dumps({"last_poll_at": self.iso(10), "log": {"offset": 0}, "log_shipped_at": self.iso(7200)})
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "stale")
+        size = self.log.stat().st_size
+        self.state.write_text(
+            json.dumps({"last_poll_at": self.iso(10), "log": {"offset": size}, "log_shipped_at": self.iso(60)})
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+
+    def test_the_server_reads_the_queue_health(self):
+        fresh = {"queued": 1, "running": 0, "oldest_queued_seconds": 20, "runner_polled_at": self.iso(10)}
+        self.assertEqual(self.rows("server", health=lambda env: fresh)["notes:queue"]["status"], "OK")
+        silent = dict(fresh, runner_polled_at=None)
+        self.assertEqual(self.rows("server", health=lambda env: silent)["notes:queue"]["state"], "stale")
+        backlog = dict(fresh, oldest_queued_seconds=4000)
+        self.assertIn("waited", self.rows("server", health=lambda env: backlog)["notes:queue"]["detail"])
+
+    def test_a_failed_probe_is_a_row_never_a_crash(self):
+        class Refused(Exception):
+            def __init__(self, code):
+                super().__init__(code)
+                self.code, self.message = code, "x"
+
+        def raises(code):
+            def health(env):
+                raise Refused(code)
+
+            return health
+
+        self.assertEqual(self.rows("server", health=raises("not_configured"))["notes:queue"]["status"], "WARN")
+        self.assertEqual(self.rows("server", health=raises("unavailable"))["notes:queue"]["status"], "FAIL")
+        self.assertEqual(self.rows("server", network=False)["notes:queue"]["state"], "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()

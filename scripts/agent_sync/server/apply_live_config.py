@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Bring the live config's JET and Grok Bot sections in line with the image's sample.
+"""Bring the live config's JET and Grok Bot sections in line with the image's sample, and add the settings
+sections a live volume lacks.
 
 Run it inside the container (the Coolify terminal, or docker exec):
 
@@ -9,8 +10,11 @@ Run it inside the container (the Coolify terminal, or docker exec):
 The entrypoint seeds /data/listener.toml from the sample only once, so a seat section changed in the
 sample never reaches a live volume by itself.  This copies exactly the sample's [seat.JET] and every
 [seat.GB-*] section into the live file:  a section that differs is replaced where it stands, with the
-comment lines just above it, and a missing one is appended.  [daemon] (owner_user_id and
-eligible_user_ids, pinned by `agent-sync daemon init`) and every other section stay byte for byte.
+comment lines just above it, and a missing one is appended.  [listener_api] and [notes_queue] (AFC-486) are
+appended the same way when the live file has none, but one that is there is never changed:  its `enabled`
+and its seat lists are the operator's choice on that volume, and the sample ships both off.  [daemon]
+(owner_user_id and eligible_user_ids, pinned by `agent-sync daemon init`) and every other section stay byte
+for byte.
 
 Before writing, the result is checked with the listener's own config parser and the seat partition;
 any problem refuses the write.  --apply first copies the live file to <file>.bak-<UTC stamp> (mode 600),
@@ -40,6 +44,8 @@ sys.path.insert(0, str(HERE.parent.parent))   # scripts/, so `agent_sync` import
 from agent_sync import config as C  # noqa: E402
 
 _HEADER_RE = re.compile(r"^\[([^\[\]]+)\]\s*(#.*)?$")
+# Settings sections copied from the sample only when the live file has none, and never replaced.
+ADD_ONLY = ("listener_api", "notes_queue")
 
 
 def target(seat: str) -> bool:
@@ -79,7 +85,7 @@ def _flat(prefix: str, value: object, out: dict[str, object]) -> None:
 
 
 def section_diff(old: str | None, new: str) -> list[str]:
-    """Key-level differences between two seat blocks (`added` when old is None)."""
+    """Key-level differences between two blocks (`added` when old is None)."""
     if old is None:
         return ["added"]
     a: dict[str, object] = {}
@@ -94,35 +100,39 @@ def section_diff(old: str | None, new: str) -> list[str]:
 
 
 def merge(live: str, sample: str) -> tuple[str, dict[str, list[str]]]:
-    """(the new live text, {seat: changes}) for every target seat that differs."""
+    """(the new live text, {table name: changes}) for every target seat that differs and every ADD_ONLY section the
+    live file lacks.  A table name is as its header writes it:  `seat.JET`, `notes_queue`."""
     _, sample_blocks = blocks(sample)
-    wanted = {_seat(name): body for name, body in sample_blocks if _seat(name) and target(_seat(name))}
+    replace = {name: body for name, body in sample_blocks if _seat(name) and target(_seat(name))}
+    add_only = {name: body for name, body in sample_blocks if name in ADD_ONLY}
     preamble, live_blocks = blocks(live)
     changes: dict[str, list[str]] = {}
     seen: set[str] = set()
     out = list(preamble)
     for name, body in live_blocks:
-        seat = _seat(name)
-        if seat in wanted:
-            seen.add(seat)
-            new = wanted[seat]
+        if name in add_only:
+            seen.add(name)  # already there:  the live values stand
+        elif name in replace:
+            seen.add(name)
+            new = replace[name]
             if "".join(body).strip() != "".join(new).strip():
-                changes[seat] = section_diff("".join(body), "".join(new))
+                changes[name] = section_diff("".join(body), "".join(new))
                 body = list(new)
                 if not body[-1].endswith("\n"):
                     body[-1] += "\n"
         out.extend(body)
-    for seat, new in wanted.items():
-        if seat not in seen:
-            changes[seat] = section_diff(None, "".join(new))
-            if out and not out[-1].endswith("\n"):
-                out[-1] += "\n"
-            block = list(new)
-            if block and block[0].strip():
-                block.insert(0, "\n")
-            if not block[-1].endswith("\n"):
-                block[-1] += "\n"
-            out.extend(block)
+    for name, new in sample_blocks:
+        if name in seen or (name not in replace and name not in add_only):
+            continue
+        changes[name] = section_diff(None, "".join(new))
+        if out and not out[-1].endswith("\n"):
+            out[-1] += "\n"
+        block = list(new)
+        if block and block[0].strip():
+            block.insert(0, "\n")
+        if not block[-1].endswith("\n"):
+            block[-1] += "\n"
+        out.extend(block)
     return "".join(out), changes
 
 
@@ -184,14 +194,18 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:
     try:
         new, changes = merge(live, sample)
     except tomllib.TOMLDecodeError as exc:
-        print("a seat section does not parse: %s" % exc, file=out)
+        print("a section does not parse: %s" % exc, file=out)
         return 2
     if not changes:
-        print("no changes:  %s already matches the sample's JET and GB sections" % live_path, file=out)
+        print(
+            "no changes:  %s already matches the sample's JET and GB sections and has [%s]"
+            % (live_path, "] and [".join(ADD_ONLY)),
+            file=out,
+        )
         return 0
-    for seat in sorted(changes):
-        print("[seat.%s]" % seat, file=out)
-        for line in changes[seat]:
+    for name in sorted(changes):
+        print("[%s]" % name, file=out)
+        for line in changes[name]:
             print("    %s" % line, file=out)
     if daemon_block(new) != daemon_block(live):
         print("refused:  [daemon] would change (it must stay byte for byte)", file=out)

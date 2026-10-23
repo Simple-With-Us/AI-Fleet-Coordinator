@@ -19,7 +19,11 @@ answer is the record's view (listener_records.py) as JSON, with no-store caching
 read-only on purpose:  nothing a request carries can move a cursor or clear an entry.
 
 Bodies in the views are Zulip-authored:  the Worker fences them as untrusted before any model sees
-them.  Nothing here logs a key, a signature or a body.  Python 3.11+, standard library only.
+them.  Nothing here logs a key, a signature or a body.
+
+The same server carries the Operator's notes queue (AFC-486, notes_queue.py) under /notes/v1/ when the daemon
+gives it one:  GET and POST there, with its own principals and signature (notes_wire.py).  Everything else stays
+GET only.  Python 3.11+, standard library only.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from typing import Any
 from urllib.parse import parse_qsl, urlsplit
 
 from . import listener_records as LR
+from . import notes_wire as NW
 from .zulip import UsageError
 
 CONTRACT = "agent-sync-read/1"
@@ -116,8 +121,10 @@ class ListenerReadApi:
         *,
         clock: Callable[[], float] = time.time,
         log: Callable[..., None] | None = None,
+        notes: Any = None,
     ) -> None:
         self.root = root
+        self.notes = notes  # a notes_queue.NotesQueue, or None:  then /notes/v1/ is 404 like any unknown path
         self.keys = {
             seat.upper(): key
             for seat, key in keys.items()
@@ -180,10 +187,53 @@ class ListenerReadApi:
                 self.close_connection = True
                 self._respond(405, {"error": "method not allowed"})
 
-            do_POST = do_PUT = do_PATCH = do_DELETE = _refuse_method
+            do_PUT = do_PATCH = do_DELETE = _refuse_method
+
+            def _notes(self, method: str) -> bool:
+                """Serve a /notes/v1/ request when the daemon gave this server a notes queue.  False otherwise."""
+                if owner.notes is None or not self.path.startswith(NW.PREFIX):
+                    return False
+                body = b""
+                if method == "POST":
+                    raw_length = self.headers.get("Content-Length")
+                    if raw_length is None or not raw_length.strip().isdigit():
+                        self._respond(411, {"error": "length_required", "message": "Content-Length is required"})
+                        return True
+                    length = int(raw_length.strip())
+                    if length > NW.MAX_BODY:
+                        self._respond(413, {"error": "too_large", "message": "the request body is too large"})
+                        return True
+                    try:
+                        body = self.rfile.read(length)
+                    except OSError:
+                        return True
+                    if len(body) != length:
+                        self._respond(400, {"error": "invalid_argument", "message": "the body ended early"})
+                        return True
+                try:
+                    status, answer = owner.notes.handle(method, self.path, self.headers, body)
+                except Exception as exc:  # noqa: BLE001 - one request must never take the server down
+                    owner.log("notes-api-error", error=type(exc).__name__)
+                    status, answer = 500, {"error": "internal", "message": "the notes queue failed"}
+                if answer is None:
+                    self.send_response(status)
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Cache-Control", "no-store")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                else:
+                    self._respond(status, answer)
+                return True
+
+            def do_POST(self) -> None:
+                self.close_connection = True
+                if not self._notes("POST"):
+                    self._respond(405, {"error": "method not allowed"})
 
             def do_GET(self) -> None:
                 self.close_connection = True
+                if self._notes("GET"):
+                    return
                 status, body = owner.handle(
                     self.path,
                     self.headers.get(TIMESTAMP_HEADER),

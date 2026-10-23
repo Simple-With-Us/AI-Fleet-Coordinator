@@ -92,7 +92,7 @@ class NarrowTests(unittest.TestCase):
                 continue
             default = values.default_value(spec)
             if spec.kind == "str":
-                self.assertEqual(default, spec.default or "")  # most are empty;  NOTES_RELAY_CONSUMER defaults to CLAUDE
+                self.assertEqual(default, spec.default or "")  # every str knob defaults to empty today
                 if default:
                     self.assertEqual(values.parse(spec, default), default, spec.name)
                 continue

@@ -41,6 +41,13 @@ class IdemStore:
             return dict(row)
         return None
 
+    def row(self, key: str) -> dict[str, Any] | None:
+        """The row for `key` in any state, or None when there is none (or it expired).  A read:  no lock."""
+        row = (LIVE.read_json(self.path).get("rows") or {}).get(key)
+        if isinstance(row, dict) and float(row.get("expires") or 0) > self.clock():
+            return dict(row)
+        return None
+
     def begin(self, key: str, ttl: float, fields: Mapping[str, Any]) -> tuple[str, dict[str, Any] | None]:
         """('send', None) for a new key, ('duplicate', row) for a sent one, ('reconcile', row) for an unknown or
         abandoned one, ('busy', row) while another process's write is in flight."""

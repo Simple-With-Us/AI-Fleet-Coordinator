@@ -60,14 +60,18 @@ counters and pacing (100ms writes, 50ms reads).  Zulip posts/replies are
 50/hour and 200/day.  Zulip spacing stays 3 seconds for writes and 500ms for reads.
 Other seats retain their existing limits.  Upstream rate limits still apply.
 
-## Notes relay consumer (AFC-331)
+## Apple Notes through the Operator (AFC-486)
 
-`NOTES_RELAY_CONSUMER` is one fleet knob (registered in `scripts/fleet_knobs/registry.py`, listed under "Fleet knobs" below):  the seat whose bot is the Apple Notes relay consumer.  **Owner action:  create the key `NOTES_RELAY_CONSUMER` with the value `CLAUDE` in this project, `prod`, root path `/`.**  Nothing in the repo writes it.
+Apple Notes requests from the server and cloud seats go to the Operator's notes queue (`docs/protocols/operator-notes.md`), never through Zulip.  Four names, all in this project, `prod`:
 
-| Reader | How it gets the value |
-|---|---|
-| Mac listener, stdio MCP, CLI | `fleet_knobs` (one fetch per process, last-known-good copy).  A `[notes_relay] seat` in `listener.toml` that differs is ignored and the listener then does not consume.  With Infisical unreachable and no usable copy the answer is the default `CLAUDE`, labelled `default CLAUDE (unreachable:...)` in the log line `notes relay consumer ...`.  The stdio MCP reads the knob on the first Notes tool call that needs the consumer, not at start, so a slow fetch never delays an MCP process start. |
-| Hosted Worker | An encrypted Worker binding of the same name, copied at deploy by `scripts/agent-sync-mcp/sync_notes_consumer.py` (DEPLOY.md, "Notes, recall and the guide").  Never in `wrangler.jsonc`.  Unset means `notes_status` answers `not_configured`. |
+| Name | Where | Who reads it |
+|---|---|---|
+| `OPERATOR_API_URL` (its row in "Fleet knobs" below is the generated one) | root `/`, a fleet knob (`scripts/fleet_knobs/registry.py`) | `simple-notes`, the stdio MCP and the Mac runner, through `fleet_knobs`:  the Operator API's https origin.  Empty means not configured.  The Worker has the same origin as its committed `LISTENER_API_URL` var. |
+| `OPERATOR_NOTES_WORKER_KEY` | `/operator`, a secret | the Operator (container start, `server/infisical_env.py`) and the Worker, as its secret `OPERATOR_NOTES_KEY` (DEPLOY.md, "Notes, recall and the guide") |
+| `OPERATOR_NOTES_SERVER_KEY` | `/operator`, a secret | the Operator, and the Hetzner server's CLIs and stdio MCP (`fleet-secrets get OPERATOR_NOTES_SERVER_KEY --path /operator --project ai-fleet-coordinator`, held in memory) |
+| `OPERATOR_NOTES_RUNNER_KEY` | `/operator`, a secret | the Operator, and the Mac runner (`com.jay.operator-notes-runner`, the same `fleet-secrets get`) |
+
+Each key is at least 32 random characters and is never printed, logged or written to a file.  The retired relay's knob `NOTES_RELAY_CONSUMER` (AFC-331) is no longer read by anything.
 
 ## Zulip Outgoing Wake Tokens
 
@@ -164,7 +168,7 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `LANE_SWEEP_MODE` | C5 | enum: report < act < retire | `report` | no | only move toward `report` | act arms merges and retires merged-PR lanes;  retire adds the Phase 3 deletions |
 | `LANE_SWEEP_CAPS` | C5 | caps | `lane_retires_per_run=10,report_posts_per_run=12` | no | only lower a number | sweep action caps |
 | `LANE_SWEEP_OPTIN_REPOS` | C5 | list | empty | no | only remove entries | money-path repos the sweep may act on;  empty means none |
-| `NOTES_RELAY_CONSUMER` | N1 | str | `CLAUDE` | no | nothing | seat whose bot is the Apple Notes relay consumer (the Mac listener's [notes_relay] seat);  notes_status trusts a mark or a refusal reply only from it;  a local [notes_relay] seat that differs is ignored and the listener does not consume;  the Worker gets the same value as a binding at deploy |
+| `OPERATOR_API_URL` | N1 | str | unset | no | nothing | the Operator API's https origin (no path):  where simple-notes, the stdio MCP and the Mac runner send Apple Notes requests off a Mac (docs/protocols/operator-notes.md);  empty means not configured;  the Worker has the same origin as its LISTENER_API_URL var |
 | `APPLE_NOTES_PIN_RETRY` | N1 | bool | `true` | no | only set it to `false` | true lets apple-notes-coding.sh run the pin or unpin Shortcut a second time when the first run misses the note index;  false keeps the single attempt;  the APPLE_NOTES_PIN_RETRY environment variable is only a local narrowing override and can turn the retry off, never on |
 | `CONSULT_ENABLED` | C7 | bool | `false` | no | only set it to `false` | false refuses every consult verb |
 | `FLEET_SHEET_INGEST_ENABLED` | S1 | bool | `true` | no | only set it to `false` | false writes the registry mirror and skips the `recall ingest --source doc` that carries it;  the sheet itself is still written |
