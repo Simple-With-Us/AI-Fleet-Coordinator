@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agent_sync import operator_candidates as OC
 from agent_sync import operator_registration as OREG
@@ -156,6 +157,15 @@ class LocationQuestionTests(_LocationQuestionFixture, unittest.TestCase):
     def test_a_secret_shaped_question_is_withheld(self) -> None:
         out = self.send(question="api_key=sk-" + "abcdef0123456789" * 2 + " (ref %s)" % ENTRY["entry_id"])
         self.assertEqual(out["status"], "refused")
+        self.assertEqual(self.topic_posts(), [])
+
+    def test_a_secret_shaped_route_is_withheld(self) -> None:
+        # The queue scans the route at persistence;  the send boundary scans it again, so
+        # a hand-built caller gets the same refusal (never the value, only the field).
+        for override in ({"channel": "sk-" + "abcdef0123456789" * 2}, {"topic": "sk-" + "abcdef0123456789" * 2}):
+            out = self.send(**override)
+            self.assertEqual(out["status"], "refused", override)
+            self.assertEqual(out["code"], "secret")
         self.assertEqual(self.topic_posts(), [])
 
     def test_an_empty_question_is_refused(self) -> None:
@@ -338,6 +348,61 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
         again = self.send(client=working, now=1001.0)
         self.assertEqual(again["status"], "sent", again["reason"])
         self.assertEqual(len(working.posts), 1)
+
+    def test_an_indeterminate_answer_leaves_delivery_unknown(self) -> None:
+        # Zulip answered, but with no HTTP status the outcome is indeterminate:  the post
+        # may have been processed, so this is unknown - never a definite refusal.
+        failing = _StubClient(post_error=Z.AgentSyncError("odd reply"))
+        first = self.send(client=failing)
+        self.assertEqual(first["status"], "refused")
+        self.assertEqual(first["delivery_status"], OC.DELIVERY_UNKNOWN)
+        working = _StubClient(messages=[])
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(len(working.posts), 1)
+
+    def test_a_landed_ref_with_a_malformed_id_fails_the_readback(self) -> None:
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
+        # The ref is in the topic but its id is unusable:  not absence, not a recovery -
+        # the read-back failed and the delivery stays unknown.
+        broken = [{"id": True, "content": QUESTION, "sender_id": OPERATOR_ID}]
+        working = _StubClient(messages=broken)
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "refused")
+        self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
+        self.assertEqual(working.posts, [])
+
+    def test_a_malformed_cursor_id_fails_the_readback(self) -> None:
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
+        chatter = [
+            {"id": 100 + i, "content": "unrelated chatter %d" % i, "sender_id": OPERATOR_ID}
+            for i in range(ORASK.READ_BACK_PAGE)
+        ]
+        chatter[0]["id"] = -7
+        working = _StubClient(messages=chatter)
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "refused")
+        self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
+        self.assertEqual(working.posts, [])
+
+    def test_the_readback_pages_share_one_deadline(self) -> None:
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
+        with mock.patch.object(ORASK, "READ_BACK_DEADLINE_SECONDS", -1):
+            working = _StubClient(messages=[])
+            again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "refused")
+        self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
+        self.assertIn("ran out of time", again["reason"])
+        self.assertEqual(working.posts, [])
 
     def test_a_rejected_credential_is_named_without_any_secret(self) -> None:
         error = Z.AgentSyncError("unauthorized")

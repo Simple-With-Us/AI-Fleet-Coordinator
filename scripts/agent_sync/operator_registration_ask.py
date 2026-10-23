@@ -62,6 +62,9 @@ def _ledger_path(environment: Mapping[str, str]) -> str:
 #: leaves the delivery unknown rather than guessing.
 READ_BACK_PAGE = 50
 READ_BACK_MAX_PAGES = 10
+#: One absolute deadline shared by every page of a single read-back:  a slow or hanging
+#: topic read must not stall the send path past this, whatever the page count.
+READ_BACK_DEADLINE_SECONDS = 60.0
 
 
 def _question_message_id(
@@ -81,7 +84,10 @@ def _question_message_id(
         ]
     )
     anchor = "newest"
+    deadline = time.monotonic() + READ_BACK_DEADLINE_SECONDS
     for _page in range(READ_BACK_MAX_PAGES):
+        if time.monotonic() > deadline:
+            return None, "the topic read-back ran out of time", False
         params: dict[str, Any] = {
             "anchor": anchor,
             "num_before": READ_BACK_PAGE,
@@ -102,13 +108,26 @@ def _question_message_id(
             if marker not in str(message.get("content") or ""):
                 continue
             message_id = message.get("id")
-            if isinstance(message_id, int) and not isinstance(message_id, bool):
+            if (
+                isinstance(message_id, int)
+                and not isinstance(message_id, bool)
+                and message_id > 0
+            ):
                 return int(message_id), None, False
+            # The ref landed but its id is unusable:  say the read-back failed rather
+            # than guessing absence (a repost would duplicate) or paging on a bad cursor.
+            return None, "the landed question's message id was malformed", False
         if len(messages) < READ_BACK_PAGE:
             return None, None, True
-        ids = [m.get("id") for m in messages if isinstance(m.get("id"), int)]
-        if not ids:
-            return None, "the topic history carried no message ids", False
+        # The page cursor is only sound when every row carries a real positive-int id:
+        # a bool, a zero or a negative id would page the history wrongly, so a malformed
+        # row makes the whole read-back unverifiable rather than silently skipped.
+        ids: list[int] = []
+        for m in messages:
+            mid = m.get("id")
+            if not isinstance(mid, int) or isinstance(mid, bool) or mid <= 0:
+                return None, "the topic history carried a malformed message id", False
+            ids.append(mid)
         anchor = str(min(ids))
     return None, None, False
 
@@ -240,6 +259,17 @@ def send_location_question(
             code="secret",
             field="question",
         )
+    # The route reaches the same API call:  scan it at this boundary too, even though
+    # the queue validated it at persistence - a hand-built caller gets the same refusal.
+    for field, value in (("channel", channel), ("topic", topic)):
+        if secretscan.scan(value, hidden):
+            return _outcome(
+                "refused",
+                "the question was withheld: the route matched the secret scan",
+                delivery_status=OC.DELIVERY_REFUSED,
+                code="secret",
+                field=field,
+            )
 
     path = _ledger_path(environment)
     key = _fingerprint(channel, topic, body)
@@ -345,6 +375,16 @@ def send_location_question(
             return _outcome(
                 "refused",
                 "the location question delivery is unknown (%s): %s" % (status, exc),
+                delivery_status=OC.DELIVERY_UNKNOWN,
+            )
+        if not isinstance(status, int) or isinstance(status, bool):
+            # No HTTP status at all:  what the server did with the post is indeterminate,
+            # so the question may already sit in the topic - keep the key, say unknown,
+            # and let the read-back reconciliation decide any resend.
+            OC._record(path, key, at, window, 0, None, OC.DELIVERY_UNKNOWN)
+            return _outcome(
+                "refused",
+                "the location question delivery is unknown: %s" % exc,
                 delivery_status=OC.DELIVERY_UNKNOWN,
             )
         OC._release(path, key, at, window)

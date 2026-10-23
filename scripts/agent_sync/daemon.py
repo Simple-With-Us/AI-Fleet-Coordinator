@@ -4231,9 +4231,29 @@ class Daemon:
                         env=self.env,
                         home=self.home,
                         owner_user_id=owner,
+                        # The ledger row must outlive every state that can resend:  keep
+                        # it at least until the entry's own deadline (past it the sweep
+                        # drops the entry, so no pass can post for it again) - never let
+                        # a pruned row make a landed question look never-sent.
+                        window=max(
+                            OC.DEDUPE_WINDOW,
+                            float(entry.get("deadline") or 0) - time.time() + 60,
+                        ),
                     )
                     if sent.get("status") == "sent":
                         OREG.mark_notified(db, entry["entry_id"])
+                    sent_status = sent.get("status")
+                    sent_reason = str(sent.get("reason") or "")[:80]
+                    # The log line stays inside the row's guard:  the complete begin,
+                    # send, stamp and log sequence is isolated per row, so one row's
+                    # failure can never abort the rest of the batch.
+                    self.log.write(
+                        "operator-registration-ask",
+                        entry_id=entry.get("entry_id"),
+                        platform=platform,
+                        status=sent_status,
+                        reason=sent_reason,
+                    )
                 except Exception as exc:
                     # One row's failure never aborts the rest of the batch:  each
                     # question is independent, and the un-stamped entry is retried on
@@ -4246,13 +4266,6 @@ class Daemon:
                         error=type(exc).__name__,
                     )
                     continue
-                self.log.write(
-                    "operator-registration-ask",
-                    entry_id=entry["entry_id"],
-                    platform=platform,
-                    status=sent.get("status"),
-                    reason=str(sent.get("reason") or "")[:80],
-                )
         except Exception as exc:
             self.log.write("operator-registration-ask", status="error", error=type(exc).__name__)
 
@@ -4284,8 +4297,22 @@ class Daemon:
             parsed = OREG.parse_answer(message.get("content"))
             if parsed is None:
                 return False
+            # The Operator's own confirmation names the ref and the settled location,
+            # so it parses as an answer.  It is not one:  consume it quietly instead
+            # of refusing it and waking the seat on the daemon's own post.
+            sender_id_raw = message.get("sender_id")
+            operator_id = self._seat_bot_user_id("OPERATOR")
+            if (
+                operator_id is not None
+                and isinstance(sender_id_raw, int)
+                and not isinstance(sender_id_raw, bool)
+                and sender_id_raw == operator_id
+            ):
+                return True
             db = self._registration_db()
-            pending = OREG.pending_entries(db)
+            # Asked entries answer directly;  conflicted ones settle through the same
+            # path (operator_registration.answer re-runs every cross-check).
+            pending = OREG.answerable_entries(db)
             if not pending:
                 return False
             entry = next(

@@ -471,7 +471,10 @@ def answer(
     with L.locked(queue_path(registry_db)):
         data = load(registry_db)
         entry = data["entries"].get(str(entry_id or ""))
-        if not isinstance(entry, dict) or entry["state"] != STATE_ASKED:
+        # An asked entry answers directly;  a conflicted one settles through the same
+        # path - the owner names the true location and every cross-check runs again, so
+        # the confirmation's "settle which is right and I will re-register it" is real.
+        if not isinstance(entry, dict) or entry["state"] not in (STATE_ASKED, STATE_CONFLICT):
             return {"status": "ignored"}
         if word not in LOCATION_VALUES:
             return {
@@ -564,6 +567,15 @@ def pending_entries(registry_db: str) -> list[dict[str, Any]]:
         dict(entry)
         for entry in load(registry_db)["entries"].values()
         if entry["state"] == STATE_ASKED
+    ]
+
+
+def answerable_entries(registry_db: str) -> list[dict[str, Any]]:
+    """The entries an answer may still act on:  asked ones, and conflicts awaiting settlement."""
+    return [
+        dict(entry)
+        for entry in load(registry_db)["entries"].values()
+        if entry["state"] in (STATE_ASKED, STATE_CONFLICT)
     ]
 
 

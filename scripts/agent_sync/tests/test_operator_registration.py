@@ -162,6 +162,31 @@ class OperatorRegistrationTest(unittest.TestCase):
         self.assertEqual(again["entry"]["entry_id"], entry["entry_id"])
         self.assertEqual(len(OREG.load(self.db)["entries"]), 1)
 
+    def test_a_settling_answer_registers_a_conflict(self):
+        entry = self.begin(evidence_location="mac")["entry"]
+        out = self.answer(entry["entry_id"], "cloud")
+        self.assertEqual(out["status"], "conflict")
+        # The confirmation promises it:  a settling answer re-runs every check and registers.
+        settled = self.answer(entry["entry_id"], "mac")
+        self.assertEqual(settled["status"], "registered")
+        self.assertEqual(self.registry.writes[0]["verified_host"], "mac")
+        self.assertEqual(OREG.pending_entries(self.db), [])
+
+    def test_a_mismatched_settling_answer_keeps_the_conflict_open(self):
+        entry = self.begin(evidence_location="mac")["entry"]
+        self.answer(entry["entry_id"], "cloud")
+        again = self.answer(entry["entry_id"], "server")
+        self.assertEqual(again["status"], "conflict")
+        self.assertEqual(again["reason"], OREG.REASON_EVIDENCE_MISMATCH)
+        self.assertEqual(self.registry.writes, [])
+
+    def test_answerable_entries_include_an_unsettled_conflict(self):
+        entry = self.begin(evidence_location="mac")["entry"]
+        self.answer(entry["entry_id"], "cloud")
+        self.assertEqual(OREG.pending_entries(self.db), [])
+        ids = [row["entry_id"] for row in OREG.answerable_entries(self.db)]
+        self.assertEqual(ids, [entry["entry_id"]])
+
     def test_answer_matching_evidence_registers(self):
         entry = self.begin(evidence_location="mac")["entry"]
         out = self.answer(entry["entry_id"], "mac")
@@ -204,13 +229,13 @@ class OperatorRegistrationTest(unittest.TestCase):
 
     def test_secret_shaped_text_is_refused_and_nothing_is_stored(self):
         with self.assertRaises(OREG.RegistrationRefused):
-            self.begin(requester="api_key=sk-" + "abcdef0123456789" * 2)
+            self.begin(requester="api_key=sk-" + os.urandom(16).hex())
         self.assertEqual(OREG.pending_entries(self.db), [])
 
     def test_a_secret_shaped_route_is_refused_and_nothing_is_stored(self):
         with self.assertRaises(OREG.RegistrationRefused):
             self.begin(
-                route={"channel": "agent-sync", "topic": "sk-" + "abcdef0123456789" * 2},
+                route={"channel": "agent-sync", "topic": "sk-" + os.urandom(16).hex()},
                 route_topics=[{"channel": "agent-sync", "topic": "t", "expires": None}],
             )
         self.assertEqual(OREG.pending_entries(self.db), [])

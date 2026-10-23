@@ -736,7 +736,8 @@ def registrations_for_native_id(
     arrives without a location, and the answer is the set of locations that id is currently
     lettered at.  Only live letters count:  a session whose letter was retired reads as
     unlettered, so the flow asks again and the register path resumes its record with a fresh
-    letter.  An empty list means unlettered, one row is the short-circuit, and several rows
+    letter.  A closed session is not a live registration either - the same filter every
+    other registry read (resolve_ref, the letter reads) applies.  An empty list means unlettered, one row is the short-circuit, and several rows
     are the contradiction the owner settles - the same id lettered on both the Mac and the
     server is never merged or picked between here.
 
@@ -765,7 +766,7 @@ def registrations_for_native_id(
             " FROM sessions s"
             " JOIN alias_assignments a"
             "   ON a.record_id = s.record_id AND a.platform = ? AND a.retired_at IS NULL"
-            " WHERE s.platform = ? AND s.native_session_id = ?"
+            " WHERE s.platform = ? AND s.native_session_id = ? AND s.closed_at IS NULL"
             " ORDER BY s.registered_at",
             (namespace, namespace, native),
         ).fetchall()

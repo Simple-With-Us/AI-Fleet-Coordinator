@@ -1877,6 +1877,9 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertEqual(send.call_count, 1)
         self.assertEqual(send.call_args.kwargs["channel"], "agent-sync")
         self.assertEqual(send.call_args.kwargs["topic"], "AFC Work")
+        # The ledger row outlives every state that can resend:  the window is the
+        # entry's own 24h deadline, not the 15-minute dedupe default.
+        self.assertGreater(send.call_args.kwargs["window"], 23 * 3600)
         pending = D.OREG.pending_entries(db)
         self.assertEqual(len(pending), 1)
         self.assertEqual(pending[0].get("route"), {"channel": "agent-sync", "topic": "AFC Work"})
@@ -1987,7 +1990,16 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
         daemon = self.daemon()
         db = self._registry(daemon)
-        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "refused", "reason": "offline"}) as send:
+        with mock.patch.object(
+            D.ORASK,
+            "send_location_question",
+            # A provably-unsent failure:  retryable, never a terminal refusal.
+            return_value={
+                "status": "refused",
+                "reason": "offline",
+                "delivery_status": D.OC.DELIVERY_RETRYABLE,
+            },
+        ) as send:
             daemon.maybe_ask_registrations(self._rows(), {})
             daemon.maybe_ask_registrations(self._rows(), {})
         self.assertEqual(send.call_count, 2)
@@ -2163,6 +2175,51 @@ class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
         self.assertTrue(self._answer(daemon, entry, 4242))
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
         self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+
+    def test_another_seats_bot_may_not_answer(self):
+        # The bound bot is the ENTRY's seat bot:  a different seat's bot in the same
+        # topic is as much a stranger as any other poster (cross-seat refusal).
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242)
+        daemon.seats["CURSOR"] = types.SimpleNamespace(
+            me=types.SimpleNamespace(user_id=5555)
+        )
+        # A stub seat is not a runner:  drop it again before the harness shuts the
+        # daemon down (cleanups run last-in-first-out, so this beats the shutdown).
+        self.addCleanup(daemon.seats.pop, "CURSOR", None)
+        self.assertFalse(self._answer(daemon, entry, 5555))
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
+
+    def test_the_operators_own_confirmation_is_consumed_quietly(self):
+        # The confirmation names the ref and the settled location, so it parses as an
+        # answer;  the Operator's own post must be consumed without a refusal or a wake.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["OPERATOR"] = types.SimpleNamespace(
+            me=types.SimpleNamespace(user_id=7777)
+        )
+        self.addCleanup(daemon.seats.pop, "OPERATOR", None)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                {
+                    "content": "Registered:  the chat is on mac, letter A (ref %s)."
+                    % entry["entry_id"],
+                    "sender_id": 7777,
+                },
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertTrue(consumed)
+        self.assertEqual(send.call_count, 0)
+        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertNotIn("operator-registration-answer", log)
 
     def test_another_bot_in_the_same_topic_may_not_answer(self):
         daemon = self.daemon()
