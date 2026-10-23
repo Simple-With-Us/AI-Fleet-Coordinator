@@ -143,6 +143,35 @@ def show_binding_code(code):
         raise StopBridge("binding_console_unavailable") from None
 
 
+def failure(error):
+    """Report fixed repair targets without exposing provider/credential text."""
+    code = str(error)
+    if code in {"binding_configuration_missing", "missing_hash_key"}:
+        source = "approved_Infisical_runtime"
+    elif code in {"unsafe_state_directory", "unsafe_state_file", "poller_already_running"}:
+        source = "durable_binding_state"
+    elif code in {
+        "schema_error",
+        "schema_limits",
+        "response_too_large",
+        "invalid_json",
+        "redirect_refused",
+        "network_error",
+        "creator_not_verified",
+    } or re.fullmatch(r"http_[1-5][0-9]{2}|rate_limited:[0-9]{1,6}", code):
+        source = "WhatsApp_provider"
+    elif code in {
+        "invalid_binding_code",
+        "binding_window_closed",
+        "binding_candidate_not_unique",
+        "binding_console_unavailable",
+    }:
+        source = "supervised_binding"
+    else:
+        source, code = "supervised_binding", "binding_failed"
+    return {"ok": False, "reason": "binding_failed", "source": source, "detail": code}
+
+
 if __name__ == "__main__":
     import os
     import sys
@@ -172,6 +201,6 @@ if __name__ == "__main__":
             print(json.dumps(pin))
         finally:
             state.close()
-    except (BridgeError, ValueError):
-        print('{"ok":false,"reason":"binding_failed"}', file=sys.stderr)
+    except (BridgeError, ValueError) as error:
+        print(json.dumps(failure(error)), file=sys.stderr)
         sys.exit(1)

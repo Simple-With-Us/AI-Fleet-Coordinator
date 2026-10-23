@@ -73,7 +73,11 @@ def arguments(mode, release, request_id=None):
     if mode not in CREDENTIAL_NAMES:
         raise ValueError("invalid_start_mode")
     if mode == "operator":
-        if not isinstance(request_id, str) or str(uuid.UUID(request_id)) != request_id:
+        try:
+            canonical_id = str(uuid.UUID(request_id)) if isinstance(request_id, str) else None
+        except ValueError:
+            raise ValueError("invalid_operator_request") from None
+        if canonical_id is None or canonical_id != request_id:
             raise ValueError("invalid_operator_request")
         module, names, folder = "whatsapp_bridge.operator_wake", OPERATOR_NAMES, OPERATOR_FOLDER
     else:

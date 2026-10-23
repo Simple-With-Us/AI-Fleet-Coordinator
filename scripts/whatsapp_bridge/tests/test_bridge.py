@@ -388,8 +388,9 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(args[:4], ["--path", folder, "--only", ",".join(names)])
             self.assertNotIn("WHATSAPP_API_KEY", OPERATOR_NAMES)
         self.assertNotEqual(CREDENTIAL_NAMES["operator"], CREDENTIAL_NAMES["poll"])
-        with self.assertRaises(ValueError):
-            arguments("operator", Path("/release"), "not-an-id")
+        for invalid in ("not-an-id", "", None, True, request_id.upper() + " "):
+            with self.assertRaisesRegex(ValueError, "^invalid_operator_request$"):
+                arguments("operator", Path("/release"), invalid)
         with self.assertRaises(ValueError):
             arguments("poll", Path("/release"), request_id)
 
@@ -614,6 +615,24 @@ class BoundaryRegressionTests(unittest.TestCase):
         with contextlib.redirect_stderr(output):
             self.assertEqual(main([], {}), 1)
         self.assertEqual(json.loads(output.getvalue())["required"], "WA_WORKER_URL")
+
+    def test_binding_failure_reports_only_fixed_source_and_detail(self):
+        from whatsapp_bridge.binding import failure
+
+        for code, source in (
+            ("binding_configuration_missing", "approved_Infisical_runtime"),
+            ("unsafe_state_directory", "durable_binding_state"),
+            ("http_403", "WhatsApp_provider"),
+            ("network_error", "WhatsApp_provider"),
+            ("binding_console_unavailable", "supervised_binding"),
+        ):
+            result = failure(StopBridge(code))
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["source"], source)
+            self.assertEqual(result["detail"], code)
+        unknown = failure(ValueError("synthetic-sensitive-provider-text"))
+        self.assertEqual(unknown["detail"], "binding_failed")
+        self.assertNotIn("synthetic-sensitive-provider-text", json.dumps(unknown))
 
     def test_binding_cli_normalizes_key_before_hashing_owner_identity(self):
         import contextlib
