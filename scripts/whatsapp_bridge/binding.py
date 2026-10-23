@@ -133,7 +133,9 @@ if __name__ == "__main__":
         state = State(os.environ["WA_STATE_DIRECTORY"])
         try:
             opened_at = int(time.time())
-            key = os.environ["WA_BRIDGE_HMAC_KEY_JET"]
+            key = os.environ["WA_BRIDGE_HMAC_KEY_JET"].strip()
+            if len(key) < 32:
+                raise StopBridge("binding_configuration_missing")
             code = state.begin_binding(key, opened_at)
             print(
                 "Send this one-time code in the intended WhatsApp Jet chat within ten minutes: "

@@ -113,6 +113,7 @@ test("callback failure retries use stable event ids and queue leases prevent con
   assert.equal(pending.keys.length, 2, "coalesce one batch into one turn");
   assert.equal(await s.gate.waClaim({}), null);
   await s.gate.waSettle({ ...pending, delivered: false });
+  now += 30001;
   const ids = [];
   const failure = async (_url, init) => { ids.push(JSON.parse(init.body).eventId); return new Response("down", { status: 400 }); };
   await deliverPending(s.gate, failure);
@@ -241,6 +242,41 @@ test("35-day content-free ledgers expire; provider-age cutoff still prevents his
   while (await wa.sweep(s.store,now)) {}
   assert.equal((await s.gate.waIngest({ body:b,owner })).stored,0);
   assert.equal((await s.store.list({prefix:"wa:seen:"})).size,0);
+});
+
+test("subscription refresh preserves the re-ring delay while allowing blocked delivery recovery", async () => {
+  let now = NOW; const s = setup(() => now);
+  await s.gate.waIngest({ body: batch([msg(62)]), owner });
+  const first = await s.gate.waClaim({ destination: "sub:version1" });
+  await s.gate.waSettle({ ...first, delivered: true });
+  assert.equal(await s.gate.waClaim({ destination: "sub:version2" }), null);
+  now += wa.RERING_MS + 1;
+  for (let i = 0; i < 3; i++) {
+    const pending = await s.gate.waClaim({ destination: "sub:version2" });
+    await s.gate.waSettle({ ...pending, delivered: false, permanent: true });
+    if (i < 2) now += wa.RERING_MS + 1;
+  }
+  assert.equal(await s.gate.waClaim({ destination: "sub:version3" }), null);
+  now += wa.RERING_MS + 1;
+  assert.equal(await s.gate.waClaim({ destination: "sub:version2" }), null);
+  assert.equal((await s.gate.waClaim({ destination: "sub:version3" })).source, "authenticated_owner");
+});
+
+test("Operator requests recover an older pending wake without an ingestion poller", async () => {
+  let now = NOW; const s = setup(() => now);
+  const op = () => ({ contract: "wa-operator/1", seat: "JET", sent_at: Math.floor(Date.now() / 1000), request_id: randomUUID() });
+  const original = op();
+  assert.equal((await request(s.gate, s.fetchFn, original, "operator")).status, 200);
+  assert.equal(s.calls.length, 0, "no subscription yet");
+  now += wa.OPERATOR_DEBOUNCE_MS + 1;
+  await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  const refused = op();
+  assert.equal((await request(s.gate, s.fetchFn, refused, "operator")).status, 429);
+  assert.equal(s.calls.length, 1, "busy request recovers the original pending id");
+  assert.equal(await s.store.get(`wa:operator:${refused.request_id}`), undefined);
+  assert.equal((await s.store.list({ prefix: "wa:pending:operator:" })).size, 0);
+  assert.equal((await request(s.gate, s.fetchFn, original, "operator")).status, 200);
+  assert.equal(s.calls.length, 1, "the recovered id remains deduplicated");
 });
 
 test("temporary MCP stop is retryable; audit/delivery errors preserve ingestion acknowledgments", async () => {

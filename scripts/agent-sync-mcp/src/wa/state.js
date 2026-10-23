@@ -101,12 +101,12 @@ export async function claim(store, { destination = "" } = {}, now = Date.now()) 
     const ownerGate = (await tx.get("wa:owner_gate")) ?? {};
     for (const [k, row] of rows) {
       if (row.lease_until > now) continue;
-      if (row.source === "authenticated_owner" && ownerGate.destination === destination && (ownerGate.next_at > now || ownerGate.blocked)) continue;
-      if (row.destination === destination && (row.next_ring_at > now || row.blocked)) continue;
+      if (row.source === "authenticated_owner" && (ownerGate.next_at > now || (ownerGate.destination === destination && ownerGate.blocked))) continue;
+      if (row.next_ring_at > now || (row.destination === destination && row.blocked)) continue;
       const token = crypto.randomUUID();
       const keys = [];
       for (const [candidate, item] of rows) {
-        if (item.source !== row.source || item.lease_until > now || (item.destination === destination && (item.next_ring_at > now || item.blocked))) continue;
+        if (item.source !== row.source || item.lease_until > now || item.next_ring_at > now || (item.destination === destination && item.blocked)) continue;
         await tx.put(candidate, { ...item, token, destination, ring: row.ring ?? 0, lease_until: now + 30000 });
         keys.push(candidate);
       }

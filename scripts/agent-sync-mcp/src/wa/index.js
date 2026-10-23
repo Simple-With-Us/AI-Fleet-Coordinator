@@ -61,7 +61,18 @@ export async function serveWa(request, env, config, gate, fetchFn = fetch) {
   const checked = await verifyRequest(bytes, request.headers.get(WA_HEADER), rawKey, kind);
   if (checked.status !== 200) return reply({ ok: false }, checked.status);
   const result = kind === "ingest" ? await gate.waIngest({ body: checked.body, owner, known: [rawKey, ...otherKeys] }) : await gate.waOperator({ requestId: checked.body.request_id });
-  if (!result.ok) return result.reason === "operator_busy" ? Response.json(result, { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(result.retry_after_s) } }) : reply(result, 403);
+  if (!result.ok) {
+    if (result.reason === "operator_busy") {
+      // A new request can recover an older pending wake even if the WhatsApp
+      // poller is down.  The new id remains unaccepted; never replay it blindly.
+      if (config.whatsappWakeEnabled) {
+        try { await deliverPending(gate, fetchFn); }
+        catch { console.log(JSON.stringify({ event: "wa_delivery_failed" })); }
+      }
+      return Response.json(result, { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(result.retry_after_s) } });
+    }
+    return reply(result, 403);
+  }
   let delivery = { delivered: 0, disabled: true };
   if (config.whatsappWakeEnabled) {
     try { delivery = await deliverPending(gate, fetchFn); }

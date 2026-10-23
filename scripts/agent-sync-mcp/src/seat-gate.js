@@ -29,7 +29,11 @@ export class SeatGate extends DurableObject {
     await this.store.setAlarm(Date.now() + (more ? 1000 : 3600000));
   }
   waRead(options) { return wa.read(this.store, options); }
-  waOperator(options) { return wa.operator(this.store, options); }
+  async waOperator(options) {
+    const result = await wa.operator(this.store, options);
+    if (result.ok && await this.store.getAlarm() === null) await this.store.setAlarm(Date.now() + 3600000);
+    return result;
+  }
   waClaim(options) { return wa.claim(this.store, options); }
   waSettle(options) { return wa.settle(this.store, options); }
   eventSubscriptions(options) { return state.eventSubscriptions(this.store, options); }

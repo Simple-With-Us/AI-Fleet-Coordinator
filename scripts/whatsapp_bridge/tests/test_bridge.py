@@ -360,6 +360,38 @@ class LaunchTests(unittest.TestCase):
 
 
 class BoundaryRegressionTests(unittest.TestCase):
+    def test_binding_cli_normalizes_key_before_hashing_owner_identity(self):
+        import contextlib
+        import io
+        import runpy
+
+        code = "JET-0123456789ABCDEF"
+        output = io.StringIO()
+
+        def request(url, headers, body=None):
+            return {"success": True} if body is not None else payload(code)
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(
+                os.environ,
+                {
+                    "WHATSAPP_API_KEY": "synthetic-api-key",
+                    "WA_BRIDGE_HMAC_KEY_JET": " \n" + "k" * 64 + "\n ",
+                    "WA_STATE_DIRECTORY": directory,
+                },
+            ),
+            patch("whatsapp_bridge.bridge.request_json", request),
+            patch("secrets.token_hex", return_value="0123456789abcdef"),
+            patch("time.time", return_value=1792700000),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            runpy.run_module("whatsapp_bridge.binding", run_name="__main__")
+        pin = json.loads(output.getvalue())
+        self.assertEqual(pin["agent_hash"], digest("123456", "k" * 64))
+        self.assertEqual(pin["sender_hash"], digest("user:owner", "k" * 64))
+
     def test_http_classification_user_agent_and_no_redirect(self):
         import urllib.error
         from email.message import Message
