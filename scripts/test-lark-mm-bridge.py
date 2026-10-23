@@ -1469,7 +1469,7 @@ class LarkSurfaceTests(unittest.TestCase):
         bridge.active_ids = set()
         bridge.seen_lock = threading.Lock()
         bridge.state_lock = threading.Lock()
-        bridge.turns = bridge_mod.queue.Queue()
+        bridge.turns = bridge_mod.TurnQueue(bridge.args.allowed_sender)
         bridge.state_file = Path(self.state_dir.name) / "state.json"
         bridge.signal_dir = Path(self.state_dir.name) / bridge_mod.SIGNAL_DIRNAME
         bridge.signal_done_dir = bridge.signal_dir / "done"
@@ -1674,8 +1674,8 @@ class LarkSurfaceTests(unittest.TestCase):
 
     def test_one_bad_signal_does_not_stop_the_later_ones(self):
         bridge = self.make_bridge()
-        first = self.write_signal(bridge, "sig-9.json", {"signal_id": "sig-9", "text": ""})
-        second = self.write_signal(
+        self.write_signal(bridge, "sig-9.json", {"signal_id": "sig-9", "text": ""})
+        self.write_signal(
             bridge, "sig-10.json", {"signal_id": "sig-10", "text": "wake up", "chat_id": "oc_1"}
         )
         sent = []
@@ -1686,11 +1686,270 @@ class LarkSurfaceTests(unittest.TestCase):
 
         with (
             mock.patch.object(bridge_mod, "run", fake_run),
-            mock.patch.object(bridge, "_handle_signal", side_effect=[RuntimeError("boom"), None]),
+            mock.patch.object(
+                bridge, "_handle_signal", side_effect=[RuntimeError("boom"), None]
+            ) as handler,
         ):
             bridge._signal_worker_once()
-        # The second file is still handed to the handler.
-        self.assertTrue(first.exists() or second.exists())
+        # Both files are handed to the handler:  one failure does not skip the
+        # next.  The sorted order puts sig-10 first, so the file that raises
+        # is the first one.
+        self.assertEqual(handler.call_count, 2)
+        self.assertEqual(
+            [call.args[0].name for call in handler.call_args_list],
+            ["sig-10.json", "sig-9.json"],
+        )
+
+    def test_the_protocol_names_the_ok_outcome_and_calls_pending_transient(self):
+        """The protocol doc lists the outcomes the signal path records.
+
+        The doc is what an operator reads to learn what a filed signal
+        means, so it has to name the same outcomes the code records.
+        """
+        doc = (
+            Path(__file__).resolve().parent.parent / "docs" / "protocols" / "lark-mm-bridge.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("recorded as ok", doc)
+        self.assertIn("files it as refused", doc)
+        self.assertIn("files it as unknown", doc)
+        self.assertIn("Pending is not one of those outcomes", doc)
+        self.assertNotIn("one of three outcomes", doc)
+
+    def test_the_signal_cli_scans_the_text_before_it_is_written(self):
+        """The scan runs before the payload is built, and names the field.
+
+        A credential-shaped text must never reach the disk, and the refusal
+        has to say which field was refused without echoing the text.
+        """
+        on_disk = []
+        real_scan = bridge_mod.scan_secret
+
+        def recording_scan(text):
+            on_disk.append(
+                sorted(
+                    path.name
+                    for path in (Path(self.state_dir.name) / bridge_mod.SIGNAL_DIRNAME).glob("*")
+                )
+            )
+            return real_scan(text)
+
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(bridge_mod, "scan_secret", recording_scan),
+            redirect_stderr(stderr),
+        ):
+            code = bridge_mod.main(
+                ["--signal", self.credential_shaped_text(), "--state-dir", self.state_dir.name]
+            )
+        self.assertEqual(code, 2)
+        # Nothing was on the disk when the scan ran.
+        self.assertEqual(on_disk, [[]])
+        message = stderr.getvalue()
+        self.assertIn("secret_in_text", message)
+        self.assertIn("field=text", message)
+        # The text itself is never echoed.
+        self.assertNotIn(self.credential_shaped_text(), message)
+        # And nothing was written.
+        self.assertEqual(
+            sorted(
+                path.name
+                for path in (Path(self.state_dir.name) / bridge_mod.SIGNAL_DIRNAME).glob("*")
+            ),
+            [],
+        )
+
+    def test_a_deferred_retry_stays_pending_and_is_not_filed_as_unknown(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(
+            bridge,
+            "sig-defer.json",
+            {
+                "signal_id": "sig-defer",
+                "text": "wake up",
+                "chat_id": "oc_1",
+                "next_attempt": time.time() + 300,
+            },
+        )
+        with mock.patch.object(bridge_mod, "run", side_effect=AssertionError("sent")):
+            bridge._handle_signal(signal)
+        # The signal is not finished, so it stays where the watcher finds it.
+        self.assertTrue(signal.exists())
+        self.assertFalse((bridge.signal_done_dir / "sig-defer.json").exists())
+        record = json.loads(signal.read_text(encoding="utf-8"))
+        self.assertEqual(record["outcome"], "pending")
+        self.assertEqual(record["detail"], "retry_not_due")
+
+    def test_a_signal_failure_records_only_the_allow_listed_error_fields(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(
+            bridge, "sig-err.json", {"signal_id": "sig-err", "text": "wake up", "chat_id": "oc_1"}
+        )
+        raw = (
+            '{"error":{"code":"rate_limited"},"request_id":"req-9"} '
+            + self.credential_shaped_text()
+        )
+        with mock.patch.object(bridge_mod, "run", side_effect=bridge_mod.CommandError(raw)):
+            bridge._handle_signal(signal)
+        record = self.read_outcome(bridge, "sig-err.json")
+        detail = record["detail"]
+        # The raw text of the error is not written down:  it can carry a
+        # response body, a request payload or a credential.
+        self.assertNotIn(raw, detail)
+        self.assertNotIn(self.credential_shaped_text(), detail)
+        # Only the normalized name and the allow-listed fields survive.
+        self.assertIn("command_error", detail)
+        self.assertIn("code=rate_limited", detail)
+        self.assertIn("request_id=req-9", detail)
+
+    def test_a_signal_with_a_malformed_queued_field_is_refused(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(
+            bridge,
+            "sig-queued.json",
+            {
+                "signal_id": "sig-queued",
+                "text": "wake up",
+                "chat_id": "oc_1",
+                "queued": "false",
+            },
+        )
+        with mock.patch.object(bridge_mod, "run", side_effect=AssertionError("sent")):
+            bridge._handle_signal(signal)
+        record = self.read_outcome(bridge, "sig-queued.json")
+        # A malformed field is refused with a precise field error, and the
+        # turn is not silently dropped.
+        self.assertEqual(record["outcome"], "refused")
+        self.assertEqual(record["detail"], "invalid_field:queued")
+        self.assertTrue(bridge.turns.empty())
+
+    def test_the_owner_goes_first_for_a_chat_and_a_peer_is_never_starved(self):
+        bridge = self.make_bridge()
+        # The Operator's signal is queued before the owner's own message.
+        signal = self.write_signal(
+            bridge,
+            "sig-order.json",
+            {"signal_id": "sig-order", "text": "wake up", "chat_id": "oc_1"},
+        )
+
+        def fake_run(command, stdin_text=None, timeout=120, env=None):
+            return json.dumps({"message_id": "om_sig"})
+
+        with mock.patch.object(bridge_mod, "run", fake_run):
+            bridge._handle_signal(signal)
+        bridge._handle(self.owner_message("om_owner", "are you there", chat_id="oc_1"))
+        # The owner's own message is the one he is waiting for, so it goes
+        # before the peer signal for the same chat.
+        self.assertEqual(bridge.turns.get_nowait()[0], "om_owner")
+        self.assertEqual(bridge.turns.get_nowait()[0], "om_sig")
+        # A peer that has waited past the bound is served even while owners
+        # keep arriving, so a signal is never starved.
+        turns = bridge_mod.TurnQueue(["ou_ok"], max_peer_wait=0.0)
+        turns.put(("om_peer", "oc_1", "signal", bridge_mod.OPERATOR_SENDER, 0))
+        turns.put(("om_owner", "oc_1", "mine", "ou_ok", 0))
+        self.assertEqual(turns.get_nowait()[0], "om_peer")
+
+    def test_a_pending_signal_carries_its_outcome_and_detail(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(
+            bridge,
+            "sig-pending.json",
+            {"signal_id": "sig-pending", "text": "wake up", "chat_id": "oc_1"},
+        )
+        with mock.patch.object(
+            bridge_mod, "run", side_effect=bridge_mod.CommandError("429 rate limit")
+        ):
+            bridge._handle_signal(signal)
+        record = json.loads(signal.read_text(encoding="utf-8"))
+        # The retry path is recorded like any other, so the record says what
+        # happened and why.
+        self.assertEqual(record["outcome"], "pending")
+        self.assertIn("retryable", record["detail"])
+        self.assertEqual(record["attempts"], 1)
+
+    def test_a_leftover_temporary_file_is_not_read_as_a_signal(self):
+        bridge = self.make_bridge()
+        # A crash between the two writes of an atomic write leaves a temp
+        # file in the signal directory.
+        leftover = bridge.signal_dir / ".tmp-crash.json"
+        leftover.write_text(
+            json.dumps({"signal_id": "tmp", "text": "wake up", "chat_id": "oc_1"}),
+            encoding="utf-8",
+        )
+        self.write_signal(
+            bridge,
+            "sig-real.json",
+            {"signal_id": "sig-real", "text": "wake up", "chat_id": "oc_1"},
+        )
+        sent = []
+
+        def fake_run(command, stdin_text=None, timeout=120, env=None):
+            sent.append(command)
+            return json.dumps({"message_id": "om_sig"})
+
+        with mock.patch.object(bridge_mod, "run", fake_run):
+            bridge._signal_worker_once()
+        # Only the real signal is delivered:  the temporary file is not one.
+        self.assertEqual(len(sent), 1)
+        self.assertTrue(leftover.exists())
+        # The temporary file of an atomic write does not carry a suffix the
+        # watcher matches.
+        seen = {}
+        real_mkstemp = tempfile.mkstemp
+
+        def recording_mkstemp(*args, **kwargs):
+            seen.update(kwargs)
+            return real_mkstemp(*args, **kwargs)
+
+        with mock.patch.object(bridge_mod.tempfile, "mkstemp", recording_mkstemp):
+            bridge_mod._write_json_atomic(bridge.signal_dir / "sig-x.json", {"outcome": "ok"})
+        self.assertEqual(seen.get("suffix"), ".tmp")
+
+    def test_a_signal_whose_record_cannot_be_written_is_not_recorded_as_ok(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(
+            bridge, "sig-fail.json", {"signal_id": "sig-fail", "text": "wake up", "chat_id": "oc_1"}
+        )
+
+        def fake_run(command, stdin_text=None, timeout=120, env=None):
+            return json.dumps({"message_id": "om_sig"})
+
+        with (
+            mock.patch.object(bridge_mod, "run", fake_run),
+            mock.patch.object(bridge, "_write_signal", return_value=False),
+        ):
+            bridge._handle_signal(signal)
+        record = self.read_outcome(bridge, "sig-fail.json")
+        # The step was not durable, so the signal cannot claim it.
+        self.assertEqual(record["outcome"], "unknown")
+        self.assertEqual(record["detail"], "signal_write_failed")
+
+    def test_a_duplicate_event_does_not_move_the_chat_the_signals_go_to(self):
+        bridge = self.make_bridge()
+        bridge._handle(self.owner_message("om_1", "hello", chat_id="oc_home"))
+        bridge.turns.get_nowait()
+        # The same message is delivered again, from an older chat.
+        bridge._handle(self.owner_message("om_1", "hello", chat_id="oc_old"))
+        # A signal that names no chat of its own still goes to the chat the
+        # owner last wrote in.
+        self.assertEqual(bridge.last_chat_id, "oc_home")
+
+    def test_each_refused_signal_is_filed_with_its_own_reason(self):
+        bridge = self.make_bridge()
+        broken = bridge.signal_dir / "sig-broken.json"
+        broken.write_text("not json at all", encoding="utf-8")
+        self.write_signal(bridge, "sig-empty.json", {"signal_id": "sig-empty", "text": ""})
+        self.write_signal(
+            bridge,
+            "sig-secret.json",
+            {"signal_id": "sig-secret", "text": self.credential_shaped_text()},
+        )
+        for name in ("sig-broken.json", "sig-empty.json", "sig-secret.json"):
+            with mock.patch.object(bridge_mod, "run", side_effect=AssertionError("sent")):
+                bridge._handle_signal(bridge.signal_dir / name)
+        # Each refusal says which one it was.
+        self.assertEqual(self.read_outcome(bridge, "sig-broken.json")["detail"], "invalid_json")
+        self.assertEqual(self.read_outcome(bridge, "sig-empty.json")["detail"], "empty_text")
+        self.assertEqual(self.read_outcome(bridge, "sig-secret.json")["detail"], "secret_in_text")
 
     def test_the_done_directory_is_pruned(self):
         bridge = self.make_bridge()
