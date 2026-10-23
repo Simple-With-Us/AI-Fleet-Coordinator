@@ -1751,7 +1751,7 @@ class Daemon:
                 R.LeaseView(
                     lease_id,
                     platform=platform,
-                    topics=L.lease_topics(lease, now).keys(),
+                    topics=self.lease_topic_keys(lease, now),
                     mentions=bool(lease.get("mentions")),
                     wake_capable=capable,
                     posted=[p for p in lease.get("posted") or [] if isinstance(p, int)],
@@ -1763,12 +1763,29 @@ class Daemon:
             )
         return views
 
+    def lease_topic_keys(self, lease: Mapping[str, Any], now: float) -> list[str]:
+        """The topic keys a lease watches, with a retired channel name resolved.
+
+        The router matches on the key, so a lease written before the rename still names
+        the old channel and would never match a message in the live one.  The name is
+        resolved here as well as where the lease is written, so a lease that predates the
+        fix keeps working.
+        """
+        return [
+            L.topic_key(
+                Z.resolve_channel(str(entry.get("channel") or ""), self.env),
+                str(entry.get("topic") or ""),
+            )
+            for entry in L.lease_topics(lease, now).values()
+        ]
+
     def backfill_topics(self, runner: SeatRunner) -> list[tuple[str, str]]:
         now = self.clock.time()
         found: dict[str, tuple[str, str]] = {}
         for lease_id in L.list_lease_ids(runner.paths):
             for entry in L.lease_topics(L.load_lease(runner.paths, lease_id), now).values():
-                channel, topic = str(entry.get("channel") or ""), str(entry.get("topic") or "")
+                channel = Z.resolve_channel(str(entry.get("channel") or ""), self.env)
+                topic = str(entry.get("topic") or "")
                 if channel and topic:
                     found[L.topic_key(channel, topic)] = (channel, topic)
         for key in list(runner.followed):

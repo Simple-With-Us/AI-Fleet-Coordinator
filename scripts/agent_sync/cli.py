@@ -307,6 +307,7 @@ class Agent:
             return self._users
 
     def stream_id(self, channel: str) -> int:
+        channel = Z.resolve_channel(channel, self.rt.env)
         with self._lock:
             known = self._stream_ids.get(channel)
         if known is not None:
@@ -691,6 +692,25 @@ def _channel(value: str) -> str:
     if not channel:
         raise argparse.ArgumentTypeError("channel must not be empty")
     return channel
+
+
+def _resolve_channel_args(
+    args: argparse.Namespace, env: Mapping[str, str] | None
+) -> argparse.Namespace:
+    """A channel name the caller typed resolves to the channel it means.
+
+    The realm renamed the fleet's coordination channel and left the old name behind as a
+    tombstone stream, so a caller that still names it has to land in the live channel.
+    The name is resolved once, here, so every command below works with the channel the
+    fleet reads.
+    """
+    for name in ("channel", "new_channel"):
+        value = getattr(args, name, None)
+        if isinstance(value, str):
+            setattr(args, name, Z.resolve_channel(value, env))
+        elif isinstance(value, list):
+            setattr(args, name, [Z.resolve_channel(v, env) for v in value])
+    return args
 
 
 def _positive_int(value: str) -> int:
@@ -2859,6 +2879,8 @@ def main(
             args = parser.parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 2)
+
+    args = _resolve_channel_args(args, rt.env)
 
     previous = None
     if threading.current_thread() is threading.main_thread():
