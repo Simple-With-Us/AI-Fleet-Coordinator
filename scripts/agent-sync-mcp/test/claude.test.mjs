@@ -89,5 +89,6 @@ test("CLAUDE canonical email is required; other seats keep their existing bindin
     "GROK-WEB": { key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" },
     ECHO: { key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" },
     WISE: { key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE" },
+    MA: { key: "ZULIP_KEY_MA", email: "ZULIP_EMAIL_MA" },
   });
 });
