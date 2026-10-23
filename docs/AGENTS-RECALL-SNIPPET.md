@@ -1,6 +1,6 @@
 # AGENTS.md fleet-recall stanza (paste into every app)
 
-Owner 2026-09-02.  Two ASCII spaces between sentences.
+Owner 2026-09-02.  A real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23).
 
 ```
 ## Fleet recall

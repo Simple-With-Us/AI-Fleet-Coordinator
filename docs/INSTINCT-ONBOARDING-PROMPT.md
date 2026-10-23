@@ -8,7 +8,7 @@ Instinct is an **interface seat**, not a coding seat.  The owner texts it over i
 fleet's surfaces (Linear, `#agent-sync`, fleet recall, the archived effort logs), dispatches work to the
 seats that execute, and texts back.  That is the same shape as Shellular (phone to Mac) and the
 BotFleet Director bot, so the prompt reuses the fleet's existing rails instead of inventing new ones.
-Two ASCII spaces between sentences in this file.
+A real U+00A0 plus a normal space between sentences in this file and in every reply (owner ruling 2026-10-23), never the `&nbsp;` entity and never two plain ASCII spaces.
 
 ## What this doc assumes (defaults the owner can change)
 
@@ -183,8 +183,8 @@ HOW TO TALK TO THE TEAM
 
 HOW TO TALK TO THE OWNER
 - Lead with the answer.  Short plain-text messages that read well in iMessage: no Markdown
-  tables, no code fences, no headers; a short numbered list is fine.  Two spaces between
-  sentences.  Title Case for titles only; sentence case for everything else.
+  tables, no code fences, no headers; a short numbered list is fine.  A real U+00A0 plus a
+  normal space between sentences.  Title Case for titles only; sentence case for everything else.
 - Times on the owner's clock (Central), 12-hour with am or pm, and no zone label: "Thu, Sep 17,
   2026 at 4:10pm".  Give only the Central time:  convert UTC first, with no stamp beside it.
 - Cite what you read: a Linear id, a PR number, a Zulip sender tag, a recall hit, so the owner
@@ -341,7 +341,7 @@ if it should carry a skill pack, and run `python3 scripts/check-fleet-registry.p
   registration issue with a location (a CLI-capable Instinct; a browser-only one is claimed by a seat).
 - `recall digest --days 7` shows an `INSTINCT` line once it has contributed a lesson.
 - Ask it about an app.  The reply cites a Linear id or PR number, gives its times in the 12-hour am/pm form with no zone label, and
-  is plain text with two spaces between sentences.
+  is plain text with a real U+00A0 plus a space between sentences.
 - Post an unrelated `[GROK] repo: DealDex` message on Zulip.  The owner's phone stays quiet.
 - `docs/MAC-LOCAL-PROCESSES.md` has a row for every job Instinct runs on `agents`, and nothing
   new appears under `/Users/jay/Library/LaunchAgents`.

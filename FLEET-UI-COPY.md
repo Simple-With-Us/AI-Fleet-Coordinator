@@ -249,14 +249,16 @@ surface.
 **What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
 in the **Claude Code Code tab** (normalized away in the view, even though copy-paste showed
 two spaces -- do not be fooled by copy-paste).  The same is true in the MiniMax Code
-pane:  the working mechanism there is the `&nbsp;` entity plus a normal space, the same
-form as the Code tab, NOT a raw U+00A0.  Also not
+pane:  until the 2026-10-23 ruling the working mechanism there was the `&nbsp;` entity plus a
+normal space, the same form as the Code tab, NOT a raw U+00A0.  The 2026-10-23 ruling above
+replaces that:  a real U+00A0 plus a space, never the entity.  Also not
 worth trying: app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
 headless `claude -p` only, `axScreenReader` only drops borders); patching the client (the CLI is
 a ~277MB compiled Mach-O binary, the desktop app is a signed native bundle -- patching breaks
 code signing and is wiped by auto-update; do not attempt).  (Two literal ASCII spaces in chat
 were logged here as not working on 2026-08-19, and they still do not work in the Code tab
-(re-confirmed 2026-10-08); the Code tab uses the entity instead — see "HOW to emit it" above.)
+(re-confirmed 2026-10-08); the Code tab used the entity instead until the 2026-10-23 ruling, and
+"HOW to emit it" above now gives a real U+00A0 plus a space there too.)
 
 **Process lesson that cost four rounds of owner correction:** when an instruction appears not to
 take effect, diagnose the RENDERING/transport layer between you and the reader -- and ask what
