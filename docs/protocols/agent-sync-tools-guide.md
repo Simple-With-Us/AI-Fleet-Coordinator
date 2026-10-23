@@ -176,7 +176,7 @@ Plus **175 named commands** (63 reads, 112 writes) and **11 proxied official Lin
 | One-offs | `linear_share_issue`, `linear_resolve_comment`, `linear_link_attachment_url`, `linear_complete_release`, `linear_add_initiative_project`, `linear_mark_notification` |
 | Official, proxied | `linear_get_diff`, `linear_list_diffs`, `linear_submit_diff_review`, `linear_merge_diff`, `linear_extract_images`, `linear_search_documentation` |
 
-From a shell, `simple-board run NAME` is the tool `linear_NAME` (`simple-board run list_issues --arg first=5`);  `simple-board mcp call TOOL` runs a proxied official tool.  A write from a shell needs `AGENT_SEAT`, `LINEAR_BOARD_WRITES=1` and `--idempotency-key`.
+From a shell, `simple-board run NAME` is the tool `linear_NAME` (`simple-board run list_issues --arg first=5`);  `simple-board mcp call TOOL` runs a proxied official tool.  A write from a shell needs `AGENT_SEAT`, `LINEAR_BOARD_WRITES=1` and `--idempotency-key`.  The older `board` name on PATH is a wrapper that sets `LINEAR_BOARD_WRITES=1` for you, so the two names do not behave alike:  `board` writes, and `simple-board` refuses a write with exit 7 until you set the variable yourself.  `simple-board whoami` prints which one you have.
 
 ### fleetlink
 
