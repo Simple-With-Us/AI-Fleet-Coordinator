@@ -357,7 +357,9 @@ class SeatRunner:
             int(me["user_id"]),
             str(me.get("full_name") or ""),
             self.creds.email,
-            bot_owner_id=int(bot_owner) if isinstance(bot_owner, int) and not isinstance(bot_owner, bool) else None,
+            bot_owner_id=int(bot_owner)
+            if isinstance(bot_owner, int) and not isinstance(bot_owner, bool)
+            else None,
         )
         self.daemon.join_public(self, "connect")
         self.daemon.ensure_notes_channel(self, "connect")

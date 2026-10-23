@@ -376,8 +376,7 @@ def send_location_question(
             OC._record(path, key, at, window, 0, None, OC.DELIVERY_UNKNOWN)
             return _outcome(
                 "refused",
-                "the location question delivery is unknown (%s): %s"
-                % (status, type(exc).__name__),
+                "the location question delivery is unknown (%s): %s" % (status, type(exc).__name__),
                 delivery_status=OC.DELIVERY_UNKNOWN,
             )
         if not isinstance(status, int) or isinstance(status, bool):
