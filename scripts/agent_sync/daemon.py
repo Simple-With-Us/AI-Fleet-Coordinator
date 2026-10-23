@@ -58,7 +58,7 @@ from . import notes as NOTES
 from . import notes_relay as NR
 from . import operator_candidates as OC
 from . import operator_registration as OREG
-from . import operator_registration_dm as ORDM
+from . import operator_registration_ask as ORASK
 from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
@@ -2187,10 +2187,8 @@ class Daemon:
             self.pause(seat=None, wakes_only=False, by="owner-dm", message_id=message["id"])
             return
         if (
-            c.owner
-            and c.dm
-            and runner.seat == OPERATOR_SEAT
-            and self._maybe_registration_answer(message, now)
+            not c.dm
+            and self._maybe_registration_answer(message, now, channel=c.channel, topic=c.topic)
         ):
             # A location answer is carried out here, deterministically:  it never becomes a
             # wake for the Operator's responder to interpret.
@@ -4011,6 +4009,50 @@ class Daemon:
             self.log.write("chat-catalog-unavailable", error=type(exc).__name__)
             return []
 
+    def _registration_evidence(self, platform: str) -> str:
+        """The daemon's own fleet location as evidence - only for locally discovered chats.
+
+        A chat this daemon discovered from local files runs on this machine, so the
+        instance name is real evidence when it is itself a fleet location.  Genuinely
+        remote adapters (cursor-cloud discovers through Cursor's API, not local files)
+        carry no such evidence:  the chat does not run here.
+        """
+        if platform == "cursor-cloud":
+            return ""
+        instance = str(self.env.get("AGENT_SYNC_INSTANCE") or "").strip().lower()
+        return instance if instance in ("mac", "server") else ""
+
+    def _registration_route(self, row: Mapping[str, Any]) -> dict[str, str] | None:
+        """The chat's own Zulip channel/topic, from its live lease;  None when unknown.
+
+        The lease is written by the chat's own attach hook, so the route is grounded in
+        the chat's registration of itself - never in a guess from the catalog row.
+        """
+        try:
+            session_id = str(row.get("session_id") or "")
+            seat = str(row.get("seat") or "")
+            if not session_id or not seat:
+                return None
+            paths = L.SeatPaths(self.root, seat)
+            now = self.clock.time()
+            for lease_id in L.list_lease_ids(paths):
+                lease = L.load_lease(paths, lease_id)
+                if str(lease.get("session_id") or "") != session_id:
+                    continue
+                for entry in lease.get("topics") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    expires = entry.get("expires")
+                    if isinstance(expires, (int, float)) and expires <= now:
+                        continue
+                    channel = str(entry.get("channel") or "").strip()
+                    topic = str(entry.get("topic") or "").strip()
+                    if channel and topic:
+                        return {"channel": channel, "topic": topic}
+        except Exception:
+            pass
+        return None
+
     def _registration_db(self) -> str:
         db = getattr(self, "_oreg_db", None)
         if db is None:
@@ -4061,6 +4103,8 @@ class Daemon:
                         session_id=session_id,
                         seat=seat,
                         requester="catalog",
+                        evidence_location=self._registration_evidence(platform),
+                        route=self._registration_route(row),
                         registrations=lambda pf, sid: OR.registrations_for_native_id(db, pf, sid),
                     )
                 except Exception as exc:
@@ -4076,13 +4120,23 @@ class Daemon:
                 entry = out["entry"]
                 if entry.get("notified_at"):
                     continue
-                # No evidence_location from here:  this daemon's own instance says where the
-                # DISCOVERY ran, not where a remotely discovered chat lives, and a wrong
-                # evidence would turn the owner's right answer into a conflict.
-                sent = ORDM.send_location_question(
+                route = entry.get("route")
+                if not isinstance(route, dict):
+                    # No known channel/topic for the chat:  the registration stays pending
+                    # (recoverable - a later pass fills the route once the chat's lease
+                    # names one) and the gap is logged, never routed to the owner by DM.
+                    self.log.write(
+                        "operator-registration-missing-route",
+                        entry_id=entry.get("entry_id"),
+                        platform=platform,
+                        session_id=session_id,
+                    )
+                    continue
+                sent = ORASK.send_location_question(
                     question=out["question"],
                     entry_id=entry["entry_id"],
-                    recipient=owner,
+                    channel=str(route["channel"]),
+                    topic=str(route["topic"]),
                     env=self.env,
                     home=self.home,
                     owner_user_id=owner,
@@ -4099,20 +4153,37 @@ class Daemon:
         except Exception as exc:
             self.log.write("operator-registration-ask", status="error", error=type(exc).__name__)
 
-    def _maybe_registration_answer(self, message: Mapping[str, Any], now: float) -> bool:
-        """Carry out the owner's DM answer to a pending location question;  True when consumed.
+    def _maybe_registration_answer(
+        self, message: Mapping[str, Any], now: float, *, channel: str, topic: str
+    ) -> bool:
+        """Carry out a location answer posted in the asked chat's own topic;  True when consumed.
 
-        The answer registers the session at the answered location (operator_registration
-        validates it and cross-checks the registry) and the confirmation goes back in the
-        same DM.  A message that is not a parseable answer returns False and follows its
-        normal wake path.
+        The question goes to the registering chat's channel/topic (the return route its own
+        lease names), so only an answer in that same topic counts:  it registers the session
+        at the answered location (operator_registration validates it and cross-checks the
+        registry) and the confirmation goes back in the same topic.  A message that is not a
+        parseable answer, an answer for an entry with no known route, or an answer posted in
+        any other place returns False and follows its normal wake path.
         """
         try:
             db = self._registration_db()
-            if not OREG.pending_entries(db):
+            pending = OREG.pending_entries(db)
+            if not pending:
                 return False
             parsed = OREG.parse_answer(message.get("content"))
             if parsed is None:
+                return False
+            entry = next(
+                (item for item in pending if item.get("entry_id") == parsed["entry_id"]), None
+            )
+            if entry is None:
+                return False
+            route = entry.get("route")
+            if not isinstance(route, dict):
+                return False
+            if str(route.get("channel") or "").casefold() != str(channel or "").casefold():
+                return False
+            if str(route.get("topic") or "").casefold() != str(topic or "").casefold():
                 return False
             out = OREG.answer(
                 db,
@@ -4120,18 +4191,18 @@ class Daemon:
                 location=parsed["location"],
                 registrations=lambda pf, sid: OR.registrations_for_native_id(db, pf, sid),
                 register=lambda **identity: OR.register_session(
-                    db, source="daemon-owner-dm", issuer=OR.ISSUER_OPERATOR, **identity
+                    db, source="chat-topic-answer", issuer=OR.ISSUER_OPERATOR, **identity
                 ),
                 now=now,
             )
-            owner = int(getattr(self.config, "owner_user_id", 0) or 0)
-            sent = ORDM.send_location_question(
+            sent = ORASK.send_location_question(
                 question=OREG.answer_reply(out),
                 entry_id=parsed["entry_id"],
-                recipient=owner,
+                channel=str(route["channel"]),
+                topic=str(route["topic"]),
                 env=self.env,
                 home=self.home,
-                owner_user_id=owner,
+                owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
             )
             self.log.write(
                 "operator-registration-answer",

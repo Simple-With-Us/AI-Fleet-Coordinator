@@ -1832,20 +1832,20 @@ class HostWakeTests(DaemonHarness):
 
 
 class OperatorRegistrationWiringTests(DaemonHarness):
-    """The daemon's ask-before-letter wiring:  the catalog hook and the owner-DM intake.
-
-    The send is mocked at the module seam (the send itself is covered end to end in
-    test_operator_registration_dm against the fake realm);  everything in front of it -
-    the queue, the registry, the gates - is real.
+    """The daemon's ask-before-letter wiring:  the registering chat is asked in its own
+    channel/topic and answers there before its letter is issued (owner direction, Oct 23
+    2026).  The send is mocked at the module seam (the send itself is covered end to end in
+    test_operator_registration_ask against the fake realm);  everything in front of it - the
+    queue, the registry, the lease route, the gates - is real.
     """
 
     def _rows(self, **overrides):
         row = {
             "id": "row-1",
-            "platform": "minimax",
+            "platform": "claude",
             "profile_scope": "default",
             "session_id": "sess-aaaaaaaa",
-            "seat": "MM",
+            "seat": "CLAUDE",
             "status": "active",
         }
         row.update(overrides)
@@ -1859,61 +1859,151 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             registry.close_db()
         return db
 
-    def test_unlettered_active_chat_is_asked_once(self):
+    def _ask_once(self, daemon, send_return=None):
+        with mock.patch.object(
+            D.ORASK, "send_location_question", return_value=send_return or {"status": "sent"}
+        ) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+        return send
+
+    def test_unlettered_active_chat_is_asked_once_in_its_own_topic(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
         daemon = self.daemon()
         db = self._registry(daemon)
-        with mock.patch.object(D.ORDM, "send_location_question", return_value={"status": "sent"}) as send:
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
             daemon.maybe_ask_registrations(self._rows(), {})
             daemon.maybe_ask_registrations(self._rows(), {})
         self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["channel"], "agent-sync")
+        self.assertEqual(send.call_args.kwargs["topic"], "AFC Work")
         pending = D.OREG.pending_entries(db)
         self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].get("route"), {"channel": "agent-sync", "topic": "AFC Work"})
         self.assertTrue(pending[0].get("notified_at"))
+
+    def test_a_chat_with_no_known_route_stays_pending_and_recovers(self):
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        # No lease names a topic for the chat:  no send, no owner DM - the entry waits.
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 0)
+        pending = D.OREG.pending_entries(db)
+        self.assertEqual(len(pending), 1)
+        self.assertNotIn("route", pending[0])
+        # The route arriving later (the chat attaches to a topic) makes the ask go out.
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(D.OREG.pending_entries(db)[0].get("route", {}).get("topic"), "AFC Work")
 
     def test_lettered_and_stale_rows_are_not_asked(self):
         daemon = self.daemon()
         self._registry(daemon)
-        with mock.patch.object(D.ORDM, "send_location_question", return_value={"status": "sent"}) as send:
-            daemon.maybe_ask_registrations(self._rows(), {"row-1": ("A", "MM A")})
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(self._rows(), {"row-1": ("A", "CLAUDE A")})
             daemon.maybe_ask_registrations(self._rows(status="stale"), {})
         self.assertEqual(send.call_count, 0)
         self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
 
     def test_a_failed_send_is_retried_on_the_next_pass(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
         daemon = self.daemon()
         db = self._registry(daemon)
-        with mock.patch.object(D.ORDM, "send_location_question", return_value={"status": "refused", "reason": "offline"}) as send:
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "refused", "reason": "offline"}) as send:
             daemon.maybe_ask_registrations(self._rows(), {})
             daemon.maybe_ask_registrations(self._rows(), {})
         self.assertEqual(send.call_count, 2)
         self.assertFalse(D.OREG.pending_entries(db)[0].get("notified_at"))
 
-    def test_owner_dm_answer_registers_at_the_answered_location(self):
-        daemon = self.daemon()
+    def _pending_entry(self, daemon):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
         db = self._registry(daemon)
-        entry = D.OREG.begin(
-            db,
-            platform="minimax",
-            profile_scope="default",
-            session_id="sess-aaaaaaaa",
-            seat="MM",
-            requester="catalog",
-            registrations=lambda pf, sid: [],
-            now=1000.0,
-        )["entry"]
-        with mock.patch.object(D.ORDM, "send_location_question", return_value={"status": "sent"}) as send:
+        self._ask_once(daemon)
+        return D.OREG.pending_entries(db)[0]
+
+    def test_an_answer_in_the_chats_topic_registers_and_confirms_there(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
             consumed = daemon._maybe_registration_answer(
-                {"content": "server %s" % entry["entry_id"]}, 2000.0
+                {"content": "mac %s" % entry["entry_id"]},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
             )
         self.assertTrue(consumed)
-        rows = D.OR.registrations_for_native_id(db, "minimax", "sess-aaaaaaaa")
-        self.assertEqual([row["verified_host"] for row in rows], ["server"])
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
         self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["channel"], "agent-sync")
+        self.assertEqual(send.call_args.kwargs["topic"], "AFC Work")
         self.assertIn("letter A", send.call_args.kwargs["question"])
-        self.assertEqual(D.OREG.pending_entries(db), [])
+        self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
+
+    def test_an_answer_in_any_other_topic_is_not_consumed(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"]},
+                2000.0,
+                channel="agent-sync",
+                topic="Elsewhere",
+            )
+        self.assertFalse(consumed)
+        self.assertEqual(send.call_count, 0)
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+
+    def test_local_discovery_stamps_the_daemons_location_remote_discovery_does_not(self):
+        daemon = self.daemon()
+        daemon.env["AGENT_SYNC_INSTANCE"] = "mac"
+        entry = self._pending_entry(daemon)
+        self.assertEqual(entry.get("evidence_location"), "mac")
+        # The answer contradicting the local-discovery evidence is a conflict:  nothing registers.
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            consumed = daemon._maybe_registration_answer(
+                {"content": "server %s" % entry["entry_id"]},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertTrue(consumed)
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+        # A cursor-cloud chat is discovered through Cursor's API, not local files:  no evidence.
+        self.write_lease(
+            "L2", seat="CURSOR", platform="cursor-cloud", session_id="sess-bbbbbbbb",
+            topics=[("agent-sync", "Cursor Cloud")],
+        )
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            daemon.maybe_ask_registrations(
+                self._rows(id="row-2", platform="cursor-cloud", session_id="sess-bbbbbbbb", seat="CURSOR"),
+                {},
+            )
+            remote_entry = [
+                e for e in D.OREG.pending_entries(daemon._registration_db())
+                if e["session_id"] == "sess-bbbbbbbb"
+            ][0]
+            self.assertEqual(remote_entry.get("evidence_location"), "")
+            consumed = daemon._maybe_registration_answer(
+                {"content": "server %s" % remote_entry["entry_id"]},
+                2000.0,
+                channel="agent-sync",
+                topic="Cursor Cloud",
+            )
+        self.assertTrue(consumed)
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "cursor-cloud", "sess-bbbbbbbb")
+        self.assertEqual([row["verified_host"] for row in rows], ["server"])
 
     def test_a_dm_that_is_not_an_answer_is_not_consumed(self):
         daemon = self.daemon()
         self.assertFalse(
-            daemon._maybe_registration_answer({"content": "thanks, no ref here"}, 2000.0)
+            daemon._maybe_registration_answer(
+                {"content": "thanks, no ref here"}, 2000.0, channel="agent-sync", topic="AFC Work"
+            )
         )

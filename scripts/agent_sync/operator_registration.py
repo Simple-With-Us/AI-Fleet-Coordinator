@@ -108,6 +108,16 @@ def _validate_entry(key: str, entry: Any) -> dict[str, Any]:
             raise ValueError("operator_registration: entry %s has no %s" % (key, field))
     if "notified_at" in entry and not isinstance(entry["notified_at"], (int, float)):
         raise ValueError("operator_registration: entry %s has a malformed notified_at" % key)
+    if "route" in entry:
+        route = entry["route"]
+        if (
+            not isinstance(route, dict)
+            or not isinstance(route.get("channel"), str)
+            or not route["channel"]
+            or not isinstance(route.get("topic"), str)
+            or not route["topic"]
+        ):
+            raise ValueError("operator_registration: entry %s has a malformed route" % key)
     return dict(entry)
 
 
@@ -161,6 +171,17 @@ def question_for(entry: Mapping[str, Any]) -> str:
     )
 
 
+def _route(route: Mapping[str, Any] | None) -> dict[str, str] | None:
+    """The chat's Zulip channel/topic as a clean pair, or None when no route is known."""
+    if not isinstance(route, Mapping):
+        return None
+    channel = str(route.get("channel") or "").strip()
+    topic = str(route.get("topic") or "").strip()
+    if not channel or not topic:
+        return None
+    return {"channel": channel[:MAX_LABEL], "topic": topic[:MAX_LABEL]}
+
+
 def begin(
     registry_db: str,
     *,
@@ -170,6 +191,7 @@ def begin(
     seat: str,
     requester: str,
     evidence_location: str = "",
+    route: Mapping[str, Any] | None = None,
     registrations: Callable[[str, str], list[dict[str, Any]]],
     now: float | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -195,6 +217,7 @@ def begin(
         )
     if not platform or not scope or not seat_label:
         raise ValueError("operator_registration: platform, profile_scope and seat are required")
+    clean_route = _route(route)
 
     known = registrations(platform, native)
     if len(known) == 1 and (not evidence or known[0].get("verified_host") == evidence):
@@ -221,6 +244,11 @@ def begin(
         data = load(registry_db)
         for entry in data["entries"].values():
             if entry["state"] == STATE_ASKED and _identity(entry) == (platform, scope, native):
+                # The route can arrive after the question:  a chat discovered before its
+                # lease listed a topic gets its route filled in on a later pass.
+                if clean_route and not entry.get("route"):
+                    entry["route"] = clean_route
+                    save(registry_db, data)
                 return {"status": "pending", "entry": dict(entry), "question": question_for(entry)}
         entry_id = "reg-" + secrets.token_hex(6)
         entry = {
@@ -235,6 +263,8 @@ def begin(
             "asked_at": round(now, 3),
             "deadline": round(now + float(timeout_seconds), 3),
         }
+        if clean_route:
+            entry["route"] = clean_route
         data["entries"][entry_id] = entry
         save(registry_db, data)
     return {"status": "ask", "entry": dict(entry), "question": question_for(entry)}
