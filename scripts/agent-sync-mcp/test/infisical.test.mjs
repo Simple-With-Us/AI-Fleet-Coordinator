@@ -124,15 +124,41 @@ test("resolveLinearPair: required mode reads the WISE_LINEAR_* names at /linear"
   assert.ok(calls.every((u) => u.includes("secretPath=%2Flinear")), "both reads are scoped to /linear");
 });
 
-test("resolveLinearPair: required mode throws on a missing pair - no silent env fallback", async () => {
+test("resolveLinearPair: required mode treats a missing pair as Linear-off - no throw, no env fallback", async () => {
   _resetInfisicalForTests();
   mockFetch([]);
   const env = { ...ENV, LINEAR_ECHO_CLIENT_ID: "id-legacy", LINEAR_ECHO_CLIENT_SECRET: "sec-legacy" };
-  await assert.rejects(() => resolveLinearPair(env, "ECHO"), InfisicalError);
+  const pair = await resolveLinearPair(env, "ECHO");
+  assert.deepEqual(pair, { clientId: "", clientSecret: "" }, "absent pair, not the legacy bindings");
+  assert.equal(linearClientFromPair(pair, "ECHO", { gate: {} }), null, "Linear tools answer not_configured");
 });
 
 test("linearClientFromPair keeps the null contract without a gate or pair", async () => {
   assert.equal(linearClientFromPair(null, "ECHO", { gate: {} }), null);
   assert.equal(linearClientFromPair({ clientId: "", clientSecret: "s" }, "ECHO", { gate: {} }), null);
   assert.ok(linearClientFromPair({ clientId: "i", clientSecret: "s" }, "ECHO", { gate: {} }) instanceof LinearClient);
+});
+
+test("optional read: required mode treats a genuine 404 as capability-off, never reads env", async () => {
+  _resetInfisicalForTests();
+  mockFetch([]);
+  const env = { ...ENV, LEGACY: "v0" };
+  assert.equal(await resolveSecret(env, { name: "S", path: "/wake", envName: "LEGACY", optional: true }), "");
+});
+
+test("optional read: required mode still throws on outage and on missing token", async () => {
+  _resetInfisicalForTests();
+  mockFetch([["/api/v3/secrets/raw/S", { body: {}, status: 500 }]]);
+  const env = { ...ENV, LEGACY: "v0" };
+  await assert.rejects(() => resolveSecret(env, { name: "S", path: "/wake", envName: "LEGACY", optional: true }), InfisicalError);
+  const noToken = { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "ws-test" };
+  await assert.rejects(() => resolveSecret(noToken, { name: "S", path: "/wake", envName: "LEGACY", optional: true }), /not bound/);
+});
+
+test("optional read: fallback mode still counts a fallback on absence", async () => {
+  _resetInfisicalForTests();
+  mockFetch([]);
+  const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+  assert.equal(await resolveSecret(env, { name: "S", path: "/wake", envName: "LEGACY", optional: true }), "v0");
+  assert.equal(infisicalStats().fallbacks, 1);
 });

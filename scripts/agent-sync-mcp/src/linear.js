@@ -87,8 +87,8 @@ export async function resolveLinearPair(env, seat) {
   const inf = Object.hasOwn(LINEAR_INFISICAL, canonical) ? LINEAR_INFISICAL[canonical] : null;
   if (!names || !inf) return null;
   const [clientId, clientSecret] = await Promise.all([
-    resolveSecret(env, { name: inf.clientId, path: "/linear", envName: names.clientId }),
-    resolveSecret(env, { name: inf.clientSecret, path: "/linear", envName: names.clientSecret }),
+    resolveSecret(env, { name: inf.clientId, path: "/linear", envName: names.clientId, optional: true }),
+    resolveSecret(env, { name: inf.clientSecret, path: "/linear", envName: names.clientSecret, optional: true }),
   ]);
   return { clientId: clientId.trim(), clientSecret: clientSecret.trim() };
 }

@@ -71,7 +71,7 @@ async function fetchRaw(env, path, name) {
  * may read ("/tools", "/wake", "/fleetlink", ...).  `envName` is the legacy
  * Worker binding used in "off" mode and as the bounded transitional fallback.
  */
-export async function resolveSecret(env, { name, path, envName }) {
+export async function resolveSecret(env, { name, path, envName, optional = false }) {
   const m = mode(env);
   if (m === "off") return typeof env[envName] === "string" ? env[envName].trim() : "";
   const cacheKey = `${path}${name}`;
@@ -86,7 +86,14 @@ export async function resolveSecret(env, { name, path, envName }) {
     stats.fetched++;
     return value;
   } catch (error) {
-    if (m === "required") throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
+    // An optional read treats a genuine absence (404) as "capability off" even
+    // in required mode:  a seat with no wake key is offered no events, not a
+    // 500.  Token/outage/scope failures still throw.  This is not a fallback:
+    // the env binding is never read for it.
+    if (m === "required") {
+      if (optional && error instanceof InfisicalError && error.code === "not_found") return "";
+      throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
+    }
     // Transitional fallback: explicit in the mode, observable in logs + stats.
     stats.fallbacks++;
     console.warn(`infisical fallback to env binding ${envName}: ${error.code ?? error.message}`);

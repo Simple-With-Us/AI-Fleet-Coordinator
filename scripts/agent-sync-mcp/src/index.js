@@ -239,7 +239,7 @@ async function serveMcp(request, env, ctx) {
   // FleetLink's agent secret resolves through /fleetlink (read-tools scope);
   // the folder awaits the population approval, so fallback mode covers the
   // gap observably and required mode throws visibly until it is populated.
-  const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET" });
+  const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
 
   const tools = new HostedTools({
     seat,
@@ -350,7 +350,7 @@ async function serveMcp(request, env, ctx) {
   // set):  any other seat would list an event that never fires.
   // Resolves through Infisical /wake when INFISICAL_MODE allows; the
   // legacy WAKE_HMAC_KEY_<SEAT> binding is the bounded transitional fallback.
-  const wakeSecret = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat] });
+  const wakeSecret = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true });
   const events = typeof wakeSecret === "string" && wakeSecret.trim() ? new SeatEvents({
     seat,
     scopes,
@@ -410,7 +410,7 @@ async function serveGbBearerMcp(request, env, token) {
   if (state.paused) return invalidToken("This identity is paused.");
   const scopes = ["zulip:read", "zulip:write"];
   const grantRef = await sha256Ref(`gb-bearer:${identity}`);
-  const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET" });
+  const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
   const tools = new HostedTools({
     seat: identity,
     callerSeat: identity,
@@ -461,7 +461,7 @@ async function serveWake(request, env, ctx, config) {
   const started = Date.now();
   const seat = wakePathSeat(new URL(request.url).pathname);
   if (!seat || !config.hostedSeats.includes(seat) || !Object.hasOwn(WAKE_SECRETS, seat)) return notFound();
-  const rawKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat] });
+  const rawKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true });
   const key = typeof rawKey === "string" ? rawKey.trim() : "";
   if (!key) {
     await recordDiagnostic(env, { kind: "wake", reason: "wake_key_missing", seat, status: 404 });
@@ -524,11 +524,11 @@ async function serveSpike(request, env, ctx, config) {
   if (!config.spikeExtraEvents) return notFound();
   const seat = spikePathSeat(new URL(request.url).pathname);
   if (!seat || !config.hostedSeats.includes(seat) || !Object.hasOwn(WAKE_SECRETS, seat)) return notFound();
-  const wakeKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat] });
+  const wakeKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true });
   const key = spikeKey(env.SPIKE_HMAC_KEY);
   if (!wakeKey || !key) return notFound();
   // SPIKE_HMAC_KEY must never equal any seat's wake key, not only this seat's.
-  const wakeKeys = (await Promise.all(Object.values(WAKE_SECRETS).map((name) => resolveSecret(env, { name, path: "/wake", envName: name })))).filter(Boolean);
+  const wakeKeys = (await Promise.all(Object.values(WAKE_SECRETS).map((name) => resolveSecret(env, { name, path: "/wake", envName: name, optional: true })))).filter(Boolean);
   if (wakeKeys.includes(key)) {
     console.log(JSON.stringify({ event: "spike_refused", seat, reason: "key_reused" }));
     return notFound();
