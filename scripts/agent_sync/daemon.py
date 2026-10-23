@@ -4052,6 +4052,15 @@ class Daemon:
             pass
         return None
 
+    def _seat_bot_user_id(self, seat: str) -> int | None:
+        """The Zulip user id of a seat's own bot, when that seat is connected."""
+        runner = self.seats.get(str(seat or ""))
+        me = getattr(runner, "me", None) if runner is not None else None
+        user_id = getattr(me, "user_id", None) if me is not None else None
+        if isinstance(user_id, int) and not isinstance(user_id, bool):
+            return int(user_id)
+        return None
+
     def _registration_db(self) -> str:
         db = getattr(self, "_oreg_db", None)
         if db is None:
@@ -4160,9 +4169,11 @@ class Daemon:
         The question goes to the registering chat's channel/topic (the return route its own
         lease names), so only an answer in that same topic counts:  it registers the session
         at the answered location (operator_registration validates it and cross-checks the
-        registry) and the confirmation goes back in the same topic.  A message that is not a
-        parseable answer, an answer for an entry with no known route, or an answer posted in
-        any other place returns False and follows its normal wake path.
+        registry) and the confirmation goes back in the same topic.  The sender must be the
+        owner or the bot of the seat the registration belongs to - the topic alone never
+        authorizes an answer.  A message that is not a parseable answer, an answer for an
+        entry with no known route, or an answer posted in any other place returns False and
+        follows its normal wake path.
         """
         try:
             db = self._registration_db()
@@ -4183,6 +4194,23 @@ class Daemon:
             if str(route.get("channel") or "").casefold() != str(channel or "").casefold():
                 return False
             if str(route.get("topic") or "").casefold() != str(topic or "").casefold():
+                return False
+            # The topic binds WHERE an answer counts;  it does not make every poster there
+            # the chat.  Only the owner or the bot of the seat the registration belongs to
+            # may speak for the chat's location.
+            sender = message.get("sender_id")
+            owner = int(getattr(self.config, "owner_user_id", 0) or 0)
+            allowed = {owner} if owner else set()
+            bot_user_id = self._seat_bot_user_id(str(entry.get("seat") or ""))
+            if bot_user_id is not None:
+                allowed.add(bot_user_id)
+            if not isinstance(sender, int) or isinstance(sender, bool) or sender not in allowed:
+                self.log.write(
+                    "operator-registration-answer",
+                    entry_id=parsed["entry_id"],
+                    status="refused",
+                    reason="the sender is not the owner or the chat's own seat bot",
+                )
                 return False
             out = OREG.answer(
                 db,

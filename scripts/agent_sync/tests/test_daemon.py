@@ -1926,7 +1926,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         entry = self._pending_entry(daemon)
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
             consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"]},
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12},
                 2000.0,
                 channel="agent-sync",
                 topic="AFC Work",
@@ -1945,7 +1945,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         entry = self._pending_entry(daemon)
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
             consumed = daemon._maybe_registration_answer(
-                {"content": "mac %s" % entry["entry_id"]},
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12},
                 2000.0,
                 channel="agent-sync",
                 topic="Elsewhere",
@@ -1965,7 +1965,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         # The answer contradicting the local-discovery evidence is a conflict:  nothing registers.
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
             consumed = daemon._maybe_registration_answer(
-                {"content": "server %s" % entry["entry_id"]},
+                {"content": "server %s" % entry["entry_id"], "sender_id": 12},
                 2000.0,
                 channel="agent-sync",
                 topic="AFC Work",
@@ -1991,7 +1991,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             ][0]
             self.assertEqual(remote_entry.get("evidence_location"), "")
             consumed = daemon._maybe_registration_answer(
-                {"content": "server %s" % remote_entry["entry_id"]},
+                {"content": "server %s" % remote_entry["entry_id"], "sender_id": 12},
                 2000.0,
                 channel="agent-sync",
                 topic="Cursor Cloud",
