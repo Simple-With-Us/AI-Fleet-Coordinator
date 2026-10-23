@@ -204,40 +204,13 @@ gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Markd
 two spaces at the END of a line is a hard line break -- a different thing; this rule is about
 the gap BETWEEN sentences.)
 
-**HOW to emit it so it's actually visible (verified 2026-08-19, Socratic.Trade
-PR #2893; chat-reply guidance reversed 2026-09-04 and again 2026-10-08, see "Rendering
-trap" below):**  intent is not enough, the gap has to survive the renderer.  Pick by
-destination:
+**HOW to emit it (owner ruling 2026-10-23, the same on every surface):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity, which shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
 
-- **Chat reply in the Claude Code desktop app Code tab** (owner-verified 2026-10-08 with a
-  screenshot): type the HTML entity `&nbsp;` right after the period, then a normal space,
-  outside code spans, as in `Sentence one.&nbsp; Sentence two.`  The renderer decodes it into
-  a real gap.  Two ASCII spaces collapse, and a raw U+00A0 typed by the model arrives as a
-  plain space (the verified reply held 0 NBSPs).
-- **Chat reply in the MiniMax Code chat pane** (owner-verified 2026-10-18, reaffirmed
-  2026-10-20):  the `&nbsp;` entity plus a normal space, right after the period, outside
-  code spans, as in `Sentence one.&nbsp; Sentence two.`, the same form as the Claude Code
-  Code tab.  Jay:  "I have confirmed this before with agents and knew you needed nbsp
-  already".  Two ASCII spaces collapse in that pane, and a raw U+00A0 typed by the model
-  arrives as a plain space, so the entity is the form that actually renders a gap.
-  A 2026-10-20 note here briefly said a raw U+00A0 for this pane;  that was my
-  inference, it was never owner-verified, and the owner reversed it.  Never override an
-  owner-verified mechanism on an inference.
-  A normal one-space gap is the failure this bullet exists to prevent, so treat a
-  collapsed reply as a bug in the emitting step rather than as a rendering quirk.
-- **Chat reply in any other Markdown-rendering agent chat pane** (Codex, Cursor,
-  Antigravity, Grok, Kimi, DeepSeek, Fx, Muse): the same entity plus a space, by
-  owner ruling 2026-10-08, unless that surface has been individually verified otherwise.
-  If the owner ever sees the six characters, stop using the entity on that surface, report
-  it in #agent-sync, and treat that surface's mechanism as unknown until tested.  Using a
-  working mechanism needs no confirmation.
-- **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode):
-  two literal ASCII spaces, unverified.  A terminal would print the entity as literal text.
-- **Cloud / BotFleet / OpenMausBot chat:** two literal ASCII spaces.  The backend maps them
-  to a real U+00A0 (owner 2026-09-03).
+- **Chat replies in every pane, Zulip, Linear, Slack, cloud and BotFleet chat:**  a real U+00A0 plus a
+  space.  If a pane strips it, leave the text as it is, report the pane, and do not switch to the entity.
 - **GitHub PR and issue titles, bodies and comments, review comments, and Zulip posts**
-  (anything a tool writes that a Markdown or HTML renderer then shows): a real U+00A0 plus a
-  space (owner ruling 2026-10-08).  Never the entity there, because GitHub can copy a PR body
+  (anything a tool writes that a Markdown or HTML renderer then shows):  a real U+00A0 plus a
+  space.  Never the entity there, because GitHub can copy a PR body
   into a plain-text squash commit, where it would show literally.  You cannot type U+00A0 in
   chat, and a double space you emit into a tool call *sometimes* arrives collapsed to a single
   space — intermittently, not deterministically, so never diagnose it and always verify.  So
@@ -255,24 +228,18 @@ destination:
   grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt
   ```
   `simple-chat post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
-  so `chmod 600` it first.  Source files (Swift, TypeScript, shell, and markdown read as source)
-  are not affected and keep two literal ASCII spaces; never put a U+00A0 into a committed source
-  file, which is a real defect rather than a fix.
-- **Files read as source and other plain text** (repo markdown and text, commit messages,
-  code comments, config, Linear issue text, terminal output): two LITERAL ASCII
-  spaces.  An entity would appear as literal text.
-- **HTML a renderer shows** (Apple Notes `--html`, in-app HTML/JSX): `Sentence one.&nbsp;
-  Sentence two.`  Notes.app is an HTML renderer, so two ASCII spaces in a `<p>` collapse to
-  one.  The notes helper converts leftover ASCII doubles after `.`/`!`/`?` into `&nbsp; `.
-  Native SwiftUI `Text` does not decode HTML entities; use two literal spaces or Unicode
-  `\u{00A0}` in Swift strings.
-- **Any surface not listed above** — a pane, a client, a tool or a channel you have not been
-  told about: two literal ASCII spaces.  Owner ruling 2026-10-20: an untested surface takes
-  two ASCII spaces until it reports otherwise.  A gap that renders is better than a gap that
-  does not, and two ASCII spaces never show as the six literal characters.  When a surface is
-  verified, change its bullet here and report the finding in #agent-sync so every seat gets it.
+  so `chmod 600` it first.  Code, code comments, identifiers and config never get a U+00A0,
+  which is a real defect there rather than a fix.
+- **Repo docs and Markdown, skills, agent instructions and commit messages** (owner ruling
+  2026-10-23):  the same U+00A0 plus a space.  Rewrite only text you are already editing;  do
+  not mass-reformat existing prose.
+- **HTML a renderer shows** (Apple Notes `--html`, in-app HTML/JSX, SwiftUI):  a real U+00A0 plus
+  a space, written `\u00A0 ` in JS, `\u{00A0}` in Swift, or a shared `SENTENCE_GAP` helper.
+  Notes.app is an HTML renderer, so two ASCII spaces in a `<p>` collapse to one.  Never
+  `&nbsp; `.
+- **Any surface not listed above:**  the same U+00A0 plus a space.
 
-**Rendering trap — history (chat advice reversed twice):** the 2026-08-19 entity advice for
+**Rendering trap — history (chat advice reversed twice; all of it superseded by the 2026-10-23 one-mechanism ruling above):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was
 superseded on 2026-10-08 by the entity again.  Do not re-run these tests.  Owner ruling
 2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or HTML
@@ -322,10 +289,9 @@ not.
 - Marketing, screenshot captions, TestFlight “What to Test”
 
 **How:**
-- Between sentences in a paragraph: `end.  Start` (two ASCII spaces after `.` `!` `?`)
-- HTML/JSX/SwiftUI that collapses spaces: use NBSP+space
-  (`&nbsp; ` / `{"\u00A0 "}` / `\u00A0 `) or a shared helper (ST: `SENTENCE_GAP`)
-- GitHub PR and issue titles, bodies and comments, review comments, Zulip, and any surface that renders Markdown or HTML: a real U+00A0 plus a space (never the `&nbsp;` entity, which shows literally if GitHub copies the body into a plain-text squash commit) — *owner ruling 2026-10-08*.  Commit messages and source files stay on two ASCII spaces.
+- Between sentences in a paragraph, on every surface:  a real U+00A0 plus a space after `.` `!` `?` (owner ruling 2026-10-23).  Never `&nbsp;`, never two plain ASCII spaces.
+- HTML/JSX/SwiftUI source:  `{"\u00A0 "}` / `\u00A0 ` or a shared helper (ST: `SENTENCE_GAP`)
+- Code, identifiers and config never get a U+00A0.
 - Prefer ONE paragraph for short related sentences over stacked one-liners when
   the owner asked for density (see Socratic proposals empty-state, 2026-08-08)
 - Do not insert spaces after brand periods (`Congress.Trade`), URLs, emails, or `U.S.`

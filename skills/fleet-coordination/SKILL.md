@@ -151,11 +151,9 @@ Visibly wider gap (two visible spaces) after terminal punctuation (`.`, `!`, `?`
 
 | Surface | Syntax | Why |
 | :--- | :--- | :--- |
-| **Other Markdown chat panes** (Claude Code desktop Code tab owner-verified 2026-10-08, MiniMax Code chat pane owner-verified 2026-10-18, other panes by ruling unverified) | `&nbsp;` plus normal space after each sentence, outside code spans (`Sentence one.&nbsp; Sentence two.`) | The renderer decodes the entity; a raw U+00A0 from the model arrives as a plain space |
-| **MiniMax Code chat pane** (owner-verified 2026-10-18, reaffirmed 2026-10-20) | `&nbsp;` plus normal space after each sentence, outside code spans (`Sentence one.&nbsp; Sentence two.`) | Jay:  "I have confirmed this before with agents and knew you needed nbsp already".  The renderer decodes the entity into a real gap, the same form as the Claude Code Code tab.  Two ASCII spaces collapse in this pane, and a raw U+00A0 typed by the model arrives as a plain space, so the entity is the form that actually renders a gap.  A 2026-10-20 note here briefly said a real U+00A0 for this pane;  that was an inference, it was never owner-verified, and the owner reversed it.  Never override an owner-verified mechanism on an inference. |
-| **GitHub PR and issue titles, bodies and comments, Zulip posts, other rendered tool output** | A real U+00A0 plus a space (never the entity) | Tools preserve the character; the entity would show literally in a plain-text squash commit |
-| **Terminal TUI chat, source files** (docs, commit messages, code comments, config) | Two literal ASCII spaces | Read in raw text editors / terminals; an entity would print literally |
-| **HTML / JSX / SwiftUI product copy** | A real U+00A0 plus a space, or `SENTENCE_GAP` | Raw doubles collapse in HTML |
+| **Every surface** (owner ruling 2026-10-23):  chat replies in any pane, Zulip, GitHub PR and issue text, review comments, Linear, Slack, commit messages, repo docs, skills, agent instructions, rendered UI copy | A real U+00A0 plus a normal space, generated in the shell | One rule everywhere.  Two ASCII spaces collapse on rendered surfaces, and the `&nbsp;` entity shows literally in squash commits and plain text. |
+| **HTML / JSX / Swift source for product copy** | `\u00A0 ` or `SENTENCE_GAP` | Same rendered gap; never `&nbsp; ` |
+| **Code, identifiers, machine-readable config** | No gap character | Never put U+00A0 into code |
 
 *Do not apply after abbreviations (`e.g.`, `v1.2.3`) or in URLs/identifiers.*
 

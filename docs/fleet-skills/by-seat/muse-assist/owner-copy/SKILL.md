@@ -21,18 +21,16 @@ Binding for every paragraph a human reads — in-app UI, ASC description / promo
 
 Every message to Jay needs the gap, including a one-line progress note and an acknowledgement:  getting it right in artifacts while writing plain single spaces in the chat is still a failure (owner ruling 2026-10-20).  **Read the reply back before sending it** and check every `.`, `!` and `?` boundary.
 
-- **Files** (repo docs, commit messages, code comments, config, terminal output): two literal ASCII spaces after `.` / `!` / `?` before the next sentence.  Do not write `&nbsp;` into files.
-- **GitHub PR and issue titles, bodies and comments, and Zulip posts:** a real U+00A0 plus a space after each sentence (owner ruling 2026-10-08).  Never the `&nbsp;` entity there: GitHub can copy a PR body into a plain-text squash commit, where it would show literally.
-- **BotFleet / OpenMausBot / cloud chat:** two ASCII spaces.  Never display the six characters `&nbsp;` (owner 2026-09-03).  Backend inserts a real U+00A0 if the renderer would collapse the gap.
-- **Claude Code desktop app (Code tab) chat replies:** type the `&nbsp;` entity plus a normal space after each sentence, outside code spans (owner-verified 2026-10-08; the renderer decodes it, a raw U+00A0 from the model arrives as a plain space, and ASCII doubles collapse).  The 2026-09-04 ASCII ruling is withdrawn.
-- **MiniMax Code chat pane chat replies:** type the `&nbsp;` entity plus a normal space after each sentence, outside code spans (owner-verified 2026-10-18, reaffirmed 2026-10-20).  The renderer decodes it into a real gap, the same form as the Claude Code Code tab;  a raw U+00A0 from the model arrives as a plain space, and two ASCII spaces collapse.
-- **Any other Markdown-rendering agent chat pane** (Codex, Cursor, Antigravity, Grok, Kimi, DeepSeek, Fx, Muse): the same entity plus a space (owner ruling 2026-10-08), not individually verified.  Only the Claude Code Code tab and the MiniMax Code pane are verified, and both decode the entity.  If the six literal characters ever show, stop and report it in #agent-sync.  **Terminal TUIs** (Claude Code CLI, Grok TUI, Codex CLI): two ASCII spaces, unverified.
+- **Every surface** (owner ruling 2026-10-23):  chat replies in any pane, Zulip, GitHub PR and issue text and review comments, Linear, Slack, commit messages, repo docs, skills, agent instructions and UI copy all take a real U+00A0 plus a normal space after each sentence.  Generate it in the shell rather than typing it.
+- **Never the `&nbsp;` entity.**  It shows up as literal text in squash-merge commits, plain-text email and many APIs.
+- **Never two plain ASCII spaces.**  Rendered surfaces collapse them to one.
+- Code, identifiers and machine-readable config never get a U+00A0.  If a surface strips it, leave the text as it is and report the surface;  do not switch to the entity.
 
 Headings / titles / buttons: **Title Case**.  Body: sentence case.  Values that are not a full sentence: lowercase or sentence case.
 
 Single space stays correct after non-terminal abbreviations (`e.g.`, `v1.2.3`).  Two trailing spaces at the **end** of a Markdown line are a hard break — a different rule.
 
-HTML/JSX/SwiftUI that collapse spaces: NBSP+space or `SENTENCE_GAP`.  Do not "fix" `Congress.Trade`, `Socratic.Trade`, URLs, emails, or `U.S.`.
+HTML/JSX/SwiftUI source: `\u00A0 ` or `SENTENCE_GAP`, never `&nbsp; `.  Do not "fix" `Congress.Trade`, `Socratic.Trade`, URLs, emails, or `U.S.`.
 
 Does not apply: identifiers, log lines, API enums, commit **subjects** that are fragments with no terminator.
 
