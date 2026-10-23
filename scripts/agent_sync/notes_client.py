@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -217,10 +218,15 @@ class OperatorClient:
             if status == 401 and isinstance(self.key, KeySource):
                 self.key.forget()
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise N.NotesError(
+            failure = N.NotesError(
                 "unavailable",
                 "the Operator notes API could not be reached (%s)" % type(exc).__name__,
-            ) from None
+            )
+            # A refused connection or a name that does not resolve never sent a byte:  definite, so `call` keeps it a
+            # plain unavailable.  Anything else (a reset, a timeout) may have reached the Operator.
+            reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            failure.definite = isinstance(reason, (ConnectionRefusedError, socket.gaierror))
+            raise failure from None
         if not raw:
             return status, None
         if len(raw) > W.MAX_BODY:  # refused before it is parsed

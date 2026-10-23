@@ -153,7 +153,7 @@ class Runner:
                     }
                 }
             try:
-                self._deliver(seat, request_id, claim, outcome)
+                self._deliver(seat, request_id, claim, outcome, entry.get("action"))
             except Exception as exc:  # noqa: BLE001 - one entry's failure, of any kind, never stops the others
                 self.log(
                     "notes-runner: recovery report for %s failed:  %s"
@@ -166,22 +166,30 @@ class Runner:
         if failed is not None:
             raise failed
 
-    def _deliver(self, seat: Any, request_id: Any, claim: Any, outcome: Mapping[str, Any]) -> None:
+    def _deliver(
+        self, seat: Any, request_id: Any, claim: Any, outcome: Mapping[str, Any], action: Any
+    ) -> None:
         """Report one outcome.  A result the Operator refuses for good (400, 413:  a read too large to send back, say)
         is replaced by an error report, so the caller hears why instead of waiting the lease out;  either way the
-        runner then lets the request go.  A network or server failure raises, and the entry stays for the next pass."""
+        runner then lets the request go.  A network or server failure raises, and the entry stays for the next pass.
+        A refused write result is reported outcome_unknown, never a plain refusal:  the script ran, so the note was
+        written, and a caller told otherwise could write it again under a new request_id."""
         status = self.client.report(seat, request_id, claim, **outcome)
         if status in (400, 413) and "result" in outcome:
-            self.client.report(
-                seat,
-                request_id,
-                claim,
-                error={
-                    "code": "unavailable",
-                    "message": "the Operator refused the runner's answer (HTTP %d), for example a note too large to send "
-                    "back;  nothing more can be done for this request" % status,
-                },
-            )
+            why = "the Operator refused the runner's answer (HTTP %d)" % status
+            if action in ("read", "list"):
+                error = {
+                    "code": "internal",
+                    "message": "%s, for example a note too large to send back;  nothing was changed"
+                    % why,
+                }
+            else:
+                error = {
+                    "code": "outcome_unknown",
+                    "message": "%s after the script ran, so the note was most likely written.  Check it before "
+                    "sending it again with a new request_id" % why,
+                }
+            self.client.report(seat, request_id, claim, error=error)
 
     def _execute(self, seat: str, request: Mapping[str, Any]) -> dict[str, Any]:
         """{"result": ...} or {"error": {...}} for one request.  Never raises NotesError."""
@@ -241,7 +249,7 @@ class Runner:
             state = self._state()
             state["inflight"].setdefault(key, entry).update(outcome)
             self._save(state)
-        self._deliver(seat, request_id, claim, outcome)
+        self._deliver(seat, request_id, claim, outcome, action)
         state = self._state()
         state["inflight"].pop(key, None)
         state["last_ok_at"] = N.iso_now(self.clock)
@@ -289,8 +297,12 @@ class Runner:
                         break
                 except OSError:
                     continue
-            if found is not None:
-                for n in range(found, -1, -1):
+            if found is None:
+                # Rotated out of reach (or replaced):  send every copy still kept, whole, oldest first.  The Operator
+                # drops the ids it already has, so only what it never got is added.
+                found, offset = len(copies) - 1, 0
+            for n in range(found, -1, -1):
+                if copies[n].exists():
                     sent += self._ship_from(copies[n], offset if n == found else 0)
             offset = 0
         if offset > current.st_size:

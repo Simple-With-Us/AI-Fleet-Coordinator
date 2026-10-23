@@ -15,6 +15,7 @@ import hmac
 import http.server
 import io
 import json
+import socket
 import subprocess
 import tempfile
 import threading
@@ -601,6 +602,18 @@ class HostTests(unittest.TestCase):
             NC.call(host, "CLAUDE", self.req(rid="requestid-0043"), wait=0, scan=self.scan)
         self.assertEqual(caught.exception.code, "unavailable")  # nothing was queued
         self.assertIn("the notes queue is full", caught.exception.message)
+        # A refused connection or a name that does not resolve sent nothing:  a plain, retryable unavailable.
+        for reason in (ConnectionRefusedError(111, "refused"), socket.gaierror(-2, "Name or service not known")):
+            with self.subTest(type(reason).__name__):
+                op.fail = urllib.error.URLError(reason)
+                with self.assertRaises(N.NotesError) as caught:
+                    NC.call(host, "CLAUDE", self.req(rid="requestid-0046"), wait=0, scan=self.scan)
+                self.assertEqual(caught.exception.code, "unavailable")
+        op.fail = urllib.error.URLError(ConnectionResetError(104, "reset"))  # may have been sent
+        with self.assertRaises(N.NotesError) as caught:
+            NC.call(host, "CLAUDE", self.req(rid="requestid-0047"), wait=0, scan=self.scan)
+        self.assertEqual(caught.exception.code, "outcome_unknown")
+        op.fail = None
         # An enqueue answered with another request's record may still have queued this one:  outcome_unknown.
         op.answers[("POST", "/notes/v1/requests")] = (202, record("queued", "someone-else-01"))
         with self.assertRaises(N.NotesError) as caught:

@@ -178,18 +178,22 @@ class NotesQueue:
                 record = L.read_json(str(path))
                 if self._valid(record) and record["state"] in ("queued", "running"):
                     self.active[(record["seat"], record["request_id"])] = record
-        # The ids already kept, from every rotated copy (oldest first) and then the current log, so no rotation lets
-        # an id the Operator holds through again;  the newest LOG_IDS_KEEP of them stay in memory.  Start-up only.
+        # The newest LOG_IDS_KEEP ids already kept:  the current log first, then the rotated copies newest first, a
+        # whole file at a time, stopping once there are enough (usually one or two files, never all eleven).  Older
+        # files go in front, so the order stays oldest to newest.  Start-up only.
         recent: list[str] = []
-        for index in range(LOG_ROTATIONS, -1, -1):
+        for index in range(LOG_ROTATIONS + 1):
             path = (
                 self.action_log
                 if index == 0
                 else self.action_log.with_name("%s.%d" % (ACTION_LOG, index))
             )
-            recent.extend(
+            ids = [
                 entry["id"] for entry in L.read_jsonl(str(path)) if isinstance(entry.get("id"), str)
-            )
+            ]
+            recent = ids + recent
+            if len(recent) >= LOG_IDS_KEEP:
+                break
         for entry_id in recent[-LOG_IDS_KEEP:]:
             self.log_ids[entry_id] = None
 
@@ -697,11 +701,10 @@ class NotesQueue:
             for raw in lines:
                 try:
                     entry = N.clean_log_entry(raw)
-                except (
-                    TypeError,
-                    ValueError,
-                    OverflowError,
-                ):  # one odd line never costs the rest of the batch
+                except Exception as exc:  # noqa: BLE001 - one odd line never costs the rest of the batch
+                    self.log(
+                        "notes-queue-log-line-refused", error=type(exc).__name__
+                    )  # the type name only
                     entry = None
                 if entry is None:
                     continue

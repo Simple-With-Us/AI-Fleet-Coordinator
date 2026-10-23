@@ -458,6 +458,16 @@ class ActionLogTests(QueueHarness):
         self.append([self.entry("log-4", body="SECRET NOTE TEXT")])
         self.assertNotIn("SECRET NOTE TEXT", (Path(self.root) / NQ.QUEUE_DIR / NQ.ACTION_LOG).read_text())
 
+    def test_start_up_reads_the_newest_files_only_until_it_has_enough_ids(self) -> None:
+        log = Path(self.root) / NQ.QUEUE_DIR / NQ.ACTION_LOG
+        self.append([self.entry("old-1"), self.entry("old-2")])
+        log.rename(log.with_name("%s.1" % NQ.ACTION_LOG))
+        self.append([self.entry("new-1"), self.entry("new-2")])
+        with mock.patch.object(NQ, "LOG_IDS_KEEP", 2), mock.patch.object(NQ.L, "read_jsonl", wraps=NQ.L.read_jsonl) as read:
+            restarted = self.make_queue()
+        self.assertEqual(list(restarted.log_ids), ["new-1", "new-2"])
+        self.assertEqual([Path(c.args[0]).name for c in read.call_args_list if NQ.ACTION_LOG in c.args[0]], [NQ.ACTION_LOG])
+
     def test_an_odd_line_never_costs_the_batch_and_a_failed_append_keeps_its_ids_unmarked(self) -> None:
         # JSON's Infinity parses to a float with no int:  that one field is dropped, and the rest of the batch is kept.
         body = self.append([self.entry("odd-1", exit=float("inf"), duration_ms=float("nan")), self.entry("odd-2")])

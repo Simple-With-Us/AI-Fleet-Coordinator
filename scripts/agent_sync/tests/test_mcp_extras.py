@@ -530,11 +530,12 @@ class NotesToolTests(McpHarness):
         result = self.session().call("notes_pin", {"title": self.MASTER})
         self.assertIn("OPERATOR_API_URL", self.assert_tool_error(result, "not_configured")["message"])
         network = FakeOperator()
-        network.fail = urllib.error.URLError("refused")
+        network.fail = urllib.error.URLError(ConnectionResetError(104, "reset"))  # may have been sent
         op, _, patch = self.operator(network)
         with patch:
             down = self.session().call("notes_read", {"title": self.MASTER})
-        # The send got no answer, so the request may or may not be queued:  never retryable, same request_id only.
+        # The connection was reset after the send, so the request may or may not be queued:  never retryable, same
+        # request_id only.  (A refused connection sent nothing, so it stays a plain unavailable.)
         error = self.assert_tool_error(down, "outcome_unknown")
         self.assertIn("could not be reached", error["message"])
         self.assertIn("never a new one", error["message"])

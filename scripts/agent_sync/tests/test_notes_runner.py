@@ -362,6 +362,17 @@ class ShipLogTests(RunnerHarness):
         self.assertEqual(self.runner.ship_log(), 4)
         self.assertEqual(self.shipped(), ["e%04d" % n for n in range(1, 7)])
 
+    def test_a_cursor_file_rotated_out_of_reach_sends_every_copy_still_kept(self):
+        self.write(1)
+        self.assertEqual(self.runner.ship_log(), 1)
+        # The cursor's file is gone from every copy (moved aside, not deleted, so no new file can reuse its inode).
+        os.rename(self.log_path, self.log_path.with_name("rotated-away"))
+        self.write(2, path=self.log_path.with_name(self.log_path.name + ".2"))
+        self.write(3, path=self.log_path.with_name(self.log_path.name + ".1"))
+        self.write(4)
+        self.assertEqual(self.runner.ship_log(), 3)
+        self.assertEqual(self.shipped(), ["e%04d" % n for n in range(1, 5)])
+
     def test_a_file_truncated_in_place_is_read_from_its_start(self):
         self.write(1, 2, 3)
         self.runner.ship_log()
@@ -407,8 +418,15 @@ class ReviewFixTests(RunnerHarness):
         self.claim(req("read"))
         self.assertTrue(self.runner.once(0))
         self.assertEqual([("result" in r, r["error"]) for r in self.client.reports][0], (True, None))
-        self.assertEqual(self.client.reports[1]["error"]["code"], "unavailable")
+        self.assertEqual(self.client.reports[1]["error"]["code"], "internal")  # a read changed nothing
         self.assertEqual(self.client.state()["inflight"], {})  # the runner let it go
+        # A write's refused result is outcome_unknown:  the script ran, so a caller must check, never just resend.
+        self.client.reports.clear()
+        self.client.report_statuses = [400]
+        self.claim(req("pin"))
+        self.assertTrue(self.runner.once(0))
+        self.assertEqual(self.client.reports[1]["error"]["code"], "outcome_unknown")
+        self.assertIn("most likely written", self.client.reports[1]["error"]["message"])
 
     def test_recover_lets_go_of_a_report_the_operator_will_never_take(self):
         state = {"inflight": {"CODEX/requestid-0009": {"seat": "CODEX", "request_id": "requestid-0009", "claim": "c9", "action": "pin", "result": {"status": "done"}}}}
