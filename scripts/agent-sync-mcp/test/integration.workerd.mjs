@@ -521,7 +521,7 @@ try {
 
   await step("approval consumed the arming window", async () => {
     const st = await (await browser("/admin")).text();
-    assert.match(st, /<strong>JET<\/strong><\/td><td>Not armed/);
+    assert.match(st, /<strong>Jet (Wake)<\/strong><\/td><td>Not armed/);
   });
 
   let tokens;
@@ -904,7 +904,7 @@ try {
     assert.equal(loc.searchParams.get("iss"), issuer);
     assert.equal(loc.searchParams.get("state"), "st-deny");
     assert.equal(res.headers.get("referrer-policy"), "same-origin");
-    assert.match(await (await browser("/admin")).text(), /<strong>JET<\/strong><\/td><td>Not armed/);
+    assert.match(await (await browser("/admin")).text(), /<strong>Jet (Wake)<\/strong><\/td><td>Not armed/);
   });
 
   await step("an expired arming window refuses the approval with 409 and leaves the epoch alone", async () => {
