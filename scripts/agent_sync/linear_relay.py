@@ -126,8 +126,10 @@ def find_issue_ids(regex: re.Pattern[str], *texts: str) -> list[str]:
 
 
 def _zulip_escape(text: str) -> str:
-    # Zulip's narrow URLs percent-encode, then swap "%" for ".".
-    return urllib.parse.quote(text, safe="").replace("%", ".")
+    # Zulip's narrow URLs percent-encode, then swap "%" for ".".  quote() leaves
+    # literal dots alone, so they are encoded first; an unencoded dot survives
+    # the swap and corrupts the narrow link.
+    return urllib.parse.quote(text, safe="").replace(".", "%2E").replace("%", ".")
 
 
 def permalink(realm: str, stream_id: int, stream: str, topic: str, mid: int) -> str:
@@ -336,7 +338,14 @@ class LinearClient:
             )
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
-                    out = json.loads(resp.read())
+                    try:
+                        out = json.loads(resp.read())
+                    except ValueError:
+                        # A proxy or gateway can answer 200 with a non-JSON body.
+                        if attempt < MAX_ATTEMPTS - 1:
+                            self.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
+                            continue
+                        raise LinearError("linear answered with a non-JSON body") from None
             except urllib.error.HTTPError as exc:
                 status = exc.code
                 payload = exc.read().decode("utf-8", "replace")[:300]
@@ -517,8 +526,8 @@ class RelayWorker:
         if not new_topic or new_topic == old_topic:
             return
         sid = event.get("new_stream_id") or event.get("stream_id")
-        if sid is None:
-            return
+        if sid is None or int(sid) not in self.public_streams:
+            return  # private streams are never mirrored, renames included
         stream = str(event.get("stream_name") or sid)
         self._migrate_topic(int(sid), stream, str(old_topic or ""), str(new_topic))
         fresh = [
@@ -695,7 +704,13 @@ class RelayWorker:
             uuid = self._issue_uuid(entry["issue"])
             if uuid is None:
                 continue
-            found = self.linear.find_comment(uuid, entry["marker"])
+            try:
+                found = self.linear.find_comment(uuid, entry["marker"])
+            except LinearError as exc:
+                # A transient Linear failure must not kill the relay; the entry
+                # stays pending and is reconciled on the next registration.
+                self.log("reconcile lookup failed for %s: %s" % (entry["issue"], exc))
+                continue
             if found:
                 entry["comment_id"] = found
                 entry["pending"] = False

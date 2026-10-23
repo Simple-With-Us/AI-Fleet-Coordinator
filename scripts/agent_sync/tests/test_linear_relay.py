@@ -44,6 +44,7 @@ class FakeLinear:
         self.by_marker: dict[str, str] = {}
         self.dry_run = False
         self.lookups: list[str] = []
+        self.fail_find = False
 
     def issue_id(self, identifier: str) -> str:
         self.lookups.append(identifier)
@@ -61,6 +62,8 @@ class FakeLinear:
         self.updated.append((comment_id, body))
 
     def find_comment(self, issue_uuid: str, marker: str) -> str | None:
+        if self.fail_find:
+            raise lr.LinearError("boom")
         return self.by_marker.get(marker)
 
     def viewer(self) -> str:
@@ -153,6 +156,28 @@ class RelayTests(unittest.TestCase):
         # and the marker is unchanged, so the comment is still found under its old key
         entry = self.led.entries["AFC-1|5|AFC-1 relay renamed"]
         self.assertEqual(entry["marker"], lr.marker_for("AFC-1", 1))
+
+    def test_a_rename_in_a_private_stream_is_not_relayed(self) -> None:
+        # The rename path honours the same public-streams guard as messages: a private
+        # stream's names and links never reach Linear.
+        self.w.handle_event({
+            "type": "update_message", "orig_subject": "plain", "subject": "OPS-9 plain",
+            "stream_id": 9, "stream_name": "secret-stream", "message_ids": [7]})
+        self.assertEqual(self.lin.created, [])
+        self.assertEqual(dict(self.led.entries), {})
+
+    def test_zulip_escape_encodes_literal_dots_before_the_percent_swap(self) -> None:
+        self.assertEqual(
+            lr._zulip_escape("AFC-502.relay topic"), "AFC-502.2Erelay.20topic")
+
+    def test_reconcile_survives_a_linear_outage(self) -> None:
+        entry = lr.new_entry("AFC-1", 5, "builds", "AFC-1 relay", 1)
+        entry["pending"] = True
+        self.led.entries["AFC-1|5|AFC-1 relay"] = entry
+        self.lin.fail_find = True
+        self.w.reconcile()  # must not raise
+        self.assertIsNone(entry["comment_id"])
+        self.assertTrue(entry["pending"])  # still pending for the next registration
 
     # -- the uncertain write -------------------------------------------------------------
     def test_a_create_whose_answer_was_lost_is_adopted_not_stacked(self) -> None:
