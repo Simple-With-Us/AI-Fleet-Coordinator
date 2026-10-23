@@ -33,10 +33,40 @@ export function binding(raw) {
   } catch { return null; }
 }
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
-const messageSchema = z.object({ id_hash: hash, sender_hash: hash, timestamp: z.number().int().positive(), type: z.string().min(1).max(64), text: z.string().refine(v => [...v].length <= 4096).nullable() }).strict().refine(m => m.type !== "text" || m.text !== null);
-const common = { seat: z.literal("JET"), sent_at: z.number().int() };
+const messageSchema = z.object({ id_hash: hash, sender_hash: hash, timestamp: z.number().int().positive().refine(Number.isSafeInteger), type: z.string().min(1).max(64), text: z.string().refine(v => [...v].length <= 4096).nullable() }).strict().refine(m => m.type !== "text" || m.text !== null);
+const common = { seat: z.literal("JET"), sent_at: z.number().int().refine(Number.isSafeInteger) };
 const ownerSchema = z.object({ ...common, contract: z.literal("wa-ingest/1"), agent_hash: hash, messages: z.array(messageSchema).max(100), next_offset: z.string().regex(/^(0|[1-9][0-9]{0,18})$/).refine(v => { try { return BigInt(v) <= 9223372036854775807n; } catch { return false; } }) }).strict();
 const operatorSchema = z.object({ ...common, contract: z.literal("wa-operator/1"), request_id: z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/) }).strict();
+
+function boundedJSONText(text) {
+  let quoted = false; let escaped = false; let depth = 0; let nodes = 0;
+  for (const char of text) {
+    if (quoted) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') quoted = false;
+    } else if (char === '"') quoted = true;
+    else if (char === "[" || char === "{") { if (++depth > 16 || ++nodes > 20000) return false; }
+    else if (char === "]" || char === "}") depth--;
+    else if (char === "," || char === ":") { if (++nodes > 20000) return false; }
+  }
+  return true; // JSON.parse handles syntax; this guard bounds allocation first.
+}
+
+function boundedTree(raw) {
+  const stack = [[raw, 0]]; let nodes = 0;
+  while (stack.length) {
+    const [value, depth] = stack.pop();
+    if (++nodes > 20000 || depth > 16) return false;
+    if (Array.isArray(value) && value.length > 100) return false;
+    if (value !== null && typeof value === "object") {
+      const values = Object.values(value);
+      if (values.length > 20000 - nodes) return false;
+      for (const child of values) stack.push([child, depth + 1]);
+    }
+  }
+  return true;
+}
 
 export async function verifyRequest(bytes, given, key, kind, now = Date.now()) {
   if (typeof key !== "string" || key.trim().length < 32) return { status: 404 };
@@ -44,7 +74,10 @@ export async function verifyRequest(bytes, given, key, kind, now = Date.now()) {
   if (!/^[a-f0-9]{64}$/.test(given ?? "") || !safeEqual(await signature(key.trim(), bytes), given)) return { status: 401 };
   let b;
   try {
-    const raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (!boundedJSONText(text)) return { status: 400 };
+    const raw = JSON.parse(text);
+    if (!boundedTree(raw)) return { status: 400 };
     const parsed = (kind === "operator" ? operatorSchema : ownerSchema).safeParse(raw);
     if (!parsed.success) return { status: 400 };
     b = parsed.data;

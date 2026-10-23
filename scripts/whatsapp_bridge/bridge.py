@@ -102,7 +102,14 @@ def normalize(payload, offset, hash_key):
                 raise ValueError
             if not isinstance(m["type"], str) or not 0 < len(m["type"]) <= 64:
                 raise ValueError
-            text = m["text"]["body"] if m["type"] == "text" else m.get(m["type"], {}).get("caption")
+            media = m.get(m["type"])
+            text = (
+                m["text"]["body"]
+                if m["type"] == "text"
+                else media.get("caption")
+                if isinstance(media, dict)
+                else None
+            )
             if text is not None and (not isinstance(text, str) or len(text) > 4096):
                 raise ValueError
             result.append(

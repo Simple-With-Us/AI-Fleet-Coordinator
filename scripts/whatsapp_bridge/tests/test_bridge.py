@@ -360,6 +360,44 @@ class LaunchTests(unittest.TestCase):
 
 
 class BoundaryRegressionTests(unittest.TestCase):
+    def test_non_object_media_is_metadata_only_without_poisoning_batch(self):
+        for media in ([], ["provider metadata"], None, "opaque"):
+            batch = payload()
+            message = batch["entry"][0]["changes"][0]["value"]["messages"][0]
+            message.update(type="image", image=media)
+            self.assertIsNone(normalize(batch, 0, "k" * 64)["messages"][0]["text"])
+
+    def test_operator_cli_preserves_refused_busy_and_unknown_outcomes(self):
+        import contextlib
+        import io
+
+        from whatsapp_bridge.operator_wake import main
+
+        env = {"WA_WORKER_URL": "https://worker.example", "WA_OPERATOR_HMAC_KEY_JET": "k" * 64}
+        for code, expected in (
+            ("network_error", "outcome_unknown"),
+            ("http_408", "outcome_unknown"),
+            ("http_503", "outcome_unknown"),
+            ("invalid_json", "outcome_unknown"),
+            ("http_403", "http_403"),
+            ("rate_limited:123", "operator_busy"),
+        ):
+            output = io.StringIO()
+            with (
+                patch("whatsapp_bridge.operator_wake.wake", side_effect=BridgeError(code)) as call,
+                contextlib.redirect_stderr(output),
+            ):
+                self.assertEqual(main(["synthetic-request"], env), 1)
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["reason"], expected)
+            self.assertEqual(call.call_count, 1, "no automatic retries")
+            if expected == "operator_busy":
+                self.assertEqual(result["retry_after_s"], 123)
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            self.assertEqual(main([], {}), 1)
+        self.assertEqual(json.loads(output.getvalue())["required"], "WA_WORKER_URL")
+
     def test_binding_cli_normalizes_key_before_hashing_owner_identity(self):
         import contextlib
         import io
@@ -454,7 +492,7 @@ class BoundaryRegressionTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "actual").mkdir()
+            (root / "actual").mkdir(mode=0o700)
             (root / "link").symlink_to(root / "actual", target_is_directory=True)
             with self.assertRaisesRegex(StopBridge, "unsafe_state_directory"):
                 State(root / "link")

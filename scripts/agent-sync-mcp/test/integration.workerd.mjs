@@ -1727,6 +1727,10 @@ try {
     assert.deepEqual(callbackCalls[1].body.data, { source: "operator", owner_authorized: false });
     const ns = await mf.getDurableObjectNamespace("SEAT_GATE");
     assert.equal((await ns.get(ns.idFromName("JET")).eventSubscriptions({})).length, 2);
+    const maximum = { ...body, messages: Array.from({ length: 100 }, (_, i) => ({ ...message("3", "😀".repeat(4096)), id_hash: (100 + i).toString(16).padStart(64, "0") })) };
+    const full = await (await postWa(maximum)).json();
+    assert.equal(full.stored, 100, "maximum provider batch commits to real SQLite storage");
+    assert.equal(full.delivered, 1, "maximum batch coalesces into one owner wake");
   });
 
   console.log(`\n${passed} passed`);

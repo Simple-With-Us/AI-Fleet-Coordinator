@@ -26,7 +26,9 @@ def prepare(environment, credential):
         raise ValueError("static_token_refused")
     project = environment.get("WA_INFISICAL_PROJECT_ID")
     if (
-        not project
+        not isinstance(project, str)
+        or not project.strip()
+        or not isinstance(credential, dict)
         or set(credential) != {"client_id", "client_secret"}
         or not all(isinstance(v, str) and v for v in credential.values())
     ):
@@ -76,6 +78,23 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except KeyError as error:
+        required = (
+            error.args[0]
+            if error.args[0] in ("CREDENTIALS_DIRECTORY", "WA_INFISICAL_PROJECT_ID")
+            else "isolated_runtime"
+        )
+        print(json.dumps({"state": "isolated_start_failed", "required": required}), file=sys.stderr)
+        sys.exit(1)
+    except ValueError as error:
+        code = (
+            str(error)
+            if str(error)
+            in ("static_token_refused", "isolated_identity_missing", "invalid_start_mode")
+            else "invalid_isolated_credential"
+        )
+        print(json.dumps({"state": "isolated_start_failed", "reason": code}), file=sys.stderr)
+        sys.exit(1)
     except Exception:  # noqa: BLE001 - loader failures must not expose credential-bearing details
         print('{"state":"isolated_start_failed"}', file=sys.stderr)
         sys.exit(1)

@@ -54,12 +54,22 @@ def wake(base_url, signing_key, request_id, request=request_json):
     return result
 
 
-if __name__ == "__main__":
+def main(argv=None, environment=None):
+    argv = sys.argv[1:] if argv is None else argv
+    environment = os.environ if environment is None else environment
     try:
+        for name in ("WA_WORKER_URL", "WA_OPERATOR_HMAC_KEY_JET"):
+            if not environment.get(name, "").strip():
+                print(
+                    json.dumps({"ok": False, "reason": "not_configured", "required": name}),
+                    file=sys.stderr,
+                )
+                return 1
         result = wake(
-            os.environ["WA_WORKER_URL"], os.environ["WA_OPERATOR_HMAC_KEY_JET"], sys.argv[1]
+            environment["WA_WORKER_URL"], environment["WA_OPERATOR_HMAC_KEY_JET"], argv[0]
         )
         print(json.dumps(result))
+        return 0
     except BridgeError as error:
         code = str(error)
         if code.startswith("rate_limited:"):
@@ -68,14 +78,38 @@ if __name__ == "__main__":
                     {
                         "ok": False,
                         "reason": "operator_busy",
-                        "retry_after_s": int(code.split(":")[1]),
+                        "retry_after_s": max(1, min(3600, int(code.split(":")[1]))),
                     }
                 ),
                 file=sys.stderr,
             )
         else:
-            print('{"ok":false,"reason":"operator_not_acknowledged"}', file=sys.stderr)
-        sys.exit(1)
+            transient = (
+                code
+                in (
+                    "network_error",
+                    "invalid_json",
+                    "response_too_large",
+                    "operator_not_acknowledged",
+                )
+                or code == "http_408"
+                or code.startswith("http_5")
+            )
+            allowed = {"invalid_worker_url", "invalid_operator_request", "redirect_refused"}
+            reason = (
+                "outcome_unknown"
+                if transient
+                else code
+                if code in allowed
+                or (code.startswith("http_") and code[5:].isdigit() and len(code) == 8)
+                else "operator_wake_failed"
+            )
+            print(json.dumps({"ok": False, "reason": reason}), file=sys.stderr)
+        return 1
     except (KeyError, ValueError, IndexError):
         print('{"ok":false,"reason":"operator_wake_failed"}', file=sys.stderr)
-        sys.exit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

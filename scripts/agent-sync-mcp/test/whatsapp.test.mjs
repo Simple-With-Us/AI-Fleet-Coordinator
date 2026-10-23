@@ -313,3 +313,69 @@ test("expiry uses due index and a single acknowledgment range rather than per-ro
   calls.length=0; await wa.sweep(s.store,now);
   assert.ok(!calls.some(c=>c.prefix==="wa:message:"),"nothing due: no historical inbox scan");
 });
+
+test("signed JSON depth/node limits run before parsing and unsafe timestamps fail closed", async () => {
+  for (const text of ['['.repeat(30) + '0' + ']'.repeat(30), '[' + '0,'.repeat(21000) + '0]']) {
+    const raw = new TextEncoder().encode(text); const sig = await signature(KEY, raw);
+    const original = JSON.parse;
+    try {
+      JSON.parse = () => { throw new Error('must reject before JSON.parse'); };
+      assert.equal((await verifyRequest(raw, sig, KEY, "ingest")).status, 400);
+    } finally { JSON.parse = original; }
+  }
+  const s = setup();
+  for (const body of [{ ...batch([]), sent_at: Number.MAX_SAFE_INTEGER + 1 }, batch([msg(80, "x", { timestamp: Number.MAX_SAFE_INTEGER + 1 })])]) {
+    assert.equal((await request(s.gate, s.fetchFn, body)).status, 400);
+  }
+  assert.equal((await request(s.gate, s.fetchFn, batch([msg(81, '{["comma, colon: text')]))).status, 200);
+});
+
+test("eligible owner doorbell precedes Operator and acknowledgment preserves rejection block", async () => {
+  let now = NOW; const s = setup(() => now);
+  await s.gate.waOperator({ requestId: randomUUID() });
+  await s.gate.waIngest({ body: batch([msg(82)]), owner });
+  const first = await s.gate.waClaim({ destination: "sub:1" });
+  assert.equal(first.source, "authenticated_owner");
+  await s.gate.waSettle({ ...first, delivered: false, permanent: true });
+  for (let i = 0; i < 2; i++) {
+    now += wa.RERING_MS + 1;
+    const pending = await s.gate.waClaim({ destination: "sub:1" });
+    await s.gate.waSettle({ ...pending, delivered: false, permanent: true });
+  }
+  await s.gate.waRead({}); await s.gate.waRead({ ack_through: "1" });
+  assert.equal((await s.store.get("wa:owner_gate")).blocked, true);
+  await s.gate.waIngest({ body: batch([msg(83)]), owner });
+  assert.equal((await s.gate.waClaim({ destination: "sub:1" })).source, "operator");
+  assert.equal((await s.gate.waClaim({ destination: "sub:2" })).source, "authenticated_owner");
+});
+
+test("acknowledgment cleanup is bounded, skips retired wakes immediately and sweep isolates failures", async () => {
+  const s = setup();
+  for (let page = 0; page < 3; page++) await s.gate.waIngest({ body: batch(Array.from({ length: 100 }, (_, i) => msg(1000 + 100 * page + i))), owner });
+  for (let page = 0; page < 6; page++) await s.gate.waRead({ limit: 50 });
+  await s.gate.waRead({ ack_through: "300" });
+  assert.equal((await s.store.list({ prefix: "wa:pending:owner:" })).size, 200);
+  assert.equal(await s.gate.waClaim({}), null);
+  await s.gate.waIngest({ body: batch([msg(1500)]), owner });
+  assert.equal((await s.gate.waClaim({})).seq, "301");
+  while (await wa.sweep(s.store, Date.now() + 1)) {}
+  assert.equal((await s.store.list({ prefix: "wa:pending:owner:" })).size, 1);
+  await s.store.put("wa:expire:00000000000000000001:broken", null);
+  await s.store.put("wa:expire:00000000000000000002:valid", { kind: "delete", keys: ["delete-me"] });
+  await s.store.put("delete-me", true);
+  assert.equal(await wa.sweep(s.store), true);
+  assert.equal(await s.store.get("delete-me"), undefined);
+  assert.ok(s.store.map.has("wa:expire:00000000000000000001:broken"));
+});
+
+test("Operator idempotency caches acceptance and retry hints reflect pending callback state", async () => {
+  let now = NOW; const s = setup(() => now); const id = randomUUID();
+  assert.equal((await s.gate.waOperator({ requestId: id })).outcome, "ok");
+  assert.deepEqual((await s.store.get(`wa:operator:${id}`)).result, { ok: true });
+  assert.equal((await s.gate.waOperator({ requestId: id })).duplicate, true);
+  const pending = await s.gate.waClaim({ destination: "sub:1" });
+  await s.gate.waSettle({ ...pending, delivered: false, permanent: true });
+  now += 31000;
+  const busy = await s.gate.waOperator({ requestId: randomUUID() });
+  assert.ok(busy.retry_after_s >= 560);
+});

@@ -43,15 +43,18 @@ export async function ingest(store, { body, owner, known = [] }, now = Date.now(
 export async function operator(store, { requestId }, now = Date.now()) {
   return store.transaction(async tx => {
     const id = `wa:operator:${requestId}`;
-    if (await tx.get(id)) return { ok: true, duplicate: true };
+    const prior = await tx.get(id);
+    if (prior) return { ...(prior.result ?? { ok: true }), outcome: prior.outcome ?? "ok", duplicate: true };
     const pending = await tx.list({ prefix: "wa:pending:operator:", limit: 1 });
     const nextAt = (await tx.get("wa:operator_next_at")) ?? 0;
-    if (pending.size || now < nextAt) return { ok: false, reason: "operator_busy", retry_after_s: Math.max(1, Math.ceil((nextAt - now) / 1000)) };
-    await tx.put(id, now);
+    const row = pending.values().next().value;
+    const retryAt = Math.max(nextAt, row?.next_ring_at ?? 0, row?.lease_until ?? 0, row ? now + (row.blocked ? RERING_MS : OPERATOR_DEBOUNCE_MS) : now);
+    if (pending.size || now < nextAt) return { ok: false, reason: "operator_busy", retry_after_s: Math.max(1, Math.ceil((retryAt - now) / 1000)), ...(row?.blocked ? { requires_subscription_refresh: true } : {}) };
+    await tx.put(id, { created_at: now, outcome: "ok", result: { ok: true } });
     await schedule(tx, now + LEDGER_RETENTION, `operator:${requestId}`, { kind: "delete", keys: [id, `wa:pending:operator:${requestId}`] });
     await tx.put("wa:operator_next_at", now + OPERATOR_DEBOUNCE_MS);
     await tx.put(`wa:pending:operator:${requestId}`, { id, source: "operator", created_at: now });
-    return { ok: true };
+    return { ok: true, outcome: "ok" };
   });
 }
 export async function read(store, args, now = Date.now()) {
@@ -63,15 +66,13 @@ export async function read(store, args, now = Date.now()) {
     const through = Math.max(previousAck, Number(ack ?? 0));
     if (through > previousAck) {
       await tx.put("wa:ack", through);
-      await tx.delete("wa:owner_gate");
-      // Only returned owner messages may retire their outstanding doorbells.
-      let start = "wa:pending:owner:";
-      while (true) {
-        const page = await tx.list({ prefix: "wa:pending:owner:", start, limit: 100 });
-        for (const [k, row] of page) if (Number(row.seq) <= through) await tx.delete(k);
-        if (page.size < 100) break;
-        start = [...page.keys()].at(-1) + "\u0000";
-      }
+      const gate = await tx.get("wa:owner_gate");
+      if (gate) await tx.put("wa:owner_gate", { ...gate, next_at: 0 });
+      // Logical retirement is the ack checkpoint; physical cleanup is bounded.
+      // Claim starts after that checkpoint, so old rows cannot hide new wakes.
+      const cleanup = await tx.list({ prefix: "wa:pending:owner:", end: `wa:pending:owner:${String(through + 1).padStart(20, "0")}`, limit: 100 });
+      if (cleanup.size) await tx.delete([...cleanup.keys()]);
+      if (cleanup.size === 100) await schedule(tx, now, `pending:${through}`, { kind: "pending_ack", through });
       // Retention starts when the acknowledgement is accepted.  The sweep
       // processes its bounded range using these content-free checkpoints.
       const checkpoint = `wa:ack_at:${String(through).padStart(20, "0")}`;
@@ -97,7 +98,10 @@ export async function read(store, args, now = Date.now()) {
 export async function claim(store, { destination = "" } = {}, now = Date.now()) {
   return store.transaction(async tx => {
     if (await tx.get("paused")) return null;
-    const rows = await tx.list({ prefix: "wa:pending:", limit: 100 });
+    const ack = (await tx.get("wa:ack")) ?? 0;
+    const owners = await tx.list({ prefix: "wa:pending:owner:", start: `wa:pending:owner:${String(ack + 1).padStart(20, "0")}`, limit: 100 });
+    const operators = await tx.list({ prefix: "wa:pending:operator:", limit: 1 });
+    const rows = new Map([...owners, ...operators]);
     const ownerGate = (await tx.get("wa:owner_gate")) ?? {};
     for (const [k, row] of rows) {
       if (row.lease_until > now) continue;
@@ -137,23 +141,32 @@ export async function sweep(store, now = Date.now()) {
   const jobs = await store.list({ prefix: "wa:expire:", end, limit: 100 });
   const ack = (await store.get("wa:ack")) ?? 0;
   for (const [jobKey, job] of jobs) {
-    if (job.kind === "delete") await store.delete(job.keys);
-    else if (job.kind === "body") {
-      const row = await store.get(job.key);
-      if (row && !row.expired) {
-        if (Number(row.seq) > ack) console.log(JSON.stringify({ event: "wa_unread_expired", count: 1 }));
-        await store.put(job.key, { ...row, text: null, expired: true });
+    try {
+      if (job.kind === "delete") await store.delete(job.keys);
+      else if (job.kind === "body") {
+        const row = await store.get(job.key);
+        if (row && !row.expired) {
+          if (Number(row.seq) > ack) console.log(JSON.stringify({ event: "wa_unread_expired", count: 1 }));
+          await store.put(job.key, { ...row, text: null, expired: true });
+        }
+      } else if (job.kind === "pending_ack") {
+        const page = await store.list({ prefix: "wa:pending:owner:", end: `wa:pending:owner:${String(job.through + 1).padStart(20, "0")}`, limit: 100 });
+        if (page.size) await store.delete([...page.keys()]);
+        if (page.size === 100) continue;
+      } else if (job.kind === "ack") {
+        const page = await store.list({ prefix: "wa:message:", start: key(job.after + 1), end: key(job.through + 1), limit: 100 });
+        let last = job.after;
+        for (const [k, row] of page) { await store.put(k, { ...row, text: null, expired: true }); last = Number(row.seq); }
+        if (page.size === 100 && last < job.through) {
+          await store.put(jobKey, { ...job, after: last });
+          continue;
+        }
       }
-    } else if (job.kind === "ack") {
-      const page = await store.list({ prefix: "wa:message:", start: key(job.after + 1), end: key(job.through + 1), limit: 100 });
-      let last = job.after;
-      for (const [k, row] of page) { await store.put(k, { ...row, text: null, expired: true }); last = Number(row.seq); }
-      if (page.size === 100 && last < job.through) {
-        await store.put(jobKey, { ...job, after: last });
-        continue;
-      }
+      await store.delete(jobKey);
+    } catch {
+      // One retryable storage/job failure must not prevent other due deletion.
+      console.log(JSON.stringify({ event: "wa_expiry_job_failed" }));
     }
-    await store.delete(jobKey);
   }
   return (await store.list({ prefix: "wa:expire:", end, limit: 1 })).size > 0;
 }
