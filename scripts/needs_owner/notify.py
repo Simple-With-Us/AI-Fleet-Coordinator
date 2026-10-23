@@ -111,13 +111,28 @@ REASON_TOKENS = (
     ("timeout", "timed_out"),
 )
 # The status code Linear answered with, and a request id to quote back to Linear.
-HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
+# The board hands the status back as a field of its own (`http=401`), so the field
+# form is read as well as the sentence form.
+HTTP_STATUS = re.compile(r"\bHTTP[ =](\d{3})\b", re.IGNORECASE)
 REQUEST_ID = re.compile(r"\brequest[-_ ]?id[:= ]+([A-Za-z0-9_-]{4,64})\b", re.IGNORECASE)
+# The name of the error the board hit, as the board names it:  a class name, never
+# a message.
+ERROR_TYPE = re.compile(r"\berror_type=([A-Za-z0-9_]{1,40})\b")
 # The board's masked credential preview.  It is the board that owns the credential,
 # so it is the board that can hand back a safe preview of it, and only a value
 # shaped exactly like a preview is taken.
+#
+# The shape is the shape the board's own `credential_preview` produces:  the first
+# eight characters of the credential, the ellipsis, and the last four.  A Linear
+# credential starts with `lin_api_`, `lin_oauth_` or `lin_wh_`, so the preview
+# carries an underscore, and a credential under twenty-four characters shows one
+# leading character and the ellipsis alone.
 CREDENTIAL_FIELD = re.compile(r"\bcredential=(\S+)")
-MASKED_SHAPE = re.compile(r"^[A-Za-z0-9]{1,8}…[A-Za-z0-9]{0,4}$")
+MASKED_SHAPE = re.compile(r"^[^\s…]{1,8}…[^\s…]{0,4}$")
+# The names of the credential variables the operator has to set, as the board hands
+# them back.  The board owns the credential, so the board is the layer that can say
+# which variable is missing.
+CREDENTIAL_FIELD_VAR = re.compile(r"\bcredential_field=(\S+)")
 DETAIL_MAX = 240
 
 
@@ -234,6 +249,17 @@ def notice_seats(seat: str) -> frozenset[str]:
     return frozenset({f3.identity.canonical_seat(seat), FALLBACK_SEAT})
 
 
+def _env_of(runner: Runner, environ: dict | None = None) -> dict:
+    """The environment a call reads:  the caller's own, and the runner's own when
+    there is none.
+
+    Never the process environment:  an ambient variable must not decide where a
+    notice goes, or how a board write is read."""
+    if environ is not None:
+        return environ
+    return dict(getattr(runner, "env", None) or {})
+
+
 def find_notice(
     runner: Runner,
     topic: str,
@@ -253,7 +279,11 @@ def find_notice(
     uid), and `carries_ref` finds the reference as an unquoted line of its own (a quote-and-reply, from
     anyone, does not count).  The result is the lowest matching id, because the first post is the notice.
     A sender whose kind agent-sync could not look up has `is_bot` null and is left out:  the worst result
-    is a repeated post, never an answer or a quote taken for the notice."""
+    is a repeated post, never an answer or a quote taken for the notice.
+
+    The channel comes from the caller's own `environ`, and from the runner's own
+    environment when there is none:  never from the process environment, so an
+    ambient `AGENT_SYNC_CHANNEL` cannot decide where the notice is read."""
     result = runner.agent_sync(
         "read",
         "--as",
@@ -262,7 +292,7 @@ def find_notice(
         SESSION,
         "--json",
         "--channel",
-        channel if channel is not None else linkmod.resolve_channel(environ),
+        channel if channel is not None else linkmod.resolve_channel(_env_of(runner, environ)),
         "--topic",
         topic,
         "--include-self",
@@ -317,6 +347,24 @@ def _missing_names(text: str) -> list[str]:
     return unset or every
 
 
+def _field_names(text: str) -> list[str]:
+    """The names of the credential variables the board handed back as structured data.
+
+    The board owns the credential, so the board is the layer that can say which
+    variable an operator has to set, and it says it in a field of its own.  Only
+    a name that is shaped like a name comes out:  the field is read, never the
+    sentence around it."""
+    match = CREDENTIAL_FIELD_VAR.search(text)
+    if not match:
+        return []
+    names = []
+    for part in match.group(1).split(","):
+        name = part.strip()
+        if VAR_NAME.fullmatch(name) and name not in names:
+            names.append(name)
+    return names
+
+
 def _reason_token(text: str) -> str:
     """The reason this module gives the failure, from a phrase the board is known to use.
 
@@ -342,6 +390,24 @@ def _credential_preview(text: str) -> str:
     return value if MASKED_SHAPE.match(value) else ""
 
 
+def _allow_listed_extras(text: str) -> list[str]:
+    """The board's allow-listed fields about the failure, as detail parts.
+
+    A stable error name, the status code and a scrubbed request id:  the three
+    things a caller may quote back without repeating anything the provider said."""
+    parts = []
+    error_type = ERROR_TYPE.search(text)
+    if error_type:
+        parts.append("error_type=%s" % error_type.group(1))
+    status = HTTP_STATUS.search(text)
+    if status:
+        parts.append("http=%s" % status.group(1))
+    request = REQUEST_ID.search(text)
+    if request:
+        parts.append("request_id=%s" % request.group(1))
+    return parts
+
+
 def _detail(result: Result) -> str:
     """What the board said about a failed write, as allow-listed fields only.
 
@@ -353,41 +419,43 @@ def _detail(result: Result) -> str:
     variable name, a scrubbed request id, and a reason token this module chose."""
     text = _board_text(result)
     if result.code == 4:
-        names = _missing_names(text)
-        return (
-            "credential variable: %s" % ", ".join(names)
-            if names
-            else "credential variable: (not named)"
-        )
+        # The board's own field first:  it names the variables the operator has to
+        # set.  The prose is only read for an older board that has no field.
+        names = _field_names(text) or _missing_names(text)
+        if names:
+            return "credential variable: %s" % ", ".join(names)
+        # No name anywhere:  the detail says so rather than pretending one was named.
+        return "credential missing: the board named no variable"
     if result.code == 6:
         preview = _credential_preview(text)
-        return (
+        parts = [
             "credential rejected: %s" % preview if preview else "credential rejected: (no preview)"
-        )
+        ]
+        parts += _allow_listed_extras(text)
+        return " ".join(parts)[:DETAIL_MAX]
     parts = ["board write failed (code=%d)" % result.code]
     reason = _reason_token(text)
     if reason:
         parts.append("reason=%s" % reason)
-    status = HTTP_STATUS.search(text)
-    if status:
-        parts.append("http=%s" % status.group(1))
+    parts += _allow_listed_extras(text)
     for name in _missing_names(text)[:4]:
         parts.append("name=%s" % name)
-    request = REQUEST_ID.search(text)
-    if request:
-        parts.append("request_id=%s" % request.group(1))
     return " ".join(parts)[:DETAIL_MAX]
 
 
 def _board_failure(result: Result) -> BoardFailed:
     """The board's failure as an error the CLI can exit with.
 
-    The message names what an operator has to fix and never a value."""
+    The message names what an operator has to fix and never a value.  The
+    allow-listed detail rides on the exception as well, so a caller that catches
+    it can report the diagnosis without taking the message apart."""
     detail = _detail(result)
-    return BoardFailed(
+    failure = BoardFailed(
         "board comment failed (exit %d):  %s" % (result.code, detail or "the board said nothing"),
         result.code,
     )
+    failure.detail = detail
+    return failure
 
 
 def _classify(result: Result) -> str:
@@ -426,6 +494,15 @@ class Write:
     detail: str = ""
     code: int = 0
 
+    def __bool__(self) -> bool:
+        """True only when the record was written.
+
+        A caller that only wants to know whether the record landed keeps working
+        with `if not record(...)`, and one that wants the reason reads `.outcome`
+        and `.detail`:  a terminal failure and a retryable one are never the same
+        thing."""
+        return self.outcome == OK
+
 
 def _write_record(runner: Runner, item: Item, text: str, *, environ: dict | None = None) -> Write:
     """One comment on the item, written once.
@@ -443,7 +520,7 @@ def _write_record(runner: Runner, item: Item, text: str, *, environ: dict | None
     not tried again:  the request may have landed, and a second write could post the
     record twice.  A terminal failure raises BoardFailed, so the CLI exits with the
     board's own code and the operator sees the board's reason;  `record` catches that
-    raise and reports the record as not written."""
+    raise and keeps the reason in the outcome it returns."""
     env = environ if environ is not None else runner.env
     key = comment_keys.key_for(item.identifier, text)
     held = comment_keys.get(key, env)
@@ -478,17 +555,19 @@ def _write_record(runner: Runner, item: Item, text: str, *, environ: dict | None
     return Write(outcome, _detail(result), result.code)
 
 
-def record(runner: Runner, item: Item, text: str) -> bool:
+def record(runner: Runner, item: Item, text: str) -> Write:
     """One comment on the item, written as the runner's seat.  The notifier's reply records use it.
 
-    A terminal board failure is reported as "not written" rather than raised.  The caller may
-    already have filed the issue, and an exception there would abandon the rest of the flow
-    with the item half done.  A caller that wants the board's own exit code calls
-    `_write_record` directly."""
+    The outcome is returned, not raised:  the caller may already have filed the
+    issue, and an exception there would abandon the rest of the flow with the item
+    half done.  A terminal failure keeps its own outcome and its own detail, so
+    the caller can tell it apart from a retryable one and report why it failed:
+    the detail is the board's masked preview of a refused credential, or the name
+    of the variable that is missing, and never the board's prose."""
     try:
-        return _write_record(runner, item, text).outcome == OK
-    except BoardFailed:
-        return False
+        return _write_record(runner, item, text)
+    except BoardFailed as failure:
+        return Write(TERMINAL, getattr(failure, "detail", ""), failure.exit_code)
 
 
 def _reason(wrote: Write) -> str:
@@ -545,9 +624,10 @@ def notify(
     b = item.block
     if b is None:
         raise Refusal("%s has no readable needs-owner block;  adopt it first" % item.identifier)
-    # one channel for the whole call, from the caller's own environ, so the post and the read-back
-    # that confirms it can never look in two different channels
-    channel = linkmod.resolve_channel(environ)
+    # one channel for the whole call, from the caller's own environ (or the runner's), so the post
+    # and the read-back that confirms it can never look in two different channels, and neither of
+    # them looks in an ambient channel
+    channel = linkmod.resolve_channel(_env_of(runner, environ))
     if item.notified:
         return Notice(
             "notified", item.notified[0], item.notified[1] or item.topic, None, True, already=True

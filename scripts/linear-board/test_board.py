@@ -123,6 +123,7 @@ class MockLinear:
         self.violations: list[str] = []
         self.mints = 0
         self.mint_down = False
+        self.request_id = ""  # a request id the token endpoint's answer carries, if any
         self.scopes: list[str] = []
         self.tokens: set[str] = set()
         self.ratelimit400 = 0
@@ -710,7 +711,8 @@ def make_handler(mock: MockLinear):
                     )
                     if want is None or form.get("client_secret") != want:
                         return self._send(
-                            401, {"error": "invalid_client", "error_description": "bad client"}
+                            401, {"error": "invalid_client", "error_description": "bad client"},
+                            {"x-request-id": mock.request_id} if mock.request_id else None,
                         )
                     mock.mints += 1
                     mock.mints_by[cid] = mock.mints_by.get(cid, 0) + 1
@@ -2833,7 +2835,8 @@ class SeatAppTests(BoardTest):
         claude, sec = self.seat_app("CLAUDE", "Claude")
         self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
         p = self.as_seat("CLAUDE", "whoami", code=6)
-        self.assertIn("minting the Claude seat app token failed: HTTP 401", p.stderr)
+        self.assertIn("minting the Claude seat app token failed", p.stderr)
+        self.assertIn("http=401", p.stderr)
         for needle in (sec, claude, "rotated-in-linear-not-in-the-file"):
             self.assertNotIn(needle, p.stdout + p.stderr)
         self.mock.clients[claude]["secret"] = sec
@@ -3616,6 +3619,90 @@ class CredentialFailureTests(BoardTest):
         p = self.board("list", code=4)
         self.assertIn("FLEET_LINEAR_CLIENT_ID", p.stderr)
         self.assertIn("FLEET_LINEAR_CLIENT_SECRET", p.stderr)
+
+    # ---- the structured fields a caller downstream reads ---------------------------------------
+    def test_a_missing_credential_hands_back_the_variable_as_a_field(self):
+        # The board owns the credential, so it is the board that says which variable an
+        # operator has to set, and it says it as a field:  a caller never has to parse
+        # the sentence around it.
+        self.creds.unlink()
+        p = self.board("list", code=4)
+        self.assertIn("credential_field=", p.stderr)
+        field = p.stderr.rsplit("credential_field=", 1)[1].split()[0]
+        self.assertIn("FLEET_LINEAR_CLIENT_ID", field)
+        self.assertIn("FLEET_LINEAR_CLIENT_SECRET", field)
+        self.assertIn("LINEAR_CLIENT_ID", field)
+        self.assertIn("LINEAR_CLIENT_SECRET", field)
+
+    def test_a_swapped_credential_hands_back_the_variable_as_a_field(self):
+        codex, sec = self.seat_app("CODEX", "Codex", file=False)
+        self.seat_app("CLAUDE", "Claude", cid=codex, secret=sec, register=False)
+        p = self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "x", code=4)
+        self.assertIn("credential_field=LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET", p.stderr)
+
+    def test_a_rejected_credential_hands_back_the_variable_as_a_field(self):
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertIn("credential_field=CLAUDE_LINEAR_CLIENT_ID,CLAUDE_LINEAR_CLIENT_SECRET", p.stderr)
+
+    def test_a_failed_mint_says_what_failed_and_nothing_of_the_providers_own_text(self):
+        # The token endpoint's error body is Linear's text and can carry anything, so
+        # the sentence says what failed and the machine-readable parts come back as
+        # fields of their own.
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertIn("minting the Claude seat app token failed", p.stderr)
+        self.assertIn("error_type=HTTPError", p.stderr)
+        self.assertIn("http=401", p.stderr)
+        self.assertNotIn("invalid_client", p.stderr, "the provider's own text is not in the message")
+        self.assertNotIn("bad client", p.stderr)
+
+    def test_a_request_id_is_quoted_back_when_the_response_carries_one(self):
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.request_id = "req-abc12345"
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertIn("request_id=req-abc12345", p.stderr)
+
+    def test_no_request_id_is_invented_when_the_response_carries_none(self):
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertNotIn("request_id=", p.stderr)
+
+
+class ErrorFieldTests(unittest.TestCase):
+    """The allow-listed fields of a failure:  what a caller downstream may read."""
+
+    def test_the_fields_of_an_error_are_the_allow_listed_ones(self):
+        cli = load_cli()
+        err = cli.GqlError(
+            [{"message": "Authentication required", "extensions": {"code": "AUTHENTICATION_ERROR"}}],
+            None, 401, {"x-request-id": "req-abc12345"},
+        )
+        fields = cli.error_fields(err, "lin_api_…wxyz", "environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)")
+        self.assertEqual(fields["error_type"], "GqlError")
+        self.assertEqual(fields["http"], "401")
+        self.assertEqual(fields["request_id"], "req-abc12345")
+        self.assertEqual(fields["credential"], "lin_api_…wxyz")
+        self.assertEqual(fields["credential_field"], "LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET")
+
+    def test_a_failure_with_no_status_and_no_request_id_carries_neither(self):
+        cli = load_cli()
+        fields = cli.error_fields(cli.GqlError([{"message": "boom"}]))
+        self.assertEqual(fields, {"error_type": "GqlError"})
+
+    def test_the_variable_names_come_from_the_places_the_credentials_came_from(self):
+        cli = load_cli()
+        self.assertEqual(
+            cli.credential_vars("Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID, CLAUDE_LINEAR_CLIENT_SECRET)"),
+            "CLAUDE_LINEAR_CLIENT_ID,CLAUDE_LINEAR_CLIENT_SECRET",
+        )
+        self.assertEqual(cli.credential_vars("environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"),
+                         "LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET")
+        self.assertEqual(cli.credential_vars(""), "")
 
 
 if __name__ == "__main__":

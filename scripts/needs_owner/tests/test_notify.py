@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from needs_owner import block as blockmod
 from needs_owner import comment_keys
@@ -73,12 +74,14 @@ class Stub:
         self.msg_id = msg_id
         self.board_calls: list[str] = []
         self.written: list[str] = []
+        self.sends: list[tuple] = []
 
     def board(self, *args: str) -> Result:
         self.board_calls.append(args[0])
         return self.result
 
     def agent_sync(self, *args: str, stdin=None) -> Result:
+        self.sends.append(args)
         return Result(0, json.dumps({"id": self.msg_id}) + "\n")
 
     @contextlib.contextmanager
@@ -534,11 +537,121 @@ class BoardWriteTests(unittest.TestCase):
     def test_a_record_reports_a_terminal_failure_instead_of_raising(self) -> None:
         # `adopt --no-notify` has already filed the issue when it writes the held mark, so a
         # terminal board failure there must not abandon the rest of the flow and leave the mark
-        # unwritten:  the fallback notifier would then announce an item that was held.
+        # unwritten:  the fallback notifier would then announce an item that was held.  The
+        # outcome is returned, and it keeps the board's own reason.
         runner = self.stub(
             Result(4, "", "board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID is missing")
         )
-        self.assertFalse(notifymod.record(runner, self.item, records.pending_text("held")))
+        wrote = notifymod.record(runner, self.item, records.pending_text("held"))
+        self.assertEqual(wrote.outcome, notifymod.TERMINAL)
+        self.assertFalse(wrote, "a record that was not written is false, as it always was")
+        self.assertIn("FLEET_LINEAR_CLIENT_ID", wrote.detail)
+
+    def test_a_terminal_record_is_not_a_retryable_one(self) -> None:
+        # Rule 51:  a retryable failure and a terminal one stay apart, so a caller can
+        # tell "try again later" from "an operator has to act".
+        terminal = self.stub(
+            Result(4, "", "board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID is missing")
+        )
+        wrote = notifymod.record(terminal, self.item, records.pending_text("held"))
+        self.assertEqual(wrote.outcome, notifymod.TERMINAL)
+        self.assertEqual(wrote.code, 4)
+        retryable = self.stub(Result(3, "", "board: claimed by BF-DIRECTOR"))
+        again = notifymod.record(retryable, self.item, records.pending_text("held"))
+        self.assertEqual(again.outcome, notifymod.RETRYABLE)
+        self.assertNotEqual(again.outcome, wrote.outcome)
+        self.assertNotEqual(again.detail, wrote.detail)
+
+    def test_a_rejected_credential_reaches_the_caller_of_a_record(self) -> None:
+        # Rule 17:  the rejected-key path stops and reports the first-eight/last-four
+        # preview.  A record that swallowed the failure lost the only diagnosis.
+        err = ("board: Linear refused a freshly minted Fleet token; check the app in Linear's API settings  "
+               "credential=lin_api_…wxyz")
+        runner = self.stub(Result(6, "", err))
+        wrote = notifymod.record(runner, self.item, records.pending_text("held"))
+        self.assertEqual(wrote.outcome, notifymod.TERMINAL)
+        self.assertEqual(wrote.code, 6)
+        self.assertIn("credential rejected: lin_api_…wxyz", wrote.detail)
+        self.assertNotIn("lin_api_", wrote.detail.replace("lin_api_…wxyz", ""))
+
+    def test_a_real_shaped_linear_preview_reaches_the_operator(self) -> None:
+        # A Linear credential starts with lin_api_, lin_oauth_ or lin_wh_, so the board's
+        # preview carries an underscore.  A shape that does not allow one turns every
+        # refusal into "no preview", and the operator is left with nothing to look at.
+        for secret in ("lin_api_" + "z" * 30, "lin_oauth_" + "z" * 30, "lin_wh_" + "z" * 30):
+            preview = secret[:8] + "…" + secret[-4:]  # the shape the board's own preview has
+            err = "board: Linear refused the token  credential=%s" % preview
+            runner = self.stub(Result(6, "", err))
+            with self.assertRaises(BoardFailed) as raised:
+                notifymod.notify(runner, self.item)
+            self.assertIn("credential rejected: %s" % preview, str(raised.exception))
+
+    def test_the_short_preview_of_a_short_credential_is_taken_too(self) -> None:
+        # A credential under twenty-four characters shows one leading character and the
+        # ellipsis alone, and that is a preview as well.
+        err = "board: Linear refused the token  credential=l…"
+        runner = self.stub(Result(6, "", err))
+        with self.assertRaises(BoardFailed) as raised:
+            notifymod.notify(runner, self.item)
+        self.assertIn("credential rejected: l…", str(raised.exception))
+
+    def test_the_missing_variable_comes_from_the_structured_field(self) -> None:
+        # The board owns the credential, so the board hands back the name of the variable
+        # as a field, and the field is read first.
+        err = "board: no Fleet credentials  credential_field=LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET"
+        runner = self.stub(Result(4, "", err))
+        with self.assertRaises(BoardFailed) as raised:
+            notifymod.notify(runner, self.item)
+        self.assertEqual(
+            str(raised.exception),
+            "board comment failed (exit 4):  credential variable: LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET",
+        )
+
+    def test_the_prose_is_only_read_when_the_board_has_no_field(self) -> None:
+        # An older board has no field, so the prose is still read:  the names it names
+        # are the names the operator has to set.
+        err = ("board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET are missing")
+        runner = self.stub(Result(4, "", err))
+        with self.assertRaises(BoardFailed) as raised:
+            notifymod.notify(runner, self.item)
+        self.assertIn("credential variable: FLEET_LINEAR_CLIENT_ID, FLEET_LINEAR_CLIENT_SECRET",
+                      str(raised.exception))
+
+    def test_no_placeholder_is_written_when_no_variable_is_named(self) -> None:
+        # Rule 3:  a missing-secret failure identifies the variable.  When nothing names
+        # one, the detail says so rather than pretending a variable was named.
+        runner = self.stub(Result(4, "", "board: no Fleet credentials"))
+        with self.assertRaises(BoardFailed) as raised:
+            notifymod.notify(runner, self.item)
+        message = str(raised.exception)
+        self.assertNotIn("(not named)", message)
+        self.assertNotIn("credential variable:", message)
+        self.assertIn("the board named no variable", message)
+
+    def test_the_boards_own_fields_reach_the_detail(self) -> None:
+        # The board hands back the error name, the status and the request id as fields of
+        # their own, and the detail quotes them back.
+        err = ("board: whoami failed  error_type=GqlError http=401 request_id=req-abc12345  "
+               "credential=lin_api_…wxyz")
+        runner = self.stub(Result(6, "", err))
+        with self.assertRaises(BoardFailed) as raised:
+            notifymod.notify(runner, self.item)
+        message = str(raised.exception)
+        self.assertIn("credential rejected: lin_api_…wxyz", message)
+        self.assertIn("error_type=GqlError", message)
+        self.assertIn("http=401", message)
+        self.assertIn("request_id=req-abc12345", message)
+
+    def test_the_channel_comes_from_the_runner_and_not_from_the_process(self) -> None:
+        # An ambient AGENT_SYNC_CHANNEL must not decide where the notice goes:  the
+        # runner's own environment does.
+        with mock.patch.dict(os.environ, {"AGENT_SYNC_CHANNEL": "ambient-channel"}):
+            runner = self.stub(Result(0, "commented"))
+            notifymod.notify(runner, self.item)
+        channels = [args[args.index("--channel") + 1] for args in runner.sends if "--channel" in args]
+        self.assertTrue(channels, "the notice was posted")
+        for channel in channels:
+            self.assertNotEqual(channel, "ambient-channel")
 
     # ---- unknown --------------------------------------------------------------------------
     def test_an_exit_1_graphql_refusal_is_unknown(self) -> None:
