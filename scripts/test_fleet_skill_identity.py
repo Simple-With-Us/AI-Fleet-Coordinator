@@ -1729,9 +1729,7 @@ class PrivateInventoryTests(unittest.TestCase):
                 start = text.rfind("\n", 0, match.start()) + 1
                 end = text.find("\n", match.start())
                 line = text[start:] if end == -1 else text[start:end]
-                if not (
-                    self.QUOTED_VARIABLE.search(line) or self.PLACEHOLDER.search(line)
-                ):
+                if not (self.QUOTED_VARIABLE.search(line) or self.PLACEHOLDER.search(line)):
                     number = text.count("\n", 0, match.start()) + 1
                     hits.append(f"{rel}:{number}")
         self.assertEqual(
