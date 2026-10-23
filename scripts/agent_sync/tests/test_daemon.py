@@ -1829,3 +1829,91 @@ class HostWakeTests(DaemonHarness):
             self.assertEqual(daemon._wake_block(runner, first, now), "host_busy")
             self.clock.advance(5 * 60)
             self.assertIsNone(daemon._wake_block(runner, retry, self.clock.time()))
+
+
+class OperatorRegistrationWiringTests(DaemonHarness):
+    """The daemon's ask-before-letter wiring:  the catalog hook and the owner-DM intake.
+
+    The send is mocked at the module seam (the send itself is covered end to end in
+    test_operator_registration_dm against the fake realm);  everything in front of it -
+    the queue, the registry, the gates - is real.
+    """
+
+    def _rows(self, **overrides):
+        row = {
+            "id": "row-1",
+            "platform": "minimax",
+            "profile_scope": "default",
+            "session_id": "sess-aaaaaaaa",
+            "seat": "MM",
+            "status": "active",
+        }
+        row.update(overrides)
+        return [row]
+
+    def _registry(self, daemon):
+        """Bring the empty registry into being, the way the first registration would."""
+        db = daemon._registration_db()
+        if not os.path.exists(db):
+            registry = D.OR.SessionRegistry(db)
+            registry.close_db()
+        return db
+
+    def test_unlettered_active_chat_is_asked_once(self):
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        with mock.patch.object(D.ORDM, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+            daemon.maybe_ask_registrations(self._rows(), {})
+        self.assertEqual(send.call_count, 1)
+        pending = D.OREG.pending_entries(db)
+        self.assertEqual(len(pending), 1)
+        self.assertTrue(pending[0].get("notified_at"))
+
+    def test_lettered_and_stale_rows_are_not_asked(self):
+        daemon = self.daemon()
+        self._registry(daemon)
+        with mock.patch.object(D.ORDM, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(self._rows(), {"row-1": ("A", "MM A")})
+            daemon.maybe_ask_registrations(self._rows(status="stale"), {})
+        self.assertEqual(send.call_count, 0)
+        self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
+
+    def test_a_failed_send_is_retried_on_the_next_pass(self):
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        with mock.patch.object(D.ORDM, "send_location_question", return_value={"status": "refused", "reason": "offline"}) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+            daemon.maybe_ask_registrations(self._rows(), {})
+        self.assertEqual(send.call_count, 2)
+        self.assertFalse(D.OREG.pending_entries(db)[0].get("notified_at"))
+
+    def test_owner_dm_answer_registers_at_the_answered_location(self):
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        entry = D.OREG.begin(
+            db,
+            platform="minimax",
+            profile_scope="default",
+            session_id="sess-aaaaaaaa",
+            seat="MM",
+            requester="catalog",
+            registrations=lambda pf, sid: [],
+            now=1000.0,
+        )["entry"]
+        with mock.patch.object(D.ORDM, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                {"content": "server %s" % entry["entry_id"]}, 2000.0
+            )
+        self.assertTrue(consumed)
+        rows = D.OR.registrations_for_native_id(db, "minimax", "sess-aaaaaaaa")
+        self.assertEqual([row["verified_host"] for row in rows], ["server"])
+        self.assertEqual(send.call_count, 1)
+        self.assertIn("letter A", send.call_args.kwargs["question"])
+        self.assertEqual(D.OREG.pending_entries(db), [])
+
+    def test_a_dm_that_is_not_an_answer_is_not_consumed(self):
+        daemon = self.daemon()
+        self.assertFalse(
+            daemon._maybe_registration_answer({"content": "thanks, no ref here"}, 2000.0)
+        )

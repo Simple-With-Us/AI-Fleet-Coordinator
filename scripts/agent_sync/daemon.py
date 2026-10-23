@@ -57,6 +57,8 @@ from . import muse_bridge_mac as MBM
 from . import notes as NOTES
 from . import notes_relay as NR
 from . import operator_candidates as OC
+from . import operator_registration as OREG
+from . import operator_registration_dm as ORDM
 from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
@@ -2184,6 +2186,15 @@ class Daemon:
         ):
             self.pause(seat=None, wakes_only=False, by="owner-dm", message_id=message["id"])
             return
+        if (
+            c.owner
+            and c.dm
+            and runner.seat == OPERATOR_SEAT
+            and self._maybe_registration_answer(message, now)
+        ):
+            # A location answer is carried out here, deterministically:  it never becomes a
+            # wake for the Operator's responder to interpret.
+            return
         item = self.make_item(runner, message, c, d)
         for lease_id, klass, kind in d.lease_items:
             if ("live", lease_id) in done:
@@ -3956,6 +3967,7 @@ class Daemon:
             else:
                 rows = sorted(rows, key=relevance, reverse=True)[:24]
             labels = self.session_labels(rows)
+            self.maybe_ask_registrations(rows, labels)
             context = []
             remaining = 24000
             for row in rows:
@@ -3998,6 +4010,134 @@ class Daemon:
         except Exception as exc:
             self.log.write("chat-catalog-unavailable", error=type(exc).__name__)
             return []
+
+    def _registration_db(self) -> str:
+        db = getattr(self, "_oreg_db", None)
+        if db is None:
+            db = OR.registry_db_path(self.root, self.env)
+            self._oreg_db = db
+        return db
+
+    def maybe_ask_registrations(self, rows: list[dict[str, Any]], labels: dict[str, tuple[str, str]]) -> None:
+        """Ask the owner for the location of each unlettered active chat.
+
+        Owner direction, Oct 23 2026:  when the Operator receives a session/chat id, it asks
+        the location (mac, server, cloud) before the session letter is assigned.  This is
+        the receipt point:  the catalog surfaced the session id, the registry has no letter
+        for it, so the Operator asks.  One question per session (the queue dedupes), one DM
+        per question (the notified stamp), and a failure here never breaks the wake that
+        found the chats - the worst case is a chat that stays unlettered, which is today.
+        """
+        try:
+            owner = int(getattr(self.config, "owner_user_id", 0) or 0)
+            if not owner or not self.operator_dm_allowed(owner):
+                return
+            db = self._registration_db()
+            for entry in OREG.sweep(db):
+                self.log.write(
+                    "operator-registration-drop",
+                    entry_id=entry.get("entry_id"),
+                    platform=entry.get("platform"),
+                    reason=entry.get("reason"),
+                )
+            for row in rows:
+                if labels.get(str(row.get("id") or ""), ("", ""))[0]:
+                    continue
+                if str(row.get("status") or "") != "active":
+                    continue
+                platform = str(row.get("platform") or "")
+                scope = str(row.get("profile_scope") or "")
+                session_id = str(row.get("session_id") or "")
+                seat = str(row.get("seat") or "")
+                if not (platform and scope and session_id and seat):
+                    continue
+                try:
+                    out = OREG.begin(
+                        db,
+                        platform=platform,
+                        profile_scope=scope,
+                        session_id=session_id,
+                        seat=seat,
+                        requester="catalog",
+                        registrations=lambda pf, sid: OR.registrations_for_native_id(db, pf, sid),
+                    )
+                except Exception as exc:
+                    self.log.write(
+                        "operator-registration-ask", platform=platform, status="error", error=type(exc).__name__
+                    )
+                    continue
+                if out.get("status") not in ("ask", "pending"):
+                    continue
+                entry = out["entry"]
+                if entry.get("notified_at"):
+                    continue
+                # No evidence_location from here:  this daemon's own instance says where the
+                # DISCOVERY ran, not where a remotely discovered chat lives, and a wrong
+                # evidence would turn the owner's right answer into a conflict.
+                sent = ORDM.send_location_question(
+                    question=out["question"],
+                    entry_id=entry["entry_id"],
+                    recipient=owner,
+                    env=self.env,
+                    home=self.home,
+                    owner_user_id=owner,
+                )
+                if sent.get("status") == "sent":
+                    OREG.mark_notified(db, entry["entry_id"])
+                self.log.write(
+                    "operator-registration-ask",
+                    entry_id=entry["entry_id"],
+                    platform=platform,
+                    status=sent.get("status"),
+                    reason=str(sent.get("reason") or "")[:80],
+                )
+        except Exception as exc:
+            self.log.write("operator-registration-ask", status="error", error=type(exc).__name__)
+
+    def _maybe_registration_answer(self, message: Mapping[str, Any], now: float) -> bool:
+        """Carry out the owner's DM answer to a pending location question;  True when consumed.
+
+        The answer registers the session at the answered location (operator_registration
+        validates it and cross-checks the registry) and the confirmation goes back in the
+        same DM.  A message that is not a parseable answer returns False and follows its
+        normal wake path.
+        """
+        try:
+            db = self._registration_db()
+            if not OREG.pending_entries(db):
+                return False
+            parsed = OREG.parse_answer(message.get("content"))
+            if parsed is None:
+                return False
+            out = OREG.answer(
+                db,
+                entry_id=parsed["entry_id"],
+                location=parsed["location"],
+                registrations=lambda pf, sid: OR.registrations_for_native_id(db, pf, sid),
+                register=lambda **identity: OR.register_session(
+                    db, source="daemon-owner-dm", issuer=OR.ISSUER_OPERATOR, **identity
+                ),
+                now=now,
+            )
+            owner = int(getattr(self.config, "owner_user_id", 0) or 0)
+            sent = ORDM.send_location_question(
+                question=OREG.answer_reply(out),
+                entry_id=parsed["entry_id"],
+                recipient=owner,
+                env=self.env,
+                home=self.home,
+                owner_user_id=owner,
+            )
+            self.log.write(
+                "operator-registration-answer",
+                entry_id=parsed["entry_id"],
+                status=out.get("status"),
+                delivery=sent.get("status"),
+            )
+            return True
+        except Exception as exc:
+            self.log.write("operator-registration-answer", status="error", error=type(exc).__name__)
+            return False
 
     @staticmethod
     def may_inspect_chat(pending: W.Pending) -> bool:

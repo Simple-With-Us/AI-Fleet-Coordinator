@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import secrets
 import time
 from collections.abc import Callable, Mapping
@@ -105,6 +106,8 @@ def _validate_entry(key: str, entry: Any) -> dict[str, Any]:
     for field in ("asked_at", "deadline"):
         if not isinstance(entry.get(field), (int, float)):
             raise ValueError("operator_registration: entry %s has no %s" % (key, field))
+    if "notified_at" in entry and not isinstance(entry["notified_at"], (int, float)):
+        raise ValueError("operator_registration: entry %s has a malformed notified_at" % key)
     return dict(entry)
 
 
@@ -341,6 +344,77 @@ def pending_entries(registry_db: str) -> list[dict[str, Any]]:
         for entry in load(registry_db)["entries"].values()
         if entry["state"] == STATE_ASKED
     ]
+
+
+# ---- the daemon's intake:  parsing replies, stamping sends, wording answers ---------------
+
+
+_ENTRY_RE = re.compile(r"\breg-[0-9a-f]{12}\b")
+
+
+def parse_answer(content: Any) -> dict[str, str] | None:
+    """The (entry ref, location) an owner reply carries, or None when it is not an answer.
+
+    Both parts are required:  the ref ties the reply to the one open question and the
+    location is the answer.  A reply naming no ref, several refs, no location word or two
+    different ones is not an answer this flow may act on, so it reads as None and the
+    message follows its normal path.  Matching is case-insensitive on whole tokens only,
+    so "MacBook" is not "mac" and a server named "cloudbank" is not "cloud".
+    """
+    if not isinstance(content, str) or not content.strip():
+        return None
+    refs = _ENTRY_RE.findall(content)
+    if len(set(refs)) != 1:
+        return None
+    words = re.findall(r"[A-Za-z]+", content.casefold())
+    locations = [word for word in words if word in LOCATION_VALUES]
+    if len(set(locations)) != 1:
+        return None
+    return {"entry_id": refs[0], "location": locations[0]}
+
+
+def mark_notified(registry_db: str, entry_id: str, *, now: float | None = None) -> bool:
+    """Stamp the question DM as sent, so a restart never asks the same question twice.
+
+    The stamp lands only on a live asked entry and only after the send returned, so a
+    failed send leaves the entry unstamped and the next wake retries the DM.  Answers False
+    when there was nothing to stamp.
+    """
+    now = time.time() if now is None else float(now)
+    with L.locked(queue_path(registry_db)):
+        data = load(registry_db)
+        entry = data["entries"].get(str(entry_id or ""))
+        if not isinstance(entry, dict) or entry["state"] != STATE_ASKED:
+            return False
+        entry["notified_at"] = round(now, 3)
+        save(registry_db, data)
+        return True
+
+
+def answer_reply(result: Mapping[str, Any]) -> str:
+    """The one-line DM the owner gets back.  Ids and the letter only, never a body."""
+    status = str(result.get("status") or "")
+    entry_id = str(result.get("entry_id") or "")
+    if status == "registered":
+        generation = int(result.get("generation") or 1)
+        suffix = " (gen %d)" % generation if generation > 1 else ""
+        return "Registered:  the chat is on %s, letter %s%s (ref %s)." % (
+            result.get("location"), result.get("label"), suffix, entry_id)
+    if status == "conflict":
+        if result.get("reason") == REASON_OTHER_LOCATION:
+            return (
+                "Not registered:  that session already has a letter at %s, which disagrees "
+                "with %s.  Settle which is right and I will re-register it (ref %s)."
+                % (", ".join(result.get("known") or []), result.get("claimed"), entry_id)
+            )
+        return (
+            "Not registered:  the fleet discovered this chat on %s, which disagrees with %s.  "
+            "Settle which is right and I will re-register it (ref %s)."
+            % (result.get("evidence") or "another location", result.get("claimed"), entry_id)
+        )
+    if status == "invalid":
+        return "That is not a location I can use:  answer mac, server, or cloud (ref %s)." % entry_id
+    return "No open question with that ref - it was answered already or expired unanswered."
 
 
 # ---- the Operator's CLI:  ask, answer, sweep, pending -----------------------------------
