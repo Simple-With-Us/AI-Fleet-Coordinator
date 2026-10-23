@@ -50,8 +50,8 @@ from .textfmt import fix_outbound
 __all__ = [
     "DEFAULT_CHANNEL",
     "MAX_TOPIC_LENGTH",
-    "RETIRED_CHANNEL_NAMES",
     "REALM",
+    "RETIRED_CHANNEL_NAMES",
     "USER_AGENT",
     "AgentSyncError",
     "ApiError",

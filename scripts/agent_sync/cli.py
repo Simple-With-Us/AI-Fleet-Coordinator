@@ -694,7 +694,9 @@ def _channel(value: str) -> str:
     return channel
 
 
-def _resolve_channel_args(args: argparse.Namespace, env: Mapping[str, str] | None) -> argparse.Namespace:
+def _resolve_channel_args(
+    args: argparse.Namespace, env: Mapping[str, str] | None
+) -> argparse.Namespace:
     """A channel name the caller typed resolves to the channel it means.
 
     The realm renamed the fleet's coordination channel and left the old name behind as a
