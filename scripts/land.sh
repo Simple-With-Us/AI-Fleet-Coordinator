@@ -228,6 +228,23 @@ $(if [[ -n "${LAND_SKIP_VERIFY:-}" ]]; then echo "⚠️  LAND_SKIP_VERIFY was s
 EOF
 )"
 
+# A GitHub PR title is plain text:  GitHub renders it as it stands and does not decode
+# an entity there, so a title takes a real U+00A0 plus a space (owner ruling
+# 2026-10-22).  Without perl the title is passed through unchanged.
+if command -v perl >/dev/null 2>&1; then
+  PR_TITLE="$(printf '%s' "$PR_TITLE" | perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g')"
+fi
+
+# A GitHub PR body is Markdown that GitHub renders, so its sentence gap is the HTML
+# entity `&nbsp;` plus a normal space:  two typed spaces collapse when GitHub renders
+# the body (owner ruling 2026-10-22).  The converter is the code-aware one, so a commit
+# subject that carries code comes through untouched.
+if command -v perl >/dev/null 2>&1 && [ -f "$REPO_ROOT/scripts/sentence_gap_convert.pl" ]; then
+  PR_BODY="$(printf '%s' "$PR_BODY" | perl -CSDA -0777 -p "$REPO_ROOT/scripts/sentence_gap_convert.pl" --entity)"
+else
+  warn "perl or scripts/sentence_gap_convert.pl is missing:  the PR body keeps its plain spaces"
+fi
+
 DRAFT_FLAG=""
 if [[ "${1:-}" == "--draft" ]]; then
   DRAFT_FLAG="--draft"

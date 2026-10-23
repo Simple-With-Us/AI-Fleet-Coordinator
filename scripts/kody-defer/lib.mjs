@@ -1,16 +1,16 @@
 // Pure helpers for the Kody /defer flow.  No I/O.
 
 export const REFUSAL_MESSAGE =
-  "Critical findings can't be deferred.  Fix this in the PR.";
+  "Critical findings can't be deferred.&nbsp; Fix this in the PR.";
 
 export const MANUAL_RESOLVE_MESSAGE =
-  'Deferred to #N.  This thread needs a manual resolve (the workflow token could not resolve it).';
+  'Deferred to #N.&nbsp; This thread needs a manual resolve (the workflow token could not resolve it).';
 
 /** Hidden marker on workflow `Deferred to #N` replies so idempotency ignores spoof comments. */
 export const DEFERRED_REPLY_MARKER = '<!-- kody-defer-reply -->';
 
 export function deferredReplyBody(issueNumber) {
-  return `Deferred to #${issueNumber}.  ${DEFERRED_REPLY_MARKER}`;
+  return `Deferred to #${issueNumber}.&nbsp; ${DEFERRED_REPLY_MARKER}`;
 }
 
 export const LABELS = {
@@ -43,21 +43,21 @@ export const LABELS = {
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low'];
 
-/** Capitalized refusal for a blocked severity.  Two spaces after the period. */
+/** Capitalized refusal for a blocked severity.  The entity plus a space after the period. */
 export function refusalMessage(severity = 'critical') {
   const raw = String(severity || 'critical').toLowerCase();
   const name = raw.charAt(0).toUpperCase() + raw.slice(1);
-  return `${name} findings can't be deferred.  Fix this in the PR.`;
+  return `${name} findings can't be deferred.&nbsp; Fix this in the PR.`;
 }
 
 /**
  * Second reply when resolveReviewThread fails.
- * Two spaces after the period.
+ * The entity plus a space after the period.
  */
 export function manualResolveReply(issueNumber, error) {
   const short = String(error || 'unknown error').replace(/\s+/g, ' ').slice(0, 180);
   const number = issueNumber ? `#${issueNumber}` : '#N';
-  return `Deferred to ${number}.  This thread needs a manual resolve.  The workflow token could not resolve it (${short}).`;
+  return `Deferred to ${number}.&nbsp; This thread needs a manual resolve.&nbsp; The workflow token could not resolve it (${short}).`;
 }
 
 function fenceToggle(line) {
@@ -137,6 +137,10 @@ export function parseSeverity(body) {
 /**
  * Strip badge images, `<details>` blocks (and their contents), other HTML tags,
  * and HTML comments.  Collapse runs of 3+ blank lines down to two.  Trim.
+ *
+ * The `&nbsp;` entity is left alone:  a GitHub body renders it as the gap it stands
+ * for (owner ruling 2026-10-22), so decoding it to a plain space would throw the gap
+ * away.  The other entities are decoded, because they are content and not gaps.
  */
 export function cleanFindingText(body) {
   let s = String(body ?? '');
@@ -146,7 +150,6 @@ export function cleanFindingText(body) {
   s = s.replace(new RegExp(`</?(?:${TAGS})\\b[^>]*>`, 'gi'), '');
   s = s.replace(/!\[[^\]]*\]\([^)]*\)/g, '');
   s = s.replace(/&#8203;|&#x200[Bb];|&ZeroWidthSpace;/gi, '');
-  s = s.replace(/&nbsp;/gi, ' ');
   s = s.replace(/&amp;/gi, '&');
   s = s.replace(/&lt;/gi, '<');
   s = s.replace(/&gt;/gi, '>');
@@ -180,9 +183,14 @@ function stripLightMarkdown(s) {
 /**
  * First non-empty prose line (or its first sentence), with light markdown
  * stripped.  Longer text is cut at a word boundary and closed with an ellipsis.
+ *
+ * `&nbsp;` is decoded to a plain space here even though cleanFindingText keeps
+ * it:  issue titles are plain text (GitHub does not decode entities in them),
+ * so the raw entity would leak into the title and defeat the sentence split
+ * below, which needs real whitespace after the punctuation.
  */
 export function summarizeFinding(text, max = 80) {
-  const lines = String(text ?? '').split('\n');
+  const lines = String(text ?? '').replace(/&nbsp;/gi, ' ').split('\n');
   let inFence = false;
   let prose = '';
   for (const raw of lines) {

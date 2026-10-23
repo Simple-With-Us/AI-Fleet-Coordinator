@@ -593,5 +593,112 @@ class TitleSecretScanTests(unittest.TestCase):
                 self.assertIn("Body of the note.", out.stdout)
 
 
+class SentenceGapMarkupTests(unittest.TestCase):
+    """AFC-496:  a sentence that ends INSIDE inline markup keeps the sentence gap.
+
+    Notes.app is an HTML renderer, so the gap has to survive as the `&nbsp; ` entity:  two raw
+    ASCII spaces collapse to one.  The helper converts the gap twice, an inline pass over the
+    Markdown source and a whole-HTML pass over the finished HTML, and a sentence that ends inside
+    `**bold**`, `*italic*` or a `[link](url)` puts the closing tag between the punctuation and the
+    run of spaces.  Neither pass matched that, so the note carried two raw spaces after the bold,
+    italic and link sentence ends and Notes rendered them as one.
+
+    The whole-HTML pass now carries the closing tag through, and the inline pass holds code spans
+    aside, because a code span is content the author wants verbatim and the entity used to land
+    inside the chip.
+
+    These tests drive the real script with APPLE_NOTES_PRINT_HTML=1, which prints the note HTML and
+    exits before Notes is touched, so nothing here writes, updates or pins a note.
+
+    Run:  cd scripts && python3 -m unittest test_apple_notes_session
+    """
+
+    PROBE = (
+        "**Bold sentence end.**  Plain sentence after the bold one.\n\n"
+        "*Italic sentence end.*  Plain sentence after the italic one.\n\n"
+        "[Link sentence end.](https://example.test/probe)  Plain sentence after the link one.\n\n"
+        "Plain sentence end.  Second plain sentence.\n\n"
+        "The literal `code span with a sentence end.  inside it` stays verbatim.\n"
+    )
+    CODE_SPAN = "code span with a sentence end.  inside it"
+    #  A code, pre, style or script region is content the author wants verbatim, so the gap
+    #  conversion leaves it alone.
+    REGION = re.compile(r"<(pre|code|style|script)\b[\s\S]*?</\1>", re.IGNORECASE)
+
+    def run_script(self, body: str) -> subprocess.CompletedProcess:
+        env = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": os.environ.get("HOME", "/tmp"),
+            "APPLE_NOTES_PRINT_HTML": "1",
+            "AGENT_SESSION": "abc12345",
+            "AGENT_SEAT": "MM",
+            "LANG": "en_US.UTF-8",
+        }
+        return subprocess.run(
+            ["/bin/bash", str(SCRIPT), "[AFC, MM] Gap probe", body],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+            check=False,
+        )
+
+    def body_html(self, out: str) -> str:
+        """The note body without the title and the two stamp rows, which carry the clock."""
+        return out.split("<div><br></div>", 1)[1]
+
+    def test_a_sentence_end_inside_markup_keeps_the_gap(self):
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        for fragment in (
+            "<b>Bold sentence end.</b>&nbsp; Plain sentence after the bold one.",
+            "<i>Italic sentence end.</i>&nbsp; Plain sentence after the italic one.",
+            (
+                '<a href="https://example.test/probe">Link sentence end.</a>&nbsp; '
+                "Plain sentence after the link one."
+            ),
+            "Plain sentence end.&nbsp; Second plain sentence.",
+        ):
+            self.assertIn(fragment, p.stdout)
+
+    def test_no_raw_double_space_survives_after_a_sentence_end(self):
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        outside = self.REGION.sub("", p.stdout)
+        #  A sentence end inside markup puts the closing tag between the punctuation and the
+        #  run of spaces, so the run is checked with the tag in front of it too.
+        self.assertEqual(re.findall(r"[.!?](</[a-zA-Z][^>]*>)?[ \t]{2,}", outside), [], outside)
+        #  Every sentence end that is followed by a space carries the entity and a space.
+        for m in re.finditer(r"[.!?](</[a-zA-Z][^>]*>)?", outside):
+            after = outside[m.end() :]
+            if after.startswith("&nbsp; "):
+                continue
+            self.assertFalse(
+                after[:1].isspace(),
+                f"no gap after {m.group(0)!r}: {outside[m.start() - 40 : m.end() + 40]!r}",
+            )
+
+    def test_a_code_span_comes_back_byte_for_byte(self):
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        chips = re.findall(r"<code\b[^>]*>([\s\S]*?)</code>", p.stdout)
+        self.assertEqual(chips, [self.CODE_SPAN])
+
+    def test_a_plain_body_renders_exactly_as_it_did_before(self):
+        body = (
+            "Plain sentence one.  Plain sentence two.  Plain sentence three.\n\n"
+            "A second paragraph here.  And its end.\n"
+        )
+        p = self.run_script(body)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        self.assertEqual(
+            self.body_html(p.stdout),
+            "<p>Plain sentence one.&nbsp; Plain sentence two.&nbsp; Plain sentence three.</p>"
+            "<div><br></div>"
+            "<p>A second paragraph here.&nbsp; And its end.</p>"
+            "<div><br></div></div>\n",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
