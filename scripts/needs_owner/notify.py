@@ -375,11 +375,13 @@ def _write_record(runner: Runner, item: Item, text: str, *, environ: dict | None
     text, so the second writer returns the first one's result instead of posting
     again.
 
-    A definite failure is tried twice, because nothing was written either time.  An
-    unknown outcome is not tried again:  the request may have landed, and a second
-    write could post the record twice.  A terminal failure raises BoardFailed, so
-    the CLI exits with the board's own code and the operator sees the board's
-    reason."""
+    A retryable failure is tried twice, because nothing was written either time and
+    the claim may be released in between.  A terminal failure is tried once:  it is the
+    same on a second try, so a second board call buys nothing.  An unknown outcome is
+    not tried again:  the request may have landed, and a second write could post the
+    record twice.  A terminal failure raises BoardFailed, so the CLI exits with the
+    board's own code and the operator sees the board's reason;  `record` catches that
+    raise and reports the record as not written."""
     env = environ if environ is not None else runner.env
     key = comment_keys.key_for(item.identifier, text)
     held = comment_keys.get(key, env)
@@ -402,6 +404,11 @@ def _write_record(runner: Runner, item: Item, text: str, *, environ: dict | None
             # record is never written twice.
             comment_keys.put(key, comment_keys.UNKNOWN, env)
             return Write(UNKNOWN, _detail(result), result.code)
+        if outcome == TERMINAL:
+            # A terminal failure is the same on a second try:  the claim is not held, the
+            # rate limit is not in play, and the write is not going to be allowed.  Retrying
+            # it costs a second board call and changes nothing, so it is tried once.
+            break
     # Nothing was written, so the row may go:  a later run may write the record.
     comment_keys.release(key, env)
     if outcome == TERMINAL:
@@ -410,8 +417,16 @@ def _write_record(runner: Runner, item: Item, text: str, *, environ: dict | None
 
 
 def record(runner: Runner, item: Item, text: str) -> bool:
-    """One comment on the item, written as the runner's seat.  The notifier's reply records use it."""
-    return _write_record(runner, item, text).outcome == OK
+    """One comment on the item, written as the runner's seat.  The notifier's reply records use it.
+
+    A terminal board failure is reported as "not written" rather than raised.  The caller may
+    already have filed the issue, and an exception there would abandon the rest of the flow
+    with the item half done.  A caller that wants the board's own exit code calls
+    `_write_record` directly."""
+    try:
+        return _write_record(runner, item, text).outcome == OK
+    except BoardFailed:
+        return False
 
 
 def _reason(wrote: Write) -> str:

@@ -218,7 +218,7 @@ class World:
             nodes.append({"id": "lbl-" + key, "name": name, "parent": {"name": parent} if parent else None})
         world["issues"][ident] = {
             "id": str(uuid.uuid5(uuid.NAMESPACE_URL, "seed/" + ident)), "identifier": ident,
-            "url": "https://linear.app/simple-with-us/issue/" + ident, "title": title, "description": text,
+            "url": "https://linear.app/test-fleet/issue/" + ident, "title": title, "description": text,
             "priority": priority, "createdAt": "2026-10-11T07:%02d:00.000Z" % (world["tick"] % 60),
             "updatedAt": "2026-10-11T07:00:00.000Z", "state": {"name": state}, "team": {"key": team},
             "labels": {"nodes": nodes}, "attachments": {"nodes": []}, "comments": []}

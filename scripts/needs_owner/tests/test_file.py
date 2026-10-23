@@ -55,7 +55,7 @@ class FileTests(unittest.TestCase):
         self.assertIn("(Tap to answer)", body)
         self.assertIn("Option 2:", body)
         self.assertIn("Recommendation:  option 1.", body)
-        self.assertIn("https://linear.app/simple-with-us/issue/AFC-300", body)
+        self.assertIn("https://linear.app/test-fleet/issue/AFC-300", body)
         self.assertIn("Answer here or as a comment on the Linear issue.", body)
         self.assertIn("`%s`" % got["uid"], body)
         # the record

@@ -202,7 +202,7 @@ def cmd_file(world, a, seat):
     if os.environ.get("FAKE_BOARD_DROP_FENCE") == "1":  # an editor that turns a fenced block into an indented one
         description = re.sub(r"```needs-owner\n(.*?)\n```", lambda m: "\n".join("    " + x for x in m.group(1).splitlines()),
                              description, flags=re.S)
-    node = {"id": iid, "identifier": ident, "url": "https://linear.app/simple-with-us/issue/" + ident,
+    node = {"id": iid, "identifier": ident, "url": "https://linear.app/test-fleet/issue/" + ident,
             "title": a.title.strip(), "description": description,
             "priority": B.SEV_PRIORITY.get(sev, 0), "createdAt": now_iso(world), "updatedAt": now_iso(world),
             "state": {"name": "Todo"}, "team": {"key": team},
