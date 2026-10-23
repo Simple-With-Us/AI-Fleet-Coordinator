@@ -22,10 +22,17 @@ A board write is classified before anything is done with it.  `ok` is the commen
 means the board decided before it wrote anything and a later run may write the record again (exit 3, the
 claim is held by another seat, and exit 5, the rate limit).  `terminal` means it decided before it wrote
 anything and no retry will help until an operator acts (exit 2 usage, 4 no credentials, 6 auth refused and
-7 writes off), and it raises BoardFailed, so the CLI exits with the board's own code and the operator
-sees the board's reason.  `unknown` means the write may have landed (a timeout, an exit-1 GraphQL
+7 writes off), and it raises BoardFailed, so the CLI exits with the board's own code.  `unknown` means the
+write may have landed (a timeout, an exit-1 GraphQL
 refusal, a transport failure, or anything we cannot prove was never sent):  the row is kept as unknown,
 so the record is never written twice.
+
+What the operator is told about a failure is built from allow-listed fields only.  The board's own prose
+is third-party text, and a GraphQL error body or a transport error can carry a credential or PII, so it
+is never copied into the detail that gets persisted in a Linear comment.  What survives is the name of a
+credential variable, a rejected credential's masked preview, a status code, a variable name, a scrubbed
+request id, and a reason token this module chose.  The board is the layer that owns the credential, so it
+is the board that hands back the masked preview.
 """
 
 from __future__ import annotations
@@ -79,13 +86,38 @@ REASON_OUTCOME_UNKNOWN = "outcome_unknown"
 # A name of an environment variable, as the board CLI writes it.  Only the name
 # is ever reported:  a value never comes out of here.
 VAR_NAME = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
-# An assignment to a secret-looking name, and any long opaque blob (a token, a
-# digest, a bearer).  Neither survives into what the operator is shown.
-SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b([A-Za-z0-9_]*(?:secret|token|password|passwd|credential|api[_-]?key)[A-Za-z0-9_]*)\s*[=:]\s*\S+"
+# The board's error prose is third-party text:  a GraphQL error body or a transport
+# error can carry a credential or PII, and the detail is persisted in a Linear
+# comment, so the prose is never copied into it.  What survives is built from the
+# board's output by patterns that cannot carry an arbitrary value, and each part is
+# a field this module names.
+#
+# The reasons are tokens this module chose, matched by a phrase the board is known
+# to use.  An unmatched failure is reported by its code alone, which is honest:  a
+# better clue would have to be an allow-listed field of its own.
+REASON_TOKENS = (
+    ("claimed by", "claim_held"),
+    ("claim held", "claim_held"),
+    ("rate limit", "rate_limited"),
+    ("too many requests", "rate_limited"),
+    ("no usable response", "no_usable_response"),
+    ("not confirmed", "not_confirmed"),
+    ("unauthorized", "unauthorized"),
+    ("invalid api key", "unauthorized"),
+    ("forbidden", "forbidden"),
+    ("entity not found", "entity_not_found"),
+    ("not found", "not_found"),
+    ("timed out", "timed_out"),
+    ("timeout", "timed_out"),
 )
-OPAQUE_BLOB = re.compile(r"\b[A-Za-z0-9+/=_-]{40,}\b")
-CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+# The status code Linear answered with, and a request id to quote back to Linear.
+HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
+REQUEST_ID = re.compile(r"\brequest[-_ ]?id[:= ]+([A-Za-z0-9_-]{4,64})\b", re.IGNORECASE)
+# The board's masked credential preview.  It is the board that owns the credential,
+# so it is the board that can hand back a safe preview of it, and only a value
+# shaped exactly like a preview is taken.
+CREDENTIAL_FIELD = re.compile(r"\bcredential=(\S+)")
+MASKED_SHAPE = re.compile(r"^[A-Za-z0-9]{1,8}…[A-Za-z0-9]{0,4}$")
 DETAIL_MAX = 240
 
 
@@ -267,15 +299,6 @@ def _board_text(result: Result) -> str:
     return " ".join(part for part in ((result.err or ""), (result.out or "")) if part.strip())
 
 
-def _board_said(result: Result) -> str:
-    """The board's first sentence about the failure:  its stderr, else its stdout."""
-    for part in (result.err or "", result.out or ""):
-        for line in part.splitlines():
-            if line.strip():
-                return " ".join(line.split())
-    return ""
-
-
 def _not_confirmed(result: Result) -> bool:
     """True when the board said the outcome of the write was not confirmed."""
     text = ("%s %s" % (result.err or "", result.out or "")).lower()
@@ -294,27 +317,60 @@ def _missing_names(text: str) -> list[str]:
     return unset or every
 
 
-def _detail(result: Result) -> str:
-    """What the board said about a failed write, with any value taken out.
+def _reason_token(text: str) -> str:
+    """The reason this module gives the failure, from a phrase the board is known to use.
 
-    A missing credential is reported by its variable name and never by the
-    board's own sentence, which is prose that could carry anything.  Anything
-    else keeps the board's words:  they are the operator's only clue to a
-    failure that cannot be classified, so the reason and any retry timing in
-    them stay."""
-    if result.code == 4:
-        names = _missing_names(_board_text(result))
-        return "no Fleet credentials:  %s" % ", ".join(names) if names else "no Fleet credentials"
-    text = _board_said(result)
-    if not text:
+    The board's own words are not copied:  they are third-party text, and this detail
+    is persisted in a Linear comment.  A phrase this module does not know is left out,
+    and the failure is reported by its code alone."""
+    lowered = text.lower()
+    for phrase, token in REASON_TOKENS:
+        if phrase in lowered:
+            return token
+    return ""
+
+
+def _credential_preview(text: str) -> str:
+    """The masked credential preview the board printed, when it printed one.
+
+    The board owns the credential, so the board is the layer that can hand back a
+    safe preview of it.  Only a value shaped exactly like a preview is taken."""
+    match = CREDENTIAL_FIELD.search(text)
+    if not match:
         return ""
-    text = SECRET_ASSIGNMENT.sub(r"\1=[redacted]", text)
-    text = OPAQUE_BLOB.sub("[redacted]", text)
-    text = CONTROL_CHARS.sub(" ", text)
-    text = " ".join(text.split())
-    if len(text) > DETAIL_MAX:
-        text = text[: DETAIL_MAX - 3].rstrip() + "..."
-    return text
+    value = match.group(1)
+    return value if MASKED_SHAPE.match(value) else ""
+
+
+def _detail(result: Result) -> str:
+    """What the board said about a failed write, as allow-listed fields only.
+
+    The board's own prose is third-party text:  a GraphQL error body or a transport
+    error can carry a credential or PII, and this string is persisted in a Linear
+    comment, so the prose is never copied into it.  What survives is built here from
+    the board's output by patterns that cannot carry an arbitrary value:  the name of
+    a credential variable, a rejected credential's masked preview, a status code, a
+    variable name, a scrubbed request id, and a reason token this module chose."""
+    text = _board_text(result)
+    if result.code == 4:
+        names = _missing_names(text)
+        return "credential variable: %s" % ", ".join(names) if names else "credential variable: (not named)"
+    if result.code == 6:
+        preview = _credential_preview(text)
+        return "credential rejected: %s" % preview if preview else "credential rejected: (no preview)"
+    parts = ["board write failed (code=%d)" % result.code]
+    reason = _reason_token(text)
+    if reason:
+        parts.append("reason=%s" % reason)
+    status = HTTP_STATUS.search(text)
+    if status:
+        parts.append("http=%s" % status.group(1))
+    for name in _missing_names(text)[:4]:
+        parts.append("name=%s" % name)
+    request = REQUEST_ID.search(text)
+    if request:
+        parts.append("request_id=%s" % request.group(1))
+    return " ".join(parts)[:DETAIL_MAX]
 
 
 def _board_failure(result: Result) -> BoardFailed:

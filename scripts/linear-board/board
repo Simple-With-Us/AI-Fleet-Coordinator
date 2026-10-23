@@ -339,8 +339,31 @@ def prog_name() -> str:
     return name or "simple-board"
 
 
-def die(msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
-    print(f"{prog_name()}: {msg}", file=sys.stderr)
+def credential_preview(secret: str) -> str:
+    """A credential's safe preview:  the first eight and the last four characters.
+
+    A refused credential has to be identifiable without ever being written out in
+    full, and a short value is not a preview at all, so one under twenty-four
+    characters shows its single leading character and nothing else."""
+    text = str(secret or "")
+    if not text:
+        return ""
+    if len(text) < 24:
+        return text[:1] + "\u2026"
+    return text[:8] + "\u2026" + text[-4:]
+
+
+def die(msg: str, code: int = EXIT_ERROR, **fields: str) -> "NoReturn":  # noqa: F821
+    """Stop with an error line.
+
+    `fields` are allow-listed key=value pairs for a caller downstream that has to
+    read this error without trusting its prose:  that caller parses the named field
+    and never the sentence around it.  Only a value that is already safe to print
+    goes here, so a credential arrives as its masked preview and never as itself."""
+    line = f"{prog_name()}: {msg}"
+    if fields:
+        line += "  " + " ".join("%s=%s" % (k, v) for k, v in fields.items())
+    print(line, file=sys.stderr)
     raise SystemExit(code)
 
 
@@ -1066,7 +1089,7 @@ class Auth:
             die(f"{why}, and it was minted {central(minted)}, under 24 hours ago.  Not minting "
                 "again (design section 2: at most one mint a day per app).  If the app was rotated, "
                 "update its credentials in Infisical; to force one mint, rerun with LINEAR_BOARD_REMINT=1.",
-                EXIT_AUTH)
+                EXIT_AUTH, credential=credential_preview(tok))
         return self._store(ident, fp, now)
 
     def _store(self, ident: Identity, fp: str, now: float) -> str:
@@ -1106,7 +1129,8 @@ class Auth:
         try:
             d = L.call(Q_WHOAMI)
         except GqlError as e:
-            die(f"cannot confirm which Linear app the credentials in {self.where} belong to: {e}", EXIT_AUTH)
+            die(f"cannot confirm which Linear app the credentials in {self.where} belong to: {e}", EXIT_AUTH,
+                credential=credential_preview(self.token or ""))
         vw, org = d.get("viewer") or {}, d.get("organization") or {}
         self.remember_viewer(vw, org)
         return {"name": vw.get("name"), "app": bool(vw.get("app")), "workspace": org.get("urlKey")}
@@ -1129,11 +1153,13 @@ class Auth:
                 js = {}
             err = str(js.get("error") or "")[:80]
             desc = str(js.get("error_description") or "")[:200]
-            die(f"minting the {ident.label} token failed: HTTP {e.code} {err} {desc}".rstrip(), EXIT_AUTH)
+            die(f"minting the {ident.label} token failed: HTTP {e.code} {err} {desc}".rstrip(), EXIT_AUTH,
+                credential=credential_preview(ident.sec))
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
             die(f"cannot reach Linear to mint the {ident.label} token ({type(e).__name__})", EXIT_ERROR)
         if not isinstance(js, dict) or not js.get("access_token"):
-            die(f"minting the {ident.label} token failed: Linear answered without an access token", EXIT_AUTH)
+            die(f"minting the {ident.label} token failed: Linear answered without an access token", EXIT_AUTH,
+                credential=credential_preview(ident.sec))
         return js
 
 
@@ -1152,7 +1178,8 @@ def write_identity_problem(ident: Identity, v: dict) -> str:
         return ""
     if ident.kind == "seat":
         fix = (f"They look swapped with another seat's.  Put the {' or '.join(ident.accept)} app's client credentials "
-               f"there, or move them aside so {ident.seat} writes as the shared {fleet_app_name()} app.")
+               f"there, or move them aside so {ident.seat} writes as the shared {fleet_app_name()} app.  "
+               "Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET to that app's pair, or unset them.")
     else:
         fix = ("Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET to this seat's app or the shared "
                f"{fleet_app_name()} app, or unset them.")
@@ -1293,12 +1320,13 @@ class Linear:
             if status == 401 or any(_is_auth_error(e) for e in errs):
                 if reminted:
                     die(f"Linear refused a freshly minted {self.auth.label} token; check the app in Linear's API settings",
-                        EXIT_AUTH)
+                        EXIT_AUTH, credential=credential_preview(self.auth.token or ""))
                 token = self.auth.get(failed=token)
                 reminted = True
                 continue
             if status == 403:
-                die(f"Linear answered 403: the {self.auth.label} may not do this (scope or team access)", EXIT_AUTH)
+                die(f"Linear answered 403: the {self.auth.label} may not do this (scope or team access)", EXIT_AUTH,
+                    credential=credential_preview(self.auth.token or ""))
             if status >= 500:
                 if time.time() + delay > deadline:
                     self.fail(f"Linear answered HTTP {status} until LINEAR_BOARD_MAX_WAIT ran out")
@@ -2455,7 +2483,7 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     try:
         d = L.call(Q_WHOAMI)
     except GqlError as e:
-        die(f"whoami failed: {e}", EXIT_AUTH)
+        die(f"whoami failed: {e}", EXIT_AUTH, credential=credential_preview(auth.token or ""))
     v = d.get("viewer") or {}
     org = d.get("organization") or {}
     auth.remember_viewer(v, org)

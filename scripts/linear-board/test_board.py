@@ -2648,6 +2648,10 @@ class SeatAppTests(BoardTest):
             self.assertIn("belong to the 'Codex' app, not 'Claude'", p.stderr)
             self.assertIn("look swapped", p.stderr)
             self.assertIn("Reads still work", p.stderr)
+            # Every exit-4 line names the variable the operator has to fix, so a caller
+            # downstream never has to fall back to a nameless "no credentials".
+            self.assertIn("LINEAR_CLIENT_ID", p.stderr)
+            self.assertIn("LINEAR_CLIENT_SECRET", p.stderr)
         self.assertEqual([o for o in self.mock.ops if o in WRITE_OPS], [])
         self.assertEqual(self.mock.ops[n_ops:], ["BoardWhoami"])  # asked once, kept with the token
         p = self.as_seat("CLAUDE", "whoami", code=6)
@@ -3549,6 +3553,69 @@ class TokenBlobTests(BoardTest):
         self.board("list", extra=pair)
         self.assertEqual(self.mock.mints, 2)
         self.assertEqual(self.sets(), [])
+
+
+class CredentialPreviewTests(unittest.TestCase):
+    """A credential preview:  enough to tell two credentials apart, never enough to use one.
+
+    The board owns the credential, so the board is the layer that hands back a preview of it
+    to a caller that has to name the credential without printing it."""
+
+    def test_a_long_credential_shows_its_first_eight_and_last_four(self):
+        cli = load_cli()
+        secret = "abcdefgh" + "x" * 20 + "wxyz"
+        self.assertEqual(cli.credential_preview(secret), "abcdefgh…wxyz")
+
+    def test_a_short_credential_shows_one_character_only(self):
+        # Twelve of thirteen characters is the whole credential.  A value under twenty-four
+        # characters is not a preview at all, so it shows its single leading character.
+        cli = load_cli()
+        self.assertEqual(cli.credential_preview("lin_api_123456"), "l…")
+        self.assertEqual(cli.credential_preview("a" * 23), "a…")
+        self.assertEqual(cli.credential_preview("a" * 24), "a" * 8 + "…" + "a" * 4)
+
+    def test_an_empty_credential_has_no_preview(self):
+        self.assertEqual(load_cli().credential_preview(""), "")
+        self.assertEqual(load_cli().credential_preview(None), "")
+
+
+class CredentialFailureTests(BoardTest):
+    """A credential the board could not use:  what it says about it, and what it never says.
+
+    The board owns the credential, so the board is the layer that can hand back a safe preview
+    of it, and every exit-4 line names the variable the operator has to fix.  A caller
+    downstream reads those fields and never the sentence around them, because the sentence is
+    third-party text that can carry anything."""
+
+    seat_app = SeatAppTests.seat_app
+    as_seat = SeatAppTests.as_seat
+
+    def test_a_rejected_credential_names_its_masked_preview(self):
+        self.board("whoami")
+        tokens = set(self.mock.tokens)
+        self.mock.tokens.clear()
+        p = self.board("list", code=6)
+        self.assertIn("credential=", p.stderr)
+        preview = p.stderr.rsplit("credential=", 1)[1].split()[0]
+        self.assertIn("…", preview, "a masked preview, not the credential")
+        for token in tokens:
+            self.assertNotIn(token, preview, "the token itself is never the preview")
+
+    def test_a_swapped_seat_credential_names_the_variable_to_fix(self):
+        # Every exit-4 line names the variable, so a caller downstream never has to fall back
+        # to a nameless "no credentials".
+        codex, sec = self.seat_app("CODEX", "Codex", file=False)
+        self.seat_app("CLAUDE", "Claude", cid=codex, secret=sec, register=False)
+        p = self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "x", code=4)
+        self.assertIn("refusing to write as CLAUDE", p.stderr)
+        self.assertIn("LINEAR_CLIENT_ID", p.stderr)
+        self.assertIn("LINEAR_CLIENT_SECRET", p.stderr)
+
+    def test_a_missing_credential_names_the_variable_to_fix(self):
+        self.creds.unlink()
+        p = self.board("list", code=4)
+        self.assertIn("FLEET_LINEAR_CLIENT_ID", p.stderr)
+        self.assertIn("FLEET_LINEAR_CLIENT_SECRET", p.stderr)
 
 
 if __name__ == "__main__":

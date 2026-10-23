@@ -455,7 +455,7 @@ class BoardWriteTests(unittest.TestCase):
             Result(3, "", "board: AFC-300 (AFC-300) is In Progress, claimed by BF-DIRECTOR.")
         )
         self.assertEqual((notice.state, notice.reason), ("notify_pending", "claim_held"))
-        self.assertIn("claimed by BF-DIRECTOR", notice.detail)
+        self.assertIn("reason=claim_held", notice.detail)
         self.assertIsNone(comment_keys.get(self.notified_key(), self.env), "the row is released")
 
     def test_exit_5_is_retryable_and_keeps_the_retry_timing(self) -> None:
@@ -463,8 +463,11 @@ class BoardWriteTests(unittest.TestCase):
                "This request was not applied; rerun it after the reset.")
         runner, notice = self.notice(Result(5, "", err))
         self.assertEqual((notice.state, notice.reason), ("notify_pending", "rate_limited"))
-        self.assertIn("budget resets", notice.detail)
-        self.assertIn("rerun it after the reset", notice.detail)
+        # The retry metadata is the reason word, which the pending record reads back on its own
+        # line.  The detail beside it is allow-listed, so it carries the reason token and not the
+        # board's sentence about the reset.
+        self.assertIn("reason=rate_limited", notice.detail)
+        self.assertNotIn("budget resets", notice.detail, "the board's prose is not copied")
         self.assertIsNone(comment_keys.get(self.notified_key(), self.env), "the row is released")
 
     def test_a_later_run_writes_the_record_after_a_retryable_failure(self) -> None:
@@ -486,7 +489,7 @@ class BoardWriteTests(unittest.TestCase):
         self.assertEqual(raised.exception.exit_code, 4)
         self.assertEqual(
             str(raised.exception),
-            "board comment failed (exit 4):  no Fleet credentials:  FLEET_LINEAR_CLIENT_ID, "
+            "board comment failed (exit 4):  credential variable: FLEET_LINEAR_CLIENT_ID, "
             "FLEET_LINEAR_CLIENT_SECRET, LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET",
         )
         self.assertNotIn("mac-collab", str(raised.exception), "a value never reaches the operator")
@@ -511,11 +514,37 @@ class BoardWriteTests(unittest.TestCase):
             # errors.py passes the board's own code through for 4 to 7, and 1 for the rest.
             self.assertEqual(raised.exception.exit_code, code if code in (4, 5, 6, 7) else 1)
 
+    def test_a_terminal_failure_is_not_tried_twice(self) -> None:
+        # A terminal failure is decided before the board writes anything, and it is the same on a
+        # second try:  the claim is not held, the rate limit is not in play and the write is not
+        # going to be allowed.  A second board call buys nothing and only delays the operator.
+        runner = self.stub(
+            Result(4, "", "board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID is missing")
+        )
+        with self.assertRaises(BoardFailed):
+            notifymod.notify(runner, self.item)
+        self.assertEqual(runner.board_calls, ["comment"], "a terminal failure is tried once")
+
+    def test_a_retryable_failure_is_still_tried_twice(self) -> None:
+        runner = self.stub(Result(3, "", "board: claimed by BF-DIRECTOR"))
+        wrote = notifymod._write_record(runner, self.item, self.notified_text())
+        self.assertEqual(runner.board_calls, ["comment", "comment"], "a retryable failure may be tried again")
+        self.assertEqual(wrote.outcome, notifymod.RETRYABLE)
+
+    def test_a_record_reports_a_terminal_failure_instead_of_raising(self) -> None:
+        # `adopt --no-notify` has already filed the issue when it writes the held mark, so a
+        # terminal board failure there must not abandon the rest of the flow and leave the mark
+        # unwritten:  the fallback notifier would then announce an item that was held.
+        runner = self.stub(
+            Result(4, "", "board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID is missing")
+        )
+        self.assertFalse(notifymod.record(runner, self.item, records.pending_text("held")))
+
     # ---- unknown --------------------------------------------------------------------------
     def test_an_exit_1_graphql_refusal_is_unknown(self) -> None:
         runner, notice = self.notice(Result(1, "", "board: Linear refused the comment: entity not found"))
         self.assertEqual((notice.state, notice.reason), ("notify_pending", "outcome_unknown"))
-        self.assertIn("Linear refused the comment", notice.detail)
+        self.assertIn("reason=entity_not_found", notice.detail)
         self.assertEqual(comment_keys.get(self.notified_key(), self.env), comment_keys.UNKNOWN)
 
     def test_a_transport_failure_is_unknown(self) -> None:
@@ -523,7 +552,7 @@ class BoardWriteTests(unittest.TestCase):
             Result(1, "", "board: no usable response from Linear (URLError); the last request was not confirmed.")
         )
         self.assertEqual((notice.state, notice.reason), ("notify_pending", "outcome_unknown"))
-        self.assertIn("no usable response", notice.detail)
+        self.assertIn("reason=no_usable_response", notice.detail)
 
     def test_an_exit_1_failure_with_no_marker_is_unknown(self) -> None:
         runner, notice = self.notice(Result(1, "", "board: fake board failure for comment"))
@@ -558,13 +587,48 @@ class BoardWriteTests(unittest.TestCase):
         self.assertEqual(len(pending), 2, "a definite failure is tried twice")
         self.assertEqual(records.parse_pending(pending[0]), "claim_held")
         self.assertIn("detail: ", pending[0])
-        self.assertIn("claimed by BF-DIRECTOR", pending[0])
+        self.assertIn("reason=claim_held", pending[0])
 
     def test_the_detail_of_an_unknown_outcome_keeps_the_code_and_the_timing(self) -> None:
         runner, notice = self.notice(Result(1, "", "board: Linear answered HTTP 503 until LINEAR_BOARD_MAX_WAIT ran out"))
         self.assertEqual(notice.reason, "outcome_unknown")
-        self.assertIn("HTTP 503", notice.detail)
-        self.assertIn("LINEAR_BOARD_MAX_WAIT", notice.detail)
+        self.assertIn("http=503", notice.detail)
+        self.assertIn("name=LINEAR_BOARD_MAX_WAIT", notice.detail)
+
+    def test_the_detail_is_built_from_allow_listed_fields_and_never_the_boards_prose(self) -> None:
+        # The board's prose is third-party text and it is persisted in a Linear comment, so it is
+        # matched and tokenized here and never copied.  A third-party error body that carries a
+        # credential must not reach the operator through this string.
+        secret = "lin_api_" + "z" * 40
+        err = ("board: Linear refused the comment: entity not found: the request carried "
+               f"credential={secret} and a customer email someone@example.test")
+        runner, notice = self.notice(Result(1, "", err))
+        self.assertNotIn(secret, notice.detail, "a credential never reaches the operator")
+        self.assertNotIn("someone@example.test", notice.detail, "a third party's PII never reaches it either")
+        self.assertNotIn("Linear refused the comment", notice.detail, "the prose is not copied")
+        self.assertIn("reason=entity_not_found", notice.detail)
+        self.assertIn("board write failed (code=1)", notice.detail)
+
+    def test_a_rejected_credential_carries_the_masks_preview_and_never_the_credential(self) -> None:
+        # The board owns the credential, so it is the board that hands back the masked preview.
+        err = ("board: Linear refused a freshly minted Fleet token; check the app in Linear's API settings  "
+               "credential=abcdefgh…wxyz")
+        runner = self.stub(Result(6, "", err))
+        with self.assertRaises(BoardFailed) as raised:
+            notifymod.notify(runner, self.item)
+        message = str(raised.exception)
+        self.assertEqual(raised.exception.exit_code, 6)
+        self.assertIn("credential rejected: abcdefgh…wxyz", message)
+        self.assertNotIn("abcdefgh", message.replace("abcdefgh…wxyz", ""))
+
+    def test_a_credential_preview_that_is_not_shaped_like_one_is_ignored(self) -> None:
+        err = "board: the token was refused  credential=this-is-the-whole-secret-value"
+        runner = self.stub(Result(6, "", err))
+        with self.assertRaises(BoardFailed) as raised:
+            notifymod.notify(runner, self.item)
+        message = str(raised.exception)
+        self.assertNotIn("this-is-the-whole-secret-value", message, "a value that is not a preview is not taken")
+        self.assertIn("credential rejected: (no preview)", message)
 
 
 if __name__ == "__main__":
