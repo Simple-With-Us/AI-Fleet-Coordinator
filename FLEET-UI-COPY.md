@@ -248,7 +248,8 @@ surface.
 
 **What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
 in the **Claude Code Code tab** (normalized away in the view, even though copy-paste showed
-two spaces -- do not be fooled by copy-paste).  The same is true in the MiniMax Code
+two spaces -- do not be fooled by copy-paste; under the 2026-10-23 ruling above still emit
+it there, and if the pane strips it report the pane).  The same is true in the MiniMax Code
 pane:  until the 2026-10-23 ruling the working mechanism there was the `&nbsp;` entity plus a
 normal space, the same form as the Code tab, NOT a raw U+00A0.  The 2026-10-23 ruling above
 replaces that:  a real U+00A0 plus a space, never the entity.  Also not
