@@ -512,6 +512,10 @@ class WaitTests(unittest.TestCase):
 
     def test_wait_zero_and_an_already_final_record_answer_at_once(self):
         self.assertEqual(self.client.wait("CLAUDE", self.queued, 0), self.queued)
+        # A record with no valid request_id is never polled by a made-up one ("None", "").
+        for bad in (None, "", "short"):
+            no_id = dict(self.queued, request_id=bad)
+            self.assertEqual(self.client.wait("CLAUDE", no_id, 300), no_id)
         done = record("done")
         self.assertEqual(self.client.wait("CLAUDE", done, 300), done)
         self.assertEqual((self.sleeps, self.op.calls), ([], []))

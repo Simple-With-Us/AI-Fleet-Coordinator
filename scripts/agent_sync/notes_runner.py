@@ -124,7 +124,7 @@ class Runner:
         report that fails keeps only its own entry for the next pass, and the others still go out.  If any failed,
         the first failure is raised after the rest have been tried, so the loop backs off before it claims new work."""
         state = self._state()
-        failed: N.NotesError | None = None
+        failed: Exception | None = None
         for key, entry in list(state["inflight"].items()):
             if not isinstance(entry, dict):
                 state["inflight"].pop(key, None)
@@ -154,9 +154,10 @@ class Runner:
                 }
             try:
                 self._deliver(seat, request_id, claim, outcome)
-            except N.NotesError as exc:
+            except Exception as exc:  # noqa: BLE001 - one entry's failure, of any kind, never stops the others
                 self.log(
-                    "notes-runner: recovery report for %s failed:  %s" % (request_id, exc.code)
+                    "notes-runner: recovery report for %s failed:  %s"
+                    % (request_id, getattr(exc, "code", type(exc).__name__))
                 )
                 failed = failed or exc
                 continue
@@ -273,12 +274,24 @@ class Runner:
         sent = 0
         inode, offset = cursor.get("inode"), int(cursor.get("offset") or 0)
         if inode is not None and inode != current.st_ino:
-            rotated = path.with_name(path.name + ".1")
-            try:
-                if os.stat(rotated).st_ino == inode:
-                    sent += self._ship_from(rotated, offset)
-            except OSError:
-                pass
+            # The cursor's file has rotated, perhaps more than once while the runner was off:  the rest of the copy
+            # it is now, then each newer copy whole, oldest first.  A failed send leaves the cursor where it was, and
+            # the Operator drops the ids it already has on the next pass.
+            copies = [
+                path.with_name("%s.%d" % (path.name, n))
+                for n in range(1, N.ACTION_LOG_ROTATIONS + 1)
+            ]
+            found = None
+            for n, copy in enumerate(copies):
+                try:
+                    if os.stat(copy).st_ino == inode:
+                        found = n
+                        break
+                except OSError:
+                    continue
+            if found is not None:
+                for n in range(found, -1, -1):
+                    sent += self._ship_from(copies[n], offset if n == found else 0)
             offset = 0
         if offset > current.st_size:
             offset = 0  # truncated in place:  start again (the Operator drops ids it already has)

@@ -262,11 +262,12 @@ class RecoverTests(RunnerHarness):
 
         def report(seat, request_id, claim, **outcome):
             if request_id == "first-request-1":
-                raise N.NotesError("unavailable", "the Operator notes API could not be reached (URLError)")
+                # Any failure, not only a NotesError (a bug, say), keeps to its own entry.
+                raise ValueError("unexpected")
             return real(seat, request_id, claim, **outcome)
 
         self.client.report = report
-        with self.assertRaises(N.NotesError):  # raised after the rest, so the loop backs off before new work
+        with self.assertRaises(ValueError):  # raised after the rest, so the loop backs off before new work
             self.runner.recover()
         self.assertEqual([r["request_id"] for r in self.client.reports], ["second-request1"])
         self.assertEqual(list(self.client.state()["inflight"]), ["CODEX/first-request-1"])
@@ -347,6 +348,19 @@ class ShipLogTests(RunnerHarness):
         self.assertEqual(self.shipped(), ["e%04d" % n for n in range(1, 8)])
         cursor = self.client.state()["log"]
         self.assertEqual((cursor["inode"], cursor["offset"]), (os.stat(self.log_path).st_ino, os.path.getsize(self.log_path)))
+
+    def test_two_rotations_while_the_runner_was_off_are_followed_oldest_first(self):
+        self.write(1, 2)
+        self.assertEqual(self.runner.ship_log(), 2)
+        self.write(3)  # the rest of the file the cursor is in, which then rotates twice
+        dot = lambda n: self.log_path.with_name("%s.%d" % (self.log_path.name, n))  # noqa: E731
+        os.rename(self.log_path, dot(1))
+        self.write(4, 5)
+        os.rename(dot(1), dot(2))
+        os.rename(self.log_path, dot(1))
+        self.write(6)
+        self.assertEqual(self.runner.ship_log(), 4)
+        self.assertEqual(self.shipped(), ["e%04d" % n for n in range(1, 7)])
 
     def test_a_file_truncated_in_place_is_read_from_its_start(self):
         self.write(1, 2, 3)

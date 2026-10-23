@@ -266,6 +266,9 @@ class OperatorClient:
         running, with its request_id), never an error:  the request is already queued, and an error would send the
         caller to retry under a new id and write twice.  The Worker's wait does the same."""
         current = dict(record)
+        request_id = record.get("request_id")
+        if not isinstance(request_id, str) or not N.REQUEST_ID_RE.fullmatch(request_id):
+            return current  # no id to poll by:  the caller answers the record as it stands
         waited, polls = 0.0, 0
         # Counted from the sleeps, not a clock:  a call's own time only makes the wait a little longer, never shorter.
         while (
@@ -277,7 +280,9 @@ class OperatorClient:
             waited += step
             polls += 1
             try:
-                current = self.record(seat, str(current.get("request_id")))
+                current = self.record(
+                    seat, request_id
+                )  # the enqueued id, never one a poll answered
             except N.NotesError:
                 break
         return current

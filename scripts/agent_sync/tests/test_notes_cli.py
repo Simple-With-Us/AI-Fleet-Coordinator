@@ -437,6 +437,13 @@ class MacTests(NotesCliHarness):
         self.assertEqual(bad.code, 2)
         self.assertEqual(len(run.calls), 1)
         self.assertEqual([(r["tool"], r["outcome"]) for r in self.audit_rows()][-1], ("notes create", "invalid_argument"))
+        # So is a write refused for its body once the identity is known:  nothing ran, by its error type only.
+        a, b = self.direct(run)
+        with a, b:
+            unreadable = self.notes("create", TITLE, "--html", str(self.home / "no-such.html"))
+        self.assertEqual(unreadable.code, 2)
+        self.assertEqual(len(run.calls), 1)
+        self.assertEqual([(r["tool"], r["outcome"]) for r in self.audit_rows()][-1], ("notes create", "refused:UsageError"))
 
     def test_the_cli_refuses_a_non_agent_identity(self):
         a, b = self.direct(FakeRun())

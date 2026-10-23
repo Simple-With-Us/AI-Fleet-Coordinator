@@ -360,8 +360,12 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
             audit["outcome"] = "interrupted"  # the write may have landed
         raise
     except Exception as exc:
-        if audit.get("started") and "outcome" not in audit:
-            audit["outcome"] = "outcome_unknown:%s" % type(exc).__name__  # the type name only
+        if "outcome" not in audit:
+            # The type name only.  Started:  the write may have landed.  Not started (its body or an option was
+            # refused once the identity was known):  nothing ran, and the attempt is still audited.
+            audit["outcome"] = (
+                "outcome_unknown:%s" if audit.get("started") else "refused:%s"
+            ) % type(exc).__name__
         raise
     finally:
         if write and audit.get("outcome") and audit.get("identity"):

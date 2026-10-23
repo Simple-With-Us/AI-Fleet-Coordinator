@@ -210,7 +210,7 @@ class EnqueueTests(QueueHarness):
         self.assert_answer(self.enqueue(pin), 202)
 
     def test_write_text_gets_the_secret_scan(self) -> None:
-        token = "ghp_" + "a1B2" * 9
+        token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic
         body = self.assert_answer(self.enqueue(request(markdown="see %s here" % token)), 400, "invalid_argument")
         self.assertIn("GitHub token", body["message"])
         self.assertNotIn(token, json.dumps(body))
@@ -304,6 +304,13 @@ class RunnerTests(QueueHarness):
         self.assertNotIn(token, json.dumps(note))
         self.assertEqual((note["body"], note["withheld"]), ("<div>Before.</div>\n<div>%s</div>" % N.WITHHELD, 1))
         self.assertNotIn(token, "".join(p.read_text() for p in (Path(self.root) / NQ.QUEUE_DIR).rglob("*.json")))
+        # Each known field is kept only in its own type, and nothing else is kept.
+        self.assert_answer(self.enqueue(request("read", rid="read-shape-001")), 202)
+        claimed = self.assert_answer(self.claim(), 200)
+        odd = {"title": ["x"], "id": 5, "format": "raw", "body": "b", "bytes": "10", "truncated": "yes", "withheld": -1, "extra": "x"}
+        self.assert_answer(self.report(claimed, result={"note": odd}), 200)
+        note = self.assert_answer(self.status("CLAUDE", "read-shape-001"), 200)["result"]["note"]
+        self.assertEqual(note, {"body": "b", "format": "raw"})
 
     def test_a_repeated_result_is_200_and_a_wrong_claim_is_409(self) -> None:
         self.assert_answer(self.enqueue(request()), 202)

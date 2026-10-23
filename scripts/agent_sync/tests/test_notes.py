@@ -612,8 +612,35 @@ class DirectRunnerTests(unittest.TestCase):
         note = N.read_result({"title": "t", "body": "x" * 50}, "raw", limit=10)
         self.assertEqual((note["body"], note["bytes"], note["truncated"]), ("x" * 10, 10, True))
 
+    def test_a_cut_ends_on_a_whole_line_so_a_withheld_marker_is_never_split(self):
+        token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic
+        lines = ["<div>line %02d</div>" % n for n in range(6)]
+        lines[3] = "<div>k %s</div>" % token  # shorter than its marker line, so withholding makes it longer
+        body = "\n".join(lines)
+        marker_end = len("\n".join(lines[:3] + ["<div>%s</div>" % N.WITHHELD]).encode())
+        for limit in range(marker_end - 20, marker_end + 3):
+            with self.subTest(limit=limit):
+                note = N.read_result({"title": "t", "body": body}, "raw", limit=limit)
+                self.assertNotIn(token, note["body"])
+                self.assertLessEqual(note["bytes"], limit)
+                self.assertTrue(note["truncated"])
+                # Whatever survives the cut is whole lines, so the marker is either all there or not there at all.
+                self.assertNotIn("[withheld", note["body"].replace(N.WITHHELD, ""))
+                self.assertTrue(note["body"].endswith("\n") or note["body"] == "", note["body"][-30:])
+
+    def test_a_list_and_the_log_withhold_a_secret_shaped_title(self):
+        token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic
+        listed = N.list_result({"notes": [{"title": "[AFC, Claude] %s" % token}, {"title": TITLE}], "total": 2})
+        self.assertEqual([row["title"] for row in listed["notes"]], [N.WITHHELD, TITLE])
+        self.assertEqual(N.list_result({"notes": "not a list"})["notes"], [])
+        entry = N.clean_log_entry({"id": "e1", "ts": "2026-10-23T00:00:00Z", "title": "[AFC, Claude] %s" % token})
+        self.assertEqual(entry["title"], N.WITHHELD)
+        with self.assertRaises(N.NotesError) as caught:
+            N.check_log_args({"title": "-x"})
+        self.assertIn("argument 'title'", caught.exception.message)  # the field the caller set
+
     def test_a_read_withholds_each_secret_shaped_line_and_the_marker_is_never_written_back(self):
-        token = "ghp_" + "a1B2" * 9  # built at run time:  no token-shaped literal in the source
+        token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic
         stored = "<div>Before.</div>\n<div>key %s</div>\n<div>After.</div>" % token
         for fmt, raw in (("raw", {"title": "t", "body": stored}), ("text", {"title": "t", "plaintext": "t\nkey %s\nAfter." % token})):
             with self.subTest(fmt):
@@ -639,7 +666,7 @@ class DirectRunnerTests(unittest.TestCase):
                 self.assertIn("must not start with -", caught.exception.message)
         self.assertEqual(N.check_query("a-b"), "a-b")
         # A query or a log title filter is sent to the Operator, so it gets the secret scan.
-        token = "ghp_" + "a1B2" * 9  # built at run time:  no token-shaped literal in the source
+        token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic
         with self.assertRaises(N.NotesError) as caught:
             N.check_log_args({"title": token})
         self.assertIn("looks like it contains a secret", caught.exception.message)

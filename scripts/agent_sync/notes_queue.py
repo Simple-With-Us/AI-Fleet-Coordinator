@@ -654,30 +654,25 @@ class NotesQueue:
             note = raw.get("note")
             if not isinstance(note, Mapping) or not isinstance(note.get("body"), str):
                 return None
-            keep = {
-                key: note.get(key)
-                for key in (
-                    "title",
-                    "id",
-                    "created",
-                    "modified",
-                    "format",
-                    "body",
-                    "bytes",
-                    "truncated",
-                    "withheld",
-                )
-            }
-            if len(str(keep.get("body") or "").encode("utf-8")) > N.READ_MAX:
+            if len(note["body"].encode("utf-8")) > N.READ_MAX:
                 return None
+            # Each known field of its own type and bounds, and nothing else, so a malformed result is never stored
+            # as if it were valid.
+            keep: dict[str, Any] = {"body": note["body"]}
+            for key in ("title", "id", "created", "modified", "format"):
+                if isinstance(note.get(key), str):
+                    keep[key] = note[key][: 400 if key == "title" else 200]
+            for key in ("bytes", "withheld"):
+                value = note.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    keep[key] = value
+            if isinstance(note.get("truncated"), bool):
+                keep["truncated"] = note["truncated"]
             # The runner withholds secret-shaped lines on the Mac;  the same scan here keeps a credential out of the
             # stored record even if an older runner did not.
             keep["body"], withheld = N.withhold_secrets(keep["body"])
             if withheld:
-                before = keep.get("withheld")
-                keep["withheld"] = (
-                    before if isinstance(before, int) and not isinstance(before, bool) else 0
-                ) + withheld
+                keep["withheld"] = int(keep.get("withheld") or 0) + withheld
             return {"note": keep}
         if action == "list":
             if not isinstance(raw.get("notes"), list):

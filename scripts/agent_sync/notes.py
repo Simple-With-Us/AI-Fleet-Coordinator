@@ -222,7 +222,8 @@ def check_format(raw: Any) -> str:
     return str(raw)
 
 
-def check_query(raw: Any) -> str:
+def check_query(raw: Any, name: str = "query") -> str:
+    """A list query or a log title filter (`name` is the argument a refusal names)."""
     if raw is None:
         return ""
     if (
@@ -233,15 +234,15 @@ def check_query(raw: Any) -> str:
     ):
         raise NotesError(
             "invalid_argument",
-            "argument 'query' must be text of at most %d characters with no double quote, backslash or "
-            "control character, and must not start with -" % QUERY_MAX,
+            "argument '%s' must be text of at most %d characters with no double quote, backslash or "
+            "control character, and must not start with -" % (name, QUERY_MAX),
         )
     from . import secretscan  # lazy, as in withhold_secrets:  the query is sent to the Operator
 
     if secretscan.scan(raw):
         raise NotesError(
             "invalid_argument",
-            "argument 'query' looks like it contains a secret;  nothing was sent",
+            "argument '%s' looks like it contains a secret;  nothing was sent" % name,
         )
     return raw.strip()
 
@@ -784,6 +785,21 @@ def withhold_secrets(body: str) -> tuple[str, int]:
     return "\n".join(out), withheld
 
 
+def _cut(body: str, limit: int) -> str:
+    """`body` cut to at most `limit` UTF-8 bytes (never inside a character), back to the end of its last whole line,
+    so a withheld marker, or the line a secret was on, is never split.  A body with no line break is cut before any
+    marker the cut would split."""
+    data = body.encode("utf-8")
+    if len(data) <= limit:
+        return body
+    cut = data[:limit].decode("utf-8", "ignore")
+    end = cut.rfind("\n")
+    if end >= 0:
+        return cut[: end + 1]
+    at = cut.rfind("[withheld")
+    return cut[:at] if at >= 0 and WITHHELD not in cut[at:] else cut
+
+
 def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> dict[str, Any]:
     """The `note` a read answers, from the script's --read output, with any secret-shaped line withheld."""
     title = str(raw.get("title") or "")
@@ -793,13 +809,12 @@ def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> d
         body = content_text(str(raw.get("plaintext") or ""), title)
     else:
         body = content_html(str(raw.get("body") or ""), title)
-    body, withheld = withhold_secrets(body)
-    data = body.encode("utf-8")
-    truncated = len(data) > limit
-    if truncated:
-        body = data[:limit].decode(
-            "utf-8", "ignore"
-        )  # cut on a byte limit, never inside a character
+    # Cut first, so the scan covers only what is returned;  then withhold, and cut again in case a marker made a line
+    # longer than the secret it replaced.  Each cut ends on a whole line, so a marker is never split.
+    whole = len(body.encode("utf-8"))
+    marked, withheld = withhold_secrets(_cut(body, limit))
+    body = _cut(marked, limit)
+    truncated = whole > limit or body != marked
     return {
         "title": title,
         "id": str(raw.get("id") or ""),
@@ -814,16 +829,20 @@ def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> d
 
 
 def list_result(raw: Mapping[str, Any]) -> dict[str, Any]:
-    """The answer of a list, from the script's --list output, with every row reduced to its four text fields."""
+    """The answer of a list, from the script's --list output, with every row reduced to its four text fields and a
+    title the secret scan flags shown as WITHHELD (a list goes to the Operator and the caller like a read does)."""
+    from . import secretscan  # lazy, as in withhold_secrets
+
+    notes = raw.get("notes")
     rows = []
-    for row in raw.get("notes") or []:
+    for row in notes if isinstance(notes, list) else []:
         if isinstance(row, Mapping):
-            rows.append(
-                {
-                    key: str(row.get(key) or "")[:400]
-                    for key in ("title", "id", "created", "modified")
-                }
-            )
+            out = {
+                key: str(row.get(key) or "")[:400] for key in ("title", "id", "created", "modified")
+            }
+            if secretscan.scan(out["title"]):
+                out["title"] = WITHHELD
+            rows.append(out)
     total = raw.get("total")
     return {
         "notes": rows,
@@ -1271,6 +1290,13 @@ def clean_log_entry(raw: Any) -> dict[str, Any] | None:
             )  # JSON's NaN and Infinity have no int
         else:
             out[key] = str(value)[: 400 if key == "title" else 200]
+    if isinstance(out.get("title"), str):
+        from . import (
+            secretscan,
+        )  # lazy, as in withhold_secrets:  the log goes to the Operator and every seat
+
+        if secretscan.scan(out["title"]):
+            out["title"] = WITHHELD
     return out
 
 
@@ -1363,7 +1389,7 @@ def check_log_args(args: Mapping[str, Any]) -> dict[str, Any]:
         raise NotesError(
             "invalid_argument", "argument 'action' must be one of %s" % ", ".join(ACTIONS)
         )
-    title = check_query(args.get("title")) or None
+    title = check_query(args.get("title"), "title") or None
     return {
         "since_hours": since,
         "limit": limit,
