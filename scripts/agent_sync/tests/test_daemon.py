@@ -30,6 +30,7 @@ from agent_sync.tests.harness import write_rc
 from agent_sync.tests.listener_harness import BASE_CONFIG, ListenerHarness, fake_watcher, reply_output
 
 MENTION = "@**Claude** can you check the AFC cutover?"
+MUSE_MENTION = "@**MiniMax** can you check the AFC cutover?"
 TOPIC_KEY = L.topic_key("agent-sync", "t")
 
 
@@ -1274,6 +1275,128 @@ class EveryoneWakesTests(DaemonHarness):
         self.pump_until(daemon, lambda: any(r["id"] == mid for r in self.inbox()))
         self.clock.advance(W.LoopGuard.DM_WINDOW + 60)
         self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY, self.clock.time()), "a topic never decays")
+
+
+class MuseSeatTests(DaemonHarness):
+    """A muse seat at the daemon level: its own runtime, its own pin and its own notices.
+
+    The claude and muse seats share the wake machinery, so a notice that names the wrong runtime
+    sends the operator to the wrong file: a muse seat whose build moved was told that "the claude
+    binary changed" and was pointed at the claude pin, while the muse pin that had actually gone
+    stale went unread (Kody, PR #880).
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The partition that gives the muse seat to this instance.
+        partition = self.tmp / "partition-muse.toml"
+        partition.write_text('[seats]\nMM = "mac"\n')
+        self.partition = str(partition)
+        # The muse bot in the realm, with a key of its own: a seat holds only its own bot.
+        self.mm_key = secrets.token_hex(16)
+        self.mm = self.fake.add_bot("mm-bot@zulip.test", "MiniMax", self.mm_key, user_id=30)
+        write_rc(
+            self.secrets_dir / "MM-zuliprc",
+            email="mm-bot@zulip.test",
+            key=self.mm_key,
+            site=self.fake.url,
+        )
+        # The build the launcher left on the wake PATH.
+        self.build = self.bin / "muse-bin-1.4.12-R6909.1"
+        self.build.write_text("#!/bin/sh\n")
+        self.build.chmod(0o755)
+
+    def muse_seat(self, muse: str) -> None:
+        """The muse seat's config, with `muse` naming the build it runs."""
+        self.write_config(
+            seats=textwrap.dedent("""\
+                [seat.MM]
+                bot = "MM"
+                wake = "muse"
+                model = "muse-spark-1.3-contributor"
+                muse = "%s"
+                """ % muse),
+            eligible=[13],
+        )
+
+    def stale_muse_pin(self) -> None:
+        """The pin the seat carried before the launcher replaced the build it named."""
+        gone = os.path.join(str(self.tmp), "muse-bin-1.4.11-R6667.1")
+        A.record_muse_pin(
+            self.seat_paths("MM"), gone, self.clock.time(), model="muse-spark-1.3-contributor"
+        )
+
+    def daemon(self, **kw: Any) -> D.Daemon:
+        kw.setdefault("partition_file", self.partition)
+        return super().daemon(**kw)
+
+    def test_a_muse_seat_whose_build_moved_is_told_about_muse_not_claude(self) -> None:
+        """Kody, PR #880.  The `pin_stale` notice used to resolve the claude binary and read the
+        claude pin file for every seat, so a muse seat whose build moved was told that "the claude
+        binary changed" and was sent to the claude pin, which never moves for a muse seat."""
+        self.muse_seat(str(self.build))
+        self.stale_muse_pin()
+        daemon = self.daemon()
+        self.assertTrue(daemon.connect_seat("MM"), daemon.seats["MM"].error)
+        self.fake.add_message("Cursor", "agent-sync", "t", MUSE_MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger("MM")) >= 1, seat="MM")
+        self.clock.advance(25)
+        daemon.tick()
+        daemon.run_jobs("MM")
+        self.assertEqual(self.ledger("MM")[-1]["reason"], "pin_stale")
+        self.assertTrue(
+            any("the muse binary changed" in b[8] for b in self.banners),
+            "the notice must name the runtime that went stale: %s" % self.banners,
+        )
+        self.assertFalse(
+            any("the claude binary changed" in b[8] for b in self.banners),
+            "a muse seat is not told about the claude binary: %s" % self.banners,
+        )
+
+    def test_a_muse_seat_running_a_build_its_config_does_not_name_is_red_with_the_repoint(self) -> None:
+        """Kody, PR #880.  The launcher deleted the build the config named, so the seat fell back
+        to another build and works today.  What breaks is the CONFIG: it names a build the next
+        release deletes, so re-pinning alone breaks the seat again at every release."""
+        gone = os.path.join(str(self.tmp), "muse-bin-1.4.11-R6667.1")
+        self.muse_seat(gone)
+        daemon = self.daemon()
+        daemon.status()
+        seat = daemon.status()["seats"]["MM"]
+        self.assertTrue(
+            any("repoint seat.MM.muse" in red for red in seat["red"]),
+            "a seat running a build its config does not name must say so: %s" % seat["red"],
+        )
+        self.assertTrue(
+            any(os.path.basename(str(self.build)) in red for red in seat["red"]),
+            "the red entry must name the build the seat is actually running: %s" % seat["red"],
+        )
+
+    def test_the_muse_pin_stale_notice_says_to_repoint_the_config_when_the_build_is_gone(self) -> None:
+        """Kody, PR #880.  Re-pinning alone records a build the launcher deletes at the next
+        release, so the notice has to name the setting to repoint and the build to point it at,
+        not only that the binary moved."""
+        gone = os.path.join(str(self.tmp), "muse-bin-1.4.11-R6667.1")
+        self.muse_seat(gone)
+        self.stale_muse_pin()
+        daemon = self.daemon()
+        self.assertTrue(daemon.connect_seat("MM"), daemon.seats["MM"].error)
+        self.fake.add_message("Cursor", "agent-sync", "t", MUSE_MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger("MM")) >= 1, seat="MM")
+        self.clock.advance(25)
+        daemon.tick()
+        daemon.run_jobs("MM")
+        self.assertEqual(self.ledger("MM")[-1]["reason"], "pin_stale")
+        notes = [
+            str(row.get("note") or "") for row in L.read_jsonl(self.seat_paths("MM").owner_queue)
+        ]
+        self.assertTrue(
+            any("repoint it to" in note for note in notes),
+            "the notice must say which setting to repoint: %s" % notes,
+        )
+        self.assertTrue(
+            any(os.path.basename(str(self.build)) in note for note in notes),
+            "the notice must name the build the seat is running: %s" % notes,
+        )
 
 
 class PeerScreenTests(DaemonHarness):

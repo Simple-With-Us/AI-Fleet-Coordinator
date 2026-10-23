@@ -2565,6 +2565,41 @@ class Daemon:
                 lost=lost,
             )
 
+    def _notify_muse_pin_stale(self, runner: SeatRunner, pending: W.Pending) -> None:
+        """The `pin_stale` owner notice for a MUSE seat.
+
+        It names the muse build and the muse pin file.  When the seat's config no longer names
+        the build it is running, the note also says to repoint ``seat.X.muse``:  the launcher
+        deletes that build on the next release, so re-pinning alone breaks the seat again at
+        every release (Kody, PR #880).
+        """
+        muse = A.resolve_muse(runner.cfg.muse, self.wake_path)
+        pin = A.muse_pin_state(runner.paths, muse)
+        current = pin.get("muse") or "<unresolved>"
+        recorded = pin.get("pinned_muse") or "<none>"
+        note = (
+            "pinned %s, on disk %s; run `agent-sync daemon test-wake --seat %s --run` "
+            "then `--pin`.  It is never re-pinned automatically:  the pin records "
+            "that a person checked this build's wake contract."
+            % (recorded, current, runner.seat)
+        )
+        if A.muse_configured_path_missing(runner.cfg.muse):
+            note += (
+                "  seat.%s.muse names a build that is gone (%s); repoint it to %s, or the next "
+                "muse release will break this seat again."
+                % (runner.seat, runner.cfg.muse, current)
+            )
+        self.notifier.notify(
+            runner.seat,
+            "agent-sync %s" % runner.seat,
+            "the muse binary changed (%s), so %s wakes are inbox-only until it is "
+            "re-pinned" % (current, runner.seat),
+            kind="wake-pin_stale",
+            key="wake:%s:%s" % (runner.seat, "pin_stale"),
+            note=note,
+            trigger_ids=pending.trigger_ids,
+        )
+
     def _drop(self, runner: SeatRunner, pending: W.Pending, reason: str, now: float) -> None:
         self._clear_host_defer(runner, pending)
         runner.ledger.append(pending.row("dropped", now, reason=reason))
@@ -2577,6 +2612,13 @@ class Daemon:
         # then and now the binary may have been re-pinned, re-pointed or removed, so guard the format
         # against `claude` or `pinned_claude` coming back None.
         if reason == "pin_stale":
+            # The notice must name the runtime that went stale.  It used to resolve the claude
+            # binary and read the claude pin file for every seat, so a muse seat whose build
+            # moved was told that "the claude binary changed" and was pointed at the claude pin
+            # (Kody, PR #880).
+            if runner.cfg.wake == "muse":
+                self._notify_muse_pin_stale(runner, pending)
+                return
             claude = A.resolve_claude(runner.cfg.claude, self.wake_path)
             pin = A.pin_state(runner.paths, claude)
             current = pin.get("claude") or "<unresolved>"
@@ -5558,6 +5600,12 @@ class Daemon:
                 # No muse binary at all:  every wake for this seat is inbox-only, so it must be red
                 # rather than an empty list, which reads as a healthy seat (AFC-491).
                 red.append(A.muse_no_binary_red_entry(seat))
+            if runner.cfg.wake == "muse" and muse and A.muse_configured_path_missing(runner.cfg.muse):
+                # The seat is running a build its own config does not name, because the launcher
+                # deleted the one it named.  The seat works today, so this is not the no-binary
+                # fault, but the CONFIG is what breaks at the next release, and re-pinning alone
+                # records a build the launcher will delete (Kody, PR #880).
+                red.append(A.muse_repoint_red_entry(seat, muse, runner.cfg.muse))
             # The fallback pin reports on its own file too.  It gates the fallback on its own, so a
             # stale one holds every fallback wake; without a red entry here a seat whose fallback
             # silently stopped looks exactly as healthy as a seat that never configured one.

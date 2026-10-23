@@ -142,6 +142,105 @@ class MuseArgvTest(unittest.TestCase):
         self.assertNotIn("run `simple-chat daemon test-wake --seat MM --run`, then", line)
 
 
+class MuseBuildResolutionTest(unittest.TestCase):
+    """Which muse build a seat runs, and which one it is allowed to run.
+
+    The muse launcher replaces its versioned build on every release and DELETES the one it
+    replaced, so a seat naming an absolute ``muse-bin-<version>`` path points at a file that no
+    longer exists after the next release.  The build that wins the scan runs with the daemon's
+    privileges and ingests untrusted Zulip DMs, so PATH order is the trust order (Kody, PR #880).
+    """
+
+    def _build(self, directory: str, name: str) -> str:
+        """An executable fake build, the way the launcher leaves one on disk."""
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def test_the_first_path_directory_wins_even_when_a_later_one_has_a_higher_version(self) -> None:
+        """Kody, PR #880.  The scan used to collect the builds of EVERY PATH directory and return
+        the global maximum, so a later directory (on macOS /opt/homebrew/bin is group-writable)
+        could plant a higher-version build that outranked the first directory's.  The winning
+        build runs with daemon privileges and reads untrusted Zulip DMs, so the first directory
+        that carries a build is the one that wins, whatever version a later one claims."""
+        with tempfile.TemporaryDirectory() as tmp:
+            first = os.path.join(tmp, "first")
+            second = os.path.join(tmp, "second")
+            os.mkdir(first)
+            os.mkdir(second)
+            trusted = self._build(first, "muse-bin-1.4.12-R6909.1")
+            planted = self._build(second, "muse-bin-9.9.9")
+            gone = os.path.join(tmp, "muse-bin-1.4.11-R6667.1")
+            resolved = A.resolve_muse(gone, first + os.pathsep + second)
+            self.assertEqual(resolved, os.path.realpath(trusted))
+            self.assertNotEqual(resolved, os.path.realpath(planted),
+                                "a later PATH directory must not outrank the first one")
+
+    def test_a_deleted_build_falls_back_to_the_launcher_shim_on_the_wake_path(self) -> None:
+        """Kody, PR #880.  With no versioned build anywhere on the PATH the seat still has the
+        launcher shim.  The explicit-path branch stopped at the versioned build and never reached
+        the shim, so a seat whose config named a deleted build had NO binary at all and read as
+        healthy while every wake for it was dropped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            shim = self._build(tmp, "muse")
+            gone = os.path.join(tmp, "muse-bin-1.4.11-R6667.1")
+            self.assertEqual(A.resolve_muse(gone, tmp), os.path.abspath(shim))
+
+    def test_the_path_scan_is_memoized_so_one_tick_does_not_relist_every_directory(self) -> None:
+        """Kody, PR #880.  The daemon's status tick calls the scan once per muse seat every two
+        seconds, and on macOS /usr/bin and /bin are the same directory, so an uncached scan reads
+        ~7,000 dirents per seat per tick.  The memo is keyed by wake PATH and lives for
+        MUSE_SCAN_TTL_SECONDS, so a second call inside the window must not touch the disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = self._build(tmp, "muse-bin-1.4.12-R6909.1")
+            listed: list[str] = []
+            real_listdir = os.listdir
+
+            def counting_listdir(path):
+                listed.append(path)
+                return real_listdir(path)
+
+            with mock.patch.object(os, "listdir", counting_listdir):
+                first = A.newest_versioned_muse(tmp)
+                second = A.newest_versioned_muse(tmp)
+            self.assertEqual(first, os.path.realpath(build))
+            self.assertEqual(second, first)
+            self.assertEqual([path for path in listed if path == tmp], [tmp],
+                             "the wake PATH was scanned twice inside the TTL")
+            # The memo holds inside the TTL, so a build that appears now is only visible to the
+            # uncached scan; the daemon picks it up when the memo expires.
+            newer = self._build(tmp, "muse-bin-1.4.13-R7000.1")
+            self.assertEqual(A.newest_versioned_muse(tmp), os.path.realpath(build))
+            self.assertEqual(A._newest_versioned_muse(tmp), os.path.realpath(newer))
+
+    def test_the_repoint_entry_names_the_running_build_and_the_setting_to_change(self) -> None:
+        """Kody, PR #880.  Re-pinning alone records a build the launcher deletes at the next
+        release, so the operator has to be told which build is running and which setting has to
+        name it, or the seat breaks again at every release."""
+        line = A.muse_repoint_red_entry(
+            "MM", "/bin/muse-bin-1.4.12-R6909.1", "/bin/muse-bin-1.4.11-R6667.1"
+        )
+        self.assertIn("/bin/muse-bin-1.4.12-R6909.1", line)
+        self.assertIn("seat.MM.muse", line)
+        self.assertIn("repoint", line)
+        self.assertIn("/bin/muse-bin-1.4.11-R6667.1", line)
+
+    def test_a_configured_path_is_missing_only_when_it_is_an_absolute_path_that_is_gone(self) -> None:
+        """Kody, PR #880.  A relative path is a config error the daemon refuses on its own, and a
+        path that is still there needs no repointing, so neither may be reported as a missing
+        build."""
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = os.path.join(tmp, "muse-bin-1.4.12-R6909.1")
+            with open(exe, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(exe, 0o755)
+            self.assertTrue(A.muse_configured_path_missing("/does/not/exist"))
+            self.assertFalse(A.muse_configured_path_missing("relative/muse"))
+            self.assertFalse(A.muse_configured_path_missing(exe))
+
+
 class MuseRunnerPromptTest(unittest.TestCase):
     def test_private_prompt_file_starts_with_contract_before_supplied_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
