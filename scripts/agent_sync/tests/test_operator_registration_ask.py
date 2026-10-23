@@ -178,7 +178,13 @@ class _StubClient:
         if endpoint == "messages":
             if self.messages_error is not None:
                 raise self.messages_error
-            return {"result": "success", "messages": list(self.messages)}
+            params = params or {}
+            rows = sorted(self.messages, key=lambda m: m["id"])
+            anchor = params.get("anchor", "newest")
+            if anchor != "newest":
+                rows = [m for m in rows if m["id"] < int(anchor)]
+            before = int(params.get("num_before", 0))
+            return {"result": "success", "messages": rows[-before:] if before else []}
         assert endpoint == "users/me", endpoint
         if self.me_error is not None:
             raise self.me_error
@@ -215,7 +221,7 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
     def test_a_landed_but_unconfirmed_question_is_recovered_by_readback(self) -> None:
         # The post landed but its outcome was unknown:  the ledger says unknown, the
         # topic holds the question.  The retry must recover, not resend.
-        landed = [{"id": 9876, "content": QUESTION}]
+        landed = [{"id": 9876, "content": QUESTION, "sender_id": OPERATOR_ID}]
         failing = _StubClient(
             post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
         )
@@ -226,6 +232,50 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
         self.assertEqual(again["status"], "sent", again["reason"])
         self.assertEqual(again["message_id"], 9876)
         self.assertEqual(again["delivery_status"], OC.DELIVERY_OK)
+        self.assertEqual(working.posts, [])
+
+    def test_a_ref_quoted_by_another_sender_is_not_the_landed_question(self) -> None:
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
+        # An answer or a quote carrying the ref, posted by anyone but the Operator bot,
+        # never counts as the landed question.
+        quoted = [{"id": 51, "content": "mac %s" % ENTRY["entry_id"], "sender_id": OWNER_ID}]
+        working = _StubClient(messages=quoted)
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(len(working.posts), 1)
+
+    def test_a_buried_question_is_found_on_a_later_page(self) -> None:
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
+        newer = [
+            {"id": 100 + i, "content": "unrelated chatter %d" % i, "sender_id": OPERATOR_ID}
+            for i in range(ORASK.READ_BACK_PAGE)
+        ]
+        buried = [{"id": 42, "content": QUESTION, "sender_id": OPERATOR_ID}]
+        working = _StubClient(messages=buried + newer)
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(again["message_id"], 42)
+        self.assertEqual(working.posts, [])
+
+    def test_an_unexhausted_history_is_not_absence(self) -> None:
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
+        chatter = [
+            {"id": 1 + i, "content": "unrelated chatter %d" % i, "sender_id": OPERATOR_ID}
+            for i in range(ORASK.READ_BACK_PAGE * ORASK.READ_BACK_MAX_PAGES)
+        ]
+        working = _StubClient(messages=chatter)
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "refused")
+        self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
         self.assertEqual(working.posts, [])
 
     def test_an_unknown_delivery_is_resent_once_proven_absent(self) -> None:

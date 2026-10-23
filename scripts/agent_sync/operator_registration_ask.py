@@ -57,40 +57,60 @@ def _ledger_path(environment: Mapping[str, str]) -> str:
     return os.path.join(L.state_root(environment), "OPERATOR", "operator-registration-asks.json")
 
 
-def _question_message_id(
-    client: Any, channel: str, topic: str, marker: str
-) -> tuple[int | None, str | None]:
-    """The id of the question already carrying this ref in the topic, or None.
+#: Read-back paging:  newest-first pages of 50, capped at 10 pages.  Absence is only
+#: PROVEN when a short page shows the topic's history is exhausted;  hitting the cap
+#: leaves the delivery unknown rather than guessing.
+READ_BACK_PAGE = 50
+READ_BACK_MAX_PAGES = 10
 
-    The second return is the error kind when the topic could not be read at all:
-    "could not check" must never read as "not there".
+
+def _question_message_id(
+    client: Any, channel: str, topic: str, marker: str, sender_id: int
+) -> tuple[int | None, str | None, bool]:
+    """(the landed question's id, error kind, proven-absent) for one topic read-back.
+
+    A match is the Operator bot's OWN post carrying the question's unique ref:  an
+    answer quoting the ref, or anyone else's message, never counts.  Absence is proven
+    only when the topic's history is exhausted;  an unreadable topic or a hit page cap
+    is "could not check", never "not there".
     """
-    try:
-        result = client.get(
-            "messages",
-            {
-                "anchor": "newest",
-                "num_before": 50,
-                "num_after": 0,
-                "narrow": json.dumps(
-                    [
-                        {"operator": "channel", "operand": channel},
-                        {"operator": "topic", "operand": topic},
-                    ]
-                ),
-            },
-        )
-    except Exception as exc:
-        return None, type(exc).__name__
-    messages = result.get("messages") if isinstance(result, Mapping) else None
-    for message in messages or []:
-        if not isinstance(message, Mapping):
-            continue
-        if marker in str(message.get("content") or ""):
+    narrow = json.dumps(
+        [
+            {"operator": "channel", "operand": channel},
+            {"operator": "topic", "operand": topic},
+        ]
+    )
+    anchor = "newest"
+    for _page in range(READ_BACK_MAX_PAGES):
+        params: dict[str, Any] = {
+            "anchor": anchor,
+            "num_before": READ_BACK_PAGE,
+            "num_after": 0,
+            "narrow": narrow,
+        }
+        if anchor != "newest":
+            params["include_anchor"] = "false"
+        try:
+            result = client.get("messages", params)
+        except Exception as exc:
+            return None, type(exc).__name__, False
+        rows = result.get("messages") if isinstance(result, Mapping) else None
+        messages = [m for m in (rows or []) if isinstance(m, Mapping)]
+        for message in messages:
+            if message.get("sender_id") != sender_id:
+                continue
+            if marker not in str(message.get("content") or ""):
+                continue
             message_id = message.get("id")
             if isinstance(message_id, int) and not isinstance(message_id, bool):
-                return int(message_id), None
-    return None, None
+                return int(message_id), None, False
+        if len(messages) < READ_BACK_PAGE:
+            return None, None, True
+        ids = [m.get("id") for m in messages if isinstance(m.get("id"), int)]
+        if not ids:
+            return None, "the topic history carried no message ids", False
+        anchor = str(min(ids))
+    return None, None, False
 
 
 def send_location_question(
@@ -238,12 +258,21 @@ def send_location_question(
     if state in (OC.DELIVERY_PENDING, OC.DELIVERY_UNKNOWN):
         # A window's expiry never proves a post missed:  reconcile against the topic
         # itself.  The question carries a unique ref, so a landed copy is identifiable.
-        landed_id, read_error = _question_message_id(client, channel, topic, entry_id)
+        landed_id, read_error, proven_absent = _question_message_id(
+            client, channel, topic, entry_id, me.get("user_id")
+        )
         if read_error is not None:
             return _outcome(
                 "refused",
                 "the location question's delivery is unknown and the topic could not be "
                 "checked (%s)" % read_error,
+                delivery_status=OC.DELIVERY_UNKNOWN,
+            )
+        if landed_id is None and not proven_absent:
+            return _outcome(
+                "refused",
+                "the location question's delivery is unknown and the topic's history "
+                "was not exhausted",
                 delivery_status=OC.DELIVERY_UNKNOWN,
             )
         if landed_id is not None:
