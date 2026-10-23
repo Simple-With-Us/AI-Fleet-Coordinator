@@ -679,7 +679,12 @@ def content_html(body: str, title: str) -> str:
             seen_session = True
         elif text.startswith(_BANNER_PREFIXES):
             pass  # the needs-owner and quick-view banners follow the spacer;  the flags write them again
-        elif header and (seen_title or seen_stamp) and not text and re.search(r"<br", block, re.IGNORECASE):
+        elif (
+            header
+            and (seen_title or seen_stamp)
+            and not text
+            and re.search(r"<br", block, re.IGNORECASE)
+        ):
             seen_spacer = True  # the one spacer after the header rows
         else:
             break
