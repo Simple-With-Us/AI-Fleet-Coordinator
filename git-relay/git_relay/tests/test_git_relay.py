@@ -684,7 +684,26 @@ class TestFleetSecretsSource(unittest.TestCase):
         source = self._source(stdout=b"value\n", calls=calls)
         self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "value")
         self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "value")
-        self.assertEqual(calls, [["fleet-secrets", "get", "GH_APP_SWU_ECHO_ID"]])
+        self.assertEqual(
+            calls, [["fleet-secrets", "get", "GH_APP_SWU_ECHO_ID", "--path", "/github-apps"]]
+        )
+
+    def test_default_path_is_github_apps_and_is_overridable(self):
+        from git_relay.app_tokens import FleetSecretsSource
+
+        calls = []
+
+        def runner(argv, capture_output, timeout):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 0, stdout=b"v", stderr=b"")
+
+        FleetSecretsSource(runner=runner).secret("GH_APP_SWU_ECHO_ID")
+        self.assertEqual(calls[0][-2:], ["--path", "/github-apps"])
+        calls.clear()
+        FleetSecretsSource(runner=runner, path="/ghr").secret("GH_APP_SWU_ECHO_ID")
+        self.assertEqual(calls[0][-2:], ["--path", "/ghr"])
+        with self.assertRaises(Exception):
+            FleetSecretsSource(runner=runner, path="github-apps")
 
     def test_environment_is_never_consulted(self):
         calls = []

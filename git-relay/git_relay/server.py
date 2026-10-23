@@ -691,8 +691,13 @@ def from_env() -> Relay:
             raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
         from .app_tokens import AppTokenMinter, FleetSecretsSource
 
+        # The Fleet-OPS prod folder the App keys are read from.  Defaults to
+        # /github-apps (their verified live location);  GIT_RELAY_SECRETS_PATH
+        # overrides it for a future folder move without a code change.
         app_minter = AppTokenMinter(
-            FleetSecretsSource(),
+            FleetSecretsSource(
+                path=os.environ.get("GIT_RELAY_SECRETS_PATH", "/github-apps")
+            ),
             lambda method, path, bearer, payload=None: client._call(
                 method, path, payload, bearer=bearer
             ),

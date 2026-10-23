@@ -77,18 +77,36 @@ class FleetSecretsSource:
     no direct Infisical calls.  The CLI's own identity and backend are its
     concern;  this class runs it with a timeout, caches values in memory, and
     never logs or includes what it returns.
+
+    `path` is the Fleet-OPS prod folder the names are read from.  It
+    defaults to /github-apps, where the GH_APP_<SLUG>_ID and
+    GH_APP_<SLUG>_PRIVATE_KEY pairs actually live (verified live
+    2026-10-23):  without it `fleet-secrets get` reads the project root
+    and every App-key lookup misses.
     """
 
-    def __init__(self, executable: str = "fleet-secrets", runner=subprocess.run):
+    def __init__(
+        self,
+        executable: str = "fleet-secrets",
+        runner=subprocess.run,
+        path: str = "/github-apps",
+    ):
+        if not path.startswith("/"):
+            raise AppTokenError(f"fleet-secrets path must be absolute: {path!r}")
         self._exe = executable
         self._run = runner
+        self._path = path
         self._cache: dict[str, str] = {}
 
     def secret(self, name: str) -> str:
         if name in self._cache:
             return self._cache[name]
         try:
-            result = self._run([self._exe, "get", name], capture_output=True, timeout=30)
+            result = self._run(
+                [self._exe, "get", name, "--path", self._path],
+                capture_output=True,
+                timeout=30,
+            )
         except subprocess.TimeoutExpired:
             raise AppTokenError(f"fleet-secrets lookup timed out for {name}") from None
         except FileNotFoundError:
