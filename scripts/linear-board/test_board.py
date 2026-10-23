@@ -183,8 +183,12 @@ class MockLinear:
         self.users: dict = {}
         for n in ("Codex", "Claude", "Cursor", "GB-Plumber", "GB-Deployer"):
             self.users[n] = {"id": f"user-{n.lower()}", "name": n, "displayName": n, "active": True}
-        self.users["GB-Retired"] = {"id": "user-gb-retired", "name": "GB-Retired",
-                                    "displayName": "GB-Retired", "active": False}
+        self.users["GB-Retired"] = {
+            "id": "user-gb-retired",
+            "name": "GB-Retired",
+            "displayName": "GB-Retired",
+            "active": False,
+        }
         self.issues: dict = {}
         self.comments: dict = {}
         self.relations: list = []
@@ -531,8 +535,15 @@ class MockLinear:
             ]
             return {"issueLabels": self.page(nodes, v.get("first"), v.get("after"))}, None
         if op == "BoardUsers":
-            nodes = [{"id": u["id"], "name": u["name"], "displayName": u["displayName"],
-                      "active": u["active"]} for u in self.users.values()]
+            nodes = [
+                {
+                    "id": u["id"],
+                    "name": u["name"],
+                    "displayName": u["displayName"],
+                    "active": u["active"],
+                }
+                for u in self.users.values()
+            ]
             return {"users": self.page(nodes, v.get("first"), v.get("after"))}, None
         if op == "BoardIssue":
             iss = self.find(v["id"])
@@ -637,7 +648,9 @@ class MockLinear:
                     # Linear only accepts an existing, active user here.
                     m = next((u for u in self.users.values() if u["id"] == uid), None)
                     if not m or not m["active"]:
-                        return {"issueUpdate": None}, [{"message": f"assignee {uid} not found or deactivated"}]
+                        return {"issueUpdate": None}, [
+                            {"message": f"assignee {uid} not found or deactivated"}
+                        ]
                 iss["assignee"] = uid
             groups = [self.labels[x]["parent"] for x in iss["labels"] if self.labels[x]["parent"]]
             if len(groups) != len(set(groups)):
@@ -3580,7 +3593,9 @@ class OwnershipTests(BoardTest):
     OWNED = {"LINEAR_BOARD_OWNER": "1"}
 
     def todo_issue(self, title="Ownership probe"):
-        return self.mock.add_issue(str(uuid.uuid4()), "AFC", "Todo", title, 3, ["Kind/agent-report"])
+        return self.mock.add_issue(
+            str(uuid.uuid4()), "AFC", "Todo", title, 3, ["Kind/agent-report"]
+        )
 
     def test_by_default_a_claim_stays_a_label_and_writes_no_assignee(self):
         """The frozen contract:  the seat rides in the label and the tag line, not a Linear field."""
@@ -3591,29 +3606,57 @@ class OwnershipTests(BoardTest):
 
     def test_claim_mirrors_ownership_onto_the_seats_linear_user(self):
         iss = self.todo_issue()
-        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)    # AGENT_SEAT=CLAUDE
+        self.board(
+            "claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED
+        )  # AGENT_SEAT=CLAUDE
         inp = self.mock.updates[-1][1]
-        self.assertEqual(inp.get("assigneeId"), "user-claude")       # seat CLAUDE -> user Claude
-        self.assertIn("claimed:CLAUDE", self.label_names(iss))      # the label is still the record
+        self.assertEqual(inp.get("assigneeId"), "user-claude")  # seat CLAUDE -> user Claude
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))  # the label is still the record
 
     def test_a_seat_with_no_linear_user_still_claims_and_assigns_nobody(self):
         iss = self.todo_issue()
-        self.board("claim", iss["identifier"], "--by", "SENTRY", extra=dict(self.OWNED, AGENT_SEAT="SENTRY"))
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "SENTRY",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
         self.assertNotIn("assigneeId", self.mock.updates[-1][1])
         self.assertIn("claimed:SENTRY", self.label_names(iss))
 
     def test_a_deactivated_seat_is_never_assigned(self):
         """A seat Linear has deactivated owns nothing:  the label is kept, the assignee is not."""
         iss = self.todo_issue()
-        self.board("claim", iss["identifier"], "--by", "GB-RETIRED", extra=dict(self.OWNED, AGENT_SEAT="GB-RETIRED"))
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "GB-RETIRED",
+            extra=dict(self.OWNED, AGENT_SEAT="GB-RETIRED"),
+        )
         self.assertNotIn("assigneeId", self.mock.updates[-1][1])
         self.assertIn("claimed:GB-RETIRED", self.label_names(iss))
 
     def test_a_steal_moves_the_owner_with_the_claim(self):
-        iss = self.mock.add_issue(str(uuid.uuid4()), "AFC", "In Progress", "Held", 3,
-                                  ["Kind/agent-report", "seat:CODEX", "claimed:CODEX"])
-        self.board("claim", iss["identifier"], "--by", "CLAUDE", "--steal", "--reason", "CODEX is capped out",
-                   extra=self.OWNED)
+        iss = self.mock.add_issue(
+            str(uuid.uuid4()),
+            "AFC",
+            "In Progress",
+            "Held",
+            3,
+            ["Kind/agent-report", "seat:CODEX", "claimed:CODEX"],
+        )
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "CLAUDE",
+            "--steal",
+            "--reason",
+            "CODEX is capped out",
+            extra=self.OWNED,
+        )
         self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude")
         self.assertEqual(iss.get("assignee"), "user-claude")
 
