@@ -143,6 +143,19 @@ async function step(name, fn) {
 
 // ---------------------------------------------------------------- fakes
 
+// Assertion messages never dump a whole response body:  a token-endpoint
+// failure body can carry sensitive fields.  Report the status-class fields
+// only (RFC 6749 error payloads), capped, never tokens.  (Kody review
+// 5633616477, high.)
+const summarize = (body) => {
+  if (body === null || typeof body !== "object") return String(body);
+  const safe = {};
+  for (const k of ["error", "error_description", "error_uri", "code", "message"]) {
+    if (body[k] !== undefined) safe[k] = typeof body[k].slice === "function" ? body[k].slice(0, 120) : body[k];
+  }
+  return JSON.stringify(safe);
+};
+
 const b64url = (buf) => Buffer.from(buf).toString("base64url");
 const { privateKey, publicKey } = await crypto.subtle.generateKey(
   { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
@@ -152,7 +165,7 @@ const { privateKey, publicKey } = await crypto.subtle.generateKey(
 const jwks = { keys: [{ ...(await crypto.subtle.exportKey("jwk", publicKey)), kid: "test-kid" }] };
 async function accessJwt(email = "mail@jays.services") {
   const now = Math.floor(Date.now() / 1000);
-  const head = b64url(JSON.stringify({ alg: "RS256", kid: "test-kid", typ: "JWT" }));
+const head = b64url(JSON.stringify({ alg: "RS256", kid: "test-kid", typ: "JWT" }));
   const body = b64url(JSON.stringify({ iss: `https://${TEAM}`, aud: [AUD], exp: now + 900, iat: now, nbf: now, email, type: "app" }));
   const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", privateKey, new TextEncoder().encode(`${head}.${body}`));
   return `${head}.${body}.${b64url(new Uint8Array(sig))}`;
@@ -551,7 +564,7 @@ try {
   let tokens;
   await step("code exchange with PKCE (ChatGPT's CIMD client authenticates as none)", async () => {
     const t = await token({ grant_type: "authorization_code", code, code_verifier: verifier, redirect_uri: CHATGPT_REDIRECT, client_id: CHATGPT_CLIENT, resource: RESOURCE });
-    assert.equal(t.status, 200, JSON.stringify(t.body));
+    assert.equal(t.status, 200, summarize(t.body));
     tokens = t.body;
     assert.ok(tokens.access_token && tokens.refresh_token);
     assert.equal(tokens.scope, "zulip:read");
@@ -559,10 +572,10 @@ try {
 
   await step("JET (Wake) serves events only:  an empty tools/list and every tools/call a protocol error", async () => {
     const list = await mcp(tokens.access_token, "tools/list");
-    assert.equal(list.status, 200, JSON.stringify(list.json));
+    assert.equal(list.status, 200, summarize(list.json));
     assert.deepEqual(list.json.result.tools, []);
     const who = await call(tokens.access_token, "whoami");
-    assert.ok(who.json.error, JSON.stringify(who.json));
+    assert.ok(who.json.error, summarize(who.json));
   });
 
   let chatTokens;
@@ -575,14 +588,14 @@ try {
     const loc = new URL(res.headers.get("location"));
     assert.equal(`${loc.origin}${loc.pathname}`, JETCHAT_REDIRECT);
     const tt = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: c.verifier, redirect_uri: JETCHAT_REDIRECT, client_id: JETCHAT_CLIENT, resource: RESOURCE });
-    assert.equal(tt.status, 200, JSON.stringify(tt.body));
+    assert.equal(tt.status, 200, summarize(tt.body));
     chatTokens = tt.body;
     assert.ok(chatTokens.access_token && chatTokens.refresh_token);
   });
 
   await step("tools/list is tools.json plus recall plus DMs, and whoami shows JET-CHAT with a read-only grant", async () => {
     const init = await mcp(chatTokens.access_token, "initialize", INIT);
-    assert.equal(init.status, 200, JSON.stringify(init.json));
+    assert.equal(init.status, 200, summarize(init.json));
     assert.match(init.json.result.instructions, /a read acts as JET-CHAT\./);
     assert.match(init.json.result.instructions, /writes must name it/);
     assert.match(init.json.result.instructions, /BEGIN_UNTRUSTED_ZULIP and END_UNTRUSTED_ZULIP/);
@@ -613,11 +626,11 @@ try {
 
   await step("MCP Events:  server/discover advertises events at 2026-07-28, and events/list offers zulip.mention", async () => {
     const discover = await mcpModern(tokens.access_token, "server/discover");
-    assert.equal(discover.status, 200, JSON.stringify(discover.json));
+    assert.equal(discover.status, 200, summarize(discover.json));
     assert.deepEqual(discover.json.result.supportedVersions, ["2026-07-28"]);
     assert.deepEqual(discover.json.result.capabilities, { tools: {}, events: {} });
     const list = await mcpModern(tokens.access_token, "events/list");
-    assert.equal(list.status, 200, JSON.stringify(list.json));
+    assert.equal(list.status, 200, summarize(list.json));
     const [ev] = list.json.result.events;
     zulipDefinition = JSON.stringify(ev);
     assert.deepEqual(list.json.result.events.map((e) => e.name), ["zulip.mention"], "SPIKE_EXTRA_EVENTS is off:  no spike event");
@@ -628,7 +641,7 @@ try {
     assert.equal(ev.inputSchema.properties.channel.enum, undefined);
     // A private stream the bot is in is not a valid filter, and nothing is subscribed or verified.
     const priv = await mcpModern(tokens.access_token, "events/subscribe", { name: "zulip.mention", arguments: { channel: "other" }, delivery: { mode: "webhook", url: CALLBACK, secret: CALLBACK_SECRET }, cursor: null });
-    assert.equal(priv.json.error?.code, -32602, JSON.stringify(priv.json));
+    assert.equal(priv.json.error?.code, -32602, summarize(priv.json));
     assert.equal(callbackCalls.length, 0);
   });
 
@@ -636,7 +649,7 @@ try {
   await step("MCP Events:  subscribe verifies the callback with a signed challenge;  a foreign host is -32015 and logged", async () => {
     const params = { name: "zulip.mention", arguments: { channel: "sandbox" }, delivery: { mode: "webhook", url: CALLBACK, secret: CALLBACK_SECRET }, cursor: null };
     const sub = await mcpModern(tokens.access_token, "events/subscribe", params);
-    assert.equal(sub.status, 200, JSON.stringify(sub.json));
+    assert.equal(sub.status, 200, summarize(sub.json));
     subId = sub.json.result.id;
     assert.match(subId, /^sub_[0-9a-f]{32}$/);
     assert.equal(sub.json.result.cursor, null);
@@ -661,7 +674,7 @@ try {
 
     // One live destination:  a second chat is refused and the first stays.
     const second = await mcpModern(tokens.access_token, "events/subscribe", { ...params, delivery: { ...params.delivery, url: `${CALLBACK}_second` } });
-    assert.equal(second.json.error.code, -32600, JSON.stringify(second.json));
+    assert.equal(second.json.error.code, -32600, summarize(second.json));
     assert.match(second.json.error.message, /another chat/);
   });
 
@@ -711,7 +724,7 @@ try {
       assert.equal(await res.text(), "Not Found");
     }
     const sub = await mcpModern(tokens.access_token, "events/subscribe", { name: "fleet.spike.ping", arguments: {}, delivery: { mode: "webhook", url: SPIKE_CALLBACK, secret: CALLBACK_SECRET }, cursor: null });
-    assert.equal(sub.json.error?.code, -32602, JSON.stringify(sub.json));
+    assert.equal(sub.json.error?.code, -32602, summarize(sub.json));
     assert.equal(callbackCalls.length, before, "nothing verified or delivered");
   });
 
@@ -825,7 +838,7 @@ try {
   await step("wake:  a pause or an unsubscribe while the first attempt is out stops the retry (202 not_live, one callback hit)", async () => {
     const params = { name: "zulip.mention", arguments: { channel: "sandbox" }, delivery: { mode: "webhook", url: CALLBACK, secret: CALLBACK_SECRET }, cursor: null };
     const sub = await mcpModern(tokens.access_token, "events/subscribe", params);
-    assert.equal(sub.status, 200, JSON.stringify(sub.json));
+    assert.equal(sub.status, 200, summarize(sub.json));
     const flips = {
       pause: async () => assert.equal((await adminAction("pause", { seat: "JET" })).status, 303),
       unsubscribe: async () => {
@@ -879,7 +892,7 @@ try {
 
   await step("DMs with a read-only grant:  dm_list and dm_read answer fenced, dm_send names the zulip:write challenge and sends nothing", async () => {
     const list = await call(chatTokens.access_token, "zulip_dm_list");
-    assert.equal(list.json.result.isError, undefined, JSON.stringify(list.json));
+    assert.equal(list.json.result.isError, undefined, summarize(list.json));
     assert.deepEqual(list.json.result.structuredContent, { count: 0, ids: [], unread_total: 0 });
     assert.match(list.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
     const read = await call(chatTokens.access_token, "zulip_dm_read", { user_ids: [OWNER_ID] });
@@ -1041,7 +1054,7 @@ try {
     assert.equal(loc.searchParams.get("iss"), issuer);
     // Grok's document says token_endpoint_auth_method none:  client_id in the form, no secret.
     const t = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: g.verifier, redirect_uri: GROK_REDIRECT, client_id: GROK_CLIENT, resource: RESOURCE });
-    assert.equal(t.status, 200, JSON.stringify(t.body));
+    assert.equal(t.status, 200, summarize(t.body));
     grokCimdTokens = t.body;
     assert.equal(await seatOf(t.body.access_token), "GROK-WEB");
     // No WAKE_HMAC_KEY_GROK_WEB, so no events:  Grok never lists an event that cannot fire.
@@ -1210,7 +1223,7 @@ try {
     assert.equal(res.status, 302, await res.clone().text());
     const code = new URL(res.headers.get("location")).searchParams.get("code");
     const t = await token({ grant_type: "authorization_code", code, code_verifier: g.verifier, redirect_uri: GROK_REDIRECT, client_id: clientId, client_secret: "", resource: RESOURCE });
-    assert.equal(t.status, 200, JSON.stringify(t.body));
+    assert.equal(t.status, 200, summarize(t.body));
     assert.equal(await seatOf(t.body.access_token), "GROK-WEB");
     // D6:  one grant per seat, so the document-based Grok grant is gone.
     const old = await call(grokCimdTokens.access_token, "whoami");
@@ -1245,7 +1258,7 @@ try {
     const first = await token({ grant_type: "refresh_token", refresh_token: grokManualTokens.refresh_token, client_id: grokManualClientId });
     assert.equal(first.status, 200, JSON.stringify(first.body));
     const second = await token({ grant_type: "refresh_token", refresh_token: first.body.refresh_token, client_id: grokManualClientId });
-    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(second.status, 200, summarize(second.body));
     // The original token is now two rotations old:  neither current nor previous.
     const replay = await token({ grant_type: "refresh_token", refresh_token: grokManualTokens.refresh_token, client_id: grokManualClientId });
     assert.equal(replay.body.error, "invalid_grant");
@@ -1603,7 +1616,7 @@ try {
     assert.notEqual(spikeSub.json.result.id, zulipSub.json.result.id);
     spikeSubId = spikeSub.json.result.id;
     const second = await mcpModern(spikeTokens.access_token, "events/subscribe", { name: "fleet.spike.ping", arguments: {}, delivery: { mode: "webhook", url: `${CALLBACK}_second`, secret: CALLBACK_SECRET }, cursor: null });
-    assert.equal(second.json.error?.code, -32600, JSON.stringify(second.json));
+    assert.equal(second.json.error?.code, -32600, summarize(second.json));
     assert.match(second.json.error.message, /already sends fleet\.spike\.ping/);
   });
 
@@ -1743,7 +1756,7 @@ try {
     assert.deepEqual(events.map(e => e.name), ["zulip.mention", "whatsapp.message"]);
     for (const name of ["zulip.mention", "whatsapp.message"]) {
       const sub = await mcpModern(access, "events/subscribe", { name, arguments: {}, delivery: { mode: "webhook", url: CALLBACK, secret: CALLBACK_SECRET } });
-      assert.ok(!sub.json.error, JSON.stringify(sub.json));
+      assert.ok(!sub.json.error, summarize(sub.json));
     }
     callbackCalls.length = 0;
     const postWa = async (body, kind = "ingest", key = bridgeKey) => {
