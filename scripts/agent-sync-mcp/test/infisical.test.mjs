@@ -162,3 +162,14 @@ test("optional read: fallback mode still counts a fallback on absence", async ()
   assert.equal(await resolveSecret(env, { name: "S", path: "/wake", envName: "LEGACY", optional: true }), "v0");
   assert.equal(infisicalStats().fallbacks, 1);
 });
+
+test("INFISICAL_EXPECT: a declared secret's 404 throws even on an optional read", async () => {
+  _resetInfisicalForTests();
+  mockFetch([]);
+  const env = { ...ENV, INFISICAL_EXPECT: "/wake:WAKE_HMAC_KEY_JET" };
+  await assert.rejects(
+    () => resolveSecret(env, { name: "WAKE_HMAC_KEY_JET", path: "/wake", envName: "WAKE_HMAC_KEY_JET", optional: true }),
+    InfisicalError,
+    "declared-configured absence fails visibly");
+  assert.equal(await resolveSecret(env, { name: "WAKE_HMAC_KEY_ECHO", path: "/wake", envName: "WAKE_HMAC_KEY_ECHO", optional: true }), "", "undeclared absence stays capability-off");
+});

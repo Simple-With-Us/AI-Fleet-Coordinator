@@ -42,6 +42,16 @@ export function _resetInfisicalForTests() {
   stats.fallbacks = 0;
 }
 
+/** Declared-configured secrets:  comma list of `path:name` (e.g.
+ * "/wake:WAKE_HMAC_KEY_JET").  A genuine 404 for a DECLARED secret throws
+ * even on an optional read - an accidentally deleted configured secret fails
+ * visibly instead of silently disabling the capability.  Absence of a name
+ * from this list is what marks a capability intentionally absent. */
+function expectedSet(env) {
+  const raw = typeof env.INFISICAL_EXPECT === "string" ? env.INFISICAL_EXPECT : "";
+  return new Set(raw.split(",").map((e) => e.trim()).filter(Boolean));
+}
+
 function mode(env) {
   const m = String(env.INFISICAL_MODE ?? "off").trim().toLowerCase();
   return m === "fallback" || m === "required" ? m : "off";
@@ -91,7 +101,7 @@ export async function resolveSecret(env, { name, path, envName, optional = false
     // 500.  Token/outage/scope failures still throw.  This is not a fallback:
     // the env binding is never read for it.
     if (m === "required") {
-      if (optional && error instanceof InfisicalError && error.code === "not_found") return "";
+      if (optional && error instanceof InfisicalError && error.code === "not_found" && !expectedSet(env).has(`${path}:${name}`)) return "";
       throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
     }
     // Transitional fallback: explicit in the mode, observable in logs + stats.
