@@ -297,7 +297,9 @@ class RegistrationsForNativeIdTest(unittest.TestCase):
 
     def test_a_missing_registry_raises_not_empty(self):
         with self.assertRaises(R.RegistryUnavailable):
-            R.registrations_for_native_id(os.path.join(self.tmp.name, "nope.sqlite3"), "zulip", "native-7")
+            R.registrations_for_native_id(
+                os.path.join(self.tmp.name, "nope.sqlite3"), "zulip", "native-7"
+            )
 
     def test_a_bad_session_id_is_refused(self):
         with self.assertRaises(ValueError):

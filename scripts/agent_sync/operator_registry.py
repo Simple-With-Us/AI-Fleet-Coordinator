@@ -727,7 +727,9 @@ def resolve_label(
     return found
 
 
-def registrations_for_native_id(db_path: str, platform: str, native_session_id: str) -> list[dict[str, Any]]:
+def registrations_for_native_id(
+    db_path: str, platform: str, native_session_id: str
+) -> list[dict[str, Any]]:
     """Every live registration of one native session id on a platform, across locations.
 
     The ask-before-letter flow (operator_registration) needs this direction:  a session id

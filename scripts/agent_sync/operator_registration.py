@@ -119,7 +119,9 @@ def load(registry_db: str) -> dict[str, Any]:
         return {"entries": {}}
     data = L.read_json(path)
     if not isinstance(data, dict) or not data:
-        raise ValueError("operator_registration: the queue file is unreadable or malformed, not an empty queue")
+        raise ValueError(
+            "operator_registration: the queue file is unreadable or malformed, not an empty queue"
+        )
     entries = data.get("entries")
     if not isinstance(entries, Mapping):
         raise ValueError("operator_registration: the queue file has no entries object")
@@ -185,7 +187,9 @@ def begin(
     requester_label = _text(requester, "requester", MAX_LABEL)
     evidence = _text(evidence_location, "evidence_location", MAX_LABEL).lower()
     if evidence and evidence not in LOCATION_VALUES:
-        raise ValueError("operator_registration: evidence_location must be one of %s" % (LOCATION_VALUES,))
+        raise ValueError(
+            "operator_registration: evidence_location must be one of %s" % (LOCATION_VALUES,)
+        )
     if not platform or not scope or not seat_label:
         raise ValueError("operator_registration: platform, profile_scope and seat are required")
 
@@ -201,7 +205,11 @@ def begin(
         return {
             "status": "ambiguous",
             "registrations": [
-                {"verified_host": row.get("verified_host"), "label": row.get("label"), "generation": row.get("generation")}
+                {
+                    "verified_host": row.get("verified_host"),
+                    "label": row.get("label"),
+                    "generation": row.get("generation"),
+                }
                 for row in known
             ],
         }
@@ -254,7 +262,11 @@ def answer(
         if not isinstance(entry, dict) or entry["state"] != STATE_ASKED:
             return {"status": "ignored"}
         if word not in LOCATION_VALUES:
-            return {"status": "invalid", "allowed": list(LOCATION_VALUES), "entry_id": entry["entry_id"]}
+            return {
+                "status": "invalid",
+                "allowed": list(LOCATION_VALUES),
+                "entry_id": entry["entry_id"],
+            }
 
         known = registrations(entry["platform"], entry["session_id"])
         other = [row for row in known if row.get("verified_host") != word]
@@ -364,7 +376,9 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--session-id", required=True)
     a.add_argument("--seat", required=True)
     a.add_argument("--requester", required=True, help="who presented the session id")
-    a.add_argument("--evidence-location", default="", help="the catalog's discovered location, when known")
+    a.add_argument(
+        "--evidence-location", default="", help="the catalog's discovered location, when known"
+    )
     a.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
 
     n = sub.add_parser("answer", help="register with the answered location and print the letter")
