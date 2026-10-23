@@ -425,9 +425,13 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(N.NotesError) as caught:
             self.client.log({})
         self.assertEqual(caught.exception.code, "unavailable")
-        self.op.answers[("GET", "/notes/v1/log")] = (200, b"[" * 100_000 + b"]" * 100_000)  # too deep to parse
-        with self.assertRaises(N.NotesError) as caught:
-            self.client.log({})
+        # A nesting too deep to parse:  forced, since how deep json.loads goes before RecursionError depends on the
+        # Python version (3.15 parses what 3.14 refuses).
+        self.op.answers[("GET", "/notes/v1/log")] = (200, b"[[[]]]")
+        with mock.patch.object(NC.json, "loads", side_effect=RecursionError("maximum recursion depth exceeded")):
+            with self.assertRaises(N.NotesError) as caught:
+                self.client.log({})
+        self.assertEqual(caught.exception.code, "unavailable")
         self.assertIn("not JSON", caught.exception.message)
 
     def test_a_redirect_is_never_followed(self):
