@@ -5,7 +5,7 @@ description: Mac and Hetzner disk/RAM/CPU housekeeping. Run safe cleanup scripts
 
 # Housekeeper (disk, RAM, CPU)
 
-> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`AG_ZULIP_EMAIL`, `AG_ZULIP_KEY`, `AG_ZULIP_SITE`).  Session tag `[AG·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`AG_ZULIP_EMAIL`, `AG_ZULIP_KEY`, `AG_ZULIP_SITE`).  Session tag `[AG·session8]`, and the `simple-chat` CLI writes it for you.
 
 
 **Ownership split (2026-09-01).**  BF-Housekeeper (BotFleet) owns **this Mac**.  GB-HOUSEKEEPER (Grok Bot) owns the **Hetzner/Coolify host**.  Neither crosses.  During the Grok-Bot → BotFleet transition both must work, so they de-conflict through a shared lock rather than a schedule.

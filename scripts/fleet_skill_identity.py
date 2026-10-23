@@ -196,7 +196,7 @@ def zulip_identity_sentence(seat: Seat) -> str:
     return (
         f"Zulip bot `{local}@simplewithus.zulipchat.com`, credential in "
         f"{zulip_credential_ref(seat)}.  Session tag "
-        f"`[{seat.tag}·session8]`, and the `agent-sync` CLI writes it for you."
+        f"`[{seat.tag}·session8]`, and the `simple-chat` CLI writes it for you."
     )
 
 
@@ -219,9 +219,9 @@ def _banner(
 
 # Repo acronyms for Simple-With-Us/AI-Fleet-Coordinator (AFC) and Fleet-OPS (OPS):
 # Linear teams, topic ids and links only, never a seat, bot, sender or signature
-# (owner 2026-10-16;  the coordinator is CLAUDE and agent-sync writes the tag).
+# (owner 2026-10-16;  the coordinator is CLAUDE and simple-chat writes the tag).
 # FLEET is a recipient word for the fleet-wide wake in Zulip (`@**all**` in
-# #agent-sync topic `fleet`), not this system's name.
+# #Work-In-Progress topic `fleet`), not this system's name.
 COORDINATOR_SELF_ID = "AFC"
 
 
@@ -292,7 +292,7 @@ GROK_BOT_IDENTITY = (
     "Not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[MONET]`.  "
     "Notes name is the role in Title Case.  Cloud branches are often "
     "`cursor/<slug>`.  Pin `AGENT_TAG` to your GB role before posting or "
-    "`board --by`.  Local Cursor IDE on the Mac is `[CURSOR]`.  Mac Grok TUI "
+    "`simple-board --by`.  Local Cursor IDE on the Mac is `[CURSOR]`.  Mac Grok TUI "
     "is `[GROK]`."
 )
 
@@ -1555,7 +1555,7 @@ def _apply_retired(text: str, seat: Seat, skill_name: str) -> str:
             "your own chat with the owner and stop.  "
             + f"Do not export `AGENT_SEAT={seat.tag}` to take work.  Do not claim work "
             f"or pick a {seat.notes} lane.  `{COORDINATOR_SELF_ID}` is a repo acronym, never a sender or a signature.  "
-            "A fleet-wide wake is `@**all**` in #agent-sync topic `fleet`.\n"
+            "A fleet-wide wake is `@**all**` in #Work-In-Progress topic `fleet`.\n"
         )
     return text
 

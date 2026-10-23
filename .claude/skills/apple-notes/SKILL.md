@@ -6,7 +6,7 @@ description: >-
 
 # Apple Notes (Universal)
 
-> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `simple-chat` CLI writes it for you.
 
 
 Mac only.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.

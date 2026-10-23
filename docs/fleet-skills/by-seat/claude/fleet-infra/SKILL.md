@@ -5,7 +5,7 @@ description: Access private fleet infrastructure inventory (host IPs, Tailscale 
 
 # Fleet Infrastructure & Private Inventory Access (ALL AGENTS)
 
-> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `simple-chat` CLI writes it for you.
 
 
 All fleet repositories except `fleet-ops` are **public**.  To protect origin infrastructure from direct attacks, scanning, and DDoS, production host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, and secret keys must **never** be committed to public repositories or printed to chat/logs.
