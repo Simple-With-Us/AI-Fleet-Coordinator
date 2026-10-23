@@ -3682,8 +3682,9 @@ class OwnershipTests(BoardTest):
         canon = self.todo_issue(title="Canonical")
         self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
         self.assertEqual(iss.get("assignee"), "user-claude")
-        self.board("status", iss["identifier"], "duplicate", "--of", canon["identifier"],
-                   extra=self.OWNED)
+        self.board(
+            "status", iss["identifier"], "duplicate", "--of", canon["identifier"], extra=self.OWNED
+        )
         self.assertIn("assigneeId", self.mock.updates[-1][1])
         self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
         self.assertIsNone(iss.get("assignee"))
@@ -3692,11 +3693,20 @@ class OwnershipTests(BoardTest):
         """A steal moves the claim even when the taker has no Linear user;  the
         old owner's assignee goes with it instead of lingering stale."""
         iss = self.todo_issue()
-        self.board("claim", iss["identifier"], "--by", "CODEX",
-                   extra=dict(self.OWNED, AGENT_SEAT="CODEX"))
+        self.board(
+            "claim", iss["identifier"], "--by", "CODEX", extra=dict(self.OWNED, AGENT_SEAT="CODEX")
+        )
         self.assertEqual(iss.get("assignee"), "user-codex")
-        self.board("claim", iss["identifier"], "--by", "SENTRY", "--steal", "--reason",
-                   "CODEX is gone", extra=dict(self.OWNED, AGENT_SEAT="SENTRY"))
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "SENTRY",
+            "--steal",
+            "--reason",
+            "CODEX is gone",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
         self.assertIn("assigneeId", self.mock.updates[-1][1])
         self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
         self.assertIsNone(iss.get("assignee"))
