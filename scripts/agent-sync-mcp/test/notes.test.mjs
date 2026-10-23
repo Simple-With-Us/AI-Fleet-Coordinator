@@ -499,6 +499,11 @@ test("the title checks mirror notes.py:  check_title, the any-title rule and tit
   }
   assert.throws(() => checkTitle("no bracket"), /must start with/);
   assert.throws(() => checkTitle('[AFC, CLAUDE] a "quote"'), /double quote/);
+  // A secret in a create's title is refused as the write scan refuses it, before titleProblem could name the agent.
+  const titleToken = "ghp_" + "a".repeat(36);
+  for (const title of [`[AFC, CLAUDE] ${titleToken}`, `[AFC, ${titleToken}] Topic`]) {
+    assert.throws(() => checkTitle(title), (error) => error.code === "refused_secret" && /the title looks like it contains/.test(error.message) && !error.message.includes(titleToken), title.slice(0, 12));
+  }
   assert.equal(checkAnyTitle(`${STATIC_TITLE}  `), STATIC_TITLE);
   assert.equal(checkAnyTitle("x".repeat(200)).length, 200);
   for (const [bad, why] of [["", /empty/], ["-x", /start with -/], [" x", /whitespace/], ["x".repeat(201), /at most 200/], [`a${LS}b`, /control/], [`a${NEL}b`, /control/], ["a\u007fb", /control/]]) {
@@ -599,6 +604,20 @@ test("exempt single-thread identities write without a session;  an invalid sessi
 });
 
 // ---------------------------------------------------------------- secrets
+
+test("a loaded credential in a create title's agent place is refused as a secret, never named by the agent check", async () => {
+  // In the stdio server's order:  the scan (which knows the loaded credentials) runs before titleProblem, whose refusal
+  // names the agent.  A key no pattern matches, as `openssl rand -hex 32` mints them, fits the agent grammar.
+  const { operator, tools } = harness({ seat: "CODEX" });
+  const loaded = `abcdef${"0123456789abcdef".repeat(4)}`.slice(0, 64);
+  tools.known = [loaded];
+  const result = await tools.call("notes_create", { session: SESSION, title: `[AFC, ${loaded}] Topic`, markdown: "b" });
+  toolError(result, "refused_secret");
+  assert.doesNotMatch(JSON.stringify(result), new RegExp(loaded.slice(0, 16)));
+  assert.equal(operator.calls.length, 0);
+  // Another seat's agent with nothing secret is still refused by the agent check.
+  toolError(await tools.call("notes_create", { session: SESSION, title: "[AFC, Claude] Topic", markdown: "b" }), "invalid_argument");
+});
 
 test("write text that looks like a secret is refused before anything is sent, and the key never reaches an error", async () => {
   const { operator, tools } = harness();

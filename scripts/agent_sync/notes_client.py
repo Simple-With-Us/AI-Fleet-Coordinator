@@ -573,16 +573,17 @@ def call(
     scan: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Run one request for `seat`:  directly on a Mac, through the Operator elsewhere.  `scan` checks a write's text
-    first (it raises to refuse).  Raises NotesError."""
+    first (it raises to refuse);  without one, notes.scan_write does, so no write is ever sent unscanned.  It runs
+    before request_problem, whose refusals can name a part of the request.  Raises NotesError."""
+    action = request["action"]
+    if action in N.WRITE_ACTIONS:
+        (scan or N.scan_write)(request)
     problem = N.request_problem(request, seat, env=host.env)
     if problem:
         raise N.NotesError(
             "session_required" if "session id is required" in problem else "invalid_argument",
             problem,
         )
-    action = request["action"]
-    if action in N.WRITE_ACTIONS and scan is not None:
-        scan(request)
     base = {"request_id": request["request_id"], "action": action}
     if request.get("title"):
         base["title"] = request["title"]

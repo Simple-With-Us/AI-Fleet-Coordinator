@@ -206,6 +206,9 @@ export function checkTitle(raw) {
   if (points(title).length > TITLE_MAX) throw invalid(`argument 'title' is ${points(title).length} characters; at most ${TITLE_MAX}`);
   if (!title.startsWith("[")) throw invalid('argument \'title\' must start with [TEAM_KEY, Agent], such as "[AFC, Claude] Topic"');
   if (TITLE_BAD_RE.test(title)) throw invalid("argument 'title' must not hold a double quote, a backslash or a control character");
+  // Scanned before any check that could name a part of it (titleProblem names the agent the title carries).
+  const kind = scanSecret(title);
+  if (kind) throw new ToolError("refused_secret", `refusing to write:  the title looks like it contains ${kind}`);
   if (!titleScope(title)) throw invalid('argument \'title\' must read "[TEAM_KEY, Agent] Topic", such as "[AFC, Claude] Topic"');
   return title;
 }
@@ -311,9 +314,7 @@ export function makeRequest({ action, requestId, identity, title, markdown, flag
   if (typeof identity !== "string" || !/^[A-Z0-9][A-Z0-9_-]{0,31}$/.test(identity)) throw invalid("the request names no valid identity");
   const request = { v: REQUEST_VERSION, action, request_id: checkRequestId(requestId), identity };
   if (action === "create") {
-    request.title = checkTitle(title);
-    const problem = titleProblem(request.title, identity);
-    if (problem) throw invalid(`argument 'title':  ${problem}`);
+    request.title = checkTitle(title);  // whose agent notesRun checks (titleProblem) after the secret scan, as notes.py does
   } else if (action !== "list") {
     request.title = checkAnyTitle(title);
   }
@@ -682,7 +683,9 @@ export const NOTES_METHODS = {
     }
     const request = makeRequest(fields);
     if (WRITE_ACTIONS.includes(action)) {
-      // Every caller-written text, flags included:  the summary reaches the owner's notification and the script's command line.
+      // Every caller-written text, flags included:  the summary reaches the owner's notification and the script's command
+      // line.  In the stdio server's order:  the session, then the request's shape, then this scan (with the loaded
+      // credentials), and only then the title's agent, whose refusal names it.
       this.scan({
         title: request.title,
         ...(request.markdown ? { markdown: request.markdown } : {}),
@@ -690,6 +693,10 @@ export const NOTES_METHODS = {
         ...(request.flags?.pr ? { pr: request.flags.pr } : {}),
       });
       if (request.markdown) audit.body_len = points(request.markdown).length;
+    }
+    if (action === "create") {
+      const problem = titleProblem(request.title, this.seat);
+      if (problem) throw invalid(`argument 'title':  ${problem}`);
     }
     await this.reserve(WRITE_ACTIONS.includes(action) ? "write" : "read");
     let posted;

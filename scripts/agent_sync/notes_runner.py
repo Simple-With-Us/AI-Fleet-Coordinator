@@ -27,7 +27,6 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -46,49 +45,35 @@ class AlreadyRunning(Exception):
     """Another runner holds the lock."""
 
 
-FUTURE_ALLOWANCE = timedelta(
-    minutes=5
-)  # a ts later than the runner's clock by more than this is not believed
+#  One read of a log file;  the script rotates it at 5 MiB, so one read is a whole file.
+LOG_READ = 8 * 1024 * 1024
+#  How far back from the cursor its entry is looked for (the script's lines are a few hundred bytes).
+LINE_WINDOW = 64 * 1024
+#  The script holds its log lock only to rotate and append, so a few tries a short pause apart always get it.
+LOG_LOCK_TRIES = 40
+LOG_LOCK_PAUSE_S = 0.05
 
 
-def _moment(ts: Any, now: datetime) -> datetime | None:
-    """A log ts as a time, or None when it cannot be read or is in the future (a clock that ran ahead must never
-    become the floor every later resend is cut at)."""
-    moment = N._entry_time({"ts": ts}) if isinstance(ts, str) and ts else None
-    return moment if moment is not None and moment <= now + FUTURE_ALLOWANCE else None
+def _offset(value: Any) -> bool:
+    """A file offset as the runner saves one:  a whole number, not a bool, not negative."""
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-def _not_older(entries: list[dict[str, Any]], since: str, now: datetime) -> list[dict[str, Any]]:
-    """The log entries whose ts is not older than `since` (all of them when `since` is empty, unreadable or in the
-    future).  An entry whose ts cannot be read is kept:  the Operator's id check is the last word on it."""
-    floor = _moment(since, now)
-    if floor is None:
-        return list(entries)
-    out = []
-    for entry in entries:
-        moment = N._entry_time(entry)
-        if moment is None or moment >= floor:
-            out.append(entry)
-    return out
-
-
-def _newest(entries: list[dict[str, Any]], since: str, now: datetime) -> str:
-    """The latest believable ts among `entries` and `since` (a future one is passed over)."""
-    best_time = _moment(since, now)
-    best = since if best_time is not None else ""
-    for entry in entries:
-        moment = _moment(entry.get("ts"), now)
-        if moment is not None and (best_time is None or moment > best_time):
-            best, best_time = str(entry.get("ts")), moment
-    return best
+def _entry(raw: bytes) -> dict[str, Any] | None:
+    """One log line as a cleaned entry, or None when it is not one (not JSON, not an entry, or nested too deep)."""
+    try:
+        return N.clean_log_entry(json.loads(raw.decode("utf-8", "replace")))
+    except (ValueError, RecursionError):
+        return None
 
 
 def _error_text(exc: BaseException, where: str = "") -> str:
     """One line for the state file and the log:  a NotesError's code and its own message (which names a missing key
-    by its variable), else only the exception's type name, since its text may hold anything."""
+    by its variable), else only the exception's type name, since its text may hold anything.  Text UTF-8 cannot hold
+    (a lone surrogate from an answer's JSON) is replaced, or saving the state would fail and end the runner."""
     prefix = where + ":  " if where else ""
     if isinstance(exc, N.NotesError):
-        return "%s%s: %s" % (prefix, exc.code, exc.message[:200])
+        return N.text_safe("%s%s: %s" % (prefix, exc.code, exc.message[:200]))
     return "%sinternal: %s" % (prefix, type(exc).__name__)
 
 
@@ -254,6 +239,10 @@ class Runner:
         """{"result": ...} or {"error": {...}} for one request.  Never raises NotesError."""
         try:
             checked = N.check_request(request)
+            if checked["action"] in N.WRITE_ACTIONS:
+                N.scan_write(
+                    checked
+                )  # the Operator's own scan, again:  first, so no refusal below can echo a secret
             problem = N.request_problem(checked, seat, env=self.env)
             if problem:
                 raise N.NotesError("invalid_argument", problem[:400])
@@ -304,6 +293,11 @@ class Runner:
         )
         request = claimed.get("request") if isinstance(claimed.get("request"), dict) else {}
         if not _ids_ok(seat, request_id, claim) or request.get("request_id") != request_id:
+            # Never run, and it cannot be reported (its ids name the report's path), so the queue's lease settles it.
+            # Recorded for the doctor, with none of its values.
+            what = "the Operator handed out a claim whose seat, request_id or claim is malformed;  it was not run"
+            self._note(last_error_at=N.iso_now(self.clock), last_error="internal: " + what)
+            self.log("notes-runner: " + what)
             return False
         key = "%s/%s" % (seat, request_id)
         action = request.get("action")
@@ -346,111 +340,233 @@ class Runner:
 
     # ---- the action log ----------------------------------------------------------------------------
     def ship_log(self) -> int:
-        """Send the script's new log lines (at most LOG_BATCH per call) and move the cursor past what the Operator
-        took.  A rotation is followed:  the rest of the rotated file first, then the new one from its start."""
+        """Send the script's new log lines (at most LOG_BATCH per call) and move the cursor past what the Operator took.
+        The cursor names a file by its inode and two places in it:  `offset`, just past the last whole line read, and
+        `at`, just past the last entry read, whose id is `id`.
+
+        The runner resumes at `offset` while the file is still kept (the current log or a rotated copy) and the line
+        before `at` is still that entry, then sends each newer file whole, oldest first.  When it cannot trust the
+        place (the file rotated out of reach, or was replaced or cut short), it looks the id up in every kept file,
+        newest first, and resumes just after it.  When no kept file holds the id, or there is no cursor yet, it sends
+        every kept line, oldest first:  none is lost, and the Operator's id check drops those it already holds (it
+        remembers more ids than the Mac keeps lines, notes_queue.LOG_IDS_KEEP)."""
         path = N.action_log_path(self.env, self.home)
         if path is None:
             return 0
-        state = self._state()
-        cursor = state.get("log") if isinstance(state.get("log"), dict) else {}
         try:
-            current = os.stat(path)
+            os.stat(path)
         except OSError:
             return 0
+        files = self._kept_files(path)
+        state = self._state()
+        cursor = state.get("log") if isinstance(state.get("log"), dict) else {}
+        first, offset, last_id, at = self._resume_point(files, cursor)
+        if at is not None and (cursor.get("inode"), cursor.get("offset"), cursor.get("at")) != (
+            files[first][1],
+            offset,
+            at,
+        ):
+            # Found by its id (the file was replaced, or cut short):  saved now, so the next pass trusts it without a
+            # search even when no new line follows, and the doctor counts from the file the cursor names.
+            self._note(log={"inode": files[first][1], "offset": offset, "id": last_id, "at": at})
         sent = 0
-        inode, offset = cursor.get("inode"), int(cursor.get("offset") or 0)
-        # The ts of the newest line already sent.  Every resend (a rotated copy, or a file truncated, replaced or
-        # rotated out of reach) skips the lines older than it, so a resend never holds more lines than the Operator's
-        # id window (LOG_IDS_KEEP) can tell apart;  a line with the same ts is sent again and dropped there by its id.
-        since = cursor.get("ts") if isinstance(cursor.get("ts"), str) else ""
-        if inode is not None and inode != current.st_ino:
-            # The cursor's file has rotated, perhaps more than once while the runner was off.  Found among the copies:
-            # the rest of it from the exact offset, then each newer copy whole, by position (lines are not always in
-            # ts order, so no ts filter).  Not found (rotated out of reach, or replaced):  every copy still kept from
-            # its start, skipping the lines older than the newest one already sent.
-            copies = [
-                path.with_name("%s.%d" % (path.name, n))
-                for n in range(1, N.ACTION_LOG_ROTATIONS + 1)
-            ]
-            found = None
-            for n, copy in enumerate(copies):
-                try:
-                    if os.stat(copy).st_ino == inode:
-                        found = n
-                        break
-                except OSError:
-                    continue
-            first = found if found is not None else len(copies) - 1
-            for n in range(first, -1, -1):
-                try:
-                    copy_inode = os.stat(copies[n]).st_ino
-                except OSError:
-                    continue
-                count, since = self._ship_from(
-                    copies[n],
-                    copy_inode,
-                    offset if n == found else 0,
-                    since,
-                    by_ts=found is None,
-                )
-                sent += count
-            offset = 0
-        by_ts = offset > current.st_size  # truncated in place:  no position to resume from
-        if by_ts:
-            offset = 0
-        count, since = self._ship_from(path, current.st_ino, offset, since, by_ts=by_ts)
-        return sent + count
-
-    def _ship_from(
-        self, path: Path, inode: int, offset: int, since: str, *, by_ts: bool
-    ) -> tuple[int, str]:
-        """Send one file's lines from `offset` (only those not older than `since` when `by_ts`), saving the cursor
-        (this file's inode, the offset past the batch, and `since`) after each batch, so a send that fails part way
-        resumes from the exact place on the next pass.  (lines sent, the new `since`)."""
-        now = datetime.fromtimestamp(self.clock(), UTC)
-        lines, end = self._read_lines(path, offset)
-        sent = 0
-        for start in range(0, len(lines), LOG_BATCH):
-            batch = lines[start : start + LOG_BATCH]
-            entries = [entry for _, entry in batch]
-            if by_ts:
-                entries = _not_older(entries, since, now)
-            if entries:
-                self.client.send_log(entries)
-                sent += len(entries)
-                since = _newest(entries, since, now)
-            self._note(
-                log={"inode": inode, "offset": batch[-1][0], "ts": since},
-                log_shipped_at=N.iso_now(self.clock),
+        for index in range(first, len(files)):
+            file, inode = files[index]
+            count, last_id, whole = self._ship_from(
+                file,
+                inode,
+                offset if index == first else 0,
+                last_id,
+                at if index == first else None,
             )
-        self._note(
-            log={"inode": inode, "offset": end, "ts": since}
-        )  # past every whole line, the unparsable ones too
-        return sent, since
+            sent += count
+            if not whole:
+                break  # the file moved after it was listed (a rotation):  the next pass finds the place again
+        return sent
 
     @staticmethod
-    def _read_lines(path: Path, offset: int) -> tuple[list[tuple[int, dict[str, Any]]], int]:
-        """[(the offset after the line, the entry)] for every whole line from `offset`, and the offset of the last
-        whole line's end.  A torn last line (a write in progress) is left for the next pass."""
-        out: list[tuple[int, dict[str, Any]]] = []
+    def _kept_files(path: Path) -> list[tuple[Path, int]]:
+        """[(file, inode)] for the rotated copies and the current log that exist, oldest first.  They are listed under
+        the script's own lock (.<name>.lock, which it holds to rotate and to append), so a rotation never lands between
+        two names and leaves a file out of the list.  NotesError unavailable when the lock stays taken.  A lock file
+        that can be neither made nor opened (a folder this user cannot write) means no script can take it either, so
+        the names are listed without it."""
+        lock = str(path.with_name("." + path.name + ".lock"))
+        try:
+            fd = os.open(lock, os.O_WRONLY | os.O_CREAT, 0o600)
+        except OSError:
+            try:
+                fd = os.open(lock, os.O_RDONLY)
+            except OSError:
+                return Runner._list_kept(path)
+        try:
+            for attempt in range(LOG_LOCK_TRIES):
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if attempt + 1 == LOG_LOCK_TRIES:
+                        raise N.NotesError(
+                            "unavailable",
+                            "the action log's lock stayed taken, so the log was not read this pass",
+                        ) from None
+                    time.sleep(LOG_LOCK_PAUSE_S)
+            return Runner._list_kept(path)
+        finally:
+            os.close(fd)  # closing it lets the lock go
+
+    @staticmethod
+    def _list_kept(path: Path) -> list[tuple[Path, int]]:
+        out: list[tuple[Path, int]] = []
+        for n in range(N.ACTION_LOG_ROTATIONS, -1, -1):
+            file = path if n == 0 else path.with_name("%s.%d" % (path.name, n))
+            try:
+                out.append((file, os.stat(file).st_ino))
+            except FileNotFoundError:
+                continue
+        return out
+
+    def _resume_point(
+        self, files: list[tuple[Path, int]], cursor: Mapping[str, Any]
+    ) -> tuple[int, int, str | None, int | None]:
+        """Where this pass starts:  (the index in `files`, the offset in that file, the id of the last entry sent, and
+        the offset just past that entry when it is in this file)."""
+        inode, offset, at, raw_id = (
+            cursor.get("inode"),
+            cursor.get("offset"),
+            cursor.get("at"),
+            cursor.get("id"),
+        )
+        # Only an id the runner could have written:  text UTF-8 can hold, as clean_log_entry leaves every id.
+        last_id = (
+            raw_id if isinstance(raw_id, str) and raw_id and N.text_safe(raw_id) == raw_id else None
+        )
+        if last_id is not None and _offset(offset) and _offset(at) and 0 < at <= offset:
+            for index, (file, file_inode) in enumerate(files):
+                if file_inode == inode:
+                    if self._ends_entry(file, file_inode, at, offset, last_id):
+                        return index, offset, last_id, at
+                    break
+        if last_id is not None:
+            for index in range(len(files) - 1, -1, -1):
+                after = self._after_id(*files[index], last_id)
+                if after is not None:
+                    return index, after, last_id, after
+        return 0, 0, last_id, None
+
+    @staticmethod
+    def _ends_entry(path: Path, inode: int, at: int, offset: int, last_id: str) -> bool:
+        """Whether `path` is still `inode`, still reaches `offset`, and the line that ends at `at` is still the entry
+        with `last_id`.  Anything else (the file cut short, `at` inside a line, or another line there) means the file
+        changed, so the place is found by the id instead."""
         try:
             with open(path, "rb") as fh:
-                fh.seek(offset)
-                data = fh.read(8 * 1024 * 1024)
+                info = os.fstat(fh.fileno())
+                if info.st_ino != inode or offset > info.st_size:
+                    return False
+                start = max(0, at - LINE_WINDOW)
+                fh.seek(start)
+                data = fh.read(at - start)
         except OSError:
-            return out, offset
-        position = offset
-        for raw in data.splitlines(keepends=True):
-            if not raw.endswith(b"\n"):
+            return False
+        if not data.endswith(b"\n"):
+            return False
+        entry = _entry(data[data.rfind(b"\n", 0, len(data) - 1) + 1 : -1])
+        return entry is not None and entry["id"] == last_id
+
+    @staticmethod
+    def _after_id(path: Path, inode: int, last_id: str) -> int | None:
+        """The offset just past the last line in `path` (still `inode`) that is the entry with `last_id`, or None."""
+        try:
+            with open(path, "rb") as fh:
+                if os.fstat(fh.fileno()).st_ino != inode:
+                    return None
+                data = fh.read(LOG_READ)
+        except OSError:
+            return None
+        needle = last_id.encode("utf-8")
+        found = len(data)
+        while True:
+            found = data.rfind(needle, 0, found)
+            if found < 0:
+                return None
+            end = data.find(b"\n", found)
+            if end < 0:
+                continue  # inside a torn last line
+            entry = _entry(data[data.rfind(b"\n", 0, found) + 1 : end])
+            if entry is not None and entry["id"] == last_id:
+                return end + 1
+
+    def _ship_from(
+        self, path: Path, inode: int, offset: int, last_id: str | None, at: int | None
+    ) -> tuple[int, str | None, bool]:
+        """Send one file's whole lines from `offset`, saving the cursor after each batch (this file's inode, the offset
+        just past the batch, and its last entry's id and end), so a send that fails part way resumes at the exact place
+        on the next pass;  and once more after the last whole line, when the pass got past one and the file holds an
+        entry the cursor can be checked by (`at`, this file's, passed in for the file the cursor names).  (lines sent, the id of
+        the last entry passed, whether the file was read to its end):  False when `path` is no longer `inode` (it
+        rotated after it was listed)."""
+        sent, start = 0, offset
+        while True:
+            read = self._read_lines(path, offset, inode)
+            if read is None:
+                return sent, last_id, False
+            lines, end, more = read
+            for first in range(0, len(lines), LOG_BATCH):
+                batch = lines[first : first + LOG_BATCH]
+                self.client.send_log([entry for _, entry in batch])
+                sent += len(batch)
+                at, last_id = batch[-1][0], batch[-1][1]["id"]
+                self._note(
+                    log={"inode": inode, "offset": at, "id": last_id, "at": at},
+                    log_shipped_at=N.iso_now(self.clock),
+                )
+            if not more or end == offset:
                 break
-            position += len(raw)
-            try:
-                entry = N.clean_log_entry(json.loads(raw.decode("utf-8", "replace")))
-            except ValueError:
-                continue
+            offset = end
+        # Past lines that are not entries too.  A pass that read nothing new writes nothing, and the cursor never moves
+        # into a file with no entry of its own yet (it could not be checked there):  it stays where it was.
+        if end > start and at is not None:
+            self._note(log={"inode": inode, "offset": end, "id": last_id, "at": at})
+        return sent, last_id, True
+
+    @staticmethod
+    def _read_lines(
+        path: Path, offset: int, inode: int
+    ) -> tuple[list[tuple[int, dict[str, Any]]], int, bool] | None:
+        """[(the offset just past the line, the entry)] for each whole line from `offset` (one read of at most
+        LOG_READ bytes), the offset just past the last whole line, and whether there may be more;  or None when `path`
+        is gone or is no longer `inode`.  Only a newline ends a line, and a torn last line (a write in progress) is left
+        for the next pass.  A file that cannot be read raises, so the loop records it and nothing after it is skipped."""
+        try:
+            fh = open(path, "rb")
+        except FileNotFoundError:
+            return None
+        with fh:
+            if os.fstat(fh.fileno()).st_ino != inode:
+                return None
+            fh.seek(offset)
+            data = fh.read(LOG_READ)
+            if len(data) == LOG_READ and b"\n" not in data:
+                # One line longer than a whole read:  no log line is, so it is passed over like any line that is not
+                # an entry, up to the next newline (or, while it has none, left for the next pass).
+                position = offset + len(data)
+                while True:
+                    chunk = fh.read(LOG_READ)
+                    if not chunk:
+                        return [], offset, False
+                    newline = chunk.find(b"\n")
+                    if newline >= 0:
+                        return [], position + newline + 1, True
+                    position += len(chunk)
+        out: list[tuple[int, dict[str, Any]]] = []
+        position = offset
+        for piece in data.split(b"\n")[:-1]:
+            position += len(piece) + 1
+            entry = _entry(piece)
             if entry is not None:
                 out.append((position, entry))
-        return out, position
+        return out, position, len(data) == LOG_READ
 
     # ---- the loop ----------------------------------------------------------------------------------
     def loop(

@@ -684,7 +684,7 @@ class DirectRunnerTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "invalid_argument")
         self.assertIn("Edit the note on the Mac", caught.exception.message)
 
-    def test_a_secret_shaped_title_is_refused_for_every_action_but_create(self):
+    def test_a_secret_shaped_title_is_refused_for_every_action(self):
         token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic
         for action in ("read", "update", "pin", "unpin"):
             with self.subTest(action):
@@ -693,8 +693,15 @@ class DirectRunnerTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "invalid_argument")
                 self.assertIn("argument 'title' looks like it contains a secret", caught.exception.message)
                 self.assertNotIn(token, caught.exception.message)
-        # A create's title gets the write scan with its body, which answers refused_secret (test_mcp_extras).
-        self.assertTrue(N.check_title("[AFC, Claude] %s" % token, "create"))
+        # A create's title gets the write scan's refusal (the MCP tools answer it as refused_secret, test_mcp_extras),
+        # before any check that could name part of it:  a token in the agent's place is never echoed either.
+        for title in ("[AFC, Claude] %s" % token, "[AFC, %s] Topic" % token):
+            with self.subTest(title=title[:12]):
+                with self.assertRaises(N.SecretRefused) as caught:
+                    N.check_title(title, "create")
+                self.assertEqual(caught.exception.code, "invalid_argument")
+                self.assertIn("the title looks like it contains", caught.exception.message)
+                self.assertNotIn(token, caught.exception.message)
 
     def test_a_query_never_starts_with_a_dash(self):
         for query in ("-x", " --read", "-"):

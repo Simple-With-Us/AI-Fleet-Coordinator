@@ -127,6 +127,17 @@ class NotesError(Exception):
         self.message = message
 
 
+class SecretRefused(NotesError):
+    """A write whose caller-written text looks like it holds a secret.  Its code is invalid_argument, as the queue and
+    simple-notes answer;  the MCP tools answer it as refused_secret, the code their contract names for it."""
+
+    def __init__(self, field: str, kind: str) -> None:
+        super().__init__(
+            "invalid_argument",
+            "refusing to write:  the %s looks like it contains %s" % (field, kind),
+        )
+
+
 # --------------------------------------------------------------------------------------------
 # Titles, flags, request ids
 # --------------------------------------------------------------------------------------------
@@ -153,21 +164,23 @@ def check_title(raw: Any, action: str = "create") -> str:
         )
     if title.startswith("-"):
         raise NotesError("invalid_argument", "argument 'title' must not start with -")
+    # Every title is sent to the Operator (a read's too), so it is scanned here, before any check that could name a
+    # part of it (request_problem names the agent a create's title carries).  A create's refusal is the write scan's.
+    from . import secretscan  # lazy, as in withhold_secrets
+
+    kind = secretscan.scan(title)
+    if kind and action == "create":
+        raise SecretRefused("title", kind)
+    if kind:
+        raise NotesError(
+            "invalid_argument",
+            "argument 'title' looks like it contains a secret;  nothing was sent",
+        )
     if action == "create" and title_agent(title) is None:
         raise NotesError(
             "invalid_argument",
             'a new note\'s title must read "[TEAM_KEY, Agent] Topic", such as "[AFC, Claude] Topic"',
         )
-    if action != "create":
-        # A create's title gets the write scan with its body (which answers refused_secret, as the tool contract
-        # says);  every other action's title (a read's included) is sent to the Operator too, so it is scanned here.
-        from . import secretscan  # lazy, as in withhold_secrets
-
-        if secretscan.scan(title):
-            raise NotesError(
-                "invalid_argument",
-                "argument 'title' looks like it contains a secret;  nothing was sent",
-            )
     return title
 
 
@@ -288,6 +301,17 @@ def text_fields(request: Mapping[str, Any]) -> dict[str, str]:
         if flags.get(name):
             fields[name] = str(flags[name])
     return {name: value for name, value in fields.items() if value}
+
+
+def scan_write(request: Mapping[str, Any]) -> None:
+    """SecretRefused when any caller-written text of a write (text_fields) looks like it holds a secret.  The scan
+    every path runs when the caller brings none of its own:  notes_client.call, and the Mac runner's second check."""
+    from . import secretscan  # lazy, as in withhold_secrets
+
+    for field, text in text_fields(request).items():
+        kind = secretscan.scan(text)
+        if kind:
+            raise SecretRefused(field, kind)
 
 
 DIRECT_TTL = 24 * 3600.0
@@ -1294,10 +1318,12 @@ def action_log_path(env: Mapping[str, str], home: Path) -> Path | None:
 
 def clean_log_entry(raw: Any) -> dict[str, Any] | None:
     """One log line reduced to the known fields, each a short scalar (or the two small objects), or None when it is not
-    a log line at all.  The log holds no note text, and nothing that arrives through it can add any."""
+    a log line at all (an empty id included:  the id is what the Operator's duplicate check and the runner's cursor go
+    by).  The log holds no note text, and nothing that arrives through it can add any."""
     if (
         not isinstance(raw, Mapping)
         or not isinstance(raw.get("id"), str)
+        or not raw["id"]
         or not isinstance(raw.get("ts"), str)
     ):
         return None

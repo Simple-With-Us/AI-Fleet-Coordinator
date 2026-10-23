@@ -770,7 +770,19 @@ class HostTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, "session_required")
                 with self.assertRaises(N.NotesError):
                     NC.call(target, "CODEX", self.req(), wait=90, scan=self.scan)
-        self.assertEqual((self.runs, client.calls, made, self.scans), ([], [], [], []))
+        # The scan runs first (it sends nothing, and it keeps a refusal below from naming a secret);  nothing ran.
+        self.assertEqual((self.runs, client.calls, made), ([], [], []))
+
+    def test_a_write_is_scanned_even_when_the_caller_brings_no_scan(self):
+        host = self.mac()
+        leak = "token " + "ghp_" + "EXAMPLE0" * 5
+        with self.assertRaises(N.SecretRefused):
+            NC.call(host, "CLAUDE", self.req(markdown=leak), wait=0)
+        self.assertEqual(self.runs, [])
+        # The scan comes before the seat checks, whose refusals name part of the request (another seat's agent here).
+        with self.assertRaises(N.SecretRefused):
+            NC.call(host, "CLAUDE", self.req(title="[AFC, Codex] Not Mine", markdown=leak), wait=0)
+        self.assertEqual(self.runs, [])
 
     def test_a_scan_refusal_stops_the_write(self):
         host = self.mac()

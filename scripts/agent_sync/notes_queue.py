@@ -64,7 +64,10 @@ READ_ATTEMPTS = 3
 LOG_ROTATE_BYTES = 5 * 1024 * 1024
 LOG_ROTATIONS = 10
 LOG_BATCH_MAX = 200
-LOG_IDS_KEEP = 20_000
+#  The ids the duplicate check remembers:  more than the Mac's log can hold (six files of 5 MiB, and the shortest line
+#  the script writes is about 450 bytes, so at most about 70,000 lines), so a runner that has lost its place and sends
+#  every kept line again never sends one this check has forgotten.  About 16 MB in memory.
+LOG_IDS_KEEP = 100_000
 PRUNE_EVERY_S = 3600.0
 FINAL = ("done", "refused", "unknown", "expired")
 STATES = ("queued", "running") + FINAL
@@ -182,8 +185,9 @@ class NotesQueue:
                 if self._valid(record) and record["state"] in ("queued", "running"):
                     self.active[(record["seat"], record["request_id"])] = record
         # The newest LOG_IDS_KEEP ids already kept:  the current log first, then the rotated copies newest first, a
-        # whole file at a time, stopping once there are enough (usually one or two files, never all eleven).  Older
-        # files go in front, so the order stays oldest to newest.  Start-up only.
+        # whole file at a time, stopping once there are enough.  With the script's usual lines (about 750 bytes as
+        # stored) the eleven files hold fewer than LOG_IDS_KEEP, so a full log is read whole:  about 55 MB, a second
+        # or so, once per start.  Older files go in front, so the order stays oldest to newest.  Start-up only.
         recent: list[str] = []
         for index in range(LOG_ROTATIONS + 1):
             path = (

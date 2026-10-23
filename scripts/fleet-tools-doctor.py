@@ -2308,6 +2308,64 @@ NOTES_POLL_STALE_S = (
 )
 NOTES_QUEUE_STALE_S = 600  # a request waiting ten minutes means the runner is not taking work
 NOTES_LOG_STALE_S = 1800  # unsent log lines older than this mean the runner stopped sending them
+NOTES_LOG_ROTATIONS = (
+    5  # apple-notes-coding.sh keeps .1 to .5 (agent_sync.notes.ACTION_LOG_ROTATIONS)
+)
+
+
+def _whole_lines(path: Path, size: int) -> int:
+    """The bytes of `path` up to the end of its last whole line:  a torn tail (a write that failed part way) is never
+    sent, so it is never counted as waiting to be."""
+    try:
+        with open(path, "rb") as fh:
+            end = size
+            while end > 0:  # back a window at a time, so a torn tail of any length is left out
+                start = max(0, end - 64 * 1024)
+                fh.seek(start)
+                newline = fh.read(end - start).rfind(b"\n")
+                if newline >= 0:
+                    return start + newline + 1
+                end = start
+            return 0
+    except OSError:
+        return size
+
+
+def _notes_unsent(cursor: dict) -> tuple[int, float | None]:
+    """Bytes of the action log the runner has not read yet, and when the file that holds the first of them was last
+    written:  the rest of the file its cursor names (by inode:  the current log or a rotated copy), then every newer
+    file whole;  every kept file when it names none of them, or when that file is now shorter than the cursor (cut
+    short), since the runner then sends them all again.  Only whole lines count."""
+    files: list[tuple[int, int, float]] = []  # (inode, bytes of whole lines, mtime), oldest first
+    for n in range(NOTES_LOG_ROTATIONS, -1, -1):
+        path = (
+            NOTES_ACTION_LOG
+            if n == 0
+            else NOTES_ACTION_LOG.with_name(f"{NOTES_ACTION_LOG.name}.{n}")
+        )
+        try:
+            info = path.stat()
+        except OSError:
+            continue
+        files.append((info.st_ino, _whole_lines(path, info.st_size), info.st_mtime))
+    offset = cursor.get("offset")
+    if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0:
+        offset = 0
+    first = 0
+    for index, (inode, size, _) in enumerate(files):
+        if inode == cursor.get("inode") and offset <= size:
+            first = index
+            break
+    else:
+        offset = 0
+    waiting = [
+        (size - (offset if index == first else 0), mtime)
+        for index, (_, size, mtime) in enumerate(files)
+        if index >= first
+    ]
+    unsent = sum(count for count, _ in waiting)
+    written = next((mtime for count, mtime in waiting if count > 0), None)
+    return unsent, written
 
 
 def _ago(seconds: float | None) -> str:
@@ -2409,18 +2467,31 @@ def check_notes(
             )
             return
         cursor = state.get("log") if isinstance(state.get("log"), dict) else {}
-        unsent = max(0, size - int(cursor.get("offset") or 0))
+        unsent, written = _notes_unsent(cursor)
         shipped = _age(state.get("log_shipped_at"), now)
+        # The runner sends new lines every pass (25 s at most), so lines written in the last few minutes are not late.
+        waited = None if written is None else now - written
+        # Only an error from shipping the log ("log:  ..."), and only one newer than the last send, says why it stalled.
+        erred = _age(state.get("last_error_at"), now)
+        log_error = (
+            error
+            if error.startswith("log:")
+            and erred is not None
+            and (shipped is None or erred < shipped)
+            else ""
+        )
         if (
             unsent
             and (shipped is None or shipped > NOTES_LOG_STALE_S)
+            and (waited is None or waited > NOTES_POLL_STALE_S)
             and job
             and job.get("loaded")
         ):
             report.add(
                 "notes:action-log",
                 "WARN",
-                f"{unsent} bytes not yet sent to the Operator (last sent {_ago(shipped)})",
+                f"{unsent} bytes not yet sent to the Operator (last sent {_ago(shipped)})"
+                + (f";  last error ({_ago(erred)}):  {log_error}" if log_error else ""),
                 state="stale",
                 reason="unsent",
                 **fields,

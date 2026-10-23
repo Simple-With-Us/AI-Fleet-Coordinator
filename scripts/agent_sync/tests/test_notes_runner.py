@@ -184,15 +184,43 @@ class OnceTests(RunnerHarness):
         self.assertEqual(self.runs, [])
 
     def test_a_claim_with_a_bad_shape_is_passed_over(self):
-        self.client.claims.append({"claim": 5, "seat": "CODEX", "request_id": "requestid-0001", "request": req("pin")})
-        self.assertFalse(self.runner.once())
-        # A seat or request_id outside the Operator's own patterns, or one that is not the request's, is passed over too.
+        # A claim that is not text, a seat or request_id outside the Operator's own patterns, or one that is not the
+        # request's:  each is passed over, and recorded for the doctor with none of the values it was handed.
         pin = req("pin")
-        for seat, rid in (("../x", pin["request_id"]), ("CODEX", "../../escape"), ("CODEX", "other-request-01")):
-            self.client.claims.append({"claim": "claim-1", "seat": seat, "request_id": rid, "request": pin})
-            self.assertFalse(self.runner.once())
+        for claim, seat, rid in (
+            (5, "CODEX", pin["request_id"]),
+            ("claim-1", "../x", pin["request_id"]),
+            ("claim-1", "CODEX", "../../escape"),
+            ("claim-1", "CODEX", "other-request-01"),
+        ):
+            with self.subTest(seat=seat, rid=rid):
+                self.client.claims.append({"claim": claim, "seat": seat, "request_id": rid, "request": pin})
+                self.assertFalse(self.runner.once())
+                error = self.client.state()["last_error"]
+                self.assertIn("malformed", error)
+                for value in (seat, rid):
+                    self.assertNotIn(value, error)
         self.assertEqual((self.runs, self.client.reports), ([], []))
         self.assertEqual(self.client.state().get("inflight", {}), {})
+
+    def test_a_claimed_write_whose_text_looks_like_a_secret_is_refused_unrun(self):
+        # The runner's second check scans a write's text as the Operator did, so a queue that let one through (an older
+        # Operator) still never has it written.  The scan comes first:  a title that also names another seat's agent is
+        # refused by the scan, never by the agent check, whose message names the agent.
+        leak = "token " + "ghp_" + "EXAMPLE0" * 5
+        for title in ("[AFC, Codex] Runner Check", "[AFC, Claude] Not Codex Own"):
+            with self.subTest(title=title):
+                self.client.reports.clear()
+                request = req("create")
+                request["title"] = title
+                request["markdown"] = leak  # as a queue that never scanned it would hand it out
+                self.claim(request)
+                self.assertTrue(self.runner.once())
+                self.assertEqual(self.runs, [])
+                error = self.client.reports[0]["error"]
+                self.assertEqual(error["code"], "invalid_argument")
+                self.assertIn("looks like it contains", error["message"])
+                self.assertNotIn(leak, json.dumps(self.client.reports))
 
     def test_a_read_is_kept_whole_while_it_runs_so_a_crash_can_run_it_again(self):
         def crash(request, script, **kwargs):
@@ -398,19 +426,228 @@ class ShipLogTests(RunnerHarness):
         self.assertEqual(self.runner.ship_log(), 3)
         self.assertEqual(self.shipped(), ["e%04d" % n for n in range(1, 5)])
 
-    def test_a_resend_skips_the_lines_older_than_the_newest_one_already_sent(self):
-        # PR #876 review:  a replaced file resent whole could hold more lines than the Operator's id window, so a
-        # resend starts at the newest ts already sent (a line at that same ts goes again and is dropped by its id).
-        stamp = lambda n: json.dumps({"id": "e%04d" % n, "ts": "2025-10-22T21:%02d:00Z" % n, "mode": "pin"}) + "\n"  # noqa: E731  (before the harness clock)
-        self.write(raw="".join(stamp(n) for n in (1, 2, 3)))
+    def test_a_replaced_file_is_resumed_just_after_the_last_line_sent(self):
+        # PR #876 review:  a replaced file sent whole could hold more lines than the Operator's id window, so the
+        # runner looks up the id of the last line it sent and goes on just after it.
+        self.write(1, 2, 3)
         self.assertEqual(self.runner.ship_log(), 3)
-        self.assertEqual(self.client.state()["log"]["ts"], "2025-10-22T21:03:00Z")
+        self.assertEqual(self.client.state()["log"]["id"], "e0003")
         os.rename(self.log_path, self.log_path.with_name("replaced-away"))
-        self.write(raw="".join(stamp(n) for n in (1, 2, 3, 4)), path=self.log_path.with_name(self.log_path.name + ".1"))
-        self.write(raw=stamp(5))
+        self.write(1, 2, 3, 4, path=self.log_path.with_name(self.log_path.name + ".1"))
+        self.write(5)
         self.client.batches.clear()
+        self.assertEqual(self.runner.ship_log(), 2)
+        self.assertEqual(self.shipped(), ["e0004", "e0005"])
+
+    def test_a_file_rewritten_in_place_is_resumed_by_the_id_not_the_offset(self):
+        # Same inode and a long enough file, but the line before the offset is another one:  the offset is not trusted.
+        self.write(1, 2)
         self.runner.ship_log()
-        self.assertEqual(self.shipped(), ["e0003", "e0004", "e0005"])
+        with open(self.log_path, "w") as fh:  # truncated and written again in place:  the inode stays
+            fh.write(self.line(5) + self.line(1) + self.line(2) + self.line(6))
+        self.client.batches.clear()
+        self.assertEqual(self.runner.ship_log(), 1)
+        self.assertEqual(self.shipped(), ["e0006"])
+
+    def test_with_no_cursor_every_kept_copy_is_sent_oldest_first(self):
+        # A first run, or a state file that was lost:  the rotated copies go too, and the Operator drops the lines it
+        # already holds by their ids.
+        dot = lambda n: self.log_path.with_name("%s.%d" % (self.log_path.name, n))  # noqa: E731
+        self.write(1, 2, path=dot(3))
+        self.write(3, path=dot(1))
+        self.write(4, 5)
+        self.assertEqual(self.runner.ship_log(), 5)
+        self.assertEqual(self.shipped(), ["e0001", "e0002", "e0003", "e0004", "e0005"])
+        self.assertEqual(self.runner.ship_log(), 0)
+
+    def test_a_lost_place_never_skips_a_line_whatever_its_ts(self):
+        # A clock that stepped back after the last pass:  the new lines are older than the last one sent, and the file
+        # the cursor named has rotated out of reach.  Every kept line still goes.  (Every ts is before the harness
+        # clock, 2025-10-22T22:00:00Z, so a ts floor would have dropped e0002 and e0003.)
+        line = lambda n, ts: json.dumps({"id": "e%04d" % n, "ts": ts, "mode": "pin"}) + "\n"  # noqa: E731
+        self.write(raw=line(1, "2025-10-22T21:30:00Z"))
+        self.runner.ship_log()
+        os.rename(self.log_path, self.log_path.with_name("rotated-away"))
+        self.write(raw=line(2, "2025-10-22T21:00:00Z"), path=self.log_path.with_name(self.log_path.name + ".1"))
+        self.write(raw=line(3, "2025-10-22T21:00:01Z"))
+        self.client.batches.clear()
+        self.assertEqual(self.runner.ship_log(), 2)
+        self.assertEqual(self.shipped(), ["e0002", "e0003"])
+
+    def test_a_line_only_a_carriage_return_ends_never_stops_the_reader(self):
+        self.write(1, raw="not\ran entry\n")
+        self.write(2)
+        self.assertEqual(self.runner.ship_log(), 2)
+        self.assertEqual(self.shipped(), ["e0001", "e0002"])
+
+    def test_a_line_nested_too_deep_is_passed_over(self):
+        self.write(1, raw="[" * 100000 + "]" * 100000 + "\n")
+        self.write(2)
+        self.assertEqual(self.runner.ship_log(), 2)
+
+    def test_a_file_that_rotates_after_it_is_listed_waits_for_the_next_pass(self):
+        dot = lambda n: self.log_path.with_name("%s.%d" % (self.log_path.name, n))  # noqa: E731
+        self.write(1, 2)
+        self.runner.ship_log()
+        cursor = self.client.state()["log"]
+        self.write(3)
+        listed = RUN.Runner._kept_files(self.log_path)  # [(the log, its inode)]
+
+        def rotate_then_list(path):
+            os.rename(self.log_path, dot(1))  # the script rotates after the runner listed the files
+            self.write(4)
+            return listed
+
+        with mock.patch.object(RUN.Runner, "_kept_files", staticmethod(rotate_then_list)):
+            self.assertEqual(self.runner.ship_log(), 0)
+        self.assertEqual(self.client.state()["log"], cursor, "the cursor never moves on a stale listing")
+        self.assertEqual(self.runner.ship_log(), 2)  # the next pass lists again and goes on from the same place
+        self.assertEqual(self.shipped(), ["e0001", "e0002", "e0003", "e0004"])
+
+    def test_the_files_are_listed_under_the_scripts_own_log_lock(self):
+        import fcntl
+
+        self.write(1)
+        # The lock file the script takes, named as its writer names it (apple-notes-coding.sh:  the folder, then "." and
+        # the log's name and ".lock").
+        script = (Path(__file__).resolve().parents[2] / "apple-notes-coding.sh").read_text()
+        self.assertIn('os.path.join(folder, "." + os.path.basename(path) + ".lock")', script)
+        name = os.path.join(os.path.dirname(str(self.log_path)), "." + os.path.basename(str(self.log_path)) + ".lock")
+        lock = os.open(name, os.O_WRONLY | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, lock)
+        fcntl.flock(lock, fcntl.LOCK_EX)  # the script, rotating
+        with mock.patch.object(RUN, "LOG_LOCK_TRIES", 2), mock.patch.object(RUN, "LOG_LOCK_PAUSE_S", 0.01):
+            with self.assertRaises(N.NotesError) as caught:
+                self.runner.ship_log()
+        self.assertEqual(caught.exception.code, "unavailable")
+        self.assertEqual(self.client.batches, [])
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        # While the runner lists the names, the script could not take its lock to rotate.
+        blocked: list[bool] = []
+        real_list = RUN.Runner._list_kept
+
+        def probing(path):
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                blocked.append(False)
+            except BlockingIOError:
+                blocked.append(True)
+            return real_list(path)
+
+        with mock.patch.object(RUN.Runner, "_list_kept", staticmethod(probing)):
+            self.assertEqual(self.runner.ship_log(), 1)
+        self.assertEqual(blocked, [True])
+
+    def test_a_lock_file_the_runner_cannot_make_never_stops_the_log(self):
+        # No lock file can be made or opened in the log's folder:  no script can take it either, so the names are
+        # listed without it.
+        self.write(1)
+        real_open = os.open
+
+        def refuse(path, *args, **kwargs):
+            if str(path).endswith(".lock"):
+                raise PermissionError(13, "Permission denied")
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(RUN.os, "open", refuse):
+            self.assertEqual(self.runner.ship_log(), 1)
+
+    def test_an_idle_pass_writes_nothing_and_a_trailing_line_that_is_no_entry_costs_no_search(self):
+        self.write(1, 2, raw="not an entry\n")
+        self.assertEqual(self.runner.ship_log(), 2)
+        before = (self.state_path.read_bytes(), os.stat(self.state_path).st_ino)  # each save replaces the file
+        with mock.patch.object(RUN.Runner, "_after_id", side_effect=AssertionError("searched")):
+            self.assertEqual(self.runner.ship_log(), 0)
+        self.assertEqual((self.state_path.read_bytes(), os.stat(self.state_path).st_ino), before)
+        self.write(3)
+        self.assertEqual(self.runner.ship_log(), 1)
+        self.assertEqual(self.shipped(), ["e0001", "e0002", "e0003"])
+
+    def test_a_place_found_by_its_id_is_saved_so_the_next_pass_needs_no_search(self):
+        self.write(1, 2)
+        self.runner.ship_log()
+        copy = self.log_path.with_name("copy")
+        copy.write_bytes(self.log_path.read_bytes())
+        os.replace(copy, self.log_path)  # an identical file under a new inode (a restore, an editor's save)
+        self.assertEqual(self.runner.ship_log(), 0)
+        self.assertEqual(self.client.state()["log"]["inode"], os.stat(self.log_path).st_ino)
+        with mock.patch.object(RUN.Runner, "_after_id", side_effect=AssertionError("searched")):
+            self.assertEqual(self.runner.ship_log(), 0)
+
+    def test_the_cursor_never_moves_into_a_file_with_no_entry(self):
+        dot = lambda n: self.log_path.with_name("%s.%d" % (self.log_path.name, n))  # noqa: E731
+        self.write(1)
+        self.runner.ship_log()
+        os.rename(self.log_path, dot(1))
+        self.write(raw="not an entry\n")
+        self.assertEqual(self.runner.ship_log(), 0)
+        self.assertEqual(self.client.state()["log"]["inode"], os.stat(dot(1)).st_ino)  # still where it can be checked
+        before = os.stat(self.state_path).st_ino
+        with mock.patch.object(RUN.Runner, "_after_id", side_effect=AssertionError("searched")):
+            self.assertEqual(self.runner.ship_log(), 0)
+        self.assertEqual(os.stat(self.state_path).st_ino, before)
+        self.write(2)
+        self.assertEqual(self.runner.ship_log(), 1)
+        self.assertEqual(self.shipped(), ["e0001", "e0002"])
+
+    def test_a_line_with_an_empty_id_is_no_entry(self):
+        self.write(1, raw=json.dumps({"id": "", "ts": "2025-10-22T21:00:00Z"}) + "\n")
+        self.assertEqual(self.runner.ship_log(), 1)
+        self.assertEqual(self.client.state()["log"]["id"], "e0001")
+        self.assertEqual(self.runner.ship_log(), 0)  # never every line again
+
+    def test_a_cursor_with_no_entry_to_check_is_never_trusted_by_its_inode_alone(self):
+        # A cursor at the start of a file (or one with no entry behind it) cannot be checked, and an inode the
+        # filesystem gave to a new file would skip every older copy;  so the place is found by the id, or every kept
+        # line goes.
+        dot = lambda n: self.log_path.with_name("%s.%d" % (self.log_path.name, n))  # noqa: E731
+        self.write(1, 2, path=dot(1))
+        self.write(3)
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(json.dumps({"log": {"inode": os.stat(self.log_path).st_ino, "offset": 0, "id": "e0001"}}))
+        self.assertEqual(self.runner.ship_log(), 2)
+        self.assertEqual(self.shipped(), ["e0002", "e0003"])
+
+    def test_a_copy_that_cannot_be_read_stops_the_pass_with_an_error_and_skips_nothing(self):
+        dot = lambda n: self.log_path.with_name("%s.%d" % (self.log_path.name, n))  # noqa: E731
+        self.write(1, path=dot(1))
+        self.write(2)
+        real_open = open
+
+        def refuse(path, *args, **kwargs):
+            if Path(path) == dot(1):
+                raise PermissionError(13, "Permission denied")
+            return real_open(path, *args, **kwargs)
+
+        with mock.patch.object(RUN, "open", refuse, create=True):
+            with self.assertRaises(PermissionError):
+                self.runner.ship_log()
+        self.assertEqual(self.client.batches, [], "nothing after the copy went ahead of it")
+        self.assertEqual(self.runner.ship_log(), 2)
+        self.assertEqual(self.shipped(), ["e0001", "e0002"])
+
+    def test_a_line_longer_than_one_read_is_passed_over_and_the_rest_of_the_copy_still_goes(self):
+        dot = lambda n: self.log_path.with_name("%s.%d" % (self.log_path.name, n))  # noqa: E731
+        self.write(1, raw="z" * 3000 + "\n", path=dot(1))
+        self.write(2, path=dot(1))
+        self.write(3)
+        with mock.patch.object(RUN, "LOG_READ", 1000):
+            self.assertEqual(self.runner.ship_log(), 3)
+        self.assertEqual(self.shipped(), ["e0001", "e0002", "e0003"])
+
+    def test_an_id_in_the_state_that_utf8_cannot_hold_is_not_used(self):
+        self.write(1, 2)
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text('{"log": {"inode": 1, "offset": 5, "at": 5, "id": "\\ud800"}}')
+        self.assertEqual(self.runner.ship_log(), 2)  # no place to trust:  every kept line, nothing raised
+        self.assertEqual(RUN._error_text(N.NotesError("unavailable", "bad \ud800 text")), "unavailable: bad ? text")
+
+    def test_a_file_larger_than_one_read_is_sent_whole(self):
+        self.write(*range(1, 61))
+        with mock.patch.object(RUN, "LOG_READ", 1000):  # a few lines per read
+            self.assertEqual(self.runner.ship_log(), 60)
+        self.assertEqual(self.shipped(), ["e%04d" % n for n in range(1, 61)])
 
     def test_a_rotated_copy_is_followed_by_position_so_an_out_of_order_line_is_never_lost(self):
         # Two script runs can finish in the other order, and a clock can step back:  a line older than the newest one
@@ -423,17 +660,6 @@ class ShipLogTests(RunnerHarness):
         self.write(raw=line(3, "2025-10-22T21:00:06Z"))
         self.runner.ship_log()
         self.assertEqual(self.shipped(), ["e0001", "e0002", "e0003"])
-
-    def test_a_future_ts_never_becomes_the_floor_a_resend_is_cut_at(self):
-        line = lambda n, ts: json.dumps({"id": "e%04d" % n, "ts": ts, "mode": "pin"}) + "\n"  # noqa: E731
-        self.write(raw=line(1, "2025-10-22T21:00:00Z") + line(2, "2031-01-01T00:00:00Z"))  # a clock that ran ahead
-        self.runner.ship_log()
-        self.assertEqual(self.client.state()["log"]["ts"], "2025-10-22T21:00:00Z")
-        os.rename(self.log_path, self.log_path.with_name("replaced-away"))
-        self.write(raw=line(3, "2025-10-22T21:30:00Z"))
-        self.client.batches.clear()
-        self.runner.ship_log()
-        self.assertEqual(self.shipped(), ["e0003"])
 
     def test_a_log_that_cannot_be_sent_never_blocks_a_claim(self):
         import threading

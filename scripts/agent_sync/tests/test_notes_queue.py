@@ -501,6 +501,18 @@ class ActionLogTests(QueueHarness):
         self.assertEqual(list(restarted.log_ids), ["new-1", "new-2"])
         self.assertEqual([Path(c.args[0]).name for c in read.call_args_list if NQ.ACTION_LOG in c.args[0]], [NQ.ACTION_LOG])
 
+    def test_the_id_check_remembers_more_ids_than_the_mac_keeps_lines(self) -> None:
+        # A runner that has lost its place sends every line the Mac keeps again:  six files of 5 MiB, each line at
+        # least as long as the shortest one apple-notes-coding.sh writes (every field there, each as short as it gets).
+        flags = {"notify": False, "needs_owner": False, "html": False, "existing_only": False, "summary": False, "pr": None}
+        shortest = {"v": 1, "id": "0" * 32, "ts": "2026-10-23T18:00:00.000+00:00", "host": None, "mode": None, "title": None,
+                    "note_id": None, "exit": 0, "outcome": "", "duration_ms": None, "seat": None, "session": None,
+                    "caller": "script", "request_id": None, "requester": None, "input_bytes": None, "body_bytes": None,
+                    "body_sha256": None, "reformatted": None, "pin": None, "flags": flags}
+        size = len(json.dumps(shortest, separators=(",", ":"))) + 1
+        most = (N.ACTION_LOG_ROTATIONS + 1) * (5 * 1024 * 1024 + size) // size  # a file can pass 5 MiB by one line
+        self.assertGreater(NQ.LOG_IDS_KEEP, most)
+
     def test_an_odd_line_never_costs_the_batch_and_a_failed_append_keeps_its_ids_unmarked(self) -> None:
         # JSON's Infinity parses to a float with no int:  that one field is dropped, and the rest of the batch is kept.
         body = self.append([self.entry("odd-1", exit=float("inf"), duration_ms=float("nan")), self.entry("odd-2")])

@@ -1413,12 +1413,106 @@ class NotesServiceTests(unittest.TestCase):
             json.dumps(
                 {
                     "last_poll_at": self.iso(10),
-                    "log": {"offset": size},
+                    "log": {"inode": self.log.stat().st_ino, "offset": size},
                     "log_shipped_at": self.iso(60),
                 }
             )
         )
         self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+
+    def test_unsent_bytes_are_counted_from_the_file_the_cursor_names(self):
+        # The cursor can sit in a rotated copy (a send that failed after a rotation):  the rest of that copy and the
+        # whole newer log are unsent, however small the new log is.
+        rotated = self.log.with_name(self.log.name + ".1")
+        rotated.write_text("x" * 3999 + "\n")
+        self.log.write_text("y" * 99 + "\n")
+        cursor = {"inode": rotated.stat().st_ino, "offset": 1000}
+        self.state.write_text(
+            json.dumps(
+                {
+                    "last_poll_at": self.iso(10),
+                    "log": cursor,
+                    "log_shipped_at": self.iso(7200),
+                    "last_error": "log:  unavailable: the Operator notes API could not be reached",
+                    "last_error_at": self.iso(60),
+                }
+            )
+        )
+        row = self.rows("mac")["notes:action-log"]
+        self.assertEqual(row["state"], "stale")
+        self.assertIn("%d bytes not yet sent" % (4000 - 1000 + 100), row["detail"])
+        self.assertIn("last error (60 s ago)", row["detail"])
+        # A cursor that names no kept file:  the runner sends every kept file again, so all of it counts.
+        self.state.write_text(
+            json.dumps({"log": {"inode": -1, "offset": 50}, "log_shipped_at": self.iso(7200)})
+        )
+        self.assertIn("4100 bytes not yet sent", self.rows("mac")["notes:action-log"]["detail"])
+        # A file cut short in place (shorter than the cursor):  the runner finds its place again, so all of it counts.
+        self.state.write_text(
+            json.dumps(
+                {
+                    "log": {"inode": self.log.stat().st_ino, "offset": 500},
+                    "log_shipped_at": self.iso(7200),
+                }
+            )
+        )
+        self.assertIn("4100 bytes not yet sent", self.rows("mac")["notes:action-log"]["detail"])
+
+    def test_a_torn_tail_and_an_old_or_unrelated_error_are_not_reported_as_waiting(self):
+        self.log.write_text(
+            '{"id":"a","ts":"2026-10-22T10:00:00Z"}\n{"id":"b","ts":'
+        )  # the last line torn
+        whole = len('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n')
+        state = {
+            "last_poll_at": self.iso(10),
+            "log": {"inode": self.log.stat().st_ino, "offset": whole},
+            "log_shipped_at": self.iso(7200),
+            "last_error": "log:  unavailable: x",
+            "last_error_at": self.iso(9000),  # before the last send
+        }
+        self.state.write_text(json.dumps(state))
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+        self.log.write_text(self.log.read_text() + "1}\n")  # finished:  now one line waits
+        self.state.write_text(json.dumps(state))
+        row = self.rows("mac")["notes:action-log"]
+        self.assertEqual(row["state"], "stale")
+        self.assertNotIn("last error", row["detail"])  # the only error is older than the last send
+        self.state.write_text(
+            json.dumps(dict(state, last_error="internal: a claim", last_error_at=self.iso(60)))
+        )
+        self.assertNotIn(
+            "last error", self.rows("mac")["notes:action-log"]["detail"]
+        )  # not from shipping the log
+        # A torn tail longer than the doctor's first look back (64 KiB) is still left out.
+        self.log.write_text('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n' + "z" * 100_000)
+        self.state.write_text(
+            json.dumps(dict(state, log={"inode": self.log.stat().st_ino, "offset": whole}))
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+
+    def test_a_line_written_moments_ago_is_not_late_however_long_ago_the_last_send(self):
+        # A quiet Mac sends nothing for hours;  a line it writes now waits only for the runner's next pass (25 s).
+        self.log.write_text('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n')
+        os.utime(self.log, (self.NOW - 20, self.NOW - 20))
+        self.state.write_text(
+            json.dumps(
+                {
+                    "last_poll_at": self.iso(5),
+                    "log": {"offset": 0},
+                    "log_shipped_at": self.iso(7200),
+                }
+            )
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+        os.utime(
+            self.log, (self.NOW - 600, self.NOW - 600)
+        )  # written ten minutes ago and still not sent
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "stale")
+
+    def test_the_doctor_counts_the_copies_the_script_keeps(self):
+        from agent_sync import notes as N
+
+        self.assertEqual(doctor.NOTES_LOG_ROTATIONS, N.ACTION_LOG_ROTATIONS)
 
     def test_the_server_reads_the_queue_health(self):
         fresh = {

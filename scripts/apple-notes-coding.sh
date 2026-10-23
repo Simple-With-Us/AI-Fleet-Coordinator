@@ -311,15 +311,42 @@ try:
         size = os.stat(path).st_size
     except OSError:
         size = 0
+    #  A line torn by an earlier short write (a full disk) or a crash is ended first, before any rotation, so it is
+    #  whole in the copy it rotates into and this line starts on a line of its own:  joined to the torn part, it would
+    #  read as one line that is no entry, and never be sent.  The mode is put back first (the owner reads and writes,
+    #  as the open below sets it too), so a log left write-only can still be checked;  one this cannot read is left.
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    try:
+        rd = os.open(path, os.O_RDONLY)
+        try:
+            torn = size > 0 and os.pread(rd, 1, size - 1) != b"\n"
+        finally:
+            os.close(rd)
+    except OSError:
+        torn = False
     if size >= ROTATE_AT:
+        if torn:
+            end = os.open(path, os.O_WRONLY | os.O_APPEND)
+            try:
+                os.write(end, b"\n")
+            finally:
+                os.close(end)
+            torn = False
         for n in range(KEEP, 0, -1):
             older = path + "." + str(n - 1) if n > 1 else path
             if os.path.exists(older):
                 os.replace(older, path + "." + str(n))
+    if torn:
+        line = b"\n" + line
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
     try:
         os.fchmod(fd, 0o600)
-        os.write(fd, line)
+        view = memoryview(line)
+        while view:  # a short write is finished, not left torn
+            view = view[os.write(fd, view):]
     finally:
         os.close(fd)
 finally:

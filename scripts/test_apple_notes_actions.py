@@ -719,7 +719,9 @@ class ActionLogTests(ActionsTestCase):
 
     def test_the_log_rotates_at_5_mb_and_keeps_five(self):
         self.log.parent.mkdir(mode=0o700)
-        self.log.write_bytes(b"x" * ROTATE_AT)
+        self.log.write_bytes(
+            b"x" * (ROTATE_AT - 1) + b"\n"
+        )  # whole lines:  a torn one would be ended first
         for n in range(1, 6):
             Path(f"{self.log}.{n}").write_text(f"old {n}\n")
         p = self.run_script("--read", NOTES[0]["title"])
@@ -739,6 +741,41 @@ class ActionLogTests(ActionsTestCase):
         #  and the next run, past the size now, rotates
         self.run_script("--read", NOTES[0]["title"])
         self.assertTrue(Path(f"{self.log}.1").exists())
+        self.assertEqual(len(self.log_lines()), 1)
+
+    def test_a_line_torn_by_an_earlier_write_is_ended_before_the_next_one(self):
+        # A short write (a full disk) or a crash can leave part of a line with no newline:  the next line starts on a
+        # line of its own, or the two would read as one line that is no entry and the runner would never send it.
+        self.log.parent.mkdir(mode=0o700)
+        self.log.write_bytes(b'{"v":1,"id":"torn')
+        p = self.run_script("--read", NOTES[0]["title"])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        torn, whole, rest = self.log.read_bytes().split(b"\n", 2)
+        self.assertEqual(torn, b'{"v":1,"id":"torn')
+        self.assertEqual(json.loads(whole)["mode"], "read")  # the new line parses on its own
+        self.assertEqual(rest, b"")
+
+    def test_a_torn_line_is_ended_before_its_file_rotates(self):
+        # A whole entry that lost only its newline, in a log due to rotate:  it is ended in place first, so the copy it
+        # rotates into holds it as a whole line the runner sends.
+        self.log.parent.mkdir(mode=0o700)
+        entry = b'{"v":1,"id":"' + b"e" * 32 + b'","ts":"2026-10-22T10:00:00Z"}'
+        self.log.write_bytes(b"x" * (ROTATE_AT - len(entry) - 1) + b"\n" + entry)
+        p = self.run_script("--read", NOTES[0]["title"])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        rotated = Path(f"{self.log}.1").read_bytes()
+        self.assertTrue(rotated.endswith(entry + b"\n"), rotated[-80:])
+        self.assertEqual(len(self.log_lines()), 1)  # the new log holds only this run's line
+
+    def test_a_log_only_its_owner_may_write_still_gets_the_line_and_its_mode_back(self):
+        self.log.parent.mkdir(mode=0o700)
+        self.log.write_bytes(b"")
+        self.log.chmod(
+            0o200
+        )  # write only:  the torn-line check cannot read it, and the line is still written
+        p = self.run_script("--read", NOTES[0]["title"])
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
         self.assertEqual(len(self.log_lines()), 1)
 
     def test_an_unwritable_log_leaves_the_exit_code_and_the_output_alone(self):

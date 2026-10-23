@@ -2289,6 +2289,10 @@ class Tools:
     )
 
     def _notes_error(self, exc: NOTES.NotesError) -> ToolError:
+        if isinstance(exc, NOTES.SecretRefused):
+            return ToolError(
+                "refused_secret", exc.message
+            )  # the tools' code for a secret in what they would write
         return ToolError(exc.code, exc.message)
 
     def _own_session_env(self) -> Mapping[str, str]:
