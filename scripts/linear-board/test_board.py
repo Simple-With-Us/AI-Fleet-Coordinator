@@ -192,6 +192,9 @@ class MockLinear:
         # When True the BoardUsers listing is refused, so ownership must degrade
         # instead of aborting the verb.
         self.fail_users = False
+        # When True, updates without an assignee are refused, so a test can
+        # fail the claim retry after its assignee was refused.
+        self.fail_ownerless_updates = False
         self.issues: dict = {}
         self.comments: dict = {}
         self.relations: list = []
@@ -627,6 +630,21 @@ class MockLinear:
             self.updates.append((iss["identifier"], json.loads(json.dumps(inp))))
             if "labelIds" in inp:
                 self.violations.append("issueUpdate with labelIds (replaces every label)")
+            if "assigneeId" in inp:
+                uid = inp["assigneeId"]
+                if uid is not None:
+                    # Linear only accepts an existing, active user here, and a
+                    # refused update applies nothing: validate before writing.
+                    m = next((u for u in self.users.values() if u["id"] == uid), None)
+                    if not m or not m["active"]:
+                        return {"issueUpdate": None}, [
+                            {"message": f"assignee {uid} not found or deactivated"}
+                        ]
+            if self.fail_ownerless_updates and "assigneeId" not in inp:
+                return {"issueUpdate": None}, [{"message": "update refused"}]
+            for lid in inp.get("addedLabelIds") or []:
+                if lid not in self.labels:
+                    return {"issueUpdate": None}, [{"message": f"label {lid} not found"}]
             if "stateId" in inp:
                 st = next(
                     s
@@ -643,20 +661,10 @@ class MockLinear:
                 if lid in iss["labels"]:
                     iss["labels"].remove(lid)
             for lid in inp.get("addedLabelIds") or []:
-                if lid not in self.labels:
-                    return {"issueUpdate": None}, [{"message": f"label {lid} not found"}]
                 if lid not in iss["labels"]:
                     iss["labels"].append(lid)
             if "assigneeId" in inp:
-                uid = inp["assigneeId"]
-                if uid is not None:
-                    # Linear only accepts an existing, active user here.
-                    m = next((u for u in self.users.values() if u["id"] == uid), None)
-                    if not m or not m["active"]:
-                        return {"issueUpdate": None}, [
-                            {"message": f"assignee {uid} not found or deactivated"}
-                        ]
-                iss["assignee"] = uid
+                iss["assignee"] = inp["assigneeId"]
             groups = [self.labels[x]["parent"] for x in iss["labels"] if self.labels[x]["parent"]]
             if len(groups) != len(set(groups)):
                 self.violations.append("two labels from one exclusive group")
@@ -3749,6 +3757,9 @@ class OwnershipTests(BoardTest):
         self.assertNotIn("assigneeId", self.mock.updates[-1][1])
         self.assertIn("claimed:CLAUDE", self.label_names(iss))
         self.assertIn("ownership stays off", p.stderr)
+        # The warning carries only allow-listed fields, never the response body.
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("users listing refused", p.stderr)
 
     def test_case_variants_of_one_seat_assign_nobody(self):
         """Two names differing only in case match the seat ambiguously, so the
@@ -3797,9 +3808,11 @@ class OwnershipTests(BoardTest):
         self.assertNotIn("assigneeId", self.mock.updates[-1][1])
         self.assertIn("claimed:DUP", self.label_names(iss))
 
-    def test_malformed_user_records_are_skipped(self):
-        """Records with an empty id, a blank name, or a non-boolean active
-        flag are skipped with one warning;  the valid users still resolve."""
+    def test_malformed_user_records_degrade_to_a_label_only_claim(self):
+        """One malformed record (empty id, blank name, non-boolean active)
+        degrades ownership to nothing instead of aborting the verb or serving
+        a partial identity set:  the claim lands on the label, like the
+        refused-listing path."""
         self.mock.users["bad-id"] = {
             "id": "",
             "name": "BadId",
@@ -3826,8 +3839,55 @@ class OwnershipTests(BoardTest):
         }
         iss = self.todo_issue()
         p = self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
-        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude")
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
         self.assertIn("unexpected shape", p.stderr)
+        self.assertIn("ownership stays off", p.stderr)
+        self.assertIn("Linear user response has an invalid", p.stderr)
+
+    def test_parse_linear_users_rejects_malformed_records(self):
+        """The boundary validator raises a precise ValueError on the first
+        malformed record;  deactivated users skip silently and shared names
+        collapse to nobody."""
+        mod = load_cli()
+        with self.assertRaisesRegex(ValueError, "must contain user objects"):
+            mod.parse_linear_users([None])
+        with self.assertRaisesRegex(ValueError, "invalid id"):
+            mod.parse_linear_users([{"id": "  ", "name": "X", "active": True}])
+        with self.assertRaisesRegex(ValueError, "invalid name"):
+            mod.parse_linear_users([{"id": "u", "name": "", "active": True}])
+        with self.assertRaisesRegex(ValueError, "invalid active flag"):
+            mod.parse_linear_users([{"id": "u", "name": "X", "active": "yes"}])
+        users = mod.parse_linear_users(
+            [
+                {"id": "user-a", "name": "A", "active": True},
+                {"id": "user-old", "name": "Old", "active": False},
+            ]
+        )
+        self.assertEqual(users, {"A": "user-a"})
+        users = mod.parse_linear_users(
+            [
+                {"id": "u1", "name": "Dup", "active": True},
+                {"id": "u2", "name": "Dup", "active": True},
+            ]
+        )
+        self.assertIsNone(users["Dup"])
+
+    def test_gql_summary_logs_only_allow_listed_fields(self):
+        """An external error is logged as error name, status, code, and
+        request id:  never the response body."""
+        mod = load_cli()
+        err = mod.GqlError(
+            [{"message": "secret body", "extensions": {"code": "BAD"}}],
+            status=400,
+            request_id="req-1",
+        )
+        summary = mod.gql_summary(err)
+        self.assertIn("error=GqlError", summary)
+        self.assertIn("status=400", summary)
+        self.assertIn("code=BAD", summary)
+        self.assertIn("request_id=req-1", summary)
+        self.assertNotIn("secret body", summary)
 
     def test_a_cached_answer_is_used_without_a_refresh(self):
         iss = self.todo_issue()
@@ -3847,7 +3907,9 @@ class OwnershipTests(BoardTest):
 
     def test_a_refused_assignee_still_lands_the_claim(self):
         """A user deactivated after the snapshot is refused by Linear;  the
-        claim retries without the owner instead of losing state and labels."""
+        claim retries without the owner instead of losing state and labels.
+        The refused update applies nothing, so the retry carries the state
+        and the labels itself."""
         iss = self.todo_issue()
         self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
         self.mock.users["Claude"]["active"] = False
@@ -3856,10 +3918,34 @@ class OwnershipTests(BoardTest):
         first, second = self.mock.updates[-2], self.mock.updates[-1]
         self.assertEqual(first[1].get("assigneeId"), "user-claude")
         self.assertNotIn("assigneeId", second[1])
+        self.assertIn("stateId", second[1])
+        self.assertIn("addedLabelIds", second[1])
+        self.assertEqual(iss2["state"], "In Progress")
         self.assertIn("claimed:CLAUDE", self.label_names(iss2))
         self.assertTrue(any("CLAIMED" in c for c in self.comments_of(iss2)))
         self.assertIsNone(iss2.get("assignee"))
         self.assertIn("refused the assignee", p.stderr)
+        self.assertIn("retrying the claim without", p.stderr)
+        self.assertNotIn("landed without an owner", p.stderr)
+        # The warning carries only allow-listed fields, never the response body.
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("not found or deactivated", p.stderr)
+
+    def test_a_failed_retry_reports_no_landing(self):
+        """When the retry after a refused assignee also fails, the log must
+        not claim the landing it never made, and the issue stays untouched."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.mock.users["Claude"]["active"] = False
+        self.mock.fail_ownerless_updates = True
+        iss2 = self.todo_issue(title="Second probe")
+        p = self.board("claim", iss2["identifier"], "--by", "CLAUDE", extra=self.OWNED, code=1)
+        self.assertIn("refused the assignee", p.stderr)
+        self.assertIn("retrying the claim without", p.stderr)
+        self.assertNotIn("landed", p.stderr)
+        self.assertEqual(iss2["state"], "Todo")
+        self.assertNotIn("claimed:CLAUDE", self.label_names(iss2))
+        self.assertEqual(self.comments_of(iss2), [])
 
 
 if __name__ == "__main__":
