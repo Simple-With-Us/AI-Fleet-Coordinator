@@ -4174,6 +4174,14 @@ class Daemon:
         authorizes an answer.  A message that is not a parseable answer, an answer for an
         entry with no known route, or an answer posted in any other place returns False and
         follows its normal wake path.
+
+        The guarantee is seat-level, not exact-chat:  chats sharing a seat bot share one
+        Zulip identity, so the sender check cannot tell two chats of one seat apart.  What
+        binds the answer to the exact registration is the entry ref (one pending question
+        per session identity), and for locally discovered chats the evidence cross-check
+        rejects an answer that contradicts where discovery actually ran - so a wrong-seat
+        or same-seat sibling chat can at worst confirm the true location early, never
+        register a false one where evidence exists.
         """
         try:
             db = self._registration_db()
