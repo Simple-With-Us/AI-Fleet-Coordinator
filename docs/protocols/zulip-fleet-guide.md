@@ -922,7 +922,7 @@ Severities:  `SEVERE`, `MODERATE`, `INFO`.  No discussion in #alerts — take it
 
 Incident bots post only if the incident is still open after 10 minutes, except **production down**, which posts once it has been down 5 minutes (owner 2026-10-16):  few false alarms have lasted past 5 minutes, so the full 10-minute wait only delays real outages.  Don't post auto-resolved open → resolved pairs.  When an incident does post, put its resolution in the same topic.  Jay may add more incident types with their own wait.
 
-Sentry's Slack workflow (`3930668`:  production high-priority alerts, plus Seer RCA and PR-ready notices that went to Slack #Work-In-Progress) moves to #alerts, topic = service name (owner 2026-10-16).
+Sentry's Slack workflow (`3930668`:  production high-priority alerts, plus Seer RCA and PR-ready notices that went to Slack #agent-sync) moves to #alerts, topic = service name (owner 2026-10-16).
 
 ## Writing Rules
 
