@@ -166,9 +166,12 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(self.lin.created, [])
         self.assertEqual(dict(self.led.entries), {})
 
-    def test_zulip_escape_encodes_literal_dots_before_the_percent_swap(self) -> None:
+    def test_the_permalink_names_the_message_and_nothing_else(self) -> None:
+        # The topic is untrusted, so it never goes into the URL.  Zulip's `near` narrow
+        # resolves a message id on its own.
         self.assertEqual(
-            lr._zulip_escape("AFC-502.relay topic"), "AFC-502.2Erelay.20topic")
+            lr.permalink("https://z.example", 42), "https://z.example/#narrow/near/42"
+        )
 
     def test_reconcile_survives_a_linear_outage(self) -> None:
         entry = lr.new_entry("AFC-1", 5, "builds", "AFC-1 relay", 1)
@@ -233,9 +236,60 @@ class RelayTests(unittest.TestCase):
         self.w.handle_event(message(1, "AFC-1 relay", "hello"))
         body = self.lin.created[0][1]
         self.assertTrue(body.startswith(lr.MARKER))
-        # Zulip's narrow URL percent-encodes, then swaps "%" for ".": a space becomes ".20".
-        self.assertIn("https://z.example/#narrow/channel/5-builds/topic/AFC-1.20relay/near/1", body)
+        # The link names the message id and carries no topic text.
+        self.assertIn("https://z.example/#narrow/near/1", body)
         self.assertIn("Mirrored one way from Zulip", body)
+
+    def test_a_secret_in_the_topic_never_reaches_the_comment_body(self) -> None:
+        # The topic is untrusted and can carry a credential.  The value is redacted in the
+        # heading, and the topic never goes into the URL, so none of it survives into Linear.
+        self.w.handle_event(message(1, "AFC-1 password=hunter2 relay", "hello"))
+        body = self.lin.created[0][1]
+        self.assertNotIn("hunter2", body)
+        link = body.split("](", 1)[1].split(")", 1)[0]
+        self.assertEqual(link, "https://z.example/#narrow/near/1")
+
+    # -- a stream that turns private --------------------------------------------------------
+    def test_a_migration_in_a_private_stream_is_refused(self) -> None:
+        # The rename path refuses a private stream, and the migration refuses it too, so a
+        # private topic's standing comment can never be carried over.
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.w._migrate_topic(9, "secret-stream", "AFC-1 relay", "AFC-1 relay renamed")
+        self.assertIn("AFC-1|5|AFC-1 relay", self.led.entries)
+        self.assertNotIn("AFC-1|9|AFC-1 relay renamed", self.led.entries)
+
+    def test_an_entry_whose_stream_turns_private_is_dropped_not_written(self) -> None:
+        # The stream was public when the entry was written and is private now, so the
+        # standing comment is neither created nor edited, and the entry leaves the ledger.
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.assertEqual(len(self.lin.created), 1)
+        entry = self.led.entries["AFC-1|5|AFC-1 relay"]
+        entry["dirty"] = True
+        self.w.public_streams = {7}  # the stream is not in the public set any more
+        self.t[0] += 600
+        self.w.tick()
+        self.assertEqual(self.lin.updated, [])
+        self.assertNotIn("AFC-1|5|AFC-1 relay", self.led.entries)
+
+    def test_a_pending_entry_whose_stream_turns_private_is_not_reconciled(self) -> None:
+        entry = lr.new_entry("AFC-1", 5, "builds", "AFC-1 relay", 1)
+        entry["pending"] = True
+        self.led.entries["AFC-1|5|AFC-1 relay"] = entry
+        self.lin.by_marker[entry["marker"]] = "c-lost"
+        self.w.public_streams = {7}
+        self.w.reconcile()
+        self.assertIsNone(entry["comment_id"])
+        self.assertNotIn("AFC-1|5|AFC-1 relay", self.led.entries)
+
+    def test_nothing_is_dropped_before_the_public_streams_are_known(self) -> None:
+        # An empty set means the set has not been loaded yet.  It proves nothing about a
+        # stream, so no entry is dropped on that account.
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.w.public_streams = set()
+        entry = self.led.entries["AFC-1|5|AFC-1 relay"]
+        entry["dirty"] = True
+        self.w.tick()
+        self.assertIn("AFC-1|5|AFC-1 relay", self.led.entries)
 
     # -- the Linear client ---------------------------------------------------------------
     def test_a_missing_issue_is_not_an_auth_failure(self) -> None:

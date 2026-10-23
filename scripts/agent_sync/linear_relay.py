@@ -53,7 +53,6 @@ import re
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -125,22 +124,16 @@ def find_issue_ids(regex: re.Pattern[str], *texts: str) -> list[str]:
     return seen[:MAX_ISSUES_PER_MESSAGE]
 
 
-def _zulip_escape(text: str) -> str:
-    # Zulip's narrow URLs percent-encode, then swap "%" for ".".  quote() leaves
-    # literal dots alone, so they are encoded first; an unencoded dot survives
-    # the swap and corrupts the narrow link.
-    return urllib.parse.quote(text, safe="").replace(".", "%2E").replace("%", ".")
+def permalink(realm: str, mid: int) -> str:
+    """The link to one Zulip message, carrying no topic text.
 
-
-def permalink(realm: str, stream_id: int, stream: str, topic: str, mid: int) -> str:
-    slug = _zulip_escape(stream.replace(" ", "-"))
-    return "%s/#narrow/channel/%d-%s/topic/%s/near/%d" % (
-        realm.rstrip("/"),
-        stream_id,
-        slug,
-        _zulip_escape(topic),
-        mid,
-    )
+    The topic is untrusted and can hold a credential, so it never goes into a URL: a
+    percent-encoded topic is still the topic, and a reader of the Linear comment could
+    decode it.  Zulip's `near` narrow operator resolves a message id on its own, and the
+    server answers that narrow with the message and the topic it lives in, so the link
+    names the message and nothing else.
+    """
+    return "%s/#narrow/near/%d" % (realm.rstrip("/"), int(mid))
 
 
 # Credential-shaped strings, redacted before any Zulip text is copied into a Linear comment.
@@ -443,7 +436,7 @@ class LinearClient:
 # ------------------------------------------------------------------------------------------
 # Worker
 # ------------------------------------------------------------------------------------------
-def render_comment(entry: Mapping[str, Any]) -> str:
+def render_comment(entry: Mapping[str, Any], realm: str) -> str:
     links = entry["links"][-MAX_LINKS_SHOWN:]
     earlier = max(0, int(entry["count"]) - len(links))
     lines = [
@@ -455,10 +448,16 @@ def render_comment(entry: Mapping[str, Any]) -> str:
     if earlier > 0:
         lines.append("_%d earlier message(s) not listed._" % earlier)
     for item in links:
-        # item["quote"] was neutralised when it was stored, so it is not escaped twice.
+        # The URL is built here, from the message id, so no text that came out of Zulip can
+        # reach it.  The quote was neutralised when it was stored, so it is not escaped twice.
         lines.append(
             '- [%s](%s), %s: "%s"'
-            % (item["when"], item["url"], neutralise(item["sender"]), item["quote"])
+            % (
+                item["when"],
+                permalink(realm, int(item["mid"])),
+                neutralise(item["sender"]),
+                item["quote"],
+            )
         )
     lines += ["", "_Mirrored one way from Zulip by the relay. Edit in Zulip, not here._"]
     return "\n".join(lines)
@@ -487,6 +486,29 @@ class RelayWorker:
         self.public_streams: set[int] = set(public_streams or ())
         self._uuid_cache: dict[str, str | None] = {}
         self._missing_issues: set[str] = set()
+
+    # -- the public-stream guard -------------------------------------------------------------
+    def _private_stream(self, entry: Mapping[str, Any]) -> bool:
+        """True when the entry's stream is known to be private.
+
+        An empty public-stream set means the set has not been loaded yet, so nothing is
+        private yet and nothing is dropped on that account.  Once the set is loaded, a stream
+        that is not in it is private or archived, and the entry never reaches Linear.
+        """
+        if not self.public_streams:
+            return False
+        return int(entry.get("stream_id", 0)) not in self.public_streams
+
+    def _drop_if_private(self, key: str, entry: Mapping[str, Any]) -> bool:
+        """Remove an entry whose stream is no longer public.  True when it was dropped."""
+        if not self._private_stream(entry):
+            return False
+        self.ledger.entries.pop(key, None)
+        self.log(
+            "dropped the relay entry for %s (topic %r): its stream is no longer public"
+            % (entry.get("issue", "?"), entry.get("topic", "?"))
+        )
+        return True
 
     # -- events ----------------------------------------------------------------------------
     def handle_event(self, event: Mapping[str, Any]) -> None:
@@ -543,6 +565,11 @@ class RelayWorker:
     def _migrate_topic(self, stream_id: int, stream: str, old_topic: str, new_topic: str) -> None:
         if not old_topic or old_topic == new_topic:
             return
+        if stream_id not in self.public_streams:
+            # The rename path already refuses a private stream; the guard is repeated here so
+            # that a migration can never move a private topic's standing comment, however it
+            # is reached.
+            return
         moved = False
         for key, entry in list(self.ledger.entries.items()):
             issue, entry_sid, entry_topic = split_key(key)
@@ -596,7 +623,6 @@ class RelayWorker:
                 {
                     "mid": mid,
                     "sender": sender,
-                    "url": permalink(self.realm, stream_id, stream, topic, mid),
                     "when": time.strftime("%b %d %H:%M UTC", time.gmtime(now)),
                     "quote": neutralise(content),
                 }
@@ -622,6 +648,8 @@ class RelayWorker:
 
     def _flush(self, key: str, now: float) -> None:
         entry = self.ledger.entries[key]
+        if self._drop_if_private(key, entry):
+            return  # the stream turned private after the entry was written: it never reaches Linear
         if not entry["dirty"]:
             return
         if now < float(entry.get("retry_after", 0.0)):
@@ -656,14 +684,14 @@ class RelayWorker:
                     # call and the save is recoverable.
                     entry["pending"] = True
                     self.ledger.save()
-                    entry["comment_id"] = self.linear.create_comment(uuid, render_comment(entry))
+                    entry["comment_id"] = self.linear.create_comment(uuid, render_comment(entry, self.realm))
                     entry["pending"] = False
                     self.log("created a relay comment for %s (topic %r)" % (issue, entry["topic"]))
             else:
                 if now - float(entry["last_edit"]) < EDIT_INTERVAL:
                     return  # batched; tick() flushes it later
                 try:
-                    self.linear.update_comment(entry["comment_id"], render_comment(entry))
+                    self.linear.update_comment(entry["comment_id"], render_comment(entry, self.realm))
                 except LinearNotFound:
                     uuid = self._issue_uuid(issue)
                     if uuid is None:
@@ -671,7 +699,7 @@ class RelayWorker:
                     entry["comment_id"] = None
                     entry["pending"] = True
                     self.ledger.save()
-                    entry["comment_id"] = self.linear.create_comment(uuid, render_comment(entry))
+                    entry["comment_id"] = self.linear.create_comment(uuid, render_comment(entry, self.realm))
                     entry["pending"] = False
                 self.log("updated the relay comment for %s (topic %r)" % (issue, entry["topic"]))
             entry["last_edit"] = now
@@ -688,7 +716,13 @@ class RelayWorker:
         now = self.clock() if now is None else now
         changed = False
         for key in list(self.ledger.entries):
-            if self.ledger.entries[key]["dirty"]:
+            entry = self.ledger.entries.get(key)
+            if entry is None:
+                continue
+            if self._drop_if_private(key, entry):
+                changed = True
+                continue
+            if entry["dirty"]:
                 self._flush(key, now)
                 changed = True
         if changed:
@@ -698,7 +732,11 @@ class RelayWorker:
         """Adopt the comments of creates whose answer was lost.  Only entries that were written
         ahead are looked at, so the cost is bounded by the number of uncertain writes."""
         recovered = False
+        dropped = False
         for key, entry in list(self.ledger.entries.items()):
+            if self._drop_if_private(key, entry):
+                dropped = True
+                continue
             if entry.get("comment_id") or not entry.get("pending"):
                 continue
             uuid = self._issue_uuid(entry["issue"])
@@ -719,7 +757,7 @@ class RelayWorker:
                     "reconciled a relay comment for %s (topic %r) after an uncertain write"
                     % (entry["issue"], entry["topic"])
                 )
-        if recovered:
+        if recovered or dropped:
             self.ledger.save()
 
 
