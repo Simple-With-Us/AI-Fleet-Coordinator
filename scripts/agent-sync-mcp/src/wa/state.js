@@ -111,7 +111,7 @@ export async function claim(store, { destination = "", source } = {}, now = Date
       const keys = [];
       for (const [candidate, item] of rows) {
         if (item.source !== row.source || item.lease_until > now || item.next_ring_at > now || (item.destination === destination && item.blocked)) continue;
-        await tx.put(candidate, { ...item, token, destination, ring: row.ring ?? 0, lease_until: now + 30000 });
+        await tx.put(candidate, { ...item, ...(item.destination !== destination ? { permanent_failures: 0, blocked: false } : {}), token, destination, ring: row.ring ?? 0, lease_until: now + 30000 });
         keys.push(candidate);
       }
       return { ...row, key: k, keys, token };
@@ -121,16 +121,29 @@ export async function claim(store, { destination = "", source } = {}, now = Date
 }
 export async function settle(store, { keys, key: k, token, delivered, permanent = false, noSubscriber = false }, now = Date.now()) {
   return store.transaction(async tx => {
+    const claimed = [];
     for (const pendingKey of keys ?? [k]) {
       const row = await tx.get(pendingKey);
-      if (!row || row.token !== token) continue;
-      if (delivered && row.source === "operator") { await tx.delete(pendingKey); continue; }
-      const failures = permanent ? (row.permanent_failures ?? 0) + 1 : 0;
-      const blocked = failures >= 3;
-      if (row.source === "authenticated_owner") await tx.put("wa:owner_gate", { destination: row.destination, next_at: noSubscriber ? 0 : now + (delivered || permanent ? RERING_MS : 30000), blocked });
-      if (blocked) console.log(JSON.stringify({ event: "wa_delivery_blocked", source: row.source }));
-      await tx.put(pendingKey, { ...row, lease_until: 0, next_ring_at: noSubscriber ? 0 : now + (delivered || permanent ? RERING_MS : 30000), permanent_failures: failures, blocked, ring: (row.ring ?? 0) + (delivered ? 1 : 0) });
+      if (row?.token === token) claimed.push([pendingKey, row]);
     }
+    const owners = claimed.filter(([, row]) => row.source === "authenticated_owner");
+    const destination = owners[0]?.[1].destination;
+    const gate = owners.length ? (await tx.get("wa:owner_gate")) ?? {} : {};
+    const prior = Math.max(0, gate.destination === destination ? gate.permanent_failures ?? 0 : 0, ...owners.map(([, row]) => row.permanent_failures ?? 0));
+    const ownerFailures = delivered ? 0 : prior + (permanent ? 1 : 0);
+    const ownerBlocked = !delivered && (ownerFailures >= 3 || (gate.destination === destination && gate.blocked === true));
+    const nextAt = now + (delivered || permanent ? RERING_MS : 30000);
+    for (const [pendingKey, row] of claimed) {
+      if (noSubscriber) { await tx.put(pendingKey, { ...row, lease_until: 0 }); continue; }
+      if (delivered && row.source === "operator") { await tx.delete(pendingKey); continue; }
+      const failures = row.source === "authenticated_owner" ? ownerFailures : (row.permanent_failures ?? 0) + (permanent ? 1 : 0);
+      const blocked = row.source === "authenticated_owner" ? ownerBlocked : failures >= 3;
+      if (blocked) console.log(JSON.stringify({ event: "wa_delivery_blocked", source: row.source }));
+      await tx.put(pendingKey, { ...row, lease_until: 0, next_ring_at: nextAt, permanent_failures: failures, blocked, ring: (row.ring ?? 0) + (delivered ? 1 : 0) });
+    }
+    // One attempt has one owner rejection history, independent of batch order.
+    // Missing subscribers/transient failures cannot erase an earlier rejection.
+    if (owners.length && !noSubscriber) await tx.put("wa:owner_gate", { destination, next_at: nextAt, permanent_failures: ownerFailures, blocked: ownerBlocked });
   });
 }
 

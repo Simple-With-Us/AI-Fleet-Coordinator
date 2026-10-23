@@ -334,29 +334,184 @@ class ReviewRegressionTests(unittest.TestCase):
 
 
 class LaunchTests(unittest.TestCase):
-    def test_dedicated_identity_and_explicit_project_without_shared_fallback(self):
-        from pathlib import Path
+    # Synthetic token-shaped fixtures assembled at runtime; never real credentials.
+    BRIDGE_TOKEN = "st." + "fixture-bridge" + "." + "not-a-live-token"
+    OPERATOR_TOKEN = "st." + "fixture-operator" + "." + "not-a-live-token"
+    PROJECT = "00000000-0000-4000-8000-000000000001"  # synthetic AFC project
 
-        from whatsapp_bridge.launch import POLL_NAMES, arguments, prepare
+    def test_dedicated_service_token_rejects_ambient_auth_and_machine_identity(self):
+        from whatsapp_bridge.launch import AMBIENT_AUTH, prepare
 
         env = prepare(
-            {
-                "WA_INFISICAL_PROJECT_ID": "synthetic-project",
-                "INFISICAL_AUTOMATION_CLIENT_SECRET": "shared-forbidden",
-            },
-            {"client_id": "synthetic-id", "client_secret": "synthetic-secret"},
+            {"WA_INFISICAL_PROJECT_ID": self.PROJECT, "GH_TOKEN": "unused-shared"},
+            self.BRIDGE_TOKEN,
         )
-        self.assertEqual(env["INFISICAL_AUTOMATION_CLIENT_SECRET"], "synthetic-secret")
-        self.assertEqual(env["INFISICAL_FLEET_OPS_PROJECT_ID"], "synthetic-project")
-        self.assertNotIn("INFISICAL_TOKEN", env)
-        self.assertEqual(arguments("poll", Path("/release"))[3], ",".join(POLL_NAMES))
+        self.assertEqual(env["INFISICAL_TOKEN"], self.BRIDGE_TOKEN)
+        self.assertEqual(env["INFISICAL_FLEET_OPS_PROJECT_ID"], self.PROJECT)
+        self.assertEqual(set(env), {"PATH", "INFISICAL_FLEET_OPS_PROJECT_ID", "INFISICAL_TOKEN"})
+        for name in AMBIENT_AUTH:
+            with self.assertRaisesRegex(ValueError, "ambient_credentials_refused"):
+                prepare(
+                    {"WA_INFISICAL_PROJECT_ID": self.PROJECT, name: "shared-forbidden"},
+                    self.BRIDGE_TOKEN,
+                )
+        for token in (
+            {"client_id": "old", "client_secret": "old"},
+            "",
+            "identity-access-token",
+            "st.a. b",
+        ):
+            with self.assertRaises((TypeError, ValueError)):
+                prepare({"WA_INFISICAL_PROJECT_ID": self.PROJECT}, token)
+        with self.assertRaisesRegex(ValueError, "WA_INFISICAL_PROJECT_ID_missing"):
+            prepare({}, self.BRIDGE_TOKEN)
+
+    def test_mode_pins_folder_allowlist_credential_and_operator_argument(self):
+        from pathlib import Path
+
+        from whatsapp_bridge.launch import (
+            BIND_NAMES,
+            CREDENTIAL_NAMES,
+            OPERATOR_FOLDER,
+            OPERATOR_NAMES,
+            POLL_NAMES,
+            arguments,
+        )
+
+        request_id = "00000000-0000-4000-8000-000000000009"
+        for mode, folder, names in (
+            ("poll", "/jet", POLL_NAMES),
+            ("bind", "/jet", BIND_NAMES),
+            ("operator", OPERATOR_FOLDER, OPERATOR_NAMES),
+        ):
+            args = arguments(mode, Path("/release"), request_id if mode == "operator" else None)
+            self.assertEqual(args[:4], ["--path", folder, "--only", ",".join(names)])
+            self.assertNotIn("WHATSAPP_API_KEY", OPERATOR_NAMES)
+        self.assertNotEqual(CREDENTIAL_NAMES["operator"], CREDENTIAL_NAMES["poll"])
         with self.assertRaises(ValueError):
-            prepare(
-                {"WA_INFISICAL_PROJECT_ID": "x", "INFISICAL_TOKEN": "forbidden"},
-                {"client_id": "x", "client_secret": "y"},
+            arguments("operator", Path("/release"), "not-an-id")
+        with self.assertRaises(ValueError):
+            arguments("poll", Path("/release"), request_id)
+
+    def _launch(self, mode, token=None, denied=False):
+        import contextlib
+        import io
+        import subprocess
+        from pathlib import Path
+
+        from fleet_secrets import cli, core
+
+        from whatsapp_bridge import launch
+
+        exports, children = [], []
+        request_id = "00000000-0000-4000-8000-000000000009"
+        folder = launch.OPERATOR_FOLDER if mode == "operator" else "/jet"
+        expected_token = self.OPERATOR_TOKEN if mode == "operator" else self.BRIDGE_TOKEN
+        token = expected_token if token is None else token
+        source_names = (
+            launch.OPERATOR_NAMES
+            if mode == "operator"
+            else launch.POLL_NAMES
+            if mode == "poll"
+            else launch.BIND_NAMES
+        )
+        values = {name: "synthetic-" + name for name in source_names}
+        values["UNRELATED_SECRET"] = "not-in-child"
+        if mode == "operator":
+            values["WHATSAPP_API_KEY"] = "must-never-reach-operator"
+        output = io.StringIO()
+
+        def export(argv, **options):
+            exports.append((argv, dict(options["env"])))
+            self.assertEqual(argv[1], "export", "no login/session/machine fallback")
+            self.assertIn("--env=prod", argv)
+            self.assertIn("--projectId=" + self.PROJECT, argv)
+            self.assertIn("--path=" + folder, argv)
+            self.assertNotIn(token, " ".join(argv))
+            # Simulates the server's exact-folder read-only token boundary.
+            accepted = not denied and options["env"].get("INFISICAL_TOKEN") == expected_token
+            return subprocess.CompletedProcess(
+                argv,
+                0 if accepted else 1,
+                json.dumps(values).encode() if accepted else b"",
+                b"forbidden",
             )
-        with self.assertRaises(ValueError):
-            prepare({}, {"client_id": "x", "client_secret": "y"})
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / launch.CREDENTIAL_NAMES[mode]
+            path.write_text(token)
+            path.chmod(0o600)
+            environment = {
+                "CREDENTIALS_DIRECTORY": directory,
+                "WA_INFISICAL_PROJECT_ID": self.PROJECT,
+            }
+            with (
+                patch.object(core, "find_cli", return_value="/fake/infisical"),
+                patch.object(core.subprocess, "run", side_effect=export),
+                patch.object(
+                    cli.os,
+                    "execvpe",
+                    side_effect=lambda program, argv, env: children.append(
+                        (program, argv, dict(env))
+                    ),
+                ),
+                contextlib.redirect_stderr(output),
+                contextlib.redirect_stdout(output),
+            ):
+                argv = [mode, request_id] if mode == "operator" else [mode]
+                if denied or token != expected_token:
+                    with self.assertRaises(core.SecretsError):
+                        launch.main(argv, environment)
+                else:
+                    self.assertEqual(launch.main(argv, environment), 0)
+        self.assertEqual(len(exports), 1)
+        self.assertNotIn(token, output.getvalue())
+        if denied or token != expected_token:
+            self.assertEqual(children, [])
+            return
+        self.assertEqual(len(children), 1)
+        child = children[0][2]
+        self.assertTrue(set(core.AUTH_ENV_VARS).isdisjoint(child))
+        self.assertEqual(set(child), {"PATH", "INFISICAL_FLEET_OPS_PROJECT_ID", *source_names})
+        self.assertNotIn("CREDENTIALS_DIRECTORY", child)
+        if mode == "operator":
+            self.assertNotIn("WHATSAPP_API_KEY", child)
+            self.assertNotIn("WA_BRIDGE_HMAC_KEY_JET", child)
+            self.assertEqual(children[0][1][-1], request_id)
+
+    def test_poller_and_binder_strip_bootstrap_before_exec(self):
+        self._launch("poll")
+        self._launch("bind")
+
+    def test_operator_has_own_token_folder_and_no_owner_credentials(self):
+        self._launch("operator")
+
+    def test_wrong_folder_or_expired_token_fails_closed_without_fallback(self):
+        self._launch("poll", self.OPERATOR_TOKEN)
+        self._launch("operator", self.BRIDGE_TOKEN)
+        self._launch("poll", denied=True)
+
+    def test_operator_boot_preserves_only_client_arguments(self):
+        import subprocess
+        import sys
+        from pathlib import Path
+
+        from whatsapp_bridge.launch import arguments
+
+        request_id = "00000000-0000-4000-8000-000000000009"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "scripts" / "whatsapp_bridge"
+            package.mkdir(mode=0o700, parents=True)
+            (package / "__init__.py").write_text("")
+            (package / "operator_wake.py").write_text(
+                "import json,sys; print(json.dumps(sys.argv[1:]))"
+            )
+            args = arguments("operator", root, request_id)
+            result = subprocess.run(
+                [sys.executable, *args[6:]], capture_output=True, text=True, check=True
+            )
+        self.assertEqual(json.loads(result.stdout), [request_id])
 
 
 class BoundaryRegressionTests(unittest.TestCase):
@@ -410,16 +565,17 @@ class BoundaryRegressionTests(unittest.TestCase):
     def test_credential_file_errors_identify_source_without_contents(self):
         from pathlib import Path
 
-        from whatsapp_bridge.launch import CredentialSourceError, load_credential
+        from whatsapp_bridge.launch import CredentialSourceError, load_service_token
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with self.assertRaisesRegex(CredentialSourceError, "unavailable_systemd_credential"):
-                load_credential(root)
+            with self.assertRaisesRegex(CredentialSourceError, "unavailable_systemd_service_token"):
+                load_service_token(root, "infisical-jet")
             for content in (b"invalid synthetic secret", b"\xff"):
-                (root / "infisical").write_bytes(content)
-                with self.assertRaisesRegex(CredentialSourceError, "invalid_systemd_credential"):
-                    load_credential(root)
+                (root / "infisical-jet").write_bytes(content)
+                (root / "infisical-jet").chmod(0o600)
+                with self.assertRaisesRegex(CredentialSourceError, "invalid_systemd_service_token"):
+                    load_service_token(root, "infisical-jet")
 
     def test_non_object_media_is_metadata_only_without_poisoning_batch(self):
         for media in ([], ["provider metadata"], None, "opaque"):

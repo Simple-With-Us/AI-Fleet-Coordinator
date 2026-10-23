@@ -12,7 +12,7 @@ Type=simple
 User=wa-bridge
 Group=wa-bridge
 WorkingDirectory=/opt/afc-wa-bridge/REVIEWED_SHA
-LoadCredential=infisical:/etc/afc-wa-bridge/infisical.json
+LoadCredential=infisical-jet:/etc/afc-wa-bridge/infisical-jet-token
 Environment=WA_INFISICAL_PROJECT_ID=APPROVED_AFC_PROJECT_ID
 ExecStart=/usr/bin/python3 -I /opt/afc-wa-bridge/REVIEWED_SHA/scripts/whatsapp_bridge/launch.py poll
 Restart=on-failure

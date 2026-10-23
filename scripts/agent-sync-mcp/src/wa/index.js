@@ -4,19 +4,23 @@ const reply = (body, status = 200) => Response.json(body, { status, headers: { "
 
 export async function deliverPending(gate, fetchFn, deadline = Date.now() + 10000, source) {
   const subs = (await gate.eventSubscriptions({})).filter(s => subEventName(s) === WA_EVENT);
+  if (!subs.length) return { delivered: 0, pending: true };
   const destination = subs.map(s => `${s.id}:${s.refresh_before}`).join(",");
   const pending = await gate.waClaim({ destination, ...(source ? { source } : {}) });
   if (!pending) return { delivered: 0 };
   let delivered = 0; let permanent = false;
   try {
     for (const sub of subs) {
-      const event = { name: WA_EVENT, eventId: await eventIdFor(`${pending.id}:ring:${pending.ring ?? 0}`, sub.id), timestamp: new Date().toISOString(), data: { source: pending.source, owner_authorized: pending.source === "authenticated_owner" }, cursor: null };
-      let result;
-      try { result = await deliverEvent(fetchFn, sub, event, { deadline, isLive: () => gate.eventSubLive({ subId: sub.id }) }); }
-      catch { result = { outcome: "outcome_unknown", status: null, attempts: 0 }; }
-      if (result.outcome === "failed" && (result.status == null || result.status === 408 || result.status >= 500)) result = { ...result, outcome: "outcome_unknown" };
-      try { await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, wakeRef: "wa", messageId: null }); }
-      catch { console.log(JSON.stringify({ event: "wa_delivery_audit_failed" })); }
+      let result = { outcome: "outcome_unknown", status: null, attempts: 0 };
+      try {
+        const event = { name: WA_EVENT, eventId: await eventIdFor(`${pending.id}:ring:${pending.ring ?? 0}`, sub.id), timestamp: new Date().toISOString(), data: { source: pending.source, owner_authorized: pending.source === "authenticated_owner" }, cursor: null };
+        result = await deliverEvent(fetchFn, sub, event, { deadline, isLive: () => gate.eventSubLive({ subId: sub.id }) });
+        if (result.outcome === "failed" && (result.status == null || result.status === 408 || result.status >= 500)) result = { ...result, outcome: "outcome_unknown" };
+      } catch { /* The stable event id remains pending for reconciliation. */ }
+      finally {
+        try { await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, wakeRef: "wa", messageId: null }); }
+        catch { console.log(JSON.stringify({ event: "wa_delivery_audit_failed" })); }
+      }
       if (result.outcome === "delivered") delivered++;
       if (["rejected", "gone"].includes(result.outcome)) permanent = true;
     }

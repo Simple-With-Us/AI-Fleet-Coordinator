@@ -417,9 +417,44 @@ test("ambiguous callback delivery is audited explicitly and reconciles with a st
 
 test("all Zulip-shaped keys are removed while surrounding owner text remains", async () => {
   const { redactSecret, scanSecret } = await import("../src/contract.js");
+  // Synthetic scanner fixtures assembled at runtime; never real credentials.
   const first = "Aa1" + "b".repeat(29), second = "Bb2" + "c".repeat(29);
   const text = redactSecret(`before ${first} middle ${second} after`);
   assert.ok(!text.includes(first) && !text.includes(second));
   assert.ok(text.startsWith("before ") && text.endsWith(" after"));
   assert.equal(scanSecret(text), null);
+});
+
+test("owner permanent-rejection history survives transient failures, new rows and subscriber gaps", async () => {
+  let now = NOW; const s = setup(() => now); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  const rejected = async () => new Response("refused", { status: 400 });
+  await s.gate.waIngest({ body: batch([msg(1700)]), owner });
+  await deliverPending(s.gate, rejected);
+  assert.equal((await s.store.get("wa:owner_gate")).permanent_failures, 1);
+  now += wa.RERING_MS + 1;
+  await deliverPending(s.gate, async () => new Response("temporary", { status: 503 }));
+  assert.equal((await s.store.get("wa:owner_gate")).permanent_failures, 1);
+  now += 31000;
+  await s.gate.waIngest({ body: batch([msg(1701), msg(1702)]), owner });
+  await deliverPending(s.gate, rejected);
+  const beforeGap = await s.store.get("wa:owner_gate");
+  assert.equal(beforeGap.permanent_failures, 2);
+  const subscriptions = s.gate.eventSubscriptions;
+  s.gate.eventSubscriptions = async () => [];
+  await deliverPending(s.gate, rejected);
+  assert.deepEqual(await s.store.get("wa:owner_gate"), beforeGap);
+  s.gate.eventSubscriptions = subscriptions;
+  now += wa.RERING_MS + 1;
+  await deliverPending(s.gate, rejected);
+  const blocked = await s.store.get("wa:owner_gate");
+  assert.equal(blocked.permanent_failures, 3); assert.equal(blocked.blocked, true);
+  const rows = await s.store.list({ prefix: "wa:pending:owner:" });
+  assert.equal(rows.size, 3);
+  for (const row of rows.values()) assert.equal(row.permanent_failures, 3);
+  now += wa.RERING_MS + 1;
+  assert.equal(await s.gate.waClaim({ destination: blocked.destination }), null);
+  const refreshed = await s.gate.waClaim({ destination: "fresh-subscription" });
+  await s.gate.waSettle({ ...refreshed, delivered: false, permanent: true });
+  assert.equal((await s.store.get("wa:owner_gate")).permanent_failures, 1);
+  assert.equal((await s.store.get("wa:owner_gate")).blocked, false);
 });

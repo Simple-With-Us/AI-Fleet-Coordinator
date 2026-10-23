@@ -370,19 +370,18 @@ Rotate both Workers from this one value, FleetLink first.  See
 
 ## WhatsApp Wake Bridge (AFC-477, Not Provisioned)
 
-The default-off implementation reads only its approved runtime environment.  Source of truth for a future bridge deployment is this project's `prod` `/jet`, except the distinct Operator key in Fleet-OPS `prod` `/zulip`, separate from the generated root fleet-knobs block.  These entries document required names, not existing credentials or permission to provision them.
+The owner selected dedicated read-only service tokens in AFC.  This supersedes the earlier machine-identity/Fleet-OPS proposal; no credentials have been provisioned.  Bridge and binder use exact AFC `prod` `/jet`.  Operator uses the separate sibling AFC `prod` `/operator-jet-wake`, containing only its distinct signing key and literal Worker URL.  No machine identity, project-wide grant, Operator read/write token or plan purchase is involved.
 
-| Name | Consumer | Purpose |
+| Name | Source | Consumer |
 |---|---|---|
-| `WHATSAPP_API_KEY` | sole poller | Meta Agent Platform Bearer, never installed in the Worker |
-| `WA_BRIDGE_HMAC_KEY_JET` | sole poller and Worker | authenticated WhatsApp ingestion, at least 32 characters |
-| `WA_OPERATOR_HMAC_KEY_JET` | Operator and Worker | independent content-free agent doorbells, never owner authorization |
-| `WA_OWNER_BINDING_JET` | Worker | verified binding JSON from supervised code plus Meta creator check |
-| `WA_AGENT_HASH_JET` | sole poller | keyed verified agent hash for idle poll heartbeats |
-| `WA_SENDER_HASH_JET` | sole poller | keyed verified sender filter before forwarding any text |
-| `WA_WORKER_URL` | sole poller and Operator client | approved HTTPS Worker origin; AFC `/jet` for poller, non-secret mirror in Fleet-OPS `/zulip` for Operator |
-| `WA_STATE_DIRECTORY` | sole poller | approved private durable offset/lock directory |
-| `WHATSAPP_BRIDGE_ENABLED` | sole poller and Worker | exact `on` enables; absent defaults off |
-| `WHATSAPP_BRIDGE_WAKE_ENABLED` | Worker | exact `on` enables delivery; absent defaults off |
+| Existing `WHATSAPP_API_KEY`, unchanged | AFC prod `/jet` | Sole poller and supervised binder only |
+| `WA_BRIDGE_HMAC_KEY_JET` | AFC prod `/jet` | Poller/binder and existing Worker |
+| `WA_OWNER_BINDING_JET` | Verified private binding | Worker only |
+| `WA_AGENT_HASH_JET`, `WA_SENDER_HASH_JET`, `WA_STATE_DIRECTORY` | AFC prod `/jet` | Sole poller |
+| `WHATSAPP_BRIDGE_ENABLED`, `WHATSAPP_BRIDGE_WAKE_ENABLED` | Approved exact `on` settings | Bridge/Worker as applicable; default off |
+| `WA_OPERATOR_HMAC_KEY_JET` | AFC prod `/operator-jet-wake` | Operator client and existing Worker |
+| `WA_WORKER_URL` | Literal origin in both folders | Respective client |
 
-No new daily wake quota is introduced.  See [the bridge runbook](scripts/whatsapp_bridge/README.md) for exact action-time approvals, isolated Universal Auth identity, binding verification and activation steps.
+Proposed bootstrap tokens expire 30 days after provisioning and are server-scoped to `read` on one literal prod folder each, without wildcards, children or write grants.  Root-only systemd credentials deliver only the mode-specific token.  `launch.py` rejects ambient/shared auth; the reviewed `fleet_secrets run` strips bootstrap authentication before executing its exact child-key allowlist.  Operator receives no Meta key, owner-ingestion key, private owner binding or AFC `/jet` read grant.  Scope receipts and negative reads remain required before activation; mock tests are not proof of live provider permissions.  Expiry stops future loads, not keys already held by a running process.
+
+No daily wake quota is introduced.  The [bridge runbook](scripts/whatsapp_bridge/README.md) gives exact token names, expiry, protected storage, recipients and action-time approval steps.  Do not provision, install credentials or activate services before parent approval.
