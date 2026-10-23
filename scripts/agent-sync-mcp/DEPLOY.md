@@ -6,6 +6,37 @@ A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every dep
 
 Run everything from `scripts/agent-sync-mcp/` in a fresh worktree off `origin/main` (never `~/Code/AI-Fleet-Coordinator`).  Never merge stderr into output (`2>&1`) on a command that touches a credential.
 
+## Runtime secrets from Infisical (scoped service token, INFISICAL_MODE)
+
+The Worker can read its secrets at runtime from Fleet-OPS `prod` through one
+read-tools service token (`INFISICAL_SERVICE_TOKEN` + `INFISICAL_WORKSPACE_ID`
+bindings), instead of install-time copied Worker secrets.  `INFISICAL_MODE`:
+
+- `off` (default):  only the legacy Worker bindings are read.  Fully
+  compatible with every install below;  nothing changes until the mode is set.
+- `fallback`:  Infisical first, the legacy binding on a read failure - every
+  fallback is logged and counted (`/admin` status shows the counters).
+- `required`:  Infisical only, zero fallbacks.  A missing secret that is
+  DECLARED configured throws visibly;  a secret absent from the declaration
+  list is an intentionally-off capability and reads as empty.
+
+The declaration list is `INFISICAL_EXPECT` (comma-separated `path:name`), and
+it defaults to `INFISICAL_EXPECT_DEFAULT` in `src/infisical-manifest.js` -
+exactly the 72 secrets the population run copies into the scoped Fleet-OPS
+folders (3 wake at `/wake`, 18 FleetLink at `/fleetlink`, 48 Grok-Bot fields
+at `/zulip` + `/linear`, 3 recall at `/tools`).  GB-ENGINEER's FleetLink token
+was never provisioned and is deliberately NOT declared:  that seat is denied
+outright (`FLEETLINK_SEATS_DISABLED`), never silently put on the shared agent
+secret.  The ephemeral SPIKE wake key is never declared or stored here.
+
+**The copies are point-in-time and are NOT a source-rotation sync.**  Rotating
+a source secret does NOT update its Fleet-OPS copy.  After any source
+rotation, re-run the population copy script by hand:  it overwrites the
+destination value in place (no deletes) and the Worker's read cache picks the
+new value up within its TTL.  Secret references were rejected for this:
+cross-project references are unsupported, and same-project references would
+force the scoped token to read source paths outside its grant.
+
 ## Step 0:  Preflight
 
 ```bash
