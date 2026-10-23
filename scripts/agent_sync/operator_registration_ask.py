@@ -108,11 +108,7 @@ def _question_message_id(
             if marker not in str(message.get("content") or ""):
                 continue
             message_id = message.get("id")
-            if (
-                isinstance(message_id, int)
-                and not isinstance(message_id, bool)
-                and message_id > 0
-            ):
+            if isinstance(message_id, int) and not isinstance(message_id, bool) and message_id > 0:
                 return int(message_id), None, False
             # The ref landed but its id is unusable:  say the read-back failed rather
             # than guessing absence (a repost would duplicate) or paging on a bad cursor.
