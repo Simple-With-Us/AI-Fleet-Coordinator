@@ -49,3 +49,8 @@ a0df50e5843d698782688de322e01948d0710292:scripts/agent_sync/tests/test_mcp_extra
 # Cloudflare Access application audience tag (the public JWT aud claim, not a credential) for the
 # agents.simplewithus.com Access app, added by Echo in #844; main already carries the old host's tag.
 ef42f132ad746c13dbe89c058d9e895ef64790a8:scripts/agent-sync-mcp/wrangler.jsonc:generic-api-key:155
+
+# Dummy stripe-shaped value in the wake-only refusal test (PR #889):  the scanner must see
+# the shape at runtime, so the literal existed at rest in 3ca1a8b only;  split in source from
+# 8a138b8 on, this fingerprint silences the historical commit (same convention as above).
+3ca1a8b1c55a8724fa0467168b5b0dab093bda99:scripts/agent-sync-mcp/test/jet-wake-split.test.mjs:stripe-access-token:120
