@@ -108,18 +108,20 @@ export async function claim(store, { destination = "", source } = {}, now = Date
       if (row.source === "authenticated_owner" && (ownerGate.next_at > now || (ownerGate.destination === destination && ownerGate.blocked))) continue;
       if (row.next_ring_at > now || (row.destination === destination && row.blocked)) continue;
       const token = crypto.randomUUID();
+      const wake_id = row.wake_id ?? row.id;
       const keys = [];
       for (const [candidate, item] of rows) {
         if (item.source !== row.source || item.lease_until > now || item.next_ring_at > now || (item.destination === destination && item.blocked)) continue;
-        await tx.put(candidate, { ...item, ...(item.destination !== destination ? { permanent_failures: 0, blocked: false } : {}), token, destination, ring: row.ring ?? 0, lease_until: now + 30000 });
+        await tx.put(candidate, { ...item, ...(item.destination !== destination ? { permanent_failures: 0, blocked: false } : {}), token, wake_id, destination, ring: row.ring ?? 0, lease_until: now + 30000 });
         keys.push(candidate);
       }
-      return { ...row, key: k, keys, token };
+      return { ...row, key: k, keys, token, wake_id };
     }
     return null;
   });
 }
 export async function settle(store, { keys, key: k, token, delivered, permanent = false, noSubscriber = false }, now = Date.now()) {
+  if (typeof token !== "string" || !token) return;
   return store.transaction(async tx => {
     const claimed = [];
     for (const pendingKey of keys ?? [k]) {
@@ -134,12 +136,14 @@ export async function settle(store, { keys, key: k, token, delivered, permanent 
     const ownerBlocked = !delivered && (ownerFailures >= 3 || (gate.destination === destination && gate.blocked === true));
     const nextAt = now + (delivered || permanent ? RERING_MS : 30000);
     for (const [pendingKey, row] of claimed) {
-      if (noSubscriber) { await tx.put(pendingKey, { ...row, lease_until: 0 }); continue; }
+      const settled = { ...row, lease_until: 0 };
+      delete settled.token; // A claim may settle only once, including lost replies.
+      if (noSubscriber) { await tx.put(pendingKey, settled); continue; }
       if (delivered && row.source === "operator") { await tx.delete(pendingKey); continue; }
       const failures = row.source === "authenticated_owner" ? ownerFailures : (row.permanent_failures ?? 0) + (permanent ? 1 : 0);
       const blocked = row.source === "authenticated_owner" ? ownerBlocked : failures >= 3;
       if (blocked) console.log(JSON.stringify({ event: "wa_delivery_blocked", source: row.source }));
-      await tx.put(pendingKey, { ...row, lease_until: 0, next_ring_at: nextAt, permanent_failures: failures, blocked, ring: (row.ring ?? 0) + (delivered ? 1 : 0) });
+      await tx.put(pendingKey, { ...settled, next_ring_at: nextAt, permanent_failures: failures, blocked, ring: (row.ring ?? 0) + (delivered ? 1 : 0) });
     }
     // One attempt has one owner rejection history, independent of batch order.
     // Missing subscribers/transient failures cannot erase an earlier rejection.

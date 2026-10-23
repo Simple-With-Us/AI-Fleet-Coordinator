@@ -458,3 +458,40 @@ test("owner permanent-rejection history survives transient failures, new rows an
   assert.equal((await s.store.get("wa:owner_gate")).permanent_failures, 1);
   assert.equal((await s.store.get("wa:owner_gate")).blocked, false);
 });
+
+
+test("partial owner acknowledgment preserves the unknown coalesced ring event id", async () => {
+  let now = NOW; const s = setup(() => now); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  await s.gate.waIngest({ body: batch([msg(901), msg(902)]), owner });
+  const unknownCalls = [];
+  const unknown = async (_url, init) => { unknownCalls.push(JSON.parse(init.body)); throw new Error("synthetic lost reply"); };
+  await deliverPending(s.gate, unknown);
+  const firstId = unknownCalls[0].eventId;
+  await s.gate.waRead({}); await s.gate.waRead({ ack_through: "1" });
+  now += 30001;
+  await deliverPending(s.gate, s.fetchFn);
+  assert.equal(s.calls[0].eventId, firstId, "same coalesced ring despite its first row being acknowledged");
+  await s.gate.waRead({ ack_through: "2" });
+  await s.gate.waIngest({ body: batch([msg(903)]), owner });
+  await deliverPending(s.gate, s.fetchFn);
+  assert.notEqual(s.calls[1].eventId, firstId, "later independent work gets a new identity");
+});
+
+test("a consumed claim token cannot settle twice or change owner rejection history", async () => {
+  let now = NOW; const s = setup(() => now);
+  await s.gate.waIngest({ body: batch([msg(910), msg(911)]), owner });
+  const claim = await s.gate.waClaim({ destination: "synthetic" });
+  const refusal = { ...claim, delivered: false, permanent: true };
+  await s.gate.waSettle(refusal);
+  const once = [...s.store.map].map(([k,v]) => [k,structuredClone(v)]);
+  now += 1000;
+  await s.gate.waSettle(refusal);
+  await s.gate.waSettle({ ...refusal, token: undefined });
+  assert.deepEqual([...s.store.map], once, "replayed or absent token cannot mutate settled state");
+  assert.equal((await s.store.get("wa:owner_gate")).permanent_failures, 1);
+  now += wa.RERING_MS;
+  const next = await s.gate.waClaim({ destination: "synthetic" });
+  assert.notEqual(next.token, claim.token);
+  await s.gate.waSettle({ ...next, delivered: false, permanent: true });
+  assert.equal((await s.store.get("wa:owner_gate")).permanent_failures, 2);
+});

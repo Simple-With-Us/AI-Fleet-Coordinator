@@ -212,6 +212,50 @@ class BindingTests(unittest.TestCase):
                 hash_key="k" * 64,
             )
 
+    def test_future_binding_candidate_is_skipped_without_spending_the_code(self):
+        from whatsapp_bridge.binding import bind_once, verify_candidate
+
+        code = "JET-0123456789ABCDEF"
+        future = payload(code, offset=21)
+        future["entry"][0]["changes"][0]["value"]["messages"][0]["timestamp"] = "1792700120"
+        with self.assertRaisesRegex(StopBridge, "binding_candidate_not_unique"):
+            verify_candidate(
+                future,
+                code,
+                "synthetic",
+                1792699999,
+                1792700500,
+                request=lambda *a, **kw: self.fail("future candidate sent a read receipt"),
+                now=lambda: 1792700001,
+                hash_key="k" * 64,
+            )
+        answers = [future, payload(code, offset=22), {"success": True}]
+        calls = []
+
+        def request(url, headers, body=None, **options):
+            calls.append(body is not None)
+            return answers.pop(0)
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            try:
+                state.begin_binding("k" * 64, 1792699999, code=code)
+                pin = bind_once(
+                    state,
+                    "synthetic",
+                    code,
+                    1792699999,
+                    1792700500,
+                    request=request,
+                    now=lambda: 1792700001,
+                    hash_key="k" * 64,
+                )
+                self.assertEqual(pin["cutoff"], 1792700000)
+                self.assertEqual(calls, [False, False, True])
+                self.assertEqual(state.offset(), 0)
+            finally:
+                state.close()
+
     def test_supervised_binding_shares_lock_and_preserves_live_cursor(self):
         from whatsapp_bridge.binding import bind_once
 
@@ -510,7 +554,7 @@ class LaunchTests(unittest.TestCase):
             )
             args = arguments("operator", root, request_id)
             result = subprocess.run(
-                [sys.executable, *args[6:]], capture_output=True, text=True, check=True
+                [sys.executable, *args[6:]], capture_output=True, text=True, check=True, timeout=5
             )
         self.assertEqual(json.loads(result.stdout), [request_id])
 

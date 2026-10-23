@@ -13,7 +13,7 @@ export async function deliverPending(gate, fetchFn, deadline = Date.now() + 1000
     for (const sub of subs) {
       let result = { outcome: "outcome_unknown", status: null, attempts: 0 };
       try {
-        const event = { name: WA_EVENT, eventId: await eventIdFor(`${pending.id}:ring:${pending.ring ?? 0}`, sub.id), timestamp: new Date().toISOString(), data: { source: pending.source, owner_authorized: pending.source === "authenticated_owner" }, cursor: null };
+        const event = { name: WA_EVENT, eventId: await eventIdFor(`${pending.wake_id ?? pending.id}:ring:${pending.ring ?? 0}`, sub.id), timestamp: new Date().toISOString(), data: { source: pending.source, owner_authorized: pending.source === "authenticated_owner" }, cursor: null };
         result = await deliverEvent(fetchFn, sub, event, { deadline, isLive: () => gate.eventSubLive({ subId: sub.id }) });
         if (result.outcome === "failed" && (result.status == null || result.status === 408 || result.status >= 500)) result = { ...result, outcome: "outcome_unknown" };
       } catch { /* The stable event id remains pending for reconciliation. */ }

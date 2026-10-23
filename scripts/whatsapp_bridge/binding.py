@@ -25,7 +25,8 @@ def verify_candidate(
 ):
     if not isinstance(expected_code, str) or not re.fullmatch(r"JET-[A-F0-9]{16}", expected_code):
         raise StopBridge("invalid_binding_code")
-    if not opened_at <= now() <= expires_at or expires_at - opened_at > 600:
+    observed_at = now()
+    if not opened_at <= observed_at <= expires_at or expires_at - opened_at > 600:
         raise StopBridge("binding_window_closed")
     normalized = normalize(payload, 0, hash_key)
     raw_messages = payload["entry"][0]["changes"][0]["value"].get("messages", [])
@@ -34,7 +35,7 @@ def verify_candidate(
         for raw, msg in zip(raw_messages, normalized["messages"])
         if msg["type"] == "text"
         and msg["text"] == expected_code
-        and opened_at <= msg["timestamp"] <= expires_at
+        and opened_at <= msg["timestamp"] <= min(expires_at, observed_at + 60)
     ]
     if len(candidates) != 1:
         raise StopBridge("binding_candidate_not_unique")
@@ -96,6 +97,7 @@ def bind_once(
             sender = message["sender_hash"]
             if (
                 message["type"] != "text"
+                or not opened_at <= message["timestamp"] <= min(expires_at, now() + 60)
                 or not re.fullmatch(r"JET-[A-F0-9]{16}", text or "")
                 or attempts.get(sender, 0) >= 3
             ):
