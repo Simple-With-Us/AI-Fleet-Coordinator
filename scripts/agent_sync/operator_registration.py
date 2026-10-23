@@ -243,10 +243,6 @@ def begin(
     with L.locked(queue_path(registry_db)):
         data = load(registry_db)
         for entry in data["entries"].values():
-            if entry["state"] == STATE_CONFLICT and _identity(entry) == (platform, scope, native):
-                # An unsettled contradiction is the owner's to settle:  re-asking the same
-                # session would spam the chat and pile up duplicate conflict entries.
-                return {"status": "conflict", "entry": dict(entry)}
             if entry["state"] == STATE_ASKED and _identity(entry) == (platform, scope, native):
                 # The route can arrive after the question:  a chat discovered before its
                 # lease listed a topic gets its route filled in on a later pass.
@@ -417,11 +413,11 @@ def parse_answer(content: Any) -> dict[str, str] | None:
 
 
 def mark_notified(registry_db: str, entry_id: str, *, now: float | None = None) -> bool:
-    """Stamp the question DM as sent, so a restart never asks the same question twice.
+    """Stamp the question post as sent, so a restart never asks the same question twice.
 
     The stamp lands only on a live asked entry and only after the send returned, so a
-    failed send leaves the entry unstamped and the next wake retries the DM.  Answers False
-    when there was nothing to stamp.
+    failed send leaves the entry unstamped and the next wake retries the post.  Answers
+    False when there was nothing to stamp.
     """
     now = time.time() if now is None else float(now)
     with L.locked(queue_path(registry_db)):
@@ -435,7 +431,7 @@ def mark_notified(registry_db: str, entry_id: str, *, now: float | None = None) 
 
 
 def answer_reply(result: Mapping[str, Any]) -> str:
-    """The one-line DM the owner gets back.  Ids and the letter only, never a body."""
+    """The one-line reply posted where the answer arrived.  Ids and the letter only, never a body."""
     status = str(result.get("status") or "")
     entry_id = str(result.get("entry_id") or "")
     if status == "registered":
