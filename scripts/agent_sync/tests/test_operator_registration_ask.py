@@ -167,12 +167,18 @@ class LocationQuestionTests(_LocationQuestionFixture, unittest.TestCase):
 class _StubClient:
     """A scripted client, so the delivery ledger's state machine is testable without a socket."""
 
-    def __init__(self, *, post_error=None, me_error=None):
+    def __init__(self, *, post_error=None, me_error=None, messages=(), messages_error=None):
         self.post_error = post_error
         self.me_error = me_error
+        self.messages = list(messages)
+        self.messages_error = messages_error
         self.posts = []
 
-    def get(self, endpoint):
+    def get(self, endpoint, params=None):
+        if endpoint == "messages":
+            if self.messages_error is not None:
+                raise self.messages_error
+            return {"result": "success", "messages": list(self.messages)}
         assert endpoint == "users/me", endpoint
         if self.me_error is not None:
             raise self.me_error
@@ -193,58 +199,83 @@ class _StubClient:
 
 class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase):
     """The delivery ledger (same machinery as the candidate list):  a landed question is
-    never posted twice, an unknown outcome is never replayed inside the window, and only
-    a definite refusal or a provably-unsent failure frees the key."""
+    never posted twice, an unknown outcome is reconciled by reading the topic back for
+    the question's unique ref - never resent on a timer - and only a definite refusal,
+    a provably-unsent failure, or a proven-absent read-back frees the send."""
 
     def test_a_landed_question_is_never_posted_twice(self) -> None:
         first = self.send()
         self.assertEqual(first["status"], "sent", first["reason"])
-        second = self.send()
+        second = self.send(now=1000.0 + OC.DEDUPE_WINDOW + 1)
         self.assertEqual(second["status"], "sent")
         self.assertEqual(second["message_id"], first["message_id"])
         self.assertIn("already went", second["reason"])
         self.assertEqual(len(self.topic_posts()), 1)
 
-    def test_an_unknown_delivery_is_not_replayed(self) -> None:
-        failing = _StubClient(post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True))
+    def test_a_landed_but_unconfirmed_question_is_recovered_by_readback(self) -> None:
+        # The post landed but its outcome was unknown:  the ledger says unknown, the
+        # topic holds the question.  The retry must recover, not resend.
+        landed = [{"id": 9876, "content": QUESTION}]
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
         out = self.send(client=failing)
-        self.assertEqual(out["status"], "refused")
         self.assertEqual(out["delivery_status"], OC.DELIVERY_UNKNOWN)
-        working = _StubClient()
+        working = _StubClient(messages=landed)
         again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(again["message_id"], 9876)
+        self.assertEqual(again["delivery_status"], OC.DELIVERY_OK)
+        self.assertEqual(working.posts, [])
+
+    def test_an_unknown_delivery_is_resent_once_proven_absent(self) -> None:
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        out = self.send(client=failing)
+        self.assertEqual(out["delivery_status"], OC.DELIVERY_UNKNOWN)
+        # The topic read-back finds no trace of the ref:  resending is safe, inside or
+        # outside the window - the window's expiry is not what proves it.
+        working = _StubClient(messages=[])
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(len(working.posts), 1)
+
+    def test_an_unknown_delivery_waits_when_the_topic_cannot_be_checked(self) -> None:
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
+        blind = _StubClient(messages_error=Z.NetworkError("connect refused", maybe_sent=False))
+        again = self.send(client=blind, now=1001.0)
         self.assertEqual(again["status"], "refused")
         self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
-        self.assertEqual(working.posts, [])
+        self.assertEqual(blind.posts, [])
 
     def test_a_provably_unsent_failure_is_retryable(self) -> None:
         failing = _StubClient(post_error=Z.NetworkError("connect refused", maybe_sent=False))
         out = self.send(client=failing)
         self.assertEqual(out["status"], "refused")
         self.assertEqual(out["delivery_status"], OC.DELIVERY_RETRYABLE)
-        working = _StubClient()
+        working = _StubClient(messages=[])
         again = self.send(client=working, now=1001.0)
         self.assertEqual(again["status"], "sent", again["reason"])
         self.assertEqual(len(working.posts), 1)
 
-    def test_an_unknown_delivery_ages_out_of_the_window(self) -> None:
-        failing = _StubClient(post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True))
-        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
-        working = _StubClient()
-        again = self.send(client=working, now=1000.0 + OC.DEDUPE_WINDOW + 1)
-        self.assertEqual(again["status"], "sent", again["reason"])
-        self.assertEqual(len(working.posts), 1)
-
-    def test_a_rejected_credential_is_named_by_a_masked_preview_only(self) -> None:
+    def test_a_rejected_credential_is_named_without_any_secret(self) -> None:
         error = Z.AgentSyncError("unauthorized")
         error.status = 401
         out = self.send(client=_StubClient(me_error=error))
         self.assertEqual(out["status"], "refused")
         self.assertEqual(out["delivery_status"], OC.DELIVERY_REFUSED)
         self.assertEqual(out["code"], "credential_rejected")
+        # The credential is named by its identity and the server's code - no part of
+        # the key, not even a masked prefix or suffix.
+        self.assertIn(OPERATOR_EMAIL, out["reason"])
+        self.assertIn("401", out["reason"])
         self.assertNotIn(self.operator_key, out["reason"])
-        preview = OC._masked(self.operator_key)
-        self.assertIn(preview[:8], out["reason"])
-        self.assertIn(preview[-4:], out["reason"])
+        self.assertNotIn(self.operator_key[:8], out["reason"])
+        self.assertNotIn(self.operator_key[-4:], out["reason"])
 
 
 if __name__ == "__main__":

@@ -14,10 +14,12 @@ sending rules as the candidate list (operator_candidates.py, owner rulings Oct 2
 
 The dedupe is two layers.  The queue stamps an entry `notified_at` after a sent outcome, so
 a restart cannot re-ask.  The send itself holds the same delivery ledger as the candidate
-list (operator_candidates.py):  a reservation goes down before the post, an `unknown`
-outcome (the post may already sit in the topic) blocks any replay inside the window, only
-a definite refusal or a provably-unsent failure releases the key, and a replay after a
-landed post returns the cached message id instead of posting a second copy.  The answer
+list (operator_candidates.py):  a reservation goes down before the post, a landed
+question answers from the ledger instead of posting twice, and an `unknown` outcome (the
+post may already sit in the topic) is never resent on a timer - it is reconciled against
+the topic itself, where the question's unique ref identifies a landed copy.  Only a
+definite refusal, a provably-unsent failure, or a read-back that proves the question
+absent frees the send.  The answer
 intake is the daemon's _maybe_registration_answer, which accepts only an answer posted in
 the same channel/topic.
 
@@ -26,6 +28,7 @@ Standard library only, Python 3.11+.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -54,6 +57,42 @@ def _ledger_path(environment: Mapping[str, str]) -> str:
     return os.path.join(L.state_root(environment), "OPERATOR", "operator-registration-asks.json")
 
 
+def _question_message_id(
+    client: Any, channel: str, topic: str, marker: str
+) -> tuple[int | None, str | None]:
+    """The id of the question already carrying this ref in the topic, or None.
+
+    The second return is the error kind when the topic could not be read at all:
+    "could not check" must never read as "not there".
+    """
+    try:
+        result = client.get(
+            "messages",
+            {
+                "anchor": "newest",
+                "num_before": 50,
+                "num_after": 0,
+                "narrow": json.dumps(
+                    [
+                        {"operator": "channel", "operand": channel},
+                        {"operator": "topic", "operand": topic},
+                    ]
+                ),
+            },
+        )
+    except Exception as exc:
+        return None, type(exc).__name__
+    messages = result.get("messages") if isinstance(result, Mapping) else None
+    for message in messages or []:
+        if not isinstance(message, Mapping):
+            continue
+        if marker in str(message.get("content") or ""):
+            message_id = message.get("id")
+            if isinstance(message_id, int) and not isinstance(message_id, bool):
+                return int(message_id), None
+    return None, None
+
+
 def send_location_question(
     *,
     question: str,
@@ -77,8 +116,9 @@ def send_location_question(
     are the chat's return route from its own lease.  Returns a dict with `status`
     sent/refused, `reason`, and `delivery_status` (operator_candidates' DELIVERY_*):
     on a sent outcome the caller stamps the entry with mark_notified.  An `unknown`
-    delivery is never replayed inside the window:  the question may already sit in the
-    topic, and a duplicate question is not automatically benign.
+    delivery is reconciled by reading the topic back for the question's unique ref, never
+    resent on a timer:  the question may already sit in the topic, and a duplicate
+    question is not automatically benign.
     """
     environment = dict(env if env is not None else os.environ)
     at = time.time() if now is None else float(now)
@@ -136,10 +176,12 @@ def send_location_question(
         # the key a caller could not otherwise see (the candidate list's convention).
         status = getattr(exc, "status", getattr(exc, "status_code", None))
         if status in (401, 403):
+            # Never any part of the key:  the credential is named by its identity
+            # (the bot email) and the server's code only.
             return _outcome(
                 "refused",
-                "the Operator credential was rejected.  Preview: %s"
-                % OC._masked(getattr(creds, "key", "")),
+                "the Operator credential (%s) was rejected (%s)"
+                % (getattr(creds, "email", "?"), status),
                 delivery_status=OC.DELIVERY_REFUSED,
                 code="credential_rejected",
             )
@@ -181,21 +223,48 @@ def send_location_question(
 
     path = _ledger_path(environment)
     key = _fingerprint(channel, topic, body)
-    allowed, since, stored = OC._reserve(path, key, at, window, 0)
-    if not allowed:
-        state = str(stored.get("state") or "")
-        if state == OC.DELIVERY_OK:
-            # A successful send is cached:  a retry returns the same answer with the same
-            # message id instead of posting the question a second time.
+    stored = OC._sends(path).get(key)
+    state = str((stored or {}).get("state") or "")
+    if state == OC.DELIVERY_OK:
+        # The question provably landed (the row carries its id):  a repeated call means
+        # the caller's stamp was lost, so answer from the ledger instead of posting a
+        # second copy.
+        return _outcome(
+            "sent",
+            "the location question already went to the chat's topic",
+            delivery_status=OC.DELIVERY_OK,
+            message_id=stored.get("message_id"),
+        )
+    if state in (OC.DELIVERY_PENDING, OC.DELIVERY_UNKNOWN):
+        # A window's expiry never proves a post missed:  reconcile against the topic
+        # itself.  The question carries a unique ref, so a landed copy is identifiable.
+        landed_id, read_error = _question_message_id(client, channel, topic, entry_id)
+        if read_error is not None:
+            return _outcome(
+                "refused",
+                "the location question's delivery is unknown and the topic could not be "
+                "checked (%s)" % read_error,
+                delivery_status=OC.DELIVERY_UNKNOWN,
+            )
+        if landed_id is not None:
+            try:
+                OC._record(path, key, at, window, 0, landed_id, OC.DELIVERY_OK)
+            except Exception:
+                pass
             return _outcome(
                 "sent",
-                "the location question already went to the chat's topic %d seconds ago"
-                % int(since),
+                "the location question was already in the chat's topic",
                 delivery_status=OC.DELIVERY_OK,
-                message_id=stored.get("message_id"),
+                message_id=landed_id,
             )
-        # `unknown` (or an unsettled pending):  the question may already sit in the
-        # topic, so it is not replayed inside the window.
+        # Provably absent from the topic:  safe to post.  The residual race is explicit:
+        # the original post could land between this check and the retry, which is a
+        # duplicate question post - never a duplicate registration (the queue keeps one
+        # pending entry, and only the first answer registers).
+        OC._release(path, key, at, window)
+    allowed, _since, stored = OC._reserve(path, key, at, window, 0)
+    if not allowed:
+        # Settled concurrently between the check and the reservation:  do not double-post.
         return _outcome(
             "refused",
             "an identical location question to this topic has an unsettled delivery "
@@ -232,8 +301,8 @@ def send_location_question(
         if status in (401, 403):
             return _outcome(
                 "refused",
-                "the Operator credential was rejected.  Preview: %s"
-                % OC._masked(getattr(creds, "key", "")),
+                "the Operator credential (%s) was rejected (%s)"
+                % (getattr(creds, "email", "?"), status),
                 delivery_status=OC.DELIVERY_REFUSED,
                 code="credential_rejected",
             )
