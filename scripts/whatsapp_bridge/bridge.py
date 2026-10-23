@@ -145,6 +145,18 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def retry_delay(value):
+    # Bound before int(): provider headers can exceed Python's digit limit.
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= 6
+        or not value.isascii()
+        or not value.isdigit()
+    ):
+        return 30
+    return max(1, min(3600, int(value)))
+
+
 def request_json(url, headers, body=None, *, timeout=40):
     request = urllib.request.Request(
         url,
@@ -173,7 +185,7 @@ def request_json(url, headers, body=None, *, timeout=40):
         if 300 <= status < 400:
             raise StopBridge("redirect_refused") from None
         if status == 429:
-            raise BridgeError(f"rate_limited:{retry if retry.isdigit() else '30'}") from None
+            raise BridgeError(f"rate_limited:{retry_delay(retry)}") from None
         raise BridgeError(f"http_{status}") from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise BridgeError("network_error") from None
@@ -378,7 +390,7 @@ def main():
                     raise StopBridge("schema_stop") from None
                 delay = min(120, 5 * 2 ** min(errors - 1, 5))
                 if str(error).startswith("rate_limited:"):
-                    delay = min(3600, max(1, int(str(error).split(":")[1])))
+                    delay = retry_delay(str(error).partition(":")[2])
                 # Check the local stop switch every second, including backoff.
                 for _ in range(delay):
                     if (Path(os.environ["WA_STATE_DIRECTORY"]) / "disabled").exists():

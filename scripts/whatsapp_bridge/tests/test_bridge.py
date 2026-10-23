@@ -598,6 +598,8 @@ class BoundaryRegressionTests(unittest.TestCase):
             ("http_503", "outcome_unknown"),
             ("invalid_json", "outcome_unknown"),
             ("http_403", "http_403"),
+            ("operator_refused", "operator_refused"),
+            ("rate_limited:" + "9" * 5000, "operator_busy"),
             ("rate_limited:123", "operator_busy"),
         ):
             output = io.StringIO()
@@ -610,7 +612,7 @@ class BoundaryRegressionTests(unittest.TestCase):
             self.assertEqual(result["reason"], expected)
             self.assertEqual(call.call_count, 1, "no automatic retries")
             if expected == "operator_busy":
-                self.assertEqual(result["retry_after_s"], 123)
+                self.assertEqual(result["retry_after_s"], 123 if code == "rate_limited:123" else 30)
         output = io.StringIO()
         with contextlib.redirect_stderr(output):
             self.assertEqual(main([], {}), 1)
@@ -667,6 +669,50 @@ class BoundaryRegressionTests(unittest.TestCase):
         pin = json.loads(output.getvalue())
         self.assertEqual(pin["agent_hash"], digest("123456", "k" * 64))
         self.assertEqual(pin["sender_hash"], digest("user:owner", "k" * 64))
+
+    def test_retry_after_is_bounded_before_integer_conversion(self):
+        import urllib.error
+        from email.message import Message
+
+        from whatsapp_bridge.bridge import request_json, retry_delay
+
+        for value, expected in (
+            ("9" * 5000, 30),
+            ("１２３", 30),
+            ("-1", 30),
+            ("0", 1),
+            ("999999", 3600),
+            ("123", 123),
+        ):
+            headers = Message()
+            headers["Retry-After"] = value
+            with patch("urllib.request.build_opener") as opener:
+                opener.return_value.open.side_effect = urllib.error.HTTPError(
+                    "https://test", 429, "test", headers, None
+                )
+                with self.assertRaises(BridgeError) as caught:
+                    request_json("https://api.whatsapp.com/test", {})
+            self.assertEqual(str(caught.exception), f"rate_limited:{expected}")
+            self.assertEqual(retry_delay(value), expected)
+
+    def test_operator_negative_ack_is_refused_and_malformed_ack_stays_unknown(self):
+        from whatsapp_bridge.operator_wake import wake
+
+        request_id = "00000000-0000-4000-8000-000000000009"
+        for answer, expected in (
+            ({"ok": False, "reason": "synthetic-sensitive-text"}, "operator_refused"),
+            ({"ok": 0}, "operator_not_acknowledged"),
+            ({}, "operator_not_acknowledged"),
+        ):
+            calls = []
+
+            def request(*args, calls=calls, answer=answer):
+                calls.append(args)
+                return answer
+
+            with self.assertRaisesRegex(BridgeError, "^" + expected + "$"):
+                wake("https://worker.example", "k" * 64, request_id, request)
+            self.assertEqual(len(calls), 1, "no automatic retry")
 
     def test_http_classification_user_agent_and_no_redirect(self):
         import urllib.error

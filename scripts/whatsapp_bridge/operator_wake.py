@@ -14,9 +14,9 @@ import uuid
 from urllib.parse import urlsplit
 
 if __package__:
-    from .bridge import BridgeError, StopBridge, request_json
+    from .bridge import BridgeError, StopBridge, request_json, retry_delay
 else:
-    from bridge import BridgeError, StopBridge, request_json
+    from bridge import BridgeError, StopBridge, request_json, retry_delay
 
 
 def wake(base_url, signing_key, request_id, request=request_json):
@@ -49,6 +49,8 @@ def wake(base_url, signing_key, request_id, request=request_json):
         body,
     )
 
+    if isinstance(result, dict) and result.get("ok") is False:
+        raise StopBridge("operator_refused")
     if not isinstance(result, dict) or result.get("ok") is not True:
         raise BridgeError("operator_not_acknowledged")
     return result
@@ -78,7 +80,7 @@ def main(argv=None, environment=None):
                     {
                         "ok": False,
                         "reason": "operator_busy",
-                        "retry_after_s": max(1, min(3600, int(code.split(":")[1]))),
+                        "retry_after_s": retry_delay(code.partition(":")[2]),
                     }
                 ),
                 file=sys.stderr,
@@ -95,7 +97,12 @@ def main(argv=None, environment=None):
                 or code == "http_408"
                 or code.startswith("http_5")
             )
-            allowed = {"invalid_worker_url", "invalid_operator_request", "redirect_refused"}
+            allowed = {
+                "invalid_worker_url",
+                "invalid_operator_request",
+                "redirect_refused",
+                "operator_refused",
+            }
             reason = (
                 "outcome_unknown"
                 if transient
