@@ -77,6 +77,18 @@ class DmRefused(Z.AgentSyncError):
         self.reason = reason
 
 
+class MissingOperatorId(DmRefused):
+    """The runtime could not tell who the Operator bot is.
+
+    Its own code and reason, because a missing deployment setting is not the DM rule saying no.
+    A seat that answers inside a DM Operator opened was told "you may not open a direct message",
+    which is both untrue (it is answering, not opening) and unactionable (the seat cannot fix a
+    host that is missing a variable).  The message names the variable the host has to set, and
+    never a value."""
+
+    code = "missing_operator_user_id"
+
+
 def rule_enabled(env: Mapping[str, str] | None = None) -> bool:
     """True unless AGENT_SYNC_DM_RULE explicitly turns the block off.  The default is on."""
     raw = (env or {}).get(ENV_RULE)
@@ -244,7 +256,11 @@ def operator_opened_dm(
     The match is the **exact** 1:1 pair, never a superset:  a group conversation that merely contains
     the same people is not the conversation this call would open, and answering in it is not the
     reply-inside-an-Operator-DM the rule allows.  `self_id` is this seat's own bot id when the caller
-    knows it;  it is the other half of the pair and is never treated as an extra participant."""
+    knows it;  it is the other half of the pair and is never treated as an extra participant.
+
+    Raises `MissingOperatorId` when the Operator's id is not configured and the conversation needs
+    it to be judged:  the id is the only thing that proves Operator opened it, so the runtime does
+    not guess."""
     wanted = {int(p["user_id"]) for p in people if isinstance(p.get("user_id"), int)}
     if not wanted:
         return False
@@ -269,18 +285,33 @@ def operator_opened_dm(
         return False
     operator_id = operator_user_id if operator_user_id is not None else Z.operator_user_id()
     if operator_id is None:
-        # The Operator's id is not configured, so no conversation is provably Operator-opened.
-        # The new-direct-message rule then applies, which is the safe direction.
-        return False
+        # The Operator's id is not configured, so no conversation is provably Operator-opened and
+        # the answer would be a guess.  Fail closed, but say what is actually wrong:  the host is
+        # missing a variable, which the DM rule cannot fix and the seat cannot set either.
+        raise MissingOperatorId(
+            "the Operator's Zulip user id is not set, so a direct message Operator opened cannot "
+            "be told apart from one a seat opened:  set %s in the seat host's environment"
+            % Z.ENV_OPERATOR_USER_ID,
+            reason="missing_operator_user_id",
+        )
     return int(sender) == int(operator_id)
 
 
-def operator_user_id(env: Mapping[str, str] | None = None) -> int | None:
-    """The Operator bot's Zulip user id:  OPERATOR_ZULIP_USER_ID, else None when it is unset.
+def operator_user_id(env: Mapping[str, str] | None = None, pinned: int | None = None) -> int | None:
+    """The Operator bot's Zulip user id:  OPERATOR_ZULIP_USER_ID, else the id the host pinned,
+    else None when neither is set.
 
-    No id is committed, so a deployment that has not set the variable gets None rather than a
-    guess, and the caller fails closed.  Only an id, never a key;  it is safe to log."""
-    return Z.operator_user_id(env)
+    No id is committed, so a deployment that has not set one gets None rather than a guess, and
+    the caller fails closed.  The environment comes first, so a host that pins the id in its own
+    environment overrides the local config;  `pinned` is the id the host's own listener.toml
+    carries, the same place the owner's id is pinned.  Only an id, never a key;  it is safe to
+    log."""
+    found = Z.operator_user_id(env)
+    if found is not None:
+        return found
+    if isinstance(pinned, int) and not isinstance(pinned, bool) and pinned > 0:
+        return pinned
+    return None
 
 
 def env_or_root_default(env: Mapping[str, str] | None, name: str, fallback: str) -> str:

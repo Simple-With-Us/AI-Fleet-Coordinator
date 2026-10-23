@@ -668,6 +668,7 @@ class Tools:
         session_source: str,
         codex_thread_meta: bool = False,
         owner_user_id: int = 0,
+        operator_user_id: int = 0,
         owner_clients: Iterable[str] = (),
         notes_consumer: str = "CLAUDE",
         notes_consumer_label: str = "",
@@ -690,6 +691,10 @@ class Tools:
         self._call_tag: str | None = None
         self._call_state_key: str | None = None
         self.owner_user_id = owner_user_id
+        # The Operator service bot's own Zulip user id, pinned in the host's listener.toml.  It is
+        # the only proof that the Operator opened a DM, so a host that pins it lets a seat answer
+        # inside one;  a host that does not pin it gets a refusal that names the variable.
+        self.operator_user_id = operator_user_id
         self.owner_clients = set(owner_clients)
         # [notes_relay] seat:  the only bot whose reactions and replies count, and where the knob's answer came from
         # (notes.relay_consumer).  With a resolver both are read on first use, not at start:  the knob fetch can take
@@ -1681,7 +1686,7 @@ class Tools:
                 operator_opened=DMP.operator_opened_dm(
                     people,
                     existing,
-                    operator_user_id=DMP.operator_user_id(env),
+                    operator_user_id=DMP.operator_user_id(env, self.operator_user_id or None),
                     self_id=_int(self.me.get("user_id")),
                 ),
                 clarifying=bool(args.get("clarifying_question")),

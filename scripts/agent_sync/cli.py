@@ -1254,6 +1254,20 @@ def pinned_owner_id(agent: Agent) -> int | None:
     return owner if owner > 0 else None
 
 
+def pinned_operator_id(agent: Agent) -> int | None:
+    """`daemon.operator_user_id` of the installed listener.toml, or None when it is not pinned.
+
+    The Operator service bot's own Zulip user id, pinned in the host's own config the same way the
+    owner's id is:  a production user id is private inventory, so none is committed and the host
+    decides.  It is the only proof that the Operator opened a direct message, so a host that pins
+    it lets a seat answer inside one (Kody review on AFC-473)."""
+    try:
+        operator = int(listener_cli._load(agent.rt).operator_user_id)
+    except Exception:  # noqa: BLE001 - a missing or damaged config is "not pinned" here
+        return None
+    return operator if operator > 0 else None
+
+
 def cmd_whoami(agent: Agent, args: argparse.Namespace) -> int:
     """Both identities:  the seat this session resolved, and the bot its key authenticates as.
     Exits 3 when they differ (the key is printed by no path)."""
@@ -1424,6 +1438,20 @@ def _check_text_args(args: argparse.Namespace) -> None:
         raise UsageError("no message text:  give TEXT, '-' to read stdin, or --body-file PATH")
 
 
+def _scan_refusal(agent: Agent, **fields: str) -> None:
+    """Refuse caller text that looks like a secret, naming the field and the kind, never the value.
+
+    The MCP side scans every field it posts;  the CLI scans the message body, and the topic and the
+    channel are caller text as well, so they are scanned here too (Kody review on AFC-473).  The
+    message names the kind, never a prefix of the value and never the value itself, because the
+    refusal can reach a log."""
+    known = secretscan.basic_forms(agent.creds.email, agent.creds.key)
+    for field, value in fields.items():
+        kind = secretscan.scan(value or "", known)
+        if kind:
+            raise UsageError("refusing to post:  the %s looks like it contains %s" % (field, kind))
+
+
 def _read_text(agent: Agent, parts: Sequence[str], body_file: str | None = None) -> str:
     _check_text_args(argparse.Namespace(text=list(parts), body_file=body_file))
     if body_file is not None:
@@ -1433,9 +1461,7 @@ def _read_text(agent: Agent, parts: Sequence[str], body_file: str | None = None)
     text = text.strip()
     if not text:
         raise UsageError("the message text is empty")
-    found = secretscan.scan(text, secretscan.basic_forms(agent.creds.email, agent.creds.key))
-    if found:
-        raise UsageError("refusing to post: the text looks like it contains %s" % found)
+    _scan_refusal(agent, text=text)
     return text
 
 
@@ -1664,6 +1690,7 @@ def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
             args.channel, args.topic
         )  # before any request, including the --to lookup
     text = _read_text(agent, args.text, getattr(args, "body_file", None))
+    _scan_refusal(agent, topic=args.topic, channel=args.channel)
     mentions, labels = _resolve_targets(agent, args.to, bool(getattr(args, "to_owner", False)))
     if args.fleet:
         mentions.append(FLEET_WAKE_MENTION)
@@ -1919,7 +1946,7 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
             operator_opened=DMP.operator_opened_dm(
                 recipients,
                 existing,
-                operator_user_id=DMP.operator_user_id(env),
+                operator_user_id=DMP.operator_user_id(env, pinned_operator_id(agent)),
                 self_id=_int_or_none(agent.me().get("user_id")),
             ),
             clarifying=bool(getattr(args, "clarifying_question", None)),
@@ -2184,6 +2211,7 @@ def cmd_reply(agent: Agent, args: argparse.Namespace) -> int:
     if original.get("type") != "stream":
         raise UsageError("message %d is a direct message; reply is channel-only in v1" % args.id)
     channel, topic = message_channel(original), message_topic(original)
+    _scan_refusal(agent, topic=topic, channel=channel)
     mentions, labels = _resolve_targets(agent, args.to, to_owner)
     body = _compose(agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag)
     return _send(agent, channel, topic, body)

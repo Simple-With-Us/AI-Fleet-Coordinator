@@ -713,6 +713,18 @@ class OperatorIdentityTests(unittest.TestCase):
         self.assertEqual(Z.masked_credential(""), "missing")
         self.assertEqual(Z.masked_credential("short"), "s\u2026")
 
+    def test_a_short_credential_exposes_one_character_only(self) -> None:
+        #  Thirteen characters:  the old threshold showed twelve of them, which is nearly the
+        #  whole secret, in an error that can reach a log.
+        key = "abcdefghijklm"
+        preview = Z.masked_credential(key)
+        self.assertEqual(preview, "a\u2026")
+        self.assertNotIn(key[1:], preview)
+        #  The threshold itself:  under 24 characters one leading character, at or over it the
+        #  first eight and the last four.
+        self.assertEqual(Z.masked_credential("x" * 23), "x\u2026")
+        self.assertEqual(Z.masked_credential("y" * 24), "yyyyyyyy\u2026yyyy")
+
 
 if __name__ == "__main__":
     unittest.main()

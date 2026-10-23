@@ -138,6 +138,10 @@ OPERATOR_SEAT = "OPERATOR"
 # variable name carries the Operator's identity for the service, so one setting serves both.
 ENV_OPERATOR_USER_ID = "OPERATOR_ZULIP_USER_ID"
 
+#: The shortest credential the preview may describe in full.  Below it the preview shows one
+#: leading character only, because eight plus four of a shorter value discloses nearly all of it.
+MASK_MIN_LENGTH = 24
+
 
 def default_channel(env: Mapping[str, str] | None = None) -> str:
     """The channel a post goes to when the caller names none.
@@ -174,11 +178,17 @@ def operator_user_id(env: Mapping[str, str] | None = None) -> int | None:
 def masked_credential(key: Any) -> str:
     """A credential preview safe to hand back to a caller:  the first eight and the last
     four characters only.  A refused key has to be identifiable without ever being written
-    out in full, and that is what the preview is for."""
+    out in full, and that is what the preview is for.
+
+    A short value gets one leading character and nothing else:  at 24 characters the preview
+    still hides at least half the secret, but below it the first eight and the last four
+    would disclose most of the value (a 13-character key showed 12 of its 13 characters),
+    and an error that carries the preview may reach a log.  So a value under the threshold
+    shows one character, which is enough to tell two refusals apart."""
     text = str(key or "")
     if not text:
         return "missing"
-    if len(text) <= 12:
+    if len(text) < MASK_MIN_LENGTH:
         return "%s\u2026" % text[:1]
     return "%s\u2026%s" % (text[:8], text[-4:])
 

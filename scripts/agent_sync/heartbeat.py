@@ -15,9 +15,10 @@ has errors.  A degraded state that lasts two beats in a row also sends one warni
 single blip (a queue that failed one poll) sends an `error` check-in and no event.
 
 Secrets:  the DSN comes from `AGENT_SYNC_SENTRY_DSN` or `SENTRY_FLEET_DSN` in the environment (the server:
-Infisical `prod` `/zulip`, loaded at start by `server/infisical_env.py`), else from the same two names in
-the KEY=value file that `AGENT_SYNC_SENTRY_ENV_FILE` names (an explicit override;  there is no default
-file), else (the Mac) `fleet-secrets get SENTRY_FLEET_DSN --path /agent-sync` from Infisical Fleet-OPS.
+Infisical `prod` `/zulip`, loaded at start by `server/infisical_env.py`), else (the Mac)
+`fleet-secrets get SENTRY_FLEET_DSN --path /agent-sync` from Infisical Fleet-OPS.  Those two sources are
+the only ones:  a caller-named file is not a secret source, because a file path picks the secret rather
+than the approved store (owner ruling, Oct 22 2026, Kody review on AFC-473).
 No credential file is read (AFC-359).  The DSN
 is never logged, never put in an error and never written to status.json.  With no DSN the heartbeat is off
 and says so once.  A send never blocks the daemon:  it runs on its own short-lived thread, and a failure
@@ -49,7 +50,6 @@ BACKOFF_FIRST_SECONDS = 30.0
 FAILURE_LOG_SECONDS = 30 * 60.0
 TIMEOUT_SECONDS = 10.0
 ENV_DSN_NAMES = ("AGENT_SYNC_SENTRY_DSN", "SENTRY_FLEET_DSN")  # the first wins
-ENV_FILE = "AGENT_SYNC_SENTRY_ENV_FILE"
 ENV_OFF = "AGENT_SYNC_SENTRY_HEARTBEAT"  # 0, off, false or no turns it off
 ENV_ENVIRONMENT = "AGENT_SYNC_SENTRY_ENVIRONMENT"
 DEFAULT_ENVIRONMENT = (
@@ -107,24 +107,6 @@ def parse_dsn(text: str) -> Dsn | None:
     return Dsn(parts.scheme, "%s:%d" % (host, port) if port else host, project, key)
 
 
-def read_env_file(path: str, names: tuple[str, ...] = ENV_DSN_NAMES) -> dict[str, str]:
-    """Only the named keys from a KEY=value file (quotes stripped);  nothing else in it is read into memory."""
-    found: dict[str, str] = {}
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line.startswith("export "):
-                    line = line[7:].lstrip()
-                name, sep, value = line.partition("=")
-                name = name.strip()
-                if sep and name in names and name not in found:
-                    found[name] = value.strip().strip("'\"")
-    except (OSError, UnicodeDecodeError):
-        pass
-    return found
-
-
 def _fleet_secrets_dsn(env: Mapping[str, str], home: str) -> str:
     """SENTRY_FLEET_DSN from Infisical Fleet-OPS /agent-sync through fleet-secrets, or '' (absent, not
     installed, or a failure:  the heartbeat is then off and says so;  no output is ever read out)."""
@@ -163,18 +145,18 @@ _default_dsn_fetch = _fleet_secrets_dsn
 def resolve_dsn(
     env: Mapping[str, str], home: str, fetch: Callable[[Mapping[str, str], str], str] | None = None
 ) -> str:
-    """The DSN text, or ''.  Environment first, then the explicit AGENT_SYNC_SENTRY_ENV_FILE, then
-    Infisical Fleet-OPS /agent-sync SENTRY_FLEET_DSN (unless AGENT_SYNC_INFISICAL turns Infisical off),
-    through `fetch` (the Heartbeat passes its cached one) or the default fetch."""
+    """The DSN text, or ''.  Environment first, then Infisical Fleet-OPS /agent-sync SENTRY_FLEET_DSN
+    (unless AGENT_SYNC_INFISICAL turns Infisical off), through `fetch` (the Heartbeat passes its
+    cached one) or the default fetch.
+
+    The environment and the approved secret store are the only sources.  A caller-named file is
+    not one:  `AGENT_SYNC_SENTRY_ENV_FILE` was removed on Oct 22 2026 because a path picks the
+    secret rather than the store, and a stale file silently supplied a DSN ahead of Infisical.
+    With neither source the DSN is '' and the heartbeat stays off, which is the safe direction.
+    """
     for name in ENV_DSN_NAMES:
         if (env.get(name) or "").strip():
             return env[name].strip()
-    if (env.get(ENV_FILE) or "").strip():
-        file_values = read_env_file(os.path.expanduser(env[ENV_FILE].strip()))
-        for name in ENV_DSN_NAMES:
-            if file_values.get(name):
-                return file_values[name]
-        return ""
     if not Z.infisical_enabled(env):
         return ""
     return (fetch or _default_dsn_fetch)(env, home) or ""

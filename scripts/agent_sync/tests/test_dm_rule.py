@@ -23,6 +23,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from agent_sync import clarify
 from agent_sync import dm_policy as DMP
@@ -285,6 +286,47 @@ class OperatorOpenedDmTests(unittest.TestCase):
         self.assertFalse(DMP.operator_opened_dm(people, opened,
                                                 operator_user_id=SYNTHETIC_OPERATOR_ID))
 
+    def test_a_missing_operator_id_is_refused_by_name_and_not_as_the_dm_rule(self) -> None:
+        # The Operator's id is the only proof that Operator opened the conversation, so without it
+        # the runtime does not guess:  it refuses, and it says the host is missing a variable
+        # instead of telling the seat the DM rule said no, which is both untrue (the seat is
+        # answering, not opening) and unactionable (the seat cannot fix the host).
+        people = [bot(SYNTHETIC_OPERATOR_ID)]
+        opened = [{"type": "private", "id": 5, "sender_id": SYNTHETIC_OPERATOR_ID,
+                   "display_recipient": [{"id": SYNTHETIC_OPERATOR_ID}, {"id": 7}]}]
+        with mock.patch.object(Z, "operator_user_id", return_value=None):
+            with self.assertRaises(DMP.MissingOperatorId) as caught:
+                DMP.operator_opened_dm(people, opened, operator_user_id=None, self_id=7)
+        self.assertEqual(caught.exception.reason, "missing_operator_user_id")
+        self.assertEqual(caught.exception.code, "missing_operator_user_id")
+        self.assertIn("OPERATOR_ZULIP_USER_ID", str(caught.exception))
+        self.assertTrue(issubclass(DMP.MissingOperatorId, DMP.DmRefused))
+        self.assertEqual(DMP.MissingOperatorId.exit_code, 3)
+
+    def test_a_missing_operator_id_does_not_refuse_when_there_is_nothing_to_judge(self) -> None:
+        # A conversation with no messages is a new DM, and the rule refuses that on its own terms.
+        # The missing id is only a problem when a conversation exists that Operator may have opened.
+        people = [bot(SYNTHETIC_OPERATOR_ID)]
+        with mock.patch.object(Z, "operator_user_id", return_value=None):
+            self.assertFalse(DMP.operator_opened_dm(people, [], operator_user_id=None, self_id=7))
+
+    def test_the_pinned_id_answers_when_the_environment_has_none(self) -> None:
+        # The host pins the Operator's id in its own listener.toml, the same place the owner's id
+        # is pinned:  a production user id is private inventory, so none is committed.  The
+        # environment still wins, so a host that sets one overrides its own config.
+        self.assertEqual(
+            DMP.operator_user_id({}, pinned=SYNTHETIC_OPERATOR_ID), SYNTHETIC_OPERATOR_ID
+        )
+        self.assertIsNone(DMP.operator_user_id({}, pinned=None))
+        self.assertIsNone(DMP.operator_user_id({}, pinned=0))
+        self.assertEqual(
+            DMP.operator_user_id(
+                {"OPERATOR_ZULIP_USER_ID": str(SYNTHETIC_OPERATOR_ID + 1)},
+                pinned=SYNTHETIC_OPERATOR_ID,
+            ),
+            SYNTHETIC_OPERATOR_ID + 1,
+        )
+
 
 class RefusalExitCodeTests(unittest.TestCase):
     """A refusal is not a malformed command:  the CLI must exit 3 so a caller can tell them apart."""
@@ -315,6 +357,7 @@ class ToolRefusalContextTests(unittest.TestCase):
         tools.me = {"user_id": 7}
         tools.seat = "CODEX"
         tools.owner_user_id = None
+        tools.operator_user_id = 0
         return tools
 
     def test_a_refusal_names_the_seat_and_the_claimed_identity(self) -> None:
