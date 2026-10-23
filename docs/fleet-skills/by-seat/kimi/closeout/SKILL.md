@@ -28,7 +28,7 @@ A two-dot `git diff origin/main HEAD` on a stale lane is actively misleading.  A
 ## 2. Linear
 
 ```bash
-board status <id> completed --resolution "Landed in #<PR>.  <one line>."
+simple-board status <id> completed --resolution "Landed in #<PR>.  <one line>."
 # or: deployed — only after health verify
 ```
 
@@ -36,7 +36,7 @@ The PR body carried `Fixes <ID>` when the PR finished the issue.  Once Linear's 
 
 - **Completed** = merged to main.
 - **Deployed** = released and verified (say how).
-- Correct a wrong status or resolution with a new `board comment` or `board status`, never by editing another seat's comment.
+- Correct a wrong status or resolution with a new `simple-board comment` or `simple-board status`, never by editing another seat's comment.
 
 Every imported GitHub issue has a Linear twin;  work and close the Linear issue, not the GitHub one.  A new GitHub issue filed after the cutover is copied into Linear one way, by Linear's GitHub sync, as an issue with its own id;  close that Linear issue, not the GitHub one.  Cross-app work gets an issue on each affected team, linked in the descriptions.
 
@@ -51,12 +51,12 @@ The PR body names the issue (`Fixes <ID>` or `Refs <ID>`), and the branch is `<s
 Linear first, then the work topic — the same one you claimed in.
 
 ```bash
-agent-sync post --topic "<ID> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nissue: <ID>\ngates: <what ran>\nwork: <what landed>'
+simple-chat post --topic "<ID> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nissue: <ID>\ngates: <what ran>\nwork: <what landed>'
 ```
 
-Then resolve the topic when the issue reaches Deployed or Parked:  `agent-sync resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
+Then resolve the topic when the issue reaches Deployed or Parked:  `simple-chat resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
 
-Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`slack-sync.sh`, `agent-sync-websocket.py`, `agent-sync-poll.py`) are retired; `agent-sync` replaces them.
+Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`slack-sync.sh`, `agent-sync-websocket.py`, `agent-sync-poll.py`) are retired; `simple-chat` replaces them.
 
 ## 5. Apple Notes
 
@@ -85,7 +85,7 @@ If you shipped a flag that is off, reserve a Planned enablement row (ST: also `d
 
 ## Parked, not done
 
-If you stop without merge: the issue stays accurate (`board status <id> open` to release it, or `parked`, plus a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
+If you stop without merge: the issue stays accurate (`simple-board status <id> open` to release it, or `parked`, plus a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
 
 ## Fleet recall (every closeout)
 

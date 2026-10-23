@@ -16,21 +16,49 @@ Act on regenerable waste.  Do not only report.  Ask before deleting anything tha
 
 This is the most important step, and the one that was missing.  This is a **16 GiB** Mac; swap is the only mechanism converting RAM pressure into disk consumption, and swapfiles share the APFS container with user data.
 
-- **Free disk > 80G** → not a disk problem.  Report and stop.  Do not clean.
-- **load1 > 40 or swap ≥ 90%** → the machine is thrashing.  Heavy cleanup costs more than it returns (measured 2026-09-01: a run freed −1.21G and *added* +1.84G swap).  Cheap truncations only; do **not** run CleanMyMac.
-- **Free < 80G and load1 < 40** → run the full playbook.
+- **Free disk > 80G** → not a disk problem.  Report and stop.  Do not clean.  (80G is the reclaim engine's healthy band, `config/reclaim-policy.json` `bands.disk.healthyFreeGb`.)
+- **Free < 80G** → run the playbook.  Pressure changes the **shape** of the run, never its **scope** (owner ruling 2026-10-02).
 
-Deleting caches never reduces swap.  If the pressure is swap or load only, say so and stop.
+**Pressure shapes the work, it never shrinks it.**  The old rule — "swap ≥ 90% or load1 > 40 → cheap truncations only, do not run CleanMyMac" — was a guard whose threshold sat *inside* this host's normal operating band: load1 runs 15-30 here continuously from real fleet build work, so it was true almost always, and wedged to a near-permanent swap reading it meant cleaning almost never ran.  A guard whose threshold equals the normal state is an outage, not a guard.
+
+Under pressure, **chunk** instead of cutting: two to four bounded chunks, fewer targets per chunk and a longer pause between them (2 targets and a 2x pause under pressure, 1 target and a 4x pause while thrashing), re-reading `df` and `uptime` between chunks.  Never key a skip on load1 alone — it is a lagging indicator that counts uninterruptible page-in as running.  Real thrash is high load1 with **cpu idle below 12%**.  The "cheap truncations only" tier is retired: CleanMyMac's **RAM** mode is the thing that must never run (see below), and its cleanup mode is part of the safe tier.
+
+Deleting caches never reduces swap.  If the pressure is swap or load only, say so and stop — that is a statement about swap, not a licence to skip disk work when the disk is also low.
 
 ## Take the lock
 
-Six schedulers reach the same playbook (`mac-cleanup` 4h, `disk-janitor` 30m, `mac-resource-watch` 5m, three routines, one webhook, plus a live bot thread).  `mac-auto-cleanup.sh` now takes a **re-entrant owner-token lock**; callers that already hold it export `HOUSEKEEPER_LOCK_OWNER=1` before spawning children, so the parent does not deadlock its own subprocesses.
+Several schedulers reach the same playbook and they all take the **same** lock, so two of them never reclaim at once: `mac-cleanup` every 4h, `mac-resource-watch` every 5m, **Hog Hunter's robotic vacuum every 300s** (the primary automatic path since the older disk-janitor daemon was retired on 2026-10-11), the BotFleet routines at 09:00 / 15:00 / 21:00, the resource webhook, plus a live bot thread.  `mac-auto-cleanup.sh` takes a **re-entrant owner-token lock**; callers that already hold it export `HOUSEKEEPER_LOCK_OWNER=1` before spawning children, so the parent does not deadlock its own subprocesses.  The lock is a directory, and it is treated as stale after 120 minutes.  Its exact path is private deployment inventory: it lives in the operator's own inventory on that Mac, not in this pack.  The path arrives in the environment as `HOUSEKEEPER_LOCK`, the variable the shipped cleanup script exports to the children it spawns, so a caller that already holds the lock inherits the real path and a caller that does not have to supply it before it can take the lock at all.
 
 ```bash
 export HOUSEKEEPER_LOCK_OWNER=1
-mkdir ~/.claude-disk-janitor/.housekeeper.lock 2>/dev/null || { echo "skipped, peer holds lock"; exit 0; }
-trap 'rmdir ~/.claude-disk-janitor/.housekeeper.lock 2>/dev/null' EXIT
+: "${HOUSEKEEPER_LOCK:?set HOUSEKEEPER_LOCK to the operator's inventory lock path before taking the lock}"
+LOCK_DIR="$HOUSEKEEPER_LOCK"
+python3 - "$LOCK_DIR" <<'PY'
+import os
+import sys
+
+try:
+    os.mkdir(sys.argv[1])
+except FileExistsError:
+    raise SystemExit(75)
+except OSError as exc:
+    print("housekeeper lock: cannot create the lock directory: %s" % (exc.strerror or exc), file=sys.stderr)
+    raise SystemExit(1)
+PY
+status=$?
+case "$status" in
+  0) ;;
+  75) echo "skipped, peer holds lock"; exit 0 ;;
+  *) exit "$status" ;;
+esac
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 ```
+
+Only `FileExistsError` means a peer holds the lock, so the lock is skipped.  Any other `OSError` —
+a permission problem, a missing parent, a full disk — exits nonzero and says so, because a lock that
+could not be taken is not a lock another seat holds.  The atomic `mkdir` runs in Python and not in the shell, so that only `EEXIST` is read as contention: a shell `mkdir ... ||` handler reads every error as contention and reports a lock that was never taken as a peer's lock.
+
+The snippet also fails closed when `HOUSEKEEPER_LOCK` is unset.  A placeholder path would create a lock directory relative to the caller's working directory, so the schedulers would stop sharing one lock and could reclaim at the same time, and it would leave a stray directory behind in whatever directory the agent ran from.  Requiring the variable refuses the run instead of taking the wrong lock.
 
 ## Immediate commands
 
@@ -47,7 +75,7 @@ Safe reclaim (idempotent):
 ```bash
 python3 /Users/jay/apps/mac-resource-watch.py --once --no-webhook   # no --clean
 bash /Users/jay/apps/mac-auto-cleanup.sh --pressure
-bash /Users/jay/.claude-disk-janitor/janitor.sh
+bash "<the janitor script path>"   # exact path: the operator's private inventory on that Mac
 cleanmymac clean --force
 ```
 
@@ -55,32 +83,34 @@ cleanmymac clean --force
 
 **Do not pass `--clean`** in a routine.  It means "clean even without a hit", not "ignore the cooldown"; `--force` is the only bypass and is for manual use.
 
-`mac-auto-cleanup` already calls CleanMyMac when the CLI is on PATH.  Disk janitor owns idle/merged worktree retirement.  Never `rm -rf` `CoreSimulator/Devices`, never `simctl shutdown all`, never wipe `~/.grok/worktrees`.
+`mac-auto-cleanup` already calls CleanMyMac when the CLI is on PATH.  **Hog Hunter's robotic vacuum** owns idle/merged worktree retirement now that the older disk-janitor daemon is retired; its janitor script can still be run by hand from the operator's private inventory.  Never `rm -rf` `CoreSimulator/Devices`, never `simctl shutdown all`, never wipe the Grok worktree directory.
 
 ## Thresholds that must wake this role
 
-These are the live defaults for `com.jay.mac-resource-watch` (every 5 min):
+These are the live defaults for the resource-watch job (every 5 min):
 
 | Signal | Wake when | Immediate action |
 |---|---|---|
-| Disk free | ≤ 80G warn, ≤ 50G critical | cleanup + janitor + CleanMyMac |
-| Disk drop | ≥ 6G since last sample | same, even if still above 80G |
-| Swap | used ≥ 80% **and** ≥ 8G absolute | report hogs; do **not** clean disk for a RAM problem |
-| Load 1m | ≥ 16 (optional, on by default) | report hogs; do not SIGKILL `com.jay.claude-remote-control` |
+| Disk free | ≤ 25G warn, ≤ 15G critical | cleanup + janitor + CleanMyMac |
+| Disk drop | ≥ 15G since last sample | same, even if still above 25G |
+| Swap | used ≥ 90% **and** ≥ 32G absolute | report hogs; do **not** clean disk for a RAM problem |
+| Load 1m | ≥ 65 (optional, on by default) | report hogs; do not SIGKILL `com.jay.claude-remote-control` |
 
-The watch runs the safe scripts itself, then POSTs BotFleet Housekeeper webhook `resource.disk` / `resource.ram` / `resource.cpu` / `resource.pressure`.  Cooldown 45 min.  Webhook URL and secret live in Infisical Fleet-OPS `/botfleet-housekeeper-webhook` (read with `fleet-secrets get`, never print).
+These are the live defaults in the resource-watch script: `RESOURCE_DISK_WARN_GB`, `RESOURCE_DISK_CRIT_GB`, `RESOURCE_DISK_DROP_GB`, `RESOURCE_SWAP_USED_PCT`, `RESOURCE_SWAP_USED_GB`, `RESOURCE_LOAD1`.  They were retuned down deliberately: the old 80G warn line ran `mac-auto-cleanup.sh --pressure` every 5 minutes back to back, and two of three runs ended with **less** free disk than they started.  The reclaim engine's bands are separate and live in the reclaim engine's own policy file (its path is in the operator's private inventory on that Mac): healthy at 80G free, acute below 40G, critical below 25G.
+
+The watch runs the safe scripts itself, then POSTs BotFleet Housekeeper webhook `resource.disk` / `resource.ram` / `resource.cpu` / `resource.pressure`.  Cooldown 4h for the webhook, 2h between cleanup runs, 30m when the disk is critical.  Webhook URL and secret live in Infisical Fleet-OPS `/botfleet-housekeeper-webhook` (read with `fleet-secrets get`, never print).
 
 ## BotFleet Housekeeper
 
-Bot id `d43849b8-5eeb-452b-ac4e-ed4724343838`.  Routines at 09:00 / 15:00 / 21:00 plus the resource webhook.  Local webhook receiver `127.0.0.1:8800`.  BotFleet server `127.0.0.1:8799`.
+The BotFleet housekeeper bot id is private resource inventory, so it is not in this pack: it lives in the operator's own inventory on that Mac.  Routines at 09:00 / 15:00 / 21:00 plus the resource webhook.  The local webhook receiver and the BotFleet server address are private deployment inventory: they live in the operator's own inventory on that Mac, not in this pack.
 
-**Status of in-app resource triggers (verified 2026-09-01, do not assume otherwise).**  PR #65 added an Automations → Resources tab, but it is **not yet live on this host**: `~/.botfleet/resource-triggers.json` does not exist (zero triggers), and the packaged `/Applications/BotFleet.app` was built *before* #65 merged, so `GET /api/resource-triggers` returns 404.  Until BotFleet is rebuilt, the **launchd path is the one that actually works**: `com.jay.mac-resource-watch` samples every 5 min independently of the GUI and POSTs the webhook.  Do not claim the Resources tab is wired up until `GET /api/resource-triggers` returns 200.
+**Status of in-app resource triggers (verified 2026-09-01, do not assume otherwise).**  PR #65 added an Automations → Resources tab, but it is **not yet live on this host**: `~/.botfleet/resource-triggers.json` does not exist (zero triggers), and the packaged `/Applications/BotFleet.app` was built *before* #65 merged, so `GET /api/resource-triggers` returns 404.  Until BotFleet is rebuilt, the **launchd path is the one that actually works**: the resource-watch launchd job samples every 5 min independently of the GUI and POSTs the webhook.  Do not claim the Resources tab is wired up until `GET /api/resource-triggers` returns 200.
 
 **Do not add an AppleScript monitor.**  It would require the app to be running, which is exactly the case launchd already covers.
 
 When this wake includes a resource payload: start with that pressure.  Re-run the playbook.  Report before/after disk, swap, load, and what was deleted.
 
-Ask before: user Documents/photos, secrets, live dirty worktrees, CoreSimulator Devices, in-session `~/.grok/worktrees`, anything with `.janitor-keep`.  Do not persist TCPMSS.  Do not change sysctl or network settings.  Do not extra-ship.  Do not post to Zulip unless kicking grok at a repo or after a completed app update.
+Ask before: user Documents/photos, secrets, live dirty worktrees, CoreSimulator Devices, in-session Grok worktrees, anything with `.janitor-keep`.  Do not persist TCPMSS.  Do not change sysctl or network settings.  Do not extra-ship.  Do not post to Zulip unless kicking grok at a repo or after a completed app update.
 
 ## Grok Bot Housekeeper (`GB-HOUSEKEEPER`)
 
@@ -99,13 +129,14 @@ Do not skip that hop and invent a cloud-side `du`.
 
 ## Hetzner — GB-HOUSEKEEPER's playbook
 
-GB-HOUSEKEEPER **owns** this host and does **not** clean the Mac (it may read Mac metrics to correlate, and must say so rather than acting).  Host `167.233.254.55`, ssh alias `coolify`.
+The host address is private deployment inventory, so it is not in this pack: it lives in the operator's own inventory on that Mac.  The ssh target below is private deployment inventory too: it arrives in the environment as `HOUSEKEEPER_SSH_ALIAS`, and the operator's own ssh config is what resolves it, which is how every other fleet document reaches the same box.  The snippet fails closed when `HOUSEKEEPER_SSH_ALIAS` is unset, because a placeholder target would reach the wrong host instead of the one the caller meant.
 
 Take the lock or exit.  Sample and record before-numbers.
 
 ```bash
-ssh coolify 'mkdir /run/fleet-housekeeper.lock 2>/dev/null || exit 9'   # 9 = peer holds it, stop
-ssh coolify 'df -h /; free -h; swapon --show; uptime; docker system df'
+: "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target before reaching the host}"
+ssh "$HOUSEKEEPER_SSH_ALIAS" 'mkdir /run/fleet-housekeeper.lock 2>/dev/null || { [ -d /run/fleet-housekeeper.lock ] && exit 9; exit 1; }'   # 9 = peer holds it (the directory is there), 1 = the lock could not be created
+ssh "$HOUSEKEEPER_SSH_ALIAS" 'df -h /; free -h; swapon --show; uptime; docker system df'
 ```
 
 Act without asking — regenerable only:

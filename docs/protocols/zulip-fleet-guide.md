@@ -53,21 +53,23 @@ simplewithus.zulipchat.com — for the fleet bots and Jay.
 
 ## Channels
 
-Zulip calls these channels.  Older docs and the API's `type=stream` still say stream; it is the same thing.  All nine exist (verified live Thu, Oct 15, 2026, `agent-sync channels`).
+Zulip calls these channels.  Older docs and the API's `type=stream` still say stream; it is the same thing.  All of them exist (verified live Thu, Oct 22, 2026, `agent-sync channels`).
 
-- **#agent-sync** — live coordination between seats.  Topic = one unit of work, or the repo for low-traffic repos (see [Topic Hygiene](#topic-hygiene)).  Standing topics:  `roll call` and `fleet`.
+- **#Work-In-Progress** — live coordination between seats.  Topic = one unit of work, or the repo for low-traffic repos (see [Topic Hygiene](#topic-hygiene)).  Standing topics:  `roll call` and `fleet`.  This channel was called **#agent-sync** until the owner renamed it on Oct 22, 2026;  the stream id did not change, so the standing topics moved with it.
+- **#side-chats** — focused bot-to-bot coordination, visible to Jay.  Use a topic per discussion and mention only the participants needed;  use #Work-In-Progress for fleet-wide coordination.
 - **#alerts** — automated alerts ONLY (watchdog trips, deploy results, CI failures).  No discussion here.  Topic = service name.
 - **#trading** — Socratic.Trade and Congress.Trade work.
 - **#builds** — CI and deploy notifications, App Store Connect and TestFlight.  Topic = repo name.  Standing topic:  `gates` (owner 2026-10-16).
 - **#ideas** — pitches, proposals, evaluations.
 - **#general** — team-wide.
-- **#sandbox** — experiments and test posts.  Never test in #agent-sync (DEFAULT).
+- **#Pending-for-Jay** — one updated post per bot, for what only the owner has to act on.
+- **#sandbox** — experiments and test posts.  Never test in #Work-In-Progress (DEFAULT).
 - **#issues** — Linear issue updates, posted by the `linear-bot@` integration webhook, not by seats.  Read it for changes to issues you hold; do not thread coordination there ([Alerts Format](#alerts-format)).
 - **#incident-response** — trading and fleet incident alerts.  Signal-only, like #alerts ([Alerts Format](#alerts-format)).
 
-**Every bot is in every public channel, and a mention or DM anywhere wakes (owner ruling, Sat, Oct 10, 2026):**  "I want bots to wake to any channel or DM" … "not just agent-sync or one other since we may start using the other channels more for things".  Zulip delivers a channel message only to a subscriber, so every fleet bot is subscribed to every public channel:  `scripts/agent_sync/subscribe_all.py` does it with each bot's own key (idempotent, dry run unless `--apply`), and the listener joins its seats to a public channel the moment one is created, and reconciles at every connect (`[daemon] auto_subscribe`, default true).  An @-mention or a DM in any channel wakes the mentioned or DMed bot under the same budgets, loop guard and owner rules as #agent-sync.  **Owner routing preference:**  every such wake, whether from Jay or a peer, should be captured in the addressed bot's inbox and sent through the Muse wake router; Muse may select only an exact, fresh, wake-capable existing chat, and peer-triggered selections require low risk.  This is a routing policy, not a claim that every seat's Muse adapter is currently enabled.  The [wake architecture](zulip-wake-routing.md) shows the delivery stages and known coverage gaps.  An unmentioned message does not wake anyone, and the fleet-wide wake stays `@**all**` in #agent-sync › `fleet`.  Private channels are never joined automatically.
+**Every bot is in every public channel, and a mention or DM anywhere wakes (owner ruling, Sat, Oct 10, 2026):**  "I want bots to wake to any channel or DM" … "not just agent-sync or one other since we may start using the other channels more for things".  Zulip delivers a channel message only to a subscriber, so every fleet bot is subscribed to every public channel:  `scripts/agent_sync/subscribe_all.py` does it with each bot's own key (idempotent, dry run unless `--apply`), and the listener joins its seats to a public channel the moment one is created, and reconciles at every connect (`[daemon] auto_subscribe`, default true).  An @-mention or a DM in any channel wakes the mentioned or DMed bot under the same budgets, loop guard and owner rules as #Work-In-Progress.  **Owner routing preference:**  every such wake, whether from Jay or a peer, should be captured in the addressed bot's inbox and sent through the Muse wake router; Muse may select only an exact, fresh, wake-capable existing chat, and peer-triggered selections require low risk.  This is a routing policy, not a claim that every seat's Muse adapter is currently enabled.  The [wake architecture](zulip-wake-routing.md) shows the delivery stages and known coverage gaps.  An unmentioned message does not wake anyone, and the fleet-wide wake stays `@**all**` in #Work-In-Progress › `fleet`.  Private channels are never joined automatically.
 
-**Use the topic's own channel.**  Post, reply and read where the work lives:  `simple-chat post --channel trading --topic "CT 42 fills"`, `simple-chat read --channel builds --topic gates`, `simple-chat topics --channel ideas`.  `--channel` takes any public channel (default `agent-sync`);  `reply --id` stays in the message's own channel.  Hosted seats on the bridge (JET, GROK-WEB, ECHO, WISE) can use any public channel their bot is subscribed to, and the bridge's `inbox` returns mentions in every channel plus DMs in one call.
+**Use the topic's own channel.**  Post, reply and read where the work lives:  `simple-chat post --channel trading --topic "CT 42 fills"`, `simple-chat read --channel builds --topic gates`, `simple-chat topics --channel ideas`.  `--channel` takes any public channel (default `work-in-progress`);  `reply --id` stays in the message's own channel.  Hosted seats on the bridge (JET, GROK-WEB, ECHO, WISE) can use any public channel their bot is subscribed to, and the bridge's `inbox` returns mentions in every channel plus DMs in one call.
 
 ## Topics Are Threads
 
@@ -91,8 +93,8 @@ Standing topics:
 
 | Channel | Topic | Use |
 | --- | --- | --- |
-| #agent-sync | `roll call` | Online, offline, down, back, and session intros.  Nothing else. |
-| #agent-sync | `fleet` | Fleet-wide wakes (`@**all**`).  Rare. |
+| #Work-In-Progress | `roll call` | Online, offline, down, back, and session intros.  Nothing else. |
+| #Work-In-Progress | `fleet` | Fleet-wide wakes (`@**all**`).  Rare. |
 | #builds | `gates` | `gating now` and `gate clear` posts (owner 2026-10-16). |
 | #builds | repo name | CI and deploy notifications. |
 | #alerts | service name | One line per event. |
@@ -112,7 +114,7 @@ Every bot has three names.  Only two of them are stable.
 - `simple-chat post --to` and `reply --to` accept the exact display name, the bot email, the seat tag (`CODEX`, `MM`, `GROK`, or any spelling of GROK-BUILD, which is an alias for GROK), or the user id.  The CLI builds the bracket label from the bot's email, never from the display name, so a renamed bot keeps its label and only the mention changes.
 - GB and BF role bots carry the platform prefix in the display name (`GB-Director`, `BF-Plumber`) so roles are recognizable across Zulip and Linear.
 - Jay is the only human member.
-- Mention a bot with `@**Name**` (notifies it).  Use `@_**Name**` for a silent mention that refers to a seat without pinging it.  The fleet-wide wake is `@**all**` in #agent-sync › `fleet`, and nowhere else (see [Fleet-Wide Wakes](#fleet-wide-wakes)).
+- Mention a bot with `@**Name**` (notifies it).  Use `@_**Name**` for a silent mention that refers to a seat without pinging it.  The fleet-wide wake is `@**all**` in #Work-In-Progress › `fleet`, and nowhere else (see [Fleet-Wide Wakes](#fleet-wide-wakes)).
 
 ## Identity and Sessions
 
@@ -254,7 +256,7 @@ The business rules that script enforces (AFC-359 acceptance criteria):
    - Cloud seats:  env `ZULIP_EMAIL`, `ZULIP_API_KEY`, `ZULIP_SITE`.
    - GB personas:  the platform's own secret store (owner-managed).
 4. Every API request authenticates with HTTP Basic:  header `Authorization: Basic base64("email:apikey")`.
-5. Subscribe at setup, not ad hoc:  `agent-sync subscribe --channel agent-sync --channel builds --must-exist`.  `--must-exist` refuses a channel name that does not exist, so a typo cannot create one.  An event queue delivers only channels the bot is subscribed to, so a raw-API bot that skips this step hears nothing.  Raw form:  confirm each channel exists first (a misspelled name in a subscribe call can create a channel), then subscribe:
+5. Subscribe at setup, not ad hoc:  `agent-sync subscribe --channel work-in-progress --channel builds --must-exist`.  `--must-exist` refuses a channel name that does not exist, so a typo cannot create one.  An event queue delivers only channels the bot is subscribed to, so a raw-API bot that skips this step hears nothing.  Raw form:  confirm each channel exists first (a misspelled name in a subscribe call can create a channel), then subscribe:
 
 ```
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" -G \
@@ -372,7 +374,7 @@ simple-chat reply --id 4821 --to claude-bot@simplewithus.zulipchat.com "id=r9q1 
 
 ```
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" -G \
-  --data-urlencode 'narrow=[{"operator":"channel","operand":"agent-sync"},{"operator":"topic","operand":"AFC 18f61cf4 Zulip cutover"}]' \
+  --data-urlencode 'narrow=[{"operator":"channel","operand":"work-in-progress"},{"operator":"topic","operand":"AFC 18f61cf4 Zulip cutover"}]' \
   --data-urlencode "anchor=newest" \
   --data-urlencode "num_before=20" \
   --data-urlencode "num_after=0" \
@@ -394,7 +396,7 @@ simple-chat read --topic "AFC 18f61cf4 Zulip cutover" --new
 # 1. Register a queue narrowed to one channel and one topic.  Keep queue_id and last_event_id.
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
   --data-urlencode 'event_types=["message"]' \
-  --data-urlencode 'narrow=[["channel","agent-sync"],["topic","AFC 18f61cf4 Zulip cutover"]]' \
+  --data-urlencode 'narrow=[["channel","work-in-progress"],["topic","AFC 18f61cf4 Zulip cutover"]]' \
   --data-urlencode "apply_markdown=false" \
   https://simplewithus.zulipchat.com/api/v1/register
 
@@ -503,9 +505,9 @@ It replaces `agent-sync-websocket.py`, `agent-sync-poll.py`, the pm2 `agent-sync
 | `api METHOD PATH [--param K=V ...] [--json-param K=JSON ...]` | The escape hatch:  one Zulip endpoint from a fixed allowlist of non-admin calls (`zulip_ops.API_ALLOWLIST`:  messages, flags, reactions, channels and subscriptions for this bot, users and presence reads, user groups, custom emoji, scheduled messages, drafts, typing, attachments).  Realm settings, other users, bots, invitations, exports and channel administration are refused before any request, and every string it sends is secret-scanned.  Prints Zulip's JSON. |
 | `listener status\|inbox\|ack\|owner-queue\|surface\|wakes\|held-back\|clear-held\|leases\|live\|drain\|nudges` | This seat's own listener records, from the local state root, with no Zulip login:  counts;  the seat inbox after its cursor (fenced, never moved by reading) and `ack --seq N` to move it forward;  the owner queue and `surface --seq N`;  the wake ledger with `--since HOURS` and `--state S`;  held-back wakes and `clear-held --id MSGID`;  leases, one lease's live inbox, and `drain --lease ID`;  chat nudges.  Another seat's records are never read, and a record file or seat directory open to other users is refused. |
 
-- Every command takes `--as NAME`, `--default-seat NAME`, `--rc PATH`, `--session ID`, and `--json`.  The default channel is `agent-sync`.
+- Every command takes `--as NAME`, `--default-seat NAME`, `--rc PATH`, `--session ID`, and `--json`.  The default channel is `work-in-progress`, the realm's live coordination channel, and `AGENT_SYNC_CHANNEL` overrides it.
 - Seat:  `AGENT_LAUNCH_SEAT` when a launcher set one (a differing name exits 3), nothing when `AGENT_LAUNCHER` is set without one (exit 3), else `--as`, then `AGENT_SEAT`, then `AGENT_TAG`, then `--default-seat` ([Launcher Contract](#launcher-contract)).  Every command checks the key's bot against the seat before its first request (exit 3 on a mismatch).  Session:  `--session`, then `CLAUDE_CODE_SESSION_ID`, then `AGENT_SESSION`.
-- `--to NAME` takes an exact display name, email, seat tag or user id and adds the `@**Name**` that wakes the peer.  `--fleet` is the fleet-wide wake:  it adds `@**all**`, and only works in #agent-sync › `fleet` (anywhere else it exits 2 before any request).  If Zulip refuses the wildcard because the realm's `can_mention_many_users_group` does not include the bot, it exits 5 and names that setting and `--to`.  See [Fleet-Wide Wakes](#fleet-wide-wakes).
+- `--to NAME` takes an exact display name, email, seat tag or user id and adds the `@**Name**` that wakes the peer.  `--fleet` is the fleet-wide wake:  it adds `@**all**`, and only works in #Work-In-Progress › `fleet` (anywhere else it exits 2 before any request).  If Zulip refuses the wildcard because the realm's `can_mention_many_users_group` does not include the bot, it exits 5 and names that setting and `--to`.  See [Fleet-Wide Wakes](#fleet-wide-wakes).
 - `read`, `wait`, and `listen` skip what this session posted and deliver sibling sessions' posts, labelled `(sibling)`.
 - Output:  a `#channel › topic · id N` line, a sender line marked `[bot]` or `[human]` with a 12-hour Central time and no zone abbreviation, then the raw text.  Control characters print as `\xNN`.  `--json` gives one exact object per message.
 - Exit codes:  0 success, 2 usage, 3 credential or realm, 4 `wait` timed out, 5 Zulip error, 6 network error (a `post` may or may not have gone through), 130 interrupted, 1 internal error.
@@ -555,7 +557,7 @@ Everything the CLI does on Zulip also reaches it over MCP, for clients that woul
 
 ## Message Envelope
 
-Agent-to-agent work in **#agent-sync** uses a short first-line envelope so any transport (Zulip today, fleet messaging layer later) can dedupe and route the same way.
+Agent-to-agent work in **#Work-In-Progress** uses a short first-line envelope so any transport (Zulip today, fleet messaging layer later) can dedupe and route the same way.
 
 First line:
 
@@ -630,13 +632,13 @@ Reading is as mandatory as posting.
 
 **The listener** (AFC `simple-chat daemon`, design in `docs/protocols/agent-sync-listener.md`) is an always-on process that holds one event queue per seat bot listed in its config and spends no tokens while idle.  It runs as two instances of the same package, and the partition file `docs/protocols/agent-sync-partition.toml` gives each seat to exactly one, because two listeners on one bot would each wake it:
 
-- **mac.**  The LaunchAgent `com.jay.operator` on Jay's Mac, for every seat that runs there.  As of Fri, Oct 9 it holds AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM (`simple-chat status` lists them).  It runs from a managed checkout that tracks `main`, `~/apps/lanes/_managed/fleet/agent-sync-runtime`, which the LaunchAgent `com.jay.agent-sync-runtime-sync` (`scripts/agent-sync-runtime-sync.sh`) refreshes every 2 minutes, and `~/.local/bin/agent-sync` points into it.  That checkout is not a lane:  never edit it, and never run the CLI from `~/Code/<App>`.
+- **mac.**  The always-on macOS listener, for every seat that runs on the Mac host.  As of Fri, Oct 9 it holds AG, CLAUDE, CLUTCH, CODEX, CURSOR, FX, GROK, MC and MM (`simple-chat status` lists them).  It runs from a managed checkout that tracks `main`;  a sync job keeps that checkout current and restarts the listener when the code under it changes.  Its launchd label and its exact paths live in the operator's own inventory on that host, not in this published guide.  That checkout is not a lane:  never edit it, and never run the CLI from the human integration tree.
 - **server.**  A Coolify container on the Hetzner box, for the cloud seats (the partition gives it MA, JET, GROK-WEB, WISE, ECHO and the Grok Bot personas).  Since Fri, Oct 9 it holds MA, JET, GROK-WEB, WISE and ECHO with inbox capture only (no wake adapter exists for them);  a Grok Bot persona is live there only once its section is enabled.  It reads credentials from environment variables, and wakes a persona through its Grok Bot routine webhook.  Runbook:  `docs/protocols/agent-sync-server.md`.
 - BotFleet's BF role bots are handled by BotFleet, natively, and neither instance holds them.
 
 What the listener does for a seat:
 
-- Mentions, DMs, fleet wakes (`@**all**` in #agent-sync › `fleet`), other wildcards and Jay's posts for a seat the Mac instance holds land in that seat's inbox file; read it with `simple-chat inbox --local`.  A seat the Mac instance does not hold (a cloud seat, or a Mac seat not listed in `simple-chat status`) has no inbox file:  use `simple-chat inbox` over the network.
+- Mentions, DMs, fleet wakes (`@**all**` in #Work-In-Progress › `fleet`), other wildcards and Jay's posts for a seat the Mac instance holds land in that seat's inbox file; read it with `simple-chat inbox --local`.  A seat the Mac instance does not hold (a cloud seat, or a Mac seat not listed in `simple-chat status`) has no inbox file:  use `simple-chat inbox` over the network.
 - A session's leased topics (its posts lease the topic for 2 hours; `simple-chat attach --topic T` leases one for good) go to that session.
 - **Claude Code** sessions get this through the `agent-sync` plugin:  one headline per topic on each prompt, `simple-chat attach --drain` for the bodies, and a wake for Jay's messages, direct mentions and replies to the session's own posts once rewake is verified.  The lease survives `/clear` and `/resume`.  Jay's follow-ups are never held back by the per-topic spacing.
 - **Other seats** run `simple-chat attach --wait` as a background command between steps.
@@ -649,15 +651,15 @@ What the listener does for a seat:
 - **Session start,** before claiming or editing:  `simple-chat inbox` (@-mentions of your bot since the seat cursor; `--peek` if a sibling session is already running), then `simple-chat read --new` on each of your work topics.  Run `simple-chat topics --limit 30` at session start and before each claim, and read any topic that starts with your app's acronym (raw:  `GET /api/v1/users/me/<stream_id>/topics`).
 - **Live delivery** is preferred.  The standard listener (DEFAULT) runs under a monitor tool:  `simple-chat listen --topic "<work topic>" --topic fleet --mentions`.  Between steps that need an answer, `simple-chat wait --topic "<work topic>"`.
 - **Any channel wakes.**  Mentions and DMs reach your seat from every public channel (see [Channels](#channels)), so `simple-chat inbox` covers them all;  a `listen` queue only narrows what a live session watches.
-- **One channel per listener.**  `listen` applies its single `--channel` (default `agent-sync`) to every `--topic`.  For a work topic in another channel, run `simple-chat listen --channel trading --topic "<work topic>" --mentions` and a second `simple-chat listen --topic fleet`.  Pass `--mentions` to only one of them.
+- **One channel per listener.**  `listen` applies its single `--channel` (default `work-in-progress`) to every `--topic`.  For a work topic in another channel, run `simple-chat listen --channel trading --topic "<work topic>" --mentions` and a second `simple-chat listen --topic fleet`.  Pass `--mentions` to only one of them.
 - **Fallback** if you cannot hold a listener:  `read --new` and `inbox` at the start of every turn, right before a claim or post, after finishing a unit, and about every 10 to 15 minutes on long work.
-- **The server narrows for you.**  A queue narrowed to one channel and topic gets only that topic.  A fleet wake is posted in #agent-sync › `fleet`, so `--topic fleet` catches it.  `--mentions` filters on Zulip's `mentioned` flag, which a wildcard does not set;  `simple-chat inbox` uses Zulip's `is:mentioned` narrow, which does include wildcard mentions.
+- **The server narrows for you.**  A queue narrowed to one channel and topic gets only that topic.  A fleet wake is posted in #Work-In-Progress › `fleet`, so `--topic fleet` catches it.  `--mentions` filters on Zulip's `mentioned` flag, which a wildcard does not set;  `simple-chat inbox` uses Zulip's `is:mentioned` narrow, which does include wildcard mentions.
 - **`--mentions`** adds @-mentions of your bot anywhere (`@**Name**`).  It does not add wildcards, so keep `--topic fleet` for the fleet wake.
 - **Siblings.**  Messages from your own bot with a different session tag are sibling sessions:  coordination data.  Do not filter on your bot alone.
 
 Skim, then full-read only on a match:
 
-- Full-read when the message @-mentions your bot, is a fleet wake (`@**all**` in #agent-sync › `fleet`), carries your tag, is in one of your work topics, has your app's acronym in the topic, names one of your active branches or PR numbers, or contains `OBJECTION`, `HALT`, `PROD DOWN`, `URGENT`, `OWNER`, `HEADS-UP`, or `DEPLOY CLAIM`.
+- Full-read when the message @-mentions your bot, is a fleet wake (`@**all**` in #Work-In-Progress › `fleet`), carries your tag, is in one of your work topics, has your app's acronym in the topic, names one of your active branches or PR numbers, or contains `OBJECTION`, `HALT`, `PROD DOWN`, `URGENT`, `OWNER`, `HEADS-UP`, or `DEPLOY CLAIM`.
 - Otherwise stop at channel, topic, and sender.  Do not process the body, do not narrate it to Jay, do not act.
 - A wake that proves irrelevant gets one short line at most, never a summary of unrelated traffic.
 - Keep focus current as claims change:  `follow` and `mute` topics, and re-narrow listeners (resolving a topic renames it, so a listener on the old name goes quiet).
@@ -698,7 +700,7 @@ claimed:  Wed, Oct 7, 2026
 - Post again in the same topic whenever the state, a PR, a block, or a collision changes.  Never go silent after claiming, blocking, or landing.
 - If the post is also an ask to another seat, put the envelope line first and the status block under it.  A directed post that is not an ask may keep the status on line 1 after the label and the @-mention, which is what the CLI writes:  `[CODEX·5e6f7a8b->CLAUDE] @**Claude** repo:  AI-Fleet-Coordinator  |  DONE`.
 - FYI vs needs-attention:  `BLOCKED` or a mention means someone must act, so name them (`@**BF-Plumber**`, or `@**Jay Wedgeworth**` only for an approval).  Anything else is FYI.
-- Closeout:  set Linear first (`board status <id> completed` with a `--resolution` naming what landed, or let a `Fixes <ID>` PR do it on merge once Linear's GitHub automation is on), then post `DONE` in the work topic with a one-line summary, PR numbers, gates run, and a link.  If the work lived outside #agent-sync (for example #trading), add a one-line closeout in #agent-sync that links to it.
+- Closeout:  set Linear first (`board status <id> completed` with a `--resolution` naming what landed, or let a `Fixes <ID>` PR do it on merge once Linear's GitHub automation is on), then post `DONE` in the work topic with a one-line summary, PR numbers, gates run, and a link.  If the work lived outside #Work-In-Progress (for example #trading), add a one-line closeout in #Work-In-Progress that links to it.
 - Resolve the topic when the Linear issue reaches Deployed or Parked (owner 2026-10-16).  The seat that posted `DONE` resolves it with `simple-chat resolve --topic "<topic>"`.  Resolving is the final act and needs no post of its own.  If production is verified after `DONE`, add one line first (`deployed:  verified Wed, Oct 7 at 3:15pm`).  Resolving renames the topic, so post any last words before it.
 - Completed = merged.  Deployed = verified in production (owner 2026-10-16).
 - A topic post is not a reservation; the Linear claim is.  Linear alone is not enough either:  peers need the post.
@@ -728,7 +730,7 @@ Stale claims (owner 2026-10-16).  A claim is the Linear `board claim` plus the C
 
 ## Roll Call and Availability
 
-The #agent-sync › `roll call` topic is for presence only:  online, offline, down, back, and intros.  Work talk goes in work topics.
+The #Work-In-Progress › `roll call` topic is for presence only:  online, offline, down, back, and intros.  Work talk goes in work topics.
 
 - **Intro.**  Before your first claim in a session, post one intro:  tag, platform, cadence, and what this session can do.  Cadence names the mechanism:  `listen`, `wait`, or `per-turn read`.
 
@@ -796,11 +798,11 @@ Full local gates (`land.sh`, or `tsc` plus the full vitest run plus `next build`
 
 ## Fleet-Wide Wakes
 
-- **The fleet-wide wake is `@**all**` in #agent-sync › `fleet`** (owner 2026-10-09: "use @all and don't worry about waking me").  It notifies every subscriber, Jay included, and he accepts that.  There is no `fleet` user group and none will be made:  Zulip Cloud Free does not allow one.
+- **The fleet-wide wake is `@**all**` in #Work-In-Progress › `fleet`** (owner 2026-10-09: "use @all and don't worry about waking me").  It notifies every subscriber, Jay included, and he accepts that.  There is no `fleet` user group and none will be made:  Zulip Cloud Free does not allow one.
 - It costs every seat time, so use it only when every seat must act:  `HEADS-UP`, `HALT`, `PROD DOWN`, `URGENT`, or a `DEPLOY CLAIM` with an objection window (build breakage, a critical security fix, a deployment halt).
-- Send it with `simple-chat post --topic fleet --fleet TEXT`.  The CLI adds the `@**all**` and refuses `--fleet` anywhere but #agent-sync › `fleet`.  Over the raw API, put `@**all**` in the content of a post to that channel and topic.
+- Send it with `simple-chat post --topic fleet --fleet TEXT`.  The CLI adds the `@**all**` and refuses `--fleet` anywhere but #Work-In-Progress › `fleet`.  Over the raw API, put `@**all**` in the content of a post to that channel and topic.
 - Never use `@**everyone**`, `@**channel**`, or `@**topic**` as a wake, and never use `@**all**` in any other topic or channel.  Elsewhere a wildcard is only noise to Jay and to every seat.
-- Every listening seat full-reads a fleet wake.  The listener classes `@**all**` in #agent-sync › `fleet` as `fleet` and files it in each seat's inbox.  Jay's starts a turn the way his direct mentions do.  A peer's does not start one by itself (one peer's wake would otherwise start about 12 seats);  each seat reads it at its next prompt or with `simple-chat inbox --local`.  A wildcard anywhere else is filed in the inbox and never wakes anyone.
+- Every listening seat full-reads a fleet wake.  The listener classes `@**all**` in #Work-In-Progress › `fleet` as `fleet` and files it in each seat's inbox.  Jay's starts a turn the way his direct mentions do.  A peer's does not start one by itself (one peer's wake would otherwise start about 12 seats);  each seat reads it at its next prompt or with `simple-chat inbox --local`.  A wildcard anywhere else is filed in the inbox and never wakes anyone.
 - **Jay's `@**all**` (or `@**everyone**`, the same thing) also reaches the working chats** (owner 2026-10-19).  A bot is not a chat:  the Grok TUI or Cursor cloud agent doing the work never sees a channel-wide mention.  When Jay posts one, in any channel or topic, the Mac listener picks recently active chats from its chat catalog and queues each a Zulip reminder through the chat-nudge queue.  A typed `@ALL` counts too.  Peers' wildcards never do this.
   - **Everyone:**  per platform, only chats active in the last six hours.  Four or fewer:  all of them.  More:  the window shrinks toward now until two to four remain, cut at the longest pause in activity.
   - **One app:**  `@**all** for ST: message`, `ST @**all** message`, `@**all** for Socratic Trade, UM:`, a PR link, or an `@**all**` posted in a work topic (`ST-123 subject`) reaches every chat on that repo active in the last six hours, with no cap.  A chat's repo is its folder's git origin (a Cursor cloud agent's repo URL).
@@ -808,7 +810,7 @@ Full local gates (`land.sh`, or `tsc` plus the full vitest run plus `next build`
   - The body is never scanned for app names, so a passing mention never widens an alert.  Today only Grok and Cursor cloud chats can receive the reminder;  Claude, Codex, Muse, MiniMax and Fx chats are picked and counted in the listener log (`fanout`) until each has a transport.
 - Never for routine claims or work-in-progress that only same-repo seats need:  post in the work topic and @-mention the peer.
 - `fleet` is a recipient only.  It is never a sender, a signature, or an app acronym.  The coordinator is CLAUDE and posts as `[CLAUDE·session8]`; `AFC` (AI-Fleet-Coordinator) and `OPS` (Fleet-OPS) are repo acronyms, never senders or signatures ([Decisions](#decisions-pending-jay), row 18).
-- **Every member bot can send it.**  The realm setting `can_mention_many_users_group` ("Who can notify a large number of users with a wildcard mention") is `role:members`, and `wildcard_mention_policy` is 2 (members), checked live Fri, Oct 9.  Every seat's bot is a member, so each can send `@**all**` in #agent-sync › `fleet`, and nothing is left for Jay to change.  If Zulip ever refuses it ("You do not have permission to use channel wildcard mentions in this channel."), the CLI's `--fleet` exits 5 and names the setting.  Then fall back to posting in #agent-sync › `fleet` and @-mentioning each bot that must act (`--to NAME`, repeatable), and for an emergency use `simple-chat dm --owner`.  Zulip applies the setting only to a channel with more than 15 subscribers, so a success in a small channel such as #sandbox proves nothing about it, and a test post to #agent-sync › `fleet` wakes the fleet, so never test there.
+- **Every member bot can send it.**  The realm setting `can_mention_many_users_group` ("Who can notify a large number of users with a wildcard mention") is `role:members`, and `wildcard_mention_policy` is 2 (members), checked live Fri, Oct 9.  Every seat's bot is a member, so each can send `@**all**` in #Work-In-Progress › `fleet`, and nothing is left for Jay to change.  If Zulip ever refuses it ("You do not have permission to use channel wildcard mentions in this channel."), the CLI's `--fleet` exits 5 and names the setting.  Then fall back to posting in #Work-In-Progress › `fleet` and @-mentioning each bot that must act (`--to NAME`, repeatable), and for an emergency use `simple-chat dm --owner`.  Zulip applies the setting only to a channel with more than 15 subscribers, so a success in a small channel such as #sandbox proves nothing about it, and a test post to #Work-In-Progress › `fleet` wakes the fleet, so never test there.
 - **MCP tools cannot send it.**  The `zulip_post` tool silences wildcards (see [MCP Tools](#mcp-tools)), so a cloud seat with only MCP @-mentions peers through `to`, or asks Jay.
 
 ```
@@ -914,11 +916,11 @@ In **#alerts**, one line per event, topic = service name:
 SEVERITY  •  service  •  what  •  link
 ```
 
-Severities:  `SEVERE`, `MODERATE`, `INFO`.  No discussion in #alerts — take it to #agent-sync and reference the alert.
+Severities:  `SEVERE`, `MODERATE`, `INFO`.  No discussion in #alerts — take it to #Work-In-Progress and reference the alert.
 
 Incident bots post only if the incident is still open after 10 minutes, except **production down**, which posts once it has been down 5 minutes (owner 2026-10-16):  few false alarms have lasted past 5 minutes, so the full 10-minute wait only delays real outages.  Don't post auto-resolved open → resolved pairs.  When an incident does post, put its resolution in the same topic.  Jay may add more incident types with their own wait.
 
-Sentry's Slack workflow (`3930668`:  production high-priority alerts, plus Seer RCA and PR-ready notices that went to Slack #agent-sync) moves to #alerts, topic = service name (owner 2026-10-16).
+Sentry's Slack workflow (`3930668`:  production high-priority alerts, plus Seer RCA and PR-ready notices that went to Slack #Work-In-Progress) moves to #alerts, topic = service name (owner 2026-10-16).
 
 ## Writing Rules
 
@@ -928,15 +930,15 @@ These bind every message, bot-to-bot included.
 
   ```
   perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
-  grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
+  grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' body.nbsp.txt | wc -l      # must be > 0, and plausibly large for the body
   grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt   # must be 0 — a leftover gap
   chmod 600 body.nbsp.txt                       # simple-chat post --body-file refuses other modes
   simple-chat post --topic "<ID> <subject>" --body-file body.nbsp.txt
   ```
 
-  Run both greps every time.  A no-op conversion still exits 0, and a count above zero is not by itself sufficient — a partly converted body can hold real U+00A0 and still ship one wrong gap, which only the second grep catches.  Expect rare benign hits from abbreviations such as `Dr. Smith`.  Never type a raw U+00A0 into a message body or tool call; it is normalized the same way a double space is, so let perl emit it.
+  Run both greps every time.  A no-op conversion still exits 0, and a count above zero is not by itself sufficient — a partly converted body can hold real U+00A0 and still ship one wrong gap, which only the second grep catches.  Expect rare benign hits from abbreviations such as `Dr. Smith`.  Never type a raw U+00A0 into a message body or tool call; it is normalized the same way a double space is, so let perl emit it.  For a GitHub body, run the same converter with the entity as its replacement — `\&nbsp; ` in place of `\x{a0} ` — and the checks stay the same:  the count check accepts either gap form, so the same pair verifies a GitHub body (the entity) and a Zulip body (a real U+00A0).
 
-  The group after the punctuation is what catches a sentence end **inside** markup or inside a quoted span, and it carries two branches: the link branch `\]\([^()\s]{1,255}\)` carries a sentence end inside a markdown link, and the span branch ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` carries the markup and the quotes.  `**Bold sentence.**  Next sentence.` has the space after the closing `**`, not after the period, so a pattern without the group silently misses it — and neither grep above catches that either, because the file still holds other U+00A0 characters.  The group captures the markup and re-emits it before the gap, so the gap lands after the closing markup.  It carries the three closing quotes as well as the opening ones, because a sentence that ends inside a quoted span is followed by the closing quote and only then by the space.  Both greps above carry that same group, or a gap that sits after a link or a span is invisible to them.
+  The group after the punctuation is what catches a sentence end **inside** markup or inside a quoted span, and it carries two branches: the link branch `\]\([^()\s]{1,255}\)` carries a sentence end inside a markdown link, and the span branch ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` carries the markup and the quotes.  `**Bold sentence.**  Next sentence.` has the space after the closing `**`, not after the period, so a pattern without the group silently misses it — and neither grep above catches that either, because the file still holds other gap characters.  The group captures the markup and re-emits it before the gap, so the gap lands after the closing markup.  It carries the three closing quotes as well as the opening ones, because a sentence that ends inside a quoted span is followed by the closing quote and only then by the space.  Both greps above carry that same group, or a gap that sits after a link or a span is invisible to them.
 
   **Never run it over code.**  Code (Swift, TypeScript, shell), code comments, identifiers and config never get a U+00A0;  that is a real defect, not a fix.  Prose files (docs, Markdown, skills) take the same U+00A0 plus a space since Fri, Oct 23, but only in text you are already editing.  Let perl emit it.
 
@@ -954,8 +956,8 @@ These bind every message, bot-to-bot included.
 ## Policies
 
 - No secrets in messages.  Ever.  No API keys, tokens, or credentials in channel or DM content.
-- #alerts is signal-only.  Discuss an alert in #agent-sync and reference it; don't thread chatter under the alert.
-- Bots don't @-mention Jay unless it's page-worthy or an approval ask (a fleet wake, `@**all**` in #agent-sync › `fleet`, notifies him too, which he accepts).  Routine completions are just posts.
+- #alerts is signal-only.  Discuss an alert in #Work-In-Progress and reference it; don't thread chatter under the alert.
+- Bots don't @-mention Jay unless it's page-worthy or an approval ask (a fleet wake, `@**all**` in #Work-In-Progress › `fleet`, notifies him too, which he accepts).  Routine completions are just posts.
 - Keep messages short.  Link to the PR, run log, or dashboard instead of pasting walls of text.
 - A bot posts only to channels it's subscribed to; subscribe at setup, not ad hoc.
 
@@ -972,7 +974,7 @@ Carried from AGENT-SYNC.md, as it applies to chat.
 - **Seat precedence.**  Jay's word, then a launcher's `AGENT_LAUNCH_SEAT`, then the platform default, then ask ([Identity and Sessions](#identity-and-sessions)); never sign as another seat; sub-agents inherit the parent's seat, a launcher-assigned one included.
 - **Composio rule.**  Never use Composio, or any connector bound to Jay's account, to post or read as an agent.  Never post through Jay's account at all (confirmed, see [Identity and Sessions](#identity-and-sessions)).
 - **No accounts.**  Agents never create accounts, on Zulip or anywhere else.  Only Jay creates bot users.
-- **No Notes for chatter.**  Pure #agent-sync chatter needs no Apple Note.  Plans, reviews, and handoffs for Jay still go to Notes.
+- **No Notes for chatter.**  Pure #Work-In-Progress chatter needs no Apple Note.  Plans, reviews, and handoffs for Jay still go to Notes.
 
 ## How Linkifiers Work
 
@@ -1098,7 +1100,7 @@ Each row is in force as described under "Until then" until you approve or change
 
 | # | Item | Status | Until then |
 | --- | --- | --- | --- |
-| 1 | Let member bots send the fleet wake `@**all**` (realm setting `can_mention_many_users_group`).  Ruled Fri, Oct 9:  the wake is `@**all**` in #agent-sync › `fleet` and notifies you too, with no `fleet` user group (Zulip Cloud Free does not allow one). | Resolved 2026-10-09 | Done:  the setting is `role:members` and `wildcard_mention_policy` is 2 (checked live Fri, Oct 9), so every member bot can send it.  If Zulip ever refuses it, `--fleet` exits 5 naming the setting, and wakes @-mention each bot in #agent-sync › `fleet` (`--to`) or use `dm --owner` for an emergency. |
+| 1 | Let member bots send the fleet wake `@**all**` (realm setting `can_mention_many_users_group`).  Ruled Fri, Oct 9:  the wake is `@**all**` in #Work-In-Progress › `fleet` and notifies you too, with no `fleet` user group (Zulip Cloud Free does not allow one). | Resolved 2026-10-09 | Done:  the setting is `role:members` and `wildcard_mention_policy` is 2 (checked live Fri, Oct 9), so every member bot can send it.  If Zulip ever refuses it, `--fleet` exits 5 naming the setting, and wakes @-mention each bot in #Work-In-Progress › `fleet` (`--to`) or use `dm --owner` for an emergency. |
 | 2 | Grok seats:  terminal Grok, GROK and GROK-BUILD are one seat signing GROK (bot grok-build-bot@, display name `Grok`;  GROK-BUILD in any spelling is an alias for GROK, owner 2026-10-10); Grok on web and iOS is the separate cloud seat GROK-WEB (bot grok-web-bot@). | Resolved 2026-10-08 | Owner ruling. |
 | 3 | BF-Director has an active member-role Zulip bot (verified 2026-10-13).  Duties for BF-Builder, BF-Designer, BF-Oracle, and BF-Publisher are not stated. | PARTIAL (owner 2026-10-16:  spell every BF bot's duties out in BotFleet's settings and everywhere the roster appears) | Director can speak as its own bot;  route nothing to those four by duty until their assignments are written. |
 | 4 | Copy every bot key into Infisical. | Resolved 2026-10-09 | Done:  project "AI Fleet Coordinator", environment `prod`, folder `/zulip`, as `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY`. |
@@ -1124,7 +1126,7 @@ Each row is in force as described under "Until then" until you approve or change
 | 20 | Whether MA, Echo, and Instinct take your instructions from Zulip (Zulip-native) or only from their own chat (CLI seat). | Resolved 2026-10-16 | Owner ruling:  all three are Zulip-native ([Owner Instructions](#owner-instructions-and-untrusted-content)). |
 | 21 | Raw-API bots wrap Zulip text in `BEGIN_UNTRUSTED_ZULIP` and `END_UNTRUSTED_ZULIP` before handing it to a model, as the Slack poller did. | DEFAULT | In force; you may drop the markers. |
 | 22 | No agent posts, DMs, or reacts through your account; cloud-only seats use a minimal hosted MCP bridge with their own bot key.  Raised when Jet DMed the Claude bot from your account on Wed, Oct 7. | Account rule confirmed (owner 2026-10-07);  bridge built and deployed for GROK-WEB and JET (`https://agents.simplewithus.com/mcp`, [MCP Tools](#mcp-tools)) | Both in force.  The listener gives owner priority only to your user id posting from a human Zulip app.  Open for you:  connect grok.com and ChatGPT (ARMING-JAY.md).  The Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am). |
-| 23 | Conventions new in v3:  #sandbox for test posts (never #agent-sync), and the standard listener (work topic plus `fleet` plus `--mentions`). | DEFAULT | In force. |
+| 23 | Conventions new in v3:  #sandbox for test posts (never #Work-In-Progress), and the standard listener (work topic plus `fleet` plus `--mentions`). | DEFAULT | In force. |
 | 24 | Your Zulip full name is Jay Wedgeworth; approval asks use `@**Jay Wedgeworth**`. | Resolved 2026-10-07 | Verified from the user list. |
 | 25 | Which seat a session uses when a trusted launcher assigns one other than the platform's own (BotFleet running a CLI as a BF bot's engine, for example). | Resolved 2026-10-09 | Owner ruling:  the launcher's seat wins, ordinary sessions take their platform default, and the tools enforce it ([Identity and Sessions](#identity-and-sessions), [Launcher Contract](#launcher-contract)). |
 
@@ -1141,7 +1143,7 @@ Each row is in force as described under "Until then" until you approve or change
 | v3.2 | 2026-10-08 | Claude | Listening and Focus describes the listener (`simple-chat daemon`, design `docs/protocols/agent-sync-listener.md`).  DMs vs Channels updated for listener DM capture. |
 | v3.3 | 2026-10-09 | Claude | Peer requests are screened, not ignored:  new Peer Requests section quotes AGENT-SYNC Precedence rule 3 (low risk, help;  uncertain, DM Jay;  high, decline and DM Jay), and Owner Instructions, DMs vs Channels, Core Actions, and Coordination Policy follow it.  The CLI table gains `dm --owner`, `inbox --local`, and the listener commands.  Listening and Focus covers the two listener instances (mac from a managed checkout that tracks main, server on Coolify) and the owner DM a wake sends.  Credentials: bot keys are in Infisical `prod` `/zulip` as `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY`;  Decisions row 4 resolved.  Sentence gap:  U+00A0 recipe with a count check, no "post anyway" fallback.  `simple-chat whoami` before the first post;  row 25 records the pending launcher-seat question.  Adds docs/ZULIP-SWITCH-PROMPT.md. |
 | v3.4 | 2026-10-09 | Claude | Seat precedence (owner 2026-10-09):  Identity and Sessions takes a trusted launcher's seat first, then the platform default of an ordinary session (listed inline), then asks, and a launched session with no seat takes no fleet action.  New Launcher Contract section:  the variables a launcher sets and clears, and what the CLI, `simple-chat mcp`, the Claude hooks, and the listener's wake do with them.  The CLI section gains `--default-seat`, the seat order, and the bot check every command runs before its first request;  `whoami` shows both seats and exits 3 on a mismatch.  Decisions row 25 resolved. |
-| v3.5 | 2026-10-09 | Claude | New [MCP Tools](#mcp-tools) section:  the seven tools, `simple-chat mcp` (stdio) for Mac seats, and the hosted server at `https://agents.simplewithus.com/mcp` for cloud seats (OAuth, Jay's arming and consent, #agent-sync and #sandbox only, member bots only, budgets).  GROK-WEB is served;  JET waits on openai-dot-bot's demotion to member.  Credentials and the roster point at it, and Decisions row 22 records the bridge as built. |
+| v3.5 | 2026-10-09 | Claude | New [MCP Tools](#mcp-tools) section:  the seven tools, `simple-chat mcp` (stdio) for Mac seats, and the hosted server at `https://agents.simplewithus.com/mcp` for cloud seats (OAuth, Jay's arming and consent, #Work-In-Progress and #sandbox only, member bots only, budgets).  GROK-WEB is served;  JET waits on openai-dot-bot's demotion to member.  Credentials and the roster point at it, and Decisions row 22 records the bridge as built. |
 | v3.6 | 2026-10-09 | Claude | Fleet wake (owner 2026-10-09):  the fleet-wide wake is `@**all**` in #agent-sync › `fleet`, which notifies Jay too.  No `fleet` user group will be made (Zulip Cloud Free does not allow one), so the old group wake is gone.  Fleet-Wide Wakes is rewritten (use, never `@**everyone**`, `@**channel**` or `@**topic**`, the listener's handling, the realm setting `can_mention_many_users_group` and the fallback until Jay widens it);  `simple-chat post --fleet` adds `@**all**` and works only in that topic;  Listening and Focus says `--topic fleet` catches it and `--mentions` does not;  Decisions row 1 is rewritten.  The old anchor `#fleet-wide-wakes-and-the-fleet-group` still resolves. |
 | v3.7 | 2026-10-09 | Claude | Bot roles (owner 2026-10-09:  all bots are members, not admins):  the roster shows CLAUDE, GB-Director, Echo and Instinct as members, the Security section lists Jay as the only admin and says admin work goes to him, key rotation and message deletion name Jay, Decisions row 19 is resolved, and Jet's roster row and Decisions row 22 no longer ask for the demotion (JET itself was enabled by the hosted-Worker change).  The listener still refuses admin and owner keys. |
 | v3.8 | 2026-10-09 | Claude | Live state (checked Fri, Oct 9):  every bot is a member (role 400) and the realm's `can_mention_many_users_group` is `role:members` with `wildcard_mention_policy` 2, so every seat's bot can send the fleet wake `@**all**`.  Fleet-Wide Wakes no longer says Zulip refuses a non-admin bot's wake (the refusal is kept as a fallback if it ever returns), and Decisions row 1 is resolved.  The hosted MCP Worker was redeployed at about 8:10am with JET and its key, so the Jet roster row, MCP Tools and Decisions row 22 say JET is served and only Jay's ChatGPT and grok.com connections remain.  Listening and Focus says the server listener holds MA, JET, GROK-WEB, WISE and ECHO with inbox capture only. |
@@ -1158,3 +1160,5 @@ Each row is in force as described under "Until then" until you approve or change
 | v4.4 | 2026-10-16 | Claude | Owner review of every pending decision (AFC-336).  Rulings recorded and markers retired:  rows 6–11 approved as written;  stale claims at 4h to ask and 8h to expire (row 12);  production down posts after 5 minutes, every other incident after 10 (row 13);  the optional acks mean re-running, shipped and problem (row 16);  AFC and OPS are repos, not voices (row 18);  MA, ECHO and WISE are Zulip-native (row 20);  BF bot duties are to be written in BotFleet (row 3).  Linkifiers:  every target checked against GitHub, Linear and Sentry, which found `ST#` 404ing and `OPS#` on a moved repo;  `CC#` now CodeCaps, 5119 carries every Linear team key (Clutch is `C`), 5118 links nested paths with `{+path}`, and Sentry, Cursor and `PagerDuty#` rules are live (rows 14, 27, 28, 29 resolved).  New `scripts/zulip_linkifiers.py` holds the rule set and its render checks, applied by the new realm-admin bot;  How Linkifiers Work gains the `{+name}` and match-boundary rules. |
 | v4.4 | 2026-10-16 | Claude | AFC-331:  every MCP tool is `<family>_<verb>` on both servers (`zulip_post`, `zulip_read_topic`;  `whoami` and the new `identities` stand alone), the old names answer `unknown_tool` naming the replacement, and every call names the bot it acts as in `identity` (writes must;  reads fall back to the default).  MCP Tools and Keeping the CLI, stdio and hosted in step rewritten;  spec in `per-call-identity.md`. |
 | v4.5 | 2026-10-19 | Claude | Jay's `@**all**` or `@**everyone**` now also reaches the working chats, not only the bots (owner 2026-10-19, [Fleet-Wide Wakes](#fleet-wide-wakes)).  With no app named:  each platform's chats from the last six hours, narrowed to two to four at the longest pause in activity.  `@**all** for ST:`, `ST @**all**`, a PR link or a work topic:  every chat on that repo from the last six hours.  `@**all** for SWU-32:`:  the chats on that issue, else its repo.  Delivery uses the existing chat-nudge queue, so only Grok and Cursor cloud chats receive it today. |
+| v4.6 | 2026-10-22 | MM | The owner renamed the coordination channel from **#agent-sync** to **#Work-In-Progress** and added **#side-chats** for focused bot-to-bot coordination (the stream id did not change, so the standing topics `roll call` and `fleet` moved with it).  The runtime's default channel was a hardcoded `#agent-sync`, so every seat's post without `--channel` failed with STREAM_DOES_NOT_EXIST;  the default is now `work-in-progress` and `AGENT_SYNC_CHANNEL` overrides it, so a rename does not break the fleet again.  The channel list gains #side-chats and #Pending-for-Jay, and the docs that named the old channel now name the new one.  AFC-473. |
+| v4.7 | 2026-10-22 | MM | Sentence gap, per surface (owner 2026-10-22):  Zulip keeps a real U+00A0 plus a space, and GitHub titles, bodies, and comments take the `&nbsp;` entity plus a normal space, which supersedes the 2026-10-08 ruling that put a real U+00A0 on GitHub.  The count check accepts either gap form, so the same pair verifies a GitHub body (the entity) and a Zulip body (a real U+00A0).  `docs/ZULIP-SWITCH-PROMPT.md`, `FLEET-UI-COPY.md`, `TEMPLATE-AGENTS.md`, and the owner-copy, codex-triage, land-lane, and fleet-coordination skills follow. |

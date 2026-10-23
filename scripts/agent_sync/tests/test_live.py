@@ -233,7 +233,7 @@ class LeaseTests(unittest.TestCase):
         env = {"CLAUDE_PID": "77"}
         self.assertEqual(L.note_post(self.root, "CLAUDE", env, "agent-sync", "AFC work", 501, now=1000.0),
                          "claude-code-77-5")
-        L.note_post(self.root, "CLAUDE", env, "agent-sync", "roll call", 502, now=1000.0)
+        L.note_post(self.root, "CLAUDE", env, "work-in-progress", "roll call", 502, now=1000.0)
         lease = L.load_lease(self.paths, "claude-code-77-5")
         self.assertEqual(lease["posted"], [501, 502])
         self.assertEqual([(t["topic"], t["expires"]) for t in lease["topics"]], [("AFC work", 1000.0 + 7200)])

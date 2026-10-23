@@ -766,6 +766,9 @@ def _resolve_lease(ctx: Ctx, args: Any, *, create: bool) -> tuple[L.SeatPaths, s
 
 def cmd_attach(ctx: Ctx, argv: list[str]) -> int:
     parser = _parser("simple-chat attach")
+    from . import zulip as Z  # local:  the hook path must stay cheap to import
+
+    channel_default = Z.default_channel(ctx.env)  # the runtime's own env, not a literal
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--hook",
@@ -803,7 +806,7 @@ def cmd_attach(ctx: Ctx, argv: list[str]) -> int:
     )
     parser.add_argument(
         "--channel",
-        default="agent-sync",
+        default=channel_default,
         metavar="C",
         help="channel of --topic (default: %(default)s)",
     )
@@ -915,6 +918,9 @@ def cmd_attach(ctx: Ctx, argv: list[str]) -> int:
 
 def cmd_detach(ctx: Ctx, argv: list[str]) -> int:
     parser = _parser("simple-chat detach")
+    from . import zulip as Z  # local:  the hook path must stay cheap to import
+
+    channel_default = Z.default_channel(ctx.env)  # the runtime's own env, not a literal
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument(
         "--topic", action="append", metavar="T", help="stop leasing this topic (repeatable)"
@@ -924,7 +930,7 @@ def cmd_detach(ctx: Ctx, argv: list[str]) -> int:
         action="store_true",
         help="remove the lease; undelivered items go back to the seat inbox",
     )
-    parser.add_argument("--channel", default="agent-sync", metavar="C")
+    parser.add_argument("--channel", default=channel_default, metavar="C")
     parser.add_argument("--platform", metavar="P")
     parser.add_argument("--lease", metavar="ID")
     parser.add_argument("--as", dest="as_seat", metavar="NAME")

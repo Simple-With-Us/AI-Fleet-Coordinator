@@ -341,6 +341,12 @@ class Config:
         self.skipped_seats: dict[str, list[str]] = {}
         self.instance = "mac"
         self.owner_user_id = 0
+        # The Operator service bot's own Zulip user id, pinned in this host's listener.toml the
+        # same way the owner's is.  A production user id is private inventory, so none is
+        # committed:  the host pins it and the runtime reads it (Kody review on AFC-473).  Without
+        # it a seat cannot be told "the Operator opened this DM" from "a seat opened it", and the
+        # runtime refuses by name instead of guessing.
+        self.operator_user_id = 0
         self.eligible_user_ids: set[int] = set()
         # `[operator] dm_allow`:  the user ids besides the pinned owner that the Operator may hand a
         # tagged address's candidate list to (AFC-412).  The list carries internal session ids and
@@ -599,6 +605,11 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.owner_user_id must be a user id (0 means not pinned yet)")
     else:
         cfg.owner_user_id = owner
+    operator = daemon.get("operator_user_id", 0)
+    if isinstance(operator, bool) or not isinstance(operator, int) or operator < 0:
+        errors.append("daemon.operator_user_id must be a user id (0 means not pinned yet)")
+    else:
+        cfg.operator_user_id = operator
     eligible = daemon.get("eligible_user_ids", [])
     if not isinstance(eligible, list) or not all(
         isinstance(i, int) and not isinstance(i, bool) for i in eligible

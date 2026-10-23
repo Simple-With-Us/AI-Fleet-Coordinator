@@ -123,12 +123,76 @@ NOT_SEAT_PREFIXES = frozenset(
         "SENTRY",
     }
 )
-DEFAULT_CHANNEL = "agent-sync"
-# The Operator seat:  the admin [Operator] Zulip bot (user 1217148, role 200) and the GitHub identity
+ENV_CHANNEL = "AGENT_SYNC_CHANNEL"
+# The fleet's live coordination channel.  The realm renamed it on Oct 22, 2026, and a
+# hardcoded name that no longer exists makes every seat's post fail with
+# STREAM_DOES_NOT_EXIST, so the built-in default follows the realm and the name is
+# settable for a deployment that puts the fleet somewhere else.
+DEFAULT_CHANNEL = "work-in-progress"
+# The Operator seat:  the admin [Operator] Zulip bot (role 200) and the GitHub identity
 # `swu-operator` (owner decision, Oct 22 2026).  It is the only seat whose key may be an
 # administrator's;  every other seat, and the owner for every seat, stays moderator/member only.
 OPERATOR_SEAT = "OPERATOR"
-OPERATOR_USER_ID = 1217148
+# The Operator bot's Zulip user id.  A production user id is private inventory, so none is
+# committed:  the deployment sets it and the runtime reads it at call time.  The same
+# variable name carries the Operator's identity for the service, so one setting serves both.
+ENV_OPERATOR_USER_ID = "OPERATOR_ZULIP_USER_ID"
+
+#: The shortest credential the preview may describe in full.  Below it the preview shows one
+#: leading character only, because eight plus four of a shorter value discloses nearly all of it.
+MASK_MIN_LENGTH = 24
+
+
+def default_channel(env: Mapping[str, str] | None = None) -> str:
+    """The channel a post goes to when the caller names none.
+
+    The override is read from the environment mapping the runtime already carries, not
+    from the process environment at import, so a caller that hands the runtime an
+    explicit environment (every test does) gets the channel it asked for.
+    """
+    if env:
+        override = env.get(ENV_CHANNEL)
+        if override and override.strip():
+            return override.strip()
+    return DEFAULT_CHANNEL
+
+
+def operator_user_id(env: Mapping[str, str] | None = None) -> int | None:
+    """The Operator bot's Zulip user id, read from the environment at call time.
+
+    None when the variable is unset or unreadable, so a caller fails closed with the
+    variable's name instead of guessing an id.  Only an id, never a key, so it is safe to
+    log."""
+    raw = (env if env is not None else os.environ).get(ENV_OPERATOR_USER_ID)
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def masked_credential(key: Any) -> str:
+    """A credential preview safe to hand back to a caller:  the first eight and the last
+    four characters only.  A refused key has to be identifiable without ever being written
+    out in full, and that is what the preview is for.
+
+    A short value gets one leading character and nothing else:  at 24 characters the preview
+    still hides at least half the secret, but below it the first eight and the last four
+    would disclose most of the value (a 13-character key showed 12 of its 13 characters),
+    and an error that carries the preview may reach a log.  So a value under the threshold
+    shows one character, which is enough to tell two refusals apart."""
+    text = str(key or "")
+    if not text:
+        return "missing"
+    if len(text) < MASK_MIN_LENGTH:
+        return "%s\u2026" % text[:1]
+    return "%s\u2026%s" % (text[:8], text[-4:])
+
+
 MAX_TOPIC_LENGTH = 60
 USER_AGENT = "agent-sync/1 (fleet)"
 

@@ -17,9 +17,16 @@ The allowlist is built from the seat partition (every seat it gives to "server")
     ZULIP_ALERT_<CODE>_ENDPOINT, ZULIP_ALERT_<CODE>_KEY  a Grok Bot routine webhook (URL and bare key)
     <CODE>_ROUTINE_URL, <CODE>_ROUTINE_KEY               the listener's default routine names
     SENTRY_FLEET_DSN, AGENT_SYNC_SENTRY_DSN              the Sentry Crons heartbeat's DSN (heartbeat.py); not per seat
+    OPERATOR_ZULIP_USER_ID, OPERATOR_ZULIP_EMAIL         the Operator service bot's own Zulip identity;  a
+                                                         user id and an address, never a credential, and
+                                                         needed so a seat can answer inside a DM the
+                                                         Operator opened (dm_policy.py)
 
 CODE is the seat with hyphens as underscores.  An Infisical value wins over a container variable of the same
 name, so a rotation in Infisical takes effect on the next restart even if Coolify still holds an old copy.
+The Operator's two names live in the Operator's own folder (/zulip_operator), so a container that reads that
+folder has to point INFISICAL_SECRET_PATH at it;  a container that reads /zulip has to carry the two names
+there instead.  Either way the host provides them, and the runtime never guesses an id.
 
 Infisical (fleet-secrets' source project) is the intended source of these variables;  Coolify copies are only a
 fallback.  On any failure (login refused, network, a bad response) it logs one ERROR line naming the stage and the
@@ -58,8 +65,16 @@ PARTITION_DEFAULT = os.path.join(
     "agent-sync-partition.toml",
 )
 SHARED_NAMES = frozenset(
-    {"SENTRY_FLEET_DSN", "AGENT_SYNC_SENTRY_DSN"}
-)  # the heartbeat's DSN;  the first of the two wins
+    {
+        "SENTRY_FLEET_DSN",
+        "AGENT_SYNC_SENTRY_DSN",
+        #  The Operator service bot's own Zulip identity.  A user id and an address, never a
+        #  credential:  the runtime needs them to tell a DM the Operator opened from one a seat
+        #  opened, and it refuses by name rather than guessing when a host does not provide them.
+        "OPERATOR_ZULIP_USER_ID",
+        "OPERATOR_ZULIP_EMAIL",
+    }
+)  # the heartbeat's DSN and the Operator's identity;  the first of the two DSN names wins
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 
 
