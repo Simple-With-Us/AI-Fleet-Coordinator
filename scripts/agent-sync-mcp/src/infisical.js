@@ -52,6 +52,12 @@ function expectedSet(env) {
   return new Set(raw.split(",").map((e) => e.trim()).filter(Boolean));
 }
 
+/** The configured mode ("off" | "fallback" | "required") for callers that
+ * must know whether legacy env bindings are in play. */
+export function infisicalMode(env) {
+  return mode(env);
+}
+
 function mode(env) {
   const m = String(env.INFISICAL_MODE ?? "off").trim().toLowerCase();
   return m === "fallback" || m === "required" ? m : "off";

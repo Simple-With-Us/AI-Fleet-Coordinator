@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveSecret, infisicalStats, _resetInfisicalForTests, InfisicalError } from "../src/infisical.js";
 import { resolveLinearPair, linearClientFromPair } from "../src/linear.js";
+import { resolveFleetlinkSeatTokens, fleetlinkClientFromSecret } from "../src/fleetlink.js";
 import { LinearClient } from "../src/linear.js";
 
 const ENV = {
@@ -172,4 +173,28 @@ test("INFISICAL_EXPECT: a declared secret's 404 throws even on an optional read"
     InfisicalError,
     "declared-configured absence fails visibly");
   assert.equal(await resolveSecret(env, { name: "WAKE_HMAC_KEY_ECHO", path: "/wake", envName: "WAKE_HMAC_KEY_ECHO", optional: true }), "", "undeclared absence stays capability-off");
+});
+
+test("resolveFleetlinkSeatTokens: valid token used, malformed fails closed, absent keeps designed paths", async () => {
+  _resetInfisicalForTests();
+  const good = `fla_${"a".repeat(64)}`;
+  mockFetch([
+    ["secrets/raw/FLEETLINK_TOKEN_JET", { body: { secret: { secretValue: good } } }],
+    ["secrets/raw/FLEETLINK_TOKEN_ECHO", { body: { secret: { secretValue: "not-a-token" } } }],
+  ]);
+  const env = { ...ENV, INFISICAL_MODE: "fallback", FLEETLINK_SEAT_TOKENS: '{"WISE":"fla_' + "b".repeat(64) + '"}' };
+  const r = await resolveFleetlinkSeatTokens(env, ["JET", "ECHO", "WISE"]);
+  assert.equal(r.seatTokens.get("JET"), good, "Infisical token used");
+  assert.ok(r.deniedSeats.has("ECHO") && !r.seatTokens.has("ECHO"), "malformed fails closed for that seat");
+  assert.equal(r.seatTokens.get("WISE"), "fla_" + "b".repeat(64), "absent name keeps the legacy bundle in fallback mode");
+  const client = fleetlinkClientFromSecret("", env, { resolvedTokens: r });
+  assert.equal(client.credentialFor("ECHO"), null, "denied seat gets no credential - no agent-secret substitution");
+});
+
+test("resolveFleetlinkSeatTokens: required mode ignores the legacy bundle", async () => {
+  _resetInfisicalForTests();
+  mockFetch([]);
+  const env = { ...ENV, FLEETLINK_SEAT_TOKENS: '{"WISE":"fla_' + "b".repeat(64) + '"}' };
+  const r = await resolveFleetlinkSeatTokens(env, ["WISE"]);
+  assert.equal(r.seatTokens.size, 0, "no env binding is read in required mode");
 });
