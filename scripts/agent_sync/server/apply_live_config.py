@@ -39,12 +39,13 @@ import tempfile
 import tomllib
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(
-    0, str(HERE.parent.parent)
-)  # scripts/, so `agent_sync` imports (the image keeps the repo layout)
+# scripts/, so `agent_sync` imports (the image keeps the repo layout).  Only this sys.path change comes before the
+# import, which ruff's E402 allows, so the import needs no noqa (a newer ruff drops it as unused).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from agent_sync import config as C
+
+HERE = Path(__file__).resolve().parent
 
 _HEADER_RE = re.compile(r"^\[([^\[\]]+)\]\s*(#.*)?$")
 # Settings sections copied from the sample only when the live file has none, and never replaced.
