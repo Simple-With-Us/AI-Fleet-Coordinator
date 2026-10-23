@@ -227,8 +227,10 @@ async function serveMcp(request, env, ctx) {
 
   const scopes = Array.isArray(auth.scope) ? auth.scope.map(String) : [];
   // The key comes from the seat in the verified props, through SEAT_SECRETS only.
+  // Canonical Fleet-OPS /zulip record (<SEAT>_ZULIP_KEY, verified live); the
+  // legacy binding is the bounded transitional fallback only.
   const secretNames = SEAT_SECRETS[seat];
-  const key = await resolveSecret(env, { name: secretNames.key, path: "/tools", envName: secretNames.key });
+  const key = await resolveSecret(env, { name: secretNames.infisical.name, path: secretNames.infisical.path, envName: secretNames.key });
   const email = config.botEmails[seat];
   const grantId = typeof auth.token === "string" ? auth.token.split(":")[1] ?? "" : "";
   // Linear app pairs resolve through Infisical too (src/linear.js); prefetched
