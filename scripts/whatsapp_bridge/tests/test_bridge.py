@@ -92,10 +92,6 @@ class BridgeTests(unittest.TestCase):
             with self.assertRaises(StopBridge):
                 Bridge(self.state, "synthetic", "k" * 64, url)
 
-
-if __name__ == "__main__":
-    unittest.main()
-
 class BindingTests(unittest.TestCase):
     def test_code_and_creator_check_both_required(self):
         from whatsapp_bridge.binding import verify_candidate
@@ -113,3 +109,26 @@ class BindingTests(unittest.TestCase):
             verify_candidate(p, "JET-FFFFFFFFFFFFFFFF", "synthetic", 1792699999, 1792700100, request, now=lambda: 1792700001)
         with self.assertRaises(StopBridge):
             verify_candidate(p, code, "synthetic", 1792699999, 1792700100, lambda *a: {"success": False}, now=lambda: 1792700001)
+
+    def test_supervised_binding_shares_lock_and_preserves_live_cursor(self):
+        from whatsapp_bridge.binding import bind_once
+        code = "JET-0123456789ABCDEF"
+        responses = [payload("old", offset=20), payload(code, offset=21), {"success": True}]
+        calls = []
+        def request(url, headers, body=None):
+            calls.append(url)
+            return responses.pop(0)
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            try:
+                state.save(10)
+                pin = bind_once(state, "synthetic", code, 1792699999, 1792700100, request, now=lambda: 1792700001)
+                self.assertEqual(pin["verified_via"], "code+creator_check")
+                self.assertEqual(state.offset(), 10, "do not lose messages in the binding batch")
+                self.assertIn("offset=20", calls[1])
+            finally:
+                state.close()
+
+
+if __name__ == "__main__":
+    unittest.main()
