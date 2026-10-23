@@ -852,7 +852,7 @@ def cmd_attach(ctx: Ctx, argv: list[str]) -> int:
 
         def mutate(lease: dict[str, Any]) -> None:
             for topic in args.topic:
-                L.add_topic(lease, args.channel.lstrip("#"), topic.strip(), None)
+                L.add_topic(lease, Z.resolve_channel(args.channel, ctx.env), topic.strip(), None)
             if args.mentions:
                 lease["mentions"] = True
             lease["heartbeat"] = now
@@ -952,16 +952,17 @@ def cmd_detach(ctx: Ctx, argv: list[str]) -> int:
         ctx.out("removed lease %s\n" % lease_id)
         return 0
     removed: list[str] = []
+    channel = Z.resolve_channel(args.channel, ctx.env)
 
     def mutate(lease: dict[str, Any]) -> None:
         for topic in args.topic:
-            if L.remove_topic(lease, args.channel.lstrip("#"), topic.strip()):
+            if L.remove_topic(lease, channel, topic.strip()):
                 removed.append(topic)
 
     L.update_lease(paths, lease_id, mutate)
     ctx.out(
         "".join(
-            "detached #%s > %s\n" % (L.escape_line(args.channel), L.escape_line(t)) for t in removed
+            "detached #%s > %s\n" % (L.escape_line(channel), L.escape_line(t)) for t in removed
         )
         or "no such topic on lease %s\n" % lease_id
     )
