@@ -165,8 +165,8 @@ test("flag off:  events/list hides the spike and subscribing to it is an unknown
   assert.equal((await gate.eventSubsSummary()).length, 1);
   assert.deepEqual(await ev.unsubscribe({ name: SPIKE_EVENT_NAME, arguments: {}, delivery: { url: SPIKE_CALLBACK } }), {});
   assert.equal((await gate.eventSubsSummary()).length, 0);
-  await assert.rejects(ev.unsubscribe({ name: "whatsapp.message", arguments: {}, delivery: { url: SPIKE_CALLBACK } }), (e) => e.code === INVALID_PARAMS);
-  assert.deepEqual(KNOWN_EVENT_NAMES, ["zulip.mention", "fleet.spike.ping"]);
+  await assert.rejects(ev.unsubscribe({ name: "unknown.event", arguments: {}, delivery: { url: SPIKE_CALLBACK } }), (e) => e.code === INVALID_PARAMS);
+  assert.deepEqual(KNOWN_EVENT_NAMES, ["zulip.mention", "fleet.spike.ping", "whatsapp.message"]);
 });
 
 test("flag on:  events/list offers zulip.mention then fleet.spike.ping, a content-free event with no arguments", () => {

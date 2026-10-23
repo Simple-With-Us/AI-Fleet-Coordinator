@@ -119,6 +119,7 @@ jobs:
     - name: agent-sync CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
+        python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests
@@ -295,8 +296,11 @@ jobs:
     # slower and stays a local run.  TokenBlobTests (about 8 seconds) pins the per-key fleet-secrets reads and the
     # zero-mint, zero-write fresh-blob path (AFC-361).  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
     # needs-owner notifier checks the owner's Linear reply by.
+    # CredentialPreviewTests and CredentialFailureTests pin what the board says about a credential it
+    # could not use:  a masked preview of the credential rather than the credential, and the name of
+    # the variable to fix on every exit-4 line (AFC-473).
     - name: Board CLI input files and flat labels
-      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests TokenBlobTests
+      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests TokenBlobTests CredentialPreviewTests CredentialFailureTests
     # Infisical for the board CLI (AFC-348):  client pairs from /linear before local files, the shared
     # LINEAR_<SEAT>_CACHE_TOKEN adopted and published, and the fallback when Infisical is down.  Mock servers only.
     - name: Board CLI Infisical tests

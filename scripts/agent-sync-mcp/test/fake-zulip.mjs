@@ -13,7 +13,13 @@
 // are born read).
 
 export const REALM = "https://simplewithus.zulipchat.com";
-export const STREAMS = { "agent-sync": 642232, sandbox: 642167, other: 999001, design: 700001 };
+// The realm renamed the fleet's coordination channel;  the worker resolves its default channel
+// from the shared tool contract, so the fake carries the live name (and keeps the old one as the
+// same stream so fixtures written against it still address the same place).
+// The stream ids are synthetic on purpose:  a fake must not carry a production resource id, and
+// nothing here depends on the number matching the realm.
+export const DEFAULT_CHANNEL = "work-in-progress";
+export const STREAMS = { [DEFAULT_CHANNEL]: 900001, "agent-sync": 900001, sandbox: 900002, other: 999001, design: 700001 };
 export const PRIVATE_STREAMS = Object.freeze([STREAMS.other]);
 export const OWNER_ID = 1211974;
 export const BOT_EMAIL = "grok-web-bot@simplewithus.zulipchat.com";

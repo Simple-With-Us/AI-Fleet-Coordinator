@@ -137,6 +137,9 @@ class Harness(unittest.TestCase):
             "AGENT_SYNC_REALM": self.fake.url,
             "AGENT_SYNC_SECRETS_DIR": str(self.secrets_dir),
             "AGENT_SYNC_STATE_DIR": str(self.state_dir),
+            # The fake realm's channels are its own;  pin the default to one of them so a
+            # test never depends on the channel the live realm happens to use.
+            "AGENT_SYNC_CHANNEL": "agent-sync",
             "AGENT_SEAT": "CLAUDE",
             "CLAUDE_CODE_SESSION_ID": SESSION,
             # The DM rule defaults ON (owner decision, Oct 22 2026):  a seat may not open a new

@@ -237,7 +237,7 @@ LaunchAgent `com.jay.fleet-work-backup`, every 3 hours (`StartInterval` 10800), 
   not `lock-held`, which means another run is working) is counted;  after 8 in a row the line carries
   `warn=no-complete-backup-for-about-24h` and every such line shows `last_ok=`.
 - **Alert:**  at that point the job tells two places, each tried even when the other fails.  (1) One post through
-  `simple-chat post --as CLAUDE` in the topic `AFC 29c02bcb fleet-work-backup` (`#agent-sync`), with the count, the
+  `simple-chat post --as CLAUDE` in the topic `AFC 29c02bcb fleet-work-backup` (`#Work-In-Progress`), with the count, the
   last complete run, the run line (names and counts only) and where the logs are
   (`~/Library/Logs/fleet-work-backup.log`, `.detail.log`, `.out.log`, `.err.log`).  The post @-mentions each name in
   `FLEET_WORK_BACKUP_ALERT_TO` (a comma list of seats or people;  empty wakes nobody) and ends with

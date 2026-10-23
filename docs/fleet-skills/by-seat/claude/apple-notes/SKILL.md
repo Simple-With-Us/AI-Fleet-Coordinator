@@ -68,7 +68,7 @@ Then: type line (`Completion` / `Plan` / `Review` / `Design` / `Handoff` / `Roll
 
 Order: `Needs owner` first when applicable, then Problem → What was done → Decisions → Next steps.
 
-Two ASCII spaces between sentences in the body file you pass the helper.
+A real U+00A0 plus a normal space between sentences in the body file you pass the helper (owner ruling 2026-10-23).  Never write the `&nbsp;` entity yourself.
 
 ## Layout (owner 2026-08-21; updated 2026-10-01 — binding)
 
@@ -88,7 +88,7 @@ Never pass empty `- ` bullets (they render as blank dots).  Put identifiers with
 
 Do Notes: plans, design docs, reviews, handoffs, rollouts, **Completion / work-complete** for anything the owner might ask about.
 
-Skip: pure #agent-sync topic chatter, Linear issue edits, routine commit messages, peer-only PR nits.
+Skip: pure #Work-In-Progress topic chatter, Linear issue edits, routine commit messages, peer-only PR nits.
 
 Open a living work note when substantial work starts.  Always Completion at the end.  Update in place; unpin stale Completion notes when the lane closes (`--unpin-only`).
 

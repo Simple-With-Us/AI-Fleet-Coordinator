@@ -717,6 +717,7 @@ def run(
             session_source=source,
             codex_thread_meta=codex_thread_meta and identity == "CODEX",
             owner_user_id=cfg.owner_user_id,
+            operator_user_id=cfg.operator_user_id,
             owner_clients=cfg.owner_clients,
             notes_consumer_resolver=notes_consumer,
             clock=clock,

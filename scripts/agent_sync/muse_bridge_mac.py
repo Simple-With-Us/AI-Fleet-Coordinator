@@ -11,7 +11,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -46,11 +45,6 @@ class DeliveryRefused(ValueError):
     destination gone, or a server refusal).  Terminal for the item, unlike a transport failure."""
 
 
-def _version_key(name: str) -> tuple[tuple[int, ...], str]:
-    """Numeric order for ``muse-bin-1.4.10-R6427.1`` style names, so 1.4.10 sorts after 1.4.9."""
-    return tuple(int(part) for part in re.findall(r"\d+", name)), name
-
-
 def resolve_bridge_muse(wake_path: str) -> str | None:
     """The real versioned Muse binary for the bridge pin, never the launcher shim.
 
@@ -58,23 +52,9 @@ def resolve_bridge_muse(wake_path: str) -> str | None:
     until a fresh canary is pinned.  Falls back to the ordinary resolver when
     no versioned build is on the wake PATH.
     """
-    candidates: list[tuple[tuple[tuple[int, ...], str], str]] = []
-    for directory in wake_path.split(os.pathsep):
-        if not directory or not os.path.isdir(directory):
-            continue
-        try:
-            names = os.listdir(directory)
-        except OSError:
-            continue
-        for name in names:
-            if not name.startswith("muse-bin-"):
-                continue
-            path = os.path.join(directory, name)
-            if os.path.isfile(path) and os.access(path, os.X_OK):
-                # The listed name carries the version; a symlink target may not.
-                candidates.append((_version_key(name), os.path.realpath(path)))
-    if candidates:
-        return max(candidates)[1]
+    found = A.newest_versioned_muse(wake_path)
+    if found:
+        return found
     return A.resolve_muse(None, wake_path)
 
 
@@ -120,7 +100,7 @@ def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> d
         "source_seat": "GB-FIXER",
         "id": 1,
         "type": "stream",
-        "channel": "agent-sync",
+        "channel": "work-in-progress",
         "topic": "synthetic bridge canary",
         "content": "Choose the listed routine for this benign canary.",
         "sender": "synthetic peer",

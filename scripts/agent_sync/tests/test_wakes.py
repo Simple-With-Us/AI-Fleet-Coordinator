@@ -233,6 +233,36 @@ class ContractTests(unittest.TestCase):
         self.assertIn('agent-sync dm --owner -- "<text>"', self.protocol())
         self.assertEqual(cli.build_parser().parse_args(["dm", "--owner", "--", "x"]).command, "dm")
 
+    def test_the_owner_ack_points_at_this_seat_not_at_a_product(self) -> None:
+        """The ack names the seat's own next session, never another seat's product.
+
+        One contract serves every seat, so a product name in it sends the owner to the wrong
+        seat:  MM's Muse wake told Jay to confirm "in a Claude session" (AFC-500).  The seat
+        cannot self-correct, because the sentence is in the system prompt it is given.
+        """
+        text = self.contract()
+        self.assertIn(
+            "queued for the owner to confirm in one of this seat's next sessions", text
+        )
+        self.assertNotIn("Claude", text)
+        self.assertNotIn("Claude", W.OWNER_ACK)
+        self.assertIn("seat's next sessions", W.OWNER_ACK)
+
+    def test_the_listener_protocol_describes_the_ack_the_daemon_posts(self) -> None:
+        path = os.path.join(
+            os.path.dirname(W.CONTRACT_PATH),
+            "..",
+            "..",
+            "..",
+            "docs",
+            "protocols",
+            "agent-sync-listener.md",
+        )
+        with open(path, encoding="utf-8") as fh:
+            doc = fh.read()
+        self.assertIn("seat's next sessions", doc)
+        self.assertNotIn("queued for confirmation in a Claude session", doc)
+
 
 class ReplyTextTests(unittest.TestCase):
     def test_mentions_are_neutralized_and_groups_removed(self) -> None:

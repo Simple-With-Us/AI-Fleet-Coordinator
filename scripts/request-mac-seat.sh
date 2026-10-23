@@ -80,6 +80,18 @@ normalize_repo() {
   echo "${OWNER}/${raw}"
 }
 
+# A GitHub title is plain text, so a title takes a real U+00A0 plus a space, and the
+# issue body below takes the same form (owner ruling 2026-10-23).  The same form goes
+# to Zulip, which also takes the real U+00A0.  Without perl the text is passed
+# through unchanged.
+title_gap() {
+  if command -v perl >/dev/null 2>&1; then
+    perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g'
+  else
+    cat
+  fi
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
@@ -111,7 +123,10 @@ esac
 
 FULL_REPO="$(normalize_repo "$REPO")"
 REPO_NAME="${FULL_REPO##*/}"
-ISSUE_TITLE="[needs-mac] ${TITLE}"
+#  A GitHub title and the issue body below both take a real U+00A0 plus a space, never
+#  the entity (owner ruling 2026-10-23).  A Zulip post takes the same form.
+TITLE_GAP="$(printf '%s' "$TITLE" | title_gap)"
+ISSUE_TITLE="[needs-mac] ${TITLE_GAP}"
 
 read -r -d '' ISSUE_BODY <<EOF || true
 Cloud seat **${BY}** needs a Mac local agent for **${REASON}**.
@@ -144,8 +159,8 @@ ${PROMPT}
 
 - Mac poller: \`mac-seat-claim.sh\` (launchd \`com.jay.mac-seat-watch\`).
 - Spawn uses Shellular-host argv: Grok \`grok -p\`, Cursor \`cursor-agent -p\` — not Shellular phone ACP.
-- grok-acp stays on \`127.0.0.1:12419\` only.  Never \`:2419\`.
-- Do **not** close this issue until the Mac seat posts results.  Scripts never claim compile passed.
+- grok-acp stays on \`127.0.0.1:12419\` only.  Never \`:2419\`.
+- Do **not** close this issue until the Mac seat posts results.  Scripts never claim compile passed.
 EOF
 
 echo "== request-mac-seat =="
@@ -173,7 +188,7 @@ if [ "$NO_ZULIP" -eq 0 ]; then
   # that seat's own Zulip credential (Infisical /zulip) itself, so there is no
   # shared bearer token to parse, rotate, or leak in this script.  (The old relay
   # POST is retired; see AGENT-SYNC.md.)
-  TEXT="repo: ${REPO_NAME} | needs-mac ${REASON}: ${TITLE}"
+  TEXT="repo: ${REPO_NAME} | needs-mac ${REASON}: ${TITLE_GAP}"
   [ -n "$BRANCH" ] && TEXT="${TEXT} | branch ${BRANCH}"
   [ -n "$WORKTREE" ] && TEXT="${TEXT} | ${WORKTREE}"
   TEXT="${TEXT} | agent ${AGENT}"

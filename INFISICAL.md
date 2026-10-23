@@ -94,7 +94,7 @@ Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`
 
 | Key | Kind | Used by |
 |---|---|---|
-| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #alerts, #trading, #agent-sync |
+| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #alerts, #trading, #Work-In-Progress |
 | `ZULIP_PAGERDUTY_EMAIL` / `ZULIP_PAGERDUTY_API_KEY` | env config / secret | PagerDuty v3 webhook to #incident-response |
 | `ZULIP_LINEAR_EMAIL` / `ZULIP_LINEAR_API_KEY` | env config / secret | Linear webhook to #issues |
 | `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #alerts (`slack_incoming`) |
@@ -119,7 +119,7 @@ This service has no per-user settings: seat identity is passed per-request by th
 
 - `scripts/mac-collab/mac-collab-server.py` (THE BOARD, retired on 2026-10-19, AFC-363): Mac-local; reads `~/.secrets/mac-collab.env` (canonical) or the environment.  Operator-managed on the Mac, not a hosted service surface.
 - The `/mac-collab` Fleet-OPS folder is gone (owner Jay, 2026-10-19, AFC-363):  its 15 `MAC_COLLAB_TOKEN*` secrets (root and per-seat), the 26 root `MAC_COLLAB_*` reference entries that pointed at them, and the `admin-jays-services` Worker secret `MAC_COLLAB_TOKEN` were deleted.  The stale `/global-api-keys` copy `MAC_COLLAB_TOKEN` and its root reference `GLOBAL_API_KEYS_MAC_COLLAB_TOKEN` were deleted the same day (owner Jay, AFC-363);  no `MAC_COLLAB` name is left in Fleet-OPS.
-- Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `simple-board` CLI reads them from there first, through the `INFISICAL_AUTOMATION` identity, falling back to `~/.secrets/Linear/<SEAT>.env` only on a host without it (AFC-348).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `simple-board` writes after every mint and reads instead of minting again.  Never print one.
+- Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `simple-board` CLI reads them from there through the `INFISICAL_AUTOMATION` identity, after the `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET` environment pair, and it reads no credential file at all (AFC-348, AFC-359).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `simple-board` writes after every mint and reads instead of minting again.  Never print one.
 - `fleet-sentry-monitor/monitor.py`: operator cron script; env-configured on the box that runs it.
 - `fleet_rag` CLI tools and MCP scripts: per-invocation env; no long-lived process to host a cache.
 - `workers/pr-conflict-watch`: Cloudflare Worker.
@@ -366,3 +366,22 @@ The Agent-Sync MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
 FleetLink's `/mcp`, which maps each seat to its own FleetLink agent account.
 Rotate both Workers from this one value, FleetLink first.  See
 [the FleetLink runbook](scripts/agent-sync-mcp/DEPLOY.md#fleetlink-afc-328).
+
+
+## WhatsApp Wake Bridge (AFC-477, Not Provisioned)
+
+The owner selected dedicated read-only service tokens in AFC.  This supersedes the earlier machine-identity/Fleet-OPS proposal; no credentials have been provisioned.  Bridge and binder use exact AFC `prod` `/jet`.  Operator uses the separate sibling AFC `prod` `/operator-jet-wake`, containing only its distinct signing key and literal Worker URL.  No machine identity, project-wide grant, Operator read/write token or plan purchase is involved.
+
+| Name | Source | Consumer |
+|---|---|---|
+| Existing `WHATSAPP_API_KEY`, unchanged | AFC prod `/jet` | Sole poller and supervised binder only |
+| `WA_BRIDGE_HMAC_KEY_JET` | AFC prod `/jet` | Poller/binder and existing Worker |
+| `WA_OWNER_BINDING_JET` | Verified private binding | Worker only |
+| `WA_AGENT_HASH_JET`, `WA_SENDER_HASH_JET`, `WA_STATE_DIRECTORY` | AFC prod `/jet` | Sole poller |
+| `WHATSAPP_BRIDGE_ENABLED`, `WHATSAPP_BRIDGE_WAKE_ENABLED` | Approved exact `on` settings | Bridge/Worker as applicable; default off |
+| `WA_OPERATOR_HMAC_KEY_JET` | AFC prod `/operator-jet-wake` | Operator client and existing Worker |
+| `WA_WORKER_URL` | Literal origin in both folders | Respective client |
+
+Approved bootstrap tokens expire 90 days after provisioning and are server-scoped to `read` on one literal prod folder each, without wildcards, children or write grants.  Root-only systemd credentials deliver only the mode-specific token.  `launch.py` rejects ambient/shared auth; the reviewed `fleet_secrets run` strips bootstrap authentication before executing its exact child-key allowlist.  Operator receives no Meta key, owner-ingestion key, private owner binding or AFC `/jet` read grant.  Scope receipts and negative reads remain required before activation; mock tests are not proof of live provider permissions.  Expiry stops future loads, not keys already held by a running process.
+
+No daily wake quota is introduced.  The [bridge runbook](scripts/whatsapp_bridge/README.md) gives exact token names, expiry, protected storage, recipients and action-time approval steps.  The parent relayed owner approval for the bounded 90-day token setup; provisioning and activation still await required CI/review readiness and coordination.  Neither client receives renewal or credential-management permission.

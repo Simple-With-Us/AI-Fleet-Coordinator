@@ -18,9 +18,36 @@
 #  The program is idempotent:  running it on its own output changes nothing.  That
 #  is the third check, and it is the one that sees a prose double space that
 #  survived, which no grep over the body can see.
+#
+#  The mode.  `--entity` makes the gap with the HTML entity `&nbsp;` plus a normal
+#  space, in place of a real U+00A0 plus a space:  that is the form a GitHub pull
+#  request or issue body, comment or review comment takes (owner ruling
+#  2026-10-22).  No flag keeps the real U+00A0, which is the form a GitHub title and
+#  a Zulip post take, so every caller that passes no flag is unaffected.  The flag is
+#  taken out of @ARGV before the input is read, so the loop over the input files
+#  still sees only the files.
+#
+#  In the entity mode the inline code spans are held BEFORE the gap is made, because
+#  the entity is six literal characters and must never land inside a code span.  The
+#  real U+00A0 is one character and invisible in the source, so the default mode
+#  keeps the order it has always had:  the gap first, the spans held after it.
 
 my @keep;
 my $hold = sub { push @keep, $_[0]; return "GAP" . $#keep . "END" };
+
+#  The mode.  `--entity` takes the entity form;  no flag takes the real U+00A0.
+#  A package variable, because the `-p` loop runs this body once per chunk and a
+#  `my` would be reset by its own declaration on every chunk after the first.
+our $ENTITY_MODE;
+BEGIN {
+    for my $i (0 .. $#ARGV) {
+        if ($ARGV[$i] eq "--entity") {
+            $ENTITY_MODE = 1;
+            splice(@ARGV, $i, 1);
+            last;
+        }
+    }
+}
 
 #  1.  Fenced code blocks that are closed.  The closing fence carries the same
 #      marker, and it may sit in a list or a quote like the opening one.
@@ -150,22 +177,39 @@ s/^([ \t]*repo:.*)$/$hold->($1)/gme;
     $_ = join "", @out;
 }
 
-#  5.  The gap.  This is the canonical pattern, unchanged:  the lookbehind keeps a
+#  5.  Inline code spans, in the entity mode.  The entity is six literal
+#      characters, so it must never land inside a code span:  the span is held
+#      before the gap is made.  A sentence end inside a span therefore takes no gap
+#      in this mode, which is the price of keeping the six characters out of the
+#      code.
+if ($ENTITY_MODE) {
+    s/(`+)([^\n]*?)\1/$hold->($1 . $2 . $1)/ge;
+}
+
+#  6.  The gap.  This is the canonical pattern, unchanged:  the lookbehind keeps a
 #      numbered list a list, the markup group catches a sentence end inside a span
 #      or at the end of a markdown link, and the lookahead skips a follower it
-#      does not know.
-s/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g;
+#      does not know.  The entity form is the same pattern with the entity in
+#      place of the byte pair, and the `&` is escaped because in a perl
+#      replacement it would otherwise stand for the matched text.
+if ($ENTITY_MODE) {
+    s/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\&nbsp; /g;
+} else {
+    s/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g;
+}
 
-#  6.  Inline code spans.  A span's interior is code, so the collapse must not
-#      reach inside one.  Every span in the body is held, and the delimiters are
-#      the ones that came in:  a span that was written with two backticks comes
-#      back with two backticks.
-s/(`+)([^\n]*?)\1/$hold->($1 . $2 . $1)/ge;
+#  7.  Inline code spans, in the default mode.  A span's interior is code, so the
+#      collapse must not reach inside one.  Every span in the body is held, and the
+#      delimiters are the ones that came in:  a span that was written with two
+#      backticks comes back with two backticks.
+unless ($ENTITY_MODE) {
+    s/(`+)([^\n]*?)\1/$hold->($1 . $2 . $1)/ge;
+}
 
-#  7.  Collapse the prose runs:  two or more spaces between two non-space
+#  8.  Collapse the prose runs:  two or more spaces between two non-space
 #      characters become one.  The lookarounds keep a Markdown hard break (two
 #      spaces at the end of a line) and the indentation of a list.
 s/(?<=\S) {2,}(?=\S)/ /g;
 
-#  8.  Put the code back.
+#  9.  Put the code back.
 s/GAP(\d+)END/$keep[$1]/ge;
