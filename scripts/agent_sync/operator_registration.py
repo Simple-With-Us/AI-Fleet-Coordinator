@@ -111,8 +111,17 @@ _ENTRY_STR_FIELDS = {
 }
 _ENTRY_TIME_FIELDS = ("asked_at", "deadline", "notified_at", "answered_at", "dropped_at")
 _ENTRY_KNOWN_KEYS = frozenset(
-    ("entry_id", "platform", "profile_scope", "session_id", "seat", "state", "route",
-     "route_lost", "generation")
+    (
+        "entry_id",
+        "platform",
+        "profile_scope",
+        "session_id",
+        "seat",
+        "state",
+        "route",
+        "route_lost",
+        "generation",
+    )
     + _ENTRY_TIME_FIELDS
     + tuple(_ENTRY_STR_FIELDS)
 )
@@ -149,16 +158,10 @@ def _validate_entry(key: str, entry: Any) -> dict[str, Any]:
         if field not in entry:
             raise ValueError("operator_registration: entry %s has no %s" % (key, field))
     for field, limit in _ENTRY_STR_FIELDS.items():
-        if field in entry and (
-            not isinstance(entry[field], str) or len(entry[field]) > limit
-        ):
-            raise ValueError(
-                "operator_registration: entry %s has a malformed %s" % (key, field)
-            )
+        if field in entry and (not isinstance(entry[field], str) or len(entry[field]) > limit):
+            raise ValueError("operator_registration: entry %s has a malformed %s" % (key, field))
     if entry.get("evidence_location") and entry["evidence_location"] not in LOCATION_VALUES:
-        raise ValueError(
-            "operator_registration: entry %s has an unknown evidence_location" % key
-        )
+        raise ValueError("operator_registration: entry %s has an unknown evidence_location" % key)
     if "location" in entry and entry["location"] not in LOCATION_VALUES:
         raise ValueError("operator_registration: entry %s has an unknown location" % key)
     if "generation" in entry and (
