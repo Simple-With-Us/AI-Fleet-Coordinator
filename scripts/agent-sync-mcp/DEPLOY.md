@@ -29,6 +29,12 @@ was never provisioned and is deliberately NOT declared:  that seat is denied
 outright (`FLEETLINK_SEATS_DISABLED`), never silently put on the shared agent
 secret.  The ephemeral SPIKE wake key is never declared or stored here.
 
+Seat zulip keys are NOT copied:  runtime reads use the canonical
+`<SEAT>_ZULIP_KEY` records already in Fleet-OPS `/zulip` (all six hosted
+seats, verified live 2026-10-23).  The stale `ZULIP_KEY_<SEAT>` code names
+matched no Infisical secret and were migrated in `SEAT_SECRETS`;  the legacy
+Worker binding names stay only as the off-mode/fallback bindings.
+
 **The copies are point-in-time and are NOT a source-rotation sync.**  Rotating
 a source secret does NOT update its Fleet-OPS copy.  After any source
 rotation, re-run the population copy script by hand:  it overwrites the

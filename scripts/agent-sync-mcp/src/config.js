@@ -59,13 +59,19 @@ export const PROPS_PHASE = 2;
 // email a plain var (spec 3.6).  The seat comes only from the grant's props,
 // and only this table turns it into a key, so a JET grant can never read
 // GROK-WEB's key.
+// key/email:  the legacy Worker binding names (off mode + bounded fallback).
+// infisical:  the canonical Fleet-OPS /zulip record, verified live
+// 2026-10-23 - the stale ZULIP_KEY_<SEAT>/ZULIP_EMAIL_<SEAT> names matched no
+// Infisical secret in either project, so runtime reads use the canonical
+// <SEAT>_ZULIP_* names and NO seat-key copies are ever provisioned (owner
+// rule:  fix stale names with evidence, never invent absent secrets).
 export const SEAT_SECRETS = Object.freeze({
-  CURSOR: Object.freeze({ key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR" }),
-  CLAUDE: Object.freeze({ key: "ZULIP_CLAUDE_API_KEY", email: "ZULIP_CLAUDE_EMAIL" }),
-  JET: Object.freeze({ key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" }),
-  "GROK-WEB": Object.freeze({ key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" }),
-  ECHO: Object.freeze({ key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" }),
-  WISE: Object.freeze({ key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE" }),
+  CURSOR: Object.freeze({ key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR", infisical: Object.freeze({ name: "CURSOR_ZULIP_KEY", path: "/zulip" }) }),
+  CLAUDE: Object.freeze({ key: "ZULIP_CLAUDE_API_KEY", email: "ZULIP_CLAUDE_EMAIL", infisical: Object.freeze({ name: "CLAUDE_ZULIP_KEY", path: "/zulip" }) }),
+  JET: Object.freeze({ key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET", infisical: Object.freeze({ name: "JET_ZULIP_KEY", path: "/zulip" }) }),
+  "GROK-WEB": Object.freeze({ key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB", infisical: Object.freeze({ name: "GROK_WEB_ZULIP_KEY", path: "/zulip" }) }),
+  ECHO: Object.freeze({ key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO", infisical: Object.freeze({ name: "ECHO_ZULIP_KEY", path: "/zulip" }) }),
+  WISE: Object.freeze({ key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE", infisical: Object.freeze({ name: "WISE_ZULIP_KEY", path: "/zulip" }) }),
 });
 
 // The shared HMAC key the server listener signs each seat's wake with

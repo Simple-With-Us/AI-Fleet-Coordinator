@@ -276,7 +276,7 @@ async function serveMcp(request, env, ctx) {
   // Seat keys resolve through Infisical when INFISICAL_MODE allows (src/infisical.js);
   // prefetched so the router's synchronous identityStatus keeps its contract.
   const seatKeys = new Map(await Promise.all(Object.entries(SEAT_SECRETS).map(async ([identity, names]) =>
-    [identity, await resolveSecret(env, { name: names.key, path: "/tools", envName: names.key })])));
+    [identity, await resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key })])));
   const seatKeyOf = (identity) => seatKeys.get(identity) ?? "";
   const routedTools = new IdentityRouter({
     callerTools: tools,
@@ -625,7 +625,7 @@ async function serveLinearHealth(request, env, config) {
  * refused;  a Zulip failure throws, which deliverWake answers with a retry.
  */
 async function wakeChannels(env, config, seat, seatGate) {
-  const key = await resolveSecret(env, { name: SEAT_SECRETS[seat].key, path: "/tools", envName: SEAT_SECRETS[seat].key });
+  const key = await resolveSecret(env, { name: SEAT_SECRETS[seat].infisical.name, path: SEAT_SECRETS[seat].infisical.path, envName: SEAT_SECRETS[seat].key });
   if (!key) return null;
   const tools = new HostedTools({ seat, scopes: [], config, zulip: new ZulipClient({ email: config.botEmails[seat], key }), key, gate: seatGate });
   try {
