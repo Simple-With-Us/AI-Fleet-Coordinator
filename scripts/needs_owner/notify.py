@@ -323,7 +323,8 @@ def _board_failure(result: Result) -> BoardFailed:
     The message names what an operator has to fix and never a value."""
     detail = _detail(result)
     return BoardFailed(
-        "board comment failed (exit %d):  %s" % (result.code, detail or "the board said nothing"), result.code
+        "board comment failed (exit %d):  %s" % (result.code, detail or "the board said nothing"),
+        result.code,
     )
 
 
@@ -389,7 +390,9 @@ def _write_record(runner: Runner, item: Item, text: str, *, environ: dict | None
     outcome = UNKNOWN
     for _ in range(2):
         with runner.private_file(text) as path:
-            result = runner.board("comment", item.identifier, "--by", runner.seat, "--text-file", path)
+            result = runner.board(
+                "comment", item.identifier, "--by", runner.seat, "--text-file", path
+            )
         outcome = _classify(result)
         if outcome == OK:
             comment_keys.put(key, comment_keys.OK, env)
