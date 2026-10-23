@@ -485,8 +485,7 @@ class ProgramBehaviourTests(unittest.TestCase):
         match = _HEREDOC_RE.search((ROOT / SURFACES[0]).read_text(encoding="utf-8"))
         self.assertIsNotNone(match, "%s embeds no program" % SURFACES[0])
         body = (
-            "Plain sentence.  Next sentence.\n\n"
-            "```js\nconst x = 1.  // a comment.  Another.\n```\n"
+            "Plain sentence.  Next sentence.\n\n```js\nconst x = 1.  // a comment.  Another.\n```\n"
         )
         self.assertEqual(
             run_program(program_text(), body),
