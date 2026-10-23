@@ -5554,6 +5554,10 @@ class Daemon:
                 # "unverifiable" and not prefix "run" before a remediation that begins with
                 # "restore the wake contract".
                 red.append(A.muse_pin_red_entry(muse_pin, seat))
+            elif runner.cfg.wake == "muse" and not muse:
+                # No muse binary at all:  every wake for this seat is inbox-only, so it must be red
+                # rather than an empty list, which reads as a healthy seat (AFC-491).
+                red.append(A.muse_no_binary_red_entry(seat))
             # The fallback pin reports on its own file too.  It gates the fallback on its own, so a
             # stale one holds every fallback wake; without a red entry here a seat whose fallback
             # silently stopped looks exactly as healthy as a seat that never configured one.

@@ -86,6 +86,61 @@ class MuseArgvTest(unittest.TestCase):
             # With no explicit path, only the fixed wake PATH is searched.
             self.assertEqual(A.resolve_muse(None, tmp), os.path.abspath(exe))
 
+    def test_a_deleted_versioned_build_falls_back_to_the_newest_one(self) -> None:
+        """AFC-491.  The muse launcher replaces its versioned build on every release and DELETES the
+        one it replaced, so a config naming one absolute `muse-bin-<version>` path pointed at a file
+        that no longer existed.  The seat went dead and READ AS HEALTHY, because a missing binary
+        resolves to None and reports no pin state at all."""
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.path.join(tmp, "muse-bin-1.4.11-R6667.1")
+            new = os.path.join(tmp, "muse-bin-1.4.12-R6909.1")
+            for path in (old, new):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("#!/bin/sh\n")
+                os.chmod(path, 0o755)
+            # The launcher deleted the build the config named.
+            os.unlink(old)
+            self.assertEqual(A.resolve_muse(old, tmp), os.path.realpath(new))
+            # With no explicit path the newest versioned build wins over the launcher shim, so the
+            # pin names a real build rather than an auto-updating shim.
+            shim = os.path.join(tmp, "muse")
+            with open(shim, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(shim, 0o755)
+            self.assertEqual(A.resolve_muse(None, tmp), os.path.realpath(new))
+
+    def test_a_relative_configured_path_is_refused_rather_than_guessed(self) -> None:
+        """A relative path is a config error, not a moved binary, so it must not resolve to some
+        other build on the PATH."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = os.path.join(tmp, "muse-bin-1.4.12-R6909.1")
+            with open(build, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(build, 0o755)
+            self.assertIsNone(A.resolve_muse("relative/muse", tmp))
+
+    def test_the_newest_versioned_build_wins_regardless_of_listing_order(self) -> None:
+        """1.4.10 sorts after 1.4.9, so the newest build is the one that runs and is pinned."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("muse-bin-1.4.9-R6297.1", "muse-bin-1.4.10-R6427.1"):
+                path = os.path.join(tmp, name)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("#!/bin/sh\n")
+                os.chmod(path, 0o755)
+            self.assertEqual(
+                A.newest_versioned_muse(tmp),
+                os.path.realpath(os.path.join(tmp, "muse-bin-1.4.10-R6427.1")),
+            )
+
+    def test_a_missing_muse_binary_is_red_and_never_reads_as_a_healthy_seat(self) -> None:
+        """AFC-491.  Every wake for the seat is inbox-only, so the status must say so."""
+        line = A.muse_no_binary_red_entry("MM")
+        self.assertIn("no muse binary found", line)
+        self.assertIn("MM", line)
+        # The remediation is to install the runtime, not to re-pin a binary that is not there.
+        self.assertIn("install a muse build", line)
+        self.assertNotIn("run `simple-chat daemon test-wake --seat MM --run`, then", line)
+
 
 class MuseRunnerPromptTest(unittest.TestCase):
     def test_private_prompt_file_starts_with_contract_before_supplied_prompt(self) -> None:

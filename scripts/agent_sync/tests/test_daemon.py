@@ -1243,6 +1243,28 @@ class EveryoneWakesTests(DaemonHarness):
         self.assertTrue(any("wake pin is stale" in red for red in seat["red"]), seat["red"])
         self.assertFalse(A.pinned(self.seat_paths(), str(moved)), "still not re-pinned")
 
+    def test_a_muse_seat_with_no_muse_binary_is_red_not_healthy(self) -> None:
+        """AFC-491.  The muse launcher replaces its versioned build on every release and deletes the
+        one it replaced, so a seat naming an absolute `muse-bin-<version>` path lost its binary.  A
+        missing binary resolved to None, which reported NO pin state, so the seat read as connected
+        and healthy while every wake for it was silently dropped."""
+        self.write_config(seats=textwrap.dedent("""\
+            [seat.MM]
+            bot = "MiniMax"
+            wake = "muse"
+            model = "muse-spark-1.3-contributor"
+            muse = "%s"
+            """ % os.path.join(str(self.bin), "muse-bin-9.9.9-absent")))
+        daemon = self.daemon()
+        daemon.status()
+        seat = daemon.status()["seats"]["MM"]
+        self.assertTrue(
+            any("no muse binary found" in red for red in seat["red"]),
+            "a seat whose wake runtime is gone must be red, not healthy:  %s" % seat["red"],
+        )
+        # The remediation installs the runtime;  it must not read as "re-pin a missing binary".
+        self.assertTrue(any("install a muse build" in red for red in seat["red"]), seat["red"])
+
     def test_a_topic_loop_guard_still_waits_for_the_owner(self) -> None:
         daemon = self.started()
         for n in range(3):

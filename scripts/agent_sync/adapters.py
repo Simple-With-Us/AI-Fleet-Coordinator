@@ -566,11 +566,64 @@ MUSE_WORKSPACE_SLOT = "<workspace>"
 MUSE_WAKE_POLICY_VERSION = "muse-chat-catalog-v2"
 
 
+def muse_version_key(name: str) -> tuple[tuple[int, ...], str]:
+    """Numeric order for ``muse-bin-1.4.10-R6427.1`` style names, so 1.4.10 sorts after 1.4.9."""
+    return tuple(int(part) for part in re.findall(r"\d+", name)), name
+
+
+def newest_versioned_muse(wake_path: str) -> str | None:
+    """The newest versioned muse build on the wake PATH, or None.
+
+    The muse launcher replaces its versioned build on every release and DELETES the one it
+    replaced, so a seat whose config names an absolute ``muse-bin-<version>`` path points at a
+    file that no longer exists after the next release.  The launcher shim is deliberately not
+    returned:  the wake runs the versioned build itself, so the pin names a real build.
+    """
+    candidates: list[tuple[tuple[tuple[int, ...], str], str]] = []
+    for directory in wake_path.split(os.pathsep):
+        if not directory or not os.path.isdir(directory):
+            continue
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in names:
+            if not name.startswith("muse-bin-"):
+                continue
+            path = os.path.join(directory, name)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                # The listed name carries the version; a symlink target may not.
+                candidates.append((muse_version_key(name), os.path.realpath(path)))
+    if candidates:
+        return max(candidates)[1]
+    return None
+
+
 def resolve_muse(explicit: str | None, wake_path: str) -> str | None:
-    """The muse binary:  the configured absolute path, else `muse` on the fixed wake PATH.  Mirrors
-    resolve_claude so a seat pins and runs the same resolved realpath."""
+    """The muse binary:  the configured absolute path when it still exists, else the newest
+    versioned build on the fixed wake PATH, else `muse` on that PATH.  Mirrors resolve_claude so a
+    seat pins and runs the same resolved realpath.
+
+    A configured absolute path that has been DELETED falls back to the newest versioned build
+    rather than resolving to nothing.  The muse launcher replaces its versioned build on every
+    release and deletes the one it replaced (AFC-491), so a config naming one absolute
+    ``muse-bin-<version>`` path went dead on every release, and the seat read as healthy because a
+    missing binary resolves to None, which reports no pin state at all.  The fallback keeps the
+    seat on a real build, where the pin check reports `pin_stale` and the owner is told to re-pin
+    it:  the wake is still held, because the pin is what proves the build's wake contract, and
+    this way the hold is visible instead of silent.
+
+    A RELATIVE path is refused rather than guessed:  it is a config error, not a moved binary.
+    """
     if explicit:
-        return explicit if os.path.isabs(explicit) and os.access(explicit, os.X_OK) else None
+        if not os.path.isabs(explicit):
+            return None
+        if os.access(explicit, os.X_OK):
+            return explicit
+        return newest_versioned_muse(wake_path)
+    newer = newest_versioned_muse(wake_path)
+    if newer:
+        return newer
     found = shutil.which("muse", path=wake_path)
     return os.path.abspath(found) if found else None
 
@@ -959,6 +1012,28 @@ MUSE_PIN_UNREADABLE_REMEDIATION = (
     "restore the wake contract and result schema, then run "
     "`simple-chat daemon test-wake --seat %s --run` and `--pin`"
 )
+
+#:  A seat whose wake runtime is not installed at all holds every wake, so it must be red:  the
+#:  remediation is to install the runtime, not to re-pin a binary that is not there.  The muse
+#:  launcher removes the build it replaces, so this is what a config that named a deleted
+#:  versioned path used to hit (AFC-491), and the seat read as healthy because a missing binary
+#:  resolved to None and reported no pin state at all.
+MUSE_NO_BINARY_REMEDIATION = (
+    "install a muse build on the wake PATH or point seat.%s.muse at one, then run "
+    "`simple-chat daemon test-wake --seat %s --run` and `--pin`"
+)
+
+
+def muse_no_binary_red_entry(seat: str) -> str:
+    """The one-line red entry for a muse seat with no muse binary at all.
+
+    It is a different fault from a stale pin:  there is nothing to re-pin until the runtime is
+    installed, so the line must not read as "run --pin" against a missing binary.
+    """
+    return "no muse binary found, so %s wakes are inbox-only; %s" % (
+        seat,
+        MUSE_NO_BINARY_REMEDIATION % (seat, seat),
+    )
 
 
 def muse_pin_cause(pin: Mapping[str, Any]) -> str:
