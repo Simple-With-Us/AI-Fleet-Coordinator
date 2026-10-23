@@ -11,8 +11,11 @@ export async function deliverPending(gate, fetchFn, deadline = Date.now() + 1000
   try {
     for (const sub of subs) {
       const event = { name: WA_EVENT, eventId: await eventIdFor(`${pending.id}:ring:${pending.ring ?? 0}`, sub.id), timestamp: new Date().toISOString(), data: { source: pending.source, owner_authorized: pending.source === "authenticated_owner" }, cursor: null };
-      const result = await deliverEvent(fetchFn, sub, event, { deadline, isLive: () => gate.eventSubLive({ subId: sub.id }) });
-      await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, wakeRef: "wa", messageId: null });
+      let result;
+      try { result = await deliverEvent(fetchFn, sub, event, { deadline, isLive: () => gate.eventSubLive({ subId: sub.id }) }); }
+      catch { result = { outcome: "failed", status: null, attempts: 0 }; }
+      try { await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, wakeRef: "wa", messageId: null }); }
+      catch { console.log(JSON.stringify({ event: "wa_delivery_audit_failed" })); }
       if (result.outcome === "delivered") delivered++;
       if (["rejected", "gone"].includes(result.outcome)) permanent = true;
     }
@@ -25,14 +28,23 @@ export async function deliverPending(gate, fetchFn, deadline = Date.now() + 1000
 // Called only after routing to the private module.  Distinct keys prevent an
 // Operator from forging WhatsApp owner provenance, or the reverse.
 export async function serveWa(request, env, config, gate, fetchFn = fetch) {
-  if (!config.whatsappEnabled || config.mcpDisabled || !config.hostedSeats.includes("JET")) return reply({ ok: false, reason: "disabled" }, 404);
+  if (!config.whatsappEnabled || !config.hostedSeats.includes("JET")) return reply({ ok: false, reason: "disabled" }, 404);
+  if (config.mcpDisabled) return reply({ ok: false, reason: "mcp_disabled" }, 503);
   const kind = new URL(request.url).pathname === "/internal/wa-operator/JET" ? "operator" : "ingest";
   const owner = binding(env.WA_OWNER_BINDING_JET);
   const keyName = kind === "operator" ? "WA_OPERATOR_HMAC_KEY_JET" : "WA_BRIDGE_HMAC_KEY_JET";
   const rawKey = env[keyName];
   const otherKeys = Object.entries(env).filter(([k,v]) => /(?:WAKE_HMAC_KEY_|_ROUTINE_KEY$|^SPIKE_HMAC_KEY$|^HEALTH_HMAC_KEY$|^WA_.*HMAC_KEY)/.test(k) && k !== keyName && typeof v === "string").map(([,v]) => v.trim());
-  if (!owner || typeof rawKey !== "string" || rawKey.trim().length < 32 || otherKeys.includes(rawKey.trim())) return reply({ ok: false, reason: "not_configured" }, 404);
+  if (!owner) return reply({ ok: false, reason: "not_configured", required: "WA_OWNER_BINDING_JET" }, 404);
+  if (typeof rawKey !== "string" || rawKey.trim().length < 32) return reply({ ok: false, reason: "not_configured", required: keyName }, 404);
+  if (otherKeys.includes(rawKey.trim())) return reply({ ok: false, reason: "key_reused", required: keyName }, 404);
   if (request.method !== "POST") return reply({ ok: false }, 405);
+  if (!/^[a-f0-9]{64}$/.test(request.headers.get(WA_HEADER) ?? "")) return reply({ ok: false }, 401);
+  if (env.TOKEN_RATE_LIMITER) {
+    const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+    const limit = await env.TOKEN_RATE_LIMITER.limit({ key: `wa:${kind}:${ip}` });
+    if (!limit.success) return Response.json({ ok: false, reason: "transport_rate_limited" }, { status: 429, headers: { "Retry-After": "60", "Cache-Control": "no-store" } });
+  }
   // Bounded streaming even when Content-Length is absent or dishonest.
   const reader = request.body?.getReader();
   if (!reader) return reply({ ok: false }, 400);
@@ -50,6 +62,10 @@ export async function serveWa(request, env, config, gate, fetchFn = fetch) {
   if (checked.status !== 200) return reply({ ok: false }, checked.status);
   const result = kind === "ingest" ? await gate.waIngest({ body: checked.body, owner, known: [rawKey, ...otherKeys] }) : await gate.waOperator({ requestId: checked.body.request_id });
   if (!result.ok) return result.reason === "operator_busy" ? Response.json(result, { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(result.retry_after_s) } }) : reply(result, 403);
-  const delivery = config.whatsappWakeEnabled ? await deliverPending(gate, fetchFn) : { delivered: 0, disabled: true };
+  let delivery = { delivered: 0, disabled: true };
+  if (config.whatsappWakeEnabled) {
+    try { delivery = await deliverPending(gate, fetchFn); }
+    catch { console.log(JSON.stringify({ event: "wa_delivery_failed" })); delivery = { delivered: 0, pending: true }; }
+  }
   return reply({ ...result, ...delivery });
 }

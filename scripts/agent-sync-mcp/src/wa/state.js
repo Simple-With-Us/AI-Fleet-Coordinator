@@ -6,6 +6,9 @@ const LEDGER_RETENTION = 35 * 86400000;
 export const RERING_MS = 10 * 60000;
 export const OPERATOR_DEBOUNCE_MS = 30000;
 const key = seq => `wa:message:${String(seq).padStart(20, "0")}`;
+const expiryKey = (at, id = "") => `wa:expire:${String(at).padStart(20, "0")}:${id}`;
+const schedule = (store, at, id, job) => store.put(expiryKey(at, id), job);
+
 
 export async function ingest(store, { body, owner, known = [] }, now = Date.now()) {
   return store.transaction(async tx => {
@@ -16,12 +19,18 @@ export async function ingest(store, { body, owner, known = [] }, now = Date.now(
       if (m.sender_hash !== owner.sender_hash || m.timestamp <= owner.cutoff || now / 1000 - m.timestamp > 31 * 86400) continue;
       const seen = `wa:seen:${m.id_hash}`;
       if (await tx.get(seen)) continue;
-      if (m.timestamp > Math.floor(now / 1000) + 60) { await tx.put(seen, now); skipped++; continue; }
+      if (m.timestamp > Math.floor(now / 1000) + 60) {
+        await tx.put(seen, now);
+        await schedule(tx, now + LEDGER_RETENTION, `future:${m.id_hash}`, { kind: "delete", keys: [seen] });
+        skipped++; continue;
+      }
       const silent = m.text?.replace(/^[\s\p{Cf}]+/u, "").startsWith("👀") === true;
       seq++;
       await tx.put(key(seq), { seq: String(seq), text: redact(m.text, known), type: m.type, timestamp: m.timestamp, received_at: now, silent, surfaced: false });
       // Do not keep raw WhatsApp ids or senders, even in the tombstones.
       await tx.put(seen, now);
+      await schedule(tx, now + RETENTION, `body:${seq}`, { kind: "body", key: key(seq) });
+      await schedule(tx, now + LEDGER_RETENTION, `ledger:${seq}`, { kind: "delete", keys: [key(seq), seen, `wa:pending:owner:${String(seq).padStart(20, "0")}`] });
       if (!silent) await tx.put(`wa:pending:owner:${String(seq).padStart(20, "0")}`, { id: `wa:owner:${seq}`, source: "authenticated_owner", seq: String(seq), created_at: now });
       stored++;
     }
@@ -39,6 +48,7 @@ export async function operator(store, { requestId }, now = Date.now()) {
     const nextAt = (await tx.get("wa:operator_next_at")) ?? 0;
     if (pending.size || now < nextAt) return { ok: false, reason: "operator_busy", retry_after_s: Math.max(1, Math.ceil((nextAt - now) / 1000)) };
     await tx.put(id, now);
+    await schedule(tx, now + LEDGER_RETENTION, `operator:${requestId}`, { kind: "delete", keys: [id, `wa:pending:operator:${requestId}`] });
     await tx.put("wa:operator_next_at", now + OPERATOR_DEBOUNCE_MS);
     await tx.put(`wa:pending:operator:${requestId}`, { id, source: "operator", created_at: now });
     return { ok: true };
@@ -64,7 +74,10 @@ export async function read(store, args, now = Date.now()) {
       }
       // Retention starts when the acknowledgement is accepted.  The sweep
       // processes its bounded range using these content-free checkpoints.
-      await tx.put(`wa:ack_at:${String(through).padStart(20, "0")}`, now);
+      const checkpoint = `wa:ack_at:${String(through).padStart(20, "0")}`;
+      await tx.put(checkpoint, now);
+      await schedule(tx, now + 86400000, `ack:${through}`, { kind: "ack", after: previousAck, through });
+      await schedule(tx, now + LEDGER_RETENTION, `checkpoint:${through}`, { kind: "delete", keys: [checkpoint] });
     }
     const after = args.include_surfaced ? through : Math.max(through, surfaced);
     const rows = await tx.list({ prefix: "wa:message:", start: key(after + 1), limit: args.limit ?? 20 });
@@ -117,26 +130,30 @@ export async function settle(store, { keys, key: k, token, delivered, permanent 
   });
 }
 
-// A bounded alarm page removes expired bodies even if Jet never reads again.
-// Tombstones and expiry stubs survive, so unread messages remain visible.
+// Only due expiry jobs are read.  Each acknowledgement job pages its range;
+// old messages are never re-scanned hourly and no per-row ack lookup is needed.
 export async function sweep(store, now = Date.now()) {
-  const start = (await store.get("wa:sweep_cursor")) ?? "wa:";
-  const page = await store.list({ prefix: "wa:", start, limit: 100 });
-  let last;
-  for (const [k, row] of page) {
-    last = k;
-    if (k.startsWith("wa:message:")) {
-      const checkpoints = await store.list({ prefix: "wa:ack_at:", start: `wa:ack_at:${row.seq.padStart(20, "0")}`, limit: 1 });
-      const ackAt = checkpoints.values().next().value;
-      if (now - row.received_at >= LEDGER_RETENTION) { await store.delete(k); continue; }
-      if (now - row.received_at >= RETENTION || (ackAt && now - ackAt >= 86400000)) {
-        if (!row.expired && !ackAt) console.log(JSON.stringify({ event: "wa_unread_expired", count: 1 }));
-        await store.put(k, { ...row, text: null, expired: true });
+  const end = expiryKey(now + 1);
+  const jobs = await store.list({ prefix: "wa:expire:", end, limit: 100 });
+  const ack = (await store.get("wa:ack")) ?? 0;
+  for (const [jobKey, job] of jobs) {
+    if (job.kind === "delete") await store.delete(job.keys);
+    else if (job.kind === "body") {
+      const row = await store.get(job.key);
+      if (row && !row.expired) {
+        if (Number(row.seq) > ack) console.log(JSON.stringify({ event: "wa_unread_expired", count: 1 }));
+        await store.put(job.key, { ...row, text: null, expired: true });
       }
-    } else if (/^wa:(seen:|operator:|ack_at:)/.test(k) && typeof row === "number" && now - row >= LEDGER_RETENTION) await store.delete(k);
-    else if (k.startsWith("wa:pending:") && now - row.created_at >= LEDGER_RETENTION) await store.delete(k);
+    } else if (job.kind === "ack") {
+      const page = await store.list({ prefix: "wa:message:", start: key(job.after + 1), end: key(job.through + 1), limit: 100 });
+      let last = job.after;
+      for (const [k, row] of page) { await store.put(k, { ...row, text: null, expired: true }); last = Number(row.seq); }
+      if (page.size === 100 && last < job.through) {
+        await store.put(jobKey, { ...job, after: last });
+        continue;
+      }
+    }
+    await store.delete(jobKey);
   }
-  const more = page.size === 100;
-  await store.put("wa:sweep_cursor", more ? last + "\u0000" : "wa:");
-  return more;
+  return (await store.list({ prefix: "wa:expire:", end, limit: 1 })).size > 0;
 }

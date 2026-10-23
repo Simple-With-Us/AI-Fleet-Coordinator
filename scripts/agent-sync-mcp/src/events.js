@@ -239,6 +239,10 @@ export function subEventName(sub) {
 }
 
 /** The spike takes no arguments:  absent, null or an empty object.  Anything else is refused. */
+function conversationMessage(name) {
+  return name === EVENT_NAME ? "Zulip must use the conversation pinned by Jet's live WhatsApp subscription; remove both subscriptions before a coordinated move." : "WhatsApp must use Jet's existing conversation callback.";
+}
+
 function validateWaArguments(args) {
   if (args === undefined || args === null) return {};
   if (typeof args !== "object" || Array.isArray(args) || Object.keys(args).length) throw new EventError(INVALID_PARAMS, "whatsapp.message takes no arguments");
@@ -853,7 +857,7 @@ export class SeatEvents {
     const host = new URL(url).hostname.toLowerCase();
 
     const room = await this.gate.eventSubRoom({ id, max: MAX_SUBSCRIPTIONS_PER_SEAT, name, url });
-    if (!room.ok) throw new EventError(INVALID_REQUEST, room.reason === "conversation" ? "WhatsApp must use Jet's existing conversation callback." : oneDestination(name, room.until));
+    if (!room.ok) throw new EventError(INVALID_REQUEST, room.reason === "conversation" ? conversationMessage(name) : oneDestination(name, room.until));
     if (!(await this.gate.eventVerifiedGet({ ref }))) {
       const reason = await verifyCallback(this.fetchFn, { url, subId: id, secret: delivery.secret, now: this.now });
       if (reason) {
@@ -868,7 +872,7 @@ export class SeatEvents {
       rotationMs: ROTATION_WINDOW_MS,
       max: MAX_SUBSCRIPTIONS_PER_SEAT,
     });
-    if (!saved.ok) throw new EventError(INVALID_REQUEST, oneDestination(name, null));
+    if (!saved.ok) throw new EventError(INVALID_REQUEST, saved.reason === "conversation" ? conversationMessage(name) : oneDestination(name, null));
     return { id, refreshBefore: iso(saved.refreshBefore), cursor: null, truncated: false };
   }
 

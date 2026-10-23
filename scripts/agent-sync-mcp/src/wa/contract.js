@@ -1,4 +1,5 @@
 // AFC-477:  WhatsApp owns its event and signing domains.  No Zulip carrier.
+import { z } from "zod";
 import { safeEqual } from "../policy.js";
 import { redactSecret } from "../contract.js";
 
@@ -31,23 +32,25 @@ export function binding(raw) {
     return b;
   } catch { return null; }
 }
+const hash = z.string().regex(/^[a-f0-9]{64}$/);
+const messageSchema = z.object({ id_hash: hash, sender_hash: hash, timestamp: z.number().int().positive(), type: z.string().min(1).max(64), text: z.string().refine(v => [...v].length <= 4096).nullable() }).strict().refine(m => m.type !== "text" || m.text !== null);
+const common = { seat: z.literal("JET"), sent_at: z.number().int() };
+const ownerSchema = z.object({ ...common, contract: z.literal("wa-ingest/1"), agent_hash: hash, messages: z.array(messageSchema).max(100), next_offset: z.string().regex(/^(0|[1-9][0-9]{0,18})$/).refine(v => { try { return BigInt(v) <= 9223372036854775807n; } catch { return false; } }) }).strict();
+const operatorSchema = z.object({ ...common, contract: z.literal("wa-operator/1"), request_id: z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/) }).strict();
+
 export async function verifyRequest(bytes, given, key, kind, now = Date.now()) {
   if (typeof key !== "string" || key.trim().length < 32) return { status: 404 };
   if (!(bytes instanceof Uint8Array) || bytes.length > WA_MAX_BODY) return { status: 413 };
   if (!/^[a-f0-9]{64}$/.test(given ?? "") || !safeEqual(await signature(key.trim(), bytes), given)) return { status: 401 };
   let b;
-  try { b = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { return { status: 400 }; }
-  if (!b || Array.isArray(b) || b.contract !== `wa-${kind}/1` || b.seat !== "JET" || !Number.isSafeInteger(b.sent_at)) return { status: 400 };
+  try {
+    const raw = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    const parsed = (kind === "operator" ? operatorSchema : ownerSchema).safeParse(raw);
+    if (!parsed.success) return { status: 400 };
+    b = parsed.data;
+  } catch { return { status: 400 }; }
   const age = Math.floor(now / 1000) - b.sent_at;
   if (age > 300 || age < -60) return { status: 401 };
-  if (kind === "operator") {
-    if (Object.keys(b).sort().join() !== "contract,request_id,seat,sent_at" || typeof b.request_id !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(b.request_id)) return { status: 400 };
-  } else {
-    if (Object.keys(b).sort().join() !== "agent_hash,contract,messages,next_offset,seat,sent_at" || typeof b.agent_hash !== "string" || !/^[a-f0-9]{64}$/.test(b.agent_hash) || !Array.isArray(b.messages) || b.messages.length > 100 || typeof b.next_offset !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(b.next_offset) || BigInt(b.next_offset) > 9223372036854775807n) return { status: 400 };
-    for (const m of b.messages) {
-      if (!m || Object.keys(m).sort().join() !== "id_hash,sender_hash,text,timestamp,type" || typeof m.id_hash !== "string" || !/^[a-f0-9]{64}$/.test(m.id_hash) || typeof m.sender_hash !== "string" || !/^[a-f0-9]{64}$/.test(m.sender_hash) || !Number.isSafeInteger(m.timestamp) || m.timestamp <= 0 || typeof m.type !== "string" || !m.type.length || m.type.length > 64 || !(m.text === null || (typeof m.text === "string" && [...m.text].length <= 4096)) || (m.type === "text" && m.text === null)) return { status: 400 };
-    }
-  }
   return { status: 200, body: b };
 }
 export function redact(text, known = []) {

@@ -156,7 +156,8 @@ test("pause and disabled defaults; Jet-only event and read tool; provenance encl
   assert.equal(s.calls.length, 0);
   assert.equal(loadConfig(testEnv()).whatsappEnabled, false);
   for (const seat of ["CODEX", "CURSOR", "GROK-WEB"]) assert.ok(!toolListFor(seat).byName.whatsapp_read);
-  assert.ok(toolListFor("JET").byName.whatsapp_read);
+  assert.ok(!toolListFor("JET").byName.whatsapp_read);
+  assert.ok(toolListFor("JET", config).byName.whatsapp_read);
   const tools = new HostedTools({ seat: "JET", scopes: ["zulip:read"], config, gate: s.gate, key: "", zulip: null, log: () => {} });
   const result = await tools.call("whatsapp_read", {});
   assert.equal(result.isError, undefined);
@@ -240,4 +241,39 @@ test("35-day content-free ledgers expire; provider-age cutoff still prevents his
   while (await wa.sweep(s.store,now)) {}
   assert.equal((await s.gate.waIngest({ body:b,owner })).stored,0);
   assert.equal((await s.store.list({prefix:"wa:seen:"})).size,0);
+});
+
+test("temporary MCP stop is retryable; audit/delivery errors preserve ingestion acknowledgments", async () => {
+  const s=setup(); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  const b=batch([msg(70)]), raw=new TextEncoder().encode(JSON.stringify(b));
+  const make=async()=>new Request("https://test/internal/wa-ingest/JET",{method:"POST",body:raw,headers:{[WA_HEADER]:await signature(KEY,raw)}});
+  assert.equal((await serveWa(await make(),env,{...config,mcpDisabled:true},s.gate,s.fetchFn)).status,503);
+  s.gate.eventDeliveryResult=async()=>{throw new Error("storage unavailable")};
+  const ack=await (await serveWa(await make(),env,config,s.gate,s.fetchFn)).json();
+  assert.equal(ack.processed,true); assert.equal(ack.delivered,1);
+  s.gate.waClaim=async()=>{throw new Error("queue unavailable")};
+  assert.equal((await (await serveWa(await make(),env,config,s.gate,s.fetchFn)).json()).processed,true);
+});
+
+test("existing transport limiter rejects large requests before body read; leased Operator does not block owner", async () => {
+  const s=setup(); const b=batch([msg(71)]); const raw=new TextEncoder().encode(JSON.stringify(b));
+  let key;
+  const limiter={limit:async arg=>{key=arg.key;return {success:false}}};
+  const req=new Request("https://test/internal/wa-ingest/JET",{method:"POST",body:raw,headers:{[WA_HEADER]:await signature(KEY,raw),"CF-Connecting-IP":"192.0.2.1"}});
+  assert.equal((await serveWa(req,{...env,TOKEN_RATE_LIMITER:limiter},config,s.gate,s.fetchFn)).status,429);
+  assert.equal(req.bodyUsed,false); assert.equal(key,"wa:ingest:192.0.2.1");
+  await s.gate.waOperator({requestId:randomUUID()}); assert.equal((await s.gate.waClaim({})).source,"operator");
+  await s.gate.waIngest({body:b,owner}); assert.equal((await s.gate.waClaim({})).source,"authenticated_owner");
+});
+
+test("expiry uses due index and a single acknowledgment range rather than per-row checkpoint scans", async()=>{
+  let now=NOW; const s=setup(()=>now);
+  await s.gate.waIngest({body:batch(Array.from({length:50},(_,i)=>msg(200+i))),owner});
+  await s.gate.waRead({limit:50}); await s.gate.waRead({ack_through:"50"}); now+=86400001;
+  const calls=[];const list=s.store.list.bind(s.store);s.store.list=async opts=>{calls.push(opts);return list(opts)};
+  await wa.sweep(s.store,now);
+  assert.ok(!calls.some(c=>c.prefix==="wa:ack_at:"));
+  assert.equal((await s.store.get("wa:message:00000000000000000050")).text,null);
+  calls.length=0; await wa.sweep(s.store,now);
+  assert.ok(!calls.some(c=>c.prefix==="wa:message:"),"nothing due: no historical inbox scan");
 });

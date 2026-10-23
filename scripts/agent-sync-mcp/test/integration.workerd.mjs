@@ -543,7 +543,7 @@ try {
     const list = await mcp(tokens.access_token, "tools/list");
     assert.equal(list.status, 200);
     const tools = list.json.result.tools;
-    assert.deepEqual(tools.map((t) => t.name), [...HOSTED_NAMES, "whatsapp_read"]);
+    assert.deepEqual(tools.map((t) => t.name), HOSTED_NAMES);
     for (const spec of [...ZULIP_PUBLIC_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS]) {
       const served = tools.find((item) => item.name === spec.name);
       assert.ok(served, spec.name);

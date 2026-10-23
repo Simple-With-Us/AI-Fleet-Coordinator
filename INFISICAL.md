@@ -380,7 +380,7 @@ The default-off implementation reads only its approved runtime environment.  Sou
 | `WA_OWNER_BINDING_JET` | Worker | verified binding JSON from supervised code plus Meta creator check |
 | `WA_AGENT_HASH_JET` | sole poller | keyed verified agent hash for idle poll heartbeats |
 | `WA_SENDER_HASH_JET` | sole poller | keyed verified sender filter before forwarding any text |
-| `WA_WORKER_URL` | sole poller and Operator client | approved HTTPS Worker origin |
+| `WA_WORKER_URL` | sole poller and Operator client | approved HTTPS Worker origin; AFC `/jet` for poller, non-secret mirror in Fleet-OPS `/zulip` for Operator |
 | `WA_STATE_DIRECTORY` | sole poller | approved private durable offset/lock directory |
 | `WHATSAPP_BRIDGE_ENABLED` | sole poller and Worker | exact `on` enables; absent defaults off |
 | `WHATSAPP_BRIDGE_WAKE_ENABLED` | Worker | exact `on` enables delivery; absent defaults off |

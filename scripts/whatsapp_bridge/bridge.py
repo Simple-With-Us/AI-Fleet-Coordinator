@@ -156,21 +156,36 @@ def request_json(url, headers, body=None):
             except (ValueError, RecursionError):
                 raise BridgeError("invalid_json") from None
     except urllib.error.HTTPError as error:
-        if error.code in (400, 401, 403, 404, 409, 413):
+        status = error.code
+        retry = error.headers.get("Retry-After", "30")
+        error.close()
+        if 400 <= status < 500 and status not in (408, 429):
             # Stand down on competing pollers or rejected credentials.  Never
             # recover by fetching another credential or fighting the poller.
-            raise StopBridge(f"http_{error.code}") from None
-        if error.code == 429:
-            retry = error.headers.get("Retry-After", "30")
+            raise StopBridge(f"http_{status}") from None
+        if 300 <= status < 400:
+            raise StopBridge("redirect_refused") from None
+        if status == 429:
             raise BridgeError(f"rate_limited:{retry if retry.isdigit() else '30'}") from None
-        raise BridgeError(f"http_{error.code}") from None
+        raise BridgeError(f"http_{status}") from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise BridgeError("network_error") from None
 
 
 class State:
     def __init__(self, directory):
-        directory = Path(directory)
+        directory = Path(os.path.abspath(directory))
+        for component in (directory, *directory.parents):
+            # macOS has root-owned /var and /tmp aliases; the untrusted target
+            # and every other symlink remain forbidden.
+            trusted_alias = (
+                component in (Path("/var"), Path("/tmp")) and component.lstat().st_uid == 0
+            )
+            if component.is_symlink() and not trusted_alias:
+                raise StopBridge("unsafe_state_directory")
+        for name in ("poller.lock", "state.sqlite3"):
+            if (directory / name).is_symlink():
+                raise StopBridge("unsafe_state_file")
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(directory, 0o700)
         self.lock = (directory / "poller.lock").open("a")
@@ -273,6 +288,13 @@ class Bridge:
         if not sender_hash:
             raise StopBridge("missing_owner_binding")
         batch["messages"] = [m for m in batch["messages"] if m["sender_hash"] == sender_hash]
+        for message in batch["messages"]:
+            if message["text"] is not None:
+                for value in (self.api_key, self.signing_key):
+                    if len(value) >= 8:
+                        message["text"] = message["text"].replace(
+                            value, "[redacted:loaded credential]"
+                        )
         body = json.dumps(
             {"contract": "wa-ingest/1", "seat": "JET", "sent_at": int(self.clock()), **batch},
             separators=(",", ":"),
@@ -306,7 +328,7 @@ def main():
     )
     for name in names:
         if not os.environ.get(name):
-            raise StopBridge(f"missing_{name}")
+            raise StopBridge(f"missing_{name}_from_approved_Infisical_runtime")
     if os.environ.get("WHATSAPP_BRIDGE_ENABLED") != "on":
         raise StopBridge("disabled")
     state = State(os.environ["WA_STATE_DIRECTORY"])
@@ -317,21 +339,24 @@ def main():
         os.environ["WA_WORKER_URL"],
     )
     errors = 0
+    schema_errors = 0
     try:
         while not (Path(os.environ["WA_STATE_DIRECTORY"]) / "disabled").exists():
             try:
                 bridge.step()
                 errors = 0
+                schema_errors = 0
                 print('{"state":"running"}', flush=True)
             except StopBridge:
                 raise
             except BridgeError as error:
                 errors += 1
                 print(json.dumps({"state": str(error).split(":")[0]}), flush=True)
-                if (
-                    str(error).startswith(("schema_", "invalid_json", "response_too_large"))
-                    and errors >= 3
-                ):
+                schema_failure = str(error).startswith(
+                    ("schema_", "invalid_json", "response_too_large")
+                )
+                schema_errors = schema_errors + 1 if schema_failure else 0
+                if schema_errors >= 3:
                     raise StopBridge("schema_stop") from None
                 delay = min(120, 5 * 2 ** min(errors - 1, 5))
                 if str(error).startswith("rate_limited:"):

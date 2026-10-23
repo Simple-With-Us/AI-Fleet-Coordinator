@@ -359,5 +359,109 @@ class LaunchTests(unittest.TestCase):
             prepare({}, {"client_id": "x", "client_secret": "y"})
 
 
+class BoundaryRegressionTests(unittest.TestCase):
+    def test_http_classification_user_agent_and_no_redirect(self):
+        import urllib.error
+        from email.message import Message
+
+        from whatsapp_bridge.bridge import NoRedirect, request_json
+
+        self.assertIsNone(
+            NoRedirect().redirect_request(None, None, 302, "redirect", {}, "https://other.example")
+        )
+        for status in (302, 418, 429, 503):
+            with patch("urllib.request.build_opener") as opener:
+                opener.return_value.open.side_effect = urllib.error.HTTPError(
+                    "https://test", status, "test", Message(), None
+                )
+                with self.assertRaises(BridgeError) as caught:
+                    request_json("https://api.whatsapp.com/test", {})
+                self.assertEqual(isinstance(caught.exception, StopBridge), status in (302, 418))
+                req = opener.return_value.open.call_args.args[0]
+                self.assertEqual(req.get_header("User-agent"), "AFC-WhatsApp-Bridge/1")
+                self.assertEqual(opener.return_value.open.call_count, 1)
+
+    def test_schema_counter_is_consecutive_and_separate(self):
+        import contextlib
+        import io
+
+        from whatsapp_bridge.bridge import main
+
+        with tempfile.TemporaryDirectory() as directory:
+            env = {
+                name: "synthetic"
+                for name in (
+                    "WHATSAPP_API_KEY",
+                    "WA_BRIDGE_HMAC_KEY_JET",
+                    "WA_WORKER_URL",
+                    "WA_AGENT_HASH_JET",
+                    "WA_SENDER_HASH_JET",
+                )
+            }
+            env.update(WA_STATE_DIRECTORY=directory, WHATSAPP_BRIDGE_ENABLED="on")
+            with (
+                patch.dict(os.environ, env),
+                patch("whatsapp_bridge.bridge.Bridge") as bridge,
+                patch("time.sleep"),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                bridge.return_value.step.side_effect = [
+                    BridgeError("network_error"),
+                    BridgeError("network_error"),
+                    BridgeError("schema_error"),
+                    StopBridge("test_exit"),
+                ]
+                with self.assertRaisesRegex(StopBridge, "test_exit"):
+                    main()
+                bridge.return_value.step.side_effect = [BridgeError("schema_error")] * 3
+                with self.assertRaisesRegex(StopBridge, "schema_stop"):
+                    main()
+
+    def test_state_symlinks_are_rejected_and_numeric_ack_is_not_boolean(self):
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "actual").mkdir()
+            (root / "link").symlink_to(root / "actual", target_is_directory=True)
+            with self.assertRaisesRegex(StopBridge, "unsafe_state_directory"):
+                State(root / "link")
+            state = State(root / "actual")
+            try:
+
+                def request(url, headers, body=None):
+                    return (
+                        payload()
+                        if body is None
+                        else {"ok": 1, "processed": 1, "next_offset": str(payload()["next_offset"])}
+                    )
+
+                with (
+                    patch.dict(os.environ, {"WA_SENDER_HASH_JET": digest("user:owner", "k" * 64)}),
+                    self.assertRaisesRegex(BridgeError, "ingest_not_acknowledged"),
+                ):
+                    Bridge(state, "synthetic", "k" * 64, "https://worker.example", request).step()
+            finally:
+                state.close()
+
+    def test_loaded_credentials_are_redacted_before_worker_relay(self):
+        def request(url, headers, body=None):
+            if body is None:
+                return payload("👀 keep synthetic private")
+            self.assertNotIn(b"synthetic", body)
+            self.assertIn(b"[redacted:loaded credential]", body)
+            return {"ok": True, "processed": True, "next_offset": str(payload()["next_offset"])}
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"WA_SENDER_HASH_JET": digest("user:owner", "k" * 64)}),
+        ):
+            state = State(directory)
+            try:
+                Bridge(state, "synthetic", "k" * 64, "https://worker.example", request).step()
+            finally:
+                state.close()
+
+
 if __name__ == "__main__":
     unittest.main()
