@@ -4021,17 +4021,20 @@ class Daemon:
         instance = str(self.env.get("AGENT_SYNC_INSTANCE") or "").strip().lower()
         return instance if instance in ("mac", "server") else ""
 
-    def _registration_route(self, row: Mapping[str, Any]) -> dict[str, str] | None:
-        """The chat's own Zulip channel/topic, from its live lease;  None when unknown.
+    def _registration_lease_topics(self, row: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """The chat's live lease topics as {channel, topic, expires};  [] when unknown.
 
-        The lease is written by the chat's own attach hook, so the route is grounded in
-        the chat's registration of itself - never in a guess from the catalog row.
+        The lease is written by the chat's own attach hook, so the topics are grounded in
+        the chat's registration of itself - never in a guess from the catalog row.  The
+        whole list (not only the picked route) feeds the queue's rename-follow logic:  a
+        whole-topic rename rewrites the lease entry in place keeping its expiry, which is
+        how a pending question tells a rename from an unrelated new attachment.
         """
         try:
             session_id = str(row.get("session_id") or "")
             seat = str(row.get("seat") or "")
             if not session_id or not seat:
-                return None
+                return []
             paths = L.SeatPaths(self.root, seat)
             now = self.clock.time()
             for lease_id in L.list_lease_ids(paths):
@@ -4045,20 +4048,32 @@ class Daemon:
                     expires = entry.get("expires")
                     if isinstance(expires, (int, float)) and expires <= now:
                         continue
+                    if expires is not None and not isinstance(expires, (int, float)):
+                        continue
                     channel = str(entry.get("channel") or "").strip()
                     topic = str(entry.get("topic") or "").strip()
                     if channel and topic:
-                        live.append((expires, channel, topic))
+                        live.append({"channel": channel, "topic": topic, "expires": expires})
                 if live:
-                    # The active topic, not the oldest:  a permanently attached lane (no
-                    # expiry) is the chat's home;  among expiring attachments the one
-                    # renewed most recently wins.
-                    live.sort(key=lambda item: (item[0] is not None, -(item[0] or 0.0)))
-                    _, channel, topic = live[0]
-                    return {"channel": channel, "topic": topic}
+                    return live
         except Exception:
             pass
-        return None
+        return []
+
+    def _registration_route(
+        self, row: Mapping[str, Any], topics: list[dict[str, Any]] | None = None
+    ) -> dict[str, str] | None:
+        """The chat's own Zulip channel/topic, picked from its live lease topics."""
+        if topics is None:
+            topics = self._registration_lease_topics(row)
+        if not topics:
+            return None
+        # The active topic, not the oldest:  a permanently attached lane (no expiry) is
+        # the chat's home;  among expiring attachments the one renewed most recently wins.
+        picked = sorted(
+            topics, key=lambda item: (item["expires"] is not None, -(item["expires"] or 0.0))
+        )[0]
+        return {"channel": picked["channel"], "topic": picked["topic"]}
 
     def _seat_bot_user_id(self, seat: str) -> int | None:
         """The Zulip user id of a seat's own bot, when that seat is connected."""
@@ -4111,6 +4126,7 @@ class Daemon:
                 seat = str(row.get("seat") or "")
                 if not (platform and scope and session_id and seat):
                     continue
+                topics = self._registration_lease_topics(row)
                 try:
                     out = OREG.begin(
                         db,
@@ -4120,7 +4136,8 @@ class Daemon:
                         seat=seat,
                         requester="catalog",
                         evidence_location=self._registration_evidence(platform),
-                        route=self._registration_route(row),
+                        route=self._registration_route(row, topics),
+                        route_topics=topics,
                         registrations=lambda pf, sid: OR.registrations_for_native_id(db, pf, sid),
                     )
                 except Exception as exc:
@@ -4134,7 +4151,28 @@ class Daemon:
                 if out.get("status") not in ("ask", "pending"):
                     continue
                 entry = out["entry"]
+                change = out.get("route_change")
+                if change == "followed":
+                    route_now = entry.get("route") or {}
+                    self.log.write(
+                        "operator-registration-route-follow",
+                        entry_id=entry.get("entry_id"),
+                        channel=str(route_now.get("channel") or ""),
+                        topic=str(route_now.get("topic") or ""),
+                    )
+                elif change == "lost":
+                    self.log.write(
+                        "operator-registration-route-lost",
+                        entry_id=entry.get("entry_id"),
+                        platform=platform,
+                        session_id=session_id,
+                    )
                 if entry.get("notified_at"):
+                    continue
+                if entry.get("route_lost"):
+                    # The asked topic is gone and no rename continuation matched:  do not
+                    # post into a dead topic name.  The sweep drops the entry and a fresh
+                    # question is asked on the then-current route.
                     continue
                 route = entry.get("route")
                 if not isinstance(route, dict):

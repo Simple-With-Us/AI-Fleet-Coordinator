@@ -41,7 +41,7 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from . import live as L
@@ -182,6 +182,90 @@ def _route(route: Mapping[str, Any] | None) -> dict[str, str] | None:
     return {"channel": channel[:MAX_LABEL], "topic": topic[:MAX_LABEL]}
 
 
+def _topic_expires(topics: Iterable[Mapping[str, Any]] | None, route: Mapping[str, str]) -> Any:
+    """The lease expiry of the topic a route names, or None when the lease does not say."""
+    key = (route["channel"].casefold(), route["topic"].casefold())
+    for entry in topics or ():
+        if not isinstance(entry, Mapping):
+            continue
+        other = (
+            str(entry.get("channel") or "").casefold(),
+            str(entry.get("topic") or "").casefold(),
+        )
+        if other == key:
+            expires = entry.get("expires")
+            return expires if expires is None or isinstance(expires, (int, float)) else None
+    return None
+
+
+def _refresh_route(
+    entry: dict[str, Any],
+    clean_route: dict[str, str] | None,
+    topics: Iterable[Mapping[str, Any]] | None,
+) -> str | None:
+    """Track the asked topic through renewals and whole-topic renames;  never steal.
+
+    The route a question was asked on is refreshed against the chat's live lease topics on
+    every pass:
+
+    - The asked topic still listed (whatever newer activity topics appeared) keeps the
+      route;  only its stored expiry follows renewals.  An unrelated new attachment never
+      moves a pending question.
+    - The asked topic gone from the lease follows ONLY a whole-topic rename or move:  the
+      daemon's update_message handler rewrites the lease entry in place and keeps its
+      expiry, so exactly one live topic carrying the asked topic's last expiry is the
+      continuation.  No unique match means the question cannot be placed honestly (an
+      unrelated activity topic must not silently inherit it):  the entry is marked
+      route_lost, keeps its stale route, and the sweep's re-ask starts a fresh question.
+    """
+    topics = [t for t in (topics or ()) if isinstance(t, Mapping)]
+    old = entry.get("route")
+    if not isinstance(old, dict):
+        if clean_route:
+            entry["route"] = clean_route
+            entry["route_expires"] = _topic_expires(topics, clean_route)
+            entry.pop("route_lost", None)
+            return "filled"
+        return None
+    key = (
+        str(old.get("channel") or "").casefold(),
+        str(old.get("topic") or "").casefold(),
+    )
+    for topic in topics:
+        current = (
+            str(topic.get("channel") or "").casefold(),
+            str(topic.get("topic") or "").casefold(),
+        )
+        if current != key:
+            continue
+        changed = False
+        expires = topic.get("expires")
+        if expires is None or isinstance(expires, (int, float)):
+            if entry.get("route_expires") != expires:
+                entry["route_expires"] = expires
+                changed = True
+        if entry.pop("route_lost", None) is not None:
+            changed = True
+        return "kept" if changed else None
+    stored = entry.get("route_expires", ...)
+    candidates = []
+    if stored is not ... and (stored is None or isinstance(stored, (int, float))):
+        candidates = [t for t in topics if t.get("expires") == stored]
+    if len(candidates) == 1:
+        picked = candidates[0]
+        channel = str(picked.get("channel") or "").strip()
+        topic = str(picked.get("topic") or "").strip()
+        if channel and topic:
+            entry["route"] = {"channel": channel[:MAX_LABEL], "topic": topic[:MAX_LABEL]}
+            entry["route_expires"] = picked.get("expires")
+            entry.pop("route_lost", None)
+            return "followed"
+    if not entry.get("route_lost"):
+        entry["route_lost"] = True
+        return "lost"
+    return None
+
+
 def begin(
     registry_db: str,
     *,
@@ -192,6 +276,7 @@ def begin(
     requester: str,
     evidence_location: str = "",
     route: Mapping[str, Any] | None = None,
+    route_topics: Iterable[Mapping[str, Any]] | None = None,
     registrations: Callable[[str, str], list[dict[str, Any]]],
     now: float | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
@@ -244,12 +329,18 @@ def begin(
         data = load(registry_db)
         for entry in data["entries"].values():
             if entry["state"] == STATE_ASKED and _identity(entry) == (platform, scope, native):
-                # The route can arrive after the question:  a chat discovered before its
-                # lease listed a topic gets its route filled in on a later pass.
-                if clean_route and not entry.get("route"):
-                    entry["route"] = clean_route
+                # The route tracks the chat's live lease:  filled when the lease first
+                # names a topic, followed through a whole-topic rename, never stolen by
+                # an unrelated new attachment (_refresh_route).
+                change = _refresh_route(entry, clean_route, route_topics)
+                if change:
                     save(registry_db, data)
-                return {"status": "pending", "entry": dict(entry), "question": question_for(entry)}
+                return {
+                    "status": "pending",
+                    "entry": dict(entry),
+                    "question": question_for(entry),
+                    "route_change": change,
+                }
         for entry in data["entries"].values():
             if entry["state"] == STATE_CONFLICT and _identity(entry) == (platform, scope, native):
                 # An unsettled conflict stays terminal until the owner settles it:  opening
@@ -274,6 +365,7 @@ def begin(
         }
         if clean_route:
             entry["route"] = clean_route
+            entry["route_expires"] = _topic_expires(route_topics, clean_route)
         data["entries"][entry_id] = entry
         save(registry_db, data)
     return {"status": "ask", "entry": dict(entry), "question": question_for(entry)}
