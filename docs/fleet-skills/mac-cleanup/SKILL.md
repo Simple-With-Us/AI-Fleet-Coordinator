@@ -48,7 +48,7 @@ mac-auto-cleanup
    - Prunes Grok session transcripts older than 7 days (`~/.grok/sessions`).
    - Prunes old Codex archived sessions (`~/.codex/archived_sessions`).
    - Prunes old Antigravity brain conversation folders older than 7 days (`~/.gemini/antigravity/brain`).
-7. **Remote Hetzner Coolify Server (`167.233.254.55`)**:
+7. **Remote Hetzner Coolify Server** (its address is private deployment inventory, so it lives in the operator's own inventory on that Mac):
    - Automatically triggers remote Docker cleanup (`docker builder prune -af --filter "until=72h"` and `docker system prune -af --volumes`).
 
 Pass `--pressure` (or `MAC_CLEANUP_PRESSURE=1`) for the tighter path: CleanMyMac purge, 3-day Grok session prune, pm2 log cap.  Resource-watch uses that flag.

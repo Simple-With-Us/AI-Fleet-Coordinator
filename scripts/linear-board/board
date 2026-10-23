@@ -3689,8 +3689,10 @@ def guarded_write(store: IdemStore, request_sha: str, operation: str, send, desc
             store.drop()
             die(str(e), e.code)
         store.unknown()
-        die(f"{gql_summary(e)}.  The {describe} may have reached Linear:  check its result before using another idempotency "
-            "key.  This key will not be replayed automatically for 24 hours.")
+        # `SendFailed` carries its own sanitized message and its mapped code; it is not a
+        # `GqlError`, so re-summarizing it here threw both away and left "no error code".
+        die(f"{e}.  The {describe} may have reached Linear: check its result before using another idempotency "
+            "key.  This key will not be replayed automatically for 24 hours.", e.code)
     except BaseException:
         store.unknown()
         raise

@@ -477,18 +477,23 @@ Two more costs it carries, and both are deliberate:
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 
 A body holds user-supplied text, so it needs the approved credential scan before it is persisted
-and before it leaves the machine.  The scan comes **first**, ahead of every `body*.txt` file:  the
+and before it leaves the machine.  The scan comes **first**, ahead of every `body*.txt` file: the
 unsaved body reaches the scanner on stdin, so no body file exists while the scan runs and a
 refusal never leaves the text on disk.  The approved scanner is `scripts/agent_sync/secretscan.py`:
 `scan(text, known)` returns the *kind* of secret it found (for example `GitHub token` or `assigned
 secret`) or `None`, and it never returns the matched text, so it is safe to use as the guard.
 `known` is the list of exact values the process has already loaded, if any.
 
+Hold the body in a shell variable and pipe it to the scanner.  A here-document is not a
+pre-persistence scan: on the system shell (`/bin/bash`, 3.2) the shell writes the here-document to
+a temporary file before the scanner ever reads it, so the body reaches disk before the refusal
+runs.  A pipe keeps the body in memory until the scanner has cleared it, which is also what the
+runtime does on its own path, where the scanner reads the in-memory text before anything is
+written.
+
 ```sh
 umask 077
-python3 -c 'import sys; sys.path.insert(0, "scripts"); from agent_sync.secretscan import scan; text = sys.stdin.read(); hit = scan(text); print("body:" + ("secret:" + str(hit) if hit else "clean"), file=sys.stderr); raise SystemExit(2 if hit else 0)' <<'BODY'
-...the body, exactly as it will be posted...
-BODY
+printf '%s' "$BODY" | python3 -c 'import sys; sys.path.insert(0, "scripts"); from agent_sync.secretscan import scan; text = sys.stdin.read(); hit = scan(text); print("body:" + ("secret:" + str(hit) if hit else "clean"), file=sys.stderr); raise SystemExit(2 if hit else 0)'
 ```
 
 The scan exits nonzero on a hit, so the write step and the relay step never run on a body that

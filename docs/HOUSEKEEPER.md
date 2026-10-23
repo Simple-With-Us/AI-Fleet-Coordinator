@@ -1,6 +1,6 @@
 # Housekeeper playbook (BotFleet + GB-HOUSEKEEPER)
 
-Canonical prompt pasted into BotFleet Housekeeper (bot `d43849b8-5eeb-452b-ac4e-ed4724343838`) routines, the resource webhook, and first-class resource triggers.  Two ASCII spaces between sentences.
+Canonical prompt pasted into BotFleet Housekeeper routines, the resource webhook, and first-class resource triggers.  The bot id is private resource inventory and is not in this pack: it lives in the operator's own inventory on that Mac.  Two ASCII spaces between sentences.
 
 **Ownership (prefer BF).**  BF-Housekeeper owns Mac disk reclaim.  GB-HOUSEKEEPER keeps Coolify/Hetzner until BF proves Mac-independent Coolify wake.  Prefer BF for Mac work.  Extra-ship no.  Do not install Tailscale or change Mac networking.  HOLD MiniMax process kills unless Jay says otherwise.
 

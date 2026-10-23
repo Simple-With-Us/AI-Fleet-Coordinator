@@ -3712,7 +3712,7 @@ class ErrorFieldTests(unittest.TestCase):
         cli = load_cli()
         self.assertEqual(
             cli.credential_vars(
-                "Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID, CLAUDE_LINEAR_CLIENT_SECRET)"
+                "Infisical Example-Project staging /example-path (CLAUDE_LINEAR_CLIENT_ID, CLAUDE_LINEAR_CLIENT_SECRET)"
             ),
             "CLAUDE_LINEAR_CLIENT_ID,CLAUDE_LINEAR_CLIENT_SECRET",
         )

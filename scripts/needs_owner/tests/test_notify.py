@@ -444,11 +444,26 @@ class BoardWriteTests(unittest.TestCase):
     def notified_key(self) -> str:
         return comment_keys.key_for("AFC-300", self.notified_text())
 
-    def test_a_refused_held_record_is_warned_with_the_boards_own_reason(self) -> None:
+    def test_a_refused_held_record_stops_the_run_with_the_boards_own_reason(self) -> None:
         # `adopt --no-notify` has already filed the item when it writes the held mark, so a
-        # board refusal on that comment must not abandon the run, and the reason has to reach
-        # the operator:  a swallowed failure leaves nothing to act on.
+        # terminal failure on that comment must not leave the item silently deliverable:
+        # the run stops with the board's own exit code, and the reason reaches the operator.
         runner = self.stub(Result(4, "", "board: no Fleet credentials  credential_field=LINEAR_CLIENT_ID"))
+        out, err = io.StringIO(), io.StringIO()
+        with self.assertRaises(BoardFailed) as raised:
+            verbs.finish(
+                verbs.Streams(runner.env, out, err), runner, argparse.Namespace(json=False),
+                "CLAUDE", self.item, [], new=True, rescan=False,
+                words=("Filed", "Adopted"), extra={}, no_notify=True,
+            )
+        self.assertEqual(raised.exception.exit_code, 4)
+        self.assertIn("the held record could not be written", str(raised.exception))
+        self.assertIn("LINEAR_CLIENT_ID", str(raised.exception))
+
+    def test_a_retryable_held_record_stays_pending_and_only_warns(self) -> None:
+        # A retryable failure may be written by a later run, so the item stays pending and
+        # the run carries on: only a terminal or an unknown outcome stops it.
+        runner = self.stub(Result(3, "", "board: AFC-300 is In Progress, claimed by BF-DIRECTOR"))
         out, err = io.StringIO(), io.StringIO()
         code = verbs.finish(
             verbs.Streams(runner.env, out, err), runner, argparse.Namespace(json=False),
@@ -457,7 +472,6 @@ class BoardWriteTests(unittest.TestCase):
         )
         self.assertEqual(code, 0, err.getvalue())
         self.assertIn("the held record could not be written", err.getvalue())
-        self.assertIn("LINEAR_CLIENT_ID", err.getvalue())
 
     # ---- the table ------------------------------------------------------------------------
     def test_the_classifier_reads_the_board_codes(self) -> None:
@@ -499,10 +513,14 @@ class BoardWriteTests(unittest.TestCase):
 
     # ---- terminal -------------------------------------------------------------------------
     def test_exit_4_names_the_missing_variable_and_no_value(self) -> None:
+        # The board owns the credential, so it names the variables in a structured field
+        # of its own, and the notifier reads that field and not the sentence around it.
+        # The prose carries a hint and a backend name, and neither reaches the operator.
         err = ("board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET are missing "
                "from Infisical Fleet-OPS /fleet/linear (`fleet-secrets get`), and LINEAR_CLIENT_ID and "
                "LINEAR_CLIENT_SECRET are not set.  Check `fleet-secrets doctor`.  Until then use "
-               "BOARD_BACKEND=mac-collab.")
+               "BOARD_BACKEND=mac-collab.  credential_field=FLEET_LINEAR_CLIENT_ID,"
+               "FLEET_LINEAR_CLIENT_SECRET,LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET")
         runner = self.stub(Result(4, "", err))
         with self.assertRaises(BoardFailed) as raised:
             notifymod.notify(runner, self.item)
@@ -515,8 +533,10 @@ class BoardWriteTests(unittest.TestCase):
         self.assertNotIn("mac-collab", str(raised.exception), "a value never reaches the operator")
 
     def test_a_value_never_comes_out_of_the_missing_variables(self) -> None:
+        # The board names the variable it owns in a structured field, and the value it
+        # printed in the sentence around it is never read and never reaches the operator.
         err = ("board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID is missing and "
-               "LINEAR_CLIENT_SECRET=hunter2 is set.")
+               "LINEAR_CLIENT_SECRET=hunter2 is set.  credential_field=FLEET_LINEAR_CLIENT_ID")
         runner = self.stub(Result(4, "", err))
         with self.assertRaises(BoardFailed) as raised:
             notifymod.notify(runner, self.item)
@@ -557,7 +577,7 @@ class BoardWriteTests(unittest.TestCase):
         # unwritten:  the fallback notifier would then announce an item that was held.  The
         # outcome is returned, and it keeps the board's own reason.
         runner = self.stub(
-            Result(4, "", "board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID is missing")
+            Result(4, "", "board: no Fleet credentials  credential_field=FLEET_LINEAR_CLIENT_ID")
         )
         wrote = notifymod.record(runner, self.item, records.pending_text("held"))
         self.assertEqual(wrote.outcome, notifymod.TERMINAL)
@@ -624,15 +644,17 @@ class BoardWriteTests(unittest.TestCase):
             "board comment failed (exit 4):  credential variable: LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET",
         )
 
-    def test_the_prose_is_only_read_when_the_board_has_no_field(self) -> None:
-        # An older board has no field, so the prose is still read:  the names it names
-        # are the names the operator has to set.
+    def test_the_prose_is_not_read_for_a_name_any_more(self) -> None:
+        # The board owns the credential, so the board names the variable in its own field.
+        # The prose is not read for a name: a name read out of prose is not a contract, and
+        # a guess would send the operator after the wrong secret.
         err = ("board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET are missing")
         runner = self.stub(Result(4, "", err))
         with self.assertRaises(BoardFailed) as raised:
             notifymod.notify(runner, self.item)
-        self.assertIn("credential variable: FLEET_LINEAR_CLIENT_ID, FLEET_LINEAR_CLIENT_SECRET",
-                      str(raised.exception))
+        message = str(raised.exception)
+        self.assertNotIn("credential variable:", message)
+        self.assertIn("the board named no credential variable", message)
 
     def test_no_placeholder_is_written_when_no_variable_is_named(self) -> None:
         # Rule 3:  a missing-secret failure identifies the variable.  When nothing names
@@ -643,7 +665,7 @@ class BoardWriteTests(unittest.TestCase):
         message = str(raised.exception)
         self.assertNotIn("(not named)", message)
         self.assertNotIn("credential variable:", message)
-        self.assertIn("the board named no variable", message)
+        self.assertIn("the board named no credential variable", message)
 
     def test_the_boards_own_fields_reach_the_detail(self) -> None:
         # The board hands back the error name, the status and the request id as fields of

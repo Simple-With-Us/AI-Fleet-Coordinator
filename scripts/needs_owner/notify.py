@@ -126,9 +126,12 @@ ERROR_TYPE = re.compile(r"\berror_type=([A-Za-z0-9_]{1,40})\b")
 # eight characters of the credential, the ellipsis, and the last four.  A Linear
 # credential starts with `lin_api_`, `lin_oauth_` or `lin_wh_`, so the preview
 # carries an underscore, and a credential under twenty-four characters shows one
-# leading character and the ellipsis alone.
+# leading character and the ellipsis alone.  The character set is an allow-list of
+# the characters a credential preview can hold: a value carrying punctuation or
+# symbols is not a preview, and taking it would put arbitrary text into a Linear
+# comment and a job log.
 CREDENTIAL_FIELD = re.compile(r"\bcredential=(\S+)")
-MASKED_SHAPE = re.compile(r"^[^\s…]{1,8}…[^\s…]{0,4}$")
+MASKED_SHAPE = re.compile(r"^[A-Za-z0-9_.-]{1,8}…[A-Za-z0-9_.-]{0,4}$")
 # The names of the credential variables the operator has to set, as the board hands
 # them back.  The board owns the credential, so the board is the layer that can say
 # which variable is missing.
@@ -419,13 +422,19 @@ def _detail(result: Result) -> str:
     variable name, a scrubbed request id, and a reason token this module chose."""
     text = _board_text(result)
     if result.code == 4:
-        # The board's own field first:  it names the variables the operator has to
-        # set.  The prose is only read for an older board that has no field.
-        names = _field_names(text) or _missing_names(text)
+        # The board owns the credential, so the board is the layer that names the
+        # variable the operator has to set, and it names it in its own structured
+        # field.  Only that field counts: a name read out of the board's prose is
+        # not a contract, and a name this module guessed would send the operator
+        # after the wrong secret.  Every code-4 exit of the board carries the
+        # field, so a board that names no variable is a board that broke its
+        # contract, and this module says that instead of guessing.
+        names = _field_names(text)
         if names:
             return "credential variable: %s" % ", ".join(names)
-        # No name anywhere:  the detail says so rather than pretending one was named.
-        return "credential missing: the board named no variable"
+        # No field: fail closed.  The outcome stays terminal, so the run stops,
+        # and the detail names the board's broken contract and no credential.
+        return "the board named no credential variable"
     if result.code == 6:
         preview = _credential_preview(text)
         parts = [

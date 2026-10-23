@@ -184,12 +184,19 @@ def finish(
     if no_notify:
         if not item.notified and not item.pending:
             # Mark it held, so the fallback notifier (which sends every other notify_pending item) leaves it alone.
-            # The item is already filed, so a board refusal on that comment must not abandon the
-            # rest of the run;  the reason is warned and the item stays pending.  The outcome
-            # carries the reason:  a terminal failure says which credential the operator has
-            # to fix, and a retryable one says to try again later.
+            # The outcome decides what happens next: a retryable failure may be written by a
+            # later run, so the item stays pending and the reason is warned.  A terminal
+            # failure never comes back on its own, and an unknown one may have landed, so
+            # neither may be left silently deliverable: the run stops with the board's own
+            # exit code and the reason the operator has to act on.
             wrote = notifymod.record(runner, item, records.pending_text("held"))
             if not wrote:
+                if wrote.outcome != notifymod.RETRYABLE:
+                    raise BoardFailed(
+                        "the held record could not be written: %s"
+                        % (wrote.detail or "the board said nothing"),
+                        wrote.code,
+                    )
                 io.warn(
                     "the held record could not be written: %s"
                     % (wrote.detail or "the board said nothing")
