@@ -98,7 +98,7 @@ Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`
 
 | Key | Kind | Used by |
 |---|---|---|
-| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #alerts, #trading, #agent-sync |
+| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #alerts, #trading, #Work-In-Progress |
 | `ZULIP_PAGERDUTY_EMAIL` / `ZULIP_PAGERDUTY_API_KEY` | env config / secret | PagerDuty v3 webhook to #incident-response |
 | `ZULIP_LINEAR_EMAIL` / `ZULIP_LINEAR_API_KEY` | env config / secret | Linear webhook to #issues |
 | `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #alerts (`slack_incoming`) |
@@ -123,7 +123,7 @@ This service has no per-user settings: seat identity is passed per-request by th
 
 - `scripts/mac-collab/mac-collab-server.py` (THE BOARD, retired on 2026-10-19, AFC-363): Mac-local; reads `~/.secrets/mac-collab.env` (canonical) or the environment.  Operator-managed on the Mac, not a hosted service surface.
 - The `/mac-collab` Fleet-OPS folder is gone (owner Jay, 2026-10-19, AFC-363):  its 15 `MAC_COLLAB_TOKEN*` secrets (root and per-seat), the 26 root `MAC_COLLAB_*` reference entries that pointed at them, and the `admin-jays-services` Worker secret `MAC_COLLAB_TOKEN` were deleted.  The stale `/global-api-keys` copy `MAC_COLLAB_TOKEN` and its root reference `GLOBAL_API_KEYS_MAC_COLLAB_TOKEN` were deleted the same day (owner Jay, AFC-363);  no `MAC_COLLAB` name is left in Fleet-OPS.
-- Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `simple-board` CLI reads them from there first, through the `INFISICAL_AUTOMATION` identity, falling back to `~/.secrets/Linear/<SEAT>.env` only on a host without it (AFC-348).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `simple-board` writes after every mint and reads instead of minting again.  Never print one.
+- Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `simple-board` CLI reads them from there through the `INFISICAL_AUTOMATION` identity, after the `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET` environment pair, and it reads no credential file at all (AFC-348, AFC-359).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `simple-board` writes after every mint and reads instead of minting again.  Never print one.
 - `fleet-sentry-monitor/monitor.py`: operator cron script; env-configured on the box that runs it.
 - `fleet_rag` CLI tools and MCP scripts: per-invocation env; no long-lived process to host a cache.
 - `workers/pr-conflict-watch`: Cloudflare Worker.

@@ -424,6 +424,21 @@ def coerce_integers(schema: Mapping[str, Any], value: Any) -> Any:
     return value
 
 
+def default_channel_for(env: Mapping[str, Any], schema: Mapping[str, Any]) -> Any:
+    """The channel an MCP tool should use when the caller named none.
+
+    Only tools whose schema declares a `channel` default get one — the others keep their
+    "the caller must name a target" validation.  When one does, the value comes from the
+    runtime's own environment rather than the schema literal, so `AGENT_SYNC_CHANNEL` is
+    honoured and the shipped contract cannot point at a renamed-away stream.
+    """
+    props = schema.get("properties") or {}
+    channel_prop = props.get("channel")
+    if not (isinstance(channel_prop, dict) and "default" in channel_prop):
+        return None
+    return Z.default_channel(env)
+
+
 def with_defaults(schema: Mapping[str, Any], arguments: Mapping[str, Any]) -> dict[str, Any]:
     filled = dict(arguments)
     for name, sub in (schema.get("properties") or {}).items():
@@ -660,6 +675,7 @@ class Tools:
         session_source: str,
         codex_thread_meta: bool = False,
         owner_user_id: int = 0,
+        operator_user_id: int = 0,
         owner_clients: Iterable[str] = (),
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -679,6 +695,10 @@ class Tools:
         self._call_tag: str | None = None
         self._call_state_key: str | None = None
         self.owner_user_id = owner_user_id
+        # The Operator service bot's own Zulip user id, pinned in the host's listener.toml.  It is
+        # the only proof that the Operator opened a DM, so a host that pins it lets a seat answer
+        # inside one;  a host that does not pin it gets a refusal that names the variable.
+        self.operator_user_id = operator_user_id
         self.owner_clients = set(owner_clients)
         # The notes host (the Mac's script, or the Operator client) is made on first use:  most sessions never call a
         # Notes tool, and off a Mac it reads a fleet knob.
@@ -722,7 +742,7 @@ class Tools:
                     handler = functools.partial(self._tool_linear, name)
                 if handler is None and name.startswith("fleetlink_"):
                     handler = functools.partial(self._tool_fleetlink, name)
-                result = handler(with_defaults(spec["inputSchema"], arguments))
+                result = handler(self._with_channel(spec["inputSchema"], arguments))
                 outcome = "ok"
             except Exception as exc:  # noqa: BLE001 - every failure becomes a tool error
                 error = map_exception(exc, write=name in WRITE_TOOLS)
@@ -748,6 +768,24 @@ class Tools:
         return {"content": [{"type": "text", "text": text}], "structuredContent": dict(structured)}
 
     # ---- helpers ---------------------------------------------------------------------------
+    def _with_channel(
+        self, schema: Mapping[str, Any], arguments: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """`with_defaults`, plus the channel resolved from this runtime's own environment.
+
+        The tool contract deliberately carries no static `channel` default:  a literal in
+        `tools.json` is baked in at call time and would silently override
+        `AGENT_SYNC_CHANNEL` (and go on targeting the stream the realm just renamed away).
+        Resolving it here keeps one source of truth — `Z.default_channel(env)` — across the
+        MCP path, the CLI and the listener.
+        """
+        filled = with_defaults(schema, arguments)
+        if "channel" not in arguments:
+            resolved = default_channel_for(self.agent.rt.env, schema)
+            if resolved is not None:
+                filled["channel"] = resolved
+        return filled
+
     def _attribution(self, meta: Any) -> None:
         """Native metadata controls attribution only; credential identity stays pinned."""
         self._call_tag = self.process_tag
@@ -1522,11 +1560,10 @@ class Tools:
         refusal that no retry can clear.  Two failures are separated for that reason:
 
         - a **credential rejection** (401, 403) means this bot's key was refused, which says
-          nothing at all about the conversation.  It is re-raised so `map_exception` renders it as
-          `not_authorized` (401) or `zulip_error` (403) with the HTTP status and Zulip's code, never
-          as "no such DM".  The rendered error carries no part of the key, not even a masked
-          preview:  the status and code identify the refusal, and the seat's key is named by the
-          seat itself.
+          nothing at all about the conversation.  It becomes a sanitized error of its own, so the
+          refusal is never read as "no such DM".  The error names the key by a masked preview
+          only (the first eight and the last four characters), with the HTTP status and Zulip's
+          code, and never any other part of the key.
         - a **rate limit** (429) is re-raised unchanged, so `map_exception` renders it as
           `rate_limited` with the `retry_after_s` hint instead of a generic outage.
         - a **transient** failure (408, a gateway or any other 5xx) becomes a `NetworkError`,
@@ -1558,7 +1595,12 @@ class Tools:
                     "Zulip answered HTTP %s for the direct message narrow" % status
                 ) from exc
             if status in (401, 403):
-                raise
+                raise ToolError(
+                    "not_authorized" if status == 401 else "zulip_error",
+                    "Zulip refused the bot credential (%s);  verify the configured API key"
+                    % Z.masked_credential(getattr(getattr(self.agent, "creds", None), "key", "")),
+                    extra={"zulip_code": exc.code, "status": status},
+                ) from exc
             return []
 
     @staticmethod
@@ -1644,7 +1686,7 @@ class Tools:
                 operator_opened=DMP.operator_opened_dm(
                     people,
                     existing,
-                    operator_user_id=DMP.operator_user_id(env),
+                    operator_user_id=DMP.operator_user_id(env, self.operator_user_id or None),
                     self_id=_int(self.me.get("user_id")),
                 ),
                 clarifying=bool(args.get("clarifying_question")),
@@ -1663,11 +1705,15 @@ class Tools:
             )
             # The seat that was authenticated and the identity it acted as ride along, so an admin
             # reading the refusal knows which grant and which claimed bot it came from.
+            # `refused.code`, not the base class's:  a missing Operator id is its own failure
+            # (`missing_operator_user_id`), and the hosted MCP has to report the same
+            # machine-readable code the CLI does (Kody review on AFC-473).
             raise ToolError(
-                DMP.DmRefused.code,
+                refused.code,
                 str(refused),
                 extra={
                     "replacement": "side_chats",
+                    "reason": refused.reason,
                     "authenticated_seat": self.seat,
                     "acting_identity": self.agent.tag,
                 },

@@ -187,7 +187,7 @@ sight.
 - Code identifiers, API enums, log lines, internal “live stream” engineering labels
   (SSE, live snapshot) unless user-facing product chrome.
 
-## Two spaces between sentences (owner rule 2026-08-08, strengthened 2026-08-10, 2026-08-14, and 2026-09-03 — ALL agents, ALL contexts)
+## Two spaces between sentences (owner rule 2026-08-08, strengthened 2026-08-10, 2026-08-14, and 2026-09-03; the per-surface gap mechanics re-ruled 2026-10-22 — ALL agents, ALL contexts)
 
 Owner: **two spaces between sentences everywhere (a real U+00A0 plus a normal space, commit messages included), including App Store
 submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
@@ -197,7 +197,7 @@ submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
 any context, always use 2 spaces to separate a period from the beginning of a new sentence."
 This closes the last loophole -- the rule is NOT limited to product/user-facing copy.  It
 covers every paragraph an agent writes anywhere: **chat replies to the owner**, PR titles and
-bodies, commit messages, Zulip posts to #agent-sync, Apple Notes, Linear issues and comments, rollout
+bodies, commit messages, Zulip posts to #Work-In-Progress, Apple Notes, Linear issues and comments, rollout
 notes, review reports and design docs.  If it is prose, it gets the gap.  (Single space
 remains correct after a non-terminal abbreviation -- "e.g.", "v1.2.3".  In HTML preserve the
 gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Markdown, note that
@@ -217,14 +217,18 @@ the gap BETWEEN sentences.)
   generate the gap in the shell, matching one *or more* spaces so it works in both states:
   ``perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g'``.  The ``([*_`~)\]"\x{27}\x{2019}\x{201D}]*)`` group catches a
   sentence end *inside* markup or inside a quoted span, where the space comes after the closing
-  span or the closing quote and not after the period.  Then run both checks before posting:
-  ``grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l`` must be above `0`, and ``grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt``
-  must be `0`, because a partly converted body can hold real U+00A0 and still carry one leftover
-  single-space gap.  A conversion that matched nothing still exits 0, so a failed run is silent.
+  span or the closing quote and not after the period.  A GitHub body takes the same converter
+  with the entity as its replacement — `\&nbsp; ` in place of `\x{a0} ` — and the checks are
+  the same for both forms.  Then run both checks before posting:
+  ``grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' body.nbsp.txt | wc -l`` must be above `0`, and ``grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt``
+  must be `0`, because a partly converted body can hold a gap and still carry one leftover
+  single-space gap.  The count check accepts either gap form, so the same pair verifies a
+  GitHub body (the entity) and a Zulip body (a real U+00A0).  A conversion that matched
+  nothing still exits 0, so a failed run is silent.
   The two checks are here as a block you can copy and run as they are:
 
   ```sh
-  grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l
+  grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' body.nbsp.txt | wc -l
   grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt
   ```
   `simple-chat post --body-file` additionally refuses any file whose mode is not `0600` or `0400`,
@@ -244,7 +248,8 @@ chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and
 superseded on 2026-10-08 by the entity again.  Do not re-run these tests.  Owner ruling
 2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or HTML
 renderer), use its working mechanism without asking; confirmation is no longer needed per
-surface.
+surface.  Owner ruling 2026-10-22 split the surfaces:  GitHub takes the entity, Zulip takes a
+real U+00A0, and a file read as source still takes two ASCII spaces.
 
 **What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
 in the **Claude Code Code tab** (normalized away in the view, even though copy-paste showed

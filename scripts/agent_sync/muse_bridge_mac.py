@@ -100,7 +100,7 @@ def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> d
         "source_seat": "GB-FIXER",
         "id": 1,
         "type": "stream",
-        "channel": "agent-sync",
+        "channel": "work-in-progress",
         "topic": "synthetic bridge canary",
         "content": "Choose the listed routine for this benign canary.",
         "sender": "synthetic peer",

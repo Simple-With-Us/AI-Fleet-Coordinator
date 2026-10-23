@@ -1618,7 +1618,7 @@ export class HostedTools {
     const keys = linearLabelKeys(issue);
     const held = keys.find((n) => n.startsWith(CLAIM_PREFIX));
     if (held && held !== `${CLAIM_PREFIX}${seat}`) {
-      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #agent-sync.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
+      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
     }
     const workspace = await this.linearWorkspace();
     const idsOf = async (names) => {

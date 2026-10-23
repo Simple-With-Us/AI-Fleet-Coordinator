@@ -48,7 +48,7 @@ held_alert_seat = "MA"            # whose bot carries it:  MA posts for the whol
                                   # itself busy never has to speak for everyone.  Optional:  unset falls back to
                                   # the claude seat, then to the first enabled seat.  The post names no one with
                                   # an @-mention, and #alerts is a presence topic, so it never wakes a seat.
-presence_topics = [["agent-sync", "roll call"], ["agent-sync", "fleet"], ["builds", "gates"], ["alerts", "*"]]
+presence_topics = [["work-in-progress", "roll call"], ["work-in-progress", "fleet"], ["builds", "gates"], ["alerts", "*"]]
 
 # Cloud seats (MA, GROK-WEB, WISE and ECHO):  enabled with wake = "inbox".  JET is the same, but its
 # wake is "http" (see its block).  Each holds a queue,
