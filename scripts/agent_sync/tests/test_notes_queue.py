@@ -306,6 +306,10 @@ class RunnerTests(QueueHarness):
         self.assert_answer(self.report(dict(claimed, claim="short"), result={}), 400, "invalid_argument")
         self.assert_answer(self.report(claimed, result={"status": "done"}, error={"code": "internal"}), 400)
         self.assert_answer(self.report(dict(claimed, request_id="no-such-request"), result={}), 404, "not_found")
+        # seat and request_id name a file under requests/:  a malformed one is refused before any lookup.
+        for bad in (dict(claimed, seat="../etc"), dict(claimed, request_id="../../escape"), dict(claimed, seat="a/b")):
+            with self.subTest(bad=(bad["seat"], bad["request_id"])):
+                self.assert_answer(self.report(bad, result={"status": "done"}), 400, "invalid_argument")
 
     def test_an_expired_lease_makes_a_write_unknown_and_puts_a_read_back(self) -> None:
         self.assert_answer(self.enqueue(request(rid="lease-write-1")), 202)
@@ -416,6 +420,16 @@ class ActionLogTests(QueueHarness):
             200,
         )
         self.assertEqual((body["accepted"], body["duplicates"]), (0, 1))
+        # A rotation moves the kept lines to .1:  a restart still knows their ids, so a resend is not kept twice.
+        log = Path(self.root) / NQ.QUEUE_DIR / NQ.ACTION_LOG
+        log.rename(log.with_name("%s.1" % NQ.ACTION_LOG))
+        rotated = self.make_queue()
+        body = self.assert_answer(
+            self.call("POST", "/notes/v1/runner/log", {"lines": [self.entry("log-1"), self.entry("log-5")]},
+                      principal=W.RUNNER, queue=rotated),
+            200,
+        )
+        self.assertEqual((body["accepted"], body["duplicates"]), (1, 1))
         self.assert_answer(
             self.call("POST", "/notes/v1/runner/log", {"lines": [self.entry("x")] * (NQ.LOG_BATCH_MAX + 1)},
                       principal=W.RUNNER),

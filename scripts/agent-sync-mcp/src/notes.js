@@ -54,6 +54,8 @@ export const FORMATS = Object.freeze(["html", "text", "raw"]);
 export const TITLE_MAX = 200;
 export const SUMMARY_MAX = 280;
 export const MARKDOWN_MAX = 500_000;
+// What a read shows for a line that looks like a credential (notes.WITHHELD);  a body holding it is never written back.
+export const WITHHELD = "[withheld: secret-shaped]";
 export const QUERY_MAX = 100;
 export const LIST_LIMIT_MAX = 500;
 export const LIST_LIMIT_DEFAULT = 100;
@@ -170,6 +172,7 @@ export const ReadNote = z.looseObject({
   body: z.string(),
   bytes: z.number().int().nonnegative().nullish(),
   truncated: z.boolean().nullish(),
+  withheld: z.number().int().nonnegative().nullish(),
 });
 export const ListNote = z.looseObject({ title: z.string(), id: z.string().nullish(), created: z.string().nullish(), modified: z.string().nullish() });
 export const ReadResult = z.looseObject({ note: ReadNote });
@@ -312,6 +315,9 @@ export function makeRequest({ action, requestId, identity, title, markdown, flag
     const body = markdown ?? "";
     if (typeof body !== "string") throw invalid("argument 'markdown' must be a string");
     if (points(body).length > MARKDOWN_MAX) throw invalid(`the note body is longer than ${MARKDOWN_MAX} characters;  nothing was written`);
+    if (body.includes(WITHHELD)) {
+      throw invalid(`the body holds ${WITHHELD}, so it came from a read that withheld a line that looks like a secret;  writing it back would erase that line from the note.  Edit the note on the Mac instead`);
+    }
     request.markdown = body;
     request.flags = checkFlags(flags);
     if (session !== undefined && session !== null) request.session = checkSession(session);
@@ -336,11 +342,14 @@ export function makeRequest({ action, requestId, identity, title, markdown, flag
   return request;
 }
 
-/** A list query or a log title filter:  at most 100 characters, no double quote, backslash or control character;  trimmed. */
+/**
+ * A list query or a log title filter:  at most 100 characters, no double quote, backslash or control character, and no
+ * leading - (the script would read it as an option);  trimmed.
+ */
 export function checkQuery(raw, name = "query") {
   if (raw === undefined || raw === null) return "";
-  if (typeof raw !== "string" || points(raw).length > QUERY_MAX || TITLE_BAD_RE.test(raw)) {
-    throw invalid(`argument '${name}' must be text of at most ${QUERY_MAX} characters with no double quote, backslash or control character`);
+  if (typeof raw !== "string" || points(raw).length > QUERY_MAX || TITLE_BAD_RE.test(raw) || raw.trim().startsWith("-")) {
+    throw invalid(`argument '${name}' must be text of at most ${QUERY_MAX} characters with no double quote, backslash or control character, and must not start with -`);
   }
   return raw.trim();
 }
@@ -507,6 +516,7 @@ export function readNote(result, title = "") {
   for (const name of ["id", "created", "modified", "format"]) if (typeof note[name] === "string") out[name] = note[name];
   if (Number.isSafeInteger(note.bytes)) out.bytes = note.bytes;
   if (typeof note.truncated === "boolean") out.truncated = note.truncated;
+  if (Number.isSafeInteger(note.withheld)) out.withheld = note.withheld;
   return out;
 }
 
@@ -652,12 +662,10 @@ export const NOTES_METHODS = {
     try {
       posted = await client.send("POST", "/notes/v1/requests", { body: { seat: this.seat, request } });
     } catch (error) {
-      // The request may have reached the queue:  the same request_id is the safe retry, a new one could run it twice.
-      if (error instanceof ToolError && error.code === "unavailable") {
-        throw new ToolError("unavailable", `${error.message}.  It may have been queued:  send it again with the same request_id (${requestId}), which never runs it twice.`, { retryable: true });
-      }
+      if (error instanceof ToolError && error.code === "unavailable") throw enqueueUnknown(error.message, requestId);
       throw error;
     }
+    if (posted.status >= 500) throw enqueueUnknown(notesHttpError(posted.status, posted.data).message, requestId);
     if (posted.status !== 200 && posted.status !== 202) throw notesHttpError(posted.status, posted.data, { seat: this.seat, requestId });
     // A 202 is queued;  a 200 is the record of the same request sent before.  An answer that does not parse is read
     // as queued, and the next poll fetches the record itself.
@@ -764,6 +772,15 @@ export const NOTES_METHODS = {
     return okResult(notesEnvelope("notes_log", shown, out), out);
   },
 };
+
+/**
+ * A failed enqueue (a network failure, a timeout, a 5xx):  the request may have reached the queue before the answer was
+ * lost, so its outcome is unknown.  Checking it, or sending it again under the same request_id, is safe (the Operator
+ * answers the record it has);  a new request_id could write the note twice, so this is never retryable.
+ */
+function enqueueUnknown(message, requestId) {
+  return new ToolError("outcome_unknown", `${message.replace(/[.\s]+$/, "")}, so the request may or may not be queued.  Check it with notes_status, or send it again with the same request_id, ${requestId}, never a new one.`);
+}
 
 /** A done read or list whose record holds no result:  expired (kept one hour) or malformed. */
 function noResult(record, action) {

@@ -178,9 +178,15 @@ class NotesQueue:
                 record = L.read_json(str(path))
                 if self._valid(record) and record["state"] in ("queued", "running"):
                     self.active[(record["seat"], record["request_id"])] = record
-        for entry in L.read_jsonl(str(self.action_log))[-LOG_IDS_KEEP:]:
-            if isinstance(entry.get("id"), str):
-                self.log_ids[entry["id"]] = None
+        # The ids the runner may still resend:  the current log and the newest rotated copy (a rotation must not let
+        # an id the Operator already holds in `.1` through again).  Older copies hold lines the runner sent long ago.
+        recent: list[str] = []
+        for path in (self.action_log.with_name("%s.1" % ACTION_LOG), self.action_log):
+            recent.extend(
+                entry["id"] for entry in L.read_jsonl(str(path)) if isinstance(entry.get("id"), str)
+            )
+        for entry_id in recent[-LOG_IDS_KEEP:]:
+            self.log_ids[entry_id] = None
 
     # ---- the record's public view --------------------------------------------------------------
     @staticmethod
@@ -566,11 +572,17 @@ class NotesQueue:
         )
         if (
             not isinstance(seat, str)
+            or not N.SEAT_RE.fullmatch(seat)
             or not isinstance(request_id, str)
+            or not N.REQUEST_ID_RE.fullmatch(request_id)
             or not isinstance(claim, str)
             or not _CLAIM_RE.fullmatch(claim)
         ):
-            return _error(400, "invalid_argument", "seat, request_id and claim are required")
+            # Checked before any lookup:  seat and request_id name a file under requests/, so a malformed one must
+            # never reach a path.
+            return _error(
+                400, "invalid_argument", "a valid seat, request_id and claim are required"
+            )
         if ("result" in payload) == ("error" in payload) or set(payload) - {
             "seat",
             "request_id",
@@ -646,6 +658,7 @@ class NotesQueue:
                     "body",
                     "bytes",
                     "truncated",
+                    "withheld",
                 )
             }
             if len(str(keep.get("body") or "").encode("utf-8")) > N.READ_MAX:

@@ -224,11 +224,16 @@ def check_format(raw: Any) -> str:
 def check_query(raw: Any) -> str:
     if raw is None:
         return ""
-    if not isinstance(raw, str) or len(raw) > QUERY_MAX or _TITLE_BAD_RE.search(raw):
+    if (
+        not isinstance(raw, str)
+        or len(raw) > QUERY_MAX
+        or _TITLE_BAD_RE.search(raw)
+        or raw.strip().startswith("-")
+    ):
         raise NotesError(
             "invalid_argument",
             "argument 'query' must be text of at most %d characters with no double quote, backslash or "
-            "control character" % QUERY_MAX,
+            "control character, and must not start with -" % QUERY_MAX,
         )
     return raw.strip()
 
@@ -306,9 +311,25 @@ def direct_once(
     return dict(result, duplicate=False)
 
 
+def remember_direct_read(store: Any, request: Mapping[str, Any]) -> None:
+    """A small row for a read or list this Mac answered directly (its action and done, never the note text or the
+    titles), so notes_status answers for it here as it does through the Operator.  A failure here never fails the read."""
+    key = "k:notes-read:%s" % request["request_id"]
+    try:
+        store.begin(key, DIRECT_TTL, {"tool": "notes_read"})
+        store.set(
+            key,
+            state="sent",
+            id=0,
+            result={"request_id": request["request_id"], "action": request["action"]},
+        )
+    except (OSError, ValueError):
+        pass
+
+
 def direct_status(store: Any, request_id: str) -> dict[str, Any] | None:
-    """What this Mac's idempotency rows say about a request it wrote directly:  None when it has no row."""
-    row = store.row("k:notes-direct:%s" % request_id)
+    """What this Mac's idempotency rows say about a request it ran directly:  None when it has no row."""
+    row = store.row("k:notes-direct:%s" % request_id) or store.row("k:notes-read:%s" % request_id)
     if not isinstance(row, Mapping):
         return None
     state = row.get("state")
@@ -453,6 +474,13 @@ def make_request(
             raise NotesError("invalid_argument", "the note body must be text")
         if len(markdown) > MARKDOWN_MAX:
             raise NotesError("invalid_argument", BODY_TOO_LONG % MARKDOWN_MAX)
+        if WITHHELD in markdown:
+            raise NotesError(
+                "invalid_argument",
+                "the body holds %s, so it came from a read that withheld a line that looks like a secret;  "
+                "writing it back would erase that line from the note.  Edit the note on the Mac instead"
+                % WITHHELD,
+            )
         request["markdown"] = markdown
         request["flags"] = check_flags(flags)
         if session is not None:
@@ -726,8 +754,30 @@ def content_text(plaintext: str, title: str) -> str:
     return text.rstrip()
 
 
+WITHHELD = "[withheld: secret-shaped]"
+
+
+def withhold_secrets(body: str) -> tuple[str, int]:
+    """`body` with every line the fleet secret scan flags replaced by WITHHELD (a `<div>` line keeps its `<div>`), and
+    how many lines that was.  A note can hold a credential an agent once pasted into it;  a read must not carry it on
+    to the Operator, a cloud seat or a model.  make_request refuses a body that still holds the marker, so a read,
+    edited and written back, can never erase the withheld line from the real note."""
+    from . import secretscan  # lazy:  only a read needs it
+
+    out: list[str] = []
+    withheld = 0
+    for line in body.split("\n"):
+        if line and secretscan.scan(line):
+            withheld += 1
+            line = (
+                "<div>%s</div>" % WITHHELD if line.lstrip().lower().startswith("<div") else WITHHELD
+            )
+        out.append(line)
+    return "\n".join(out), withheld
+
+
 def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> dict[str, Any]:
-    """The `note` a read answers, from the script's --read output."""
+    """The `note` a read answers, from the script's --read output, with any secret-shaped line withheld."""
     title = str(raw.get("title") or "")
     if fmt == "raw":
         body = str(raw.get("body") or "")
@@ -735,6 +785,7 @@ def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> d
         body = content_text(str(raw.get("plaintext") or ""), title)
     else:
         body = content_html(str(raw.get("body") or ""), title)
+    body, withheld = withhold_secrets(body)
     data = body.encode("utf-8")
     truncated = len(data) > limit
     if truncated:
@@ -750,6 +801,7 @@ def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> d
         "body": body,
         "bytes": len(body.encode("utf-8")),
         "truncated": truncated,
+        "withheld": withheld,
     }
 
 

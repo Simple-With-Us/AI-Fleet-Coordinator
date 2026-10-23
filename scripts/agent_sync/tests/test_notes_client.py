@@ -425,6 +425,10 @@ class ClientTests(unittest.TestCase):
         with self.assertRaises(N.NotesError) as caught:
             self.client.log({})
         self.assertEqual(caught.exception.code, "unavailable")
+        self.op.answers[("GET", "/notes/v1/log")] = (200, b"[" * 100_000 + b"]" * 100_000)  # too deep to parse
+        with self.assertRaises(N.NotesError) as caught:
+            self.client.log({})
+        self.assertIn("not JSON", caught.exception.message)
 
     def test_a_redirect_is_never_followed(self):
         hits: list[str] = []
@@ -576,7 +580,10 @@ class HostTests(unittest.TestCase):
         host, _ = self.elsewhere(Unreachable(record("queued")))
         with self.assertRaises(N.NotesError) as caught:
             NC.call(host, "CLAUDE", self.req(rid="requestid-0042"), wait=30, scan=self.scan)
-        self.assertEqual(caught.exception.code, "unavailable")
+        # The request may have reached the queue before the answer was lost:  its outcome is unknown, not retryable.
+        self.assertEqual(caught.exception.code, "outcome_unknown")
+        self.assertIn("may or may not be queued", caught.exception.message)
+        self.assertIn("simple-notes status requestid-0042", caught.exception.message)
         self.assertIn("same request_id, requestid-0042, never a new one", caught.exception.message)
 
     def test_the_mac_seam_is_notes_direct_available_looked_up_when_the_host_is_made(self):
@@ -624,6 +631,11 @@ class HostTests(unittest.TestCase):
         self.assertEqual(len(self.runs), 3, "a read runs every time")
         self.assertEqual(self.scans, [])
         self.assertIsNone(self.store.row("k:notes-direct:readrequest-01"))
+        # A small status row (no note text) lets notes_status answer for a read this Mac ran.
+        self.assertEqual(self.store.row("k:notes-read:readrequest-01")["result"], {"request_id": "readrequest-01", "action": "read"})
+        self.assertNotIn("<div>x</div>", json.dumps(self.store.row("k:notes-read:readrequest-01")))
+        status = NC.status(host, "CLAUDE", "listrequest-01")
+        self.assertEqual((status["status"], status["transport"], status["action"]), ("done", "direct", "list"))
 
     def test_status_on_a_mac_reads_the_idempotency_rows(self):
         host = self.mac()
@@ -709,6 +721,7 @@ class HostTests(unittest.TestCase):
             ("refused", {}, (None, "internal")),
             ("unknown", {"error": {"code": "outcome_unknown", "message": "the lease ran out"}}, (None, "outcome_unknown")),
             ("expired", {}, (None, "unavailable")),
+            ("lost", {}, (None, "unavailable")),  # a state this client does not know is never read as done
         ):
             with self.subTest(state=state, extra=bool(extra)):
                 host, _ = self.elsewhere(FakeClient(record(state, **extra)))

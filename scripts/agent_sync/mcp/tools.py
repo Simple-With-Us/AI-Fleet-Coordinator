@@ -2277,9 +2277,10 @@ class Tools:
         return guide_result(args, self.agent.rt.env)
 
     # ---- Apple Notes (AFC-486, docs/protocols/operator-notes.md) -----------------------------
-    NOTES_WAIT_DEFAULT = (
-        90  # seconds a tool waits for the Mac runner off a Mac (wait_seconds may lower it)
-    )
+    # Seconds a tool waits for the Mac runner off a Mac.  The stdio server answers one call at a time, so the default is
+    # short (a healthy runner answers in a few seconds) and wait_seconds may raise it, never past the most.
+    NOTES_WAIT_DEFAULT = 25
+    NOTES_WAIT_MAX = 90
     NOTES_MARKER_BEGIN = "BEGIN_UNTRUSTED_NOTES"
     NOTES_MARKER_END = "END_UNTRUSTED_NOTES"
     NOTES_UNTRUSTED = (
@@ -2333,7 +2334,7 @@ class Tools:
         value = args.get("wait_seconds")
         if value is None:
             return self.NOTES_WAIT_DEFAULT
-        return max(0, min(int(value), self.NOTES_WAIT_DEFAULT))
+        return max(0, min(int(value), self.NOTES_WAIT_MAX))
 
     def _notes_fenced(self, header: str, data: Mapping[str, Any]) -> str:
         """A read's answer as text:  the header, the note, then the data as one JSON line inside the fence, so note

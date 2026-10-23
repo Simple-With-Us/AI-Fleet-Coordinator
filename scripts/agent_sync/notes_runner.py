@@ -90,9 +90,14 @@ class Runner:
         fd = os.open(str(self.state_path.parent / LOCK_NAME), os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        except BlockingIOError:
+            # Only "held by someone else" means another runner.  A flock lock is released by the kernel when its
+            # holder dies, so a crash never leaves it stale (a mkdir lock would).
             os.close(fd)
             raise AlreadyRunning("another notes runner is running on this Mac") from None
+        except OSError:
+            os.close(fd)
+            raise
         self._lock_fd = fd
 
     def release(self) -> None:
@@ -102,8 +107,11 @@ class Runner:
 
     # ---- one pass --------------------------------------------------------------------------------
     def recover(self) -> None:
-        """Report what a crash left behind (see the module header, step 1)."""
+        """Report what a crash left behind (see the module header, step 1).  Each request is reported on its own:  a
+        report that fails keeps only its own entry for the next pass, and the others still go out.  If any failed,
+        the first failure is raised after the rest have been tried, so the loop backs off before it claims new work."""
         state = self._state()
+        failed: N.NotesError | None = None
         for key, entry in list(state["inflight"].items()):
             if not isinstance(entry, dict):
                 state["inflight"].pop(key, None)
@@ -124,9 +132,18 @@ class Runner:
                         "been written.  Check the Coding folder, then send it again with a new request_id.",
                     }
                 }
-            self._deliver(seat, request_id, claim, outcome)
+            try:
+                self._deliver(seat, request_id, claim, outcome)
+            except N.NotesError as exc:
+                self.log(
+                    "notes-runner: recovery report for %s failed:  %s" % (request_id, exc.code)
+                )
+                failed = failed or exc
+                continue
             state["inflight"].pop(key, None)
             self._save(state)
+        if failed is not None:
+            raise failed
 
     def _deliver(self, seat: Any, request_id: Any, claim: Any, outcome: Mapping[str, Any]) -> None:
         """Report one outcome.  A result the Operator refuses for good (400, 413:  a read too large to send back, say)

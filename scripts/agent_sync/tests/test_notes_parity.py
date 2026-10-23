@@ -144,7 +144,8 @@ class ParityTests(unittest.TestCase):
                 self.assertEqual(tool["inputSchema"]["properties"]["request_id"]["pattern"], N.REQUEST_ID_RE.pattern, tool["name"])
             if "wait_seconds" in tool["inputSchema"]["properties"]:
                 self.assertEqual(tool["inputSchema"]["properties"]["wait_seconds"]["maximum"], 300)
-        self.assertEqual(T.Tools.NOTES_WAIT_DEFAULT, 90)
+        # The stdio server answers one call at a time:  a short default, and wait_seconds may raise it to the most.
+        self.assertEqual((T.Tools.NOTES_WAIT_DEFAULT, T.Tools.NOTES_WAIT_MAX), (25, 90))
         from agent_sync import notes_cli
 
         self.assertEqual(notes_cli.CLI_WAIT_DEFAULT, 300)

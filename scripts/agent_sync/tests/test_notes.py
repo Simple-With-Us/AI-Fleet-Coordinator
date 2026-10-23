@@ -27,14 +27,14 @@ MASTER = "⭐️ Background Jobs Master List"
 SESSION = "11112222-3333-4444-5555-666677778888"
 RID = "requestid-0001"
 
-# A real note as Notes stores it (Tue, Oct 20):  written by the old #notes-relay for MM, so it ends with the relay's
+# A note shaped as Notes stores it (ids made up):  written by the old #notes-relay for MM, so it ends with the relay's
 # footer.  STORED_HTML is the `body` of `apple-notes-coding.sh --read`, STORED_TEXT its `plaintext`.
 STORED_TITLE = "[AFC, MM] Relay Live Test"
 STORED_HTML = (
     '<div><b><font face=".AppleSystemUIFontBold"><span style="font-size: 24px">[AFC, MM] Relay Live Test</span>'
     "</font></b></div>\n"
     "<div>Tue, Oct 20, 3:05am</div>\n"
-    "<div>Session: mvs_1e439b803ddc4631a9dc6243b32c0bc5</div>\n"
+    "<div>Session: mvs_00000000example0session00000000</div>\n"
     "<div><br></div>\n"
     "<div>Live end-to-end test of the #notes-relay consumer on this Mac.</div>\n"
     "<div><br></div>\n"
@@ -43,13 +43,13 @@ STORED_HTML = (
     "<div><br><br></div>\n"
     "<div><br></div>\n"
     "<div><i>Relayed for MM by the notes relay on Tue, Oct 20, 2026: </i><i><u>"
-    '<a href="https://simplewithus.zulipchat.com/#narrow/id/633237747">request message</a></u></i><i>.</i><br></div>\n'
+    '<a href="https://chat.example.test/#narrow/id/100000001">request message</a></u></i><i>.</i><br></div>\n'
     "<div><br></div>\n"
 )
 STORED_TEXT = (
     "[AFC, MM] Relay Live Test\n"
     "Tue, Oct 20, 3:05am\n"
-    "Session: mvs_1e439b803ddc4631a9dc6243b32c0bc5\n"
+    "Session: mvs_00000000example0session00000000\n"
     "\n"
     "Live end-to-end test of the #notes-relay consumer on this Mac.\n"
     "\n"
@@ -601,6 +601,7 @@ class DirectRunnerTests(unittest.TestCase):
                             "body": body,
                             "bytes": len(body.encode()),
                             "truncated": False,
+                            "withheld": 0,
                         }
                     },
                 )
@@ -610,6 +611,33 @@ class DirectRunnerTests(unittest.TestCase):
     def test_a_long_note_is_cut_and_says_so(self):
         note = N.read_result({"title": "t", "body": "x" * 50}, "raw", limit=10)
         self.assertEqual((note["body"], note["bytes"], note["truncated"]), ("x" * 10, 10, True))
+
+    def test_a_read_withholds_each_secret_shaped_line_and_the_marker_is_never_written_back(self):
+        token = "ghp_" + "a1B2" * 9  # built at run time:  no token-shaped literal in the source
+        stored = "<div>Before.</div>\n<div>key %s</div>\n<div>After.</div>" % token
+        for fmt, raw in (("raw", {"title": "t", "body": stored}), ("text", {"title": "t", "plaintext": "t\nkey %s\nAfter." % token})):
+            with self.subTest(fmt):
+                note = N.read_result(raw, fmt)
+                self.assertNotIn(token, note["body"])
+                self.assertIn(N.WITHHELD, note["body"])
+                self.assertEqual(note["withheld"], 1)
+        self.assertEqual(
+            N.read_result({"title": "t", "body": stored}, "raw")["body"],
+            "<div>Before.</div>\n<div>%s</div>\n<div>After.</div>" % N.WITHHELD,
+            "a <div> line keeps its <div>",
+        )
+        with self.assertRaises(N.NotesError) as caught:
+            N.make_request("update", "CLAUDE", request_id="withheld-req-01", title=MASTER, markdown="<div>%s</div>" % N.WITHHELD, session=SESSION)
+        self.assertEqual(caught.exception.code, "invalid_argument")
+        self.assertIn("Edit the note on the Mac", caught.exception.message)
+
+    def test_a_query_never_starts_with_a_dash(self):
+        for query in ("-x", " --read", "-"):
+            with self.subTest(query):
+                with self.assertRaises(N.NotesError) as caught:
+                    N.check_query(query)
+                self.assertIn("must not start with -", caught.exception.message)
+        self.assertEqual(N.check_query("a-b"), "a-b")
 
     def test_a_list_answers_four_text_fields_per_note(self):
         answer = {

@@ -15,7 +15,7 @@ import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
 import {
   NOTES_TOOLS, NOTES_WRITE_TOOLS, NOTES_MARKER_BEGIN, NOTES_MARKER_END, NOTES_POLL_MS, NOTES_WAIT_MAX_S, OperatorNotesClient,
   operatorNotesClientFromEnv, notesSigningString, checkTitle, checkAnyTitle, checkFlags, titleProblem, notesNames, makeRequest,
-  logQuery, logEntry, waitFor,
+  logQuery, logEntry, waitFor, WITHHELD,
 } from "../src/notes.js";
 import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
 
@@ -421,6 +421,15 @@ test("notes_read answers the note exactly in structuredContent and fences it as 
   assert.equal(fence(pending.content[0].text, "notes_read")[1].status, "queued");
 });
 
+test("notes_read passes on how many secret-shaped lines the Mac withheld", async () => {
+  const { operator, tools } = harness();
+  const body = `<div>Before.</div>\n<div>${WITHHELD}</div>`;
+  const note = { title: STATIC_TITLE, id: NOTE_ID, format: "html", body, bytes: new TextEncoder().encode(body).length, truncated: false, withheld: 1 };
+  operator.onPoll = finishOn(operator, 1, "done", { result: { note } });
+  const out = ok(await tools.call("notes_read", { title: STATIC_TITLE, request_id: "read-withheld-1" }), "notes_read");
+  assert.equal(out.note.withheld, 1);
+});
+
 test("notes_list answers {notes, total, truncated}, each note fenced on its own line", async () => {
   const { operator, tools } = harness();
   const notes = [
@@ -509,6 +518,11 @@ test("the title checks mirror notes.py:  check_title, the any-title rule and tit
   assert.throws(() => makeRequest({ action: "pin", requestId: "abcdefgh12", identity: "CLAUDE", title: "t", markdown: "body" }), /takes no body/);
   assert.throws(() => makeRequest({ action: "list", requestId: "abcdefgh12", identity: "CLAUDE", limit: 501 }), /limit/);
   assert.throws(() => makeRequest({ action: "list", requestId: "abcdefgh12", identity: "CLAUDE", query: "x".repeat(101) }), /query/);
+  // The script would read a leading - as one of its own options.
+  for (const query of ["-x", " --read", "-"]) assert.throws(() => makeRequest({ action: "list", requestId: "abcdefgh12", identity: "CLAUDE", query }), /must not start with -/);
+  assert.equal(makeRequest({ action: "list", requestId: "abcdefgh12", identity: "CLAUDE", query: "a-b" }).query, "a-b");
+  // A body from a read that withheld a secret-shaped line is never written back over the real line.
+  assert.throws(() => makeRequest({ action: "update", requestId: "abcdefgh12", identity: "CLAUDE", title: "t", markdown: `<div>${WITHHELD}</div>` }), /Edit the note on the Mac/);
   assert.throws(() => makeRequest({ action: "read", requestId: "abcdefgh12", identity: "CLAUDE", title: "t", format: "pdf" }), /format/);
   assert.throws(() => makeRequest({ action: "update", requestId: "abcdefgh12", identity: "CLAUDE", title: "t", markdown: "x".repeat(500_001) }), /longer than 500000/);
   assert.throws(() => makeRequest({ action: "pin", requestId: "abcdefgh12", identity: "not a seat", title: "t" }), /identity/);
@@ -603,10 +617,12 @@ test("the Operator's HTTP answers map to clear tool errors", async () => {
     [{ status: 404, body: { error: "not_found", message: "not found" } }, "not_configured", /notes_queue/],
     [{ status: 409, body: { error: "conflict", message: "x" } }, "invalid_argument", /new request_id/],
     [{ status: 413, body: { error: "too_large" } }, "invalid_argument", /4 MiB/],
-    [{ status: 503, body: { error: "unavailable", message: "the notes queue is full" } }, "unavailable", /same request_id \(http-answer-01\)/],
-    [{ status: 502, body: null }, "unavailable", /HTTP 502/],
+    // A 5xx or a lost answer on the enqueue may have queued the request:  its outcome is unknown, never retryable.
+    [{ status: 503, body: { error: "unavailable", message: "the notes queue is full" } }, "outcome_unknown", /full or not running, so the request may or may not be queued.*notes_status.*same request_id, http-answer-01, never a new one/],
+    [{ status: 502, body: null }, "outcome_unknown", /HTTP 502, so the request may or may not be queued/],
     [{ status: 302, body: null }, "not_configured", /redirect/],
-    ["throw", "unavailable", /could not reach the Operator.*same request_id \(http-answer-01\)/],
+    [{ status: 429, body: null }, "rate_limited", /same request_id \(http-answer-01\)/],
+    ["throw", "outcome_unknown", /could not reach the Operator, so the request may or may not be queued.*same request_id, http-answer-01/],
   ];
   for (const [answer, code, message] of cases) {
     const { tools } = harness();
@@ -616,7 +632,7 @@ test("the Operator's HTTP answers map to clear tool errors", async () => {
     };
     const error = toolError(await tools.call("notes_pin", { title: STATIC_TITLE, request_id: "http-answer-01" }), code);
     assert.match(error.message, message, `${answer.status ?? answer} ${error.message}`);
-    if (code === "unavailable") assert.equal(error.retryable, true);
+    if (code === "outcome_unknown") assert.notEqual(error.retryable, true);
   }
 });
 

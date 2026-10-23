@@ -200,7 +200,8 @@ def add_parsers(
     q.add_argument(
         "--title", metavar="TEXT", default=None, help="only entries whose title contains this text"
     )
-    identity_opt(q)
+    # No --identity:  the log is the whole fleet's (any seat may read every Coding note), so it acts as no one;
+    # --by-seat filters it.
     q = add(
         sub, "runner", "the Mac runner for the Operator's notes queue (the LaunchAgent runs this)"
     )
@@ -223,7 +224,8 @@ def _fail(exc: N.NotesError) -> Z.AgentSyncError:
         return Z.UsageError(exc.message)
     if exc.code in ("not_configured", "forbidden"):
         return Z.CredentialError(exc.message)
-    if exc.code == "unavailable" and "could not be reached" in exc.message:
+    # A lost enqueue is outcome_unknown, and its message keeps the network failure's own words.
+    if exc.code in ("unavailable", "outcome_unknown") and "could not be reached" in exc.message:
         return Z.NetworkError(exc.message)
     return Z.ApiError(exc.message)
 
@@ -431,6 +433,9 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
             audit["outcome"] = "session_required"
             raise Z.UsageError(str(exc)) from None
         except ValueError as exc:
+            audit["outcome"] = (
+                "invalid_argument"  # a refused write attempt is audited too, by its code only
+            )
             raise Z.UsageError(str(exc)) from None
     wait = _wait(args)
     try:

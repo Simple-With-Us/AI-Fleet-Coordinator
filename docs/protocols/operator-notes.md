@@ -11,7 +11,7 @@ Owner direction (quoted):  "I don't want notes going from Zulip to Apple notes."
 | create | `simple-notes create TITLE` | `notes_create` | A new note.  The title must be `[TEAM_KEY, Agent] Topic` with the caller's own agent name. |
 | update | `simple-notes update TITLE` | `notes_update` | Replace a note's body.  Any Coding note.  A note whose title does not carry the caller's name is never created by an update. |
 | pin, unpin | `simple-notes pin TITLE` | `notes_pin`, `notes_unpin` | Any Coding note. |
-| read | `simple-notes read TITLE` | `notes_read` | One note's content, as `html` (ready to send back with `update --html`), `text` or `raw` (exactly what Notes stores). |
+| read | `simple-notes read TITLE` | `notes_read` | One note's content, as `html` (ready to send back with `update --html`), `text` or `raw` (exactly what Notes stores).  A line that looks like a credential reads as `[withheld: secret-shaped]`. |
 | list | `simple-notes list` | `notes_list` | The Coding folder's notes, newest first:  title, id, created, modified.  `query` filters titles. |
 | status | `simple-notes status ID` | `notes_status` | Where a queued request stands. |
 | log | `simple-notes log` | `notes_log` | The action log of `apple-notes-coding.sh`. |
@@ -23,7 +23,7 @@ The output is the same everywhere:  a write answers `status: done` with the `not
 ## Where a Request Runs
 
 - **On the Mac** (macOS, `osascript` and the script found):  `simple-notes`, the stdio MCP and the apple-notes skill run `apple-notes-coding.sh` directly, as before.
-- **Everywhere else** (the Hetzner server's CLIs and stdio MCP, the hosted ST-MCP Worker for cloud seats):  the request goes to the Operator's notes queue over signed HTTPS (below), and a seatless runner on the Mac claims it, runs the same script and reports the result.  The caller waits for that result:  `simple-notes` up to 300 seconds (`--wait SECONDS`, `--no-wait`), the stdio MCP up to 90 seconds and ST-MCP up to 25 seconds, polling once a second or so.  No Zulip message is involved at any point.
+- **Everywhere else** (the Hetzner server's CLIs and stdio MCP, the hosted ST-MCP Worker for cloud seats):  the request goes to the Operator's notes queue over signed HTTPS (below), and a seatless runner on the Mac claims it, runs the same script and reports the result.  The caller waits for that result, polling once a second or so:  `simple-notes` up to 300 seconds (`--wait SECONDS`, `--no-wait`);  the stdio MCP 25 seconds by default, which `wait_seconds` may raise to 90 (it answers one call at a time, so a long default would hold up the next);  ST-MCP up to 25 seconds.  No Zulip message is involved at any point.
 
 The script is the one place formatting is enforced (the title row, the date row, the Session row, sentence gaps, fleet dates), so a note reads the same whoever wrote it and from wherever.
 
@@ -34,6 +34,7 @@ The script is the one place formatting is enforced (the title row, the date row,
 - **list:**  the whole Coding folder.
 - Every title is at most 200 characters, holds no double quote, backslash or control character, and does not start with `-`.
 - Write text (title, body, summary, pr) gets the fleet secret scan before it leaves the caller.
+- A read gets the same scan on the Mac, before its result leaves:  each line it flags is replaced by `[withheld: secret-shaped]` (a `<div>` line keeps its `<div>`), and `note.withheld` counts them, so a credential pasted into a note never reaches the Operator, a cloud seat or a model.  A write whose body holds that marker is refused, so a read, edited and written back, never erases the real line;  edit such a note on the Mac.
 
 ## The Wire Protocol
 
@@ -60,7 +61,7 @@ good for 300 seconds either side of the Operator's clock.  Bodies are UTF-8 JSON
 ```json
 {"v": 2, "action": "update", "request_id": "nr0123456789abcdef0123", "identity": "CLAUDE",
  "title": "⭐️ Background Jobs Master List", "markdown": "...", "flags": {"html": true},
- "session": "0e51f975-e985-42d8-81ae-526f5971a79f"}
+ "session": "<session-id>"}
 ```
 
 `action` is one of create, update, pin, unpin, read, list.  `title` is required except for list;  `markdown` and `flags` (pin, notify, needs_owner, summary, pr, html) only for create and update;  `format` (html, text, raw) only for read;  `query` (at most 100 characters) and `limit` (1 to 500, default 100) only for list.
@@ -84,7 +85,7 @@ good for 300 seconds either side of the Operator's clock.  Bodies are UTF-8 JSON
 - `unknown`:  a write whose outcome cannot be known (the runner's lease ran out, or the script timed out).  It is never retried:  check the note, then send it again with a new request_id;
 - `expired`:  nobody claimed it within 24 hours.
 
-A claimed write that does not report within the lease (1,500 seconds, above the script's 1,200-second cap) becomes `unknown`;  if the runner later reports a definite outcome for that same claim (the Mac slept, say), the record takes it.  A claimed read or list goes back to the queue (at most three tries), because reading twice changes nothing.  A caller whose POST got no answer is told to send it again with the same `request_id`, never a new one, and a caller whose poll fails stops waiting and answers `queued` with the id.  A write's body is dropped from the record as soon as it finishes, and a read's or list's result after one hour.  Finished records are kept 14 days;  the queue holds at most 1,000 waiting requests.
+A claimed write that does not report within the lease (1,500 seconds, above the script's 1,200-second cap) becomes `unknown`;  if the runner later reports a definite outcome for that same claim (the Mac slept, say), the record takes it.  A claimed read or list goes back to the queue (at most three tries), because reading twice changes nothing.  A caller whose POST got no answer (a network failure, a timeout, a 5xx) answers `outcome_unknown` with the `request_id`, never retryable:  the request may or may not be queued, so check it with `notes_status`, or send it again with the same `request_id`, never a new one.  A caller whose poll fails stops waiting and answers `queued` with the id.  A write's body is dropped from the record as soon as it finishes, and a read's or list's result after one hour.  Finished records are kept 14 days;  the queue holds at most 1,000 waiting requests.
 
 ## The Mac Runner
 

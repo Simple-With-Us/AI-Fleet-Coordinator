@@ -282,6 +282,10 @@ class MacTests(NotesCliHarness):
         self.assertNotIn("body", info["entries"][0])
         self.assertIn("  create  ok  CLAUDE  cli  old", week.out)
         self.assertEqual(run.calls, [], "the log is read from the file, not the script")
+        # The log is the whole fleet's and acts as no one, so it takes no --identity (--by-seat filters it).
+        a, b = self.direct(run)
+        with a, b:
+            self.assertEqual(self.notes("log", "--identity", "CLAUDE").code, 2)
 
     def test_a_secret_in_the_body_or_the_summary_is_refused_before_anything_runs(self):
         run = FakeRun()
@@ -426,6 +430,13 @@ class MacTests(NotesCliHarness):
         self.assertEqual(pin.code, 0, "a pin needs no session")
         self.assertEqual(len(run.calls), 1)
         self.assertEqual([(r["tool"], r["outcome"]) for r in self.audit_rows()][0], ("notes create", "session_required"))
+        # A malformed session id is refused and audited too, by its code only.
+        a, b = self.direct(run)
+        with a, b:
+            bad = self.notes("create", TITLE, stdin="x", env=self.env(CLAUDE_CODE_SESSION_ID="bad/char"))
+        self.assertEqual(bad.code, 2)
+        self.assertEqual(len(run.calls), 1)
+        self.assertEqual([(r["tool"], r["outcome"]) for r in self.audit_rows()][-1], ("notes create", "invalid_argument"))
 
     def test_the_cli_refuses_a_non_agent_identity(self):
         a, b = self.direct(FakeRun())

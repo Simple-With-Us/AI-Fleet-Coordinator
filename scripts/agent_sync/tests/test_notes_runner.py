@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from agent_sync import notes as N
 from agent_sync import notes_runner as RUN
@@ -232,6 +233,26 @@ class RecoverTests(RunnerHarness):
         self.assertEqual([r["request"]["action"] for r in self.runs], ["read"], "only the read ran again")
         self.assertEqual(self.client.state()["inflight"], {})
 
+    def test_a_failed_recovery_report_keeps_only_its_own_entry_and_the_rest_still_go_out(self):
+        self.seed(
+            **{
+                "CODEX/first-request-1": {"seat": "CODEX", "request_id": "first-request-1", "claim": "c1", "action": "pin", "result": {"status": "done"}},
+                "CODEX/second-request1": {"seat": "CODEX", "request_id": "second-request1", "claim": "c2", "action": "pin", "result": {"status": "done"}},
+            }
+        )
+        real = self.client.report
+
+        def report(seat, request_id, claim, **outcome):
+            if request_id == "first-request-1":
+                raise N.NotesError("unavailable", "the Operator notes API could not be reached (URLError)")
+            return real(seat, request_id, claim, **outcome)
+
+        self.client.report = report
+        with self.assertRaises(N.NotesError):  # raised after the rest, so the loop backs off before new work
+            self.runner.recover()
+        self.assertEqual([r["request_id"] for r in self.client.reports], ["second-request1"])
+        self.assertEqual(list(self.client.state()["inflight"]), ["CODEX/first-request-1"])
+
     def test_once_recovers_first(self):
         self.seed(**{"CODEX/lost-request-01": {"seat": "CODEX", "request_id": "lost-request-01", "claim": "c3", "action": "create"}})
         self.assertFalse(self.runner.once())
@@ -251,6 +272,11 @@ class LockTests(RunnerHarness):
         lock = self.state_path.parent / RUN.LOCK_NAME
         self.assertEqual(stat.S_IMODE(os.stat(lock).st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(os.stat(self.state_path.parent).st_mode), 0o700)
+
+    def test_a_lock_failure_other_than_held_is_raised_as_itself(self):
+        with mock.patch.object(RUN.fcntl, "flock", side_effect=PermissionError("not permitted")):
+            with self.assertRaises(PermissionError):
+                self.make().acquire()
 
 
 class ShipLogTests(RunnerHarness):

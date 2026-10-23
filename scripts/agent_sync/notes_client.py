@@ -215,8 +215,14 @@ class OperatorClient:
         if not raw:
             return status, None
         try:
-            data = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError):
+            data = json.loads(
+                raw.decode("utf-8")
+            )  # the body is already capped at MAX_BODY bytes above
+        except (
+            UnicodeDecodeError,
+            ValueError,
+            RecursionError,
+        ):  # RecursionError:  nesting too deep to parse
             raise N.NotesError(
                 "unavailable", "the Operator answered HTTP %d with a body that is not JSON" % status
             ) from None
@@ -424,6 +430,10 @@ def _shape(record: Mapping[str, Any], duplicate: bool) -> dict[str, Any]:
             "unavailable",
             str(error.get("message") or "nobody picked the request up within 24 hours"),
         )
+    if state not in ("queued", "running", "done"):
+        raise N.NotesError(
+            "unavailable", "the Operator answered a record in a state this client does not know"
+        )
     out: dict[str, Any] = {
         "request_id": request_id,
         "action": action,
@@ -482,19 +492,26 @@ def call(
             return {**base, "transport": "direct", **done, "status": "done"}
 
         if action in ("read", "list"):
-            return send()  # a read changes nothing:  no idempotency row
+            # A read changes nothing, so it takes no idempotency row;  a small status row (no note text) lets
+            # notes_status answer for it here as it does through the Operator.
+            done = send()
+            N.remember_direct_read(host.store, request)
+            return done
         return N.direct_once(host.store, request, send)
     try:
         record, duplicate = host.client.enqueue(seat, request)
     except N.NotesError as exc:
         if exc.code != "unavailable":
             raise
-        # The request may have reached the Operator before the answer was lost.  Retrying under the same request_id
-        # is safe (the Operator answers the record it has);  a new id could write the note twice.
+        # The request may have reached the Operator before the answer was lost (a timeout, a 5xx), so its outcome is
+        # unknown.  Checking it, or sending it again under the same request_id, is safe:  the Operator answers the
+        # record it has.  A new request_id could write the note twice.
+        rid = request["request_id"]
         raise N.NotesError(
-            "unavailable",
-            "%s.  The request may already be queued:  send it again with the same request_id, %s, never a new one"
-            % (exc.message.rstrip(". "), request["request_id"]),
+            "outcome_unknown",
+            "%s, so the request may or may not be queued.  Check it with notes_status (simple-notes status %s), "
+            "or send it again with the same request_id, %s, never a new one"
+            % (exc.message.rstrip(". "), rid, rid),
         ) from None
     if wait > 0:
         record = host.client.wait(seat, record, wait)
@@ -508,7 +525,8 @@ def status(host: Host, seat: str, request_id: str) -> dict[str, Any]:
         found = N.direct_status(host.store, request_id)
         if found is None:
             raise N.NotesError(
-                "not_found", "this Mac wrote no note with that request_id in the last 24 hours"
+                "not_found",
+                "this Mac ran no notes request with that request_id in the last 24 hours",
             )
         return found
     record = host.client.record(seat, request_id)
