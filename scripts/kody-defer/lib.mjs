@@ -183,9 +183,14 @@ function stripLightMarkdown(s) {
 /**
  * First non-empty prose line (or its first sentence), with light markdown
  * stripped.  Longer text is cut at a word boundary and closed with an ellipsis.
+ *
+ * `&nbsp;` is decoded to a plain space here even though cleanFindingText keeps
+ * it:  issue titles are plain text (GitHub does not decode entities in them),
+ * so the raw entity would leak into the title and defeat the sentence split
+ * below, which needs real whitespace after the punctuation.
  */
 export function summarizeFinding(text, max = 80) {
-  const lines = String(text ?? '').split('\n');
+  const lines = String(text ?? '').replace(/&nbsp;/gi, ' ').split('\n');
   let inFence = false;
   let prose = '';
   for (const raw of lines) {

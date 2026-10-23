@@ -122,6 +122,12 @@ test('buildIssueTitle prefixes Deferred review', () => {
   assert.ok(long.length < 120);
 });
 
+test('buildIssueTitle decodes &nbsp; so the raw entity never reaches the title', () => {
+  const title = buildIssueTitle(cleanFindingText('First sentence here.&nbsp; Second sentence follows.'));
+  assert.equal(title.includes('&nbsp;'), false);
+  assert.equal(title, 'Deferred review: First sentence here.');
+});
+
 test('buildIssueBody contains the finding, links, and the sweep marker', () => {
   const body = buildIssueBody({
     finding: 'The watcher reports a false DOWN.',
