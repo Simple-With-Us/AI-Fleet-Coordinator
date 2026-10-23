@@ -246,7 +246,12 @@ def main() -> int:
     checks.append(
         ("users/me email is the seat's bot", str(me.get("email") or "").lower() == expected_email)
     )
-    checks.append((f"users/me signs as {EXPECTED_TAGS.get(args.seat, args.seat)}", seat_tag(me) == EXPECTED_TAGS.get(args.seat, args.seat)))
+    checks.append(
+        (
+            f"users/me signs as {EXPECTED_TAGS.get(args.seat, args.seat)}",
+            seat_tag(me) == EXPECTED_TAGS.get(args.seat, args.seat),
+        )
+    )
     checks.append(
         (
             f"role is member (400), live role {role}",
