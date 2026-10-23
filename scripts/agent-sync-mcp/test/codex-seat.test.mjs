@@ -37,6 +37,7 @@ test("CODEX is not hosted yet, and hosting it without its email var fails closed
 test("the key installer reads Codex's existing Fleet-OPS entry instead of duplicating it", () => {
   const installer = readFileSync(path.join(ROOT, "install_seat_key.py"), "utf8");
   const flat = installer.replace(/\s+/g, " ");
-  assert.match(flat, /FLEET_OPS_PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"/);
+  // The Fleet-OPS project id itself stays out of fixtures (fleet-infra mock-data
+  // rule);  the test pins the consolidation mapping, not the literal.
   assert.match(flat, /"CODEX": \( FLEET_OPS_PROJECT, "CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY", "ZULIP_KEY_CODEX", "ZULIP_EMAIL_CODEX", \)/);
 });
