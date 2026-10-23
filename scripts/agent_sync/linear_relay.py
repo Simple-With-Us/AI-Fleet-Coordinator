@@ -55,10 +55,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
-from .zulip import (  # noqa: E402
+from .zulip import (
     ApiError,
     Credentials,
     EventQueue,
@@ -72,7 +73,22 @@ from .zulip import (  # noqa: E402
 # Keep in step with LINEAR_TEAMS in scripts/zulip_linkifiers.py (that script's --check compares it
 # with Linear).  Override with LINEAR_RELAY_TEAMS.
 DEFAULT_TEAMS = (
-    "AFC", "CTS", "OPS", "SWU", "AR", "BF", "CC", "CL", "CT", "DD", "FL", "HH", "PS", "ST", "UM", "C",
+    "AFC",
+    "CTS",
+    "OPS",
+    "SWU",
+    "AR",
+    "BF",
+    "CC",
+    "CL",
+    "CT",
+    "DD",
+    "FL",
+    "HH",
+    "PS",
+    "ST",
+    "UM",
+    "C",
 )
 EDIT_INTERVAL = 600  # seconds between edits of one comment (owner: 10 minute batching)
 MAX_LINKS_SHOWN = 20
@@ -117,7 +133,12 @@ def _zulip_escape(text: str) -> str:
 def permalink(realm: str, stream_id: int, stream: str, topic: str, mid: int) -> str:
     slug = _zulip_escape(stream.replace(" ", "-"))
     return "%s/#narrow/channel/%d-%s/topic/%s/near/%d" % (
-        realm.rstrip("/"), stream_id, slug, _zulip_escape(topic), mid)
+        realm.rstrip("/"),
+        stream_id,
+        slug,
+        _zulip_escape(topic),
+        mid,
+    )
 
 
 # Credential-shaped strings, redacted before any Zulip text is copied into a Linear comment.
@@ -138,7 +159,7 @@ _KEYED_SECRET = re.compile(
 )
 # The markdown that can change the shape of the comment: emphasis, code spans, links, html,
 # tables, strikethrough and the quote delimiter.
-_MD_SPECIALS = set("\\`*_[]<>|~!\"")
+_MD_SPECIALS = set('\\`*_[]<>|~!"')
 
 
 def _scrub_secrets(text: str) -> str:
@@ -212,7 +233,8 @@ class Ledger:
                 # would stack a second comment on every existing topic.
                 raise SystemExit(
                     "the relay ledger %s is unreadable (%s); move it aside to start over, and know "
-                    "that a fresh ledger can stack duplicate comments" % (self.path, type(exc).__name__)
+                    "that a fresh ledger can stack duplicate comments"
+                    % (self.path, type(exc).__name__)
                 ) from None
         entries = self.data.get("entries")
         if not isinstance(entries, dict):
@@ -293,8 +315,9 @@ class LinearAuthError(LinearError):
 
 
 class LinearClient:
-    def __init__(self, token: str, *, dry_run: bool = False,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+    def __init__(
+        self, token: str, *, dry_run: bool = False, sleep: Callable[[float], None] = time.sleep
+    ) -> None:
         self._token = token
         self.dry_run = dry_run
         self.sleep = sleep
@@ -302,9 +325,15 @@ class LinearClient:
     def _gql(self, query: str, variables: Mapping[str, Any]) -> dict[str, Any]:
         body = json.dumps({"query": query, "variables": variables}).encode()
         for attempt in range(MAX_ATTEMPTS):
-            req = urllib.request.Request(LINEAR_URL, data=body, method="POST", headers={
-                "Authorization": "Bearer " + self._token,
-                "Content-Type": "application/json"})
+            req = urllib.request.Request(
+                LINEAR_URL,
+                data=body,
+                method="POST",
+                headers={
+                    "Authorization": "Bearer " + self._token,
+                    "Content-Type": "application/json",
+                },
+            )
             try:
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     out = json.loads(resp.read())
@@ -333,8 +362,12 @@ class LinearClient:
                 low = text.lower()
                 if "not found" in low or "entity not found" in low:
                     raise LinearNotFound(text)
-                if ("unauthorized" in low or "authentication" in low or "forbidden" in low
-                        or "scope" in low):
+                if (
+                    "unauthorized" in low
+                    or "authentication" in low
+                    or "forbidden" in low
+                    or "scope" in low
+                ):
                     raise LinearAuthError("linear refused the token: %s" % text)
                 raise LinearError("linear graphql error: " + text)
             return out["data"]
@@ -380,7 +413,8 @@ class LinearClient:
             raise LinearError("create_comment must not be called in a dry run")
         data = self._gql(
             "mutation($i:CommentCreateInput!){commentCreate(input:$i){success comment{id}}}",
-            {"i": {"issueId": issue_uuid, "body": body}})
+            {"i": {"issueId": issue_uuid, "body": body}},
+        )
         res = data["commentCreate"]
         if not res.get("success"):
             raise LinearError("commentCreate failed")
@@ -391,7 +425,8 @@ class LinearClient:
             raise LinearError("update_comment must not be called in a dry run")
         data = self._gql(
             "mutation($id:String!,$i:CommentUpdateInput!){commentUpdate(id:$id,input:$i){success}}",
-            {"id": comment_id, "i": {"body": body}})
+            {"id": comment_id, "i": {"body": body}},
+        )
         if not data["commentUpdate"].get("success"):
             raise LinearNotFound("commentUpdate failed for " + comment_id)
 
@@ -402,24 +437,37 @@ class LinearClient:
 def render_comment(entry: Mapping[str, Any]) -> str:
     links = entry["links"][-MAX_LINKS_SHOWN:]
     earlier = max(0, int(entry["count"]) - len(links))
-    lines = [entry["marker"],
-             "**Zulip discussion:** #%s > %s" % (neutralise(entry["stream"]),
-                                                 neutralise(entry["topic"])), ""]
+    lines = [
+        entry["marker"],
+        "**Zulip discussion:** #%s > %s"
+        % (neutralise(entry["stream"]), neutralise(entry["topic"])),
+        "",
+    ]
     if earlier > 0:
         lines.append("_%d earlier message(s) not listed._" % earlier)
     for item in links:
         # item["quote"] was neutralised when it was stored, so it is not escaped twice.
-        lines.append("- [%s](%s), %s: \"%s\"" % (item["when"], item["url"],
-                                                  neutralise(item["sender"]), item["quote"]))
+        lines.append(
+            '- [%s](%s), %s: "%s"'
+            % (item["when"], item["url"], neutralise(item["sender"]), item["quote"])
+        )
     lines += ["", "_Mirrored one way from Zulip by the relay. Edit in Zulip, not here._"]
     return "\n".join(lines)
 
 
 class RelayWorker:
-    def __init__(self, zulip_realm: str, own_email: str, linear: LinearClient, ledger: Ledger,
-                 regex: re.Pattern[str], *, clock: Callable[[], float] = time.time,
-                 log: Callable[[str], None] | None = None,
-                 public_streams: set[int] | None = None) -> None:
+    def __init__(
+        self,
+        zulip_realm: str,
+        own_email: str,
+        linear: LinearClient,
+        ledger: Ledger,
+        regex: re.Pattern[str],
+        *,
+        clock: Callable[[], float] = time.time,
+        log: Callable[[str], None] | None = None,
+        public_streams: set[int] | None = None,
+    ) -> None:
         self.realm = zulip_realm
         self.own_email = own_email.lower()
         self.linear = linear
@@ -451,9 +499,15 @@ class RelayWorker:
             return
         stream = str(msg.get("display_recipient", ""))
         ids = find_issue_ids(self.regex, str(msg.get("subject", "")), str(msg.get("content", "")))
-        self._record(ids, int(sid), stream, str(msg.get("subject", "")),
-                     int(msg.get("id", 0)), str(msg.get("sender_full_name", "someone")),
-                     str(msg.get("content", "")))
+        self._record(
+            ids,
+            int(sid),
+            stream,
+            str(msg.get("subject", "")),
+            int(msg.get("id", 0)),
+            str(msg.get("sender_full_name", "someone")),
+            str(msg.get("content", "")),
+        )
 
     def _handle_rename(self, event: Mapping[str, Any]) -> None:
         # A topic rename moves the whole conversation.  The standing comment moves with it, so the
@@ -467,8 +521,11 @@ class RelayWorker:
             return
         stream = str(event.get("stream_name") or sid)
         self._migrate_topic(int(sid), stream, str(old_topic or ""), str(new_topic))
-        fresh = [i for i in find_issue_ids(self.regex, str(new_topic))
-                 if i not in find_issue_ids(self.regex, str(old_topic or ""))]
+        fresh = [
+            i
+            for i in find_issue_ids(self.regex, str(new_topic))
+            if i not in find_issue_ids(self.regex, str(old_topic or ""))
+        ]
         if not fresh:
             return
         mid = int((event.get("message_ids") or [event.get("message_id", 0)])[0])
@@ -498,11 +555,21 @@ class RelayWorker:
                 del self.ledger.entries[key]
             moved = True
         if moved:
-            self.log("carried the standing comment over the topic rename %r -> %r"
-                     % (old_topic, new_topic))
+            self.log(
+                "carried the standing comment over the topic rename %r -> %r"
+                % (old_topic, new_topic)
+            )
 
-    def _record(self, ids: list[str], stream_id: int, stream: str, topic: str, mid: int,
-                sender: str, content: str) -> None:
+    def _record(
+        self,
+        ids: list[str],
+        stream_id: int,
+        stream: str,
+        topic: str,
+        mid: int,
+        sender: str,
+        content: str,
+    ) -> None:
         if not ids:
             return
         now = self.clock()
@@ -516,11 +583,15 @@ class RelayWorker:
                 continue
             entry["seen"] = (entry["seen"] + [mid])[-MAX_SEEN:]
             entry["count"] = int(entry["count"]) + 1
-            entry["links"].append({
-                "mid": mid, "sender": sender,
-                "url": permalink(self.realm, stream_id, stream, topic, mid),
-                "when": time.strftime("%b %d %H:%M UTC", time.gmtime(now)),
-                "quote": neutralise(content)})
+            entry["links"].append(
+                {
+                    "mid": mid,
+                    "sender": sender,
+                    "url": permalink(self.realm, stream_id, stream, topic, mid),
+                    "when": time.strftime("%b %d %H:%M UTC", time.gmtime(now)),
+                    "quote": neutralise(content),
+                }
+            )
             entry["links"] = entry["links"][-MAX_LINKS_SHOWN:]
             entry["dirty"] = True
             entry["last_touch"] = now
@@ -555,8 +626,9 @@ class RelayWorker:
                 return
             if entry["comment_id"] is None:
                 if self.linear.dry_run:
-                    self.log("would create a relay comment for %s (topic %r)"
-                             % (issue, entry["topic"]))
+                    self.log(
+                        "would create a relay comment for %s (topic %r)" % (issue, entry["topic"])
+                    )
                     entry["last_edit"] = now
                     entry["dirty"] = False
                     return
@@ -566,8 +638,10 @@ class RelayWorker:
                 if existing:
                     entry["comment_id"] = existing
                     entry["pending"] = False
-                    self.log("adopted an existing relay comment for %s (topic %r)"
-                             % (issue, entry["topic"]))
+                    self.log(
+                        "adopted an existing relay comment for %s (topic %r)"
+                        % (issue, entry["topic"])
+                    )
                 else:
                     # Write ahead: the intent is on disk before the call, so a crash between the
                     # call and the save is recoverable.
@@ -626,8 +700,10 @@ class RelayWorker:
                 entry["comment_id"] = found
                 entry["pending"] = False
                 recovered = True
-                self.log("reconciled a relay comment for %s (topic %r) after an uncertain write"
-                         % (entry["issue"], entry["topic"]))
+                self.log(
+                    "reconciled a relay comment for %s (topic %r) after an uncertain write"
+                    % (entry["issue"], entry["topic"])
+                )
         if recovered:
             self.ledger.save()
 
@@ -654,7 +730,8 @@ def state_path(env: Mapping[str, str], dry_run: bool) -> Path:
         if chosen == live:
             raise SystemExit(
                 "LINEAR_RELAY_DRY_RUN=1 refuses to use the live ledger %s; point LINEAR_RELAY_STATE "
-                "at a dry-run file" % live)
+                "at a dry-run file" % live
+            )
         return chosen
     return Path(raw).expanduser() if raw else live
 
@@ -673,18 +750,18 @@ def subscribe_public(client: ZulipClient, log: Callable[[str], None]) -> None:
     try:
         have = {s["name"] for s in client.get("users/me/subscriptions").get("subscriptions", [])}
         allp = client.get("streams", {"exclude_archived": True}).get("streams", [])
-        missing = [{"name": s["name"]} for s in allp
-                   if not s.get("invite_only") and s["name"] not in have]
+        missing = [
+            {"name": s["name"]} for s in allp if not s.get("invite_only") and s["name"] not in have
+        ]
         for i in range(0, len(missing), 20):
-            client.post("users/me/subscriptions", {"subscriptions": missing[i:i + 20]})
+            client.post("users/me/subscriptions", {"subscriptions": missing[i : i + 20]})
         if missing:
             log("subscribed to %d public stream(s)" % len(missing))
     except (ApiError, NetworkError) as exc:
         log("auto-subscribe error: %s" % type(exc).__name__)
 
 
-def run_check(client: ZulipClient, linear: LinearClient, env: Mapping[str, str],
-              realm: str) -> int:
+def run_check(client: ZulipClient, linear: LinearClient, env: Mapping[str, str], realm: str) -> int:
     """Credentials and Linear auth, with no writes.  A missing issue is not an auth failure."""
     print("zulip bot ok (member, not admin); realm %s" % realm)
     print("linear auth ok: %s" % linear.viewer())
@@ -719,8 +796,12 @@ def run(env: Mapping[str, str], *, check_only: bool = False) -> int:
         raise SystemExit("missing LINEAR_RELAY_TOKEN")
     dry = env.get("LINEAR_RELAY_DRY_RUN") == "1"
     linear = LinearClient(token, dry_run=dry)
-    teams = tuple(t.strip().upper() for t in (env.get("LINEAR_RELAY_TEAMS") or "").split(",")
-                  if t.strip()) or DEFAULT_TEAMS
+    teams = (
+        tuple(
+            t.strip().upper() for t in (env.get("LINEAR_RELAY_TEAMS") or "").split(",") if t.strip()
+        )
+        or DEFAULT_TEAMS
+    )
     regex = build_regex(teams)
     if check_only:
         return run_check(client, linear, env, realm)
