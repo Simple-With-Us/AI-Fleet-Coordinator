@@ -13,12 +13,14 @@ import os
 import stat
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
 
 from agent_sync import adapters as A
 from agent_sync import config as C
+from agent_sync import daemon as D
 from agent_sync import live as L
 from agent_sync import wakes as W
 
@@ -239,6 +241,69 @@ class MuseBuildResolutionTest(unittest.TestCase):
             self.assertTrue(A.muse_configured_path_missing("/does/not/exist"))
             self.assertFalse(A.muse_configured_path_missing("relative/muse"))
             self.assertFalse(A.muse_configured_path_missing(exe))
+
+    def test_the_memo_outlives_the_daemon_status_tick(self) -> None:
+        """Kody, PR #880.  The daemon rewrites its status file at most every two seconds, and the
+        scan is memoized.  A TTL that expires between two ticks is no TTL at all:  every tick
+        still pays the full scan of every PATH directory, so the memo has to span several ticks."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = self._build(tmp, "muse-bin-1.4.12-R6909.1")
+            listed: list[str] = []
+            real_listdir = os.listdir
+
+            def counting_listdir(path):
+                listed.append(path)
+                return real_listdir(path)
+
+            clock = [1000.0]
+            with mock.patch.object(os, "listdir", counting_listdir), mock.patch.object(
+                time, "monotonic", lambda: clock[0]
+            ):
+                first = A.newest_versioned_muse(tmp)
+                clock[0] += D.STATUS_TICK_SECONDS
+                second = A.newest_versioned_muse(tmp)
+            self.assertEqual(first, os.path.realpath(build))
+            self.assertEqual(second, first)
+            self.assertEqual(
+                [path for path in listed if path == tmp],
+                [tmp],
+                "the memo expired between two status ticks, so every tick still rescans",
+            )
+
+    def test_a_build_deleted_inside_the_memo_window_is_not_served_from_the_memo(self) -> None:
+        """Kody, PR #880.  The launcher DELETES the build it replaced, so the build the memo names
+        can vanish while the memo is still warm.  Serving it would point the seat at a file that
+        is not there, so the memoized answer is checked before it is handed back."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = self._build(tmp, "muse-bin-1.4.12-R6909.1")
+            self.assertEqual(A.newest_versioned_muse(tmp), os.path.realpath(build))
+            os.remove(build)
+            self.assertIsNone(
+                A.newest_versioned_muse(tmp),
+                "the memo served a build the launcher deleted",
+            )
+
+    def test_concurrent_scans_of_one_wake_path_agree(self) -> None:
+        """Kody, PR #880.  The daemon's seat threads share the memo, so concurrent scans of one
+        wake PATH must all report the same build and none may raise."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = self._build(tmp, "muse-bin-1.4.12-R6909.1")
+            results: list[str | None] = []
+            errors: list[BaseException] = []
+
+            def scan() -> None:
+                try:
+                    results.append(A.newest_versioned_muse(tmp))
+                except BaseException as exc:  # noqa: BLE001 - the test reports the failure
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=scan) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(errors, [])
+            self.assertEqual(results, [os.path.realpath(build)] * len(threads))
 
 
 class MuseRunnerPromptTest(unittest.TestCase):

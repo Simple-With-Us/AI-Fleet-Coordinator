@@ -1286,6 +1286,17 @@ class MuseSeatTests(DaemonHarness):
     stale went unread (Kody, PR #880).
     """
 
+    def test_the_muse_path_scan_memo_outlives_the_status_tick(self) -> None:
+        """Kody, PR #880.  The daemon rewrites its status file every STATUS_TICK_SECONDS, and the
+        status pass resolves the muse binary for every muse seat.  A memo whose TTL is not
+        longer than the tick expires between two ticks, so every tick still scans every PATH
+        directory, which is the cost the memo was meant to remove."""
+        self.assertGreater(
+            A.MUSE_SCAN_TTL_SECONDS,
+            D.STATUS_TICK_SECONDS,
+            "the wake-PATH memo must outlive the status tick, or it never hits",
+        )
+
     def setUp(self) -> None:
         super().setUp()
         # The partition that gives the muse seat to this instance.

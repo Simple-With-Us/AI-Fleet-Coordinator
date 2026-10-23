@@ -98,6 +98,9 @@ POST_SPACING = 3.0
 # exist to prevent -- and a seat that cannot answer is the worst possible time to add traffic.
 QUOTA_HOLD_TELL_WINDOW = 3600.0
 HELD_TICK_SECONDS = 30.0  # held-back upkeep:  expiry, the owner digest and the catch-up check
+#:  How often the status file is rewritten.  The muse wake-PATH memo has to outlive this period,
+#:  or the memo expires between two ticks and every tick still pays the full scan (Kody, #880).
+STATUS_TICK_SECONDS = 2.0
 SEAT_INBOX_ROTATE_BYTES = 1 << 20
 SEAT_INBOX_ROTATE_SECONDS = 7 * 86400
 LOG_ROTATE_BYTES = 5 << 20
@@ -5368,7 +5371,7 @@ class Daemon:
                 )
         for runner in self.seats.values():
             runner.flush_cursor()
-        if now - self.last_tick["status"] >= 2:
+        if now - self.last_tick["status"] >= STATUS_TICK_SECONDS:
             self.last_tick["status"] = now
             self.write_status()
         try:

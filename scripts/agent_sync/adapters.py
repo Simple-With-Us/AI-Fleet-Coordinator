@@ -572,13 +572,16 @@ def muse_version_key(name: str) -> tuple[tuple[int, ...], str]:
 
 
 #:  How long a wake-PATH scan is reused.  The daemon's status tick runs at most every two
-#:  seconds, so a short TTL keeps one tick from re-listing every PATH directory once per muse
-#:  seat:  on macOS /usr/bin and /bin are the same directory, so an uncached scan reads ~7,000
-#:  dirents per seat per tick (Kody, PR #880).
-MUSE_SCAN_TTL_SECONDS = 2.0
+#:  seconds, so the TTL has to OUTLIVE the tick:  a TTL of two seconds expires between two
+#:  ticks, so every tick still pays the full scan and the memo never hits.  Ten seconds spans
+#:  five ticks, so one scan serves them all, and a build that appears or disappears is still
+#:  noticed within ten seconds (Kody, PR #880).
+MUSE_SCAN_TTL_SECONDS = 10.0
 
-#:  The last scan per wake PATH, with the monotonic time it was taken.
+#:  The last scan per wake PATH, with the monotonic time it was taken.  The daemon's seat
+#:  threads share it, so the lock keeps the memo consistent between them.
 _muse_scan_cache: dict[str, tuple[float, str | None]] = {}
+_muse_scan_lock = threading.Lock()
 
 
 def _versioned_muse_builds(directory: str) -> list[tuple[tuple[tuple[int, ...], str], str]]:
@@ -623,16 +626,34 @@ def newest_versioned_muse(wake_path: str) -> str | None:
     file that no longer exists after the next release.  The launcher shim is deliberately not
     returned:  the wake runs the versioned build itself, so the pin names a real build.
 
+    PATH order is the trust order:  the newest build of the FIRST PATH directory that carries one
+    wins, so a later directory cannot outrank it (Kody, PR #880).
+
     The scan is memoized for a few seconds:  the daemon's status tick calls this once per muse
     seat every two seconds, and on macOS /usr/bin and /bin are the same directory, so an
-    uncached scan reads ~7,000 dirents per seat per tick (Kody, PR #880).
+    uncached scan reads ~7,000 dirents per seat per tick (Kody, PR #880).  The memo spans
+    several ticks, so one scan serves them all, and it is revalidated on every hit, because the
+    launcher DELETES the build it replaced and a warm memo must not serve a file that is gone.
     """
     now = time.monotonic()
-    cached = _muse_scan_cache.get(wake_path)
+    with _muse_scan_lock:
+        cached = _muse_scan_cache.get(wake_path)
     if cached is not None and now - cached[0] < MUSE_SCAN_TTL_SECONDS:
-        return cached[1]
+        found = cached[1]
+        # One stat is cheap and a directory listing is not, so the memoized answer is checked
+        # before it is served:  a build the launcher deleted must not be handed back.
+        if found is None or os.access(found, os.X_OK):
+            return found
     found = _newest_versioned_muse(wake_path)
-    _muse_scan_cache[wake_path] = (now, found)
+    with _muse_scan_lock:
+        expired = [
+            path
+            for path, (taken, _) in _muse_scan_cache.items()
+            if now - taken >= MUSE_SCAN_TTL_SECONDS
+        ]
+        for path in expired:
+            _muse_scan_cache.pop(path, None)
+        _muse_scan_cache[wake_path] = (now, found)
     return found
 
 
