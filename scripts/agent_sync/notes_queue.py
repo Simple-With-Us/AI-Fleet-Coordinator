@@ -358,6 +358,8 @@ class NotesQueue:
             if match and not query:
                 return self.status(principal, match.group(1), match.group(2))
             if path == "/notes/v1/log":
+                # Not seat-scoped, unlike a record:  every seat may list and read every Coding note (owner, Oct 22),
+                # and the log never holds note text, so it is the whole fleet's;  by_seat filters it.
                 return self.read_log(query)
             if path == "/notes/v1/health" and not query:
                 return self.health()
