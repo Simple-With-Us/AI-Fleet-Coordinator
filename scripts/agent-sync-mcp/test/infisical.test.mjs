@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { resolveSecret, infisicalStats, _resetInfisicalForTests, InfisicalError } from "../src/infisical.js";
+import { resolveLinearPair, linearClientFromPair } from "../src/linear.js";
+import { LinearClient } from "../src/linear.js";
 
 const ENV = {
   INFISICAL_SERVICE_TOKEN: "st-test",
@@ -99,4 +101,38 @@ test("fallback mode serves Infisical when healthy and counts zero fallbacks", as
   const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
   assert.equal(await resolveSecret(env, { name: "S", path: "/tools", envName: "LEGACY" }), "v9");
   assert.equal(infisicalStats().fallbacks, 0);
+});
+
+test("resolveLinearPair: off mode reads the legacy Worker names, WISE maps to LINEAR_INSTINCT_*", async () => {
+  _resetInfisicalForTests();
+  const calls = mockFetch([]);
+  const env = { ...ENV, INFISICAL_MODE: "off", LINEAR_INSTINCT_CLIENT_ID: "id-wise", LINEAR_INSTINCT_CLIENT_SECRET: "sec-wise" };
+  const pair = await resolveLinearPair(env, "WISE");
+  assert.deepEqual(pair, { clientId: "id-wise", clientSecret: "sec-wise" });
+  assert.equal(calls.length, 0);
+  assert.equal(await resolveLinearPair(env, "GROK"), null, "a seat with no Linear app stays null");
+});
+
+test("resolveLinearPair: required mode reads the WISE_LINEAR_* names at /linear", async () => {
+  _resetInfisicalForTests();
+  const calls = mockFetch([
+    ["secrets/raw/WISE_LINEAR_CLIENT_ID", { body: { secret: { secretValue: "id-inf" } } }],
+    ["secrets/raw/WISE_LINEAR_CLIENT_SECRET", { body: { secret: { secretValue: "sec-inf" } } }],
+  ]);
+  const pair = await resolveLinearPair(ENV, "WISE");
+  assert.deepEqual(pair, { clientId: "id-inf", clientSecret: "sec-inf" });
+  assert.ok(calls.every((u) => u.includes("secretPath=%2Flinear")), "both reads are scoped to /linear");
+});
+
+test("resolveLinearPair: required mode throws on a missing pair - no silent env fallback", async () => {
+  _resetInfisicalForTests();
+  mockFetch([]);
+  const env = { ...ENV, LINEAR_ECHO_CLIENT_ID: "id-legacy", LINEAR_ECHO_CLIENT_SECRET: "sec-legacy" };
+  await assert.rejects(() => resolveLinearPair(env, "ECHO"), InfisicalError);
+});
+
+test("linearClientFromPair keeps the null contract without a gate or pair", async () => {
+  assert.equal(linearClientFromPair(null, "ECHO", { gate: {} }), null);
+  assert.equal(linearClientFromPair({ clientId: "", clientSecret: "s" }, "ECHO", { gate: {} }), null);
+  assert.ok(linearClientFromPair({ clientId: "i", clientSecret: "s" }, "ECHO", { gate: {} }) instanceof LinearClient);
 });

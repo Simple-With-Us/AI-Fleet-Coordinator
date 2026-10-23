@@ -68,7 +68,7 @@ import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
 import { fleetlinkClientFromEnv } from "./fleetlink.js";
-import { LinearClient, linearClientFromEnv, LINEAR_SEATS, linearSecretNames } from "./linear.js";
+import { LinearClient, linearClientFromEnv, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat, LINEAR_SECRETS } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { listenerClientFromEnv } from "./eavesdropper.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
@@ -231,6 +231,12 @@ async function serveMcp(request, env, ctx) {
   const key = await resolveSecret(env, { name: secretNames.key, path: "/tools", envName: secretNames.key });
   const email = config.botEmails[seat];
   const grantId = typeof auth.token === "string" ? auth.token.split(":")[1] ?? "" : "";
+  // Linear app pairs resolve through Infisical too (src/linear.js); prefetched
+  // with the seat keys so the router's synchronous identityStatus keeps its
+  // contract.  In required mode a missing pair throws here, visibly.
+  const linearPairs = new Map(await Promise.all(Object.keys(LINEAR_SECRETS).map(async (canonical) =>
+    [canonical, await resolveLinearPair(env, canonical)])));
+
   const tools = new HostedTools({
     seat,
     scopes,
@@ -248,7 +254,7 @@ async function serveMcp(request, env, ctx) {
     // Null when this seat has no Linear app credentials, or when the seat is
     // not on LINEAR_SEATS:  the Linear tools then answer not_configured and
     // every other tool works as before (AFC-289).
-    linear: linearClientFromEnv(env, seat, { gate: seatGate }),
+    linear: linearClientFromPair(linearPairs.get(seatTagForSeat(seat)) ?? null, seat, { gate: seatGate }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     // Null without FLEETLINK_AGENT_SECRET:  the FleetLink tools then answer
     // not_configured and every other tool works as before (AFC-328).
@@ -271,8 +277,7 @@ async function serveMcp(request, env, ctx) {
     credentials: delegatedCredentials,
     identityStatus: (identity) => ({
       zulip: seatKeyOf(identity) && config.botEmails[identity] ? "configured" : "missing",
-      linear: [linearSecretNames(identity)?.clientId, linearSecretNames(identity)?.clientSecret]
-        .every((name) => name && typeof env[name] === "string" && env[name].trim()) ? "configured" : "missing",
+      linear: ((pair) => (pair && pair.clientId && pair.clientSecret ? "configured" : "missing"))(linearPairs.get(seatTagForSeat(identity))),
     }),
     createIdentity: !sharedGroup ? null : async (identity) => {
       // Each identity has its own SeatGate:  its spacing, idempotency rows, role cache and budget.  The
@@ -325,7 +330,7 @@ async function serveMcp(request, env, ctx) {
         config,
         zulip: new ZulipClient({ email: peerEmail, key: peerKey }),
         key: peerKey,
-        linear: linearClientFromEnv(env, identity, { gate: identityGate }),
+        linear: linearClientFromPair(linearPairs.get(seatTagForSeat(identity)) ?? null, identity, { gate: identityGate }),
         listener: listenerClientFromEnv(env, identity),
       });
     },
@@ -339,7 +344,9 @@ async function serveMcp(request, env, ctx) {
   };
   // Events only for a seat the listener can wake (its WAKE_HMAC_KEY_<SEAT> is
   // set):  any other seat would list an event that never fires.
-  const wakeSecret = env[WAKE_SECRETS[seat]];
+  // Resolves through Infisical /wake when INFISICAL_MODE allows; the
+  // legacy WAKE_HMAC_KEY_<SEAT> binding is the bounded transitional fallback.
+  const wakeSecret = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat] });
   const events = typeof wakeSecret === "string" && wakeSecret.trim() ? new SeatEvents({
     seat,
     scopes,
@@ -449,7 +456,7 @@ async function serveWake(request, env, ctx, config) {
   const started = Date.now();
   const seat = wakePathSeat(new URL(request.url).pathname);
   if (!seat || !config.hostedSeats.includes(seat) || !Object.hasOwn(WAKE_SECRETS, seat)) return notFound();
-  const rawKey = env[WAKE_SECRETS[seat]];
+  const rawKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat] });
   const key = typeof rawKey === "string" ? rawKey.trim() : "";
   if (!key) {
     await recordDiagnostic(env, { kind: "wake", reason: "wake_key_missing", seat, status: 404 });
@@ -512,11 +519,11 @@ async function serveSpike(request, env, ctx, config) {
   if (!config.spikeExtraEvents) return notFound();
   const seat = spikePathSeat(new URL(request.url).pathname);
   if (!seat || !config.hostedSeats.includes(seat) || !Object.hasOwn(WAKE_SECRETS, seat)) return notFound();
-  const wakeKey = typeof env[WAKE_SECRETS[seat]] === "string" ? env[WAKE_SECRETS[seat]].trim() : "";
+  const wakeKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat] });
   const key = spikeKey(env.SPIKE_HMAC_KEY);
   if (!wakeKey || !key) return notFound();
   // SPIKE_HMAC_KEY must never equal any seat's wake key, not only this seat's.
-  const wakeKeys = Object.values(WAKE_SECRETS).map((name) => (typeof env[name] === "string" ? env[name].trim() : "")).filter(Boolean);
+  const wakeKeys = (await Promise.all(Object.values(WAKE_SECRETS).map((name) => resolveSecret(env, { name, path: "/wake", envName: name })))).filter(Boolean);
   if (wakeKeys.includes(key)) {
     console.log(JSON.stringify({ event: "spike_refused", seat, reason: "key_reused" }));
     return notFound();
