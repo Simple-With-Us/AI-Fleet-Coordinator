@@ -21,6 +21,16 @@ from agent_sync.mcp import tools as T
 from agent_sync.mcp.tools import with_defaults
 from fleet_skill_identity import catalog_seats
 
+#: A channel is written in its hashtag form.  The pattern is deliberately loose:  it catches
+#: every hashtag a file holds, and the checks compare one set with another rather than asking
+#: whether a name is a real channel.
+CHANNEL_TAG = re.compile(r"#[A-Za-z][A-Za-z0-9_-]*")
+
+
+def _channels(text: str) -> set:
+    """The channel-shaped names the text holds."""
+    return set(CHANNEL_TAG.findall(text))
+
 
 def _without_comments(text: str, suffix: str) -> str:
     """The file's text with its comments taken out.
@@ -144,16 +154,13 @@ class DefaultChannelTests(unittest.TestCase):
         # nobody reads.  A channel is always written in its hashtag form, so that form is the
         # signal;  the runtime's own source may still mention the old name in a comment that
         # explains the rename, and the pack may not.
+        # There is no exemption for a retired seat:  their packs are rendered from the canonical
+        # too, so a retired seat's pack may not name the old channel either.  A blanket skip
+        # here would hide any stale consumer that landed under one of those folders.
         repo_root = AGENT_SYNC_DIR.parents[1]
         pack = repo_root / "docs" / "fleet-skills"
-        retired = {seat.seat_key for seat in catalog_seats() if seat.retired}
         offenders = []
         for path in sorted(pack.rglob("*.md")):
-            parts = path.relative_to(pack).parts
-            # A retired seat's catalog copy is history:  the generator leaves it as it was, and
-            # no live seat reads it.
-            if len(parts) > 2 and parts[0] == "by-seat" and parts[1] in retired:
-                continue
             if "#agent-sync" in path.read_text():
                 offenders.append(str(path.relative_to(repo_root)))
         for path in sorted((repo_root / ".claude" / "skills").rglob("SKILL.md")):
@@ -164,6 +171,41 @@ class DefaultChannelTests(unittest.TestCase):
             [],
             "the skills pack still names the old channel:  %s" % ", ".join(offenders),
         )
+
+    def test_every_generated_pack_matches_the_channel_of_its_canonical(self) -> None:
+        # Rejecting the old channel is not the same as holding the new one:  a generator that
+        # drops the live label, or a generated copy that has drifted from its source, passes
+        # the check above and leaves every seat without a channel to post in.  So the generated
+        # copy may not name a channel its canonical source does not name, and the live label has
+        # to be in the canonical and in the rendered tree.
+        repo_root = AGENT_SYNC_DIR.parents[1]
+        pack = repo_root / "docs" / "fleet-skills"
+        live = "#%s" % Z.DEFAULT_CHANNEL.title()
+        drifted = []
+        for canonical in sorted(pack.glob("*/SKILL.md")):
+            name = canonical.parent.name
+            source_channels = _channels(canonical.read_text())
+            for seat_dir in sorted((pack / "by-seat").iterdir()):
+                generated = seat_dir / name / "SKILL.md"
+                if not generated.exists():
+                    continue
+                extra = _channels(generated.read_text()) - source_channels
+                if extra:
+                    drifted.append(
+                        "%s/%s names %s, which its canonical does not"
+                        % (seat_dir.name, name, ", ".join(sorted(extra)))
+                    )
+        self.assertEqual(drifted, [], ";  ".join(drifted))
+        # The live channel has to be in the canonical, or nothing renders it.
+        self.assertIn(
+            live,
+            (pack / "session-start" / "SKILL.md").read_text(),
+            "the canonical session-start pack does not name the live channel",
+        )
+        for tree in (".claude", ".codex", ".cursor", ".fx", ".gemini", ".grok", ".minimax"):
+            path = repo_root / tree / "skills" / "session-start" / "SKILL.md"
+            if path.exists():
+                self.assertIn(live, path.read_text(), "%s does not name the live channel" % tree)
 
     def test_no_onboarding_prompt_names_the_old_channel(self) -> None:
         # An onboarding prompt is the first thing a seat reads, so a prompt that names the old
@@ -220,9 +262,12 @@ class DefaultChannelTests(unittest.TestCase):
         # coordination traffic, and the seat that waits for it waits forever.  The script takes
         # the channel from the runtime that owns it, so the check is that the runtime's own
         # default is in the list and that the old name is not.
+        # The environment has to go in:  `default_channel()` without it never reads
+        # AGENT_SYNC_CHANNEL, so a deployment that names its own channel would still provision
+        # bots into the realm's default.
         repo_root = AGENT_SYNC_DIR.parents[1]
         text = (repo_root / "scripts" / "zulip_provision_bots.py").read_text()
-        self.assertIn("default_channel()", text)
+        self.assertIn("default_channel(os.environ)", text)
         self.assertNotIn('"agent-sync"', text)
 
 

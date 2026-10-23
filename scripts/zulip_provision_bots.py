@@ -111,7 +111,7 @@ def admin_secret(name, required=True):
     )
 
 
-CHANNELS = [default_channel(), "alerts", "builds", "trading", "ideas"]
+CHANNELS = [default_channel(os.environ), "alerts", "builds", "trading", "ideas"]
 
 # (full name shown in Zulip, short name, zuliprc file stem).
 # Zulip appends "-bot" to the short name, in the API and in the web form alike:

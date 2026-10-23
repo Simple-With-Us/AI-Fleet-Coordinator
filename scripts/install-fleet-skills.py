@@ -179,15 +179,14 @@ def main(argv: list[str] | None = None) -> None:
 
     print("\nUpload packs: docs/fleet-skills/by-seat/<seat>/")
     for seat in catalog_seats():
-        if seat.retired:
-            #  A retired seat's catalog copy is history, not a live tree:  re-rendering it
-            #  would write new text into a seat nobody runs.  Leave it as it was.
-            print(f"  {seat.tag:12}  {seat.seat_key}  (retired; catalog copy left as-is)")
-            continue
+        #  A retired seat's catalog copy is still rendered from the canonical pack:  a pack that
+        #  names a channel the realm no longer has is a stale consumer, and the retirement notice
+        #  comes from the renderer (it reads the seat's own retired block), not from a hand edit.
         key = seat.seat_key or seat.tag.lower()
         seat_root = os.path.join(BY_SEAT, key)
         written = _install_skill_set(seat_root, sources, seat, zip_each=True)
-        print(f"  {seat.tag:12}  {seat.seat_key}  ({len(written)} skills)")
+        note = "  (retired)" if seat.retired else ""
+        print(f"  {seat.tag:12}  {seat.seat_key}  ({len(written)} skills){note}")
 
     if args.repo_only:
         return

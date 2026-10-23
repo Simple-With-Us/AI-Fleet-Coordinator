@@ -45,7 +45,7 @@ gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadR
 gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -F t=<threadId>
 ```
 
-Reply shape (review-thread replies are PR text: a real U+00A0 plus a space between sentences, converted with the `perl` recipe in `sentence-gap`; files stay on two ASCII spaces):
+Reply shape (review-thread replies are PR text: the `&nbsp;` entity plus a normal space between sentences, per the owner ruling 2026-10-22, which supersedes the 2026-10-08 real U+00A0 for GitHub; convert with the GitHub form of the `perl` recipe in `sentence-gap`, whose checks accept either gap form; files stay on two ASCII spaces):
 
 - **Real:** `Fixed in <short-sha>.  <function>.  Test: test/foo.test.ts.`
 - **False positive:** why the rule does not apply, then resolve.
