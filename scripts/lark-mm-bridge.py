@@ -89,6 +89,23 @@ MAX_REPLY_ATTEMPTS = 3
 # turns a working seat into "could not answer" (AFC-417).
 ACP_HANDSHAKE_TIMEOUT = 300
 
+# The owner's marker for "do not wake the seat for this one".  A message whose
+# very first character is the eyes emoji is read and dropped:  no turn, no
+# reply, no record of it.  The owner asked for it on Oct 22, 2026;  Jet's
+# WhatsApp bridge takes the same marker.
+SILENT_MARKER = "\U0001F440"
+
+# The Operator (the agent-sync listener) can put a message into the Lark chat.
+# It drops a JSON file into the signal directory and the bridge picks it up,
+# sends it to Lark as the bot, and runs the seat turn on it, so the owner gets
+# the signal and the answer in one place.  The bridge is the only process that
+# holds the Lark bot identity, so nothing else may write into the chat.
+SIGNAL_DIRNAME = "signal"
+SIGNAL_SUFFIX = ".json"
+# A signal is not the owner's own message, so it carries its own sender id and
+# the seat inbox records the exchange as the Operator's.
+OPERATOR_SENDER = "operator"
+
 # The owner's house rule: a visibly wider gap between sentences, after . ! and ?
 # only, never after a colon, semicolon, comma or dash.  Lark renders a plain
 # text message literally, so two ASCII spaces already show as a wide gap there,
@@ -212,6 +229,39 @@ def lark_env():
     if os.path.isdir(prefix):
         env["PATH"] = prefix + os.pathsep + env.get("PATH", "")
     return env
+
+
+def _message_id_from(output):
+    """The message id in a lark-cli send answer, or None.
+
+    lark-cli answers with one JSON object holding message_id, chat_id and
+    create_time.  A shape this bridge does not know is a missing id, not a
+    guess:  the id is what the reply hangs on, and a wrong one posts the
+    answer into the wrong place.
+    """
+    try:
+        data = json.loads(output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    for candidate in (data, data.get("data") if isinstance(data.get("data"), dict) else {}):
+        for key in ("message_id", "messageId"):
+            value = candidate.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _signal_key(signal_id):
+    """The idempotency key for one signal.
+
+    lark-cli takes at most 50 characters, and the key must survive a restart
+    unchanged, so it is built from the signal's own id and nothing else.  The
+    same signal sent twice is one message in the chat.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "-", signal_id or "")
+    return safe[:50] or "signal"
 
 
 class LarkEventReader:
@@ -601,6 +651,15 @@ class Bridge:
             raise ValueError("refusing a symlinked state directory: %s" % self.state_dir)
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state_file = self.state_dir / "state.json"
+        self.signal_dir = self.state_dir / SIGNAL_DIRNAME
+        self.signal_done_dir = self.signal_dir / "done"
+        for path in (self.signal_dir, self.signal_done_dir):
+            if path.is_symlink():
+                raise ValueError("refusing a symlinked signal directory: %s" % path)
+            path.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # The chat the owner last wrote in.  A signal that names no chat of its
+        # own goes there, so the Operator does not have to know the chat id.
+        self.last_chat_id = None
         self._load_state()
         self.stopping = threading.Event()
 
@@ -639,6 +698,10 @@ class Bridge:
                 "treat corrupt state as authoritative" % (self.state_file, exc)
             )
         self.rows = self._parse_state(data)
+        last_chat = data.get("last_chat_id")
+        if last_chat is not None and not isinstance(last_chat, str):
+            raise RuntimeError("Lark bridge state last_chat_id must be a string")
+        self.last_chat_id = last_chat
         jobs = data.get("jobs", {})
         if not isinstance(jobs, dict):
             raise RuntimeError("invalid durable job inventory")
@@ -704,6 +767,7 @@ class Bridge:
                     json.dump(
                         {
                             "messages": dict(kept),
+                            "last_chat_id": getattr(self, "last_chat_id", None),
                             "jobs": {
                                 key: job
                                 for key, job in jobs.items()
@@ -936,6 +1000,118 @@ class Bridge:
             # here must never cost the answer.
             log("could not record the Lark exchange in the seat inbox: %s" % exc)
 
+    def _post_signal(self, chat_id, text, signal_id):
+        """Send the signal into the Lark chat and return the message id.
+
+        None means the message did not reach Lark, or reached it without an id
+        this bridge can answer on.  The idempotency key is the signal's own
+        id, so a bridge that dies after Lark accepted the message does not
+        post it twice when it comes back.
+        """
+        command = [
+            self.args.lark_cli,
+            "im",
+            "+messages-send",
+            "--as",
+            "bot",
+            "--chat-id=" + chat_id,
+            "--text=" + text,
+            "--idempotency-key=" + _signal_key(signal_id),
+        ]
+        try:
+            output = run(command, timeout=REPLY_TIMEOUT, env=self.env)
+        except CommandError as exc:
+            log("signal to %s failed: %s" % (chat_id, type(exc).__name__))
+            return None
+        message_id = _message_id_from(output)
+        if not message_id:
+            log("signal to %s was sent without a message id to answer on" % chat_id)
+            return None
+        return message_id
+
+    def _handle_signal(self, path):
+        """Deliver one Operator signal into the Lark chat and wake the seat for it."""
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            log("could not read a signal file: %s" % type(exc).__name__)
+            return
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            self._finish_signal(path, "refused", "not_json")
+            return
+        if not isinstance(data, dict):
+            self._finish_signal(path, "refused", "not_an_object")
+            return
+        text = data.get("text")
+        if not isinstance(text, str) or not text.strip():
+            self._finish_signal(path, "refused", "no_text")
+            return
+        text = text.strip()
+        if scan_secret(text):
+            # The text is the thing being kept out of the chat, so it must not
+            # be named in the log either.
+            self._finish_signal(path, "refused", "secret")
+            return
+        chat_id = data.get("chat_id") or self.last_chat_id
+        if not isinstance(chat_id, str) or not chat_id:
+            self._finish_signal(path, "refused", "no_chat")
+            return
+        signal_id = data.get("signal_id")
+        if not isinstance(signal_id, str) or not signal_id:
+            signal_id = path.stem
+        message_id = self._post_signal(chat_id, text, signal_id)
+        if not message_id:
+            self._finish_signal(path, "unknown", "send_failed")
+            return
+        # From here the signal is an ordinary turn:  the session answers, the
+        # answer goes back into the chat, and the exchange is mirrored to
+        # Zulip and recorded in the seat inbox.
+        if not self._queue_turn(message_id, chat_id, text, OPERATOR_SENDER):
+            self._finish_signal(path, "unknown", "state_unavailable")
+            return
+        self._finish_signal(path, "queued", message_id)
+
+    def _finish_signal(self, path, outcome, detail):
+        """Record what happened to a signal and move it out of the way.
+
+        The file is moved before the outcome is written, so a signal is never
+        handled twice because the write failed.  The done directory keeps the
+        record, so the Operator can read what the bridge did with it.
+        """
+        target = self.signal_done_dir / path.name
+        try:
+            os.replace(str(path), str(target))
+        except OSError as exc:
+            log("could not file a signal: %s" % type(exc).__name__)
+            return
+        record = {}
+        try:
+            record = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            record = {}
+        if not isinstance(record, dict):
+            record = {}
+        record["outcome"] = outcome
+        record["detail"] = detail
+        try:
+            target.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+        except OSError as exc:
+            log("could not record a signal outcome: %s" % type(exc).__name__)
+
+    def _signal_worker(self):
+        """Watch the signal directory and deliver what the Operator drops in it."""
+        while not self.stopping.is_set():
+            try:
+                for path in sorted(self.signal_dir.glob("*" + SIGNAL_SUFFIX)):
+                    self._handle_signal(path)
+            except Exception as exc:
+                # One bad signal file must not take the watcher down:  the
+                # owner would stop getting signals and nothing would say why.
+                log("signal watcher failed: %s" % type(exc).__name__)
+            self.stopping.wait(1.0)
+
     def _handle(self, event):
         # Every field below is read off a frame the Lark socket delivered, and
         # the event loop has no try around this call: a content that is an
@@ -966,6 +1142,14 @@ class Bridge:
         if sender_id not in self.args.allowed_sender:
             log("ignoring message %s from unallowed sender %s" % (message_id, sender_id))
             return
+        # The owner marks a message with the eyes emoji at the very start to
+        # say "do not wake the seat for this one".  The check is on the first
+        # character of the trimmed text and it runs before the message is
+        # claimed, so a marked message never becomes a turn, never gets a
+        # reply, and leaves no delivery row behind.
+        if content.startswith(SILENT_MARKER):
+            log("ignoring message %s in %s: the silent marker is at the start" % (message_id, chat_id))
+            return
         if not self._mentioned(event):
             log("ignoring message %s in %s: bot was not mentioned" % (message_id, chat_id))
             return
@@ -976,6 +1160,16 @@ class Bridge:
             return
         if not self._claim(message_id):
             return
+        self.last_chat_id = chat_id
+        self._queue_turn(message_id, chat_id, content, sender_id)
+
+    def _queue_turn(self, message_id, chat_id, content, sender_id):
+        """Put one message on the turn queue and persist the job.
+
+        The durable job is what keeps a restart from replaying the message, so
+        a job that could not be persisted is not answered:  the turn would run
+        with no receipt and the next start would answer it again.
+        """
         if not hasattr(self, "jobs"):
             self.jobs = {}
         self.jobs[message_id] = {
@@ -989,8 +1183,9 @@ class Bridge:
         if not self._save_state():
             with self.seen_lock:
                 self.active_ids.discard(message_id)
-            return
+            return False
         self.turns.put((message_id, chat_id, content, sender_id, 0))
+        return True
 
     def _mentioned(self, event):
         """In a group chat the bot answers only when it is mentioned.
@@ -1141,6 +1336,10 @@ class Bridge:
         reader = LarkEventReader(self.args.lark_cli, self.env, self.args.event_log_dir)
         worker = threading.Thread(target=self._worker, daemon=True)
         worker.start()
+        # The Operator's signals arrive as files, not as Lark events, so they
+        # need their own watcher.
+        signal_worker = threading.Thread(target=self._signal_worker, daemon=True)
+        signal_worker.start()
 
         def handle_signal(signum, frame):
             log("signal %s received; shutting down" % signum)
@@ -1168,6 +1367,7 @@ class Bridge:
                     reader.stop()
                 finally:
                     worker.join(timeout=min(self.args.timeout + 130, 300))
+                    signal_worker.join(timeout=5)
                     with self.sessions_lock:
                         sessions = list(self.sessions.values())
                         self.sessions.clear()
@@ -1241,7 +1441,56 @@ def build_parser():
         default=AGENT_SYNC_ROOT,
         help="the agent-sync state root that holds the seat inbox",
     )
+    parser.add_argument(
+        "--signal",
+        dest="signal",
+        default=None,
+        help="deliver this text into the Lark chat through the running bridge, then exit",
+    )
+    parser.add_argument(
+        "--signal-chat-id",
+        dest="signal_chat_id",
+        default=None,
+        help="the chat to signal; the chat the owner last wrote in when it is not given",
+    )
     return parser
+
+
+def signal_out(args):
+    """Hand a signal to the running bridge and exit.
+
+    The bridge is the only process that holds the Lark bot identity, so the
+    Operator leaves the message in the signal directory and the bridge sends
+    it into the chat, wakes the seat for it, and puts the answer back in the
+    same chat.  This process never talks to Lark itself.
+    """
+    text = (args.signal or "").strip()
+    if not text:
+        print("nothing to signal", file=sys.stderr)
+        return 2
+    if scan_secret(text):
+        # The text is the thing being kept out of the chat, so it must not be
+        # printed either.
+        print("signal refused: the text is credential-shaped", file=sys.stderr)
+        return 2
+    state_dir = Path(args.state_dir)
+    if state_dir.is_symlink():
+        print("refusing a symlinked state directory: %s" % state_dir, file=sys.stderr)
+        return 2
+    signal_dir = state_dir / SIGNAL_DIRNAME
+    signal_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    signal_id = "sig-%d-%s" % (int(time.time()), os.urandom(4).hex())
+    payload = {"signal_id": signal_id, "text": text}
+    if args.signal_chat_id:
+        payload["chat_id"] = args.signal_chat_id
+    target = signal_dir / ("%s%s" % (signal_id, SIGNAL_SUFFIX))
+    tmp = signal_dir / (".tmp-%s" % signal_id)
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload))
+    os.chmod(str(tmp), 0o600)
+    os.replace(str(tmp), str(target))
+    print("signal queued: %s" % signal_id)
+    return 0
 
 
 def preview_events(args):
@@ -1277,6 +1526,11 @@ def preview_events(args):
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # The signal path never starts the bridge and never needs the seat's own
+    # tools:  it only leaves a message for the running bridge.
+    if args.signal is not None:
+        return signal_out(args)
 
     for tool, path in (("lark-cli", args.lark_cli), ("mcode", args.mcode)):
         if not os.path.exists(path):

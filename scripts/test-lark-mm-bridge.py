@@ -1439,5 +1439,221 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(state.read_bytes(), before)
 
 
+class LarkSurfaceTests(unittest.TestCase):
+    """The eyes marker and the Operator's signal path.
+
+    The marker is the owner's way of saying "do not wake the seat for this
+    one", and the signal path is how the Operator puts a message into the
+    Lark chat and wakes the seat for it.
+    """
+
+    def setUp(self):
+        self.state_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state_dir.cleanup)
+
+    def make_bridge(self, argv=None, **overrides):
+        bridge = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+        bridge.args = make_args(argv or ["--allow-sender", "ou_ok"], **overrides)
+        bridge.rows = {}
+        bridge.seen_lock = threading.Lock()
+        bridge.turns = bridge_mod.queue.Queue()
+        bridge.state_file = Path(self.state_dir.name) / "state.json"
+        bridge.signal_dir = Path(self.state_dir.name) / bridge_mod.SIGNAL_DIRNAME
+        bridge.signal_done_dir = bridge.signal_dir / "done"
+        bridge.signal_dir.mkdir(parents=True, exist_ok=True)
+        bridge.signal_done_dir.mkdir(parents=True, exist_ok=True)
+        bridge.last_chat_id = None
+        bridge.env = {}
+        return bridge
+
+    def owner_message(self, message_id, content, chat_id="oc_1"):
+        return {
+            "message_id": message_id,
+            "chat_id": chat_id,
+            "content": content,
+            "sender_id": "ou_ok",
+            "sender_type": "user",
+        }
+
+    def write_signal(self, bridge, name, payload):
+        path = bridge.signal_dir / name
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def test_a_message_that_starts_with_the_eyes_marker_never_wakes_the_seat(self):
+        bridge = self.make_bridge()
+        bridge._handle(
+            self.owner_message("om_eyes", "\U0001F440 thinking out loud, no answer needed")
+        )
+        self.assertTrue(bridge.turns.empty())
+        # No delivery row either:  a marked message is not a message this
+        # bridge answered, so it must not look like one in the state file.
+        self.assertEqual(bridge.rows, {})
+
+    def test_the_marker_only_counts_at_the_very_start(self):
+        bridge = self.make_bridge()
+        bridge._handle(self.owner_message("om_late", "hey \U0001F440 what do you think?"))
+        self.assertEqual(bridge.turns.qsize(), 1)
+
+    def test_the_marker_is_checked_before_the_secret_scan(self):
+        """A marked message is dropped, and its text never reaches the log."""
+        bridge = self.make_bridge()
+        with mock.patch.object(bridge_mod, "scan_secret", side_effect=AssertionError("scanned")):
+            bridge._handle(self.owner_message("om_eyes2", "\U0001F440 token sk-abcdefghijklmnopqrstuvwx"))
+        self.assertTrue(bridge.turns.empty())
+
+    def test_a_signal_is_sent_into_the_chat_and_queued_as_a_turn(self):
+        bridge = self.make_bridge()
+        sent = []
+
+        def fake_run(command, stdin_text=None, timeout=120, env=None):
+            sent.append(command)
+            return json.dumps({"message_id": "om_sig", "chat_id": "oc_1"})
+
+        signal = self.write_signal(
+            bridge, "sig-1.json", {"signal_id": "sig-1", "text": "the operator spoke", "chat_id": "oc_1"}
+        )
+        with mock.patch.object(bridge_mod, "run", fake_run):
+            bridge._handle_signal(signal)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("+messages-send", sent[0])
+        self.assertIn("--chat-id=oc_1", sent[0])
+        self.assertIn("--idempotency-key=sig-1", sent[0])
+        self.assertEqual(bridge.turns.qsize(), 1)
+        message_id, chat_id, content, sender_id, attempt = bridge.turns.get_nowait()
+        self.assertEqual(message_id, "om_sig")
+        self.assertEqual(chat_id, "oc_1")
+        self.assertEqual(content, "the operator spoke")
+        # The signal is the Operator's, not the owner's own message.
+        self.assertEqual(sender_id, bridge_mod.OPERATOR_SENDER)
+        # The signal is filed, not left where the watcher would take it again.
+        self.assertFalse(signal.exists())
+        self.assertTrue((bridge.signal_done_dir / "sig-1.json").exists())
+
+    def test_a_signal_without_a_chat_goes_to_the_chat_the_owner_last_wrote_in(self):
+        bridge = self.make_bridge()
+        bridge._handle(self.owner_message("om_1", "hello", chat_id="oc_home"))
+        bridge.turns.get_nowait()
+        sent = []
+
+        def fake_run(command, stdin_text=None, timeout=120, env=None):
+            sent.append(command)
+            return json.dumps({"message_id": "om_sig"})
+
+        signal = self.write_signal(bridge, "sig-2.json", {"signal_id": "sig-2", "text": "wake up"})
+        with mock.patch.object(bridge_mod, "run", fake_run):
+            bridge._handle_signal(signal)
+        self.assertIn("--chat-id=oc_home", sent[0])
+
+    def test_a_signal_with_nowhere_to_go_is_refused(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(bridge, "sig-3.json", {"signal_id": "sig-3", "text": "wake up"})
+        with mock.patch.object(bridge_mod, "run", side_effect=AssertionError("sent")):
+            bridge._handle_signal(signal)
+        record = json.loads((bridge.signal_done_dir / "sig-3.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["outcome"], "refused")
+        self.assertEqual(record["detail"], "no_chat")
+        self.assertTrue(bridge.turns.empty())
+
+    def test_a_credential_shaped_signal_is_refused_and_never_sent(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(
+            bridge,
+            "sig-4.json",
+            {"signal_id": "sig-4", "text": "token sk-abcdefghijklmnopqrstuvwx"},
+        )
+        with mock.patch.object(bridge_mod, "run", side_effect=AssertionError("sent")):
+            bridge._handle_signal(signal)
+        record = json.loads((bridge.signal_done_dir / "sig-4.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["outcome"], "refused")
+        self.assertEqual(record["detail"], "secret")
+        self.assertTrue(bridge.turns.empty())
+
+    def test_a_signal_that_cannot_be_sent_is_unknown_and_not_replayed(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(
+            bridge, "sig-5.json", {"signal_id": "sig-5", "text": "wake up", "chat_id": "oc_1"}
+        )
+        with mock.patch.object(bridge_mod, "run", side_effect=bridge_mod.CommandError("no")):
+            bridge._handle_signal(signal)
+        record = json.loads((bridge.signal_done_dir / "sig-5.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["outcome"], "unknown")
+        self.assertEqual(record["detail"], "send_failed")
+        self.assertTrue(bridge.turns.empty())
+
+    def test_the_signal_idempotency_key_comes_from_the_signal_id_alone(self):
+        self.assertEqual(bridge_mod._signal_key("sig-5"), "sig-5")
+        self.assertEqual(bridge_mod._signal_key("sig-5"), bridge_mod._signal_key("sig-5"))
+        self.assertLessEqual(len(bridge_mod._signal_key("x" * 200)), 50)
+        self.assertNotIn("/", bridge_mod._signal_key("a/b"))
+
+    def test_a_send_answer_without_a_message_id_is_not_guessed(self):
+        self.assertEqual(bridge_mod._message_id_from(json.dumps({"message_id": "om_x"})), "om_x")
+        self.assertEqual(bridge_mod._message_id_from(json.dumps({"data": {"message_id": "om_y"}})), "om_y")
+        self.assertIsNone(bridge_mod._message_id_from("not json"))
+        self.assertIsNone(bridge_mod._message_id_from(json.dumps({"chat_id": "oc_1"})))
+        self.assertIsNone(bridge_mod._message_id_from(json.dumps([1, 2])))
+
+    def test_the_signal_cli_leaves_a_file_the_bridge_picks_up(self):
+        code = bridge_mod.main(
+            ["--signal", "wake up", "--state-dir", self.state_dir.name]
+        )
+        self.assertEqual(code, 0)
+        files = list((Path(self.state_dir.name) / bridge_mod.SIGNAL_DIRNAME).glob("*.json"))
+        self.assertEqual(len(files), 1)
+        payload = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(payload["text"], "wake up")
+        self.assertTrue(payload["signal_id"])
+
+    def test_the_signal_cli_refuses_a_credential_shaped_text(self):
+        code = bridge_mod.main(
+            [
+                "--signal",
+                "token sk-abcdefghijklmnopqrstuvwx",
+                "--state-dir",
+                self.state_dir.name,
+            ]
+        )
+        self.assertEqual(code, 2)
+        files = list((Path(self.state_dir.name) / bridge_mod.SIGNAL_DIRNAME).glob("*.json"))
+        self.assertEqual(files, [])
+
+    def test_the_signal_cli_names_a_chat_when_it_is_given_one(self):
+        code = bridge_mod.main(
+            [
+                "--signal",
+                "wake up",
+                "--signal-chat-id",
+                "oc_other",
+                "--state-dir",
+                self.state_dir.name,
+            ]
+        )
+        self.assertEqual(code, 0)
+        files = list((Path(self.state_dir.name) / bridge_mod.SIGNAL_DIRNAME).glob("*.json"))
+        payload = json.loads(files[0].read_text(encoding="utf-8"))
+        self.assertEqual(payload["chat_id"], "oc_other")
+
+    def test_the_last_chat_survives_a_restart(self):
+        bridge = self.make_bridge()
+        bridge._handle(self.owner_message("om_1", "hello", chat_id="oc_home"))
+        bridge.turns.get_nowait()
+        self.assertTrue(bridge._save_state())
+        state = json.loads(bridge.state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["last_chat_id"], "oc_home")
+        again = bridge_mod.Bridge.__new__(bridge_mod.Bridge)
+        again.args = make_args(["--allow-sender", "ou_ok"], state_dir=self.state_dir.name)
+        again.rows = {}
+        again.seen_lock = threading.Lock()
+        again.turns = bridge_mod.queue.Queue()
+        again.state_file = bridge.state_file
+        again.signal_dir = bridge.signal_dir
+        again.signal_done_dir = bridge.signal_done_dir
+        again.last_chat_id = None
+        again.active_ids = set()
+        again._load_state()
+        self.assertEqual(again.last_chat_id, "oc_home")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
