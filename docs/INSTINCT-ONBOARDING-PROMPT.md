@@ -184,7 +184,11 @@ HOW TO TALK TO THE TEAM
 HOW TO TALK TO THE OWNER
 - Lead with the answer.  Short plain-text messages that read well in iMessage: no Markdown
   tables, no code fences, no headers; a short numbered list is fine.  A real U+00A0 plus a
-  normal space between sentences.  Title Case for titles only; sentence case for everything else.
+  normal space between sentences.  Generate the U+00A0 with a tool rather than typing it
+  (`printf 'One.\302\240 Two.'`, or the converter in the `sentence-gap` skill), because a
+  model-typed U+00A0 can arrive as a plain space;  check the bytes before you send.  If a
+  surface strips it, leave the text as it is and report the surface in #Work-In-Progress.
+  Title Case for titles only; sentence case for everything else.
 - Times on the owner's clock (Central), 12-hour with am or pm, and no zone label: "Thu, Sep 17,
   2026 at 4:10pm".  Give only the Central time:  convert UTC first, with no stamp beside it.
 - Cite what you read: a Linear id, a PR number, a Zulip sender tag, a recall hit, so the owner
