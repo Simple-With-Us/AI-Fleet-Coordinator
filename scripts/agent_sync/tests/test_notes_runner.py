@@ -239,6 +239,19 @@ class RecoverTests(RunnerHarness):
         self.assertEqual([r["request"]["action"] for r in self.runs], ["read"], "only the read ran again")
         self.assertEqual(self.client.state()["inflight"], {})
 
+    def test_a_read_that_fails_to_run_again_keeps_to_its_own_entry(self):
+        self.seed(
+            **{
+                "CODEX/read-request-01": {"seat": "CODEX", "request_id": "read-request-01", "claim": "c1", "action": "read", "request": req("read", rid="read-request-01")},
+                "CODEX/pin-request-001": {"seat": "CODEX", "request_id": "pin-request-001", "claim": "c2", "action": "pin", "result": {"status": "done"}},
+            }
+        )
+        self.answer = ValueError("unexpected")  # running the read again fails in a way _execute does not expect
+        with self.assertRaises(ValueError):
+            self.runner.recover()
+        self.assertEqual([r["request_id"] for r in self.client.reports], ["pin-request-001"])
+        self.assertEqual(list(self.client.state()["inflight"]), ["CODEX/read-request-01"])
+
     def test_a_recovery_entry_with_malformed_ids_is_dropped_unreported(self):
         self.seed(
             **{

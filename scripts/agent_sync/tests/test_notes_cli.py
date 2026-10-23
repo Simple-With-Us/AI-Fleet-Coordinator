@@ -332,6 +332,13 @@ class MacTests(NotesCliHarness):
             retry = self.notes("create", TITLE, "--request-id", "interrupt-request-1", stdin="again")
         self.assertNotEqual(retry.code, 0)
         self.assertEqual(run.calls, [], "the interrupted write may have landed:  its id is refused")
+        # Interrupted before anything was sent:  still one audit row, saying so.
+        a, b = self.direct(run)
+        with a, b, mock.patch.object(N, "make_request", side_effect=KeyboardInterrupt()):
+            early = self.notes("create", TITLE, "--request-id", "interrupt-request-2", stdin="x")
+        self.assertEqual(early.code, 130)
+        self.assertEqual([(r["tool"], r["outcome"]) for r in self.audit_rows()][-1], ("notes create", "interrupted_before_send"))
+        self.assertEqual(run.calls, [])
 
     def test_an_oversized_body_is_a_usage_error_not_cut_short(self):
         run = FakeRun()

@@ -627,6 +627,8 @@ class DirectRunnerTests(unittest.TestCase):
                 # Whatever survives the cut is whole lines, so the marker is either all there or not there at all.
                 self.assertNotIn("[withheld", note["body"].replace(N.WITHHELD, ""))
                 self.assertTrue(note["body"].endswith("\n") or note["body"] == "", note["body"][-30:])
+                # The count is of the markers the caller actually gets, never one the second cut dropped.
+                self.assertEqual(note["withheld"], note["body"].count(N.WITHHELD))
 
     def test_a_list_and_the_log_withhold_a_secret_shaped_title(self):
         token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic

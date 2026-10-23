@@ -355,7 +355,10 @@ class NotesQueue:
         if method == "POST":
             try:
                 payload = json.loads(body.decode("utf-8")) if body else {}
-            except (UnicodeDecodeError, ValueError, RecursionError):
+                # JSON can spell a lone surrogate (\ud800), which is not text:  refused here, once, so no record or
+                # log line ever holds a string that cannot be written back out as UTF-8.
+                json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            except (UnicodeError, ValueError, RecursionError):
                 return _error(400, "invalid_argument", "the body is not JSON")
             if not isinstance(payload, dict):
                 return _error(400, "invalid_argument", "the body must be a JSON object")
@@ -602,6 +605,10 @@ class NotesQueue:
             "error",
         }:
             return _error(400, "invalid_argument", "send exactly one of result and error")
+        if "result" in payload:
+            payload = dict(
+                payload, result=self._withhold_read(payload["result"])
+            )  # before the lock:  a long scan
         now = self.clock()
         with self.lock:
             self.runner_reported_at = now
@@ -645,6 +652,26 @@ class NotesQueue:
             return Answer(200, self.view(record))
 
     @staticmethod
+    def _withhold_read(raw: Any) -> Any:
+        """A read result with every secret-shaped line, and a secret-shaped title, withheld, and cut back to READ_MAX on
+        a whole line if a marker made it longer.  The runner already did this on the Mac;  doing it again keeps a
+        credential out of the stored record even from an older runner.  Called before the lock is taken, since it
+        scans up to 1.5 MB.  Anything not shaped like a read result is returned as it is, for _clean_result to judge."""
+        note = raw.get("note") if isinstance(raw, Mapping) else None
+        if not isinstance(note, Mapping) or not isinstance(note.get("body"), str):
+            return raw
+        if len(note["body"].encode("utf-8")) > N.READ_MAX:
+            return raw  # _clean_result refuses it
+        marked, _ = N.withhold_secrets(note["body"])
+        out = dict(note, body=N.cut_body(marked, N.READ_MAX))
+        if out["body"] != marked:
+            out["truncated"] = True
+        title = note.get("title")
+        if isinstance(title, str) and N.withhold_secrets(title)[1]:
+            out["title"] = N.WITHHELD  # as a list and the log show a secret-shaped title
+        return dict(raw, note=out)
+
+    @staticmethod
     def _clean_result(action: Any, raw: Any) -> dict[str, Any] | None:
         if not isinstance(raw, Mapping):
             return None
@@ -658,27 +685,21 @@ class NotesQueue:
             note = raw.get("note")
             if not isinstance(note, Mapping) or not isinstance(note.get("body"), str):
                 return None
-            if len(note["body"].encode("utf-8")) > N.READ_MAX:
+            size = len(note["body"].encode("utf-8"))
+            if size > N.READ_MAX:
                 return None
             # Each known field of its own type and bounds, and nothing else, so a malformed result is never stored
-            # as if it were valid.
-            keep: dict[str, Any] = {"body": note["body"]}
+            # as if it were valid.  The size and the marker count are the stored body's own, never the runner's word.
+            keep: dict[str, Any] = {
+                "body": note["body"],
+                "bytes": size,
+                "withheld": note["body"].count(N.WITHHELD),
+            }
             for key in ("title", "id", "created", "modified", "format"):
                 if isinstance(note.get(key), str):
                     keep[key] = note[key][: 400 if key == "title" else 200]
-            if "title" in keep and N.withhold_secrets(keep["title"])[1]:
-                keep["title"] = N.WITHHELD  # as a list and the log show a secret-shaped title
-            for key in ("bytes", "withheld"):
-                value = note.get(key)
-                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-                    keep[key] = value
             if isinstance(note.get("truncated"), bool):
                 keep["truncated"] = note["truncated"]
-            # The runner withholds secret-shaped lines on the Mac;  the same scan here keeps a credential out of the
-            # stored record even if an older runner did not.
-            keep["body"], withheld = N.withhold_secrets(keep["body"])
-            if withheld:
-                keep["withheld"] = int(keep.get("withheld") or 0) + withheld
             return {"note": keep}
         if action == "list":
             if not isinstance(raw.get("notes"), list):

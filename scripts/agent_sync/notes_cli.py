@@ -356,8 +356,9 @@ def cmd_notes(rt: Any, args: argparse.Namespace) -> int:
     try:
         return _cmd_notes(rt, args, audit)
     except (KeyboardInterrupt, SystemExit):
-        if audit.get("started") and "outcome" not in audit:
-            audit["outcome"] = "interrupted"  # the write may have landed
+        if "outcome" not in audit:
+            # Started:  the write may have landed.  Not started:  nothing was sent, and the attempt is still audited.
+            audit["outcome"] = "interrupted" if audit.get("started") else "interrupted_before_send"
         raise
     except Exception as exc:
         if "outcome" not in audit:
@@ -499,11 +500,11 @@ def _cmd_runner(rt: Any, args: argparse.Namespace) -> int:
             rt.out("notes runner:  %s\n" % ("handled one request" if handled else "nothing queued"))
             return 0
         stop = threading.Event()
-        previous = {
-            sig: signal.signal(sig, lambda *_: stop.set())
-            for sig in (signal.SIGTERM, signal.SIGINT)
-        }
+        previous: dict[Any, Any] = {}
         try:
+            # Installed inside the try, one at a time, so whatever was installed is restored on every exit path.
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                previous[sig] = signal.signal(sig, lambda *_: stop.set())
             runner.loop(stop, wait)
         finally:
             for sig, handler in previous.items():

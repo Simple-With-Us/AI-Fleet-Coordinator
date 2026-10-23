@@ -138,21 +138,27 @@ class Runner:
                 state["inflight"].pop(key, None)
                 self._save(state)
                 continue
-            if "result" in entry or "error" in entry:
-                outcome = (
-                    {"result": entry["result"]} if "result" in entry else {"error": entry["error"]}
-                )
-            elif entry.get("action") in ("read", "list") and isinstance(entry.get("request"), dict):
-                outcome = self._execute(seat, entry["request"])
-            else:
-                outcome = {
-                    "error": {
-                        "code": "outcome_unknown",
-                        "message": "the Mac runner stopped while it ran this request, so the note may or may not have "
-                        "been written.  Check the Coding folder, then send it again with a new request_id.",
-                    }
-                }
+            # One boundary per entry, around running a read again as well as reporting.
             try:
+                if "result" in entry or "error" in entry:
+                    outcome = (
+                        {"result": entry["result"]}
+                        if "result" in entry
+                        else {"error": entry["error"]}
+                    )
+                elif entry.get("action") in ("read", "list") and isinstance(
+                    entry.get("request"), dict
+                ):
+                    outcome = self._execute(seat, entry["request"])
+                else:
+                    outcome = {
+                        "error": {
+                            "code": "outcome_unknown",
+                            "message": "the Mac runner stopped while it ran this request, so the note may or may "
+                            "not have been written.  Check the Coding folder, then send it again with a new "
+                            "request_id.",
+                        }
+                    }
                 self._deliver(seat, request_id, claim, outcome, entry.get("action"))
             except Exception as exc:  # noqa: BLE001 - one entry's failure, of any kind, never stops the others
                 self.log(

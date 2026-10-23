@@ -795,7 +795,7 @@ def withhold_secrets(body: str) -> tuple[str, int]:
     return "\n".join(out), withheld
 
 
-def _cut(body: str, limit: int) -> str:
+def cut_body(body: str, limit: int) -> str:
     """`body` cut to at most `limit` UTF-8 bytes (never inside a character), back to the end of its last whole line,
     so a withheld marker, or the line a secret was on, is never split.  A body with no line break is cut before any
     marker the cut would split."""
@@ -822,9 +822,12 @@ def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> d
     # Cut first, so the scan covers only what is returned;  then withhold, and cut again in case a marker made a line
     # longer than the secret it replaced.  Each cut ends on a whole line, so a marker is never split.
     whole = len(body.encode("utf-8"))
-    marked, withheld = withhold_secrets(_cut(body, limit))
-    body = _cut(marked, limit)
+    marked, _ = withhold_secrets(cut_body(body, limit))
+    body = cut_body(marked, limit)
     truncated = whole > limit or body != marked
+    withheld = body.count(
+        WITHHELD
+    )  # the markers the caller actually gets, never one the second cut dropped
     return {
         "title": title,
         "id": str(raw.get("id") or ""),

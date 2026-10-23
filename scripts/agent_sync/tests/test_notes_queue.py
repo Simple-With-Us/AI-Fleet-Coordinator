@@ -312,7 +312,13 @@ class RunnerTests(QueueHarness):
         odd = {"title": ["x"], "id": 5, "format": "raw", "body": "b", "bytes": "10", "truncated": "yes", "withheld": -1, "extra": "x"}
         self.assert_answer(self.report(claimed, result={"note": odd}), 200)
         note = self.assert_answer(self.status("CLAUDE", "read-shape-001"), 200)["result"]["note"]
-        self.assertEqual(note, {"body": "b", "format": "raw"})
+        # The size and the marker count are the stored body's own, never the runner's word.
+        self.assertEqual(note, {"body": "b", "bytes": 1, "withheld": 0, "format": "raw"})
+        # A lone surrogate is not text:  the whole report is refused before anything is stored.
+        self.assert_answer(self.enqueue(request("read", rid="read-surrogate-1")), 202)
+        claimed = self.assert_answer(self.claim(), 200)
+        self.assert_answer(self.report(claimed, result={"note": {"title": "t", "body": "a\ud800b"}}), 400, "invalid_argument")
+        self.assertEqual(self.assert_answer(self.status("CLAUDE", "read-surrogate-1"), 200)["state"], "running")
 
     def test_a_repeated_result_is_200_and_a_wrong_claim_is_409(self) -> None:
         self.assert_answer(self.enqueue(request()), 202)
