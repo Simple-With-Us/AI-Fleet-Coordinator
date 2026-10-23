@@ -59,7 +59,13 @@ SEATS = {
     # (names verified live 2026-10-23):  read it there instead of duplicating
     # it into the AI Fleet Coordinator project (secret consolidation).  The
     # 5-tuple is (project, email name, key name, Worker secret name, email var).
-    "CODEX": (FLEET_OPS_PROJECT, "CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY", "ZULIP_KEY_CODEX", "ZULIP_EMAIL_CODEX"),
+    "CODEX": (
+        FLEET_OPS_PROJECT,
+        "CODEX_ZULIP_EMAIL",
+        "CODEX_ZULIP_KEY",
+        "ZULIP_KEY_CODEX",
+        "ZULIP_EMAIL_CODEX",
+    ),
     "JET": ("ZULIP_JET", "ZULIP_KEY_JET", "ZULIP_EMAIL_JET"),
     "GROK-WEB": ("ZULIP_GROK_WEB", "ZULIP_KEY_GROK_WEB", "ZULIP_EMAIL_GROK_WEB"),
     "ECHO": ("ZULIP_ECHO", "ZULIP_KEY_ECHO", "ZULIP_EMAIL_ECHO"),
@@ -139,7 +145,9 @@ def http_json(
         )
 
 
-def infisical_pair(email_name: str, key_name: str, project: str = INFISICAL_PROJECT) -> tuple[str, str]:
+def infisical_pair(
+    email_name: str, key_name: str, project: str = INFISICAL_PROJECT
+) -> tuple[str, str]:
     """(email, key) for a seat from Infisical.  Neither is printed."""
     login = http_json(
         "POST",
