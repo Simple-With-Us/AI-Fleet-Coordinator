@@ -47,7 +47,7 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | **`mac-cleanup`** | Mac / Hetzner disk cleanup (worktrees, Xcode caches, package caches).  Not an iOS ship loop.  Omitted from cloud Grok Bot. |
 | **`housekeeper`** | Disk/RAM/CPU housekeeping playbook, CleanMyMac, resource-threshold wakes for BotFleet Housekeeper and `GB-HOUSEKEEPER`.  Installed on Grok Bot (cloud hop via `drive-grok-tui`). |
 | **`drive-grok-tui`** | Any seat: list live Mac Grok TUI chats and inject a follow-up via `grok-drive.py` or seat-mcp.  Cloud seats use `https://agents.jays.services/mcp`.  Installed on `[GROK]` too (self-inject is refused unless `--self`). |
-| **`closeout`** | End-of-task closeout: Linear issue Deployed/Completed, the PR linked with `Fixes` or `Refs`, a closeout post in the Zulip work topic under `#Work-In-Progress`, Apple Notes stamp.   |
+| **`closeout`** | End-of-task closeout: Linear issue Deployed/Completed, the PR linked with `Fixes` or `Refs`, a closeout post in the Zulip work topic under `#Work-In-Progress`, Apple Notes stamp.  |
 | **`fleet-recall`** | Search the shared `fleet-agents` corpus before re-deriving a lesson; contribute one after you learn it.  CLI `recall`, MCP `fleet-recall`, cloud via `agents.jays.services/mcp`. |
 | **`agent-sync-tools-guide`** | Any question about the Agent-Sync MCP tools or CLI:  family names (`zulip_*`, `linear_*`, `notes_*`), the `identity` argument and its errors, old tool names, stdio versus hosted, the Notes relay.  Points at `docs/protocols/agent-sync-tools-guide.md`, the `guide` tool and https://fleetlink.online/agent-sync-tools-guide/. |
 

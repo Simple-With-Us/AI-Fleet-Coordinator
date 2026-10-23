@@ -189,7 +189,7 @@ These are optional, and best left unset:
    simple-chat daemon reload             # SIGHUP:  re-reads listener.toml (enough here; no variable changed)
    simple-chat status
    ```
-   `init` pins `owner_user_id` into `/data/listener.toml`, and that is still required.    `eligible_user_ids` is an optional extra list of pins, because every fleet bot is eligible without it.    `init` also checks each enabled seat's environment credentials, role and #Work-In-Progress subscription.    **Always pass `--seat`.*  *  Without it the reader is the first enabled seat in name order (ECHO, with the sample as it is now), and `init` stops with that seat's missing variable.    Name a seat whose credentials are present and correct (MA is).
+   `init` pins `owner_user_id` into `/data/listener.toml`, and that is still required.  `eligible_user_ids` is an optional extra list of pins, because every fleet bot is eligible without it.  `init` also checks each enabled seat's environment credentials, role and #Work-In-Progress subscription.  **Always pass `--seat`.**  Without it the reader is the first enabled seat in name order (ECHO, with the sample as it is now), and `init` stops with that seat's missing variable.  Name a seat whose credentials are present and correct (MA is).
 
    Over a non-interactive `docker exec` there is no terminal to answer the prompt, so `init` needs `--yes` or it changes nothing.  The Coolify host is reachable as the ssh alias `coolify`:
    ```
@@ -215,7 +215,7 @@ These are optional, and best left unset:
 **Operating.**
 
 - Logs are in Coolify's log view (stdout) and in `/data/logs/listener.log` (5 MB, 3 files).
-- Kill switch:  `simple-chat daemon pause [--seat GB-COMPILER] [--wakes-only]`, lifted with `simple-chat daemon resume`.    An owner DM to a persona saying `simple-chat pause` pauses every seat of this instance (the retired `agent-sync pause` phrase still works).    Hard stop:  stop the app.
+- Kill switch:  `simple-chat daemon pause [--seat GB-COMPILER] [--wakes-only]`, lifted with `simple-chat daemon resume`.  An owner DM to a persona saying `simple-chat pause` pauses every seat of this instance (the retired `agent-sync pause` phrase still works).  Hard stop:  stop the app.
 - `simple-chat wakes --seat GB-COMPILER` lists the ledger and ends with the seat's held-back count, oldest age and reasons;  `simple-chat status` shows the same under each seat that has any.
 - `simple-chat inbox --local --as GB-COMPILER` reads the captured inbox.
 - Owner notes (`notify-owner`) go to `/data/<SEAT>/owner-queue.jsonl` only, the held-back digest included.
@@ -358,7 +358,7 @@ Code:  `scripts/agent_sync/heldalert.py` (the state, the composer and the rules)
 
 ## The Read API (AFC-330)
 
-Owner, Thu, Oct 15:  agents should "fully interact with the listener (or the listener's records regarding that platform/bot)".    On a Mac the CLI and the stdio MCP read the records from the local state root (`simple-chat listener ...`  , the `eavesdropper_*` tools).    The hosted Worker has no disk here, so this instance can serve a small read API for it:  `scripts/agent_sync/listener_api.py`, started by the daemon when `[listener_api] enabled = true`.
+Owner, Thu, Oct 15:  agents should "fully interact with the listener (or the listener's records regarding that platform/bot)".  On a Mac the CLI and the stdio MCP read the records from the local state root (`simple-chat listener ...`  , the `eavesdropper_*` tools).  The hosted Worker has no disk here, so this instance can serve a small read API for it:  `scripts/agent_sync/listener_api.py`, started by the daemon when `[listener_api] enabled = true`.
 
 - **Endpoints.**  `GET /listener/v1/<SEAT>/<record>`, where `record` is `status`, `inbox`, `owner-queue`, `wakes` or `held-back`, with the query parameters each takes (`since_seq`, `limit`;  `all`, `limit`;  `since_hours`, `state`, `limit`;  `limit`).  The answer is `{contract: "agent-sync-read/1", seat, record, view}`, the same view `agent-sync listener ... --json` prints, with `Cache-Control: no-store`.  Read-only:  nothing a request carries moves a cursor or clears an entry.  Anything but GET is 405.
 - **Authentication, per seat.**  `X-Agent-Sync-Timestamp` (unix seconds) and `X-Agent-Sync-Signature`, the lowercase hex HMAC-SHA256 of `agent-sync-read/1\nGET\n<path>\n<raw query>\n<timestamp>`, good for five minutes either side.  The key is the one this listener already shares with the Worker for the seat's wakes:  the seat's routine `key_env` when its routine is `hmac-sha256` (`JET_ROUTINE_KEY`), else `<CODE>_ROUTINE_KEY`;  on the Worker it is `WAKE_HMAC_KEY_<SEAT>`.  A seat without a key of at least 32 characters is 404, as is an unknown seat or path;  a bad or stale signature is 401.  A signature names one seat, one record and one exact query, so it cannot read another seat or widen a limit.  Keys join the log scrub list;  the log records the seat and record of each read and each refusal's reason, never a key, a signature or a body.

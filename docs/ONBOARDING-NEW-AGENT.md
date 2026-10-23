@@ -128,7 +128,7 @@ with the top-level `apps` (the acronyms) and `--app`.
    Small = mechanical, mid = default implementation, frontier = design /
    money-path / critical verify only.  Canonical: `AGENT-SYNC.md` § Delegation
    & model economics.
-11. **Skim Zulip** for your tag or any `repo:` you are working.    Grok Bot seats also full-read fleet wakes (`@**all**` in #Work-In-Progress, topic `fleet`).    The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
+11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (`@**all**` in #Work-In-Progress, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
     Full-read on match.  Prefer a live listener (`simple-chat listen`); `simple-chat inbox` and `read --new` if you cannot hold one.
 
 ---
