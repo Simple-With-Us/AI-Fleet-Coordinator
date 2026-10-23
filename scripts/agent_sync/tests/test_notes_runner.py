@@ -239,6 +239,18 @@ class RecoverTests(RunnerHarness):
         self.assertEqual([r["request"]["action"] for r in self.runs], ["read"], "only the read ran again")
         self.assertEqual(self.client.state()["inflight"], {})
 
+    def test_a_recovery_entry_with_malformed_ids_is_dropped_unreported(self):
+        self.seed(
+            **{
+                "a": {"seat": "../x", "request_id": "requestid-0001", "claim": "c1", "action": "pin", "result": {"status": "done"}},
+                "b": {"seat": "CODEX", "request_id": "../../escape", "claim": "c2", "action": "pin"},
+                "c": {"seat": "CODEX", "request_id": "requestid-0003", "claim": "", "action": "pin"},
+            }
+        )
+        self.runner.recover()
+        self.assertEqual((self.client.reports, self.runs), ([], []))
+        self.assertEqual(self.client.state()["inflight"], {})
+
     def test_a_failed_recovery_report_keeps_only_its_own_entry_and_the_rest_still_go_out(self):
         self.seed(
             **{

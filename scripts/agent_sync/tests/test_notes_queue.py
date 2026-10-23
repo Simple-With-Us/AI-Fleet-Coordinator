@@ -294,6 +294,17 @@ class RunnerTests(QueueHarness):
         body = self.assert_answer(self.report(listed, result={"notes": [], "total": 0}), 200)
         self.assertEqual(body["state"], "done")
 
+    def test_a_stored_read_withholds_secret_shaped_lines_even_from_an_older_runner(self) -> None:
+        self.assert_answer(self.enqueue(request("read", rid="read-secret-01")), 202)
+        claimed = self.assert_answer(self.claim(), 200)
+        token = "ghp_" + "a" * 36  # built at run time from one repeated letter
+        body = "<div>Before.</div>\n<div>key %s</div>" % token
+        self.assert_answer(self.report(claimed, result={"note": {"title": "t", "body": body, "withheld": 0}}), 200)
+        note = self.assert_answer(self.status("CLAUDE", "read-secret-01"), 200)["result"]["note"]
+        self.assertNotIn(token, json.dumps(note))
+        self.assertEqual((note["body"], note["withheld"]), ("<div>Before.</div>\n<div>%s</div>" % N.WITHHELD, 1))
+        self.assertNotIn(token, "".join(p.read_text() for p in (Path(self.root) / NQ.QUEUE_DIR).rglob("*.json")))
+
     def test_a_repeated_result_is_200_and_a_wrong_claim_is_409(self) -> None:
         self.assert_answer(self.enqueue(request()), 202)
         claimed = self.assert_answer(self.claim(), 200)
@@ -420,9 +431,10 @@ class ActionLogTests(QueueHarness):
             200,
         )
         self.assertEqual((body["accepted"], body["duplicates"]), (0, 1))
-        # A rotation moves the kept lines to .1:  a restart still knows their ids, so a resend is not kept twice.
+        # A rotation moves the kept lines along (.1, .2, ...):  a restart still knows their ids, from every copy, so a
+        # resend is not kept twice.
         log = Path(self.root) / NQ.QUEUE_DIR / NQ.ACTION_LOG
-        log.rename(log.with_name("%s.1" % NQ.ACTION_LOG))
+        log.rename(log.with_name("%s.%d" % (NQ.ACTION_LOG, NQ.LOG_ROTATIONS)))
         rotated = self.make_queue()
         body = self.assert_answer(
             self.call("POST", "/notes/v1/runner/log", {"lines": [self.entry("log-1"), self.entry("log-5")]},

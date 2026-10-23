@@ -45,6 +45,19 @@ class AlreadyRunning(Exception):
     """Another runner holds the lock."""
 
 
+def _ids_ok(seat: Any, request_id: Any, claim: Any) -> bool:
+    """A claim's seat and request_id in the Operator's own patterns, and a claim that is text:  they name the state
+    entry and the report's path, so nothing else is used."""
+    return (
+        isinstance(seat, str)
+        and bool(N.SEAT_RE.fullmatch(seat))
+        and isinstance(request_id, str)
+        and bool(N.REQUEST_ID_RE.fullmatch(request_id))
+        and isinstance(claim, str)
+        and bool(claim)
+    )
+
+
 class Runner:
     def __init__(
         self,
@@ -118,6 +131,13 @@ class Runner:
                 self._save(state)  # dropped for good, not only in this pass's copy
                 continue
             seat, request_id, claim = entry.get("seat"), entry.get("request_id"), entry.get("claim")
+            if not _ids_ok(seat, request_id, claim):
+                # Only this runner writes the file, after the same check;  an entry that fails it now cannot be
+                # reported (its ids name the report's path), so it is dropped for good.
+                self.log("notes-runner: dropped a recovery entry whose ids are malformed")
+                state["inflight"].pop(key, None)
+                self._save(state)
+                continue
             if "result" in entry or "error" in entry:
                 outcome = (
                     {"result": entry["result"]} if "result" in entry else {"error": entry["error"]}
@@ -196,15 +216,7 @@ class Runner:
             claimed.get("claim"),
         )
         request = claimed.get("request") if isinstance(claimed.get("request"), dict) else {}
-        # The same patterns the Operator checks:  seat and request_id name the state entry and the report's path.
-        if (
-            not isinstance(seat, str)
-            or not N.SEAT_RE.fullmatch(seat)
-            or not isinstance(request_id, str)
-            or not N.REQUEST_ID_RE.fullmatch(request_id)
-            or request.get("request_id") != request_id
-            or not isinstance(claim, str)
-        ):
+        if not _ids_ok(seat, request_id, claim) or request.get("request_id") != request_id:
             return False
         key = "%s/%s" % (seat, request_id)
         action = request.get("action")

@@ -432,6 +432,11 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "unavailable")
         # A nesting too deep to parse:  forced, since how deep json.loads goes before RecursionError depends on the
         # Python version (3.15 parses what 3.14 refuses).
+        # A body over the cap is refused before it is parsed.
+        self.op.answers[("GET", "/notes/v1/log")] = (200, b"[" + b"0," * (W.MAX_BODY // 2) + b"0]")
+        with self.assertRaises(N.NotesError) as caught:
+            self.client.log({})
+        self.assertIn("larger than 4 MiB", caught.exception.message)
         self.op.answers[("GET", "/notes/v1/log")] = (200, b"[[[]]]")
         with mock.patch.object(NC.json, "loads", side_effect=RecursionError("maximum recursion depth exceeded")):
             with self.assertRaises(N.NotesError) as caught:
@@ -582,6 +587,21 @@ class HostTests(unittest.TestCase):
     def scan(self, request):
         self.scans.append(dict(request))
 
+    def test_the_queues_own_503_is_a_definite_refusal_and_a_bare_5xx_is_unknown(self):
+        op = FakeOperator()
+        host, _ = self.elsewhere(op.client([]))
+        op.answers[("POST", "/notes/v1/requests")] = (503, {"error": "unavailable", "message": "the notes queue is full;  try again later"})
+        with self.assertRaises(N.NotesError) as caught:
+            NC.call(host, "CLAUDE", self.req(rid="requestid-0043"), wait=0, scan=self.scan)
+        self.assertEqual(caught.exception.code, "unavailable")  # nothing was queued
+        self.assertIn("the notes queue is full", caught.exception.message)
+        for answer in ((503, b"<html>no available server</html>"), (502, None)):
+            with self.subTest(answer[0]):
+                op.answers[("POST", "/notes/v1/requests")] = answer
+                with self.assertRaises(N.NotesError) as caught:
+                    NC.call(host, "CLAUDE", self.req(rid="requestid-0044"), wait=0, scan=self.scan)
+                self.assertEqual(caught.exception.code, "outcome_unknown")  # a proxy's 5xx may have queued it
+
     def test_a_lost_answer_to_the_post_tells_the_caller_to_resend_with_the_same_request_id(self):
         class Unreachable(FakeClient):
             def enqueue(self, seat, request):
@@ -731,7 +751,7 @@ class HostTests(unittest.TestCase):
             ("refused", {}, (None, "internal")),
             ("unknown", {"error": {"code": "outcome_unknown", "message": "the lease ran out"}}, (None, "outcome_unknown")),
             ("expired", {}, (None, "unavailable")),
-            ("lost", {}, (None, "unavailable")),  # a state this client does not know is never read as done
+            ("lost", {}, (None, "outcome_unknown")),  # a state this client does not know is never read as done
         ):
             with self.subTest(state=state, extra=bool(extra)):
                 host, _ = self.elsewhere(FakeClient(record(state, **extra)))

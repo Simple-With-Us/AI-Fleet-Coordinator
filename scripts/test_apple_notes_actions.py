@@ -661,9 +661,8 @@ class ActionLogTests(ActionsTestCase):
         self.assertEqual(self.log_lines()[-1]["pin"], "skipped")
 
     def test_a_title_the_secret_scan_refuses_is_never_logged(self):
-        secret = (
-            "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
-        )  # built at run time:  no token-shaped literal in the source
+        # Built at run time from one repeated letter:  plainly synthetic, and still the shape the scan refuses.
+        secret = "ghp_" + "a" * 36
         p = self.run_script("--read", f"[AFC, Claude] {secret}")
         self.assertEqual(p.returncode, 2)
         self.assertNotIn(secret, self.log.read_text())

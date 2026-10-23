@@ -620,8 +620,10 @@ test("the Operator's HTTP answers map to clear tool errors", async () => {
     [{ status: 404, body: { error: "not_found", message: "not found" } }, "not_configured", /notes_queue/],
     [{ status: 409, body: { error: "conflict", message: "x" } }, "invalid_argument", /new request_id/],
     [{ status: 413, body: { error: "too_large" } }, "invalid_argument", /4 MiB/],
-    // A 5xx or a lost answer on the enqueue may have queued the request:  its outcome is unknown, never retryable.
-    [{ status: 503, body: { error: "unavailable", message: "the notes queue is full" } }, "outcome_unknown", /full or not running, so the request may or may not be queued.*notes_status.*same request_id, http-answer-01, never a new one/],
+    // The queue's own 503 is a definite refusal (nothing was queued):  retryable under the same request_id.
+    [{ status: 503, body: { error: "unavailable", message: "the notes queue is full" } }, "unavailable", /full or not running.*same request_id \(http-answer-01\)/],
+    // Any other 5xx, or a lost answer, may have queued the request:  its outcome is unknown, never retryable.
+    [{ status: 503, body: null }, "outcome_unknown", /full or not running, so the request may or may not be queued.*notes_status.*same request_id, http-answer-01, never a new one/],
     [{ status: 502, body: null }, "outcome_unknown", /HTTP 502, so the request may or may not be queued/],
     [{ status: 302, body: null }, "not_configured", /redirect/],
     [{ status: 429, body: null }, "rate_limited", /same request_id \(http-answer-01\)/],
@@ -636,6 +638,7 @@ test("the Operator's HTTP answers map to clear tool errors", async () => {
     const error = toolError(await tools.call("notes_pin", { title: STATIC_TITLE, request_id: "http-answer-01" }), code);
     assert.match(error.message, message, `${answer.status ?? answer} ${error.message}`);
     if (code === "outcome_unknown") assert.notEqual(error.retryable, true);
+    if (code === "unavailable") assert.equal(error.retryable, true);
   }
 });
 

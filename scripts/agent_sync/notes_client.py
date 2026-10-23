@@ -223,10 +223,13 @@ class OperatorClient:
             ) from None
         if not raw:
             return status, None
+        if len(raw) > W.MAX_BODY:  # refused before it is parsed
+            raise N.NotesError(
+                "unavailable",
+                "the Operator answered HTTP %d with a body larger than 4 MiB" % status,
+            )
         try:
-            data = json.loads(
-                raw.decode("utf-8")
-            )  # the body is already capped at MAX_BODY bytes above
+            data = json.loads(raw.decode("utf-8"))
         except (
             UnicodeDecodeError,
             ValueError,
@@ -245,7 +248,11 @@ class OperatorClient:
         )
         if status in (200, 202) and data is not None:
             return data, status == 200
-        raise answer_error(status, data)
+        refusal = answer_error(status, data)
+        # The queue's own 503 (full, or not running) is a definite refusal:  nothing was queued, so `call` passes it
+        # on as unavailable instead of an unknown outcome.  A bare 5xx from a proxy stays unknown.
+        refusal.definite = status == 503 and (data or {}).get("error") == "unavailable"
+        raise refusal
 
     def record(self, seat: str, request_id: str) -> dict[str, Any]:
         status, data = self.call("GET", "/notes/v1/requests/%s/%s" % (seat, request_id))
@@ -452,8 +459,11 @@ def _shape(record: Mapping[str, Any], duplicate: bool) -> dict[str, Any]:
             str(error.get("message") or "nobody picked the request up within 24 hours"),
         )
     if state not in ("queued", "running", "done"):
+        # Not a state this client knows, so it cannot tell whether the note was written:  never a plain retry.
         raise N.NotesError(
-            "unavailable", "the Operator answered a record in a state this client does not know"
+            "outcome_unknown",
+            "the Operator answered a record in a state this client does not know, so the outcome is unknown;  "
+            "check the note before sending it again with a new request_id",
         )
     out: dict[str, Any] = {
         "request_id": request_id,
@@ -522,7 +532,7 @@ def call(
     try:
         record, duplicate = host.client.enqueue(seat, request)
     except N.NotesError as exc:
-        if exc.code != "unavailable":
+        if exc.code != "unavailable" or getattr(exc, "definite", False):
             raise
         # The request may have reached the Operator before the answer was lost (a timeout, a 5xx), so its outcome is
         # unknown.  Checking it, or sending it again under the same request_id, is safe:  the Operator answers the

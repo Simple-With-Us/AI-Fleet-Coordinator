@@ -267,7 +267,7 @@ Title rule for a create:  `[TEAM_KEY, Agent] Topic`, such as `[AFC, Codex] Topic
 
 ## CLI Equivalents
 
-Every MCP tool has a command.  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3);  the `notes` commands also take `--identity`.  Add `--json` for machine output.
+Every MCP tool has a command.  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3);  the `notes` commands also take `--identity`, except `simple-notes log`, which acts as no one (filter it with `--by-seat`).  Add `--json` for machine output.
 
 | Group | Commands |
 |---|---|

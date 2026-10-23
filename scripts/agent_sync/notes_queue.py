@@ -178,10 +178,15 @@ class NotesQueue:
                 record = L.read_json(str(path))
                 if self._valid(record) and record["state"] in ("queued", "running"):
                     self.active[(record["seat"], record["request_id"])] = record
-        # The ids the runner may still resend:  the current log and the newest rotated copy (a rotation must not let
-        # an id the Operator already holds in `.1` through again).  Older copies hold lines the runner sent long ago.
+        # The ids already kept, from every rotated copy (oldest first) and then the current log, so no rotation lets
+        # an id the Operator holds through again;  the newest LOG_IDS_KEEP of them stay in memory.  Start-up only.
         recent: list[str] = []
-        for path in (self.action_log.with_name("%s.1" % ACTION_LOG), self.action_log):
+        for index in range(LOG_ROTATIONS, -1, -1):
+            path = (
+                self.action_log
+                if index == 0
+                else self.action_log.with_name("%s.%d" % (ACTION_LOG, index))
+            )
             recent.extend(
                 entry["id"] for entry in L.read_jsonl(str(path)) if isinstance(entry.get("id"), str)
             )
@@ -665,6 +670,14 @@ class NotesQueue:
             }
             if len(str(keep.get("body") or "").encode("utf-8")) > N.READ_MAX:
                 return None
+            # The runner withholds secret-shaped lines on the Mac;  the same scan here keeps a credential out of the
+            # stored record even if an older runner did not.
+            keep["body"], withheld = N.withhold_secrets(keep["body"])
+            if withheld:
+                before = keep.get("withheld")
+                keep["withheld"] = (
+                    before if isinstance(before, int) and not isinstance(before, bool) else 0
+                ) + withheld
             return {"note": keep}
         if action == "list":
             if not isinstance(raw.get("notes"), list):
