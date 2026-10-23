@@ -27,7 +27,9 @@ from .errors import BoardFailed, NotFound, Refusal
 from .items import AWAITING, CLOSED_STATUSES, KIND, LABEL, OVER_FIVE, Item
 from .proc import Runner, first_line
 
-_FILED_RE = re.compile(r"^filed\s+(\S+)\s+\(([^)]*)\)\s+([A-Za-z]{1,8}-[0-9]{1,9})\b(.*)$", re.MULTILINE)
+_FILED_RE = re.compile(
+    r"^filed\s+(\S+)\s+\(([^)]*)\)\s+([A-Za-z]{1,8}-[0-9]{1,9})\b(.*)$", re.MULTILINE
+)
 _MAX_VERSION_TRIES = 6
 
 
