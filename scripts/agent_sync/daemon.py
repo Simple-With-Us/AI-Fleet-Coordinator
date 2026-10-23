@@ -2342,6 +2342,25 @@ class Daemon:
             self.chat_queue(runner.seat).rename(
                 old_channel, old_topic, new_channel, new_topic, self.clock.time()
             )
+        try:
+            for moved in OREG.retarget_routes(
+                self._registration_db(),
+                seat=runner.seat,
+                old_channel=old_channel,
+                old_topic=old_topic,
+                new_channel=new_channel,
+                new_topic=new_topic,
+            ):
+                self.log.write(
+                    "operator-registration-route-follow",
+                    entry_id=moved.get("entry_id"),
+                    channel=new_channel,
+                    topic=new_topic,
+                )
+        except Exception as exc:
+            self.log.write(
+                "operator-registration-route-follow", status="error", error=type(exc).__name__
+            )
         self.log.write("rename", seat=runner.seat, leases=renamed)
 
     # ---- wakes ---------------------------------------------------------------------------------
@@ -4151,16 +4170,7 @@ class Daemon:
                 if out.get("status") not in ("ask", "pending"):
                     continue
                 entry = out["entry"]
-                change = out.get("route_change")
-                if change == "followed":
-                    route_now = entry.get("route") or {}
-                    self.log.write(
-                        "operator-registration-route-follow",
-                        entry_id=entry.get("entry_id"),
-                        channel=str(route_now.get("channel") or ""),
-                        topic=str(route_now.get("topic") or ""),
-                    )
-                elif change == "lost":
+                if out.get("route_change") == "lost":
                     self.log.write(
                         "operator-registration-route-lost",
                         entry_id=entry.get("entry_id"),

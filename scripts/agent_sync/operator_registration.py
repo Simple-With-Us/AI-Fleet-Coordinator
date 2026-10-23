@@ -182,48 +182,26 @@ def _route(route: Mapping[str, Any] | None) -> dict[str, str] | None:
     return {"channel": channel[:MAX_LABEL], "topic": topic[:MAX_LABEL]}
 
 
-def _topic_expires(topics: Iterable[Mapping[str, Any]] | None, route: Mapping[str, str]) -> Any:
-    """The lease expiry of the topic a route names, or None when the lease does not say."""
-    key = (route["channel"].casefold(), route["topic"].casefold())
-    for entry in topics or ():
-        if not isinstance(entry, Mapping):
-            continue
-        other = (
-            str(entry.get("channel") or "").casefold(),
-            str(entry.get("topic") or "").casefold(),
-        )
-        if other == key:
-            expires = entry.get("expires")
-            return expires if expires is None or isinstance(expires, (int, float)) else None
-    return None
-
-
 def _refresh_route(
     entry: dict[str, Any],
     clean_route: dict[str, str] | None,
     topics: Iterable[Mapping[str, Any]] | None,
 ) -> str | None:
-    """Track the asked topic through renewals and whole-topic renames;  never steal.
-
-    The route a question was asked on is refreshed against the chat's live lease topics on
-    every pass:
+    """Keep or lose the asked route against the chat's live lease topics;  never guess.
 
     - The asked topic still listed (whatever newer activity topics appeared) keeps the
-      route;  only its stored expiry follows renewals.  An unrelated new attachment never
-      moves a pending question.
-    - The asked topic gone from the lease follows ONLY a whole-topic rename or move:  the
-      daemon's update_message handler rewrites the lease entry in place and keeps its
-      expiry, so exactly one live topic carrying the asked topic's last expiry is the
-      continuation.  No unique match means the question cannot be placed honestly (an
-      unrelated activity topic must not silently inherit it):  the entry is marked
-      route_lost, keeps its stale route, and the sweep's re-ask starts a fresh question.
+      route:  an unrelated new attachment never moves a pending question.
+    - The asked topic gone from the lease marks the entry route_lost.  A whole-topic
+      rename is NOT recovered here - lease shape cannot tell a rename from an unrelated
+      replacement (independent topics can share an expiry, permanent ones most of all).
+      Renames arrive with real provenance through the daemon's update_message handler,
+      which calls retarget_routes with the event's own old and new names.
     """
     topics = [t for t in (topics or ()) if isinstance(t, Mapping)]
     old = entry.get("route")
     if not isinstance(old, dict):
         if clean_route:
             entry["route"] = clean_route
-            entry["route_expires"] = _topic_expires(topics, clean_route)
             entry.pop("route_lost", None)
             return "filled"
         return None
@@ -236,34 +214,61 @@ def _refresh_route(
             str(topic.get("channel") or "").casefold(),
             str(topic.get("topic") or "").casefold(),
         )
-        if current != key:
-            continue
-        changed = False
-        expires = topic.get("expires")
-        if expires is None or isinstance(expires, (int, float)):
-            if entry.get("route_expires") != expires:
-                entry["route_expires"] = expires
-                changed = True
-        if entry.pop("route_lost", None) is not None:
-            changed = True
-        return "kept" if changed else None
-    stored = entry.get("route_expires", ...)
-    candidates = []
-    if stored is not ... and (stored is None or isinstance(stored, (int, float))):
-        candidates = [t for t in topics if t.get("expires") == stored]
-    if len(candidates) == 1:
-        picked = candidates[0]
-        channel = str(picked.get("channel") or "").strip()
-        topic = str(picked.get("topic") or "").strip()
-        if channel and topic:
-            entry["route"] = {"channel": channel[:MAX_LABEL], "topic": topic[:MAX_LABEL]}
-            entry["route_expires"] = picked.get("expires")
-            entry.pop("route_lost", None)
-            return "followed"
+        if current == key:
+            if entry.pop("route_lost", None) is not None:
+                return "kept"
+            return None
     if not entry.get("route_lost"):
         entry["route_lost"] = True
         return "lost"
     return None
+
+
+def retarget_routes(
+    registry_db: str,
+    *,
+    seat: str,
+    old_channel: str,
+    old_topic: str,
+    new_channel: str,
+    new_topic: str,
+) -> list[dict[str, Any]]:
+    """Re-point pending questions at a whole-topic rename;  the retargeted entries.
+
+    The rename event itself (update_message, propagate_mode change_all) is the only
+    provenance accepted:  it carries the old and new names, so no heuristic ever guesses
+    a continuation from lease shape.  Only asked-state entries of the renamed seat whose
+    route matches the old channel/topic (casefolded) move;  a route_lost entry whose
+    stale route matches is revived, because the event proves where its question went.
+    """
+    old_key = (old_channel.casefold(), old_topic.casefold())
+    seat_key = seat.casefold()
+    moved: list[dict[str, Any]] = []
+    with L.locked(queue_path(registry_db)):
+        data = load(registry_db)
+        for entry in data["entries"].values():
+            if entry["state"] != STATE_ASKED:
+                continue
+            if str(entry.get("seat") or "").casefold() != seat_key:
+                continue
+            route = entry.get("route")
+            if not isinstance(route, dict):
+                continue
+            route_key = (
+                str(route.get("channel") or "").casefold(),
+                str(route.get("topic") or "").casefold(),
+            )
+            if route_key != old_key:
+                continue
+            entry["route"] = {
+                "channel": new_channel[:MAX_LABEL],
+                "topic": new_topic[:MAX_LABEL],
+            }
+            entry.pop("route_lost", None)
+            moved.append(dict(entry))
+        if moved:
+            save(registry_db, data)
+    return moved
 
 
 def begin(
@@ -330,8 +335,10 @@ def begin(
         for entry in data["entries"].values():
             if entry["state"] == STATE_ASKED and _identity(entry) == (platform, scope, native):
                 # The route tracks the chat's live lease:  filled when the lease first
-                # names a topic, followed through a whole-topic rename, never stolen by
-                # an unrelated new attachment (_refresh_route).
+                # names a topic, kept while the asked topic stays attached, lost when it
+                # vanishes.  A whole-topic rename is re-pointed by the daemon's
+                # update_message handler through retarget_routes - event provenance,
+                # never a lease-shape guess (_refresh_route).
                 change = _refresh_route(entry, clean_route, route_topics)
                 if change:
                     save(registry_db, data)
@@ -365,7 +372,6 @@ def begin(
         }
         if clean_route:
             entry["route"] = clean_route
-            entry["route_expires"] = _topic_expires(route_topics, clean_route)
         data["entries"][entry_id] = entry
         save(registry_db, data)
     return {"status": "ask", "entry": dict(entry), "question": question_for(entry)}

@@ -231,9 +231,9 @@ class OperatorRegistrationTest(unittest.TestCase):
 
 
 class OperatorRegistrationRouteRefreshTest(unittest.TestCase):
-    """A pending question's route tracks the chat's live lease topics:  renewed expiries
-    are followed, a whole-topic rename (the lease entry rewritten in place, expiry kept)
-    is followed, and an unrelated new attachment never steals the question."""
+    """A pending question's route:  kept while its topic stays attached, lost when the
+    topic vanishes (lease shape never guesses a continuation), and re-pointed ONLY by a
+    whole-topic rename event's own provenance (retarget_routes)."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -255,23 +255,6 @@ class OperatorRegistrationRouteRefreshTest(unittest.TestCase):
             now=now,
         )
 
-    def test_a_whole_topic_rename_is_followed(self):
-        first = self.begin(
-            route={"channel": "agent-sync", "topic": "AFC Work"},
-            topics=[{"channel": "agent-sync", "topic": "AFC Work", "expires": 5000.0}],
-        )
-        self.assertEqual(first["entry"].get("route_expires"), 5000.0)
-        # handle_update rewrites the lease entry in place:  new name, same expiry.
-        out = self.begin(
-            route={"channel": "agent-sync", "topic": "AFC Work Renamed"},
-            topics=[{"channel": "agent-sync", "topic": "AFC Work Renamed", "expires": 5000.0}],
-        )
-        self.assertEqual(out.get("route_change"), "followed")
-        self.assertEqual(
-            out["entry"]["route"], {"channel": "agent-sync", "topic": "AFC Work Renamed"}
-        )
-        self.assertFalse(out["entry"].get("route_lost"))
-
     def test_an_unrelated_new_topic_does_not_steal_the_route(self):
         self.begin(
             route={"channel": "agent-sync", "topic": "AFC Work"},
@@ -285,25 +268,9 @@ class OperatorRegistrationRouteRefreshTest(unittest.TestCase):
             ],
         )
         self.assertEqual(out["entry"]["route"], {"channel": "agent-sync", "topic": "AFC Work"})
-        self.assertNotEqual(out.get("route_change"), "followed")
+        self.assertIsNone(out.get("route_change"))
 
-    def test_a_renewal_is_tracked_so_a_later_rename_still_matches(self):
-        self.begin(
-            route={"channel": "agent-sync", "topic": "AFC Work"},
-            topics=[{"channel": "agent-sync", "topic": "AFC Work", "expires": 5000.0}],
-        )
-        renewed = self.begin(
-            route={"channel": "agent-sync", "topic": "AFC Work"},
-            topics=[{"channel": "agent-sync", "topic": "AFC Work", "expires": 7000.0}],
-        )
-        self.assertEqual(renewed["entry"].get("route_expires"), 7000.0)
-        out = self.begin(
-            route={"channel": "agent-sync", "topic": "AFC Work Renamed"},
-            topics=[{"channel": "agent-sync", "topic": "AFC Work Renamed", "expires": 7000.0}],
-        )
-        self.assertEqual(out.get("route_change"), "followed")
-
-    def test_a_topic_gone_without_continuation_marks_the_route_lost_once(self):
+    def test_a_topic_gone_marks_the_route_lost_once(self):
         self.begin(
             route={"channel": "agent-sync", "topic": "AFC Work"},
             topics=[{"channel": "agent-sync", "topic": "AFC Work", "expires": 5000.0}],
@@ -322,32 +289,80 @@ class OperatorRegistrationRouteRefreshTest(unittest.TestCase):
         )
         self.assertIsNone(again.get("route_change"))
 
-    def test_an_ambiguous_rename_never_moves_the_question(self):
+    def test_an_equal_expiry_replacement_is_not_a_rename(self):
+        """An unrelated topic carrying the SAME expiry (permanent None most of all) is
+        not a continuation:  expiry equality is not rename provenance, so the entry
+        fails closed to route_lost rather than moving the question."""
         self.begin(
             route={"channel": "agent-sync", "topic": "AFC Work"},
             topics=[{"channel": "agent-sync", "topic": "AFC Work", "expires": None}],
         )
         out = self.begin(
-            route={"channel": "agent-sync", "topic": "One"},
-            topics=[
-                {"channel": "agent-sync", "topic": "One", "expires": None},
-                {"channel": "agent-sync", "topic": "Two", "expires": None},
-            ],
+            route={"channel": "agent-sync", "topic": "Unrelated Lane"},
+            topics=[{"channel": "agent-sync", "topic": "Unrelated Lane", "expires": None}],
         )
         self.assertEqual(out.get("route_change"), "lost")
         self.assertEqual(out["entry"]["route"], {"channel": "agent-sync", "topic": "AFC Work"})
 
-    def test_a_permanent_lane_rename_is_followed(self):
+    def test_retarget_routes_repoints_the_pending_question(self):
+        first = self.begin(
+            route={"channel": "agent-sync", "topic": "AFC Work"},
+            topics=[{"channel": "agent-sync", "topic": "AFC Work", "expires": None}],
+        )
+        moved = OREG.retarget_routes(
+            self.db,
+            seat="MM",
+            old_channel="agent-sync",
+            old_topic="AFC Work",
+            new_channel="agent-sync",
+            new_topic="AFC Work Renamed",
+        )
+        self.assertEqual([entry["entry_id"] for entry in moved], [first["entry"]["entry_id"]])
+        entry = OREG.pending_entries(self.db)[0]
+        self.assertEqual(entry["route"], {"channel": "agent-sync", "topic": "AFC Work Renamed"})
+
+    def test_retarget_routes_matches_only_the_seat_and_route(self):
         self.begin(
             route={"channel": "agent-sync", "topic": "AFC Work"},
             topics=[{"channel": "agent-sync", "topic": "AFC Work", "expires": None}],
         )
-        out = self.begin(
-            route={"channel": "agent-sync", "topic": "AFC Work Renamed"},
-            topics=[{"channel": "agent-sync", "topic": "AFC Work Renamed", "expires": None}],
+        # A rename in another seat, or of another topic, leaves the entry alone.
+        moved = OREG.retarget_routes(
+            self.db, seat="CLAUDE",
+            old_channel="agent-sync", old_topic="AFC Work",
+            new_channel="agent-sync", new_topic="Renamed",
         )
-        self.assertEqual(out.get("route_change"), "followed")
-        self.assertEqual(out["entry"]["route"]["topic"], "AFC Work Renamed")
+        self.assertEqual(moved, [])
+        moved = OREG.retarget_routes(
+            self.db, seat="MM",
+            old_channel="agent-sync", old_topic="Some Other Topic",
+            new_channel="agent-sync", new_topic="Renamed",
+        )
+        self.assertEqual(moved, [])
+        entry = OREG.pending_entries(self.db)[0]
+        self.assertEqual(entry["route"], {"channel": "agent-sync", "topic": "AFC Work"})
+
+    def test_retarget_routes_revives_a_lost_entry(self):
+        """The pass can mark a route lost before the rename event lands;  the event's
+        provenance still re-points it, because it proves where the question went."""
+        self.begin(
+            route={"channel": "agent-sync", "topic": "AFC Work"},
+            topics=[{"channel": "agent-sync", "topic": "AFC Work", "expires": 5000.0}],
+        )
+        out = self.begin(
+            route={"channel": "agent-sync", "topic": "Elsewhere"},
+            topics=[{"channel": "agent-sync", "topic": "Elsewhere", "expires": 9000.0}],
+        )
+        self.assertEqual(out.get("route_change"), "lost")
+        moved = OREG.retarget_routes(
+            self.db, seat="MM",
+            old_channel="agent-sync", old_topic="AFC Work",
+            new_channel="agent-sync", new_topic="AFC Work Renamed",
+        )
+        self.assertEqual(len(moved), 1)
+        entry = OREG.pending_entries(self.db)[0]
+        self.assertEqual(entry["route"], {"channel": "agent-sync", "topic": "AFC Work Renamed"})
+        self.assertFalse(entry.get("route_lost"))
 
 
 if __name__ == "__main__":

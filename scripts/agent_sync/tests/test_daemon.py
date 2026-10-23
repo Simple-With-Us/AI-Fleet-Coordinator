@@ -2109,10 +2109,9 @@ class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
 
 
 class OperatorRegistrationRouteFollowTests(DaemonHarness):
-    """A pending question follows its topic through a whole-topic rename (the lease entry
-    is rewritten in place, expiry kept) and is never stolen by an unrelated attachment.
-    A topic that vanishes with no honest continuation is route_lost:  nothing is posted
-    to the dead topic name and the sweep's re-ask asks again on the then-current route."""
+    """A pending question is re-pointed by a whole-topic rename EVENT (handle_update's
+    own provenance), kept beside unrelated new attachments, and never posted to a dead
+    topic name when the topic vanishes with no rename event."""
 
     def _rows(self):
         return [{
@@ -2140,17 +2139,27 @@ class OperatorRegistrationRouteFollowTests(DaemonHarness):
         lease["topics"] = topics
         D.L.write_json(paths.lease(lease_id), lease)
 
-    def test_a_renamed_topic_keeps_the_answer_working(self):
+    def test_a_rename_event_repoints_the_question_and_the_answer_works(self):
         self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
         daemon = self.daemon()
         db = self._registry(daemon)
-        entry_id = self._ask_once(daemon) and D.OREG.pending_entries(db)[0]["entry_id"]
-        # handle_update's rewrite, exactly:  new name, same (permanent) expiry.
-        self._rewrite_topics("L1", [{"channel": "agent-sync", "topic": "AFC Work Renamed", "expires": None}])
-        send = self._ask_once(daemon)
-        self.assertEqual(send.call_count, 0)  # already notified; the question moved with the topic
+        self._ask_once(daemon)
+        entry_id = D.OREG.pending_entries(db)[0]["entry_id"]
+        runner = daemon.seats["CLAUDE"]
+        runner.streams = {1: "agent-sync"}
+        daemon.handle_update(
+            runner,
+            {
+                "propagate_mode": "change_all",
+                "stream_id": 1,
+                "orig_subject": "AFC Work",
+                "subject": "AFC Work Renamed",
+            },
+        )
         route = D.OREG.pending_entries(db)[0]["route"]
         self.assertEqual(route, {"channel": "agent-sync", "topic": "AFC Work Renamed"})
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 0)  # already notified; the question moved with the topic
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
             consumed = daemon._maybe_registration_answer(
                 {"content": "mac %s" % entry_id, "sender_id": 12},
@@ -2176,18 +2185,15 @@ class OperatorRegistrationRouteFollowTests(DaemonHarness):
         route = D.OREG.pending_entries(db)[0]["route"]
         self.assertEqual(route, {"channel": "agent-sync", "topic": "AFC Work"})
 
-    def test_a_topic_gone_without_continuation_is_never_posted_to(self):
+    def test_a_topic_gone_without_a_rename_event_is_never_posted_to(self):
         self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
         daemon = self.daemon()
         db = self._registry(daemon)
-        now = self.clock.time()
-        self._rewrite_topics("L1", [{"channel": "agent-sync", "topic": "AFC Work", "expires": now + 100}])
-        send = self._ask_once(daemon)
-        self.assertEqual(send.call_count, 1)
-        self.assertEqual(D.OREG.pending_entries(db)[0].get("route_expires"), now + 100)
-        # The activity topic expired out of the lease;  an unrelated topic with a
-        # different expiry is NOT the continuation.
-        self._rewrite_topics("L1", [{"channel": "agent-sync", "topic": "Elsewhere", "expires": now + 9000}])
+        self._ask_once(daemon)
+        # The topic expired out of the lease and an unrelated permanent topic appeared -
+        # even one carrying the SAME expiry is not a continuation (expiry equality is
+        # not provenance);  the entry fails closed and nothing posts to the dead name.
+        self._rewrite_topics("L1", [{"channel": "agent-sync", "topic": "Elsewhere", "expires": None}])
         send = self._ask_once(daemon)
         self.assertEqual(send.call_count, 0)
         entry = D.OREG.pending_entries(db)[0]
