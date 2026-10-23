@@ -2580,14 +2580,12 @@ class Daemon:
         note = (
             "pinned %s, on disk %s; run `agent-sync daemon test-wake --seat %s --run` "
             "then `--pin`.  It is never re-pinned automatically:  the pin records "
-            "that a person checked this build's wake contract."
-            % (recorded, current, runner.seat)
+            "that a person checked this build's wake contract." % (recorded, current, runner.seat)
         )
         if A.muse_configured_path_missing(runner.cfg.muse):
             note += (
                 "  seat.%s.muse names a build that is gone (%s); repoint it to %s, or the next "
-                "muse release will break this seat again."
-                % (runner.seat, runner.cfg.muse, current)
+                "muse release will break this seat again." % (runner.seat, runner.cfg.muse, current)
             )
         self.notifier.notify(
             runner.seat,
@@ -5600,7 +5598,11 @@ class Daemon:
                 # No muse binary at all:  every wake for this seat is inbox-only, so it must be red
                 # rather than an empty list, which reads as a healthy seat (AFC-491).
                 red.append(A.muse_no_binary_red_entry(seat))
-            if runner.cfg.wake == "muse" and muse and A.muse_configured_path_missing(runner.cfg.muse):
+            if (
+                runner.cfg.wake == "muse"
+                and muse
+                and A.muse_configured_path_missing(runner.cfg.muse)
+            ):
                 # The seat is running a build its own config does not name, because the launcher
                 # deleted the one it named.  The seat works today, so this is not the no-binary
                 # fault, but the CONFIG is what breaks at the next release, and re-pinning alone
