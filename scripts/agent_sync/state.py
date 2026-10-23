@@ -228,11 +228,21 @@ class State:
             if not isinstance(cursors, dict):
                 cursors = {}
                 data["cursors"] = cursors
+            legacy_keys = _legacy_cursor_keys(channel, topic)
+            # A legacy entry still holds the pre-rename position, so it counts toward the
+            # current cursor:  an id at or below it must never move the read position back.
             current = _as_int(cursors.get(key))
+            for legacy_key in legacy_keys:
+                legacy_value = _as_int(cursors.get(legacy_key))
+                if legacy_value is not None and (current is None or legacy_value > current):
+                    current = legacy_value
             if current is None or message_id > current:
-                cursors[key] = int(message_id)
-            for legacy_key in _legacy_cursor_keys(channel, topic):
-                cursors.pop(legacy_key, None)
+                current = int(message_id)
+            cursors[key] = current
+            for legacy_key in legacy_keys:
+                legacy_value = _as_int(cursors.get(legacy_key))
+                if legacy_value is not None and legacy_value <= current:
+                    cursors.pop(legacy_key, None)
 
         self._update(self.path, mutate)
 

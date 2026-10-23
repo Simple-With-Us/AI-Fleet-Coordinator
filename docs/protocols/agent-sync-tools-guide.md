@@ -199,7 +199,7 @@ Hosted only, JET only, and only while the WhatsApp bridge is enabled (it is defa
 
 | Tool | R/W | Purpose |
 |---|---|---|
-| `whatsapp_read` | R | The owner's WhatsApp messages after the acknowledged mark.  `limit` (1-50, default 20);  `ack_through` (a returned message id, moves the acknowledged mark);  `include_surfaced` (default false, also list messages already surfaced to the owner) |
+| `whatsapp_read` | R | The owner's WhatsApp messages after the acknowledged mark.  `limit` (1-50, default 20);  `ack_through` (the `seq` string of a returned message, moves the acknowledged mark up to and including it; must be one an earlier read returned);  `include_surfaced` (default false, also list messages already surfaced to the owner) |
 
 ## Old Names and New Names
 
