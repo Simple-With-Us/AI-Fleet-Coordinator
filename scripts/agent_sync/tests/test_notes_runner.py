@@ -186,7 +186,13 @@ class OnceTests(RunnerHarness):
     def test_a_claim_with_a_bad_shape_is_passed_over(self):
         self.client.claims.append({"claim": 5, "seat": "CODEX", "request_id": "requestid-0001", "request": req("pin")})
         self.assertFalse(self.runner.once())
+        # A seat or request_id outside the Operator's own patterns, or one that is not the request's, is passed over too.
+        pin = req("pin")
+        for seat, rid in (("../x", pin["request_id"]), ("CODEX", "../../escape"), ("CODEX", "other-request-01")):
+            self.client.claims.append({"claim": "claim-1", "seat": seat, "request_id": rid, "request": pin})
+            self.assertFalse(self.runner.once())
         self.assertEqual((self.runs, self.client.reports), ([], []))
+        self.assertEqual(self.client.state().get("inflight", {}), {})
 
     def test_a_read_is_kept_whole_while_it_runs_so_a_crash_can_run_it_again(self):
         def crash(request, script, **kwargs):

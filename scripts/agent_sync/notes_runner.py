@@ -196,9 +196,13 @@ class Runner:
             claimed.get("claim"),
         )
         request = claimed.get("request") if isinstance(claimed.get("request"), dict) else {}
+        # The same patterns the Operator checks:  seat and request_id name the state entry and the report's path.
         if (
             not isinstance(seat, str)
+            or not N.SEAT_RE.fullmatch(seat)
             or not isinstance(request_id, str)
+            or not N.REQUEST_ID_RE.fullmatch(request_id)
+            or request.get("request_id") != request_id
             or not isinstance(claim, str)
         ):
             return False
