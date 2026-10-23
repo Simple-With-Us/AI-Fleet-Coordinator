@@ -4039,7 +4039,11 @@ class OwnershipTests(BoardTest):
         self.assertIn("(assignee CLAUDE)", p.stdout)
         iss2 = self.todo_issue(title="Second probe")
         p = self.board(
-            "claim", iss2["identifier"], "--by", "SENTRY", extra=dict(self.OWNED, AGENT_SEAT="SENTRY")
+            "claim",
+            iss2["identifier"],
+            "--by",
+            "SENTRY",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
         )
         self.assertIn("(no Linear user for the seat)", p.stdout)
         iss3 = self.todo_issue(title="Third probe")
