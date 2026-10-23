@@ -19,7 +19,7 @@ const callback = "https://chatgpt.com/private-jet-conversation";
 const config = { ...loadConfig(testEnv({ WHATSAPP_BRIDGE_ENABLED: "on", WHATSAPP_BRIDGE_WAKE_ENABLED: "on" })), eventSeat: "JET" };
 const env = { WA_BRIDGE_HMAC_KEY_JET: KEY, WA_OPERATOR_HMAC_KEY_JET: OPKEY, WA_OWNER_BINDING_JET: JSON.stringify(owner) };
 const msg = (id, text = "owner message", over = {}) => ({ id_hash: String(id).padStart(64, "0"), sender_hash: SENDER, timestamp: Math.floor(NOW / 1000), type: "text", text, ...over });
-const batch = messages => ({ contract: "wa-ingest/1", seat: "JET", sent_at: Math.floor(Date.now() / 1000), agent_hash: HASH, next_offset: "9223372036854775807", messages });
+const batch = messages => ({ contract: "wa-ingest/1", seat: "JET", sent_at: Math.floor(Date.now() / 1000), agent_hash: HASH, sender_hash: SENDER, next_offset: "9223372036854775807", messages });
 function setup(clock = () => Date.now()) {
   const store = state.memoryStore(); const gate = { store };
   for (const name of ["eventSubRoom", "eventSubUpsert", "eventSubDelete", "eventVerifiedGet", "eventVerifiedSet", "eventSubscriptions", "eventSubLive", "eventDeliveryResult", "audit", "setPaused"]) gate[name] = opts => state[name](store, opts, clock());
@@ -363,9 +363,12 @@ test("acknowledgment cleanup is bounded, skips retired wakes immediately and swe
   await s.store.put("wa:expire:00000000000000000001:broken", null);
   await s.store.put("wa:expire:00000000000000000002:valid", { kind: "delete", keys: ["delete-me"] });
   await s.store.put("delete-me", true);
-  assert.equal(await wa.sweep(s.store), true);
+  assert.equal(await wa.sweep(s.store), false);
   assert.equal(await s.store.get("delete-me"), undefined);
-  assert.ok(s.store.map.has("wa:expire:00000000000000000001:broken"));
+  assert.ok(!s.store.map.has("wa:expire:00000000000000000001:broken"));
+  const retry = [...s.store.map].find(([k]) => k.endsWith(":broken"));
+  assert.equal(retry[1].failures, 1);
+  assert.ok(Number(retry[0].split(":")[2]) > Date.now() + 50000);
 });
 
 test("Operator idempotency caches acceptance and retry hints reflect pending callback state", async () => {
@@ -378,4 +381,45 @@ test("Operator idempotency caches acceptance and retry hints reflect pending cal
   now += 31000;
   const busy = await s.gate.waOperator({ requestId: randomUUID() });
   assert.ok(busy.retry_after_s >= 560);
+});
+
+test("Operator works without owner binding and its recovery cannot consume an owner wake", async () => {
+  let now = NOW; const s = setup(() => now);
+  const op = () => ({ contract: "wa-operator/1", seat: "JET", request_id: randomUUID(), sent_at: Math.floor(Date.now()/1000) });
+  assert.equal((await request(s.gate, s.fetchFn, op(), "operator", { WA_OWNER_BINDING_JET: "" })).status, 200);
+  now += 31000;
+  await s.gate.waIngest({ body: batch([msg(1600)]), owner });
+  await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  assert.equal((await request(s.gate, s.fetchFn, op(), "operator")).status, 429);
+  assert.deepEqual(s.calls[0].data, { source: "operator", owner_authorized: false });
+  await deliverPending(s.gate, s.fetchFn);
+  assert.deepEqual(s.calls[1].data, { source: "authenticated_owner", owner_authorized: true });
+});
+
+test("signed sender-filter mismatch is refused even when the filtered batch is empty", async () => {
+  const s = setup();
+  const response = await request(s.gate, s.fetchFn, { ...batch([]), sender_hash: "f".repeat(64) });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).reason, "binding_mismatch");
+  assert.equal(await s.store.get("wa:last_ingest"), undefined);
+});
+
+test("ambiguous callback delivery is audited explicitly and reconciles with a stable event id", async () => {
+  let now = NOW; const s = setup(() => now); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  let attempted;
+  const unknown = async (_url, init) => { attempted = JSON.parse(init.body).eventId; throw new Error("response lost"); };
+  const result = await (await request(s.gate, unknown, batch([msg(1601)]))).json();
+  assert.equal(result.processed, true); assert.equal(result.delivered, 0);
+  assert.equal((await s.gate.eventSubscriptions({})).find(x => x.name === WA_EVENT).last_outcome, "outcome_unknown");
+  now += 31000; await deliverPending(s.gate, s.fetchFn);
+  assert.equal(s.calls[0].eventId, attempted);
+});
+
+test("all Zulip-shaped keys are removed while surrounding owner text remains", async () => {
+  const { redactSecret, scanSecret } = await import("../src/contract.js");
+  const first = "Aa1" + "b".repeat(29), second = "Bb2" + "c".repeat(29);
+  const text = redactSecret(`before ${first} middle ${second} after`);
+  assert.ok(!text.includes(first) && !text.includes(second));
+  assert.ok(text.startsWith("before ") && text.endsWith(" after"));
+  assert.equal(scanSecret(text), null);
 });

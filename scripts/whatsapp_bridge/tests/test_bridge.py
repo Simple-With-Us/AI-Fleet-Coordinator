@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 from whatsapp_bridge.bridge import (
     Bridge,
@@ -62,7 +62,7 @@ class BridgeTests(unittest.TestCase):
     def test_persist_only_exact_ack_and_sign_raw_body(self):
         calls = []
 
-        def request(url, headers, body=None):
+        def request(url, headers, body=None, **_options):
             calls.append((url, headers, body))
             if body is None:
                 return payload("👀 silent")
@@ -134,7 +134,7 @@ class BridgeTests(unittest.TestCase):
     def test_idle_poll_heartbeats(self):
         self.state.save(99)
 
-        def request(url, headers, body=None):
+        def request(url, headers, body=None, **_options):
             if body is None:
                 return None
             decoded = json.loads(body)
@@ -172,7 +172,7 @@ class BindingTests(unittest.TestCase):
         p = payload(code)
         calls = []
 
-        def request(url, headers, body):
+        def request(url, headers, body, **_options):
             calls.append(json.loads(body))
             return {"success": True}
 
@@ -207,7 +207,7 @@ class BindingTests(unittest.TestCase):
                 "synthetic",
                 1792699999,
                 1792700100,
-                lambda *a: {"success": False},
+                lambda *a, **kw: {"success": False},
                 now=lambda: 1792700001,
                 hash_key="k" * 64,
             )
@@ -219,7 +219,7 @@ class BindingTests(unittest.TestCase):
         responses = [payload("old", offset=20), payload(code, offset=21), {"success": True}]
         calls = []
 
-        def request(url, headers, body=None):
+        def request(url, headers, body=None, **_options):
             calls.append(url)
             return responses.pop(0)
 
@@ -261,7 +261,7 @@ class ReviewRegressionTests(unittest.TestCase):
         )
         captured = []
 
-        def request(url, headers, body=None):
+        def request(url, headers, body=None, **_options):
             if body is None:
                 return p
             captured.append(body)
@@ -306,7 +306,7 @@ class ReviewRegressionTests(unittest.TestCase):
 
         code = "JET-0123456789ABCDEF"
 
-        def refused(*args):
+        def refused(*args, **_options):
             raise StopBridge("http_403")
 
         with self.assertRaisesRegex(StopBridge, "http_403"):
@@ -360,6 +360,67 @@ class LaunchTests(unittest.TestCase):
 
 
 class BoundaryRegressionTests(unittest.TestCase):
+    def test_binding_requests_share_absolute_deadline(self):
+        from whatsapp_bridge.binding import bind_once
+
+        clock = [1599]
+        calls = []
+
+        def request(url, headers, body=None, **options):
+            calls.append((url, options))
+            clock[0] = 1601
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = State(directory)
+            try:
+                code = state.begin_binding("k" * 64, 1000)
+                with self.assertRaisesRegex(StopBridge, "binding_window_closed"):
+                    bind_once(
+                        state,
+                        "synthetic",
+                        code,
+                        1000,
+                        1600,
+                        request=request,
+                        now=lambda: clock[0],
+                        hash_key="k" * 64,
+                    )
+            finally:
+                state.close()
+        self.assertEqual(len(calls), 1)
+        self.assertIn("timeout=1", calls[0][0])
+        self.assertEqual(calls[0][1]["timeout"], 1)
+
+    def test_binding_code_never_falls_back_to_logs_without_console(self):
+        import contextlib
+        import io
+
+        from whatsapp_bridge.binding import show_binding_code
+
+        output = io.StringIO()
+        with (
+            patch("builtins.open", side_effect=OSError("private detail")),
+            contextlib.redirect_stderr(output),
+            contextlib.redirect_stdout(output),
+            self.assertRaisesRegex(StopBridge, "binding_console_unavailable"),
+        ):
+            show_binding_code("JET-0123456789ABCDEF")
+        self.assertEqual(output.getvalue(), "")
+
+    def test_credential_file_errors_identify_source_without_contents(self):
+        from pathlib import Path
+
+        from whatsapp_bridge.launch import CredentialSourceError, load_credential
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(CredentialSourceError, "unavailable_systemd_credential"):
+                load_credential(root)
+            for content in (b"invalid synthetic secret", b"\xff"):
+                (root / "infisical").write_bytes(content)
+                with self.assertRaisesRegex(CredentialSourceError, "invalid_systemd_credential"):
+                    load_credential(root)
+
     def test_non_object_media_is_metadata_only_without_poisoning_batch(self):
         for media in ([], ["provider metadata"], None, "opaque"):
             batch = payload()
@@ -406,7 +467,7 @@ class BoundaryRegressionTests(unittest.TestCase):
         code = "JET-0123456789ABCDEF"
         output = io.StringIO()
 
-        def request(url, headers, body=None):
+        def request(url, headers, body=None, **_options):
             return {"success": True} if body is not None else payload(code)
 
         with (
@@ -420,12 +481,14 @@ class BoundaryRegressionTests(unittest.TestCase):
                 },
             ),
             patch("whatsapp_bridge.bridge.request_json", request),
+            patch("builtins.open", mock_open()) as console,
             patch("secrets.token_hex", return_value="0123456789abcdef"),
             patch("time.time", return_value=1792700000),
             contextlib.redirect_stdout(output),
             contextlib.redirect_stderr(io.StringIO()),
         ):
             runpy.run_module("whatsapp_bridge.binding", run_name="__main__")
+            console.assert_called_once_with("/dev/tty", "w", encoding="utf-8")
         pin = json.loads(output.getvalue())
         self.assertEqual(pin["agent_hash"], digest("123456", "k" * 64))
         self.assertEqual(pin["sender_hash"], digest("user:owner", "k" * 64))
@@ -499,7 +562,7 @@ class BoundaryRegressionTests(unittest.TestCase):
             state = State(root / "actual")
             try:
 
-                def request(url, headers, body=None):
+                def request(url, headers, body=None, **_options):
                     return (
                         payload()
                         if body is None
@@ -515,7 +578,7 @@ class BoundaryRegressionTests(unittest.TestCase):
                 state.close()
 
     def test_loaded_credentials_are_redacted_before_worker_relay(self):
-        def request(url, headers, body=None):
+        def request(url, headers, body=None, **_options):
             if body is None:
                 return payload("👀 keep synthetic private")
             self.assertNotIn(b"synthetic", body)

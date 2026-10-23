@@ -35,7 +35,7 @@ export function binding(raw) {
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const messageSchema = z.object({ id_hash: hash, sender_hash: hash, timestamp: z.number().int().positive().refine(Number.isSafeInteger), type: z.string().min(1).max(64), text: z.string().refine(v => [...v].length <= 4096).nullable() }).strict().refine(m => m.type !== "text" || m.text !== null);
 const common = { seat: z.literal("JET"), sent_at: z.number().int().refine(Number.isSafeInteger) };
-const ownerSchema = z.object({ ...common, contract: z.literal("wa-ingest/1"), agent_hash: hash, messages: z.array(messageSchema).max(100), next_offset: z.string().regex(/^(0|[1-9][0-9]{0,18})$/).refine(v => { try { return BigInt(v) <= 9223372036854775807n; } catch { return false; } }) }).strict();
+const ownerSchema = z.object({ ...common, contract: z.literal("wa-ingest/1"), agent_hash: hash, sender_hash: hash, messages: z.array(messageSchema).max(100), next_offset: z.string().regex(/^(0|[1-9][0-9]{0,18})$/).refine(v => { try { return BigInt(v) <= 9223372036854775807n; } catch { return false; } }) }).strict();
 const operatorSchema = z.object({ ...common, contract: z.literal("wa-operator/1"), request_id: z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/) }).strict();
 
 function boundedJSONText(text) {

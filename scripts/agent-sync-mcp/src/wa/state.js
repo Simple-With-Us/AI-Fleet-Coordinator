@@ -12,7 +12,7 @@ const schedule = (store, at, id, job) => store.put(expiryKey(at, id), job);
 
 export async function ingest(store, { body, owner, known = [] }, now = Date.now()) {
   return store.transaction(async tx => {
-    if (!owner || body.agent_hash !== owner.agent_hash) return { ok: false, reason: "binding_mismatch" };
+    if (!owner || body.agent_hash !== owner.agent_hash || body.sender_hash !== owner.sender_hash) return { ok: false, reason: "binding_mismatch" };
     let seq = (await tx.get("wa:seq")) ?? 0;
     let stored = 0; let skipped = 0;
     for (const m of body.messages) {
@@ -95,12 +95,12 @@ export async function read(store, args, now = Date.now()) {
     return { ok: true, items, acknowledged_through: String(through) };
   });
 }
-export async function claim(store, { destination = "" } = {}, now = Date.now()) {
+export async function claim(store, { destination = "", source } = {}, now = Date.now()) {
   return store.transaction(async tx => {
     if (await tx.get("paused")) return null;
     const ack = (await tx.get("wa:ack")) ?? 0;
-    const owners = await tx.list({ prefix: "wa:pending:owner:", start: `wa:pending:owner:${String(ack + 1).padStart(20, "0")}`, limit: 100 });
-    const operators = await tx.list({ prefix: "wa:pending:operator:", limit: 1 });
+    const owners = source === "operator" ? new Map() : await tx.list({ prefix: "wa:pending:owner:", start: `wa:pending:owner:${String(ack + 1).padStart(20, "0")}`, limit: 100 });
+    const operators = source === "authenticated_owner" ? new Map() : await tx.list({ prefix: "wa:pending:operator:", limit: 1 });
     const rows = new Map([...owners, ...operators]);
     const ownerGate = (await tx.get("wa:owner_gate")) ?? {};
     for (const [k, row] of rows) {
@@ -161,11 +161,17 @@ export async function sweep(store, now = Date.now()) {
           await store.put(jobKey, { ...job, after: last });
           continue;
         }
-      }
+      } else throw new Error("invalid_expiry_job");
       await store.delete(jobKey);
     } catch {
-      // One retryable storage/job failure must not prevent other due deletion.
+      // Retry a poison/transient job later, without a one-second alarm loop.
       console.log(JSON.stringify({ event: "wa_expiry_job_failed" }));
+      const failures = Math.min(7, (job?.failures ?? 0) + 1);
+      const retryAt = now + Math.min(3600000, 60000 * 2 ** (failures - 1));
+      try {
+        await store.put(expiryKey(retryAt, jobKey.split(":").slice(3).join(":")), { ...job, failures });
+        await store.delete(jobKey);
+      } catch { /* Storage outage: preserve the original job for platform retry. */ }
     }
   }
   return (await store.list({ prefix: "wa:expire:", end, limit: 1 })).size > 0;

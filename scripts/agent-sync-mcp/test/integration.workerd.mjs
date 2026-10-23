@@ -1701,8 +1701,9 @@ try {
       return mf.dispatchFetch(`${HOST}/internal/wa-${kind}/JET`, { method: "POST", headers: { "X-WA-Bridge-Signature": createHmac("sha256", key).update(raw).digest("hex") }, body: raw });
     };
     const message = (id, text) => ({ id_hash: id.repeat(64), sender_hash: senderHash, timestamp: Math.floor(Date.now() / 1000), type: "text", text });
-    const body = { contract: "wa-ingest/1", seat: "JET", sent_at: Math.floor(Date.now() / 1000), agent_hash: agentHash, next_offset: "9223372036854775807", messages: [message("1", "received owner fixture")] };
+    const body = { contract: "wa-ingest/1", seat: "JET", sent_at: Math.floor(Date.now() / 1000), agent_hash: agentHash, sender_hash: senderHash, next_offset: "9223372036854775807", messages: [message("1", "received owner fixture")] };
     assert.equal((await postWa(body, "ingest", operatorKey)).status, 401);
+    assert.equal((await postWa({ ...body, sender_hash: "f".repeat(64) })).status, 403);
     const ack = await (await postWa(body)).json();
     assert.equal(ack.processed, true);
     assert.equal(ack.next_offset, "9223372036854775807");

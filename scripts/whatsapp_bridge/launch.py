@@ -64,10 +64,23 @@ def arguments(mode, release):
     ]
 
 
+class CredentialSourceError(ValueError):
+    pass
+
+
+def load_credential(directory):
+    try:
+        return json.loads((directory / "infisical").read_text())
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise CredentialSourceError("invalid_systemd_credential") from None
+    except OSError:
+        raise CredentialSourceError("unavailable_systemd_credential") from None
+
+
 def main():
     release = Path(__file__).resolve().parents[2]
     directory = Path(os.environ["CREDENTIALS_DIRECTORY"])
-    credential = json.loads((directory / "infisical").read_text())
+    credential = load_credential(directory)
     environment = prepare(os.environ, credential)
     sys.path.insert(0, str(release / "lib"))
     from fleet_secrets.cli import cmd_run
@@ -78,6 +91,18 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except CredentialSourceError as error:
+        print(
+            json.dumps(
+                {
+                    "state": "isolated_start_failed",
+                    "source": "systemd:infisical",
+                    "reason": str(error),
+                }
+            ),
+            file=sys.stderr,
+        )
+        sys.exit(1)
     except KeyError as error:
         required = (
             error.args[0]

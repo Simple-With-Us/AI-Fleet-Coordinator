@@ -2,10 +2,10 @@ import { WA_EVENT, WA_HEADER, WA_MAX_BODY, binding, verifyRequest } from "./cont
 import { subEventName, deliverEvent, eventIdFor } from "../events.js";
 const reply = (body, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 
-export async function deliverPending(gate, fetchFn, deadline = Date.now() + 10000) {
+export async function deliverPending(gate, fetchFn, deadline = Date.now() + 10000, source) {
   const subs = (await gate.eventSubscriptions({})).filter(s => subEventName(s) === WA_EVENT);
   const destination = subs.map(s => `${s.id}:${s.refresh_before}`).join(",");
-  const pending = await gate.waClaim({ destination });
+  const pending = await gate.waClaim({ destination, ...(source ? { source } : {}) });
   if (!pending) return { delivered: 0 };
   let delivered = 0; let permanent = false;
   try {
@@ -13,7 +13,8 @@ export async function deliverPending(gate, fetchFn, deadline = Date.now() + 1000
       const event = { name: WA_EVENT, eventId: await eventIdFor(`${pending.id}:ring:${pending.ring ?? 0}`, sub.id), timestamp: new Date().toISOString(), data: { source: pending.source, owner_authorized: pending.source === "authenticated_owner" }, cursor: null };
       let result;
       try { result = await deliverEvent(fetchFn, sub, event, { deadline, isLive: () => gate.eventSubLive({ subId: sub.id }) }); }
-      catch { result = { outcome: "failed", status: null, attempts: 0 }; }
+      catch { result = { outcome: "outcome_unknown", status: null, attempts: 0 }; }
+      if (result.outcome === "failed" && (result.status == null || result.status === 408 || result.status >= 500)) result = { ...result, outcome: "outcome_unknown" };
       try { await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, wakeRef: "wa", messageId: null }); }
       catch { console.log(JSON.stringify({ event: "wa_delivery_audit_failed" })); }
       if (result.outcome === "delivered") delivered++;
@@ -35,7 +36,7 @@ export async function serveWa(request, env, config, gate, fetchFn = fetch) {
   const keyName = kind === "operator" ? "WA_OPERATOR_HMAC_KEY_JET" : "WA_BRIDGE_HMAC_KEY_JET";
   const rawKey = env[keyName];
   const otherKeys = Object.entries(env).filter(([k,v]) => /(?:WAKE_HMAC_KEY_|_ROUTINE_KEY$|^SPIKE_HMAC_KEY$|^HEALTH_HMAC_KEY$|^WA_.*HMAC_KEY)/.test(k) && k !== keyName && typeof v === "string").map(([,v]) => v.trim());
-  if (!owner) return reply({ ok: false, reason: "not_configured", required: "WA_OWNER_BINDING_JET" }, 404);
+  if (kind === "ingest" && !owner) return reply({ ok: false, reason: "not_configured", required: "WA_OWNER_BINDING_JET" }, 404);
   if (typeof rawKey !== "string" || rawKey.trim().length < 32) return reply({ ok: false, reason: "not_configured", required: keyName }, 404);
   if (otherKeys.includes(rawKey.trim())) return reply({ ok: false, reason: "key_reused", required: keyName }, 404);
   if (request.method !== "POST") return reply({ ok: false }, 405);
@@ -66,7 +67,7 @@ export async function serveWa(request, env, config, gate, fetchFn = fetch) {
       // A new request can recover an older pending wake even if the WhatsApp
       // poller is down.  The new id remains unaccepted; never replay it blindly.
       if (config.whatsappWakeEnabled) {
-        try { await deliverPending(gate, fetchFn); }
+        try { await deliverPending(gate, fetchFn, Date.now() + 10000, "operator"); }
         catch { console.log(JSON.stringify({ event: "wa_delivery_failed" })); }
       }
       return Response.json(result, { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(result.retry_after_s) } });
@@ -75,7 +76,7 @@ export async function serveWa(request, env, config, gate, fetchFn = fetch) {
   }
   let delivery = { delivered: 0, disabled: true };
   if (config.whatsappWakeEnabled) {
-    try { delivery = await deliverPending(gate, fetchFn); }
+    try { delivery = await deliverPending(gate, fetchFn, Date.now() + 10000, kind === "operator" ? "operator" : undefined); }
     catch { console.log(JSON.stringify({ event: "wa_delivery_failed" })); delivery = { delivered: 0, pending: true }; }
   }
   return reply({ ...result, ...delivery });

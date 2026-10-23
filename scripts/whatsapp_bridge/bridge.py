@@ -145,14 +145,14 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def request_json(url, headers, body=None):
+def request_json(url, headers, body=None, *, timeout=40):
     request = urllib.request.Request(
         url,
         data=body,
         headers={**headers, "User-Agent": "AFC-WhatsApp-Bridge/1", "Accept": "application/json"},
     )
     try:
-        with urllib.request.build_opener(NoRedirect()).open(request, timeout=40) as response:
+        with urllib.request.build_opener(NoRedirect()).open(request, timeout=timeout) as response:
             if response.status == 204:
                 return None
             data = response.read(MAX_RESPONSE + 1)
@@ -238,10 +238,15 @@ class State:
         return row[1], row[2]
 
     def spend_binding(self, code, signing_key, now):
-        window = self.binding_window(code, signing_key, now)
-        with self.db:
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            window = self.binding_window(code, signing_key, now)
             self.db.execute("UPDATE binding_window SET spent=1 WHERE id=1")
-        return window
+            self.db.commit()
+            return window
+        except Exception:
+            self.db.rollback()
+            raise
 
     def offset(self):
         row = self.db.execute("SELECT offset FROM cursor WHERE id=1").fetchone()
@@ -303,7 +308,13 @@ class Bridge:
                             value, "[redacted:loaded credential]"
                         )
         body = json.dumps(
-            {"contract": "wa-ingest/1", "seat": "JET", "sent_at": int(self.clock()), **batch},
+            {
+                "contract": "wa-ingest/1",
+                "seat": "JET",
+                "sent_at": int(self.clock()),
+                **batch,
+                "sender_hash": sender_hash,
+            },
             separators=(",", ":"),
             ensure_ascii=False,
         ).encode()

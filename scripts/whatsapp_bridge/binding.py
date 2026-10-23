@@ -43,10 +43,14 @@ def verify_candidate(
         {"messaging_product": "whatsapp", "status": "read", "message_id": raw["id"]},
         separators=(",", ":"),
     ).encode()
+    remaining = expires_at - now()
+    if remaining <= 0:
+        raise StopBridge("binding_window_closed")
     answer = request(
         "https://api.whatsapp.com/agent/v1/statuses",
         {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         body,
+        timeout=min(40, remaining),
     )
     if not isinstance(answer, dict) or answer.get("success") is not True:
         raise StopBridge("creator_not_verified")
@@ -71,11 +75,17 @@ def bind_once(
     state.binding_window(code, hash_key, now())
     offset = state.offset()
     attempts = {}
-    while now() <= expires_at:
-        query = urllib.parse.urlencode({"offset": offset, "timeout": 25, "limit": 100})
+    while now() < expires_at:
+        remaining = expires_at - now()
+        if remaining <= 0:
+            break
+        query = urllib.parse.urlencode(
+            {"offset": offset, "timeout": min(25, int(remaining)), "limit": 100}
+        )
         payload = request(
             "https://api.whatsapp.com/agent/v1/updates?" + query,
             {"Authorization": f"Bearer {api_key}"},
+            timeout=min(40, remaining),
         )
         if payload is None:
             continue
@@ -120,6 +130,19 @@ def bind_once(
     raise StopBridge("binding_window_closed")
 
 
+def show_binding_code(code):
+    try:
+        with open("/dev/tty", "w", encoding="utf-8") as console:
+            print(
+                "Send this one-time code in the intended WhatsApp Jet chat within ten minutes: "
+                + code,
+                file=console,
+                flush=True,
+            )
+    except OSError:
+        raise StopBridge("binding_console_unavailable") from None
+
+
 if __name__ == "__main__":
     import os
     import sys
@@ -137,12 +160,7 @@ if __name__ == "__main__":
             if len(key) < 32:
                 raise StopBridge("binding_configuration_missing")
             code = state.begin_binding(key, opened_at)
-            print(
-                "Send this one-time code in the intended WhatsApp Jet chat within ten minutes: "
-                + code,
-                file=sys.stderr,
-                flush=True,
-            )
+            show_binding_code(code)
             pin = bind_once(
                 state,
                 os.environ["WHATSAPP_API_KEY"],
