@@ -566,11 +566,126 @@ MUSE_WORKSPACE_SLOT = "<workspace>"
 MUSE_WAKE_POLICY_VERSION = "muse-chat-catalog-v2"
 
 
+def muse_version_key(name: str) -> tuple[tuple[int, ...], str]:
+    """Numeric order for ``muse-bin-1.4.10-R6427.1`` style names, so 1.4.10 sorts after 1.4.9."""
+    return tuple(int(part) for part in re.findall(r"\d+", name)), name
+
+
+#:  How long a wake-PATH scan is reused.  The daemon's status tick runs at most every two
+#:  seconds, so the TTL has to OUTLIVE the tick:  a TTL of two seconds expires between two
+#:  ticks, so every tick still pays the full scan and the memo never hits.  Ten seconds spans
+#:  five ticks, so one scan serves them all, and a build that appears or disappears is still
+#:  noticed within ten seconds (Kody, PR #880).
+MUSE_SCAN_TTL_SECONDS = 10.0
+
+#:  The last scan per wake PATH, with the monotonic time it was taken.  The daemon's seat
+#:  threads share it, so the lock keeps the memo consistent between them.
+_muse_scan_cache: dict[str, tuple[float, str | None]] = {}
+_muse_scan_lock = threading.Lock()
+
+
+def _versioned_muse_builds(directory: str) -> list[tuple[tuple[tuple[int, ...], str], str]]:
+    """The executable ``muse-bin-*`` builds in one directory, with their version keys."""
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return []
+    found: list[tuple[tuple[tuple[int, ...], str], str]] = []
+    for name in names:
+        if not name.startswith("muse-bin-"):
+            continue
+        path = os.path.join(directory, name)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            # The listed name carries the version; a symlink target may not.
+            found.append((muse_version_key(name), os.path.realpath(path)))
+    return found
+
+
+def _newest_versioned_muse(wake_path: str) -> str | None:
+    """The newest versioned muse build in the FIRST PATH directory that carries one.
+
+    PATH order is the trust order.  The scan stops at the first directory that has a versioned
+    build, so a later directory cannot plant a higher-version build that outranks the first
+    one:  on macOS /opt/homebrew/bin is group-writable, and the build that wins here runs with
+    the daemon's privileges and ingests untrusted Zulip DMs (Kody, PR #880).
+    """
+    for directory in wake_path.split(os.pathsep):
+        if not directory or not os.path.isdir(directory):
+            continue
+        candidates = _versioned_muse_builds(directory)
+        if candidates:
+            return max(candidates)[1]
+    return None
+
+
+def newest_versioned_muse(wake_path: str) -> str | None:
+    """The newest versioned muse build on the wake PATH, or None.
+
+    The muse launcher replaces its versioned build on every release and DELETES the one it
+    replaced, so a seat whose config names an absolute ``muse-bin-<version>`` path points at a
+    file that no longer exists after the next release.  The launcher shim is deliberately not
+    returned:  the wake runs the versioned build itself, so the pin names a real build.
+
+    PATH order is the trust order:  the newest build of the FIRST PATH directory that carries one
+    wins, so a later directory cannot outrank it (Kody, PR #880).
+
+    The scan is memoized for a few seconds:  the daemon's status tick calls this once per muse
+    seat every two seconds, and on macOS /usr/bin and /bin are the same directory, so an
+    uncached scan reads ~7,000 dirents per seat per tick (Kody, PR #880).  The memo spans
+    several ticks, so one scan serves them all, and it is revalidated on every hit, because the
+    launcher DELETES the build it replaced and a warm memo must not serve a file that is gone.
+    """
+    now = time.monotonic()
+    with _muse_scan_lock:
+        cached = _muse_scan_cache.get(wake_path)
+    if cached is not None and now - cached[0] < MUSE_SCAN_TTL_SECONDS:
+        found = cached[1]
+        # One stat is cheap and a directory listing is not, so the memoized answer is checked
+        # before it is served:  a build the launcher deleted must not be handed back.
+        if found is None or os.access(found, os.X_OK):
+            return found
+    found = _newest_versioned_muse(wake_path)
+    with _muse_scan_lock:
+        expired = [
+            path
+            for path, (taken, _) in _muse_scan_cache.items()
+            if now - taken >= MUSE_SCAN_TTL_SECONDS
+        ]
+        for path in expired:
+            _muse_scan_cache.pop(path, None)
+        _muse_scan_cache[wake_path] = (now, found)
+    return found
+
+
 def resolve_muse(explicit: str | None, wake_path: str) -> str | None:
-    """The muse binary:  the configured absolute path, else `muse` on the fixed wake PATH.  Mirrors
-    resolve_claude so a seat pins and runs the same resolved realpath."""
+    """The muse binary:  the configured absolute path when it still exists, else the newest
+    versioned build on the fixed wake PATH, else `muse` on that PATH.  Mirrors resolve_claude so a
+    seat pins and runs the same resolved realpath.
+
+    A configured absolute path that has been DELETED falls back to the newest versioned build
+    rather than resolving to nothing.  The muse launcher replaces its versioned build on every
+    release and deletes the one it replaced (AFC-491), so a config naming one absolute
+    ``muse-bin-<version>`` path went dead on every release, and the seat read as healthy because a
+    missing binary resolves to None, which reports no pin state at all.  The fallback keeps the
+    seat on a real build, where the pin check reports `pin_stale` and the owner is told to re-pin
+    it:  the wake is still held, because the pin is what proves the build's wake contract, and
+    this way the hold is visible instead of silent.
+
+    A RELATIVE path is refused rather than guessed:  it is a config error, not a moved binary.
+    """
     if explicit:
-        return explicit if os.path.isabs(explicit) and os.access(explicit, os.X_OK) else None
+        if not os.path.isabs(explicit):
+            return None
+        if os.access(explicit, os.X_OK):
+            return explicit
+        newer = newest_versioned_muse(wake_path)
+        if newer:
+            return newer
+        found = shutil.which("muse", path=wake_path)
+        return os.path.abspath(found) if found else None
+    newer = newest_versioned_muse(wake_path)
+    if newer:
+        return newer
     found = shutil.which("muse", path=wake_path)
     return os.path.abspath(found) if found else None
 
@@ -959,6 +1074,55 @@ MUSE_PIN_UNREADABLE_REMEDIATION = (
     "restore the wake contract and result schema, then run "
     "`simple-chat daemon test-wake --seat %s --run` and `--pin`"
 )
+
+#:  A seat whose wake runtime is not installed at all holds every wake, so it must be red:  the
+#:  remediation is to install the runtime, not to re-pin a binary that is not there.  The muse
+#:  launcher removes the build it replaces, so this is what a config that named a deleted
+#:  versioned path used to hit (AFC-491), and the seat read as healthy because a missing binary
+#:  resolved to None and reported no pin state at all.
+MUSE_NO_BINARY_REMEDIATION = (
+    "install a muse build on the wake PATH or point seat.%s.muse at one, then run "
+    "`simple-chat daemon test-wake --seat %s --run` and `--pin`"
+)
+
+
+def muse_no_binary_red_entry(seat: str) -> str:
+    """The one-line red entry for a muse seat with no muse binary at all.
+
+    It is a different fault from a stale pin:  there is nothing to re-pin until the runtime is
+    installed, so the line must not read as "run --pin" against a missing binary.
+    """
+    return "no muse binary found, so %s wakes are inbox-only; %s" % (
+        seat,
+        MUSE_NO_BINARY_REMEDIATION % (seat, seat),
+    )
+
+
+def muse_configured_path_missing(explicit: str | None) -> bool:
+    """True when the seat names an absolute muse path that is no longer there.
+
+    The fallback then binds the seat to a build that appears nowhere in listener.toml, and the
+    launcher deletes that build on the next release, so the seat breaks again at every release
+    unless the operator repoints ``seat.X.muse`` at the build it is actually running
+    (Kody, PR #880).
+    """
+    if not explicit or not os.path.isabs(explicit):
+        return False
+    return not os.access(explicit, os.X_OK)
+
+
+def muse_repoint_red_entry(seat: str, resolved: str | None, configured: str | None) -> str:
+    """The one-line red entry for a muse seat running a build its own config does not name.
+
+    The seat works today, so the line must not read as a broken seat;  it must say that the
+    CONFIG is what breaks at the next muse release, and name the build to point it at, because
+    re-pinning alone records a build the launcher will delete (Kody, PR #880).
+    """
+    return (
+        "wake is running muse %s, which seat.%s.muse does not name (it names %s); repoint "
+        "seat.%s.muse to that build, or the next muse release will break this seat again"
+        % (resolved or "<none>", seat, configured or "<none>", seat)
+    )
 
 
 def muse_pin_cause(pin: Mapping[str, Any]) -> str:

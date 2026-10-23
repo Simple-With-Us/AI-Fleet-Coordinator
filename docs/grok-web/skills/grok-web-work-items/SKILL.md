@@ -22,7 +22,7 @@ You have no Mac shell or checkout.  Work that must land on the Mac, and anything
 Only if this chat itself can open a PR:
 - Branch `grok-web/<slug>`;  after cutover `grok-web/<issue-id>-<slug>`.  Never `main`;  nobody pushes `main`.
 - Body:  `Fixes AFC-123`, or `Refs AFC-123` for partial work.
-- Claim first.  Title and body use the GitHub sentence gap (the `&nbsp;` entity plus a normal space, owner ruling 2026-10-22, which supersedes the 2026-10-08 real U+00A0 for GitHub).
+- Claim first.  Title and body use the sentence gap:  a real U+00A0 plus a normal space, owner ruling 2026-10-23, one mechanism on every surface, never the `&nbsp;` entity.
 - If you cannot arm auto-merge, ask in the work topic.
 - Post `DONE` with the PR link.
 - Never invent a GitHub repo.
