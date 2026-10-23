@@ -113,3 +113,17 @@ test("JET-CHAT loads with Jet's bot email under its own var name", () => {
   assert.equal(cfg.botEmails["JET-CHAT"], "openai-dot-bot@simplewithus.zulipchat.com");
   assert.equal(cfg.botEmails.JET, cfg.botEmails["JET-CHAT"], "one bot, two seats");
 });
+
+test("the wake-only refusal never carries a secret-shaped tool name (kody 4363581984)", async () => {
+  const caller = new StubTools("JET");
+  const r = new IdentityRouter({ callerTools: caller });
+  const secretish = "sk_live_4eC39HqLyjWDarjtT1zdp7dc";
+  try {
+    await r.call(secretish, {});
+    assert.fail("must refuse");
+  } catch (error) {
+    assert.ok(error instanceof UnknownTool);
+    assert.equal(error.toolName, "<omitted after secret scan>", "audited name, never the raw one");
+    assert.ok(!JSON.stringify(error).includes(secretish) && !String(error.stack).includes(secretish));
+  }
+});

@@ -210,7 +210,9 @@ export class IdentityRouter {
       const requested = typeof name === "string" ? name : "";
       const audited = scanSecret(requested) ? "<omitted after secret scan>" : [...requested].slice(0, 64).join("");
       await this.audit({ acting_identity: "none", tool: audited, error_code: "unknown_tool", error_message: "This connection delivers event notifications only;  it has no tools." });
-      throw new UnknownTool(requested);
+      // The thrown error carries the AUDITED name too:  a secret-shaped tool
+      // name must never echo back to the caller (kody 4363581984).
+      throw new UnknownTool(audited);
     }
     if (typeof name === "string" && Object.hasOwn(RENAMED_TOOLS, name)) {
       const replacement = RENAMED_TOOLS[name];

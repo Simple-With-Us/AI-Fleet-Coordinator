@@ -326,7 +326,11 @@ export class HostedTools {
         error_message: "Unknown tool name.",
         retryable: false,
       }));
-      throw new UnknownTool(name);
+      // The thrown object carries the AUDITED name (scanSecret-checked,
+      // length-capped):  a secret-shaped tool name never rides along for any
+      // consumer of UnknownTool.toolName (kody 4363581984, sibling path).
+      const auditedUnknown = scanSecret(typeof name === "string" ? name : "") ? "<omitted after secret scan>" : [...String(name)].slice(0, 64).join("");
+      throw new UnknownTool(auditedUnknown);
     }
     const publicName = name;
     // A Zulip tool runs as tool_<verb>;  only its zulip_<verb> name is callable (AFC-331).
