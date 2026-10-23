@@ -4038,6 +4038,7 @@ class Daemon:
                 lease = L.load_lease(paths, lease_id)
                 if str(lease.get("session_id") or "") != session_id:
                     continue
+                live = []
                 for entry in lease.get("topics") or []:
                     if not isinstance(entry, dict):
                         continue
@@ -4047,7 +4048,14 @@ class Daemon:
                     channel = str(entry.get("channel") or "").strip()
                     topic = str(entry.get("topic") or "").strip()
                     if channel and topic:
-                        return {"channel": channel, "topic": topic}
+                        live.append((expires, channel, topic))
+                if live:
+                    # The active topic, not the oldest:  a permanently attached lane (no
+                    # expiry) is the chat's home;  among expiring attachments the one
+                    # renewed most recently wins.
+                    live.sort(key=lambda item: (item[0] is not None, -(item[0] or 0.0)))
+                    _, channel, topic = live[0]
+                    return {"channel": channel, "topic": topic}
         except Exception:
             pass
         return None

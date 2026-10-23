@@ -12,6 +12,7 @@ import sys
 import textwrap
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -2006,4 +2007,102 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             daemon._maybe_registration_answer(
                 {"content": "thanks, no ref here"}, 2000.0, channel="agent-sync", topic="AFC Work"
             )
+        )
+
+
+class OperatorRegistrationRouteTests(DaemonHarness):
+    """The route is the chat's ACTIVE topic, not the oldest one (review finding)."""
+
+    def _rows(self):
+        return [{
+            "id": "row-1", "platform": "claude", "profile_scope": "default",
+            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "active",
+        }]
+
+    def test_the_route_is_the_active_topic_not_the_oldest(self):
+        daemon = self.daemon()
+        now = self.clock.time()
+        self.write_lease(
+            "L1", session_id="sess-aaaaaaaa",
+            topics=[("agent-sync", "Old Lane"), ("agent-sync", "Active Lane")],
+        )
+        paths = self.seat_paths("CLAUDE")
+        lease = D.L.load_lease(paths, "L1")
+        lease["topics"][0]["expires"] = now + 50
+        lease["topics"][1]["expires"] = now + 5000
+        D.L.write_json(paths.lease("L1"), lease)
+        self.assertEqual(
+            daemon._registration_route(self._rows()[0]),
+            {"channel": "agent-sync", "topic": "Active Lane"},
+        )
+        # A permanently attached lane is the chat's home even beside a fresher expiring one.
+        lease["topics"][1]["expires"] = None
+        D.L.write_json(paths.lease("L1"), lease)
+        self.assertEqual(
+            daemon._registration_route(self._rows()[0]),
+            {"channel": "agent-sync", "topic": "Active Lane"},
+        )
+        lease["topics"][0]["expires"] = None
+        lease["topics"][1]["expires"] = now + 5000
+        D.L.write_json(paths.lease("L1"), lease)
+        self.assertEqual(
+            daemon._registration_route(self._rows()[0]),
+            {"channel": "agent-sync", "topic": "Old Lane"},
+        )
+
+
+class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
+    """The bound topic says WHERE an answer counts;  the sender says WHO may answer
+    (the owner, or the bot of the seat the registration belongs to).  Another chat's bot,
+    or any other poster in the same topic, cannot claim this registration's location."""
+
+    def _pending_entry(self, daemon):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        db = daemon._registration_db()
+        if not os.path.exists(db):
+            registry = D.OR.SessionRegistry(db)
+            registry.close_db()
+        rows = [{
+            "id": "row-1", "platform": "claude", "profile_scope": "default",
+            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "active",
+        }]
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            daemon.maybe_ask_registrations(rows, {})
+        return D.OREG.pending_entries(db)[0]
+
+    def _answer(self, daemon, entry, sender_id):
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            return daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": sender_id},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+
+    def test_the_chats_own_seat_bot_may_answer(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242)
+        self.assertTrue(self._answer(daemon, entry, 4242))
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+
+    def test_another_bot_in_the_same_topic_may_not_answer(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242)
+        self.assertFalse(self._answer(daemon, entry, 9999))
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
+
+    def test_an_answer_with_no_sender_is_not_consumed(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        self.assertFalse(self._answer(daemon, entry, None))
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
         )

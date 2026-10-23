@@ -243,6 +243,10 @@ def begin(
     with L.locked(queue_path(registry_db)):
         data = load(registry_db)
         for entry in data["entries"].values():
+            if entry["state"] == STATE_CONFLICT and _identity(entry) == (platform, scope, native):
+                # An unsettled contradiction is the owner's to settle:  re-asking the same
+                # session would spam the chat and pile up duplicate conflict entries.
+                return {"status": "conflict", "entry": dict(entry)}
             if entry["state"] == STATE_ASKED and _identity(entry) == (platform, scope, native):
                 # The route can arrive after the question:  a chat discovered before its
                 # lease listed a topic gets its route filled in on a later pass.

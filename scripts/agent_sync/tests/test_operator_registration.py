@@ -150,6 +150,16 @@ class OperatorRegistrationTest(unittest.TestCase):
         self.assertEqual(out["reason"], OREG.REASON_EVIDENCE_MISMATCH)
         self.assertEqual(self.registry.writes, [])
 
+    def test_an_unsettled_conflict_is_not_reasked(self):
+        entry = self.begin(evidence_location="mac")["entry"]
+        out = self.answer(entry["entry_id"], "cloud")
+        self.assertEqual(out["status"], "conflict")
+        again = self.begin(evidence_location="mac")
+        # The contradiction is the owner's to settle:  no re-ask, no duplicate entry.
+        self.assertEqual(again["status"], "conflict")
+        self.assertEqual(again["entry"]["entry_id"], entry["entry_id"])
+        self.assertEqual(len(OREG.load(self.db)["entries"]), 1)
+
     def test_answer_matching_evidence_registers(self):
         entry = self.begin(evidence_location="mac")["entry"]
         out = self.answer(entry["entry_id"], "mac")
