@@ -240,6 +240,7 @@ async function serveMcp(request, env, ctx) {
     zulip: key ? new ZulipClient({ email, key }) : null,
     key,
     gate: seatGate,
+    whatsappGate: gate(env, "JET"),
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     // Null when any recall secret is missing:  the recall tools then answer
     // not_configured and every other tool works as before (spec 1.1).

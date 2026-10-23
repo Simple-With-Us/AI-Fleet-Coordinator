@@ -196,7 +196,9 @@ test("row 6:  each grant's tools/list offers exactly its own set, required on wr
       continue;
     }
     assert.deepEqual(list.slice(0, 3).map((t) => t.name), ["whoami", "identities", "guide"]);
-    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET" ? 0 : 1));
+    // The whatsapp tools ride with the full Jet login (JET-CHAT);  every other seat
+    // has them withheld, so only JET-CHAT advertises the complete catalog.
+    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET-CHAT" ? 0 : 1));
     for (const tool of list) {
       const properties = tool.inputSchema.properties ?? {};
       if (tool.name === "identities") {
@@ -210,8 +212,8 @@ test("row 6:  each grant's tools/list offers exactly its own set, required on wr
 });
 
 test("every hosted tool is classified as exactly one of read or write", () => {
-  // JET is wake-only;  JET-CHAT serves the full set (minus the whatsapp tools,
-  // which stay gated to JET) and the classification covers the whole catalog.
+  // JET is wake-only;  JET-CHAT serves the full set (including the whatsapp
+  // tools on the full Jet login) and the classification covers the whole catalog.
   const names = toolListFor("JET-CHAT", { whatsappEnabled: true }).list.map((t) => t.name);
   for (const name of names) assert.notEqual(HOSTED_READ_TOOLS.has(name), HOSTED_WRITE_TOOLS.has(name), name);
   assert.deepEqual(sorted([...HOSTED_READ_TOOLS, ...HOSTED_WRITE_TOOLS]), sorted([...HOSTED_TOOL_LIST.map((t) => t.name), "identities", "guide"]));

@@ -148,7 +148,7 @@ export function toolListFor(seat, config = {}) {
   const cached = LIST_CACHE.get(cacheKey);
   if (cached) return cached;
   const allowed = allowedIdentities(seat);
-  const decorated = HOSTED_TOOL_LIST.filter(spec => !spec.name.startsWith("whatsapp_") || (seat === "JET" && config.whatsappEnabled === true)).map((spec) => decorate(spec, allowed, seat));
+  const decorated = HOSTED_TOOL_LIST.filter(spec => !spec.name.startsWith("whatsapp_") || (seat === "JET-CHAT" && config.whatsappEnabled === true)).map((spec) => decorate(spec, allowed, seat));
   const at = decorated.findIndex((spec) => spec.name === "whoami") + 1;
   const list = Object.freeze([...decorated.slice(0, at), IDENTITIES_SPEC, decorate(GUIDE_SPEC, allowed, seat), ...decorated.slice(at)]);
   const byName = Object.freeze(Object.fromEntries(list.map((spec) => [spec.name, spec])));

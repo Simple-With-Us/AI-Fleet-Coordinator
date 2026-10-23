@@ -64,7 +64,7 @@ test("the wake-only seat refuses every tools/call name, audited, as the unknown-
 });
 
 test("admin labels tell the two Jet logins apart;  stored identifiers stay canonical", () => {
-  assert.equal(adminSeatLabel("JET"), "Jet (Wake)");
+  assert.equal(adminSeatLabel("JET"), "Jet-Wake");
   assert.equal(adminSeatLabel("JET-CHAT"), "Jet");
   assert.equal(adminSeatLabel("CURSOR"), "Cursor & Grok Bots");
   assert.equal(adminSeatLabel("ECHO"), "ECHO");
@@ -81,7 +81,7 @@ test("the consent page names the wake seat and states its real capability", asyn
     replacing: [],
   };
   const wake = await (await consentPage({ ...facts, seat: "JET" }, {})).text();
-  assert.match(wake, /Connect ChatGPT as Jet \(Wake\)\?/);
+  assert.match(wake, /Connect ChatGPT as Jet-Wake\?/);
   assert.match(wake, /name="seat" value="JET"/, "the posted value stays the canonical seat");
   assert.match(wake, /This seat only delivers wake notifications to the app/);
   assert.ok(!wake.includes("This seat reads and posts"));

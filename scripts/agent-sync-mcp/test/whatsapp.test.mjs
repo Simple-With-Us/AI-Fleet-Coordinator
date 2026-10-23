@@ -157,16 +157,20 @@ test("pause and disabled defaults; Jet-only event and read tool; provenance encl
   assert.equal(s.calls.length, 0);
   assert.equal(loadConfig(testEnv()).whatsappEnabled, false);
   for (const seat of ["CODEX", "CURSOR", "GROK-WEB"]) assert.ok(!toolListFor(seat).byName.whatsapp_read);
-  // JET is wake-only (owner decision, Oct 23 2026):  its tools/list is empty,
-  // so whatsapp_read stays unreachable there even with the flag on.  The JET
-  // gate stays for the seat the WhatsApp surface is assigned to at rollout.
+  // JET is wake-only:  its tools/list is empty, so whatsapp_read stays
+  // unreachable there even with the flag on, and the tool's own gate refuses
+  // it too.  The new full-tool Jet login (JET-CHAT) reads and ACKs;  the inbox
+  // itself stays on the original JET gate (Jay, WhatsApp Oct 23 2026 5:03 PM CT).
   assert.ok(!toolListFor("JET").byName.whatsapp_read);
   assert.ok(!toolListFor("JET", config).byName.whatsapp_read);
-  const tools = new HostedTools({ seat: "JET", scopes: ["zulip:read"], config, gate: s.gate, key: "", zulip: null, log: () => {} });
+  assert.ok(toolListFor("JET-CHAT", config).byName.whatsapp_read);
+  const tools = new HostedTools({ seat: "JET-CHAT", scopes: ["zulip:read"], config, gate: s.gate, whatsappGate: s.gate, key: "", zulip: null, log: () => {} });
   const result = await tools.call("whatsapp_read", {});
   assert.equal(result.isError, undefined);
   assert.match(result.content[0].text, /owner message/);
   assert.match(result.content[0].text, /nonce=/);
+  const wakeSeat = new HostedTools({ seat: "JET", scopes: ["zulip:read"], config, gate: s.gate, key: "", zulip: null, log: () => {} });
+  assert.equal((await wakeSeat.call("whatsapp_read", {})).isError, true);
   const foreign = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: s.gate, key: "", zulip: null, log: () => {} });
   assert.equal((await foreign.call("whatsapp_read", {})).isError, true);
   assert.equal(classifyPath("/internal/wa-ingest/JET"), "wa");

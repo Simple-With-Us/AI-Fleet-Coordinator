@@ -16,7 +16,7 @@ export function adminSeatLabel(seat) {
   if (seat === "CURSOR") return "Cursor & Grok Bots";
   // The two Jet logins (owner decision, Oct 23 2026):  the original
   // connection is wake-only;  the new one carries Jet's normal access.
-  if (seat === "JET") return "Jet (Wake)";
+  if (seat === "JET") return "Jet-Wake";
   if (seat === "JET-CHAT") return "Jet";
   return String(seat ?? "");
 }

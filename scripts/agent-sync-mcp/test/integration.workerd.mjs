@@ -558,7 +558,7 @@ try {
 
   await step("approval consumed the arming window", async () => {
     const st = await (await browser("/admin")).text();
-    assert.match(st, /<strong>Jet \(Wake\)<\/strong><\/td><td>Not armed/);
+    assert.match(st, /<strong>Jet-Wake<\/strong><\/td><td>Not armed/);
   });
 
   let tokens;
@@ -971,7 +971,7 @@ try {
     assert.equal(loc.searchParams.get("iss"), issuer);
     assert.equal(loc.searchParams.get("state"), "st-deny");
     assert.equal(res.headers.get("referrer-policy"), "same-origin");
-    assert.match(await (await browser("/admin")).text(), /<strong>Jet \(Wake\)<\/strong><\/td><td>Not armed/);
+    assert.match(await (await browser("/admin")).text(), /<strong>Jet-Wake<\/strong><\/td><td>Not armed/);
   });
 
   await step("an expired arming window refuses the approval with 409 and leaves the epoch alone", async () => {
@@ -1783,10 +1783,10 @@ try {
     assert.equal(callbackCalls.length, 1, "replay is deduped durably");
     await postWa({ ...body, messages: [message("2", "👀 silent fixture")] });
     assert.equal(callbackCalls.length, 1, "eyes message did not wake");
-    // whatsapp_read is a tool, so the wake seat refuses it outright, and the tool's
-    // own gate is still JET-only:  transferring private WhatsApp read to JET-CHAT is
-    // held for an owner decision, so the read/ack tool path is intentionally not
-    // exercised here while the feature stays default-off.
+    // whatsapp_read is a tool, so the wake-only seat (JET, labeled Jet-Wake)
+    // refuses it outright as unknown.  The owner assigned WhatsApp read/ack to
+    // the new full-tool Jet login (JET-CHAT) - Jay, WhatsApp Oct 23 2026
+    // 5:03 PM CT - which is exercised below.
     const denied = await call(access, "whatsapp_read", {});
     assert.ok(denied.json.error, JSON.stringify(denied.json));
     assert.equal((await adminAction("arm", { seat: "JET-CHAT" })).status, 303);
@@ -1797,25 +1797,26 @@ try {
     const chatLoc = new URL(chatConsent.headers.get("location"));
     const chatGrant = await token({ grant_type: "authorization_code", code: chatLoc.searchParams.get("code"), code_verifier: cc.verifier, redirect_uri: JETCHAT_REDIRECT, client_id: JETCHAT_CLIENT, resource: RESOURCE });
     assert.equal(chatGrant.status, 200, summarize(chatGrant.body));
-    const heldOut = await call(chatGrant.body.access_token, "whatsapp_read", {});
-    assert.equal(heldOut.json.result.isError, true, JSON.stringify(heldOut.json));
-    assert.equal(heldOut.json.result._meta["agent-sync/error"].code, "not_authorized");
+    // The full Jet login reads the original JET-bound inbox through the public
+    // router:  the delivered owner fixture is returned, and an unrelated seat
+    // (the wake seat above, the foreign-seat unit case) stays denied.
+    const chatRead = await call(chatGrant.body.access_token, "whatsapp_read", {});
+    assert.equal(chatRead.json.result.isError, undefined, JSON.stringify(chatRead.json));
+    assert.match(chatRead.json.result.content[0].text, /received owner fixture/);
+    const seqs = [...chatRead.json.result.content[0].text.matchAll(/"seq":"(\d+)"/g)].map((m) => m[1]);
+    assert.ok(seqs.length > 0, "the read returned at least one seq");
+    const chatAck = await call(chatGrant.body.access_token, "whatsapp_read", { ack_through: seqs[seqs.length - 1] });
+    assert.equal(chatAck.json.result.isError, undefined, JSON.stringify(chatAck.json));
     const op = { contract: "wa-operator/1", seat: "JET", request_id: crypto.randomUUID(), sent_at: Math.floor(Date.now() / 1000) };
     await postWa(op, "operator", operatorKey);
     assert.equal(callbackCalls.length, 2);
     assert.deepEqual(callbackCalls[1].body.data, { source: "operator", owner_authorized: false });
     const ns = await mf.getDurableObjectNamespace("SEAT_GATE");
     assert.equal((await ns.get(ns.idFromName("JET")).eventSubscriptions({})).length, 2);
-    // A delivered owner wake re-rings after RERING_MS until the owner acks.
-    // That ack normally arrives through the whatsapp_read tool;  with the tool
-    // held (JET is events-only and the JET-CHAT transfer is undecided) the
-    // test acks through the SeatGate's storage seam, the same wa.read the
-    // tool calls, so the coalescing assertion below stays reachable.
+    // The tool-path ack above retired the pending wake through the public
+    // router;  the coalescing assertion below stays reachable through the same
+    // JET-bound gate the tool reads.
     const jetGate = ns.get(ns.idFromName("JET"));
-    const surfaced = await jetGate.waRead({});
-    assert.ok(surfaced.items.length > 0);
-    const acked = await jetGate.waRead({ ack_through: surfaced.items[surfaced.items.length - 1].seq });
-    assert.equal(acked.ok, true);
     const maximum = { ...body, messages: Array.from({ length: 100 }, (_, i) => ({ ...message("3", "😀".repeat(4096)), id_hash: (100 + i).toString(16).padStart(64, "0") })) };
     const full = await (await postWa(maximum)).json();
     assert.equal(full.stored, 100, "maximum provider batch commits to real SQLite storage");
