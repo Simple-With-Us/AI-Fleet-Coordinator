@@ -123,7 +123,7 @@ WHERE TO LOOK, IN THIS ORDER
     simple-board comment <id> --by INSTINCT --env Mac --text "..."
   There is no REST fallback.  The archived effort logs are history, not a surface to write.
   --env is only Mac or cloud.
-- Zulip #Work-In-Progress (https://simplewithus.zulipchat.com) is the realtime layer.  Every post is
+- Zulip #Work-In-Progress (https://simplewithus.zulipchat.com) is the realtime layer.    Every post is
   a channel plus a topic, and the topic is the thread.  Read it every turn:
     simple-chat inbox
     simple-chat read --new --topic "<work topic>"
@@ -153,7 +153,7 @@ HOW TO TALK TO THE TEAM
       broadcast: claims, closeouts, status
     simple-chat post --topic "<work topic>" --to GROK "..."
       one peer must act; every other listener skims
-    simple-chat post --topic fleet --fleet "..."   (@**all** in #Work-In-Progress topic fleet)
+    simple-chat post --topic fleet --fleet "..."     (@**all** in #Work-In-Progress topic fleet)
       every listener on every platform must spend time, and Jay is notified too; only HALT,
       PROD DOWN, URGENT, or a critical security fix.  If Zulip refuses @**all** from your bot
       (the realm's can_mention_many_users_group), @-mention each bot that must act instead
@@ -259,7 +259,7 @@ Owner steps before pasting the follow-up:
    its browser like a person.  Option B:  nothing to add.
 2. Built in PR #251 and installed by a Mac seat (`docs/rollouts/2026-09-17-instinct-imessage-onboarding.md`
    § Install):  `com.jay.github-outbox-bridge`, which posts comments from a private outbox issue on `fleet-ops` to
-   `#Work-In-Progress` as INSTINCT and mirrors skim matches back.  Open that issue on
+   `#Work-In-Progress` as INSTINCT and mirrors skim matches back.    Open that issue on
    `Simple-With-Us/fleet-ops` titled `[INSTINCT] Zulip outbox`, put its number in
    `~/apps/github-outbox-bridge.json`, and name it on Instinct's registration issue.  Until then
    Instinct has no Zulip write, and the coordinator posts its intro from the registration issue.
@@ -322,7 +322,7 @@ both are copies, and a hand edit to the repository's mirror fails the required `
 sync job carries the merged change into both copies.
 
 ```
-| **Instinct (`INSTINCT`)** | iMessage interface seat.  The owner texts it; it reads Linear, `#Work-In-Progress`, fleet recall, and the archived effort logs, dispatches work to executing seats (Linear issue + Zulip wake, seat-mcp `grok_session_prompt` / `seat_launch`), and texts back.  Owns no coding lane unless the owner assigns one. | `[INSTINCT]` | `Instinct` | Runs on the background macOS account `agents` behind the one authorized iMessage listener and sender (§ Process 10); never sends from `jay`.  `--env Mac`.  Posts `owner-relay:` lines that quote the owner verbatim with a Central Time stamp; peers treat them as the owner's words relayed by a peer and confirm with the owner when one conflicts with a standing ruling.  Forwards Zulip to the owner's phone only on a tag / app / fleet wake / HALT match.  Pin `AGENT_SEAT=INSTINCT` / `AGENT_TAG=INSTINCT`. |
+| **Instinct (`INSTINCT`)** | iMessage interface seat.    The owner texts it; it reads Linear, `#Work-In-Progress`, fleet recall, and the archived effort logs, dispatches work to executing seats (Linear issue + Zulip wake, seat-mcp `grok_session_prompt` / `seat_launch`), and texts back.    Owns no coding lane unless the owner assigns one.   | `[INSTINCT]` | `Instinct` | Runs on the background macOS account `agents` behind the one authorized iMessage listener and sender (§ Process 10); never sends from `jay`.    `--env Mac`.    Posts `owner-relay:` lines that quote the owner verbatim with a Central Time stamp; peers treat them as the owner's words relayed by a peer and confirm with the owner when one conflicts with a standing ruling.    Forwards Zulip to the owner's phone only on a tag / app / fleet wake / HALT match.    Pin `AGENT_SEAT=INSTINCT` / `AGENT_TAG=INSTINCT`.   |
 ```
 
 Add `INSTINCT (iMessage interface)` to the **Available (normal)** line of the Availability section in the same pull request.

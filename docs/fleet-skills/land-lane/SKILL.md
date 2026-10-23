@@ -26,7 +26,7 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[TEAM_KEY, Agent] …`.
 
-Prose: commit body, rollout docs and Notes source take two ASCII spaces between sentences.  PR titles, bodies and comments take a real U+00A0 plus a space (convert with the `perl` recipe in `sentence-gap`; never the `&nbsp;` entity there).  Chat replies to the owner use the mechanism of the pane you are in:  `&nbsp;` plus a space in the MiniMax Code chat pane (owner-verified 2026-10-18, reaffirmed 2026-10-20) and in the Claude Code Code tab, and two ASCII spaces in a terminal.  See `owner-copy`.
+Prose:  commit bodies, rollout docs, Notes source, PR titles, bodies and comments, and chat replies to the owner all take a real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23;  convert with the `perl` recipe in `sentence-gap`;  never the `&nbsp;` entity).  See `owner-copy`.
 
 ## Gate
 
@@ -72,7 +72,7 @@ gh pr create --fill
 | Personal-Site | CI `verify` is file-existence + About-copy grep.  `site/` is the TanStack Start source (README).  `AGENTS.md` may still say "static snapshot" — believe README + the tree.  Preserve `Earlier work included` and the Doximity `/profiles/…/view` URL or the daily mirror reverts them. |
 | AFC | No app test gate.  `python3 scripts/check-fleet-registry.py` if you touched registries. |
 
-CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Progress` then tag.  Consumers pin the exact tag.
+CTS "prod" is an annotated tag `vX.Y  .Z  ` after merge — announce on `#Work-In-Progress` then tag.    Consumers pin the exact tag.
 
 `STATUS.md` / `PLAN.md` (and the archived `docs/EFFORT-LOG.md`) often carry `merge=union` in `.gitattributes`.  Additive edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
 
@@ -84,9 +84,9 @@ gh pr merge <N> --squash --auto
 
 Not `--admin`.  Branch protection is `enforce_admins: true` plus conversation resolution.  Unresolved review threads block forever.  Use `codex-triage` / `unstick-pr`.
 
-If the box is gating several lanes, announce the full gate in #builds topic `gates`: `simple-chat post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.  The CLI writes the tag.  Wait on a peer's open `gating now` with `simple-chat wait --channel builds --topic gates --timeout 900`.  Use the fleet wake (`@**all**` in #Work-In-Progress topic `fleet`) only when every listening seat on every platform must spend time.  `AFC` and `OPS` are repo acronyms, never a sender or a signature.
+If the box is gating several lanes, announce the full gate in #builds topic `gates`: `simple-chat post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.    The CLI writes the tag.    Wait on a peer's open `gating now` with `simple-chat wait --channel builds --topic gates --timeout 900`.    Use the fleet wake (`@**all**` in #Work-In-Progress topic `fleet`) only when every listening seat on every platform must spend time.    `AFC` and `OPS` are repo acronyms, never a sender or a signature.
 
-**The GitHub tools.**  The credential-safe path for GitHub work is `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`).  It exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`, and `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the interim `gh` and shell path above is still the one that works, until the owner decides the cutover.
+**The GitHub tools.*  *  The credential-safe path for GitHub work is `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`).    It exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`, and `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.    A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.    **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the interim `gh` and shell path above is still the one that works, until the owner decides the cutover.
 
 ## After merge
 

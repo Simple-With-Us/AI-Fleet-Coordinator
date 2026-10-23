@@ -2,9 +2,9 @@
 
 The one guide to the simple-tools on every transport:  the stdio server (`simple-chat mcp`), ST-MCP, the hosted server (`https://agents.simplewithus.com/mcp`), and the `simple-chat` CLI.
 
-Names, old and current:  the collection was "agent-sync" and is now **simple-tools**;  the hosted server is **ST-MCP** (its admin is ST-MCP Admin);  the CLIs are `simple-chat` (Zulip), `simple-board` (Linear), `simple-notes` (Apple Notes) and the FleetLink CLI;  the fleet channel is **#Work-In-Progress**.  An `agent-sync` command still exists on managed hosts as a compatibility launcher for `simple-chat`;  new work should call `simple-chat`.  What did NOT change:  wire spellings such as the `_meta["agent-sync/error"]` key, the `agent-sync-wake/1` contract and the `X-Agent-Sync-Signature` header, state paths under `~/.agent-sync/`, and the Worker and directory names (`agent-sync-mcp`, `scripts/agent-sync-mcp/`).  Those are identifiers, not product names.  It is served four ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, `https://fleetlink.online/agent-sync-tools-guide/`, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a published copy.
+Names, old and current:  the collection was "agent-sync" and is now **simple-tools**;  the hosted server is **ST-MCP** (its admin is ST-MCP Admin);  the CLIs are `simple-chat` (Zulip), `simple-board` (Linear), `simple-notes` (Apple Notes) and the FleetLink CLI;  the fleet channel is **#Work-In-Progress**.    An `agent-sync` command still exists on managed hosts as a compatibility launcher for `simple-chat`;  new work should call `simple-chat`.    What did NOT change:  wire spellings such as the `_meta["agent-sync/error"]` key, the `agent-sync-wake/1` contract and the `X-Agent-Sync-Signature` header, state paths under `~/.agent-sync/`, and the Worker and directory names (`agent-sync-mcp`, `scripts/agent-sync-mcp/`).    Those are identifiers, not product names.    It is served four ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, `https://fleetlink.online/agent-sync-tools-guide/`, and the `agent-sync-tools-guide` skill.    Design and rules:  `docs/protocols/per-call-identity.md`.    Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a published copy.
 
-At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 270 tools and the hosted server 269 by default - JET alone sees one more, `whatsapp_read`, while the WhatsApp bridge is enabled (it is default-off).  The difference is explained under Tools by Family.
+At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.    The stdio server serves 270 tools and the hosted server 269 by default - JET alone sees one more, `whatsapp_read`, while the WhatsApp bridge is enabled (it is default-off).    The difference is explained under Tools by Family.
 
 ## How to Pass Identity
 
@@ -31,7 +31,7 @@ Call `identities` first when a client is new, then `whoami` with an `identity` t
 ## Which Connection a Client Gets
 
 - **A Mac or server app that can run a local command** uses the **stdio** server:  `{"command": "simple-chat", "args": ["mcp"]}` in its MCP config.  No OAuth, no arming, no `--as` needed (pass `--as` or `--default-seat` only to give reads a default).  Never put a Zulip key in the config.
-- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it;  steps per app are in `scripts/agent-sync-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
+- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.    The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it;  steps per app are in `scripts/agent-sync-mcp/ARMING-JAY.md`.    The armed seat becomes the grant's default identity.
 
 Allowed sets, as the code builds them:
 
@@ -176,7 +176,7 @@ Plus **175 named commands** (63 reads, 112 writes) and **11 proxied official Lin
 | One-offs | `linear_share_issue`, `linear_resolve_comment`, `linear_link_attachment_url`, `linear_complete_release`, `linear_add_initiative_project`, `linear_mark_notification` |
 | Official, proxied | `linear_get_diff`, `linear_list_diffs`, `linear_submit_diff_review`, `linear_merge_diff`, `linear_extract_images`, `linear_search_documentation` |
 
-From a shell, `simple-board run NAME` is the tool `linear_NAME` (`simple-board run list_issues --arg first=5`);  `simple-board mcp call TOOL` runs a proxied official tool.  A write from a shell needs `AGENT_SEAT`, `LINEAR_BOARD_WRITES=1` and `--idempotency-key`.  The older `board` name on PATH is a wrapper that sets `LINEAR_BOARD_WRITES=1` for you, so the two names do not behave alike:  `board` writes, and `simple-board` refuses a write with exit 7 until you set the variable yourself.  `simple-board whoami` prints which one you have.
+From a shell, `simple-board run NAME` is the tool `linear_NAME` (`simple-board run list_issues --arg first=5`);  `simple-board mcp call TOOL` runs a proxied official tool.    A write from a shell needs `AGENT_SEAT`, `LINEAR_BOARD_WRITES=1` and `--idempotency-key`.    The older `board` name on PATH is a wrapper that sets `LINEAR_BOARD_WRITES=1` for you, so the two names do not behave alike:  `board` writes, and `simple-board` refuses a write with exit 7 until you set the variable yourself.    `simple-board whoami` prints which one you have.
 
 ### fleetlink
 
@@ -195,11 +195,11 @@ Same names and arguments on both servers, as the identity's own FleetLink bot.  
 
 ## GitHub Tools: git-relay and GR-MCP
 
-GitHub work is not a simple-tools family.  It has its own relay and its own MCP server, and a seat reaches them with a bearer token rather than with a bot identity.
+GitHub work is not a simple-tools family.    It has its own relay and its own MCP server, and a seat reaches them with a bearer token rather than with a bot identity.
 
-**git-relay** is the relay:  a CLI (`git-relay serve`) and a small service in front of the GitHub API.  It knows each seat from its bearer token and picks the credential BY TASK.  **GR-MCP** is the MCP wrapper for it (`git-relay mcp`):  a stdio server that advertises itself as `GR-MCP`, holds only the seat's own bearer token, and forwards every call over HTTP, so policy, caps and the audit log stay server-side.
+**git-relay** is the relay:  a CLI (`git-relay serve`) and a small service in front of the GitHub API.    It knows each seat from its bearer token and picks the credential BY TASK.    **GR-MCP** is the MCP wrapper for it (`git-relay mcp`):  a stdio server that advertises itself as `GR-MCP`, holds only the seat's own bearer token, and forwards every call over HTTP, so policy, caps and the audit log stay server-side.
 
-A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement, so a seat may find the GitHub tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server.  The tool names are the same either way.
+A seat reaches these tools with its own bearer token.    ST-MCP shares the same bearer-token arrangement, so a seat may find the GitHub tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server.    The tool names are the same either way.
 
 | Tool | Credential | Purpose |
 |---|---|---|
@@ -211,13 +211,13 @@ A seat reaches these tools with its own bearer token.  ST-MCP shares the same be
 | `workflow_dispatch` | the seat's own GitHub App | Dispatch a workflow run |
 | `resolve_thread` | the seat's own GitHub App | Resolve a review thread |
 
-PR-write authoring runs under the owner's scoped PR-only token on purpose:  a pull request is authored as the owner, so the review bots read it the way they expect.  Everything else runs under the seat's own GitHub App token, which the relay mints and refreshes itself.  git-relay is the only path in the fleet that mints per-bot GitHub App tokens, so a seat never handles an App id, a private key or the one-hour token expiry, and a seat can never push.
+PR-write authoring runs under the owner's scoped PR-only token on purpose:  a pull request is authored as the owner, so the review bots read it the way they expect.    Everything else runs under the seat's own GitHub App token, which the relay mints and refreshes itself.    git-relay is the only path in the fleet that mints per-bot GitHub App tokens, so a seat never handles an App id, a private key or the one-hour token expiry, and a seat can never push.
 
-Per-seat policy is an allowlist layer over that credential:  allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every call, allowed or denied, is written to the audit log, and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
+Per-seat policy is an allowlist layer over that credential:  allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.    It can only narrow what the credential allows, never exceed it.    Every call, allowed or denied, is written to the audit log, and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
 
-**Status.**  git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**:  there is no daemon, no launchd job, no seat pointed at it and no service host chosen yet.  Until the owner decides the cutover, the interim `gh` and shell path is the one that works.  Do not plan work that assumes the relay is live.
+**Status.*  *  git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**:  there is no daemon, no launchd job, no seat pointed at it and no service host chosen yet.    Until the owner decides the cutover, the interim `gh` and shell path is the one that works.    Do not plan work that assumes the relay is live.
 
-`mint_token` is deliberately not exposed over GR-MCP:  it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller.
+`mint_token` is deliberately not exposed over GR-MCP:  it returns a raw credential, and a stdio transcript is too easy to capture.    A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller.
 
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below:  401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
 
@@ -331,6 +331,6 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `not_found` | An unknown guide section or notes `request_id` |
 | `claim_held` | Linear:  another seat holds the claim |
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
-| `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above:  a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
+| `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above:  a refusal arrives as a tool error carrying the relay's own HTTP status.    See the GitHub section |
 
 Exit codes of the `simple-chat` CLI:  0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, 6 auth, 7 writes off.

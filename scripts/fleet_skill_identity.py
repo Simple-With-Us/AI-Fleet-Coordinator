@@ -196,7 +196,7 @@ def zulip_identity_sentence(seat: Seat) -> str:
     return (
         f"Zulip bot `{local}@simplewithus.zulipchat.com`, credential in "
         f"{zulip_credential_ref(seat)}.  Session tag "
-        f"`[{seat.tag}·session8]`, and the `simple-chat` CLI writes it for you."
+        f"`[{seat.tag}·session8]`, and the `simple-chat` CLI writes it for you."  
     )
 
 
@@ -292,7 +292,7 @@ GROK_BOT_IDENTITY = (
     "Not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[MONET]`.  "
     "Notes name is the role in Title Case.  Cloud branches are often "
     "`cursor/<slug>`.  Pin `AGENT_TAG` to your GB role before posting or "
-    "`simple-board --by`.  Local Cursor IDE on the Mac is `[CURSOR]`.  Mac Grok TUI "
+    "`simple-board --by`.    Local Cursor IDE on the Mac is `[CURSOR]`.    Mac Grok TUI "
     "is `[GROK]`."
 )
 
@@ -933,8 +933,8 @@ def _rewrite_reader_voice(text: str, seat: Seat) -> str:
         # The skim rule names the seat that owns the pack, so a rendered copy must name its own
         # reader and never the retired seat the canonical copy was written for (Kody rule 12).
         (
-            "Skim channel, topic, and sender for `MONET` or a repo you are about to touch.",
-            f"Skim channel, topic, and sender for `{seat.tag}` or a repo you are about to touch.",
+            "Skim channel, topic, and sender for `MONET` or a repo you are about to touch."  ,
+            f"Skim channel, topic, and sender for `{seat.tag}` or a repo you are about to touch."  ,
         ),
     ]
     if not is_claude_family(seat):
@@ -999,8 +999,8 @@ def _rewrite_universal_voice(text: str) -> str:
             "(this pack's `sentence-gap` — Monet portable protocol).",
         ),
         (
-            "Skim channel, topic, and sender for `MONET` or a repo you are about to touch.",
-            "Skim channel, topic, and sender for `<YOUR_TAG>` or a repo you are about to touch.",
+            "Skim channel, topic, and sender for `MONET` or a repo you are about to touch."  ,
+            "Skim channel, topic, and sender for `<YOUR_TAG>` or a repo you are about to touch."  ,
         ),
     ]
     for old, new in swaps:

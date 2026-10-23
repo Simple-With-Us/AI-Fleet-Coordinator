@@ -719,7 +719,7 @@ def cmd_init(rt: Any, args: argparse.Namespace) -> int:
         except Z.AgentSyncError:
             subs = set()
         rt.out(
-            "  %s: %s ok, role %s%s, subscribed to #agent-sync: %s\n"
+            "  %s: %s ok, role %s%s, subscribed to #Work-In-Progress: %s\n"
             % (
                 name,
                 "environment credentials"

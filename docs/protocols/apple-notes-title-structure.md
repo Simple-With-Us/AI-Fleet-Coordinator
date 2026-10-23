@@ -39,7 +39,7 @@ Rules:
 | `OPS` | fleet-ops (sibling identity; do not invent a checkout here) | `Simple-With-Us/fleet-ops` |
 | `PS` | Personal-Site | `Simple-With-Us/Personal-Site` |
 | `CTS` | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
-| `FLEET` | Zulip wake (`@**all**` in #Work-In-Progress, topic `fleet`): every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).  Not the coordinator.  Not OPS. | A recipient only.  Never a SENDER tag. |
+| `FLEET` | Zulip wake (`@**all**` in #Work-In-Progress, topic `fleet`): every listening seat on every platform must spend time (Grok Bot included, largely superseded by BotFleet — owner 2026-09-13).    Not the coordinator.    Not OPS.   | A recipient only.    Never a SENDER tag.   |
 
 **Second row of the note (first body line) — ALWAYS the local create/update stamp + optional PR numbers:**
 

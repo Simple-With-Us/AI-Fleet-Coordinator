@@ -489,7 +489,7 @@ class PerSeatVoiceTests(unittest.TestCase):
             self.assertNotIn("This pack is for the **MONET** Claude account", out, name)
 
     def test_the_skim_rule_names_the_readers_own_seat(self) -> None:
-        # The skim rule names the seat that owns the pack.  The canonical copy was written for
+        # The skim rule names the seat that owns the pack.    The canonical copy was written for
         # MONET, so a rendered copy must name its own reader and never the retired seat.
         for tag in sorted(SEATS):
             seat = SEATS[tag]
@@ -497,7 +497,7 @@ class PerSeatVoiceTests(unittest.TestCase):
             if "Skim channel, topic, and sender for" not in out:
                 continue  # a retired seat's pack carries no skim rule
             self.assertIn(f"Skim channel, topic, and sender for `{seat.tag}`", out, tag)
-            if seat.tag != "MONET":
+            if seat.tag !=   "MONET":
                 self.assertNotIn("Skim channel, topic, and sender for `MONET`", out, tag)
 
     def test_the_universal_skim_rule_names_no_seat(self) -> None:
