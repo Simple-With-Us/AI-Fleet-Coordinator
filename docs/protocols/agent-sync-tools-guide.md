@@ -1,8 +1,10 @@
-# Agent-Sync Tools Guide
+# Simple-Tools Guide
 
-The one guide to the Agent-Sync tools on every transport:  the stdio server (`simple-chat mcp`), the hosted server (`https://agents.simplewithus.com/mcp`) and the `agent-sync` CLI.  It is served four ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, `https://fleetlink.online/agent-sync-tools-guide/`, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a published copy.
+The one guide to the simple-tools on every transport:  the stdio server (`simple-chat mcp`), ST-MCP, the hosted server (`https://agents.simplewithus.com/mcp`), and the `simple-chat` CLI.
 
-At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 270 tools and the hosted server 269 (the difference is explained under Tools by Family).
+Names, old and current:  the collection was "agent-sync" and is now **simple-tools**;  the hosted server is **ST-MCP** (its admin is ST-MCP Admin);  the CLIs are `simple-chat` (Zulip), `simple-board` (Linear), `simple-notes` (Apple Notes) and the FleetLink CLI;  the fleet channel is **#Work-In-Progress**.  An `agent-sync` command still exists on managed hosts as a compatibility launcher for `simple-chat`;  new work should call `simple-chat`.  What did NOT change:  wire spellings such as the `_meta["agent-sync/error"]` key, the `agent-sync-wake/1` contract and the `X-Agent-Sync-Signature` header, state paths under `~/.agent-sync/`, and the Worker and directory names (`agent-sync-mcp`, `scripts/agent-sync-mcp/`).  Those are identifiers, not product names.  It is served four ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, `https://fleetlink.online/agent-sync-tools-guide/`, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a published copy.
+
+At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 270 tools and the hosted server 269 by default - JET alone sees one more, `whatsapp_read`, while the WhatsApp bridge is enabled (it is default-off).  The difference is explained under Tools by Family.
 
 ## How to Pass Identity
 
@@ -29,7 +31,7 @@ Call `identities` first when a client is new, then `whoami` with an `identity` t
 ## Which Connection a Client Gets
 
 - **A Mac or server app that can run a local command** uses the **stdio** server:  `{"command": "simple-chat", "args": ["mcp"]}` in its MCP config.  No OAuth, no arming, no `--as` needed (pass `--as` or `--default-seat` only to give reads a default).  Never put a Zulip key in the config.
-- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses the **hosted** server at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it;  steps per app are in `scripts/agent-sync-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
+- **A client that only speaks remote MCP** (a web app, a phone, a Mac app with no local command support) uses **ST-MCP**, the hosted server, at `https://agents.simplewithus.com/mcp` with OAuth.  The owner arms the seat in `https://agents.simplewithus.com/admin` first, then the client starts its sign-in and the owner approves it;  steps per app are in `scripts/agent-sync-mcp/ARMING-JAY.md`.  The armed seat becomes the grant's default identity.
 
 Allowed sets, as the code builds them:
 
@@ -59,6 +61,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Where:
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
 | `fleetlink_*` | 15 | both | FleetLink shares and links |
+| `whatsapp_read` | 1 | hosted | The owner's WhatsApp messages;  JET only, only while the bridge is enabled (default-off) |
 
 ### zulip
 
@@ -301,7 +304,7 @@ Every MCP tool has a command.  Identity for the CLI comes from `--as NAME`, `AGE
 | Listener | `simple-chat listener status|inbox|ack|owner-queue|surface|wakes|held-back|clear-held` for this seat's records;  `simple-chat daemon …` runs the listener itself |
 | Notes | `simple-notes create|update TITLE [BODY|-] [--body-file P] [--html P] [--no-pin] [--notify] [--needs-owner] [--summary T] [--pr N] [--relay]`, `simple-notes pin|unpin TITLE`, `simple-notes status REQUEST_ID` |
 | Guide | `simple-chat guide [SECTION]` |
-| Recall | `recall search|stats|contribute` (not part of `agent-sync`) |
+| Recall | `recall search|stats|contribute` (its own CLI, not part of `simple-chat`) |
 | Linear | `simple-board list|show|file|claim|comment|status|whoami`, `simple-board commands`, `simple-board run NAME`, `simple-board api schema|query|mutation`, `simple-board mcp list|call` |
 | MCP server | `simple-chat mcp` (what an MCP client's config runs) |
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool;  stdio runs it that way) |
