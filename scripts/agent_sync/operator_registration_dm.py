@@ -22,7 +22,6 @@ Standard library only, Python 3.11+.
 from __future__ import annotations
 
 import os
-import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -128,4 +127,3 @@ def send_location_question(
         return _outcome("refused", "the send did not complete: %s" % type(exc).__name__)
     message_id = result.get("id") if isinstance(result, Mapping) else None
     return _outcome("sent", "the location question went to the owner", message_id=message_id)
-

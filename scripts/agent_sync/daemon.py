@@ -4018,7 +4018,9 @@ class Daemon:
             self._oreg_db = db
         return db
 
-    def maybe_ask_registrations(self, rows: list[dict[str, Any]], labels: dict[str, tuple[str, str]]) -> None:
+    def maybe_ask_registrations(
+        self, rows: list[dict[str, Any]], labels: dict[str, tuple[str, str]]
+    ) -> None:
         """Ask the owner for the location of each unlettered active chat.
 
         Owner direction, Oct 23 2026:  when the Operator receives a session/chat id, it asks
@@ -4063,7 +4065,10 @@ class Daemon:
                     )
                 except Exception as exc:
                     self.log.write(
-                        "operator-registration-ask", platform=platform, status="error", error=type(exc).__name__
+                        "operator-registration-ask",
+                        platform=platform,
+                        status="error",
+                        error=type(exc).__name__,
                     )
                     continue
                 if out.get("status") not in ("ask", "pending"):

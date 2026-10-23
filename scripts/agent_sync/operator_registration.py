@@ -399,7 +399,11 @@ def answer_reply(result: Mapping[str, Any]) -> str:
         generation = int(result.get("generation") or 1)
         suffix = " (gen %d)" % generation if generation > 1 else ""
         return "Registered:  the chat is on %s, letter %s%s (ref %s)." % (
-            result.get("location"), result.get("label"), suffix, entry_id)
+            result.get("location"),
+            result.get("label"),
+            suffix,
+            entry_id,
+        )
     if status == "conflict":
         if result.get("reason") == REASON_OTHER_LOCATION:
             return (
@@ -413,7 +417,9 @@ def answer_reply(result: Mapping[str, Any]) -> str:
             % (result.get("evidence") or "another location", result.get("claimed"), entry_id)
         )
     if status == "invalid":
-        return "That is not a location I can use:  answer mac, server, or cloud (ref %s)." % entry_id
+        return (
+            "That is not a location I can use:  answer mac, server, or cloud (ref %s)." % entry_id
+        )
     return "No open question with that ref - it was answered already or expired unanswered."
 
 
