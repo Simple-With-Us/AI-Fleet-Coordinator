@@ -190,6 +190,34 @@ Same names and arguments on both servers, as the identity's own FleetLink bot.  
 | `fleetlink_share_to_team`, `fleetlink_make_personal` | W | Move a share to the team side, or back to personal |
 | `fleetlink_upload_url` | W | A one-time URL to `curl -T` a file on disk or too big for base64 |
 
+## GitHub Tools: git-relay and GR-MCP
+
+GitHub work is not a simple-tools family.  It has its own relay and its own MCP server, and a seat reaches them with a bearer token rather than with a bot identity.
+
+**git-relay** is the relay:  a CLI (`git-relay serve`) and a small service in front of the GitHub API.  It knows each seat from its bearer token and picks the credential BY TASK.  **GR-MCP** is the MCP wrapper for it (`git-relay mcp`):  a stdio server that advertises itself as `GR-MCP`, holds only the seat's own bearer token, and forwards every call over HTTP, so policy, caps and the audit log stay server-side.
+
+A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement, so a seat may find the GitHub tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server.  The tool names are the same either way.
+
+| Tool | Credential | Purpose |
+|---|---|---|
+| `open_pr` | owner PR-only token | Open a pull request |
+| `edit_pr` | owner PR-only token | Change a pull request's title or body |
+| `reply_thread` | owner PR-only token | Reply inline to a review thread |
+| `comment_pr` | owner PR-only token | Post a top-level pull request comment |
+| `merge_pr` | the seat's own GitHub App | Merge (squash, merge or rebase) |
+| `workflow_dispatch` | the seat's own GitHub App | Dispatch a workflow run |
+| `resolve_thread` | the seat's own GitHub App | Resolve a review thread |
+
+PR-write authoring runs under the owner's scoped PR-only token on purpose:  a pull request is authored as the owner, so the review bots read it the way they expect.  Everything else runs under the seat's own GitHub App token, which the relay mints and refreshes itself.  git-relay is the only path in the fleet that mints per-bot GitHub App tokens, so a seat never handles an App id, a private key or the one-hour token expiry, and a seat can never push.
+
+Per-seat policy is an allowlist layer over that credential:  allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every call, allowed or denied, is written to the audit log, and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
+
+**Status.**  git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**:  there is no daemon, no launchd job, no seat pointed at it and no service host chosen yet.  Until the owner decides the cutover, the interim `gh` and shell path is the one that works.  Do not plan work that assumes the relay is live.
+
+`mint_token` is deliberately not exposed over GR-MCP:  it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller.
+
+A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below:  401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
+
 ## Old Names and New Names
 
 Removed names are not aliased.  Calling one returns `unknown_tool` with the replacement (below).  Generated from `scripts/agent_sync/mcp/renamed-tools.json`.
@@ -277,6 +305,7 @@ Every MCP tool has a command.  Identity for the CLI comes from `--as NAME`, `AGE
 | Linear | `simple-board list|show|file|claim|comment|status|whoami`, `simple-board commands`, `simple-board run NAME`, `simple-board api schema|query|mutation`, `simple-board mcp list|call` |
 | MCP server | `simple-chat mcp` (what an MCP client's config runs) |
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool;  stdio runs it that way) |
+| GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio);  the relay is not deployed yet, so the interim `gh` path is the one that works today |
 
 Long text stays out of `argv`:  `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.
 
@@ -299,5 +328,6 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `not_found` | An unknown guide section or notes `request_id` |
 | `claim_held` | Linear:  another seat holds the claim |
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
+| `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above:  a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
 
 Exit codes of the `simple-chat` CLI:  0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, 6 auth, 7 writes off.

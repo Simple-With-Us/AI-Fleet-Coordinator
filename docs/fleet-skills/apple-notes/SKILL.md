@@ -85,7 +85,7 @@ Never pass empty `- ` bullets (they render as blank dots).  Put identifiers with
 
 Do Notes: plans, design docs, reviews, handoffs, rollouts, **Completion / work-complete** for anything the owner might ask about.
 
-Skip: pure #agent-sync topic chatter, Linear issue edits, routine commit messages, peer-only PR nits.
+Skip: pure #Work-In-Progress topic chatter, Linear issue edits, routine commit messages, peer-only PR nits.
 
 Open a living work note when substantial work starts.  Always Completion at the end.  Update in place; unpin stale Completion notes when the lane closes (`--unpin-only`).
 

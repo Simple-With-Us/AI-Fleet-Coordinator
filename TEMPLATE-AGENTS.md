@@ -330,7 +330,7 @@ deployment machine.
 ## Inter-Agent Coordination
 
 Look first at Linear (`https://linear.app/simple-with-us`, through the `simple-board` CLI).  Coordinate with other AI
-agents in Zulip `#agent-sync` (realm `https://simplewithus.zulipchat.com`).  Every post names
+agents in Zulip `#Work-In-Progress` (realm `https://simplewithus.zulipchat.com`).  Every post names
 both a channel and a topic, and the topic is the thread.  Full protocol: `~/apps/AGENT-SYNC.md`
 (canonical - read it before your first message; covers Linear and the claim lifecycle, sender tags, terse post
 shape, reaction acks, read/post mechanics).  Chat mechanics live in the Zulip Fleet Guide:
@@ -344,14 +344,14 @@ cloud), not a per-app seat.  Other agents state their cadence in their first mes
 
 **Zulip + Linear (binding — always):**
 - **Start of work:** `simple-board claim` the Linear issue (In Progress), branch `<seat>/<id>-<slug>`,
-  and open the work topic `<ID> <subject>` in `#agent-sync` (`[<YOUR_SEAT>·session8]` + `repo:` + what you will do).
+  and open the work topic `<ID> <subject>` in `#Work-In-Progress` (`[<YOUR_SEAT>·session8]` + `repo:` + what you will do).
 - **End of work:** the PR says `Fixes <ID>` (finished) or `Refs <ID>` (partial); mark Completed/Deployed
   with `simple-board status`, post the closeout in the same topic, then resolve that topic.
 - Keep **Linear and the PR matching and accurate**.  Writes need `AGENT_SEAT`.  The effort logs
   and the effort-issues mirror are retired.
 - Post shape: `[<YOUR_SEAT>·session8]` or `[<YOUR_SEAT>·session8-><PEER_SEAT>]`, then `repo:`
   first.  A directed post also @-mentions the peer (`@**<Display Name>**`); the bracket label
-  alone wakes nobody.  Wake every seat only with `@**all**` in `#agent-sync` › `fleet`
+  alone wakes nobody.  Wake every seat only with `@**all**` in `#Work-In-Progress` › `fleet`
   (`simple-chat post --topic fleet --fleet`), when every seat must act;  it notifies Jay too.
   Every seat's bot is a member and the realm's `can_mention_many_users_group` is `role:members`,
   so each can send it.  If Zulip ever refuses it (`STREAM_WILDCARD_MENTION_NOT_ALLOWED`),
@@ -476,7 +476,7 @@ Store listing copy must also be **accurate** (corpus, trial length).
 context, always use 2 spaces to separate a period from the beginning of a new sentence."
 Not limited to product copy — covers every paragraph an agent writes anywhere: **chat
 replies to the owner**, PR titles and bodies, commit messages, Zulip posts to
-#agent-sync, Apple Notes, Linear issues and comments, rollout notes, review reports, and design
+#Work-In-Progress, Apple Notes, Linear issues and comments, rollout notes, review reports, and design
 docs.  If it is prose a human reads, it gets two spaces.
 
 Canonical: `~/apps/AGENT-SYNC.md` § Two spaces and `~/apps/FLEET-UI-COPY.md`.
@@ -489,7 +489,7 @@ and `docs/fleet-skills/sentence-gap/SKILL.md`.
 - **GitHub PR and issue titles, bodies and comments, review comments, and Zulip posts** (anything a tool writes that a Markdown or HTML renderer then shows): a real U+00A0 plus a space after each sentence.  Never the `&nbsp;` entity there, because GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.
 - **Plain-text surfaces** (git commit messages, source files and repo docs read as source, terminal output, terminal TUI chat): two literal ASCII spaces.  Do not write `&nbsp;` or U+00A0 into files.  A terminal TUI chat is unverified, and a terminal would print the entity literally.
 - **HTML, JSX and SwiftUI product copy:** a real U+00A0 plus a space, or a shared `SENTENCE_GAP` constant.
-- The owner must never see the six characters `&nbsp;`.  If a chat surface shows them, stop using the entity there and report the surface in #agent-sync, because that surface then needs a different mechanism, which is unknown until tested.  When a surface is known to collapse two typed spaces, use its working mechanism without asking.
+- The owner must never see the six characters `&nbsp;`.  If a chat surface shows them, stop using the entity there and report the surface in #Work-In-Progress, because that surface then needs a different mechanism, which is unknown until tested.  When a surface is known to collapse two typed spaces, use its working mechanism without asking.
 
 ## Times: owner's clock, 12-hour, am or pm (owner 2026-08-22, amended 2026-10-05)
 
@@ -531,6 +531,8 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
   Safe: `[ -n "$VAR" ]`, `${#VAR}`, `[[ $VAR == *'"'* ]]`.  Hook:
   `~/.claude/hooks/secret-guard-pretooluse.py`.
 
+- **GitHub App credentials are the relay's, never yours.**  The fleet's GitHub relay (`git-relay`) is the only path that mints per-bot GitHub App tokens, and it keeps them server-side; a seat never handles an App id, a private key, or a token expiry, and never reads App keys out of Infisical itself.  A seat reaches the relay's tools with its own bearer token — never print it, and never ask the owner for an App key.  See "The fleet's GitHub tools" above.
+
 Canonical: `~/apps/AGENT-SYNC.md` § Secret handoff / Infisical / Coolify tokens.
 
 Chat engine: the `simple-chat` CLI (`~/.local/bin/simple-chat`, AFC `scripts/agent_sync`) is the
@@ -561,7 +563,7 @@ is the replacement.
 | **`PS`** | Personal-Site | `Simple-With-Us/Personal-Site` |
 | **`CTS`** | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
 | **`SWU`** | Simple With Us website (`https://simplewithus.com`; registered Linear team; lane prefix pending AFC-297) | `Simple-With-Us/Simple-With-Us` |
-| **`FLEET`** | Fleet-wide wake: every seat must act | Not a repo.  Not the coordinator.  `@**all**` in `#agent-sync` › `fleet`;  never a seat tag or a sender. |
+| **`FLEET`** | Fleet-wide wake: every seat must act | Not a repo.  Not the coordinator.  `@**all**` in `#Work-In-Progress` › `fleet`;  never a seat tag or a sender. |
 
 ## Fleet docs (start here)
 
@@ -584,7 +586,7 @@ is the replacement.
   Also spawn a child for a smaller slice when it would save context, run in
   parallel, or be cheaper at a different tier.  Do not serialize out of habit.
   Skip only one-step work where spawn overhead exceeds the task.  Sub-teams
-  follow the same Linear + #agent-sync rules as top-level agents.
+  follow the same Linear + #Work-In-Progress rules as top-level agents.
 - **Right-size the model for EVERY task, including each sub-agent — even if
   that tier is lower or higher than the model you are running.**  Pick the most
   economical model that completes that task very effectively.  Small = mechanical
@@ -719,6 +721,17 @@ address:
     tests were a recurring offender — fixed 2026-06-21 with a 20s per-test timeout.
   - Because `verify` runs `npm run build`, a PR that breaks the build cannot merge —
     always run the full tsc/test/build trio locally before pushing.
+
+### The fleet's GitHub tools: git-relay and GR-MCP (relay path — NOT LIVE YET)
+
+`git-relay` is the fleet's GitHub relay, and `GR-MCP` (`git-relay mcp`) is its MCP wrapper.  Together they expose seven tools: `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`.
+
+- **The relay is the ONLY path in the fleet that mints per-bot GitHub App tokens.**  A seat never handles an App id, a private key, or the 1-hour token expiry; the relay mints and refreshes the seat's own token server-side.
+- **PR-write authoring runs under the owner's scoped PR-only token** (`open_pr`, `edit_pr`, `reply_thread`, `comment_pr`), so a PR is authored as the owner and the review bots work normally.  Everything else (`merge_pr`, `workflow_dispatch`, `resolve_thread`) runs under the seat's own GitHub App token.  A seat can never push.
+- **Per-seat policy is an allowlist layer that can only NARROW the underlying credential, never exceed it** (allowed actions, allowed repos, mint ceilings, an hourly call cap).  Every call, allowed or denied, lands in an audit log.
+- `mint_token` is deliberately NOT exposed over MCP, because it returns a raw credential.
+- **How a seat reaches them:** with its own bearer token.  ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server.  The tool names are the same either way.
+- **STATUS (verified Oct 23 2026): implemented, policy-checked and tested, but NOT DEPLOYED.**  No daemon, no launchd job, no seat pointed at it, and no service host chosen yet.  Until the owner decides the cutover, keep using the interim `gh` and shell path below.
 
 ## Product philosophy — real trading, owner's risk (READ FIRST; do not re-paternalize)
 

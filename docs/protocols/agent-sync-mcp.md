@@ -4,6 +4,8 @@ Status:  revision 3, Fri, Oct 9;  hosted DM tools (section 1.2) added Sat, Oct 1
 
 Tool names, identity, connections and the CLI equivalents are in the [Agent-Sync Tools Guide](agent-sync-tools-guide.md) (https://fleetlink.online/agent-sync-tools-guide/);  this page is the design.
 
+Naming:  the hosted server is now **ST-MCP** (Simple-Tools MCP) and the local stdio server is `simple-chat mcp`.  This page keeps the older name in its title and in the decisions below, because those records name the artifact as it was built.  The current names live in the tools guide.
+
 Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet in ChatGPT, Grok on Web and iOS) one shared hosted endpoint.  Each caller acts only as its own bot.  Bot keys never reach the client.
 
 ## 0. Decisions at a Glance

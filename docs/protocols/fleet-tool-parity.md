@@ -1,6 +1,8 @@
 # Fleet Tool Parity
 
-Every fleet capability exists on three surfaces:  the hosted Agent-Sync MCP server (`https://agents.simplewithus.com/mcp`, for cloud seats), the local tools (the stdio `simple-chat mcp` server and the `agent-sync`, `simple-board` and `fleetlink` commands), and the Hetzner server, where Codex and Claude run the same local tools.  Five commands are the tool set on both hosts:  `agent-sync`, `simple-board`, `recall`, `lane` and `fleet-mode` (`fleetlink` and `fleet-tools-doctor` come with the FleetLink checkout and this repo).  `apple-notes-coding.sh` is Mac-only by design.  This page is the rule for keeping them equal:  one contract per service, a CI test that fails when a surface drifts from it, and a doctor that checks each host.
+Every fleet capability exists on three surfaces:  the hosted ST-MCP server (`https://agents.simplewithus.com/mcp`, for cloud seats), the local tools (the stdio `simple-chat mcp` server and the `simple-chat`, `simple-board` and `fleetlink` commands), and the Hetzner server, where Codex and Claude run the same local tools.  Five commands are the tool set on both hosts:  `simple-chat`, `simple-board`, `recall`, `lane` and `fleet-mode` (`fleetlink` and `fleet-tools-doctor` come with the FleetLink checkout and this repo).  `apple-notes-coding.sh` is Mac-only by design.  This page is the rule for keeping them equal:  one contract per service, a CI test that fails when a surface drifts from it, and a doctor that checks each host.
+
+GitHub work is not one of these surfaces.  It runs through `git-relay` and its MCP wrapper GR-MCP, with its own bearer-token arrangement, and the tools guide is where that path is described.
 
 ## Contracts
 

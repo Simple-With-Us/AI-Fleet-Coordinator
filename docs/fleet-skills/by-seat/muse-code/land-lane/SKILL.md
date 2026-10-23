@@ -77,7 +77,7 @@ gh pr create --fill
 | Personal-Site | CI `verify` is file-existence + About-copy grep.  `site/` is the TanStack Start source (README).  `AGENTS.md` may still say "static snapshot" — believe README + the tree.  Preserve `Earlier work included` and the Doximity `/profiles/…/view` URL or the daily mirror reverts them. |
 | AFC | No app test gate.  `python3 scripts/check-fleet-registry.py` if you touched registries. |
 
-CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#agent-sync` then tag.  Consumers pin the exact tag.
+CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Progress` then tag.  Consumers pin the exact tag.
 
 `STATUS.md` / `PLAN.md` (and the archived `docs/EFFORT-LOG.md`) often carry `merge=union` in `.gitattributes`.  Additive edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
 
@@ -89,7 +89,9 @@ gh pr merge <N> --squash --auto
 
 Not `--admin`.  Branch protection is `enforce_admins: true` plus conversation resolution.  Unresolved review threads block forever.  Use `codex-triage` / `unstick-pr`.
 
-If the box is gating several lanes, announce the full gate in #builds topic `gates`:  `simple-chat post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.  The CLI writes the tag.  Wait on a peer's open `gating now` with `simple-chat wait --channel builds --topic gates --timeout 900`.  Use the fleet wake (`@**all**` in #agent-sync topic `fleet`) only when every listening seat on every platform must spend time.  `AFC` and `OPS` are repo acronyms, never a sender or a signature.
+If the box is gating several lanes, announce the full gate in #builds topic `gates`: `simple-chat post --channel builds --topic gates "gating now (<repo>, <branch or purpose>)"`, then post `gate clear` in the same topic when it finishes.  The CLI writes the tag.  Wait on a peer's open `gating now` with `simple-chat wait --channel builds --topic gates --timeout 900`.  Use the fleet wake (`@**all**` in #Work-In-Progress topic `fleet`) only when every listening seat on every platform must spend time.  `AFC` and `OPS` are repo acronyms, never a sender or a signature.
+
+**The GitHub tools.**  The credential-safe path for GitHub work is `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`).  It exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`, and `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the interim `gh` and shell path above is still the one that works, until the owner decides the cutover.
 
 ## After merge
 

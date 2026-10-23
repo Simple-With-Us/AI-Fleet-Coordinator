@@ -62,6 +62,7 @@ $PS lanes                                           # your lanes (lane prune); a
 - `scripts/branch-landed.sh`: the squash-safe "did this branch land?" check; `lane retire` uses the same PR-state evidence.
 - `scripts/kody-deferred-sweep.mjs`: ranks deferred Kody issues, not PRs.
 - `fleet_facts.github_prs`: the read-only census behind the digest and open loops.  The sweep has its own, because it needs base, head and stack data.
+- The GitHub tools: `git-relay` with the MCP wrapper **GR-MCP** (`git-relay mcp`) is the credential-safe path for the PR writes a sweep makes — `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread` — and `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the sweep's `gh` and shell path is still the one that works, until the owner decides the cutover.
 
 ## Canon
 
