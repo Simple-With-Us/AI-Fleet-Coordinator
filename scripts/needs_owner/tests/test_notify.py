@@ -1,7 +1,9 @@
 """The notice:  pending, maybe-sent, reruns and the Grok Bot mirror."""
 from __future__ import annotations
 
+import argparse
 import contextlib
+import io
 import json
 import os
 import shutil
@@ -19,6 +21,7 @@ from needs_owner import links
 from needs_owner import notify as notifymod
 from needs_owner import records
 from needs_owner import text as T
+from needs_owner import verbs
 from needs_owner.errors import BoardFailed
 from needs_owner.proc import Result
 
@@ -409,7 +412,6 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual((got["state"], got["linkback"]), ("notified", "failed"))
         self.assertIn("notified msg 777", self._records()[0])
 
-
 class BoardWriteTests(unittest.TestCase):
     """The classifier:  what a failed board write means, and where it goes.
 
@@ -441,6 +443,21 @@ class BoardWriteTests(unittest.TestCase):
 
     def notified_key(self) -> str:
         return comment_keys.key_for("AFC-300", self.notified_text())
+
+    def test_a_refused_held_record_is_warned_with_the_boards_own_reason(self) -> None:
+        # `adopt --no-notify` has already filed the item when it writes the held mark, so a
+        # board refusal on that comment must not abandon the run, and the reason has to reach
+        # the operator:  a swallowed failure leaves nothing to act on.
+        runner = self.stub(Result(4, "", "board: no Fleet credentials  credential_field=LINEAR_CLIENT_ID"))
+        out, err = io.StringIO(), io.StringIO()
+        code = verbs.finish(
+            verbs.Streams(runner.env, out, err), runner, argparse.Namespace(json=False),
+            "CLAUDE", self.item, [], new=True, rescan=False,
+            words=("Filed", "Adopted"), extra={}, no_notify=True,
+        )
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn("the held record could not be written", err.getvalue())
+        self.assertIn("LINEAR_CLIENT_ID", err.getvalue())
 
     # ---- the table ------------------------------------------------------------------------
     def test_the_classifier_reads_the_board_codes(self) -> None:

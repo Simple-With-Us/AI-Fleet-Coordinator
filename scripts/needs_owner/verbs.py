@@ -185,11 +185,15 @@ def finish(
         if not item.notified and not item.pending:
             # Mark it held, so the fallback notifier (which sends every other notify_pending item) leaves it alone.
             # The item is already filed, so a board refusal on that comment must not abandon the
-            # rest of the run;  the reason is warned and the item stays pending.
-            try:
-                notifymod.record(runner, item, records.pending_text("held"))
-            except BoardFailed as exc:
-                io.warn("the held record could not be written: %s" % exc)
+            # rest of the run;  the reason is warned and the item stays pending.  The outcome
+            # carries the reason:  a terminal failure says which credential the operator has
+            # to fix, and a retryable one says to try again later.
+            wrote = notifymod.record(runner, item, records.pending_text("held"))
+            if not wrote:
+                io.warn(
+                    "the held record could not be written: %s"
+                    % (wrote.detail or "the board said nothing")
+                )
         notice = notifymod.Notice(
             "notified" if item.notified else "notify_pending",
             item.notified[0] if item.notified else None,
