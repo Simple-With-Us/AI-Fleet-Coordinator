@@ -627,8 +627,11 @@ test("the Operator's HTTP answers map to clear tool errors", async () => {
     // The queue's own 503 is a definite refusal (nothing was queued):  retryable under the same request_id.
     [{ status: 503, body: { error: "unavailable", message: "the notes queue is full" } }, "unavailable", /full or not running.*same request_id \(http-answer-01\)/],
     // Any other 5xx, or a lost answer, may have queued the request:  its outcome is unknown, never retryable.
-    [{ status: 503, body: null }, "outcome_unknown", /full or not running, so the request may or may not be queued.*notes_status.*same request_id, http-answer-01, never a new one/],
+    // A proxy's 503 is no proof the queue is full:  the message names only the status.
+    [{ status: 503, body: null }, "outcome_unknown", /answered HTTP 503, so the request may or may not be queued.*notes_status.*same request_id, http-answer-01, never a new one/],
+    [{ status: 422, body: null }, "outcome_unknown", /HTTP 422, so the request may or may not be queued/],
     [{ status: 502, body: null }, "outcome_unknown", /HTTP 502, so the request may or may not be queued/],
+    [{ status: 408, body: null }, "outcome_unknown", /HTTP 408, so the request may or may not be queued/],
     [{ status: 302, body: null }, "not_configured", /redirect/],
     [{ status: 429, body: null }, "rate_limited", /same request_id \(http-answer-01\)/],
     ["throw", "outcome_unknown", /could not reach the Operator, so the request may or may not be queued.*same request_id, http-answer-01/],

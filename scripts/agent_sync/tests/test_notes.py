@@ -630,6 +630,30 @@ class DirectRunnerTests(unittest.TestCase):
                 # The count is of the markers the caller actually gets, never one the second cut dropped.
                 self.assertEqual(note["withheld"], note["body"].count(N.WITHHELD))
 
+    def test_a_log_line_keeps_each_field_in_its_own_type_and_only_text_utf8_can_hold(self):
+        entry = N.clean_log_entry(
+            {"id": "e1", "ts": "2026-10-23T00:00:00Z", "exit": "boom", "duration_ms": 1.9, "seat": ["x"], "mode": {"a": 1},
+             "title": "t\ud800x", "pin": "skipped", "count": True}
+        )
+        self.assertEqual(entry["exit"], None)  # a count field takes a whole number only
+        self.assertEqual(entry["duration_ms"], 1)
+        self.assertNotIn("seat", entry)  # a list is no value of a text field:  dropped, never str()'d
+        self.assertNotIn("mode", entry)
+        self.assertEqual(entry["count"], None)  # a bool is no count
+        self.assertEqual(entry["title"], "t?x")  # a lone surrogate cannot be sent on as UTF-8
+        json.dumps(entry, ensure_ascii=False).encode("utf-8")  # so the line can always be sent
+        self.assertIsNone(N.clean_log_entry({"id": 5, "ts": "x"}))
+        with self.assertRaises(N.NotesError) as caught:
+            N.check_flags("pin")
+        self.assertEqual(caught.exception.code, "invalid_argument")
+
+    def test_a_title_is_scanned_whole_before_it_is_cut(self):
+        token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic
+        long_title = "x" * 380 + " " + token  # the token crosses character 400
+        self.assertEqual(N.list_result({"notes": [{"title": long_title}]})["notes"][0]["title"], N.WITHHELD)
+        entry = N.clean_log_entry({"id": "e1", "ts": "2026-10-23T00:00:00Z", "title": long_title})
+        self.assertEqual(entry["title"], N.WITHHELD)
+
     def test_a_list_and_the_log_withhold_a_secret_shaped_title(self):
         token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic
         listed = N.list_result({"notes": [{"title": "[AFC, Claude] %s" % token}, {"title": TITLE}], "total": 2})
@@ -728,10 +752,19 @@ class DirectRunnerTests(unittest.TestCase):
         self.assertEqual(run.calls, [], "nothing was written")
 
     def test_script_exit_codes_become_tool_errors(self):
-        for code, expected in ((2, "invalid_argument"), (3, "not_found"), (4, "unavailable"), (9, "internal")):
-            with self.subTest(code):
+        # An exit the script does not plan for (9) is an osascript error:  a create or update may still have written
+        # the note, so it is outcome_unknown;  a pin changed nothing a retry could repeat, so it is internal.
+        for action, code, expected in (
+            ("create", 2, "invalid_argument"),
+            ("create", 3, "not_found"),
+            ("create", 4, "unavailable"),
+            ("create", 9, "outcome_unknown"),
+            ("update", 9, "outcome_unknown"),
+            ("pin", 9, "internal"),
+        ):
+            with self.subTest(action=action, code=code):
                 with self.assertRaises(N.NotesError) as caught:
-                    self.run_direct(request(), FakeRun(code=code, stderr="usage: nope " + "x" * 400))
+                    self.run_direct(request(action), FakeRun(code=code, stderr="usage: nope " + "x" * 400))
                 self.assertEqual(caught.exception.code, expected)
                 self.assertLess(len(caught.exception.message), 400)
 

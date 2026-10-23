@@ -239,18 +239,28 @@ class RecoverTests(RunnerHarness):
         self.assertEqual([r["request"]["action"] for r in self.runs], ["read"], "only the read ran again")
         self.assertEqual(self.client.state()["inflight"], {})
 
-    def test_a_read_that_fails_to_run_again_keeps_to_its_own_entry(self):
+    def test_a_read_that_fails_to_run_again_is_reported_by_its_type_and_let_go(self):
         self.seed(
             **{
                 "CODEX/read-request-01": {"seat": "CODEX", "request_id": "read-request-01", "claim": "c1", "action": "read", "request": req("read", rid="read-request-01")},
                 "CODEX/pin-request-001": {"seat": "CODEX", "request_id": "pin-request-001", "claim": "c2", "action": "pin", "result": {"status": "done"}},
             }
         )
-        self.answer = ValueError("unexpected")  # running the read again fails in a way _execute does not expect
-        with self.assertRaises(ValueError):
-            self.runner.recover()
-        self.assertEqual([r["request_id"] for r in self.client.reports], ["pin-request-001"])
-        self.assertEqual(list(self.client.state()["inflight"]), ["CODEX/read-request-01"])
+        self.answer = ValueError("secret-looking text")  # running the read again fails in a way nobody planned for
+        self.runner.recover()  # _execute never raises:  the read gets a report, so its entry never blocks a claim
+        got = {r["request_id"]: r["error"] for r in self.client.reports}
+        self.assertEqual(got["read-request-01"]["code"], "internal")
+        self.assertIn("ValueError", got["read-request-01"]["message"])
+        self.assertNotIn("secret-looking", got["read-request-01"]["message"])  # the type name only
+        self.assertIsNone(got["pin-request-001"])
+        self.assertEqual(self.client.state()["inflight"], {})
+
+    def test_an_unexpected_failure_in_a_create_is_outcome_unknown(self):
+        self.answer = RuntimeError("boom")
+        self.claim(req("create"))
+        self.assertTrue(self.runner.once(0))
+        self.assertEqual(self.client.reports[0]["error"]["code"], "outcome_unknown")
+        self.assertIn("may or may not have been written", self.client.reports[0]["error"]["message"])
 
     def test_a_recovery_entry_with_malformed_ids_is_dropped_unreported(self):
         self.seed(
@@ -280,8 +290,10 @@ class RecoverTests(RunnerHarness):
             return real(seat, request_id, claim, **outcome)
 
         self.client.report = report
-        with self.assertRaises(ValueError):  # raised after the rest, so the loop backs off before new work
+        # Raised after the rest, as a NotesError the loop backs off on (never one that ends the runner).
+        with self.assertRaises(N.NotesError) as caught:
             self.runner.recover()
+        self.assertIn("ValueError", caught.exception.message)
         self.assertEqual([r["request_id"] for r in self.client.reports], ["second-request1"])
         self.assertEqual(list(self.client.state()["inflight"]), ["CODEX/first-request-1"])
 
@@ -385,6 +397,53 @@ class ShipLogTests(RunnerHarness):
         self.write(4)
         self.assertEqual(self.runner.ship_log(), 3)
         self.assertEqual(self.shipped(), ["e%04d" % n for n in range(1, 5)])
+
+    def test_a_resend_skips_the_lines_older_than_the_newest_one_already_sent(self):
+        # PR #876 review:  a replaced file resent whole could hold more lines than the Operator's id window, so a
+        # resend starts at the newest ts already sent (a line at that same ts goes again and is dropped by its id).
+        stamp = lambda n: json.dumps({"id": "e%04d" % n, "ts": "2025-10-22T21:%02d:00Z" % n, "mode": "pin"}) + "\n"  # noqa: E731  (before the harness clock)
+        self.write(raw="".join(stamp(n) for n in (1, 2, 3)))
+        self.assertEqual(self.runner.ship_log(), 3)
+        self.assertEqual(self.client.state()["log"]["ts"], "2025-10-22T21:03:00Z")
+        os.rename(self.log_path, self.log_path.with_name("replaced-away"))
+        self.write(raw="".join(stamp(n) for n in (1, 2, 3, 4)), path=self.log_path.with_name(self.log_path.name + ".1"))
+        self.write(raw=stamp(5))
+        self.client.batches.clear()
+        self.runner.ship_log()
+        self.assertEqual(self.shipped(), ["e0003", "e0004", "e0005"])
+
+    def test_a_rotated_copy_is_followed_by_position_so_an_out_of_order_line_is_never_lost(self):
+        # Two script runs can finish in the other order, and a clock can step back:  a line older than the newest one
+        # sent, written after it, must still go once its file rotates.
+        line = lambda n, ts: json.dumps({"id": "e%04d" % n, "ts": ts, "mode": "pin"}) + "\n"  # noqa: E731
+        self.write(raw=line(1, "2025-10-22T21:00:05Z"))
+        self.assertEqual(self.runner.ship_log(), 1)
+        self.write(raw=line(2, "2025-10-22T21:00:03Z"))  # older than e0001, written after it
+        os.rename(self.log_path, self.log_path.with_name(self.log_path.name + ".1"))
+        self.write(raw=line(3, "2025-10-22T21:00:06Z"))
+        self.runner.ship_log()
+        self.assertEqual(self.shipped(), ["e0001", "e0002", "e0003"])
+
+    def test_a_future_ts_never_becomes_the_floor_a_resend_is_cut_at(self):
+        line = lambda n, ts: json.dumps({"id": "e%04d" % n, "ts": ts, "mode": "pin"}) + "\n"  # noqa: E731
+        self.write(raw=line(1, "2025-10-22T21:00:00Z") + line(2, "2031-01-01T00:00:00Z"))  # a clock that ran ahead
+        self.runner.ship_log()
+        self.assertEqual(self.client.state()["log"]["ts"], "2025-10-22T21:00:00Z")
+        os.rename(self.log_path, self.log_path.with_name("replaced-away"))
+        self.write(raw=line(3, "2025-10-22T21:30:00Z"))
+        self.client.batches.clear()
+        self.runner.ship_log()
+        self.assertEqual(self.shipped(), ["e0003"])
+
+    def test_a_log_that_cannot_be_sent_never_blocks_a_claim(self):
+        import threading
+
+        stamps = iter([("old",), ("old",), ("new",)])
+        self.claim(req("pin"))
+        with mock.patch.object(self.runner, "ship_log", side_effect=ValueError("a line it cannot send")):
+            self.runner.loop(threading.Event(), 0, code_stamp=lambda: next(stamps))
+        self.assertEqual(len(self.client.reports), 1)  # the request was still handled
+        self.assertIn("log:  internal: ValueError", self.client.state()["last_error"])
 
     def test_a_file_truncated_in_place_is_read_from_its_start(self):
         self.write(1, 2, 3)

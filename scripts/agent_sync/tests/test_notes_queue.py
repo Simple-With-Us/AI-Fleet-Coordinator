@@ -268,7 +268,9 @@ class RunnerTests(QueueHarness):
             self.clock.advance(1)
         done, refused, unknown = (self.assert_answer(self.claim(), 200) for _ in range(3))
         body = self.assert_answer(self.report(done, result={"status": "done", "note_id": "x-coredata://n1"}), 200)
-        self.assertEqual((body["state"], body["result"]), ("done", {"status": "done", "note_id": "x-coredata://n1"}))
+        self.assertEqual(body["state"], "done")
+        stored = self.assert_answer(self.status("CLAUDE", "result-request-1"), 200)
+        self.assertEqual(stored["result"], {"status": "done", "note_id": "x-coredata://n1"})
         self.assertIsNotNone(body["finished_at"])
         body = self.assert_answer(self.report(refused, error={"code": "not_found", "message": "no note"}), 200)
         self.assertEqual((body["state"], body["error"]["code"]), ("refused", "not_found"))
@@ -277,11 +279,21 @@ class RunnerTests(QueueHarness):
         # A finished write keeps no body on disk.
         for path in (Path(self.root) / NQ.QUEUE_DIR / NQ.REQUESTS_DIR / "CLAUDE").glob("*.json"):
             self.assertNotIn("the body text", path.read_text())
-        # An error code the contract does not know is recorded as internal.
+        # An error code the contract does not know is internal, which proves nothing:  for a create it is unknown (the
+        # note may have been written), and for a pin a refusal.
         self.assert_answer(self.enqueue(request(rid="result-request-4")), 202)
         odd = self.assert_answer(self.claim(), 200)
         body = self.assert_answer(self.report(odd, error={"code": "made_up", "message": "x"}), 200)
+        self.assertEqual((body["state"], body["error"]["code"]), ("unknown", "outcome_unknown"))
+        self.assert_answer(self.enqueue(request("pin", rid="result-request-5")), 202)
+        pin = self.assert_answer(self.claim(), 200)
+        body = self.assert_answer(self.report(pin, error={"code": "internal", "message": "x"}), 200)
         self.assertEqual((body["state"], body["error"]["code"]), ("refused", "internal"))
+        # An error whose code or message is not text is refused whole, before anything is stored.
+        self.assert_answer(self.enqueue(request("pin", rid="result-request-6")), 202)
+        bad = self.assert_answer(self.claim(), 200)
+        self.assert_answer(self.report(bad, error={"code": "internal", "message": {"deep": [1]}}), 400, "invalid_argument")
+        self.assertEqual(self.assert_answer(self.status("CLAUDE", "result-request-6"), 200)["state"], "running")
 
     def test_a_read_and_a_list_return_their_result(self) -> None:
         self.assert_answer(self.enqueue(request("read", rid="read-request-1", format="text")), 202)
@@ -289,7 +301,11 @@ class RunnerTests(QueueHarness):
         read, listed = self.assert_answer(self.claim(), 200), self.assert_answer(self.claim(), 200)
         note = {"title": "[AFC, Claude] Queue Test", "id": "n1", "format": "text", "body": "hello", "bytes": 5}
         body = self.assert_answer(self.report(read, result={"note": note}), 200)
-        self.assertEqual(body["result"]["note"]["body"], "hello")
+        # The answer to a report never echoes the result (the runner already holds it);  the record does.
+        self.assertNotIn("result", body)
+        self.assertEqual((body["seat"], body["request_id"], body["state"]), ("CLAUDE", "read-request-1", "done"))
+        stored = self.assert_answer(self.status("CLAUDE", "read-request-1"), 200)
+        self.assertEqual(stored["result"]["note"]["body"], "hello")
         self.assert_answer(self.report(listed, result={"status": "done"}), 400, "invalid_argument")  # no notes list
         body = self.assert_answer(self.report(listed, result={"notes": [], "total": 0}), 200)
         self.assertEqual(body["state"], "done")
@@ -379,6 +395,15 @@ class RunnerTests(QueueHarness):
         self.assertEqual(self.assert_answer(self.status("CLAUDE", "late-write-2"), 200)["state"], "unknown")
         self.assert_answer(self.report(second, error={"code": "outcome_unknown", "message": "m"}), 200)
         self.assertEqual(self.assert_answer(self.status("CLAUDE", "late-write-2"), 200)["state"], "unknown")
+        # Nor does a late internal, or an error with no code:  they prove nothing, so the write stays unknown.
+        for rid, error in (("late-write-3", {"code": "internal", "message": "exit 9"}), ("late-write-4", {})):
+            with self.subTest(rid):
+                self.assert_answer(self.enqueue(request(rid=rid)), 202)
+                late = self.assert_answer(self.claim(), 200)
+                self.clock.advance(NQ.LEASE_S + 1)
+                self.assert_answer(self.report(late, error=error), 200)
+                body = self.assert_answer(self.status("CLAUDE", rid), 200)
+                self.assertEqual((body["state"], body["error"]["code"]), ("unknown", "outcome_unknown"))
 
     def test_a_request_nobody_claims_expires_after_24_hours(self) -> None:
         self.assert_answer(self.enqueue(request()), 202)

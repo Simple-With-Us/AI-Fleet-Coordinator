@@ -55,6 +55,9 @@ export const TITLE_MAX = 200;
 export const SUMMARY_MAX = 280;
 export const MARKDOWN_MAX = 500_000;
 export const NOTES_ANSWER_MAX = 4 * 1024 * 1024; // the most of an Operator answer the Worker reads (notes_wire.MAX_BODY)
+// The statuses the queue answers an enqueue with, each a definite outcome (queued, a repeat, or a refusal);  any other
+// may have queued the request (notes_client.answer_error reads them the same way).
+const ENQUEUE_ANSWERS = new Set([200, 202, 400, 401, 403, 404, 409, 413, 429]);
 // What a read shows for a line that looks like a credential (notes.WITHHELD);  a body holding it is never written back.
 export const WITHHELD = "[withheld: secret-shaped]";
 export const QUERY_MAX = 100;
@@ -697,10 +700,14 @@ export const NOTES_METHODS = {
       throw error;
     }
     // The queue's own 503 (full, or not running) is a definite refusal:  nothing was queued, so it stays unavailable
-    // and retryable under the same request_id.  Any other 5xx, a proxy's included, may have queued it.
+    // and retryable under the same request_id.  Any other 5xx (a proxy's included), a 408 (the request may have
+    // arrived before the timeout), or a status the queue never sends may have queued it, as the Python client reads
+    // them too.  Its message names only the status:  a proxy's 503 is no proof the queue is full.
     const refusal = OperatorRefusal.safeParse(posted.data);
     const refused = posted.status === 503 && refusal.success && refusal.data.error === "unavailable";
-    if (posted.status >= 500 && !refused) throw enqueueUnknown(notesHttpError(posted.status, posted.data).message, requestId);
+    const redirect = posted.status >= 300 && posted.status < 400;
+    const answered = ENQUEUE_ANSWERS.has(posted.status) || redirect || refused;
+    if (!answered) throw enqueueUnknown(`the Operator answered HTTP ${posted.status}`, requestId);
     if (posted.status !== 200 && posted.status !== 202) throw notesHttpError(posted.status, posted.data, { seat: this.seat, requestId });
     // A 202 is queued;  a 200 is the record of the same request sent before.  An answer that does not parse is read
     // as queued, and the next poll fetches the record itself.
@@ -809,7 +816,7 @@ export const NOTES_METHODS = {
 };
 
 /**
- * A failed enqueue (a network failure, a timeout, a 5xx):  the request may have reached the queue before the answer was
+ * A failed enqueue (a network failure, a timeout, a 5xx, a 408):  the request may have reached the queue before the answer was
  * lost, so its outcome is unknown.  Checking it, or sending it again under the same request_id, is safe (the Operator
  * answers the record it has);  a new request_id could write the note twice, so this is never retryable.
  */

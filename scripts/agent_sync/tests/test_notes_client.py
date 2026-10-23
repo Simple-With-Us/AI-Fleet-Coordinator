@@ -147,7 +147,7 @@ class FakeOperator:
             return (204, None) if claimed is None else (200, claimed)
         if method == "POST" and path == "/notes/v1/runner/result":
             self.reports.append(payload)
-            return 200, {"state": "done"}
+            return 200, {"state": "done", "seat": payload["seat"], "request_id": payload["request_id"]}
         if method == "POST" and path == "/notes/v1/runner/log":
             return 200, {"accepted": len(payload["lines"]), "duplicates": 0}
         return 404, {"error": "not_found", "message": "no such path"}
@@ -366,12 +366,35 @@ class ClientTests(unittest.TestCase):
                 {"seat": "CLAUDE", "request_id": "requestid-0002", "claim": "c2", "error": {"code": "not_found", "message": "m"}},
             ],
         )
-        for status in (404, 409):
-            runner.answers[("POST", "/notes/v1/runner/result")] = (status, {"error": "gone"})
-            self.assertEqual(client.report("CLAUDE", "r", "c", result={}), status, "the claim is no longer held:  nothing to resend")
-        runner.answers[("POST", "/notes/v1/runner/result")] = (503, {"error": "unavailable"})
-        with self.assertRaises(N.NotesError):
-            client.report("CLAUDE", "r", "c", result={})
+        # Final only when it is the queue's own answer:  nothing to resend, so the runner lets it go.
+        for status, body in (
+            (404, {"error": "not_found", "message": "no such request"}),
+            (409, {"error": "conflict", "message": "this claim does not hold the request"}),
+            (400, {"error": "invalid_argument", "message": "the result does not fit the request's action"}),
+            (413, {"error": "too_large", "message": "too large"}),
+        ):
+            with self.subTest(final=status):
+                runner.answers[("POST", "/notes/v1/runner/result")] = (status, body)
+                self.assertEqual(client.report("CLAUDE", "r", "c", result={}), status)
+        # A report over the queue's body cap is answered 413 before it is sent (the queue would close on it, so a
+        # sender only ever sees a reset):  the runner then sends a small error report and lets the request go.
+        sent_before = len(runner.calls)
+        huge = {"note": {"body": "\x01" * (W.MAX_BODY // 5)}}  # each control character is six bytes once escaped
+        self.assertEqual(client.report("CLAUDE", "r", "c", result=huge), 413)
+        self.assertEqual(len(runner.calls), sent_before, "nothing was sent")
+        # Anything else leaves the outcome with the runner:  an empty 200, a proxy's 404 page, the queue's 404 to a
+        # principal it holds no key for, a 503.
+        for status, body in (
+            (200, None),
+            (200, {"state": "done", "seat": "CLAUDE", "request_id": "someone-else"}),
+            (404, b"404 page not found"),
+            (404, {"error": "not_found", "message": "not found"}),
+            (503, {"error": "unavailable"}),
+        ):
+            with self.subTest(kept=status, body=str(body)[:30]):
+                runner.answers[("POST", "/notes/v1/runner/result")] = (status, body)
+                with self.assertRaises(N.NotesError):
+                    client.report("CLAUDE", "r", "c", result={})
         self.assertEqual(client.send_log([{"id": "e1"}, {"id": "e2"}]), 2)
 
     def test_http_answers_map_to_stable_codes(self):
@@ -379,7 +402,8 @@ class ClientTests(unittest.TestCase):
             (400, {"error": "invalid_argument", "message": "the title is bad"}, "invalid_argument", "the title is bad"),
             (400, {"error": "session_required", "message": "pass a session"}, "session_required", "pass a session"),
             (400, {"error": "weird"}, "invalid_argument", "the Operator refused the request"),
-            (401, {"error": "unauthorized"}, "not_configured", "HTTP 401"),
+            # A rejected key is named by its variable and where it lives, never by any part of its value.
+            (401, {"error": "unauthorized"}, "not_configured", "does not accept OPERATOR_NOTES_SERVER_KEY (Infisical AI Fleet Coordinator prod /operator) (HTTP 401)"),
             (403, {"error": "forbidden", "message": "seat CLAUDE is not a server seat"}, "forbidden", "not a server seat"),
             (404, None, "not_configured", "HTTP 404"),
             (404, {"error": "not_found", "message": "no request r1 for CLAUDE"}, "not_found", "no request r1"),
@@ -394,8 +418,11 @@ class ClientTests(unittest.TestCase):
                     self.client.enqueue("CLAUDE", self.req)
                 self.assertEqual(caught.exception.code, code)
                 self.assertIn(words, caught.exception.message)
-                direct = NC.answer_error(status, data)
+                self.assertNotIn(TEST_KEY[:8], caught.exception.message)
+                direct = NC.answer_error(status, data, W.SERVER)
                 self.assertEqual((direct.code, direct.message), (caught.exception.code, caught.exception.message))
+        # Without a principal it says "this host's notes key".
+        self.assertIn("this host's notes key", NC.answer_error(401, None).message)
 
     def test_a_401_drops_a_cached_key_so_a_rotation_is_picked_up(self):
         source = NC.KeySource(W.SERVER, {"OPERATOR_NOTES_SERVER_KEY": TEST_KEY})
@@ -470,8 +497,11 @@ class ClientTests(unittest.TestCase):
         client = NC.OperatorClient("http://127.0.0.1:%d" % server.server_address[1], W.SERVER, lambda: TEST_KEY)
         with self.assertRaises(N.NotesError) as caught:
             client.enqueue("CLAUDE", self.req)
-        self.assertEqual(caught.exception.code, "unavailable")
-        self.assertIn("HTTP 302", caught.exception.message)
+        # The queue never redirects, so a redirect is a configuration fault, as the Worker reads it:  never an unknown
+        # outcome (call passes not_configured through as it is).
+        self.assertEqual(caught.exception.code, "not_configured")
+        self.assertIn("redirect", caught.exception.message)
+        self.assertIn("OPERATOR_API_URL", caught.exception.message)
         self.assertEqual(hits, ["/notes/v1/requests"], "the redirect target was never asked")
         self.assertTrue(any(isinstance(h, NC._NoRedirect) for h in NC._OPENER.handlers))
 
@@ -685,10 +715,14 @@ class HostTests(unittest.TestCase):
             out = NC.call(host, "CLAUDE", self.req("read", rid="readrequest-01"), wait=90, scan=self.scan)
         self.assertEqual((out["status"], out["transport"], out["note"]["body"]), ("done", "direct", "<div>x</div>"))
         self.assertNotIn("duplicate", out)
+        # Its status row costs one write of the idempotency file, not two.
+        with mock.patch.object(self.store, "mutate", wraps=self.store.mutate) as writes:
+            NC.call(host, "CLAUDE", self.req("read", rid="readrequest-02"), wait=90, scan=self.scan)
+        self.assertEqual(writes.call_count, 1)
         self.answer = {"notes": [], "total": 0, "truncated": False}
         listed = NC.call(host, "CLAUDE", self.req("list", rid="listrequest-01"), wait=90, scan=self.scan)
         self.assertEqual((listed["status"], listed["notes"], listed["total"]), ("done", [], 0))
-        self.assertEqual(len(self.runs), 3, "a read runs every time")
+        self.assertEqual(len(self.runs), 4, "a read runs every time")
         self.assertEqual(self.scans, [])
         self.assertIsNone(self.store.row("k:notes-direct:readrequest-01"))
         # A small status row (no note text) lets notes_status answer for a read this Mac ran.

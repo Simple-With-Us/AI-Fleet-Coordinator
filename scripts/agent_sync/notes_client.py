@@ -256,7 +256,7 @@ class OperatorClient:
         )
         if status in (200, 202) and data is not None:
             return _own_record(data, seat, request["request_id"]), status == 200
-        refusal = answer_error(status, data)
+        refusal = answer_error(status, data, self.principal)
         # A 429 (rate limited, before anything is queued) and the queue's own 503 (full, or not running) are definite
         # refusals:  nothing was queued, so `call` passes them on as unavailable instead of an unknown outcome, as
         # the Worker does.  A bare 5xx from a proxy stays unknown.
@@ -269,7 +269,7 @@ class OperatorClient:
         status, data = self.call("GET", "/notes/v1/requests/%s/%s" % (seat, request_id))
         if status == 200 and data is not None:
             return _own_record(data, seat, request_id)
-        raise answer_error(status, data)
+        raise answer_error(status, data, self.principal)
 
     def wait(self, seat: str, record: Mapping[str, Any], seconds: float) -> dict[str, Any]:
         """The record once it is final, or as it stands when `seconds` have passed.  A poll that fails for any reason
@@ -316,13 +316,13 @@ class OperatorClient:
                 for entry in data.get("entries") or []
                 if isinstance(entry, dict)
             ]
-        raise answer_error(status, data)
+        raise answer_error(status, data, self.principal)
 
     def health(self) -> dict[str, Any]:
         status, data = self.call("GET", "/notes/v1/health")
         if status == 200 and data is not None:
             return data
-        raise answer_error(status, data)
+        raise answer_error(status, data, self.principal)
 
     # ---- the runner ------------------------------------------------------------------------------
     def claim(self, wait: int) -> dict[str, Any] | None:
@@ -333,7 +333,7 @@ class OperatorClient:
             return None
         if status == 200 and data is not None:
             return data
-        raise answer_error(status, data)
+        raise answer_error(status, data, self.principal)
 
     def report(
         self, seat: str, request_id: str, claim: str, *, result: Any = None, error: Any = None
@@ -343,18 +343,44 @@ class OperatorClient:
             payload["error"] = error
         else:
             payload["result"] = result
+        # A report over the queue's body cap is answered 413 here, before it is sent, encoded as `call` encodes it:
+        # the queue answers 413 from the length alone and closes, so a sender only ever sees a reset, and the runner
+        # would retry it for ever.  A 413 makes the runner send a small error report instead and let the request go.
+        try:
+            size = len(
+                json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            )
+        except UnicodeEncodeError:  # text UTF-8 cannot hold:  a refusal the queue would always give
+            return 400
+        if size > W.MAX_BODY:
+            return 413
         status, data = self.call("POST", "/notes/v1/runner/result", payload=payload)
-        if status in (200, 400, 404, 409, 413):
-            # Recorded;  or the Operator no longer holds this claim;  or it refuses this report and always will (400,
-            # 413).  Sending it again changes nothing, so the runner never holds on to it.
+        body = data if isinstance(data, Mapping) else {}
+        code, message = str(body.get("error") or ""), str(body.get("message") or "")
+        # Final only when it is the queue's own answer:  the record of this request (200);  "no such request" (404);
+        # another claim holds it (409);  or a refusal it will always give (400, 413).  Sending it again changes
+        # nothing, so the runner lets it go.  Anything else (an empty body, a proxy's page, or the queue's 404 to a
+        # principal it holds no key for) leaves the outcome with the runner for the next pass.
+        if status == 200 and body.get("seat") == seat and body.get("request_id") == request_id:
             return status
-        raise answer_error(status, data)
+        if (
+            (status == 404 and code == "not_found" and message == "no such request")
+            or (status == 409 and code == "conflict")
+            or (status == 400 and code == "invalid_argument")
+            or (status == 413 and code == "too_large")
+        ):
+            return status
+        if status == 200:
+            raise N.NotesError(
+                "unavailable", "the Operator answered the report without this request's record"
+            )
+        raise answer_error(status, data, self.principal)
 
     def send_log(self, lines: list[dict[str, Any]]) -> int:
         status, data = self.call("POST", "/notes/v1/runner/log", payload={"lines": lines})
         if status == 200 and data is not None:
             return int(data.get("accepted") or 0)
-        raise answer_error(status, data)
+        raise answer_error(status, data, self.principal)
 
 
 def _own_record(data: Mapping[str, Any], seat: str, request_id: str) -> dict[str, Any]:
@@ -367,10 +393,21 @@ def _own_record(data: Mapping[str, Any], seat: str, request_id: str) -> dict[str
     return dict(data)
 
 
-def answer_error(status: int, data: Mapping[str, Any] | None) -> N.NotesError:
-    """The NotesError for an HTTP answer that is not a success."""
+def answer_error(
+    status: int, data: Mapping[str, Any] | None, principal: str | None = None
+) -> N.NotesError:
+    """The NotesError for an HTTP answer that is not a success.  `principal` names the key in a 401 or 404 (the
+    variable and where it lives, never any part of its value)."""
     code = str((data or {}).get("error") or "")
     message = str((data or {}).get("message") or "")[:400]
+    if 300 <= status < 400:
+        # The queue never redirects, so a redirect proves it never saw the request:  a configuration fault, as the
+        # Worker reads it too.
+        return N.NotesError(
+            "not_configured",
+            "the Operator answered with a redirect, which this client never follows (check the fleet knob %s)"
+            % KNOB,
+        )
     if status == 400:
         return N.NotesError(
             code if code in ("invalid_argument", "session_required") else "invalid_argument",
@@ -384,10 +421,15 @@ def answer_error(status: int, data: Mapping[str, Any] | None) -> N.NotesError:
     if status == 404 and code == "not_found" and message.startswith("no request"):
         return N.NotesError("not_found", message)
     if status in (401, 404):
+        which = (
+            "%s (Infisical AI Fleet Coordinator prod %s)" % (W.KEY_NAMES[principal], W.KEY_PATH)
+            if principal in W.KEY_NAMES
+            else "this host's notes key"
+        )
         return N.NotesError(
             "not_configured",
-            "the Operator does not accept this host's notes key (HTTP %d);  check the key in Infisical and the "
-            "Operator's [notes_queue]" % status,
+            "the Operator does not accept %s (HTTP %d);  check that key and the Operator's [notes_queue]"
+            % (which, status),
         )
     if status == 403:
         return N.NotesError("forbidden", message or "the Operator refused this seat")

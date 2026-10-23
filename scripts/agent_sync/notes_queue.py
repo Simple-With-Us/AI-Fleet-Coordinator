@@ -84,6 +84,9 @@ _ERROR_CODES = frozenset(
         "session_required",
     }
 )
+# The runner's error codes that prove a request's outcome:  nothing was written (the script refused it, found no
+# such note, wanted a session, or never ran).  internal and outcome_unknown prove nothing.
+DEFINITE_CODES = frozenset({"invalid_argument", "not_found", "session_required", "unavailable"})
 
 
 class Principal(NamedTuple):
@@ -218,6 +221,14 @@ class NotesQueue:
             out["error"] = record["error"]
         if record.get("result_expired"):
             out["result_expired"] = True
+        return out
+
+    @classmethod
+    def _report_view(cls, record: Mapping[str, Any]) -> dict[str, Any]:
+        """The record as a runner report is answered:  without its result, which the runner already holds, so an
+        answer to a large read is never larger than the report it answers (or than a client reads)."""
+        out = cls.view(record)
+        out.pop("result", None)
         return out
 
     # ---- time-based changes ----------------------------------------------------------------------
@@ -605,6 +616,15 @@ class NotesQueue:
             "error",
         }:
             return _error(400, "invalid_argument", "send exactly one of result and error")
+        if "error" in payload:
+            error = payload["error"]
+            if not isinstance(error, Mapping) or not all(
+                error.get(key) is None or isinstance(error.get(key), str)
+                for key in ("code", "message")
+            ):
+                return _error(
+                    400, "invalid_argument", "error must be an object with a text code and message"
+                )
         if "result" in payload:
             payload = dict(
                 payload, result=self._withhold_read(payload["result"])
@@ -618,13 +638,12 @@ class NotesQueue:
             if record["state"] in FINAL:
                 if record.get("claim") != claim:
                     return _error(409, "conflict", "this request is already finished")
-                definite = "result" in payload or (
-                    isinstance(payload.get("error"), Mapping)
-                    and payload["error"].get("code") != "outcome_unknown"
-                )
+                # Only a result, or an error that proves the outcome (DEFINITE_CODES), settles it;  an internal, a
+                # missing or unknown code, or outcome_unknown leaves the write unknown.
+                definite = "result" in payload or (payload["error"].get("code") in DEFINITE_CODES)
                 if not (record.get("lease_expired") and definite):
                     return Answer(
-                        200, self.view(record)
+                        200, self._report_view(record)
                     )  # the same report again:  already recorded
                 # The lease ran out (the Mac slept or lost the network) and the write was called unknown, but the
                 # runner now knows what happened:  record that, so notes_status tells the truth instead of leaving
@@ -635,9 +654,13 @@ class NotesQueue:
             elif record["state"] != "running" or record.get("claim") != claim:
                 return _error(409, "conflict", "this claim does not hold the request")
             if "error" in payload:
-                error = payload["error"] if isinstance(payload["error"], Mapping) else {}
+                error = payload["error"]
                 code = str(error.get("code") or "internal")
                 code = code if code in _ERROR_CODES else "internal"
+                if record.get("action") in ("create", "update") and code not in DEFINITE_CODES:
+                    # A create or update that failed in a way that does not prove nothing was written (an
+                    # unplanned exit, say) may have written the note:  unknown, never a refusal a retry repeats.
+                    code = "outcome_unknown"
                 state = "unknown" if code == "outcome_unknown" else "refused"
                 self._finish(
                     record, now, state=state, error={"code": code, "message": error.get("message")}
@@ -649,7 +672,7 @@ class NotesQueue:
                         400, "invalid_argument", "the result does not fit the request's action"
                     )
                 self._finish(record, now, state="done", result=cleaned)
-            return Answer(200, self.view(record))
+            return Answer(200, self._report_view(record))
 
     @staticmethod
     def _withhold_read(raw: Any) -> Any:

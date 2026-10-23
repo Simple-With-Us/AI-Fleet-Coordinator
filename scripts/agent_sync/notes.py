@@ -176,6 +176,8 @@ def check_flags(raw: Mapping[str, Any] | None) -> dict[str, Any]:
     `activate` is not a flag at all:  a request must never steal the owner's focus.  A flag set to its default
     (pin true;  notify, needs_owner and html false) is left out, so the same request reads the same, and
     request_digest matches, whether a tool's schema filled the default in or simple-notes left it unset."""
+    if raw is not None and not isinstance(raw, Mapping):
+        raise NotesError("invalid_argument", "argument 'flags' must be an object")
     flags = dict(raw or {})
     unknown = [name for name in flags if name not in FLAG_NAMES]
     if unknown:
@@ -334,14 +336,22 @@ def remember_direct_read(store: Any, request: Mapping[str, Any]) -> None:
     """A small row for a read or list this Mac answered directly (its action and done, never the note text or the
     titles), so notes_status answers for it here as it does through the Operator.  A failure here never fails the read."""
     key = "k:notes-read:%s" % request["request_id"]
+    result = {"request_id": request["request_id"], "action": request["action"]}
+
+    def change(rows: dict[str, Any], now: float) -> None:
+        # One write, finished as it is made:  a read has nothing in flight to guard, so it needs no pending step.
+        rows[key] = {
+            "tool": "notes_read",
+            "state": "sent",
+            "id": 0,
+            "result": result,
+            "claimed_at": now,
+            "ts": now,
+            "expires": now + DIRECT_TTL,
+        }
+
     try:
-        store.begin(key, DIRECT_TTL, {"tool": "notes_read"})
-        store.set(
-            key,
-            state="sent",
-            id=0,
-            result={"request_id": request["request_id"], "action": request["action"]},
-        )
+        store.mutate(change)
     except (OSError, ValueError):
         pass
 
@@ -812,13 +822,13 @@ def cut_body(body: str, limit: int) -> str:
 
 def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> dict[str, Any]:
     """The `note` a read answers, from the script's --read output, with any secret-shaped line withheld."""
-    title = str(raw.get("title") or "")
+    title = text_safe(str(raw.get("title") or ""))
     if fmt == "raw":
-        body = str(raw.get("body") or "")
+        body = text_safe(str(raw.get("body") or ""))
     elif fmt == "text":
-        body = content_text(str(raw.get("plaintext") or ""), title)
+        body = content_text(text_safe(str(raw.get("plaintext") or "")), title)
     else:
-        body = content_html(str(raw.get("body") or ""), title)
+        body = content_html(text_safe(str(raw.get("body") or "")), title)
     # Cut first, so the scan covers only what is returned;  then withhold, and cut again in case a marker made a line
     # longer than the secret it replaced.  Each cut ends on a whole line, so a marker is never split.
     whole = len(body.encode("utf-8"))
@@ -830,9 +840,9 @@ def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> d
     )  # the markers the caller actually gets, never one the second cut dropped
     return {
         "title": title,
-        "id": str(raw.get("id") or ""),
-        "created": str(raw.get("created") or ""),
-        "modified": str(raw.get("modified") or ""),
+        "id": text_safe(str(raw.get("id") or "")),
+        "created": text_safe(str(raw.get("created") or "")),
+        "modified": text_safe(str(raw.get("modified") or "")),
         "format": fmt,
         "body": body,
         "bytes": len(body.encode("utf-8")),
@@ -850,10 +860,12 @@ def list_result(raw: Mapping[str, Any]) -> dict[str, Any]:
     rows = []
     for row in notes if isinstance(notes, list) else []:
         if isinstance(row, Mapping):
-            out = {
-                key: str(row.get(key) or "")[:400] for key in ("title", "id", "created", "modified")
+            text = {
+                key: text_safe(str(row.get(key) or ""))
+                for key in ("title", "id", "created", "modified")
             }
-            if secretscan.scan(out["title"]):
+            out = {key: value[:400] for key, value in text.items()}
+            if secretscan.scan(text["title"]):  # the whole title, before it is cut
                 out["title"] = WITHHELD
             rows.append(out)
     total = raw.get("total")
@@ -1224,10 +1236,16 @@ def run_direct(
             "unavailable",
             "the note could not be unpinned:  the Unpin Coding Note shortcut is missing, failed or busy",
         )
-    raise NotesError(
-        "internal",
-        "the notes script exited with code %d%s" % (code, (":  " + stderr) if stderr else ""),
-    )
+    detail = "the notes script exited with code %d%s" % (code, (":  " + stderr) if stderr else "")
+    if action in ("create", "update"):
+        # An exit the script does not plan for is an osascript error (say an AppleEvent timeout after `make new
+        # note` was sent), and Notes can still finish the note:  never a plain refusal a retry could write twice.
+        raise NotesError(
+            "outcome_unknown",
+            "%s, so the note may or may not have been written.  Check the Coding folder before sending it again."
+            % detail,
+        )
+    raise NotesError("internal", detail)
 
 
 # --------------------------------------------------------------------------------------------
@@ -1283,6 +1301,10 @@ def clean_log_entry(raw: Any) -> dict[str, Any] | None:
         or not isinstance(raw.get("ts"), str)
     ):
         return None
+    from . import (
+        secretscan,
+    )  # lazy, as in withhold_secrets:  the log goes to the Operator and every seat
+
     out: dict[str, Any] = {}
     for key in LOG_FIELDS:
         if key not in raw:
@@ -1291,26 +1313,36 @@ def clean_log_entry(raw: Any) -> dict[str, Any] | None:
         if key in ("reformatted", "flags"):
             if isinstance(value, Mapping):
                 out[key] = {
-                    str(k)[:40]: v if isinstance(v, (bool, int)) or v is None else str(v)[:80]
+                    text_safe(str(k))[:40]: v
+                    if isinstance(v, (bool, int)) or v is None
+                    else text_safe(str(v))[:80]
                     for k, v in list(value.items())[:12]
                 }
             continue
-        if isinstance(value, bool) or value is None or isinstance(value, int):
+        if key in LOG_COUNTS:
+            # A count:  a whole number, else null (a bool, text, or JSON's NaN and Infinity are no count).
+            finite = isinstance(value, int) or (isinstance(value, float) and math.isfinite(value))
+            out[key] = int(value) if finite and not isinstance(value, bool) else None
+        elif isinstance(value, str):
+            text = text_safe(value)
+            if key == "title" and secretscan.scan(text):  # the whole title, before it is cut
+                out[key] = WITHHELD
+            else:
+                out[key] = text[: 400 if key == "title" else 200]
+        elif isinstance(value, bool) or value is None:
             out[key] = value
-        elif isinstance(value, float):
-            out[key] = (
-                int(value) if math.isfinite(value) else None
-            )  # JSON's NaN and Infinity have no int
-        else:
-            out[key] = str(value)[: 400 if key == "title" else 200]
-    if isinstance(out.get("title"), str):
-        from . import (
-            secretscan,
-        )  # lazy, as in withhold_secrets:  the log goes to the Operator and every seat
-
-        if secretscan.scan(out["title"]):
-            out["title"] = WITHHELD
+        # Anything else (a list, an object, a number where text belongs) is no value of this field:  dropped.
     return out
+
+
+# The log fields that hold a count.  Every other field holds text, a flag or null.
+LOG_COUNTS = frozenset({"v", "exit", "duration_ms", "input_bytes", "body_bytes", "count", "bytes"})
+
+
+def text_safe(value: str) -> str:
+    """`value` with anything UTF-8 cannot hold (a lone surrogate, which JSON can spell) replaced, so it can always be
+    written to a file and sent on."""
+    return value.encode("utf-8", "replace").decode("utf-8")
 
 
 def _entry_time(entry: Mapping[str, Any]) -> datetime | None:

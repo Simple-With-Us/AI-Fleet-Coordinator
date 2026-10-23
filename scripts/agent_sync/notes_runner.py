@@ -27,6 +27,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +44,52 @@ ERROR_BACKOFF_S = (5.0, 15.0, 30.0, 60.0)
 
 class AlreadyRunning(Exception):
     """Another runner holds the lock."""
+
+
+FUTURE_ALLOWANCE = timedelta(
+    minutes=5
+)  # a ts later than the runner's clock by more than this is not believed
+
+
+def _moment(ts: Any, now: datetime) -> datetime | None:
+    """A log ts as a time, or None when it cannot be read or is in the future (a clock that ran ahead must never
+    become the floor every later resend is cut at)."""
+    moment = N._entry_time({"ts": ts}) if isinstance(ts, str) and ts else None
+    return moment if moment is not None and moment <= now + FUTURE_ALLOWANCE else None
+
+
+def _not_older(entries: list[dict[str, Any]], since: str, now: datetime) -> list[dict[str, Any]]:
+    """The log entries whose ts is not older than `since` (all of them when `since` is empty, unreadable or in the
+    future).  An entry whose ts cannot be read is kept:  the Operator's id check is the last word on it."""
+    floor = _moment(since, now)
+    if floor is None:
+        return list(entries)
+    out = []
+    for entry in entries:
+        moment = N._entry_time(entry)
+        if moment is None or moment >= floor:
+            out.append(entry)
+    return out
+
+
+def _newest(entries: list[dict[str, Any]], since: str, now: datetime) -> str:
+    """The latest believable ts among `entries` and `since` (a future one is passed over)."""
+    best_time = _moment(since, now)
+    best = since if best_time is not None else ""
+    for entry in entries:
+        moment = _moment(entry.get("ts"), now)
+        if moment is not None and (best_time is None or moment > best_time):
+            best, best_time = str(entry.get("ts")), moment
+    return best
+
+
+def _error_text(exc: BaseException, where: str = "") -> str:
+    """One line for the state file and the log:  a NotesError's code and its own message (which names a missing key
+    by its variable), else only the exception's type name, since its text may hold anything."""
+    prefix = where + ":  " if where else ""
+    if isinstance(exc, N.NotesError):
+        return "%s%s: %s" % (prefix, exc.code, exc.message[:200])
+    return "%sinternal: %s" % (prefix, type(exc).__name__)
 
 
 def _ids_ok(seat: Any, request_id: Any, claim: Any) -> bool:
@@ -169,8 +216,14 @@ class Runner:
                 continue
             state["inflight"].pop(key, None)
             self._save(state)
-        if failed is not None:
+        if isinstance(failed, N.NotesError):
             raise failed
+        if failed is not None:
+            # An unexpected failure becomes a NotesError, which the loop backs off on, instead of ending the runner;
+            # its entry stays for the next pass.  The type name only:  the error's text may hold anything.
+            raise N.NotesError(
+                "internal", "a recovery entry failed (%s)" % type(failed).__name__
+            ) from failed
 
     def _deliver(
         self, seat: Any, request_id: Any, claim: Any, outcome: Mapping[str, Any], action: Any
@@ -217,6 +270,25 @@ class Runner:
             }
         except N.NotesError as exc:
             return {"error": {"code": exc.code, "message": exc.message[:400]}}
+        except Exception as exc:  # noqa: BLE001 - never raises:  every request gets a report
+            # Its type name only.  A create or update may have run, so it is never a plain refusal;  any other action
+            # changed nothing that a retry could repeat.
+            what = type(exc).__name__
+            if isinstance(request, Mapping) and request.get("action") in ("create", "update"):
+                return {
+                    "error": {
+                        "code": "outcome_unknown",
+                        "message": "the Mac runner failed while it ran this request (%s), so the note may or may not "
+                        "have been written.  Check the Coding folder before sending it again."
+                        % what,
+                    }
+                }
+            return {
+                "error": {
+                    "code": "internal",
+                    "message": "the Mac runner failed while it ran this request (%s)" % what,
+                }
+            }
 
     def once(self, wait: int = W.CLAIM_WAIT_MAX) -> bool:
         """One claim, run and report.  True when a request was handled."""
@@ -287,10 +359,15 @@ class Runner:
             return 0
         sent = 0
         inode, offset = cursor.get("inode"), int(cursor.get("offset") or 0)
+        # The ts of the newest line already sent.  Every resend (a rotated copy, or a file truncated, replaced or
+        # rotated out of reach) skips the lines older than it, so a resend never holds more lines than the Operator's
+        # id window (LOG_IDS_KEEP) can tell apart;  a line with the same ts is sent again and dropped there by its id.
+        since = cursor.get("ts") if isinstance(cursor.get("ts"), str) else ""
         if inode is not None and inode != current.st_ino:
-            # The cursor's file has rotated, perhaps more than once while the runner was off:  the rest of the copy
-            # it is now, then each newer copy whole, oldest first.  A failed send leaves the cursor where it was, and
-            # the Operator drops the ids it already has on the next pass.
+            # The cursor's file has rotated, perhaps more than once while the runner was off.  Found among the copies:
+            # the rest of it from the exact offset, then each newer copy whole, by position (lines are not always in
+            # ts order, so no ts filter).  Not found (rotated out of reach, or replaced):  every copy still kept from
+            # its start, skipping the lines older than the newest one already sent.
             copies = [
                 path.with_name("%s.%d" % (path.name, n))
                 for n in range(1, N.ACTION_LOG_ROTATIONS + 1)
@@ -303,35 +380,53 @@ class Runner:
                         break
                 except OSError:
                     continue
-            if found is None:
-                # Rotated out of reach (or replaced):  send every copy still kept, whole, oldest first.  The Operator
-                # drops the ids it already has, so only what it never got is added.
-                found, offset = len(copies) - 1, 0
-            for n in range(found, -1, -1):
-                if copies[n].exists():
-                    sent += self._ship_from(copies[n], offset if n == found else 0)
+            first = found if found is not None else len(copies) - 1
+            for n in range(first, -1, -1):
+                try:
+                    copy_inode = os.stat(copies[n]).st_ino
+                except OSError:
+                    continue
+                count, since = self._ship_from(
+                    copies[n],
+                    copy_inode,
+                    offset if n == found else 0,
+                    since,
+                    by_ts=found is None,
+                )
+                sent += count
             offset = 0
-        if offset > current.st_size:
-            offset = 0  # truncated in place:  start again (the Operator drops ids it already has)
+        by_ts = offset > current.st_size  # truncated in place:  no position to resume from
+        if by_ts:
+            offset = 0
+        count, since = self._ship_from(path, current.st_ino, offset, since, by_ts=by_ts)
+        return sent + count
+
+    def _ship_from(
+        self, path: Path, inode: int, offset: int, since: str, *, by_ts: bool
+    ) -> tuple[int, str]:
+        """Send one file's lines from `offset` (only those not older than `since` when `by_ts`), saving the cursor
+        (this file's inode, the offset past the batch, and `since`) after each batch, so a send that fails part way
+        resumes from the exact place on the next pass.  (lines sent, the new `since`)."""
+        now = datetime.fromtimestamp(self.clock(), UTC)
         lines, end = self._read_lines(path, offset)
+        sent = 0
         for start in range(0, len(lines), LOG_BATCH):
             batch = lines[start : start + LOG_BATCH]
-            self.client.send_log([entry for _, entry in batch])
-            sent += len(batch)
+            entries = [entry for _, entry in batch]
+            if by_ts:
+                entries = _not_older(entries, since, now)
+            if entries:
+                self.client.send_log(entries)
+                sent += len(entries)
+                since = _newest(entries, since, now)
             self._note(
-                log={"inode": current.st_ino, "offset": batch[-1][0]},
+                log={"inode": inode, "offset": batch[-1][0], "ts": since},
                 log_shipped_at=N.iso_now(self.clock),
             )
         self._note(
-            log={"inode": current.st_ino, "offset": end}
+            log={"inode": inode, "offset": end, "ts": since}
         )  # past every whole line, the unparsable ones too
-        return sent
-
-    def _ship_from(self, path: Path, offset: int) -> int:
-        lines, _ = self._read_lines(path, offset)
-        for start in range(0, len(lines), LOG_BATCH):
-            self.client.send_log([entry for _, entry in lines[start : start + LOG_BATCH]])
-        return len(lines)
+        return sent, since
 
     @staticmethod
     def _read_lines(path: Path, offset: int) -> tuple[list[tuple[int, dict[str, Any]]], int]:
@@ -377,16 +472,19 @@ class Runner:
                     "notes-runner: the code changed on disk;  exiting so launchd starts the new one"
                 )
                 return
+            # The log is a record:  shipping it never stops request handling, so it has its own boundary (a line it
+            # cannot send would otherwise block every claim behind it).
             try:
                 self.ship_log()
+            except Exception as exc:  # noqa: BLE001
+                self._note(last_error_at=N.iso_now(self.clock), last_error=_error_text(exc, "log"))
+                self.log("notes-runner: %s" % _error_text(exc, "log"))
+            try:
                 self.once(wait)
                 failures = 0
-            except N.NotesError as exc:
-                self._note(
-                    last_error_at=N.iso_now(self.clock),
-                    last_error="%s: %s" % (exc.code, exc.message[:200]),
-                )
-                self.log("notes-runner: %s" % exc.code)
+            except Exception as exc:  # noqa: BLE001 - nothing unexpected ends the runner:  it backs off
+                self._note(last_error_at=N.iso_now(self.clock), last_error=_error_text(exc))
+                self.log("notes-runner: %s" % _error_text(exc))
                 delay = ERROR_BACKOFF_S[min(failures, len(ERROR_BACKOFF_S) - 1)]
                 failures += 1
                 stop.wait(delay)
