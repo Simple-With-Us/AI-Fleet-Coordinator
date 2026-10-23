@@ -119,8 +119,8 @@ SECRETS
   variable that holds a key.  Infisical is the runtime source of truth;  never run bare infisical secrets.
 
 WRITING FOR THE OWNER
-- Two spaces between sentences in everything a human reads:  chat, commits, PR bodies, Zulip, Notes, docs, UI copy.
-  GitHub and Zulip text use a real U+00A0 plus a space instead (see the sentence-gap skill).  Title Case headings
+- Between sentences, a real U+00A0 plus a normal space in everything a human reads:  chat, commits, PR bodies, Zulip,
+  Notes, docs, UI copy.  Never `&nbsp;`, never two plain ASCII spaces (owner ruling 2026-10-23; see the sentence-gap skill).  Title Case headings
   and buttons;  sentence case values.  Tell the owner times in 12-hour form with am or pm, no zone abbreviation.
 - Plans, reviews, handoffs and completion notes also go to Apple Notes folder Coding:
   ~/apps/apple-notes-coding.sh "[TEAM_KEY, OpenCode] short topic" "body" (--update to revise in place).

@@ -1074,9 +1074,20 @@ def clean_existing_html(text: str) -> str:
 
 def inline(s: str) -> str:
     s = html.escape(s)
+    # A code span is content the author wants verbatim, so the sentence-gap conversion must
+    # not touch it.  This pass runs BEFORE the backticks become code chips, so a code span
+    # holding a sentence end used to get the entity inside the chip.  Hold the spans aside,
+    # convert the prose around them, and put them back byte for byte.  (The whole-HTML pass
+    # skips <code> regions the same way.)
+    code_spans = []
+    def hold_code_span(m):
+        code_spans.append(m.group(0))
+        return "\x00code" + str(len(code_spans) - 1) + "\x00"
+    s = re.sub(r"`[^`]+`", hold_code_span, s)
     # Notes.app is an HTML renderer — two ASCII spaces collapse.
     # Sentence gap in HTML is &nbsp; + space.
     s = re.sub(r"([.!?]) {2,}", r"\1&nbsp; ", s)
+    s = re.sub(r"\x00code(\d+)\x00", lambda m: code_spans[int(m.group(1))], s)
     # links [text](url) — after escape brackets still match
     s = re.sub(
         r"\[([^\]]+)\]\(([^)]+)\)",
@@ -1293,6 +1304,10 @@ PY
 
 # Notes.app collapses ASCII double spaces.  Turn leftover `.  ` / `!  ` / `?  `
 # into `&nbsp; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
+# A sentence that ends INSIDE inline markup puts the closing tag between the punctuation
+# and the run of spaces (`Bold end.</b>  Next`), so the run never sits next to the
+# punctuation and the gap was lost.  The optional tag group carries the closing tag
+# through, so the gap lands after it.  (AFC-496)
 _html_sentence_gaps() {
   /usr/bin/python3 -c '
 import re, sys
@@ -1303,7 +1318,7 @@ for i, part in enumerate(parts):
     if i % 2 == 1:
         out.append(part)
         continue
-    out.append(re.sub(r"([.!?]) {2,}", r"\1&nbsp; ", part))
+    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&nbsp; ", part))
 sys.stdout.write("".join(out))
 '
 }

@@ -112,6 +112,7 @@ jobs:
     - name: agent-sync CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
+        python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests

@@ -281,6 +281,8 @@ export function loadConfig(env) {
     // POST /internal/spike/<SEAT> only while this is exactly "on".  It is a
     // Worker secret binding, not a var, so a later deploy from main does not
     // turn it off (DEPLOY.md, "AFC-477 second-event spike").
+    whatsappEnabled: String(env.WHATSAPP_BRIDGE_ENABLED ?? "").trim() === "on",
+    whatsappWakeEnabled: String(env.WHATSAPP_BRIDGE_WAKE_ENABLED ?? "").trim() === "on",
     spikeExtraEvents: String(env.SPIKE_EXTRA_EVENTS ?? "").trim() === "on",
   });
 }

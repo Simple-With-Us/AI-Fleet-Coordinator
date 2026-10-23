@@ -50,6 +50,7 @@
 // delivery), never inside SeatGate, whose methods stay storage-only so its
 // input gate keeps them atomic.
 
+import { WA_EVENT, waDefinition } from "./wa/contract.js";
 import { logSafe, safeEqual } from "./policy.js";
 import { HELD_BACK_MAX_ITEMS } from "./wake.js";
 
@@ -62,7 +63,7 @@ export const EVENT_NAME = "zulip.mention";
 export const SPIKE_EVENT_NAME = "fleet.spike.ping";
 // Every name a subscription may carry.  An unsubscribe accepts any of them
 // whatever the flag says, so a subscription can always be removed.
-export const KNOWN_EVENT_NAMES = Object.freeze([EVENT_NAME, SPIKE_EVENT_NAME]);
+export const KNOWN_EVENT_NAMES = Object.freeze([EVENT_NAME, SPIKE_EVENT_NAME, WA_EVENT]);
 // One live destination per seat and event name (Jay:  hold ambiguous routing
 // rather than wake several chats).  A refresh of the same subscription is
 // fine;  a second chat for the same event is refused, never silently swapped
@@ -223,12 +224,13 @@ export function spikeEventDefinition() {
 export function eventDefinitions(config) {
   const out = [eventDefinition(config)];
   if (config?.spikeExtraEvents === true) out.push(spikeEventDefinition());
+  if (config?.whatsappEnabled && config?.eventSeat === "JET") out.push(waDefinition());
   return out;
 }
 
 /** The event names a seat may subscribe to now. */
 export function offeredEventNames(config) {
-  return config?.spikeExtraEvents === true ? [EVENT_NAME, SPIKE_EVENT_NAME] : [EVENT_NAME];
+  return eventDefinitions(config).map(event => event.name);
 }
 
 /** The event a stored subscription is for.  Every row from before the spike is zulip.mention. */
@@ -237,6 +239,16 @@ export function subEventName(sub) {
 }
 
 /** The spike takes no arguments:  absent, null or an empty object.  Anything else is refused. */
+function conversationMessage(name) {
+  return name === EVENT_NAME ? "Zulip must use the conversation pinned by Jet's live WhatsApp subscription; remove both subscriptions before a coordinated move." : "WhatsApp must use Jet's existing conversation callback.";
+}
+
+function validateWaArguments(args) {
+  if (args === undefined || args === null) return {};
+  if (typeof args !== "object" || Array.isArray(args) || Object.keys(args).length) throw new EventError(INVALID_PARAMS, "whatsapp.message takes no arguments");
+  return {};
+}
+
 export function validateSpikeArguments(args) {
   if (args === undefined || args === null) return {};
   if (typeof args !== "object" || Array.isArray(args)) throw new EventError(INVALID_PARAMS, "arguments must be an object");
@@ -828,7 +840,7 @@ export class SeatEvents {
     this.requireRead();
     if (this.paused) throw new EventError(INVALID_REQUEST, "This seat is paused.");
     const name = this.checkName(params.name);
-    const args = name === EVENT_NAME ? await validateArguments(params.arguments, this.channels) : validateSpikeArguments(params.arguments);
+    const args = name === EVENT_NAME ? await validateArguments(params.arguments, this.channels) : name === WA_EVENT ? validateWaArguments(params.arguments) : validateSpikeArguments(params.arguments);
     const delivery = params.delivery;
     if (!delivery || typeof delivery !== "object" || delivery.mode !== "webhook") throw new EventError(INVALID_PARAMS, "Only webhook delivery is supported.");
     if (!parseWhsec(delivery.secret)) throw new EventError(INVALID_PARAMS, "delivery.secret must be whsec_ followed by base64 of 24 to 64 bytes.");
@@ -844,8 +856,8 @@ export class SeatEvents {
     const ref = await urlRef(url);
     const host = new URL(url).hostname.toLowerCase();
 
-    const room = await this.gate.eventSubRoom({ id, max: MAX_SUBSCRIPTIONS_PER_SEAT, name });
-    if (!room.ok) throw new EventError(INVALID_REQUEST, oneDestination(name, room.until));
+    const room = await this.gate.eventSubRoom({ id, max: MAX_SUBSCRIPTIONS_PER_SEAT, name, url });
+    if (!room.ok) throw new EventError(INVALID_REQUEST, room.reason === "conversation" ? conversationMessage(name) : oneDestination(name, room.until));
     if (!(await this.gate.eventVerifiedGet({ ref }))) {
       const reason = await verifyCallback(this.fetchFn, { url, subId: id, secret: delivery.secret, now: this.now });
       if (reason) {
@@ -860,7 +872,7 @@ export class SeatEvents {
       rotationMs: ROTATION_WINDOW_MS,
       max: MAX_SUBSCRIPTIONS_PER_SEAT,
     });
-    if (!saved.ok) throw new EventError(INVALID_REQUEST, oneDestination(name, null));
+    if (!saved.ok) throw new EventError(INVALID_REQUEST, saved.reason === "conversation" ? conversationMessage(name) : oneDestination(name, null));
     return { id, refreshBefore: iso(saved.refreshBefore), cursor: null, truncated: false };
   }
 

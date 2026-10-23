@@ -76,6 +76,7 @@ import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.j
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "./events.js";
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
+import { serveWa } from "./wa/index.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 
 export { SeatGate };
@@ -346,7 +347,7 @@ async function serveMcp(request, env, ctx) {
     approvedAt: props.approved_at,
     paused: result.code === "paused",
     gate: seatGate,
-    config,
+    config: { ...config, eventSeat: seat },
     // A `channel` filter must name a channel the seat may use (src/channels.js).
     channels: () => tools.checkedChannelSet(),
     clientId: typeof auth.clientId === "string" ? auth.clientId : "",
@@ -1169,6 +1170,7 @@ export default {
       return textResponse("The ST-MCP server is turned off.", 503, { "Retry-After": "3600" });
     }
     if (route === "wake") return serveWake(request, env, ctx, config);
+    if (route === "wa") return serveWa(request, env, config, gate(env, "JET"));
     if (route === "spike") return serveSpike(request, env, ctx, config);
     if (route === "linear_health") return serveLinearHealth(request, env, config);
     if (route === "token") {
