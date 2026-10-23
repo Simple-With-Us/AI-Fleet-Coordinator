@@ -711,7 +711,8 @@ def make_handler(mock: MockLinear):
                     )
                     if want is None or form.get("client_secret") != want:
                         return self._send(
-                            401, {"error": "invalid_client", "error_description": "bad client"},
+                            401,
+                            {"error": "invalid_client", "error_description": "bad client"},
                             {"x-request-id": mock.request_id} if mock.request_id else None,
                         )
                     mock.mints += 1
@@ -3644,7 +3645,9 @@ class CredentialFailureTests(BoardTest):
         claude, _ = self.seat_app("CLAUDE", "Claude")
         self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
         p = self.as_seat("CLAUDE", "whoami", code=6)
-        self.assertIn("credential_field=CLAUDE_LINEAR_CLIENT_ID,CLAUDE_LINEAR_CLIENT_SECRET", p.stderr)
+        self.assertIn(
+            "credential_field=CLAUDE_LINEAR_CLIENT_ID,CLAUDE_LINEAR_CLIENT_SECRET", p.stderr
+        )
 
     def test_a_failed_mint_says_what_failed_and_nothing_of_the_providers_own_text(self):
         # The token endpoint's error body is Linear's text and can carry anything, so
@@ -3656,7 +3659,9 @@ class CredentialFailureTests(BoardTest):
         self.assertIn("minting the Claude seat app token failed", p.stderr)
         self.assertIn("error_type=HTTPError", p.stderr)
         self.assertIn("http=401", p.stderr)
-        self.assertNotIn("invalid_client", p.stderr, "the provider's own text is not in the message")
+        self.assertNotIn(
+            "invalid_client", p.stderr, "the provider's own text is not in the message"
+        )
         self.assertNotIn("bad client", p.stderr)
 
     def test_a_request_id_is_quoted_back_when_the_response_carries_one(self):
@@ -3679,10 +3684,19 @@ class ErrorFieldTests(unittest.TestCase):
     def test_the_fields_of_an_error_are_the_allow_listed_ones(self):
         cli = load_cli()
         err = cli.GqlError(
-            [{"message": "Authentication required", "extensions": {"code": "AUTHENTICATION_ERROR"}}],
-            None, 401, {"x-request-id": "req-abc12345"},
+            [
+                {
+                    "message": "Authentication required",
+                    "extensions": {"code": "AUTHENTICATION_ERROR"},
+                }
+            ],
+            None,
+            401,
+            {"x-request-id": "req-abc12345"},
         )
-        fields = cli.error_fields(err, "lin_api_…wxyz", "environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)")
+        fields = cli.error_fields(
+            err, "lin_api_…wxyz", "environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"
+        )
         self.assertEqual(fields["error_type"], "GqlError")
         self.assertEqual(fields["http"], "401")
         self.assertEqual(fields["request_id"], "req-abc12345")
@@ -3697,11 +3711,15 @@ class ErrorFieldTests(unittest.TestCase):
     def test_the_variable_names_come_from_the_places_the_credentials_came_from(self):
         cli = load_cli()
         self.assertEqual(
-            cli.credential_vars("Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID, CLAUDE_LINEAR_CLIENT_SECRET)"),
+            cli.credential_vars(
+                "Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID, CLAUDE_LINEAR_CLIENT_SECRET)"
+            ),
             "CLAUDE_LINEAR_CLIENT_ID,CLAUDE_LINEAR_CLIENT_SECRET",
         )
-        self.assertEqual(cli.credential_vars("environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"),
-                         "LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET")
+        self.assertEqual(
+            cli.credential_vars("environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"),
+            "LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET",
+        )
         self.assertEqual(cli.credential_vars(""), "")
 
 
