@@ -524,6 +524,10 @@ test("the title checks mirror notes.py:  check_title, the any-title rule and tit
   // A query or a log title filter is sent to the Operator, so it gets the secret scan.
   const token = `${"ghp_"}${"EXAMPLE0".repeat(5)}`;
   assert.throws(() => makeRequest({ action: "list", requestId: "abcdefgh12", identity: "CLAUDE", query: token }), /looks like it contains a secret/);
+  // So is the title of a read, update, pin or unpin (a create's gets the write scan with its body).
+  for (const action of ["read", "pin", "unpin"]) {
+    assert.throws(() => makeRequest({ action, requestId: "abcdefgh12", identity: "CLAUDE", title: `k ${token}` }), /'title' looks like it contains a secret/);
+  }
   // A body from a read that withheld a secret-shaped line is never written back over the real line.
   assert.throws(() => makeRequest({ action: "update", requestId: "abcdefgh12", identity: "CLAUDE", title: "t", markdown: `<div>${WITHHELD}</div>` }), /Edit the note on the Mac/);
   assert.throws(() => makeRequest({ action: "read", requestId: "abcdefgh12", identity: "CLAUDE", title: "t", format: "pdf" }), /format/);

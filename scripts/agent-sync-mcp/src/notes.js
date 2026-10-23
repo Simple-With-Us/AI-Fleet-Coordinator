@@ -221,6 +221,8 @@ export function checkAnyTitle(raw) {
   if (length > TITLE_MAX) throw invalid(`argument 'title' is ${length} characters; at most ${TITLE_MAX}`);
   if (TITLE_BAD_RE.test(title)) throw invalid("argument 'title' must not hold a double quote, a backslash or a control character");
   if (title.startsWith("-")) throw invalid("argument 'title' must not start with -");
+  // Sent to the Operator for a read as for a write, so it gets the secret scan (a create's gets the write scan).
+  if (scanSecret(title)) throw invalid("argument 'title' looks like it contains a secret;  nothing was sent");
   return title;
 }
 

@@ -666,6 +666,8 @@ class NotesQueue:
             for key in ("title", "id", "created", "modified", "format"):
                 if isinstance(note.get(key), str):
                     keep[key] = note[key][: 400 if key == "title" else 200]
+            if "title" in keep and N.withhold_secrets(keep["title"])[1]:
+                keep["title"] = N.WITHHELD  # as a list and the log show a secret-shaped title
             for key in ("bytes", "withheld"):
                 value = note.get(key)
                 if isinstance(value, int) and not isinstance(value, bool) and value >= 0:

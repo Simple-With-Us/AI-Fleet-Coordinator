@@ -158,6 +158,16 @@ def check_title(raw: Any, action: str = "create") -> str:
             "invalid_argument",
             'a new note\'s title must read "[TEAM_KEY, Agent] Topic", such as "[AFC, Claude] Topic"',
         )
+    if action != "create":
+        # A create's title gets the write scan with its body;  every other action's title (a read's included) is sent
+        # to the Operator too, so it gets the same scan here.
+        from . import secretscan  # lazy, as in withhold_secrets
+
+        if secretscan.scan(title):
+            raise NotesError(
+                "invalid_argument",
+                "argument 'title' looks like it contains a secret;  nothing was sent",
+            )
     return title
 
 

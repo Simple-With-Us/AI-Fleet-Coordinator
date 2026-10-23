@@ -658,6 +658,17 @@ class DirectRunnerTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "invalid_argument")
         self.assertIn("Edit the note on the Mac", caught.exception.message)
 
+    def test_a_secret_shaped_title_is_refused_for_every_action_but_create(self):
+        token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic
+        for action in ("read", "update", "pin", "unpin"):
+            with self.subTest(action):
+                with self.assertRaises(N.NotesError) as caught:
+                    N.check_title("%s note" % token, action)
+                self.assertIn("looks like it contains a secret", caught.exception.message)
+                self.assertNotIn(token, caught.exception.message)
+        # A create's title gets the write scan with its body instead.
+        self.assertTrue(N.check_title("[AFC, Claude] %s" % token, "create"))
+
     def test_a_query_never_starts_with_a_dash(self):
         for query in ("-x", " --read", "-"):
             with self.subTest(query):

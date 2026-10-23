@@ -299,10 +299,12 @@ class RunnerTests(QueueHarness):
         claimed = self.assert_answer(self.claim(), 200)
         token = "ghp_" + "a" * 36  # built at run time from one repeated letter
         body = "<div>Before.</div>\n<div>key %s</div>" % token
-        self.assert_answer(self.report(claimed, result={"note": {"title": "t", "body": body, "withheld": 0}}), 200)
+        result = {"note": {"title": "k %s" % token, "body": body, "withheld": 0}}  # a title an older runner sent as is
+        self.assert_answer(self.report(claimed, result=result), 200)
         note = self.assert_answer(self.status("CLAUDE", "read-secret-01"), 200)["result"]["note"]
         self.assertNotIn(token, json.dumps(note))
         self.assertEqual((note["body"], note["withheld"]), ("<div>Before.</div>\n<div>%s</div>" % N.WITHHELD, 1))
+        self.assertEqual(note["title"], N.WITHHELD)
         self.assertNotIn(token, "".join(p.read_text() for p in (Path(self.root) / NQ.QUEUE_DIR).rglob("*.json")))
         # Each known field is kept only in its own type, and nothing else is kept.
         self.assert_answer(self.enqueue(request("read", rid="read-shape-001")), 202)
