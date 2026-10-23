@@ -497,7 +497,7 @@ class PerSeatVoiceTests(unittest.TestCase):
             if "Skim channel, topic, and sender for" not in out:
                 continue  # a retired seat's pack carries no skim rule
             self.assertIn(f"Skim channel, topic, and sender for `{seat.tag}`", out, tag)
-            if seat.tag !=   "MONET":
+            if seat.tag != "MONET":
                 self.assertNotIn("Skim channel, topic, and sender for `MONET`", out, tag)
 
     def test_the_universal_skim_rule_names_no_seat(self) -> None:
