@@ -60,7 +60,8 @@ SEATS = {
     # it into the AI Fleet Coordinator project (secret consolidation).  The
     # 5-tuple is (project, email name, key name, Worker secret name, email var).
     "CODEX": (
-        FLEET_OPS_PROJECT,
+        None,  # resolved at call time: env INFISICAL_FLEET_OPS_PROJECT_ID, then
+        # ~/.agent-sync/fleet-ops-project-id, then the FLEET_OPS_PROJECT fallback
         "CODEX_ZULIP_EMAIL",
         "CODEX_ZULIP_KEY",
         "ZULIP_KEY_CODEX",
@@ -78,6 +79,43 @@ TAG_OVERRIDES = {"openai-dot": "JET", "instinct-bat": "ECHO", "instinct-owl": "W
 
 def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
     raise SystemExit(f"install_seat_key: {message}")
+
+
+def fleet_ops_project() -> str:
+    """Fleet-OPS project id: env INFISICAL_FLEET_OPS_PROJECT_ID, then the first
+    line of ~/.agent-sync/fleet-ops-project-id (same sources as
+    scripts/fleet_secrets/core.py), with the committed constant as the fallback."""
+    value = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+    if not value:
+        try:
+            value = (
+                (pathlib.Path.home() / ".agent-sync" / "fleet-ops-project-id")
+                .read_text(encoding="utf-8")
+                .strip()
+                .splitlines()[0]
+                .strip()
+            )
+        except (OSError, UnicodeDecodeError, IndexError):
+            value = ""
+    return value or FLEET_OPS_PROJECT
+
+
+def seat_entry(seat: str) -> tuple[str, str, str, str, str]:
+    """(project, email name, key name, Worker secret name, email var) for a seat.
+    Legacy seats carry a 3-tuple prefix and derive the AFC project + names; CODEX
+    carries the explicit 5-tuple with the Fleet-OPS project resolved at call time."""
+    entry = SEATS[seat]
+    if len(entry) == 5:
+        project, email_name, key_name, secret_name, email_var = entry
+        return (
+            fleet_ops_project() if project is None else project,
+            email_name,
+            key_name,
+            secret_name,
+            email_var,
+        )
+    prefix, secret_name, email_var = entry
+    return INFISICAL_PROJECT, f"{prefix}_EMAIL", f"{prefix}_API_KEY", secret_name, email_var
 
 
 def handoff(name: str) -> str:
@@ -157,7 +195,11 @@ def infisical_pair(
             "clientSecret": handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
         },
     )
-    token = login.get("accessToken") or fail("Infisical login returned no access token")
+    if not isinstance(login, dict):
+        fail("Infisical login returned a malformed response (not an object)")
+    token = login.get("accessToken")
+    if not isinstance(token, str) or not token:
+        fail("Infisical login returned no access token")
     query = urllib.parse.urlencode(
         {
             "workspaceId": project,
@@ -169,7 +211,19 @@ def infisical_pair(
     data = http_json(
         "GET", f"{INFISICAL_API}/api/v3/secrets/raw?{query}", headers={"Authorization": auth_header}
     )
-    found = {s.get("secretKey"): s.get("secretValue") or "" for s in data.get("secrets", [])}
+    if not isinstance(data, dict) or not isinstance(data.get("secrets"), list):
+        fail("Infisical secrets response is malformed (missing secrets list)")
+    found = {}
+    for item in data["secrets"]:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("secretKey"), str)
+            or not (item.get("secretValue") is None or isinstance(item.get("secretValue"), str))
+        ):
+            fail(
+                "Infisical secrets response has a malformed entry - refusing to continue on partial data"
+            )
+        found[item["secretKey"]] = item.get("secretValue") or ""
     email, key = found.get(email_name, ""), found.get(key_name, "")
     if not email or not key:
         fail(
@@ -227,12 +281,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    entry = SEATS[args.seat]
-    if len(entry) == 5:
-        project, email_name, key_name, secret_name, email_var = entry
-    else:
-        prefix, secret_name, email_var = entry
-        project, email_name, key_name = INFISICAL_PROJECT, f"{prefix}_EMAIL", f"{prefix}_API_KEY"
+    project, email_name, key_name, secret_name, email_var = seat_entry(args.seat)
     vars_ = wrangler_vars()
     hosted = [s.strip() for s in str(vars_.get("HOSTED_SEATS", "")).split(",") if s.strip()]
 
