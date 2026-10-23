@@ -6,7 +6,7 @@ description: How GROK-WEB reserves, releases, and closes fleet work (THE BOARD u
 # Work Items, Handoff, and PRs (GROK-WEB)
 
 ## Reservation
-Linear replaces THE BOARD (owner 2026-10-08):  workspace `simple-with-us`, ids like `AFC-123`, reached through your Linear connector.  Until the cutover is announced in `#agent-sync` › `fleet`, THE BOARD is the system of record and a Mac seat or Jay reserves on it for you.
+Linear replaces THE BOARD (owner 2026-10-08):  workspace `simple-with-us`, ids like `AFC-123`, reached through your Linear connector.  Until the cutover is announced in `#Work-In-Progress` › `fleet`, THE BOARD is the system of record and a Mac seat or Jay reserves on it for you.
 
 After cutover:
 - Claim:  move the issue to In Progress, add label `claimed:GROK-WEB`, comment `CLAIMED`.

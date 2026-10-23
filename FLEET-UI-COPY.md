@@ -197,7 +197,7 @@ submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
 any context, always use 2 spaces to separate a period from the beginning of a new sentence."
 This closes the last loophole -- the rule is NOT limited to product/user-facing copy.  It
 covers every paragraph an agent writes anywhere: **chat replies to the owner**, PR titles and
-bodies, commit messages, Zulip posts to #agent-sync, Apple Notes, Linear issues and comments, rollout
+bodies, commit messages, Zulip posts to #Work-In-Progress, Apple Notes, Linear issues and comments, rollout
 notes, review reports and design docs.  If it is prose, it gets two spaces.  (Single space
 remains correct after a non-terminal abbreviation -- "e.g.", "v1.2.3".  In HTML preserve the
 gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Markdown, note that
@@ -229,7 +229,7 @@ destination:
   Antigravity, Grok, Kimi, DeepSeek, Fx, Muse): the same entity plus a space, by
   owner ruling 2026-10-08, unless that surface has been individually verified otherwise.
   If the owner ever sees the six characters, stop using the entity on that surface, report
-  it in #agent-sync, and treat that surface's mechanism as unknown until tested.  Using a
+  it in #Work-In-Progress, and treat that surface's mechanism as unknown until tested.  Using a
   working mechanism needs no confirmation.
 - **Terminal TUI chat** (Claude Code CLI, Grok TUI, Codex CLI, opencode, kimi-code, mcode):
   two literal ASCII spaces, unverified.  A terminal would print the entity as literal text.
@@ -270,7 +270,7 @@ destination:
   told about: two literal ASCII spaces.  Owner ruling 2026-10-20: an untested surface takes
   two ASCII spaces until it reports otherwise.  A gap that renders is better than a gap that
   does not, and two ASCII spaces never show as the six literal characters.  When a surface is
-  verified, change its bullet here and report the finding in #agent-sync so every seat gets it.
+  verified, change its bullet here and report the finding in #Work-In-Progress so every seat gets it.
 
 **Rendering trap — history (chat advice reversed twice):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was

@@ -5,7 +5,7 @@ Owner-facing, paste-ready.  Give Instinct the prompt in the box below as its sta
 https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/INSTINCT-ONBOARDING-PROMPT.md
 
 Instinct is an **interface seat**, not a coding seat.  The owner texts it over iMessage; it reads the
-fleet's surfaces (Linear, `#agent-sync`, fleet recall, the archived effort logs), dispatches work to the
+fleet's surfaces (Linear, `#Work-In-Progress`, fleet recall, the archived effort logs), dispatches work to the
 seats that execute, and texts back.  That is the same shape as Shellular (phone to Mac) and the
 BotFleet Director bot, so the prompt reuses the fleet's existing rails instead of inventing new ones.
 Two ASCII spaces between sentences in this file.
@@ -123,12 +123,12 @@ WHERE TO LOOK, IN THIS ORDER
     simple-board comment <id> --by INSTINCT --env Mac --text "..."
   There is no REST fallback.  The archived effort logs are history, not a surface to write.
   --env is only Mac or cloud.
-- Zulip #agent-sync (https://simplewithus.zulipchat.com) is the realtime layer.  Every post is
+- Zulip #Work-In-Progress (https://simplewithus.zulipchat.com) is the realtime layer.  Every post is
   a channel plus a topic, and the topic is the thread.  Read it every turn:
     simple-chat inbox
     simple-chat read --new --topic "<work topic>"
     simple-chat topics --limit 30
-  (agent-sync is ~/.local/bin/simple-chat; the tracked copy is scripts/agent_sync in
+  (simple-chat is ~/.local/bin/simple-chat; the tracked copy is scripts/agent_sync in
   AI-Fleet-Coordinator.  It reads your own bot's credential, ~/.secrets/Zulip/Instinct-zuliprc
   in your home (in a cloud runtime, env ZULIP_EMAIL, ZULIP_API_KEY, ZULIP_SITE), and shows
   its realm and source with simple-chat whoami, never the key.)
@@ -153,7 +153,7 @@ HOW TO TALK TO THE TEAM
       broadcast: claims, closeouts, status
     simple-chat post --topic "<work topic>" --to GROK "..."
       one peer must act; every other listener skims
-    simple-chat post --topic fleet --fleet "..."   (@**all** in #agent-sync topic fleet)
+    simple-chat post --topic fleet --fleet "..."   (@**all** in #Work-In-Progress topic fleet)
       every listener on every platform must spend time, and Jay is notified too; only HALT,
       PROD DOWN, URGENT, or a critical security fix.  If Zulip refuses @**all** from your bot
       (the realm's can_mention_many_users_group), @-mention each bot that must act instead
@@ -224,7 +224,7 @@ FLEET RECALL AND CLOSEOUT
 YOUR FIRST UNIT, NOW
 1. Prove each surface and keep the exact result: simple-board stats; one simple-chat read; recall stats;
    one outbound iMessage to the owner from the agents account.
-2. Post your intro in #agent-sync, topic "roll call":
+2. Post your intro in #Work-In-Progress, topic "roll call":
      [INSTINCT] online  |  Mac  |  cadence:  per-turn read
      platform:  <harness and model>, iMessage interface on the agents macOS account
      can:  Linear, recall, iMessage; worktrees: none (interface seat; dispatches to peers)
@@ -259,14 +259,14 @@ Owner steps before pasting the follow-up:
    its browser like a person.  Option B:  nothing to add.
 2. Built in PR #251 and installed by a Mac seat (`docs/rollouts/2026-09-17-instinct-imessage-onboarding.md`
    § Install):  `com.jay.github-outbox-bridge`, which posts comments from a private outbox issue on `fleet-ops` to
-   `#agent-sync` as INSTINCT and mirrors skim matches back.  Open that issue on
+   `#Work-In-Progress` as INSTINCT and mirrors skim matches back.  Open that issue on
    `Simple-With-Us/fleet-ops` titled `[INSTINCT] Zulip outbox`, put its number in
    `~/apps/github-outbox-bridge.json`, and name it on Instinct's registration issue.  Until then
    Instinct has no Zulip write, and the coordinator posts its intro from the registration issue.
 
 ```
 Follow-up to your standing instructions.  Your runtime fills web forms only, sets no API
-headers, and has no MCP client, so these lines replace the board CLI, agent-sync CLI,
+headers, and has no MCP client, so these lines replace the board CLI, simple-chat CLI,
 recall, and seat-mcp lines above.  Everything else in the prompt still binds.
 
 LINEAR, BY GITHUB (OPTION B, THE DEFAULT)
@@ -284,11 +284,11 @@ LINEAR, BY GITHUB (OPTION B, THE DEFAULT)
 ZULIP, THROUGH YOUR OUTBOX ISSUE
 - Until the owner names your outbox issue, you have no Zulip write.  Say so in your
   registration issue;  anything a seat must hear now goes in the GitHub issue, and the
-  coordinator posts your intro on #agent-sync from that issue.
+  coordinator posts your intro on #Work-In-Progress from that issue.
 - Once the owner names it, a comment on the outbox issue is a Zulip post.  Write the
   comment exactly as you would write the Zulip message: first line [INSTINCT] subject or
   [INSTINCT->PEER] subject, then repo: <project> as the first body line.  A Mac-side
-  bridge posts it to #agent-sync as INSTINCT within about two minutes and reacts with a
+  bridge posts it to #Work-In-Progress as INSTINCT within about two minutes and reacts with a
   rocket.  A comment that breaks the shape gets a confused reaction and a reply naming
   the reason; edits are not re-read, so post a corrected comment.
 - The bridge mirrors Zulip messages that name you, wake the fleet, or carry
@@ -322,7 +322,7 @@ both are copies, and a hand edit to the repository's mirror fails the required `
 sync job carries the merged change into both copies.
 
 ```
-| **Instinct (`INSTINCT`)** | iMessage interface seat.  The owner texts it; it reads Linear, `#agent-sync`, fleet recall, and the archived effort logs, dispatches work to executing seats (Linear issue + Zulip wake, seat-mcp `grok_session_prompt` / `seat_launch`), and texts back.  Owns no coding lane unless the owner assigns one. | `[INSTINCT]` | `Instinct` | Runs on the background macOS account `agents` behind the one authorized iMessage listener and sender (§ Process 10); never sends from `jay`.  `--env Mac`.  Posts `owner-relay:` lines that quote the owner verbatim with a Central Time stamp; peers treat them as the owner's words relayed by a peer and confirm with the owner when one conflicts with a standing ruling.  Forwards Zulip to the owner's phone only on a tag / app / fleet wake / HALT match.  Pin `AGENT_SEAT=INSTINCT` / `AGENT_TAG=INSTINCT`. |
+| **Instinct (`INSTINCT`)** | iMessage interface seat.  The owner texts it; it reads Linear, `#Work-In-Progress`, fleet recall, and the archived effort logs, dispatches work to executing seats (Linear issue + Zulip wake, seat-mcp `grok_session_prompt` / `seat_launch`), and texts back.  Owns no coding lane unless the owner assigns one. | `[INSTINCT]` | `Instinct` | Runs on the background macOS account `agents` behind the one authorized iMessage listener and sender (§ Process 10); never sends from `jay`.  `--env Mac`.  Posts `owner-relay:` lines that quote the owner verbatim with a Central Time stamp; peers treat them as the owner's words relayed by a peer and confirm with the owner when one conflicts with a standing ruling.  Forwards Zulip to the owner's phone only on a tag / app / fleet wake / HALT match.  Pin `AGENT_SEAT=INSTINCT` / `AGENT_TAG=INSTINCT`. |
 ```
 
 Add `INSTINCT (iMessage interface)` to the **Available (normal)** line of the Availability section in the same pull request.
@@ -337,7 +337,7 @@ if it should carry a skill pack, and run `python3 scripts/check-fleet-registry.p
 
 - Text it "which seat are you and where do you send from".  The answer is INSTINCT, the `agents`
   account, and the listener path from Process 10.
-- The `[INSTINCT] online` post appears in `#agent-sync` topic `roll call`, and `simple-board list --mine INSTINCT` shows the
+- The `[INSTINCT] online` post appears in `#Work-In-Progress` topic `roll call`, and `simple-board list --mine INSTINCT` shows the
   registration issue with a location (a CLI-capable Instinct; a browser-only one is claimed by a seat).
 - `recall digest --days 7` shows an `INSTINCT` line once it has contributed a lesson.
 - Ask it about an app.  The reply cites a Linear id or PR number, gives its times in the 12-hour am/pm form with no zone label, and
@@ -345,7 +345,7 @@ if it should carry a skill pack, and run `python3 scripts/check-fleet-registry.p
 - Post an unrelated `[GROK] repo: DealDex` message on Zulip.  The owner's phone stays quiet.
 - `docs/MAC-LOCAL-PROCESSES.md` has a row for every job Instinct runs on `agents`, and nothing
   new appears under `/Users/jay/Library/LaunchAgents`.
-- A well-formed comment on the outbox issue shows up in `#agent-sync` as INSTINCT within about
+- A well-formed comment on the outbox issue shows up in `#Work-In-Progress` as INSTINCT within about
   two minutes and gets a rocket reaction; a malformed one gets a confused reaction and a reply.
 
 ## Existing iMessage jobs this prompt builds on

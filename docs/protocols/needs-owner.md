@@ -145,7 +145,7 @@ write it (the tag line the board writes for the seat that wrote the comment):  a
 filing seat or from CLAUDE, a reply (`owner replied:`) only from CLAUDE.  A copied record from a peer is just a comment:  it cannot hide an
 item from Jay's list or point the taps at another message.
 
-**A post that may or may not have landed** (agent-sync exit 5 or 6, or a timeout) is never retried blind:  the
+**A post that may or may not have landed** (simple-chat exit 5 or 6, or a timeout) is never retried blind:  the
 topic is read for the reference line first, and only a missing line becomes `notify_pending`.  A rerun looks
 in the topic before it posts, so a crash between the post and its record cannot post twice.  The lookup is
 `notify.find_notice(runner, topic, uid)`, and it is strict about who and what it takes for the notice (see the
@@ -173,7 +173,7 @@ states live in `records.py` and `items.py`:  import them rather than copying the
 **A Grok Bot item** (`file --mirror-of <topic link> --context "for GB-<ROLE>"`, used by the C6-2 notifier as
 CLAUDE):  files as above, posts **no** new topic, records the persona's own message as the notice
 (`notified msg <the persona's message id>` with that topic), and replies in that topic with the Linear link.
-The link must be on this realm, in #agent-sync, in a topic that starts `OWNER `, and name its message
+The link must be on this realm, in #Work-In-Progress, in a topic that starts `OWNER `, and name its message
 (`/near/<id>`);  the message id is folded into the uid, so two personas asking one question are two items and
 a repeat of the same request is not.  The caller has already checked who opened the topic.
 
