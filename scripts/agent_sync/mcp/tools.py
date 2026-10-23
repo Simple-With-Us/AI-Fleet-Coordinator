@@ -1705,11 +1705,15 @@ class Tools:
             )
             # The seat that was authenticated and the identity it acted as ride along, so an admin
             # reading the refusal knows which grant and which claimed bot it came from.
+            # `refused.code`, not the base class's:  a missing Operator id is its own failure
+            # (`missing_operator_user_id`), and the hosted MCP has to report the same
+            # machine-readable code the CLI does (Kody review on AFC-473).
             raise ToolError(
-                DMP.DmRefused.code,
+                refused.code,
                 str(refused),
                 extra={
                     "replacement": "side_chats",
+                    "reason": refused.reason,
                     "authenticated_seat": self.seat,
                     "acting_identity": self.agent.tag,
                 },

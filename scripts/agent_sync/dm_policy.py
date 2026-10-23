@@ -132,15 +132,21 @@ def check_new_dm(
     *,
     identity: str,
     recipients: Sequence[Mapping[str, Any]],
-    operator_opened: bool = False,
+    operator_opened: bool | None = False,
     clarifying: bool = False,
     owner_user_id: int | None = None,
 ) -> None:
-    """Raise DmRefused unless this DM may be opened.  Nothing here writes or sends anything."""
+    """Raise DmRefused unless this DM may be opened.  Nothing here writes or sends anything.
+
+    `operator_opened` is what `operator_opened_dm` could prove:  True when the conversation is
+    provably Operator's, False when it is provably not, and None when a conversation exists and
+    the Operator's id is not configured, so nobody can tell.  None is decided here rather than in
+    the caller, because the exemptions below do not need the id:  a reply inside a conversation
+    Operator opened, and Operator's own clarifying question, are both permitted without it."""
     if not rule_enabled(env):
         return
     # A reply inside a conversation Operator opened is a seat answering, not a seat opening one.
-    if operator_opened:
+    if operator_opened is True:
         return
     if identity == OPERATOR_SEAT:
         # Operator may open a DM for exactly one reason, and the caller says so.
@@ -151,6 +157,17 @@ def check_new_dm(
             "could not be routed.  Bot-to-bot work goes to a #%s topic (stream %d)."
             % (OPERATOR_SEAT, SIDE_CHATS_NAME, SIDE_CHATS_STREAM_ID),
             reason="operator_not_clarifying",
+        )
+    if operator_opened is None:
+        # The exemptions above did not decide it and the attribution is unknown, so the host is
+        # missing the variable the rule needs.  Say what is actually wrong:  a missing deployment
+        # setting, which the DM rule cannot fix and the seat cannot set either.  Failing closed
+        # here is right;  failing closed *before* the exemptions ran was not.
+        raise MissingOperatorId(
+            "the Operator's Zulip user id is not set, so a direct message Operator opened cannot "
+            "be told apart from one a seat opened:  set %s in the seat host's environment"
+            % Z.ENV_OPERATOR_USER_ID,
+            reason="missing_operator_user_id",
         )
     kind = classify(recipients, owner_user_id=owner_user_id)
     raise DmRefused(
@@ -247,8 +264,9 @@ def operator_opened_dm(
     *,
     operator_user_id: int | None = None,
     self_id: int | None = None,
-) -> bool:
-    """True when this exact conversation already exists and Operator opened it.
+) -> bool | None:
+    """True when this exact conversation already exists and Operator opened it, False when it
+    provably did not, and None when nobody can tell.
 
     A conversation is Operator's when its oldest message came from the Operator bot, so a seat may
     answer inside it.  An empty conversation (no messages yet) is not: that would be a new DM.
@@ -258,9 +276,11 @@ def operator_opened_dm(
     reply-inside-an-Operator-DM the rule allows.  `self_id` is this seat's own bot id when the caller
     knows it;  it is the other half of the pair and is never treated as an extra participant.
 
-    Raises `MissingOperatorId` when the Operator's id is not configured and the conversation needs
-    it to be judged:  the id is the only thing that proves Operator opened it, so the runtime does
-    not guess."""
+    **None means unknown, not no.**  The Operator's id is the only thing that proves Operator opened
+    the conversation, so without it the runtime does not guess and does not decide here either:  the
+    id is a deployment setting, and the rule's own exemptions (a reply inside a conversation Operator
+    opened, Operator's one clarifying question) have to run before a missing variable becomes the
+    answer.  `check_new_dm` raises `MissingOperatorId` once those exemptions have passed."""
     wanted = {int(p["user_id"]) for p in people if isinstance(p.get("user_id"), int)}
     if not wanted:
         return False
@@ -286,14 +306,11 @@ def operator_opened_dm(
     operator_id = operator_user_id if operator_user_id is not None else Z.operator_user_id()
     if operator_id is None:
         # The Operator's id is not configured, so no conversation is provably Operator-opened and
-        # the answer would be a guess.  Fail closed, but say what is actually wrong:  the host is
-        # missing a variable, which the DM rule cannot fix and the seat cannot set either.
-        raise MissingOperatorId(
-            "the Operator's Zulip user id is not set, so a direct message Operator opened cannot "
-            "be told apart from one a seat opened:  set %s in the seat host's environment"
-            % Z.ENV_OPERATOR_USER_ID,
-            reason="missing_operator_user_id",
-        )
+        # the answer would be a guess.  Report "unknown" instead of deciding here:  a permitted DM
+        # (a reply inside a conversation Operator opened, or Operator's own clarifying question)
+        # does not need the id, so the exemptions run first and only then does the missing
+        # deployment setting become the answer (Kody review on AFC-473).
+        return None
     return int(sender) == int(operator_id)
 
 

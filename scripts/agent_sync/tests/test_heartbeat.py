@@ -94,6 +94,7 @@ class PureTests(unittest.TestCase):
 
     def test_resolve_dsn_reads_the_environment_first_and_never_a_named_file(self) -> None:
         import tempfile
+        from unittest import mock  # local, like the stdlib imports in the neighbouring tests
 
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

@@ -176,8 +176,8 @@ class DefaultChannelTests(unittest.TestCase):
         # Rejecting the old channel is not the same as holding the new one:  a generator that
         # drops the live label, or a generated copy that has drifted from its source, passes
         # the check above and leaves every seat without a channel to post in.  So the generated
-        # copy may not name a channel its canonical source does not name, and the live label has
-        # to be in the canonical and in the rendered tree.
+        # copy has to name exactly the channels its canonical source names, and the live label
+        # has to be in the canonical and in the rendered tree.
         repo_root = AGENT_SYNC_DIR.parents[1]
         pack = repo_root / "docs" / "fleet-skills"
         live = "#%s" % Z.DEFAULT_CHANNEL.title()
@@ -189,11 +189,23 @@ class DefaultChannelTests(unittest.TestCase):
                 generated = seat_dir / name / "SKILL.md"
                 if not generated.exists():
                     continue
-                extra = _channels(generated.read_text()) - source_channels
-                if extra:
+                # Both directions:  a generated pack that names a channel its canonical does not
+                # is stale, and one that omits a channel its canonical names has lost it.  The
+                # extra-only check let the second through, so a renamed canonical channel could
+                # vanish from every seat's copy while the test stayed green (Kody review on
+                # AFC-473).
+                generated_channels = _channels(generated.read_text())
+                extra = generated_channels - source_channels
+                missing = source_channels - generated_channels
+                if extra or missing:
                     drifted.append(
-                        "%s/%s names %s, which its canonical does not"
-                        % (seat_dir.name, name, ", ".join(sorted(extra)))
+                        "%s/%s does not match its canonical:  extra %s, missing %s"
+                        % (
+                            seat_dir.name,
+                            name,
+                            ", ".join(sorted(extra)) or "none",
+                            ", ".join(sorted(missing)) or "none",
+                        )
                     )
         self.assertEqual(drifted, [], ";  ".join(drifted))
         # The live channel has to be in the canonical, or nothing renders it.

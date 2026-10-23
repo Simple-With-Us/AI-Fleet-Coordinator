@@ -291,17 +291,45 @@ class OperatorOpenedDmTests(unittest.TestCase):
         # the runtime does not guess:  it refuses, and it says the host is missing a variable
         # instead of telling the seat the DM rule said no, which is both untrue (the seat is
         # answering, not opening) and unactionable (the seat cannot fix the host).
+        #
+        # The refusal is raised by `check_new_dm`, not by the attribution helper.  The helper
+        # reports "unknown" (None) and lets the rule's exemptions run first, because a permitted
+        # DM must not be refused for a deployment setting the rule does not need (Kody review on
+        # AFC-473).
         people = [bot(SYNTHETIC_OPERATOR_ID)]
         opened = [{"type": "private", "id": 5, "sender_id": SYNTHETIC_OPERATOR_ID,
                    "display_recipient": [{"id": SYNTHETIC_OPERATOR_ID}, {"id": 7}]}]
         with mock.patch.object(Z, "operator_user_id", return_value=None):
+            unknown = DMP.operator_opened_dm(people, opened, operator_user_id=None, self_id=7)
+            self.assertIsNone(unknown, "the attribution is unknown, not decided")
             with self.assertRaises(DMP.MissingOperatorId) as caught:
-                DMP.operator_opened_dm(people, opened, operator_user_id=None, self_id=7)
+                DMP.check_new_dm(
+                    {},
+                    identity="CLAUDE",
+                    recipients=people,
+                    operator_opened=unknown,
+                )
         self.assertEqual(caught.exception.reason, "missing_operator_user_id")
         self.assertEqual(caught.exception.code, "missing_operator_user_id")
         self.assertIn("OPERATOR_ZULIP_USER_ID", str(caught.exception))
         self.assertTrue(issubclass(DMP.MissingOperatorId, DMP.DmRefused))
         self.assertEqual(DMP.MissingOperatorId.exit_code, 3)
+
+    def test_a_permitted_dm_is_not_refused_when_the_operator_id_is_missing(self) -> None:
+        # The exemptions do not need the Operator's id, so they must run before the missing
+        # deployment setting becomes the answer.  Two DMs are permitted without it:  a seat
+        # answering inside a conversation Operator opened, and Operator's one clarifying
+        # question.  Both were refused before the helper stopped raising (Kody review on AFC-473).
+        DMP.check_new_dm({}, identity="CLAUDE", recipients=[bot(SYNTHETIC_OPERATOR_ID)],
+                         operator_opened=True)
+        DMP.check_new_dm({}, identity=DMP.OPERATOR_SEAT, recipients=[human(12)],
+                         operator_opened=None, clarifying=True, owner_user_id=12)
+        # The rule's own answer still stands when the id is there:  a seat that opens a new DM is
+        # refused by the rule, not by a missing variable.
+        with self.assertRaises(DMP.DmRefused) as caught:
+            DMP.check_new_dm({}, identity="CLAUDE", recipients=[human(12)], operator_opened=False)
+        self.assertEqual(caught.exception.reason, "people")
+        self.assertNotIsInstance(caught.exception, DMP.MissingOperatorId)
 
     def test_a_missing_operator_id_does_not_refuse_when_there_is_nothing_to_judge(self) -> None:
         # A conversation with no messages is a new DM, and the rule refuses that on its own terms.
@@ -369,6 +397,39 @@ class ToolRefusalContextTests(unittest.TestCase):
             self.assertEqual(caught.exception.extra["authenticated_seat"], "CODEX")
             self.assertEqual(caught.exception.extra["acting_identity"], "CODEX")
             self.assertEqual(caught.exception.extra["replacement"], "side_chats")
+
+    def test_a_refusal_carries_its_own_code_and_reason(self) -> None:
+        # The hosted MCP has to report the same machine-readable failure the CLI does:  a missing
+        # Operator id is its own code (`missing_operator_user_id`), not the rule's `dm_not_allowed`,
+        # and the reason rides along in `extra` so a client can branch on it.  The base class's code
+        # used to be raised here, so both transports disagreed (Kody review on AFC-473).
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._tools(tmp)
+            # A conversation exists, so the rule has to attribute it, and no Operator id is
+            # configured, so nobody can:  the answer is "unknown", and the rule says so by name.
+            tools.agent.fetch = lambda operands, **kw: [
+                {
+                    "type": "private",
+                    "id": 5,
+                    "sender_id": 4242,
+                    "display_recipient": [{"id": 7}, {"id": 9}],
+                }
+            ]
+            with self.assertRaises(T.ToolError) as caught:
+                tools._check_dm_rule([{"user_id": 9, "is_bot": True}], {})
+            self.assertEqual(caught.exception.code, "missing_operator_user_id")
+            self.assertEqual(caught.exception.extra["reason"], "missing_operator_user_id")
+            self.assertEqual(caught.exception.extra["authenticated_seat"], "CODEX")
+
+    def test_the_rule_refusal_keeps_its_own_code_and_reason(self) -> None:
+        # The ordinary refusal is unchanged by the fix above:  `dm_not_allowed`, with the reason
+        # naming who the seat was trying to reach.
+        with tempfile.TemporaryDirectory() as tmp:
+            tools = self._tools(tmp)
+            with self.assertRaises(T.ToolError) as caught:
+                tools._check_dm_rule([{"user_id": 9, "is_bot": True}], {})
+            self.assertEqual(caught.exception.code, "dm_not_allowed")
+            self.assertEqual(caught.exception.extra["reason"], "seat")
 
     def test_a_scheduled_direct_message_cannot_step_around_the_rule(self) -> None:
         # The rule runs where every `direct` target is built, so scheduling the same message for
@@ -818,7 +879,11 @@ class CliRuleSwitchTests(unittest.TestCase):
         class StubAgent:
             seat = "CLAUDE"
             tag = "claude-code/1.2.3"
-            rt = types.SimpleNamespace(env=env)
+            # `home` is what the real Runtime carries (cli.py `class Runtime`:  `home: Path | None
+            # = None`),  and the owner id is read from the installed listener config under it.  The
+            # rule asks for that id only when it classifies a refusal, so the stub has to answer
+            # the question the same way the runtime does.
+            rt = types.SimpleNamespace(env=env, home=None, prog="simple-chat")
             creds = Z.Credentials(
                 email="bot@example.test",
                 key=SYNTHETIC_KEY,
