@@ -287,7 +287,12 @@ class WakePromptTests(unittest.TestCase):
 
     def prompt(self, **overrides) -> str:
         pending = W.Pending(
-            "w1", "MM", {"channel": "agent-sync", "topic": "AFC-412"}, owner=False, now=1.0, due=2.0
+            "w1",
+            "MM",
+            {"channel": Z.DEFAULT_CHANNEL, "topic": "AFC-412"},
+            owner=False,
+            now=1.0,
+            due=2.0,
         )
         pending.add({"id": 5}, False)
         kwargs = dict(
