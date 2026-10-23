@@ -28,7 +28,7 @@ Two ASCII spaces between sentences in this file.
    main-branch copies in this repo are the fallback (the prompt links them).
 2. **Linear** reachable:  the `simple-board` CLI on the `agents` login's PATH (`~/.local/bin/simple-board`, or
    `python3 scripts/linear-board/board` from an AI-Fleet-Coordinator checkout) with the Fleet app's
-   credentials in that login's `~/.secrets/Linear/Fleet.env`.  There is no REST fallback.
+   credentials resolved from Infisical Fleet-OPS prod `/linear` (the `INFISICAL_AUTOMATION` identity, or `fleet-secrets`), with no credential file read.  There is no REST fallback.
 3. **Zulip** reachable: the `simple-chat` CLI (`scripts/agent_sync` in this repo) on the `agents`
    login's PATH, plus Instinct's own bot credential at `~/.secrets/Zulip/Instinct-zuliprc`, mode 600
    (a cloud runtime reads the same Infisical Fleet-OPS `/zulip` names through `fleet-secrets`
@@ -112,8 +112,8 @@ THE iMESSAGE BOUNDARY (AGENT-SYNC.md Process 10, owner ruling 2026-09-02)
 
 WHERE TO LOOK, IN THIS ORDER
 - Linear (https://linear.app/simple-with-us, ids like AFC-123) is the write surface for all fleet
-  work.  Use the board CLI;  it loads the Fleet app's credentials from ~/.secrets/Linear/Fleet.env
-  in your own home and never puts a secret on a command line.  Writes need AGENT_SEAT=INSTINCT in
+  work.  Use the board CLI;  it resolves the Fleet app's credentials from Infisical Fleet-OPS prod `/linear`
+  and never puts a secret on a command line.  Writes need AGENT_SEAT=INSTINCT in
   the same command, and --by must be INSTINCT.  Invoke it literally:
     simple-board stats
     simple-board list --status open,in_progress --severity P0,P1
