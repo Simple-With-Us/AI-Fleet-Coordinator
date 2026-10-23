@@ -48,6 +48,8 @@ Contract `agent-sync-notes/1`, on the Operator's API server (the listener API, `
 | `SERVER` | `OPERATOR_NOTES_SERVER_KEY` | the Hetzner server's CLIs and stdio MCP (`fleet-secrets get`) | the same, for `[notes_queue] server_seats` |
 | `RUNNER` | `OPERATOR_NOTES_RUNNER_KEY` | the Mac runner | claim requests, report results, send log lines;  nothing else |
 
+Each principal works on its own, on purpose:  the Operator serves the principals whose key is set and answers 404 to one without a key, so one missing key never takes the other two down.  It says so at start:  `notes-queue-started` names the principals it serves and warns when the runner has none (then nothing can claim a request), and with no usable key at all the queue stays off (`notes-queue-off`).  The doctor's `notes:queue` row shows the queue's health, and `notes:runner` shows whether the Mac runner is polling.
+
 The three keys separate what each caller may do over the network:  a leaked Worker key cannot claim a request, and a leaked runner key cannot enqueue one.  They are not a boundary between processes on one host.  Today the server's and the Mac's Infisical identities can each read all of `/operator`, so any process on either host that can run `fleet-secrets` can take any of the three keys.
 
 **Signing.**  Three headers:  `X-Agent-Sync-Principal`, `X-Agent-Sync-Timestamp` (unix seconds) and `X-Agent-Sync-Signature`, the lowercase hex HMAC-SHA256, keyed with the principal's key, of
