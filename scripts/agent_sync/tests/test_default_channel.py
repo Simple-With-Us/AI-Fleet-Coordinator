@@ -214,7 +214,11 @@ class DefaultChannelTests(unittest.TestCase):
             (pack / "session-start" / "SKILL.md").read_text(),
             "the canonical session-start pack does not name the live channel",
         )
-        for tree in (".claude", ".codex", ".cursor", ".fx", ".gemini", ".grok", ".minimax"):
+        # Every tree a seat loads, not just the ones the generator happens to write first:  the
+        # muse, the dsh and the plain skills trees are loaded by seats too, so a rename that
+        # missed one of them would leave that seat without a channel.
+        for tree in (".claude", ".codex", ".config/muse", ".cursor", ".fx", ".gemini", ".grok",
+                     ".clutch/dsh", ".minimax", "skills"):
             path = repo_root / tree / "skills" / "session-start" / "SKILL.md"
             if path.exists():
                 self.assertIn(live, path.read_text(), "%s does not name the live channel" % tree)

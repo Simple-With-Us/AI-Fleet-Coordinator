@@ -1260,11 +1260,27 @@ def pinned_operator_id(agent: Agent) -> int | None:
     The Operator service bot's own Zulip user id, pinned in the host's own config the same way the
     owner's id is:  a production user id is private inventory, so none is committed and the host
     decides.  It is the only proof that the Operator opened a direct message, so a host that pins
-    it lets a seat answer inside one (Kody review on AFC-473)."""
+    it lets a seat answer inside one (Kody review on AFC-473).
+
+    **A damaged setting is not an unpinned one.**  A listener.toml that cannot be read, or whose
+    `operator_user_id` is not a user id, used to come back as None, so the refusal named an
+    environment variable that is not the one at fault and the recoverable setup error stayed
+    hidden.  It fails closed here instead, with a UsageError that names the setting the operator
+    has to repair and no id value in the message (Kody review on AFC-473)."""
     try:
-        operator = int(listener_cli._load(agent.rt).operator_user_id)
-    except Exception:  # noqa: BLE001 - a missing or damaged config is "not pinned" here
-        return None
+        cfg = listener_cli._load(agent.rt)
+    except Exception as exc:  # noqa: BLE001 - a damaged config is a named failure, never a guess
+        raise UsageError(
+            "%s is unavailable:  the listener config could not be read (%s)"
+            % (OPERATOR_ID_SETTING, type(exc).__name__)
+        ) from None
+    for problem in cfg.errors:
+        # The two ways the setting itself is unusable:  a value that is not a user id, and a
+        # listener.toml that could not be read or parsed.  A host that simply has not pinned the
+        # id (0, or no listener.toml at all) is not a failure and comes back as None.
+        if "operator_user_id" in problem or problem.startswith("cannot read "):
+            raise UsageError("%s is unavailable:  %s" % (OPERATOR_ID_SETTING, problem)) from None
+    operator = cfg.operator_user_id
     return operator if operator > 0 else None
 
 
@@ -1779,6 +1795,9 @@ DM_MAX_RECIPIENTS = (
     8  # other people in one conversation, this bot not counted (the hosted dm_send's cap too)
 )
 DM_CURSOR_CHANNEL = "@dm"  # reserved cursor name for `dm-read --new`
+# The setting a host pins the Operator's Zulip user id in, named when it cannot be read:  a
+# refusal that omits it sends the operator to the wrong place (Kody review on AFC-473).
+OPERATOR_ID_SETTING = "listener.toml.operator_user_id"
 GENERIC_BOT = ROUTER.GENERIC_BOT
 
 
@@ -1901,7 +1920,11 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
 
     A reply inside a conversation Operator already opened is still allowed, so the existing messages
     are read first.  A refusal is audited (ids and the reason only) and then raised as the policy's own
-    DmRefused, which exits 3 (a refusal) rather than 2 (a malformed command)."""
+    DmRefused, which exits 3 (a refusal) rather than 2 (a malformed command).
+
+    A host that cannot say who the Operator is fails closed by name:  a damaged listener config
+    raises a UsageError that says which setting to repair, instead of a refusal that points at an
+    environment variable that is not the one at fault (Kody review on AFC-473)."""
     env = getattr(getattr(agent, "rt", None), "env", None) or os.environ
     # The rule's own switch is read first, exactly as the MCP reads it, because with the block off
     # there is nothing to decide:  the Operator's id is only needed to tell a conversation Operator
@@ -1910,6 +1933,12 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
     # round-trip per direct-message write for a result that is then thrown away, and would turn an
     # outage into a retryable failure for a send the rule does not govern.
     if not DMP.rule_enabled(env):
+        return
+    clarifying = bool(getattr(args, "clarifying_question", None))
+    if DMP.clarifying_exempt(agent.seat, clarifying=clarifying):
+        # Operator's own clarifying question is the one message the rule permits without knowing
+        # who the Operator is, so the id is never resolved and the conversation is never read:  a
+        # host whose listener config is damaged can still send it (Kody review on AFC-473).
         return
     bots = {int(u["user_id"]): bool(u.get("is_bot")) for u in agent.users()}
     recipients = [
@@ -1954,10 +1983,15 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
             operator_opened=DMP.operator_opened_dm(
                 recipients,
                 existing,
-                operator_user_id=DMP.operator_user_id(env, pinned_operator_id(agent)),
+                # The pinned lookup is a callable, so the host's listener config is read only
+                # when the environment has no id:  a host that exports the id is never broken by
+                # a config file it does not consult (Kody review on AFC-473).
+                operator_user_id=DMP.operator_user_id(
+                    env, lambda: pinned_operator_id(agent)
+                ),
                 self_id=_int_or_none(agent.me().get("user_id")),
             ),
-            clarifying=bool(getattr(args, "clarifying_question", None)),
+            clarifying=clarifying,
             owner_user_id=_owner_id_pinned(agent) or None,
         )
     except DMP.DmRefused as refused:

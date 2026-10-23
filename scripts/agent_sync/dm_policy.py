@@ -97,6 +97,18 @@ def rule_enabled(env: Mapping[str, str] | None = None) -> bool:
     return raw.strip().casefold() not in OFF
 
 
+def clarifying_exempt(identity: str, *, clarifying: bool) -> bool:
+    """True when the rule permits Operator's own clarifying question.
+
+    The one message the rule allows without knowing who the Operator is:  the Operator is the
+    sender, so nothing has to be proven.  A reply inside a conversation Operator opened still needs
+    the id, because only the id proves who opened it.
+
+    The surfaces ask this question before they resolve the Operator's id, so a host whose Operator
+    id cannot be read can still send the one question the rule permits (Kody review on AFC-473)."""
+    return identity == OPERATOR_SEAT and clarifying
+
+
 def clarify_timeout_seconds(env: Mapping[str, str] | None = None) -> float:
     """How long Operator waits for an answer to its clarifying question before dropping the wake.
     AGENT_SYNC_DM_CLARIFY_TIMEOUT_MINUTES, default 30."""
@@ -140,9 +152,13 @@ def check_new_dm(
 
     `operator_opened` is what `operator_opened_dm` could prove:  True when the conversation is
     provably Operator's, False when it is provably not, and None when a conversation exists and
-    the Operator's id is not configured, so nobody can tell.  None is decided here rather than in
-    the caller, because the exemptions below do not need the id:  a reply inside a conversation
-    Operator opened, and Operator's own clarifying question, are both permitted without it."""
+    the Operator's id is not configured, so nobody can tell.
+
+    **Only Operator's own clarifying question is id-free.**  A reply inside a conversation Operator
+    opened needs the id too:  `operator_opened_dm` has to resolve the id to prove the conversation
+    is Operator's, and without it `missing_operator_user_id` applies.  A maintainer must not read
+    the id as optional here, because deleting the fail-closed branch would reopen the direct
+    messages a seat was told not to open (Kody review on AFC-473)."""
     if not rule_enabled(env):
         return
     # A reply inside a conversation Operator opened is a seat answering, not a seat opening one.
@@ -150,7 +166,7 @@ def check_new_dm(
         return
     if identity == OPERATOR_SEAT:
         # Operator may open a DM for exactly one reason, and the caller says so.
-        if clarifying:
+        if clarifying_exempt(identity, clarifying=clarifying):
             return
         raise DmRefused(
             "%s may open a direct message only to ask the sender one clarifying question when a wake "
@@ -158,18 +174,24 @@ def check_new_dm(
             % (OPERATOR_SEAT, SIDE_CHATS_NAME, SIDE_CHATS_STREAM_ID),
             reason="operator_not_clarifying",
         )
-    if operator_opened is None:
+    kind = classify(recipients, owner_user_id=owner_user_id)
+    if operator_opened is None and kind == "seat":
         # The exemptions above did not decide it and the attribution is unknown, so the host is
         # missing the variable the rule needs.  Say what is actually wrong:  a missing deployment
         # setting, which the DM rule cannot fix and the seat cannot set either.  Failing closed
         # here is right;  failing closed *before* the exemptions ran was not.
+        #
+        # This is the answer only when the attribution can change the verdict:  a bot is in the
+        # conversation, so it may be the Operator, and setting the id may permit the message.  A
+        # conversation with only people in it cannot be Operator's, so the rule's own reason is the
+        # actionable answer there, and telling the host to set a variable could never permit the
+        # message (Kody review on AFC-473).
         raise MissingOperatorId(
             "the Operator's Zulip user id is not set, so a direct message Operator opened cannot "
             "be told apart from one a seat opened:  set %s in the seat host's environment"
             % Z.ENV_OPERATOR_USER_ID,
             reason="missing_operator_user_id",
         )
-    kind = classify(recipients, owner_user_id=owner_user_id)
     raise DmRefused(
         "this seat may not open a new direct message (%s).  %s" % (kind, guidance_for(kind)),
         reason=kind,
@@ -314,7 +336,7 @@ def operator_opened_dm(
     return int(sender) == int(operator_id)
 
 
-def operator_user_id(env: Mapping[str, str] | None = None, pinned: int | None = None) -> int | None:
+def operator_user_id(env: Mapping[str, str] | None = None, pinned: Any = None) -> int | None:
     """The Operator bot's Zulip user id:  OPERATOR_ZULIP_USER_ID, else the id the host pinned,
     else None when neither is set.
 
@@ -322,10 +344,17 @@ def operator_user_id(env: Mapping[str, str] | None = None, pinned: int | None = 
     the caller fails closed.  The environment comes first, so a host that pins the id in its own
     environment overrides the local config;  `pinned` is the id the host's own listener.toml
     carries, the same place the owner's id is pinned.  Only an id, never a key;  it is safe to
-    log."""
+    log.
+
+    `pinned` may be a callable that resolves it, so the host's config is read only when the
+    environment has no id:  a host that exports the id is never broken by a config file it does
+    not consult, and a damaged one fails closed by name instead of looking like an unpinned host
+    (Kody review on AFC-473)."""
     found = Z.operator_user_id(env)
     if found is not None:
         return found
+    if callable(pinned):
+        pinned = pinned()
     if isinstance(pinned, int) and not isinstance(pinned, bool) and pinned > 0:
         return pinned
     return None

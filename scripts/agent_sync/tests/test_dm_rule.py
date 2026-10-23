@@ -318,8 +318,10 @@ class OperatorOpenedDmTests(unittest.TestCase):
     def test_a_permitted_dm_is_not_refused_when_the_operator_id_is_missing(self) -> None:
         # The exemptions do not need the Operator's id, so they must run before the missing
         # deployment setting becomes the answer.  Two DMs are permitted without it:  a seat
-        # answering inside a conversation Operator opened, and Operator's one clarifying
-        # question.  Both were refused before the helper stopped raising (Kody review on AFC-473).
+        # answering inside a conversation Operator opened (the caller has already proved that with
+        # the id, so `operator_opened` is True), and Operator's one clarifying question (the one
+        # message that is id-free).  Both were refused before the helper stopped raising (Kody
+        # review on AFC-473).
         DMP.check_new_dm({}, identity="CLAUDE", recipients=[bot(SYNTHETIC_OPERATOR_ID)],
                          operator_opened=True)
         DMP.check_new_dm({}, identity=DMP.OPERATOR_SEAT, recipients=[human(12)],
@@ -330,6 +332,45 @@ class OperatorOpenedDmTests(unittest.TestCase):
             DMP.check_new_dm({}, identity="CLAUDE", recipients=[human(12)], operator_opened=False)
         self.assertEqual(caught.exception.reason, "people")
         self.assertNotIsInstance(caught.exception, DMP.MissingOperatorId)
+
+    def test_the_missing_id_is_not_the_answer_for_a_target_the_rule_forbids_anyway(self) -> None:
+        # A conversation with only people in it cannot be Operator's, so the attribution cannot
+        # change the verdict:  the rule's own reason is the actionable answer, and telling the host
+        # to set a variable could never permit the message (Kody review on AFC-473).
+        with mock.patch.object(Z, "operator_user_id", return_value=None):
+            with self.assertRaises(DMP.DmRefused) as caught:
+                DMP.check_new_dm({}, identity="CLAUDE", recipients=[human(12)], operator_opened=None)
+        self.assertEqual(caught.exception.reason, "people")
+        self.assertNotIsInstance(caught.exception, DMP.MissingOperatorId)
+        self.assertIn(DMP.SIDE_CHATS_NAME, str(caught.exception))
+
+    def test_the_owner_target_is_refused_by_the_rule_and_not_by_a_missing_id(self) -> None:
+        # The owner's route is the Pending-for-Jay topic, which is the answer an operator needs.
+        with mock.patch.object(Z, "operator_user_id", return_value=None):
+            with self.assertRaises(DMP.DmRefused) as caught:
+                DMP.check_new_dm(
+                    {},
+                    identity="CLAUDE",
+                    recipients=[human(12)],
+                    operator_opened=None,
+                    owner_user_id=12,
+                )
+        self.assertEqual(caught.exception.reason, "owner")
+        self.assertNotIsInstance(caught.exception, DMP.MissingOperatorId)
+        self.assertIn(DMP.PENDING_FOR_JAY_TOPIC, str(caught.exception))
+
+    def test_a_bot_target_still_needs_the_id_because_it_may_be_the_operator(self) -> None:
+        # A bot in the conversation may be the Operator, so the attribution can change the verdict
+        # and the missing setting is the honest answer.
+        with mock.patch.object(Z, "operator_user_id", return_value=None):
+            with self.assertRaises(DMP.MissingOperatorId) as caught:
+                DMP.check_new_dm(
+                    {},
+                    identity="CLAUDE",
+                    recipients=[bot(SYNTHETIC_OPERATOR_ID)],
+                    operator_opened=None,
+                )
+        self.assertEqual(caught.exception.reason, "missing_operator_user_id")
 
     def test_a_missing_operator_id_does_not_refuse_when_there_is_nothing_to_judge(self) -> None:
         # A conversation with no messages is a new DM, and the rule refuses that on its own terms.
@@ -943,6 +984,157 @@ class CliRuleSwitchTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "missing_operator_user_id")
         self.assertEqual(caught.exception.exit_code, 3, "a refusal, not a malformed command")
         self.assertIn(Z.ENV_OPERATOR_USER_ID, str(caught.exception), "the variable is named")
+
+
+class DamagedOperatorConfigTests(unittest.TestCase):
+    """A damaged listener.toml must fail closed by name, not look like an unpinned host.
+
+    `pinned_operator_id` caught every failure and returned None, so an unreadable listener.toml and
+    an `operator_user_id` that is not a user id both came back as "the host has not pinned the
+    Operator's id".  The refusal then named an environment variable that is not the one at fault and
+    the recoverable setup error stayed hidden (Kody review on AFC-473).
+    """
+
+    @staticmethod
+    def _config(home: str, body: str) -> str:
+        """The listener.toml the CLI reads, written into the home the stub points at."""
+        path = os.path.join(home, "listener.toml")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        return path
+
+    @staticmethod
+    def _agent(
+        env: dict[str, str],
+        messages: list[dict[str, Any]] | None = None,
+        seat: str = "CLAUDE",
+    ) -> Any:
+        class StubAgent:
+            tag = "claude-code/1.2.3"
+            rt = types.SimpleNamespace(env=env, home=None, prog="simple-chat")
+            creds = Z.Credentials(
+                email="bot@example.test",
+                key=SYNTHETIC_KEY,
+                site="https://realm.example.test",
+                source="env",
+            )
+            reads = 0
+
+            def users(self) -> list[dict[str, Any]]:
+                return [{"user_id": 9, "is_bot": True}]
+
+            def me(self) -> dict[str, Any]:
+                return {"user_id": 7}
+
+            def fetch(self, operands: Any, **kw: Any) -> list[dict[str, Any]]:
+                StubAgent.reads += 1
+                return list(messages or [])
+
+        StubAgent.seat = seat
+        return StubAgent()
+
+    @staticmethod
+    def _opened_by(sender_id: int) -> list[dict[str, Any]]:
+        """One private message in the conversation, from `sender_id`."""
+        return [
+            {
+                "type": "private",
+                "id": 5,
+                "sender_id": sender_id,
+                "display_recipient": [{"id": 7}, {"id": 9}],
+            }
+        ]
+
+    def test_an_operator_id_that_is_not_a_user_id_names_the_setting(self) -> None:
+        from agent_sync import cli
+
+        with tempfile.TemporaryDirectory() as home:
+            path = self._config(home, '[daemon]\noperator_user_id = "not-a-user-id"\n')
+            agent = self._agent({"HOME": home, "AGENT_SYNC_CONFIG": path})
+            to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
+            with self.assertRaises(cli.UsageError) as caught:
+                cli._dm_rule(agent, types.SimpleNamespace(), to)
+        message = str(caught.exception)
+        self.assertIn(cli.OPERATOR_ID_SETTING, message, "the setting the operator must fix is named")
+        self.assertNotIn("not-a-user-id", message, "no value from the config is exposed")
+
+    def test_an_unreadable_listener_config_names_the_setting(self) -> None:
+        from agent_sync import cli
+
+        with tempfile.TemporaryDirectory() as home:
+            path = self._config(home, "[daemon\noperator_user_id = 1\n")
+            agent = self._agent({"HOME": home, "AGENT_SYNC_CONFIG": path})
+            to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
+            with self.assertRaises(cli.UsageError) as caught:
+                cli._dm_rule(agent, types.SimpleNamespace(), to)
+        self.assertIn(cli.OPERATOR_ID_SETTING, str(caught.exception), "the setting is named")
+
+    def test_an_unpinned_operator_is_a_host_state_not_a_damage(self) -> None:
+        # `operator_user_id = 0` means the host has not pinned it:  nothing is broken, and the
+        # refusal names the variable the host can set.  An existing conversation is what makes the
+        # id matter:  without it there is nothing to attribute and the rule refuses either way.
+        from agent_sync import cli
+
+        with tempfile.TemporaryDirectory() as home:
+            path = self._config(home, "[daemon]\noperator_user_id = 0\n")
+            agent = self._agent(
+                {"HOME": home, "AGENT_SYNC_CONFIG": path}, self._opened_by(4242)
+            )
+            to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
+            with mock.patch.object(Z, "operator_user_id", return_value=None):
+                with self.assertRaises(DMP.MissingOperatorId) as caught:
+                    cli._dm_rule(agent, types.SimpleNamespace(), to)
+        self.assertIn(Z.ENV_OPERATOR_USER_ID, str(caught.exception), "the variable is named")
+
+    def test_the_environment_id_wins_over_a_damaged_config(self) -> None:
+        # The environment comes first, so a host that exports the id never consults the config it
+        # does not need:  a damaged listener.toml must not break it.  The conversation is one the
+        # Operator opened, so the id is what decides, and the answer is that the seat may answer.
+        from agent_sync import cli
+
+        with tempfile.TemporaryDirectory() as home:
+            path = self._config(home, '[daemon]\noperator_user_id = "not-a-user-id"\n')
+            env = {
+                "HOME": home,
+                "AGENT_SYNC_CONFIG": path,
+                Z.ENV_OPERATOR_USER_ID: str(SYNTHETIC_OPERATOR_ID),
+            }
+            agent = self._agent(env, self._opened_by(SYNTHETIC_OPERATOR_ID))
+            to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
+            cli._dm_rule(agent, types.SimpleNamespace(), to)  # a reply inside it is allowed
+
+    def test_the_operators_clarifying_question_needs_no_id(self) -> None:
+        # Operator's own clarifying question is permitted without knowing who the Operator is, so
+        # a host whose config is damaged can still send it, and no conversation is read.
+        from agent_sync import cli
+
+        with tempfile.TemporaryDirectory() as home:
+            path = self._config(home, '[daemon]\noperator_user_id = "not-a-user-id"\n')
+            agent = self._agent({"HOME": home, "AGENT_SYNC_CONFIG": path}, seat="OPERATOR")
+            to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
+            cli._dm_rule(agent, types.SimpleNamespace(clarifying_question=True), to)
+        self.assertEqual(type(agent).reads, 0, "the conversation is not read")
+
+    def test_the_rule_asks_dm_policy_about_the_clarifying_allowance(self) -> None:
+        # One source of truth for the exemption, so the CLI and the policy cannot drift apart.
+        self.assertTrue(DMP.clarifying_exempt("OPERATOR", clarifying=True))
+        self.assertFalse(DMP.clarifying_exempt("OPERATOR", clarifying=False))
+        self.assertFalse(DMP.clarifying_exempt("CLAUDE", clarifying=True))
+
+    def test_the_pinned_id_is_read_only_when_the_environment_has_none(self) -> None:
+        # `pinned` may be a callable, so the host's config is not read at all when the environment
+        # already carries the id.
+        calls: list[int] = []
+
+        def pinned() -> int:
+            calls.append(1)
+            return SYNTHETIC_OPERATOR_ID
+
+        with_env = {Z.ENV_OPERATOR_USER_ID: str(SYNTHETIC_OPERATOR_ID)}
+        self.assertEqual(DMP.operator_user_id(with_env, pinned), SYNTHETIC_OPERATOR_ID)
+        self.assertEqual(calls, [], "the config is not read when the environment has the id")
+        self.assertEqual(DMP.operator_user_id({}, pinned), SYNTHETIC_OPERATOR_ID)
+        self.assertEqual(calls, [1], "the config is read when the environment has none")
 
 
 if __name__ == "__main__":
