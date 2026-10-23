@@ -29,12 +29,13 @@ Deleting caches never reduces swap.  If the pressure is swap or load only, say s
 
 ## Take the lock
 
-Several schedulers reach the same playbook and they all take the **same** lock, so two of them never reclaim at once: `mac-cleanup` every 4h, `mac-resource-watch` every 5m, **Hog Hunter's robotic vacuum every 300s** (the primary automatic path since `com.jay.disk-janitor` was retired on 2026-10-11), the BotFleet routines at 09:00 / 15:00 / 21:00, the resource webhook, plus a live bot thread.  `mac-auto-cleanup.sh` takes a **re-entrant owner-token lock**; callers that already hold it export `HOUSEKEEPER_LOCK_OWNER=1` before spawning children, so the parent does not deadlock its own subprocesses.  The lock is the directory `~/.claude-disk-janitor/.housekeeper.lock`, and it is treated as stale after 120 minutes.
+Several schedulers reach the same playbook and they all take the **same** lock, so two of them never reclaim at once: `mac-cleanup` every 4h, `mac-resource-watch` every 5m, **Hog Hunter's robotic vacuum every 300s** (the primary automatic path since the older disk-janitor daemon was retired on 2026-10-11), the BotFleet routines at 09:00 / 15:00 / 21:00, the resource webhook, plus a live bot thread.  `mac-auto-cleanup.sh` takes a **re-entrant owner-token lock**; callers that already hold it export `HOUSEKEEPER_LOCK_OWNER=1` before spawning children, so the parent does not deadlock its own subprocesses.  The lock is a directory, and it is treated as stale after 120 minutes.  Its exact path is private deployment inventory:  it lives in the operator's own inventory on that Mac, not in this pack.
 
 ```bash
 export HOUSEKEEPER_LOCK_OWNER=1
-mkdir ~/.claude-disk-janitor/.housekeeper.lock 2>/dev/null || { echo "skipped, peer holds lock"; exit 0; }
-trap 'rmdir ~/.claude-disk-janitor/.housekeeper.lock 2>/dev/null' EXIT
+LOCK_DIR="<the housekeeper lock directory>"   # exact path: the operator's private inventory on that Mac
+mkdir "$LOCK_DIR" 2>/dev/null || { echo "skipped, peer holds lock"; exit 0; }
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 ```
 
 ## Immediate commands
@@ -60,11 +61,11 @@ cleanmymac clean --force
 
 **Do not pass `--clean`** in a routine.  It means "clean even without a hit", not "ignore the cooldown"; `--force` is the only bypass and is for manual use.
 
-`mac-auto-cleanup` already calls CleanMyMac when the CLI is on PATH.  **Hog Hunter's robotic vacuum** owns idle/merged worktree retirement now that `com.jay.disk-janitor` is retired; `~/.claude-disk-janitor/janitor.sh` still exists and can be run by hand.  Never `rm -rf` `CoreSimulator/Devices`, never `simctl shutdown all`, never wipe `~/.grok/worktrees`.
+`mac-auto-cleanup` already calls CleanMyMac when the CLI is on PATH.  **Hog Hunter's robotic vacuum** owns idle/merged worktree retirement now that the older disk-janitor daemon is retired; `~/.claude-disk-janitor/janitor.sh` still exists and can be run by hand.  Never `rm -rf` `CoreSimulator/Devices`, never `simctl shutdown all`, never wipe `~/.grok/worktrees`.
 
 ## Thresholds that must wake this role
 
-These are the live defaults for `com.jay.mac-resource-watch` (every 5 min):
+These are the live defaults for the resource-watch job (every 5 min):
 
 | Signal | Wake when | Immediate action |
 |---|---|---|
@@ -73,7 +74,7 @@ These are the live defaults for `com.jay.mac-resource-watch` (every 5 min):
 | Swap | used ≥ 90% **and** ≥ 32G absolute | report hogs; do **not** clean disk for a RAM problem |
 | Load 1m | ≥ 65 (optional, on by default) | report hogs; do not SIGKILL `com.jay.claude-remote-control` |
 
-These are the live defaults in `~/apps/mac-resource-watch.py`: `RESOURCE_DISK_WARN_GB`, `RESOURCE_DISK_CRIT_GB`, `RESOURCE_DISK_DROP_GB`, `RESOURCE_SWAP_USED_PCT`, `RESOURCE_SWAP_USED_GB`, `RESOURCE_LOAD1`.  They were retuned down deliberately: the old 80G warn line ran `mac-auto-cleanup.sh --pressure` every 5 minutes back to back, and two of three runs ended with **less** free disk than they started.  The reclaim engine's bands are separate and live in `~/Code/HogHunter/config/reclaim-policy.json`: healthy at 80G free, acute below 40G, critical below 25G.
+These are the live defaults in the resource-watch script: `RESOURCE_DISK_WARN_GB`, `RESOURCE_DISK_CRIT_GB`, `RESOURCE_DISK_DROP_GB`, `RESOURCE_SWAP_USED_PCT`, `RESOURCE_SWAP_USED_GB`, `RESOURCE_LOAD1`.  They were retuned down deliberately: the old 80G warn line ran `mac-auto-cleanup.sh --pressure` every 5 minutes back to back, and two of three runs ended with **less** free disk than they started.  The reclaim engine's bands are separate and live in the reclaim engine's own policy file (its path is in the operator's private inventory on that Mac): healthy at 80G free, acute below 40G, critical below 25G.
 
 The watch runs the safe scripts itself, then POSTs BotFleet Housekeeper webhook `resource.disk` / `resource.ram` / `resource.cpu` / `resource.pressure`.  Cooldown 4h for the webhook, 2h between cleanup runs, 30m when the disk is critical.  Webhook URL and secret live in Infisical Fleet-OPS `/botfleet-housekeeper-webhook` (read with `fleet-secrets get`, never print).
 
@@ -81,7 +82,7 @@ The watch runs the safe scripts itself, then POSTs BotFleet Housekeeper webhook 
 
 Bot id `d43849b8-5eeb-452b-ac4e-ed4724343838`.  Routines at 09:00 / 15:00 / 21:00 plus the resource webhook.  Local webhook receiver `127.0.0.1:8800`.  BotFleet server `127.0.0.1:8799`.
 
-**Status of in-app resource triggers (verified 2026-09-01, do not assume otherwise).**  PR #65 added an Automations → Resources tab, but it is **not yet live on this host**: `~/.botfleet/resource-triggers.json` does not exist (zero triggers), and the packaged `/Applications/BotFleet.app` was built *before* #65 merged, so `GET /api/resource-triggers` returns 404.  Until BotFleet is rebuilt, the **launchd path is the one that actually works**: `com.jay.mac-resource-watch` samples every 5 min independently of the GUI and POSTs the webhook.  Do not claim the Resources tab is wired up until `GET /api/resource-triggers` returns 200.
+**Status of in-app resource triggers (verified 2026-09-01, do not assume otherwise).**  PR #65 added an Automations → Resources tab, but it is **not yet live on this host**: `~/.botfleet/resource-triggers.json` does not exist (zero triggers), and the packaged `/Applications/BotFleet.app` was built *before* #65 merged, so `GET /api/resource-triggers` returns 404.  Until BotFleet is rebuilt, the **launchd path is the one that actually works**: the resource-watch launchd job samples every 5 min independently of the GUI and POSTs the webhook.  Do not claim the Resources tab is wired up until `GET /api/resource-triggers` returns 200.
 
 **Do not add an AppleScript monitor.**  It would require the app to be running, which is exactly the case launchd already covers.
 
