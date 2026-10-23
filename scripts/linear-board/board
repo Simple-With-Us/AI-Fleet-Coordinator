@@ -2282,6 +2282,10 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     owner = ws.user_id(by) if env("LINEAR_BOARD_OWNER") == "1" else None
     if owner:
         inp["assigneeId"] = owner
+    elif stolen and env("LINEAR_BOARD_OWNER") == "1":
+        # A steal by a seat with no Linear user still moves the claim, so the
+        # old owner's assignee goes with it instead of lingering stale.
+        inp["assigneeId"] = None
     try:
         L.call(M_UPDATE, {"id": n["id"], "input": inp})
     except GqlError as e:
@@ -2372,12 +2376,20 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
             time.sleep(env_float("LINEAR_BOARD_DUP_WAIT", 3))
             state = (fetch_issue(L, n["id"], a.id).get("state") or {}).get("name")
         drop = closing_label_ids(n)
-        if drop:
+        # The relation path skips the CLOSING_STATUSES branch below, so "clear
+        # on Done" is repeated here:  a duplicate owns nothing either.
+        dup_inp = {"removedLabelIds": drop} if drop else {}
+        if env("LINEAR_BOARD_OWNER") == "1":
+            dup_inp["assigneeId"] = None
+        if dup_inp:
             try:
-                L.call(M_UPDATE, {"id": n["id"], "input": {"removedLabelIds": drop}})
+                L.call(M_UPDATE, {"id": n["id"], "input": dup_inp})
             except GqlError as e:
-                L.fail(f"Linear refused removing the open-loop labels: {e}")
-            L.landed.append(f"{n['identifier']} lost needs-owner and ask-capture")
+                L.fail(f"Linear refused the duplicate cleanup update: {e}")
+            if drop:
+                L.landed.append(f"{n['identifier']} lost needs-owner and ask-capture")
+            if env("LINEAR_BOARD_OWNER") == "1":
+                L.landed.append(f"{n['identifier']} cleared its assignee")
         text = f"Duplicate of {canon['identifier']}"
         if a.resolution:
             text = f"Resolution (duplicate of {canon['identifier']}): {a.resolution.strip()}"
@@ -2401,8 +2413,10 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
         if released:
             inp["removedLabelIds"] = released
         # Releasing a claim releases the owner with it, whenever ownership is
-        # mirrored at all (LINEAR_BOARD_OWNER=1;  see `claim`).
-        if env("LINEAR_BOARD_OWNER") == "1":
+        # mirrored at all (LINEAR_BOARD_OWNER=1;  see `claim`).  Only when a
+        # claim marker was actually released:  an unclaimed issue keeps its
+        # human assignee.
+        if released and env("LINEAR_BOARD_OWNER") == "1":
             inp["assigneeId"] = None
     elif value in CLOSING_STATUSES:
         # Closed:  the question was answered or the ask handled, so it stops waiting on the owner.

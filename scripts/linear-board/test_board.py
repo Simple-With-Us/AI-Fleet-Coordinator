@@ -3675,6 +3675,42 @@ class OwnershipTests(BoardTest):
         self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
         self.assertIsNone(iss.get("assignee"))
 
+    def test_duplicate_clears_the_owner(self):
+        """The duplicate relation path skips the CLOSING_STATUSES branch, so it
+        clears the assignee in its own cleanup update instead."""
+        iss = self.todo_issue()
+        canon = self.todo_issue(title="Canonical")
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.board("status", iss["identifier"], "duplicate", "--of", canon["identifier"],
+                   extra=self.OWNED)
+        self.assertIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+
+    def test_steal_by_a_userless_seat_clears_the_stale_owner(self):
+        """A steal moves the claim even when the taker has no Linear user;  the
+        old owner's assignee goes with it instead of lingering stale."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CODEX",
+                   extra=dict(self.OWNED, AGENT_SEAT="CODEX"))
+        self.assertEqual(iss.get("assignee"), "user-codex")
+        self.board("claim", iss["identifier"], "--by", "SENTRY", "--steal", "--reason",
+                   "CODEX is gone", extra=dict(self.OWNED, AGENT_SEAT="SENTRY"))
+        self.assertIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+        self.assertIn("claimed:SENTRY", self.label_names(iss))
+
+    def test_release_without_a_claim_keeps_a_human_assignee(self):
+        """open/backlog clear the assignee only when a claim marker was actually
+        released;  an unclaimed issue keeps whoever owns it."""
+        iss = self.todo_issue()
+        iss["assignee"] = "user-claude"
+        self.board("status", iss["identifier"], "open", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertEqual(iss.get("assignee"), "user-claude")
+
     def test_closing_by_default_writes_no_assignee_at_all(self):
         iss = self.todo_issue()
         self.board("claim", iss["identifier"], "--by", "CLAUDE")
