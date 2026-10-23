@@ -19,7 +19,7 @@
 import GB_TABLE from "../../agent_sync/mcp/gb-identities.json" with { type: "json" };
 import RENAMED from "../../agent_sync/mcp/renamed-tools.json" with { type: "json" };
 import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS, UnknownTool } from "./hosted-tools.js";
-import { ToolError, errorResult, okResult, schemaProblem } from "./contract.js";
+import { ToolError, errorResult, okResult, scanSecret, schemaProblem } from "./contract.js";
 import { EVENTS_ONLY_SEATS, SHARED_IDENTITY_SEATS } from "./config.js";
 import { IDENTITIES_SPEC, GUIDE_SPEC } from "./zulip-tool-specs.js";
 import { guideResult, GuideArgs, GUIDE_URL } from "./guide.js";
@@ -205,8 +205,12 @@ export class IdentityRouter {
     // to the connection, the same protocol error as any unknown name
     // (buildServer maps UnknownTool), audited like one.
     if (EVENTS_ONLY_SEATS.includes(this.seat)) {
-      await this.audit({ acting_identity: "none", tool: typeof name === "string" ? name : "", error_code: "unknown_tool", error_message: "This connection delivers event notifications only;  it has no tools." });
-      throw new UnknownTool(typeof name === "string" ? name : "");
+      // The requested name is client-controlled:  audit it secret-scanned and
+      // length-capped, the same hygiene seat-state applies to error messages.
+      const requested = typeof name === "string" ? name : "";
+      const audited = scanSecret(requested) ? "<omitted after secret scan>" : [...requested].slice(0, 64).join("");
+      await this.audit({ acting_identity: "none", tool: audited, error_code: "unknown_tool", error_message: "This connection delivers event notifications only;  it has no tools." });
+      throw new UnknownTool(requested);
     }
     if (typeof name === "string" && Object.hasOwn(RENAMED_TOOLS, name)) {
       const replacement = RENAMED_TOOLS[name];
