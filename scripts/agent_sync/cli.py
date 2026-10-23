@@ -1903,6 +1903,14 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
     are read first.  A refusal is audited (ids and the reason only) and then raised as the policy's own
     DmRefused, which exits 3 (a refusal) rather than 2 (a malformed command)."""
     env = getattr(getattr(agent, "rt", None), "env", None) or os.environ
+    # The rule's own switch is read first, exactly as the MCP reads it, because with the block off
+    # there is nothing to decide:  the Operator's id is only needed to tell a conversation Operator
+    # opened from one a seat opened, and with the rule off that judgement is never made, so a host
+    # without the id is not broken by it.  Reading the conversation first would also cost a network
+    # round-trip per direct-message write for a result that is then thrown away, and would turn an
+    # outage into a retryable failure for a send the rule does not govern.
+    if not DMP.rule_enabled(env):
+        return
     bots = {int(u["user_id"]): bool(u.get("is_bot")) for u in agent.users()}
     recipients = [
         {"user_id": u["user_id"], "is_bot": bots.get(int(u["user_id"]), False)} for u in to.users

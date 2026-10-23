@@ -802,5 +802,73 @@ class ClarifyingFlagOnTheCliTests(unittest.TestCase):
         self.assertEqual(getattr(args, "clarifying_question", None), True)
 
 
+class CliRuleSwitchTests(unittest.TestCase):
+    """The CLI must read the rule's own switch before it needs the Operator's id.
+
+    `operator_opened_dm` needs the Operator's id to tell a conversation Operator opened from one a
+    seat opened, and it refuses with `missing_operator_user_id` when the id is absent.  That refusal
+    is right only while the rule is on:  with `AGENT_SYNC_DM_RULE=off` there is no judgement to make
+    at all, so a host that has not set the id is not broken by it.  The CLI evaluated the
+    conversation before `check_new_dm` could short-circuit on the switch, so the refusal fired
+    anyway and the CLI refused a send the rule does not govern.  The MCP read the switch first;  the
+    CLI now does the same, so the two transports decide alike."""
+
+    @staticmethod
+    def _agent(env: dict[str, str], messages: list[dict[str, Any]]) -> Any:
+        class StubAgent:
+            seat = "CLAUDE"
+            tag = "claude-code/1.2.3"
+            rt = types.SimpleNamespace(env=env)
+            creds = Z.Credentials(
+                email="bot@example.test",
+                key=SYNTHETIC_KEY,
+                site="https://realm.example.test",
+                source="env",
+            )
+            reads = 0
+
+            def users(self) -> list[dict[str, Any]]:
+                return [{"user_id": 9, "is_bot": True}]
+
+            def me(self) -> dict[str, Any]:
+                return {"user_id": 7}
+
+            def fetch(self, operands: Any, **kw: Any) -> list[dict[str, Any]]:
+                StubAgent.reads += 1
+                return messages
+
+        return StubAgent()
+
+    def test_the_rule_off_needs_no_operator_id_and_reads_no_conversation(self) -> None:
+        from agent_sync import cli
+
+        with tempfile.TemporaryDirectory() as home:
+            agent = self._agent({"HOME": home, "AGENT_SYNC_DM_RULE": "off"}, [])
+            to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
+            cli._dm_rule(agent, types.SimpleNamespace(), to)  # no refusal
+        self.assertEqual(type(agent).reads, 0, "the conversation is not read when the rule is off")
+
+    def test_the_rule_on_refuses_a_missing_operator_id_by_name(self) -> None:
+        from agent_sync import cli
+
+        opened = [
+            {
+                "type": "private",
+                "id": 5,
+                "sender_id": 4242,
+                "display_recipient": [{"id": 7}, {"id": 9}],
+            }
+        ]
+        with tempfile.TemporaryDirectory() as home:
+            agent = self._agent({"HOME": home}, opened)
+            to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
+            with self.assertRaises(DMP.MissingOperatorId) as caught:
+                cli._dm_rule(agent, types.SimpleNamespace(), to)
+        self.assertEqual(caught.exception.reason, "missing_operator_user_id")
+        self.assertEqual(caught.exception.code, "missing_operator_user_id")
+        self.assertEqual(caught.exception.exit_code, 3, "a refusal, not a malformed command")
+        self.assertIn(Z.ENV_OPERATOR_USER_ID, str(caught.exception), "the variable is named")
+
+
 if __name__ == "__main__":
     unittest.main()
