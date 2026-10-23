@@ -113,7 +113,8 @@ depends on the surface, so pick by destination:
 | **Plain-text chat (no Markdown rendering)** | two literal ASCII spaces | Nothing collapses them; an entity would show as the ugly text `&nbsp;` |
 | **Files read as source** — repo docs, commit messages, code comments, config, diffs, terminal output | two literal ASCII spaces | Read in an editor/terminal/`git diff`, which preserve them verbatim; an entity would appear literally |
 | **HTML / JSX / SwiftUI / any rendered product copy** | a real U+00A0 plus a space, or a shared `SENTENCE_GAP` constant | Raw double spaces collapse in HTML.  Source may use the entity only when the renderer expands it.  The owner must never see `&nbsp;` as text. |
-| **GitHub PR and issue titles, bodies and comments, review comments, and any text a tool writes that GitHub then renders** | the literal entity text `&nbsp;` then a normal space after each sentence → `End.&nbsp; Next.` | Owner ruling 2026-10-22:  "On GitHub use `&nbsp; ` instead."  GitHub's renderer decodes the entity into a real gap, and the entity survives a copy into a plain-text squash commit as the six characters `&nbsp;`, which reads as the gap it stands for.  Supersedes the 2026-10-08 ruling that a real U+00A0 belongs here. |
+| **GitHub PR and issue titles** | a real U+00A0 plus a space | A title is plain text: GitHub renders it as it stands and does not decode an entity there, so the entity would sit in the title bar as the six characters `&nbsp;`.  Owner ruling 2026-10-22, as `scripts/land.sh` implements it when it writes a title. |
+| **GitHub PR and issue bodies and comments, review comments, and any text a tool writes that GitHub then renders** | the literal entity text `&nbsp;` then a normal space after each sentence → `End.&nbsp; Next.` | Owner ruling 2026-10-22: "On GitHub use `&nbsp; ` instead."  GitHub's renderer decodes the entity into a real gap, and the entity survives a copy into a plain-text squash commit as the six characters `&nbsp;`, which reads as the gap it stands for.  Supersedes the 2026-10-08 ruling that a real U+00A0 belongs here. |
 | **Zulip posts, and any text a tool writes for a surface that renders Markdown or HTML and is not named above** | a real U+00A0 plus a space | Owner ruling 2026-10-22:  "type a non-breaking space (NBSP) first, then a normal space."  Zulip collapses plain double spaces, and a real U+00A0 renders as a real gap.  The `&nbsp;` entity is for GitHub and for the chat panes named above;  on Zulip it would post as the six literal characters. |
 | **Markdown source** | two literal spaces *between* sentences | ⚠️ Two spaces at the **end of a line** is the unrelated hard-line-break syntax — don't confuse the two |
 | **Any surface not listed above** — a pane, a client, a tool or a channel you have not been told about | two literal ASCII spaces | Owner ruling 2026-10-20: an untested surface takes two ASCII spaces until it reports otherwise.  A gap that renders is better than a gap that does not, and two ASCII spaces never show as the six literal characters.  When the surface is verified, change its row here and report the finding in #Work-In-Progress so every seat gets it. |
@@ -199,17 +200,22 @@ read them and confirm they are abbreviations rather than real sentences.
 
 ### The GitHub form: the `&nbsp;` entity
 
-**On GitHub the gap is the `&nbsp;` entity, not a raw U+00A0.**  Owner ruling 2026-10-22:
-"On GitHub use `&nbsp; ` instead."  GitHub's renderer decodes the entity into a real gap,
-and the entity survives a copy into a plain-text squash commit as the six characters
-`&nbsp;`, which reads as the gap it stands for.  So the converter for a GitHub body
-replaces the gap with the entity and a space, and everything else — the markup group, the
-lookbehind that keeps a numbered list a list, and the lookahead — is the same:
+**In a GitHub body or comment the gap is the `&nbsp;` entity, not a raw U+00A0.**
+Owner ruling 2026-10-22: "On GitHub use `&nbsp; ` instead."  GitHub's renderer decodes the
+entity into a real gap, and the entity survives a copy into a plain-text squash commit as
+the six characters `&nbsp;`, which reads as the gap it stands for.  So the converter for a
+GitHub body replaces the gap with the entity and a space, and everything else — the markup
+group, the lookbehind that keeps a numbered list a list, and the lookahead — is the same:
 
 ```sh
 umask 077
 perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\&nbsp; /g' body.txt > body.entity.txt
 ```
+
+A GitHub **title** is the exception, and it is a property of the surface rather than a
+different ruling: a title is plain text, GitHub renders it as it stands and does not
+decode an entity there, so the six characters would sit in the title bar.  A title takes a
+real U+00A0 plus a space, which is what `scripts/land.sh` does when it writes one.
 
 The only difference from the converter above is the replacement:  `$1$2\&nbsp; ` writes the
 six characters and a space where `$1$2\x{a0} ` writes the byte pair and a space.  The
