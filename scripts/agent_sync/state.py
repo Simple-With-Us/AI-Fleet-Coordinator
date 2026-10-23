@@ -62,6 +62,18 @@ def cursor_key(channel: str, topic: str) -> str:
     return "%s\u0000%s" % (channel.casefold(), topic.casefold())
 
 
+# A channel rename strands the cursors persisted under its old name.  Each current
+# channel (casefolded) maps to the legacy names its cursors may still live under;
+# reads fall back to them and the next advance re-keys the cursor forward.
+LEGACY_CHANNEL_NAMES: dict[str, tuple[str, ...]] = {
+    "work-in-progress": ("agent-sync",),
+}
+
+
+def _legacy_cursor_keys(channel: str, topic: str) -> list[str]:
+    return [cursor_key(old, topic) for old in LEGACY_CHANNEL_NAMES.get(channel.casefold(), ())]
+
+
 def make_private_dir(path: Path) -> None:
     """Create `path` and any missing parents, each with mode 700.  os.makedirs(mode=...) would
     apply the mode to the leaf only."""
@@ -198,7 +210,14 @@ class State:
         cursors = _read_json(self.path).get("cursors")
         if not isinstance(cursors, dict):
             return None
-        return _as_int(cursors.get(cursor_key(channel, topic)))
+        value = _as_int(cursors.get(cursor_key(channel, topic)))
+        if value is not None:
+            return value
+        for legacy_key in _legacy_cursor_keys(channel, topic):
+            value = _as_int(cursors.get(legacy_key))
+            if value is not None:
+                return value
+        return None
 
     def advance_cursor(self, channel: str, topic: str, message_id: int) -> None:
         """Move the cursor forward to `message_id`; a smaller id never moves it back."""
@@ -212,6 +231,8 @@ class State:
             current = _as_int(cursors.get(key))
             if current is None or message_id > current:
                 cursors[key] = int(message_id)
+            for legacy_key in _legacy_cursor_keys(channel, topic):
+                cursors.pop(legacy_key, None)
 
         self._update(self.path, mutate)
 

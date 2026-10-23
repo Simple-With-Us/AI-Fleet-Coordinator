@@ -1599,7 +1599,7 @@ export class HostedTools {
   linearFileBody(args, slug, team) {
     const seat = seatTagForSeat(this.seat);
     const text = args.description?.trim() || "_No description given._";
-    const footer = [`---`, "", "**Filed from Agent-Sync**", "", `- Reported by ${seat}`, `- App: \`${slug ?? args.app ?? DEFAULT_APP}\` (team ${team})`];
+    const footer = [`---`, "", "**Filed from simple-tools**", "", `- Reported by ${seat}`, `- App: \`${slug ?? args.app ?? DEFAULT_APP}\` (team ${team})`];
     if (args.kind) footer.push(`- Kind: ${args.kind}`);
     if (args.severity) footer.push(`- Severity: ${args.severity}`);
     if (args.env) footer.push(`- Env: ${ENVS[args.env]}`);
