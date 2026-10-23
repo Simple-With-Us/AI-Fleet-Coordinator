@@ -40,6 +40,18 @@ def state_dir(environ: Mapping[str, str]) -> str:
     return os.path.join(home, "apps", "needs-owner", "state")
 
 
+def comment_keys_dir(environ: Mapping[str, str]) -> str:
+    """The comment-key store's own directory:  beside the notifier's state, not inside it.
+
+    The state directory belongs to the notifier:  it holds the notifier's own state, its
+    lock and the file for CLAUDE's items, and a dry run must leave no state and no lock.
+    The filing seat writes the same comment-key store, so the store cannot live inside
+    that directory:  filing an item would create the notifier's state.
+    """
+    home = environ.get("HOME") or os.path.expanduser("~")
+    return os.path.join(home, "apps", "needs-owner", "comment-keys")
+
+
 def private_dir(path: str) -> None:
     """`path` and its missing parents exist, and the last one is mode 0700."""
     os.makedirs(path, exist_ok=True)

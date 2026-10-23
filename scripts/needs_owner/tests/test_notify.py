@@ -1,14 +1,24 @@
 """The notice:  pending, maybe-sent, reruns and the Grok Bot mirror."""
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
+from needs_owner import block as blockmod
+from needs_owner import comment_keys
+from needs_owner import items as itemsmod
+from needs_owner import ledger
 from needs_owner import links
 from needs_owner import notify as notifymod
+from needs_owner import records
 from needs_owner import text as T
+from needs_owner.errors import BoardFailed
 from needs_owner.proc import Result
 
 from .world import REALM_LINK, SCRIPTS, World
@@ -47,6 +57,34 @@ class Reader:
 
 def row(message_id, seat, content, *, is_bot=True) -> dict:
     return {"id": message_id, "channel": "agent-sync", "topic": "OWNER AFC-1 x", "content": content, "is_bot": is_bot, "seat": seat}
+
+
+class Stub:
+    """A runner that answers with fixed results:  the board fails the way a test says, and the post lands.
+
+    The board CLI's exit codes are the contract the classifier reads, so a stub
+    pins them without a child process."""
+
+    def __init__(self, result: Result, *, seat: str = "CLAUDE", environ: dict | None = None,
+                 msg_id: int = 630000000) -> None:
+        self.seat = seat
+        self.env = environ if environ is not None else {}
+        self.result = result
+        self.msg_id = msg_id
+        self.board_calls: list[str] = []
+        self.written: list[str] = []
+
+    def board(self, *args: str) -> Result:
+        self.board_calls.append(args[0])
+        return self.result
+
+    def agent_sync(self, *args: str, stdin=None) -> Result:
+        return Result(0, json.dumps({"id": self.msg_id}) + "\n")
+
+    @contextlib.contextmanager
+    def private_file(self, text: str):
+        self.written.append(text)
+        yield "/tmp/a-private-file"
 
 
 class ReferenceLineTests(unittest.TestCase):
@@ -212,17 +250,20 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual(len(self.w.zulip()["messages"]), 1)
 
     def test_a_post_that_landed_but_whose_record_failed_is_not_posted_twice(self) -> None:
+        """The record write failed and its outcome is unknown, so the record may already be on the issue:  it is
+        not written again, and the notice is not posted a second time."""
         r = self.w.file(Q, "Yes", "No", env=self.w.env(FAKE_BOARD_FAIL="comment"))
         self.assertEqual(r.code, 0, r.err)
-        self.assertIn("did not", r.err)
+        self.assertEqual((r.json()["state"], r.json()["reason"]), ("notify_pending", "outcome_unknown"))
         self.assertFalse(r.json()["recorded"])
         self.assertEqual(len(self.w.zulip()["messages"]), 1)
         again = self.w.file(Q, "Yes", "No")
         self.assertEqual(again.code, 0, again.err)
-        self.assertEqual(again.json()["state"], "notified")
-        self.assertTrue(again.json()["recorded"])
+        self.assertEqual(again.json()["notified_msg_id"], 630000000, "the notice is found by its reference")
+        self.assertEqual(again.json()["state"], "notify_pending", "the record may have landed:  the item is pending")
         self.assertEqual(len(self.w.zulip()["messages"]), 1)
-        self.assertEqual(len([c for c in self._records() if "notified msg" in c]), 1)
+        self.assertEqual(len([c for c in self._records() if "notified msg" in c]), 0, "the record is not written again")
+        self.assertEqual(len([c for c in self._records() if "notify_pending" in c]), 1, "the pending record is on the issue")
 
     def test_a_post_without_an_id_is_found_by_its_reference(self) -> None:
         self.w.set_zulip(post_mode="nojson")
@@ -239,8 +280,8 @@ class NoticeTests(unittest.TestCase):
         return [c for c in self.w.calls("simple-chat") if c["argv"][0] in ("post", "reply")]
 
     def test_a_quote_or_a_copied_reference_is_never_taken_for_the_notice(self) -> None:
-        """The post landed, both attempts to record it failed, and the topic then fills with look-alikes.  The
-        rerun records the bot's own first post and posts nothing."""
+        """The post landed, its record could not be written, and the topic then fills with look-alikes.  The
+        rerun takes the bot's own first post for the notice, posts nothing, and writes no record."""
         first = self.w.file(Q, "Yes", "No", env=self.w.env(FAKE_BOARD_FAIL="comment"))
         self.assertEqual(first.code, 0, first.err)
         self.assertFalse(first.json()["recorded"])
@@ -258,15 +299,14 @@ class NoticeTests(unittest.TestCase):
         again = self.w.file(Q, "Yes", "No")
         self.assertEqual(again.code, 0, again.err)
         got = again.json()
-        self.assertEqual((got["state"], got["notified_msg_id"], got["recorded"]), ("notified", 630000000, True))
-        records = [c for c in self._records() if "notified msg" in c]
-        self.assertEqual(len(records), 1)
-        self.assertIn("notified msg 630000000", records[0])
+        self.assertEqual(got["notified_msg_id"], 630000000, "the bot's own first post is the notice, not a look-alike")
+        self.assertEqual(got["state"], "notify_pending", "the record may have landed:  the item is still pending")
+        self.assertEqual(len([c for c in self._records() if "notified msg" in c]), 0, "the record is not written twice")
         for stray in impostors:
-            self.assertNotIn(str(stray), records[0])
+            self.assertNotEqual(str(stray), str(got["notified_msg_id"]))
         self.assertEqual(len(self._posts()), 1, "one post across both runs")
         listed = self.w.run("list", "--json").json()
-        self.assertEqual(listed[0]["notified_msg_id"], 630000000)
+        self.assertEqual(listed[0]["notified_msg_id"], None, "no record is on the issue")
 
     def test_a_copied_reference_does_not_stop_the_notice_from_being_sent(self) -> None:
         """The post never landed.  A peer (or Jay's quote) carries the uid, and the rerun still posts."""
@@ -365,6 +405,166 @@ class NoticeTests(unittest.TestCase):
         got = self._mirror().json()
         self.assertEqual((got["state"], got["linkback"]), ("notified", "failed"))
         self.assertIn("notified msg 777", self._records()[0])
+
+
+class BoardWriteTests(unittest.TestCase):
+    """The classifier:  what a failed board write means, and where it goes.
+
+    The board CLI's exit codes are the contract, and a stub pins them without a
+    child process:  every board call answers with the same result."""
+
+    def setUp(self) -> None:
+        self.home = tempfile.mkdtemp(prefix="nowner-keys-")
+        self.addCleanup(shutil.rmtree, self.home, True)
+        self.env = {"HOME": self.home}
+        self.item = itemsmod.Item(
+            identifier="AFC-300", id="id-300", url="https://linear.app/simple-with-us/issue/AFC-300",
+            title="Revive PR 761 or close it?", status="Todo", severity=None, app="AFC", created_at=None,
+            labels=[itemsmod.LABEL], kind=itemsmod.KIND, reported_by="CLAUDE",
+            block=blockmod.Block(uid="needs-owner:CLAUDE:abc12345", question=Q, options=["Yes", "No"],
+                                 filed_by="CLAUDE"),
+        )
+        self.topic = T.topic_for("AFC-300", Q)
+
+    def stub(self, result: Result) -> Stub:
+        return Stub(result, environ=self.env)
+
+    def notice(self, result: Result) -> tuple:
+        runner = self.stub(result)
+        return runner, notifymod.notify(runner, self.item)
+
+    def notified_text(self) -> str:
+        return records.notified_text(630000000, self.topic)
+
+    def notified_key(self) -> str:
+        return comment_keys.key_for("AFC-300", self.notified_text())
+
+    # ---- the table ------------------------------------------------------------------------
+    def test_the_classifier_reads_the_board_codes(self) -> None:
+        table = {2: notifymod.TERMINAL, 3: notifymod.RETRYABLE, 4: notifymod.TERMINAL,
+                 5: notifymod.RETRYABLE, 6: notifymod.TERMINAL, 7: notifymod.TERMINAL}
+        for code, want in table.items():
+            self.assertEqual(notifymod._classify(Result(code, "", "board: refused")), want, code)
+        self.assertEqual(notifymod._classify(Result(0, "commented")), notifymod.OK)
+        self.assertEqual(notifymod._classify(Result(124, "", "timed out", timed_out=True)), notifymod.UNKNOWN)
+        self.assertEqual(notifymod._classify(Result(1, "", "board: Linear refused the comment: x")), notifymod.UNKNOWN)
+
+    # ---- retryable ------------------------------------------------------------------------
+    def test_exit_3_is_retryable_and_leaves_the_item_pending(self) -> None:
+        runner, notice = self.notice(
+            Result(3, "", "board: AFC-300 (AFC-300) is In Progress, claimed by BF-DIRECTOR.")
+        )
+        self.assertEqual((notice.state, notice.reason), ("notify_pending", "claim_held"))
+        self.assertIn("claimed by BF-DIRECTOR", notice.detail)
+        self.assertIsNone(comment_keys.get(self.notified_key(), self.env), "the row is released")
+
+    def test_exit_5_is_retryable_and_keeps_the_retry_timing(self) -> None:
+        err = ("board: Linear rate limit: the Fleet app's budget resets at 3:42pm.  "
+               "This request was not applied; rerun it after the reset.")
+        runner, notice = self.notice(Result(5, "", err))
+        self.assertEqual((notice.state, notice.reason), ("notify_pending", "rate_limited"))
+        self.assertIn("budget resets", notice.detail)
+        self.assertIn("rerun it after the reset", notice.detail)
+        self.assertIsNone(comment_keys.get(self.notified_key(), self.env), "the row is released")
+
+    def test_a_later_run_writes_the_record_after_a_retryable_failure(self) -> None:
+        runner, notice = self.notice(Result(3, "", "board: claimed by BF-DIRECTOR"))
+        again = self.stub(Result(0, "commented"))
+        wrote = notifymod._write_record(again, self.item, self.notified_text())
+        self.assertEqual(wrote.outcome, "ok")
+        self.assertEqual(again.board_calls, ["comment"])
+
+    # ---- terminal -------------------------------------------------------------------------
+    def test_exit_4_names_the_missing_variable_and_no_value(self) -> None:
+        err = ("board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET are missing "
+               "from Infisical Fleet-OPS /fleet/linear (`fleet-secrets get`), and LINEAR_CLIENT_ID and "
+               "LINEAR_CLIENT_SECRET are not set.  Check `fleet-secrets doctor`.  Until then use "
+               "BOARD_BACKEND=mac-collab.")
+        runner = self.stub(Result(4, "", err))
+        with self.assertRaises(BoardFailed) as raised:
+            notifymod.notify(runner, self.item)
+        self.assertEqual(raised.exception.exit_code, 4)
+        self.assertEqual(
+            str(raised.exception),
+            "board comment failed (exit 4):  no Fleet credentials:  FLEET_LINEAR_CLIENT_ID, "
+            "FLEET_LINEAR_CLIENT_SECRET, LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET",
+        )
+        self.assertNotIn("mac-collab", str(raised.exception), "a value never reaches the operator")
+
+    def test_a_value_never_comes_out_of_the_missing_variables(self) -> None:
+        err = ("board: no Fleet credentials: FLEET_LINEAR_CLIENT_ID is missing and "
+               "LINEAR_CLIENT_SECRET=hunter2 is set.")
+        runner = self.stub(Result(4, "", err))
+        with self.assertRaises(BoardFailed) as raised:
+            notifymod.notify(runner, self.item)
+        message = str(raised.exception)
+        self.assertIn("FLEET_LINEAR_CLIENT_ID", message)
+        self.assertNotIn("LINEAR_CLIENT_SECRET", message, "a name with a value is not a missing variable")
+        self.assertNotIn("hunter2", message)
+
+    def test_exits_2_6_and_7_are_terminal(self) -> None:
+        for code in (2, 6, 7):
+            runner = self.stub(Result(code, "", "board: refused"))
+            with self.assertRaises(BoardFailed) as raised:
+                notifymod.notify(runner, self.item)
+            self.assertIn("exit %d" % code, str(raised.exception))
+            # errors.py passes the board's own code through for 4 to 7, and 1 for the rest.
+            self.assertEqual(raised.exception.exit_code, code if code in (4, 5, 6, 7) else 1)
+
+    # ---- unknown --------------------------------------------------------------------------
+    def test_an_exit_1_graphql_refusal_is_unknown(self) -> None:
+        runner, notice = self.notice(Result(1, "", "board: Linear refused the comment: entity not found"))
+        self.assertEqual((notice.state, notice.reason), ("notify_pending", "outcome_unknown"))
+        self.assertIn("Linear refused the comment", notice.detail)
+        self.assertEqual(comment_keys.get(self.notified_key(), self.env), comment_keys.UNKNOWN)
+
+    def test_a_transport_failure_is_unknown(self) -> None:
+        runner, notice = self.notice(
+            Result(1, "", "board: no usable response from Linear (URLError); the last request was not confirmed.")
+        )
+        self.assertEqual((notice.state, notice.reason), ("notify_pending", "outcome_unknown"))
+        self.assertIn("no usable response", notice.detail)
+
+    def test_an_exit_1_failure_with_no_marker_is_unknown(self) -> None:
+        runner, notice = self.notice(Result(1, "", "board: fake board failure for comment"))
+        self.assertEqual((notice.state, notice.reason), ("notify_pending", "outcome_unknown"))
+        self.assertEqual(comment_keys.get(self.notified_key(), self.env), comment_keys.UNKNOWN)
+
+    def test_a_timeout_is_unknown(self) -> None:
+        runner, notice = self.notice(Result(124, "", "simple-board timed out after 240 seconds", timed_out=True))
+        self.assertEqual((notice.state, notice.reason), ("notify_pending", "outcome_unknown"))
+        self.assertEqual(comment_keys.get(self.notified_key(), self.env), comment_keys.UNKNOWN)
+
+    def test_an_unknown_record_is_never_written_twice(self) -> None:
+        runner, notice = self.notice(Result(1, "", "board: Linear refused the comment: boom"))
+        again = self.stub(Result(0, "commented"))
+        wrote = notifymod._write_record(again, self.item, self.notified_text())
+        self.assertEqual(wrote.outcome, "unknown")
+        self.assertEqual(again.board_calls, [], "the row says it may have landed:  nothing is written")
+
+    # ---- the record ------------------------------------------------------------------------
+    def test_the_store_lives_beside_the_notifier_state_and_not_inside_it(self) -> None:
+        state = ledger.state_dir(self.env)
+        store = comment_keys._path(self.env)
+        self.assertFalse(store.startswith(state + os.sep), "the store is inside the notifier's own state")
+        self.assertNotEqual(os.path.dirname(store), state, "the store is the notifier's own state")
+        runner, notice = self.notice(Result(0, "commented"))
+        self.assertFalse(os.path.exists(state), "a record does not create the notifier's state")
+        self.assertTrue(os.path.exists(store), "the store is written")
+
+    def test_the_reason_word_is_read_back_and_the_detail_is_not_part_of_it(self) -> None:
+        runner, notice = self.notice(Result(3, "", "board: AFC-300 is In Progress, claimed by BF-DIRECTOR."))
+        pending = [text for text in runner.written if "notify_pending" in text]
+        self.assertEqual(len(pending), 2, "a definite failure is tried twice")
+        self.assertEqual(records.parse_pending(pending[0]), "claim_held")
+        self.assertIn("detail: ", pending[0])
+        self.assertIn("claimed by BF-DIRECTOR", pending[0])
+
+    def test_the_detail_of_an_unknown_outcome_keeps_the_code_and_the_timing(self) -> None:
+        runner, notice = self.notice(Result(1, "", "board: Linear answered HTTP 503 until LINEAR_BOARD_MAX_WAIT ran out"))
+        self.assertEqual(notice.reason, "outcome_unknown")
+        self.assertIn("HTTP 503", notice.detail)
+        self.assertIn("LINEAR_BOARD_MAX_WAIT", notice.detail)
 
 
 if __name__ == "__main__":

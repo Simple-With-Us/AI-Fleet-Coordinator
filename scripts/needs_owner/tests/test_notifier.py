@@ -179,6 +179,19 @@ class FallbackTests(NotifierCase):
         self.w.set_zulip(no_credential=[])
         self.assertEqual(len(self.events(self.run_notify(), "notified")), 1)
 
+    def test_a_notice_whose_record_may_have_landed_is_not_posted_again(self) -> None:
+        """The board's exit-1 failure may have applied the record comment, so it is not written again:  the
+        notice is not posted a second time and the item stays pending."""
+        record = self.pending()
+        first = self.w.notify(env=self.w.env(FAKE_BOARD_FAIL="comment"))
+        (event,) = self.events(first.json(), "notice-failed")
+        self.assertEqual(event["reason"], "outcome_unknown")
+        self.assertEqual(len(self.sent_by_notifier()), 1)
+        self.run_notify()
+        self.assertEqual(len(self.sent_by_notifier()), 1, "the notice is not posted again")
+        self.assertEqual(self.state_of(record["identifier"])["state"], "notify_pending")
+        self.assertEqual(len([c for c in self.w.comments(record["identifier"]) if "notified msg" in c]), 0)
+
     def test_an_item_that_fails_revalidation_is_skipped_with_a_reason(self) -> None:
         edited = self.pending("Edited after filing?")
         mail = self.pending("Mail me a copy?", seat="BF-PLUMBER")

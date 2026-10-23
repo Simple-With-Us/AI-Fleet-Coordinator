@@ -17,6 +17,15 @@ blind:  the message carries a reference line (the item's uid), and the topic is 
 bot of the filing seat (or CLAUDE, whose fallback notifier posts for any seat), only when the reference is
 a line of its own that is not quoted, and then the oldest such message, so a person's quote-and-reply or
 a peer who copies the (public) uid can never become the notice.
+
+A board write is classified before anything is done with it.  `ok` is the comment on the issue.  `retryable`
+means the board decided before it wrote anything and a later run may write the record again (exit 3, the
+claim is held by another seat, and exit 5, the rate limit).  `terminal` means it decided before it wrote
+anything and no retry will help until an operator acts (exit 2 usage, 4 no credentials, 6 auth refused and
+7 writes off), and it raises BoardFailed, so the CLI exits with the board's own code and the operator
+sees the board's reason.  `unknown` means the write may have landed (a timeout, an exit-1 GraphQL
+refusal, a transport failure, or anything we cannot prove was never sent):  the row is kept as unknown,
+so the record is never written twice.
 """
 
 from __future__ import annotations
@@ -28,7 +37,7 @@ from dataclasses import dataclass
 from . import comment_keys, f3, records
 from . import links as linkmod
 from . import text as T
-from .errors import Refusal
+from .errors import BoardFailed, Refusal
 from .items import Item
 from .proc import Result, Runner
 
@@ -42,13 +51,42 @@ MAYBE_SENT_CODES = (5, 6)
 FALLBACK_SEAT = "CLAUDE"  # CLAUDE's fallback notifier (C6-2) posts a pending notice for any seat
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
-# The board CLI's exit codes.  2 usage, 3 claim held, 4 no credentials, 5 rate
-# limit (the request was never applied), 6 auth refused and 7 writes off are
-# all decided before anything is written, so they are definite refusals.  Exit 1
-# is the generic failure and carries both a GraphQL refusal and a transport
-# failure, so its message decides which one it was.
-BOARD_REFUSED_CODES = (2, 3, 4, 5, 6, 7)
+# The board CLI's exit codes, and what each one means for a write.  2 usage,
+# 4 no credentials, 6 auth refused and 7 writes off are all decided before
+# anything is written, and a retry will not help until an operator acts:  they
+# are terminal.  3 claim held and 5 rate limit are decided before anything is
+# written too, but a later run may write the record, so they are retryable.
+# Exit 1 is the generic failure:  it carries both a GraphQL refusal and a
+# transport failure, and the mutation may have landed, so it is unknown.
+BOARD_RETRYABLE_CODES = (3, 5)
+BOARD_TERMINAL_CODES = (2, 4, 6, 7)
 UNKNOWN_MARKERS = ("no usable response", "not confirmed", "timed out", "timeout")
+
+# The four outcomes of a board write.
+OK = "ok"
+RETRYABLE = "retryable"
+TERMINAL = "terminal"
+UNKNOWN = "unknown"
+
+# The reason of a pending record goes into a Linear comment as `reason: <word>`
+# and is read back with a `^[a-z_]{1,30}$` pattern, so it stays lowercase word
+# characters.  What the board said about the failure goes on a line of its own,
+# never on that one.
+REASON_CLAIM_HELD = "claim_held"
+REASON_RATE_LIMITED = "rate_limited"
+REASON_OUTCOME_UNKNOWN = "outcome_unknown"
+
+# A name of an environment variable, as the board CLI writes it.  Only the name
+# is ever reported:  a value never comes out of here.
+VAR_NAME = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+# An assignment to a secret-looking name, and any long opaque blob (a token, a
+# digest, a bearer).  Neither survives into what the operator is shown.
+SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b([A-Za-z0-9_]*(?:secret|token|password|passwd|credential|api[_-]?key)[A-Za-z0-9_]*)\s*[=:]\s*\S+"
+)
+OPAQUE_BLOB = re.compile(r"\b[A-Za-z0-9+/=_-]{40,}\b")
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+DETAIL_MAX = 240
 
 
 @dataclass
@@ -60,6 +98,7 @@ class Notice:
     recorded: bool = False  # the Linear comment that records it
     already: bool = False  # it was already announced
     linkback: str | None = None  # mirror items:  ok | failed
+    detail: str | None = None  # what the board said about a failure
 
     def to_json(self) -> dict:
         return {
@@ -70,6 +109,7 @@ class Notice:
             "recorded": self.recorded,
             "already_notified": self.already,
             "linkback": self.linkback,
+            "detail": self.detail,
         }
 
 
@@ -222,27 +262,109 @@ def find_notice(
     return min(found) if found else None
 
 
+def _board_text(result: Result) -> str:
+    """Everything the board said, as one line:  its stderr first, then its stdout."""
+    return " ".join(part for part in ((result.err or ""), (result.out or "")) if part.strip())
+
+
+def _board_said(result: Result) -> str:
+    """The board's first sentence about the failure:  its stderr, else its stdout."""
+    for part in (result.err or "", result.out or ""):
+        for line in part.splitlines():
+            if line.strip():
+                return " ".join(line.split())
+    return ""
+
+
+def _not_confirmed(result: Result) -> bool:
+    """True when the board said the outcome of the write was not confirmed."""
+    text = ("%s %s" % (result.err or "", result.out or "")).lower()
+    return any(marker in text for marker in UNKNOWN_MARKERS)
+
+
+def _missing_names(text: str) -> list[str]:
+    """The names of the environment variables the board says are missing.
+
+    Only names come out.  A name the board printed with a value is left out:
+    that value is set, not missing, and a value must never reach the operator.
+    When that leaves nothing, every name is reported:  a name the operator needs
+    beats a tidy list."""
+    every = list(dict.fromkeys(VAR_NAME.findall(text)))
+    unset = [name for name in every if not re.search(re.escape(name) + r"=\s*\S", text)]
+    return unset or every
+
+
+def _detail(result: Result) -> str:
+    """What the board said about a failed write, with any value taken out.
+
+    A missing credential is reported by its variable name and never by the
+    board's own sentence, which is prose that could carry anything.  Anything
+    else keeps the board's words:  they are the operator's only clue to a
+    failure that cannot be classified, so the reason and any retry timing in
+    them stay."""
+    if result.code == 4:
+        names = _missing_names(_board_text(result))
+        return "no Fleet credentials:  %s" % ", ".join(names) if names else "no Fleet credentials"
+    text = _board_said(result)
+    if not text:
+        return ""
+    text = SECRET_ASSIGNMENT.sub(r"\1=[redacted]", text)
+    text = OPAQUE_BLOB.sub("[redacted]", text)
+    text = CONTROL_CHARS.sub(" ", text)
+    text = " ".join(text.split())
+    if len(text) > DETAIL_MAX:
+        text = text[: DETAIL_MAX - 3].rstrip() + "..."
+    return text
+
+
+def _board_failure(result: Result) -> BoardFailed:
+    """The board's failure as an error the CLI can exit with.
+
+    The message names what an operator has to fix and never a value."""
+    detail = _detail(result)
+    return BoardFailed(
+        "board comment failed (exit %d):  %s" % (result.code, detail or "the board said nothing"), result.code
+    )
+
+
 def _classify(result: Result) -> str:
-    """What one board comment attempt did.
+    """What one board write did:  `ok`, `retryable`, `terminal` or `unknown`.
 
-    `ok` is the comment on the issue.  `refused` means the CLI decided before it
-    wrote anything, so a later run may try again.  `unknown` means the request
-    may have landed, so nothing more is written on this key."""
+    `ok` is the comment on the issue.  `retryable` means the board decided
+    before it wrote anything and a later run may write the record again.
+    `terminal` means it decided before it wrote anything and no retry will help
+    until an operator acts.  `unknown` means the write may have landed, so
+    nothing more is written on this key.
+
+    The board's own words can only make the answer more careful:  a failure it
+    says was not confirmed is unknown, whatever the code said."""
     if result.ok:
-        return "ok"
+        return OK
     if result.timed_out:
-        return "unknown"
+        return UNKNOWN  # the request may have landed
     if result.missing:
-        return "refused"  # the board CLI is not installed, so nothing was written
-    if result.code in BOARD_REFUSED_CODES:
-        return "refused"
-    text = "%s %s" % (result.err or "", result.out or "")
-    if any(marker in text.lower() for marker in UNKNOWN_MARKERS):
-        return "unknown"
-    return "refused"
+        return TERMINAL  # the board CLI is not installed, so nothing was written
+    if result.code in BOARD_RETRYABLE_CODES:
+        return UNKNOWN if _not_confirmed(result) else RETRYABLE
+    if result.code in BOARD_TERMINAL_CODES:
+        return UNKNOWN if _not_confirmed(result) else TERMINAL
+    # Exit 1 is the generic failure:  it carries both a GraphQL refusal and a
+    # transport failure, and the mutation may have landed.  An unclassified
+    # failure is unknown and never a definite refusal:  a replay of a write
+    # that may have landed would put the record on the issue twice.
+    return UNKNOWN
 
 
-def _record(runner: Runner, item: Item, text: str, *, environ: dict | None = None) -> bool:
+@dataclass
+class Write:
+    """What one board write did, and what the board said about it."""
+
+    outcome: str
+    detail: str = ""
+    code: int = 0
+
+
+def _write_record(runner: Runner, item: Item, text: str, *, environ: dict | None = None) -> Write:
     """One comment on the item, written once.
 
     The board CLI derives a comment's own id from the seat and the session, so the
@@ -252,51 +374,82 @@ def _record(runner: Runner, item: Item, text: str, *, environ: dict | None = Non
     text, so the second writer returns the first one's result instead of posting
     again.
 
-    A definite refusal is tried twice, because nothing was written either time.  An
+    A definite failure is tried twice, because nothing was written either time.  An
     unknown outcome is not tried again:  the request may have landed, and a second
-    write could post the record twice."""
+    write could post the record twice.  A terminal failure raises BoardFailed, so
+    the CLI exits with the board's own code and the operator sees the board's
+    reason."""
     env = environ if environ is not None else runner.env
     key = comment_keys.key_for(item.identifier, text)
     held = comment_keys.get(key, env)
     if held == comment_keys.OK:
-        return True
+        return Write(OK)
     if held == comment_keys.UNKNOWN:
-        return False
+        return Write(UNKNOWN, "the record may already be on the issue;  it is not written again")
+    outcome = UNKNOWN
     for _ in range(2):
         with runner.private_file(text) as path:
-            outcome = _classify(
-                runner.board("comment", item.identifier, "--by", runner.seat, "--text-file", path)
-            )
-        if outcome == "ok":
+            result = runner.board("comment", item.identifier, "--by", runner.seat, "--text-file", path)
+        outcome = _classify(result)
+        if outcome == OK:
             comment_keys.put(key, comment_keys.OK, env)
-            return True
-        if outcome == "unknown":
+            return Write(OK)
+        if outcome == UNKNOWN:
+            # The write may have landed:  the row is kept as unknown, so the
+            # record is never written twice.
             comment_keys.put(key, comment_keys.UNKNOWN, env)
-            return False
-    # A definite refusal:  the key is released, so a later run may write the record.
+            return Write(UNKNOWN, _detail(result), result.code)
+    # Nothing was written, so the row may go:  a later run may write the record.
     comment_keys.release(key, env)
-    return False
+    if outcome == TERMINAL:
+        raise _board_failure(result)
+    return Write(outcome, _detail(result), result.code)
 
 
 def record(runner: Runner, item: Item, text: str) -> bool:
     """One comment on the item, written as the runner's seat.  The notifier's reply records use it."""
-    return _record(runner, item, text)
+    return _write_record(runner, item, text).outcome == OK
+
+
+def _reason(wrote: Write) -> str:
+    """The reason word for a pending record:  lowercase word characters only."""
+    if wrote.outcome == RETRYABLE:
+        return REASON_CLAIM_HELD if wrote.code == 3 else REASON_RATE_LIMITED
+    return REASON_OUTCOME_UNKNOWN
+
+
+def _pending_text(reason: str, detail: str = "") -> str:
+    """The pending record:  the reason word, and the board's words on a line of their own.
+
+    The reason is read back with a `^[a-z_]{1,30}$` pattern, so the detail never
+    rides on that line."""
+    text = records.pending_text(reason)
+    return "%s\ndetail: %s" % (text, detail) if detail else text
 
 
 def _announce(runner: Runner, item: Item, msg_id: int, topic: str) -> Notice:
-    return Notice(
-        "notified", msg_id, topic, None, _record(runner, item, records.notified_text(msg_id, topic))
-    )
+    """The notice went out:  its record goes on the issue.
+
+    A record that could not be written leaves the item pending:  a definite
+    failure may be written by a later run, and an unknown one must never be
+    written twice.  A terminal failure never comes back:  it raises, so the CLI
+    exits with the board's own code."""
+    wrote = _write_record(runner, item, records.notified_text(msg_id, topic))
+    if wrote.outcome == OK:
+        return Notice("notified", msg_id, topic, None, True)
+    notice = _pending(runner, item, topic, _reason(wrote), wrote.detail)
+    notice.msg_id = msg_id  # the notice went out;  only its record is missing
+    return notice
 
 
-def _pending(runner: Runner, item: Item, topic: str, reason: str) -> Notice:
+def _pending(runner: Runner, item: Item, topic: str, reason: str, detail: str = "") -> Notice:
     recorded = True
     if item.pending in (
         None,
         "held",
     ):  # one record is enough (a rerun does not pile more on);  a "held" mark is replaced
-        recorded = _record(runner, item, records.pending_text(reason))
-    return Notice("notify_pending", None, topic, reason, recorded)
+        recorded = _write_record(runner, item, _pending_text(reason, detail)).outcome == OK
+    return Notice("notify_pending", None, topic, reason, recorded, detail=detail or None)
 
 
 def notify(

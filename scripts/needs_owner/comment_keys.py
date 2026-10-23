@@ -7,9 +7,10 @@ record a second time.  This store holds one outcome per (item, record text)
 pair, so the second writer returns the first one's result instead of posting
 again.
 
-The file lives beside the fallback notifier's own state, under the needs-owner
-state directory, and holds digests and outcome words only:  never a question,
-an answer, a comment's words or a credential.
+The file lives beside the fallback notifier's own state, in a directory of its own
+and not inside the notifier's, because the filing seat writes this store too and a
+dry run must leave the notifier's state untouched.  It holds digests and outcome
+words only:  never a question, an answer, a comment's words or a credential.
 """
 
 from __future__ import annotations
@@ -38,7 +39,8 @@ def key_for(identifier: str, text: str) -> str:
 
 
 def _path(environ: Mapping[str, str] | None = None) -> str:
-    return os.path.join(ledger.state_dir(environ if environ is not None else os.environ), FILE)
+    env = environ if environ is not None else os.environ
+    return os.path.join(ledger.comment_keys_dir(env), FILE)
 
 
 def _load(environ: Mapping[str, str] | None = None) -> dict:

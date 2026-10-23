@@ -231,7 +231,9 @@ class TypedReplyTests(RepliesCase):
         self.w.set_zulip(verify_fails=False)
         self.assertEqual([e["ref"] for e in self.events(self.run_notify(), "replied")], [reply])
 
-    def test_a_record_that_cannot_be_written_sends_no_note_and_is_tried_again(self) -> None:
+    def test_a_record_that_may_have_landed_sends_no_note_and_is_not_written_again(self) -> None:
+        """The board's exit-1 failure may have applied the comment, so the record is not written again:  the
+        reply stays unrecorded and no note goes out."""
         record = self.item()
         self.w.add_message(record["topic"], "Option 1")
         failing = self.w.env(FAKE_BOARD_FAIL="comment")
@@ -239,8 +241,10 @@ class TypedReplyTests(RepliesCase):
         self.assertEqual(self.events(result, "record-failed")[0]["id"], record["identifier"])
         self.assertEqual(self.notes(), [])
         self.assertEqual(self.w.notifier_state()["notes"], {}, "no note is due for a record that was never written")
-        self.assertEqual(len(self.events(self.run_notify(), "replied")), 1)
-        self.assertEqual(len(self.notes()), 1)
+        again = self.run_notify()
+        self.assertEqual(self.events(again, "replied"), [], "the record may have landed:  it is not written again")
+        self.assertEqual(self.events(again, "record-failed")[0]["id"], record["identifier"])
+        self.assertEqual(self.notes(), [])
 
 
 class LinearReplyTests(RepliesCase):
