@@ -371,6 +371,71 @@ class Reaper(Base):
         with patch.object(reaper, "pgrep_pids", lambda a: None):
             self.assertIn("xcodebuild?", reaper.busy_processes())  # cannot tell: busy
 
+    def test_xcodebuild_version_check_is_not_busy(self):
+        def fake_pgrep(args):
+            return {"101", "102"} if tuple(args) == ("-x", "xcodebuild") else set()
+
+        def fake_run(args, timeout=60, stdin_text=None):
+            if args[:3] == ["/bin/ps", "-o", "command="]:
+                pid = args[args.index("-p") + 1]
+                return (0, "xcodebuild -version\n" if pid == "101" else "xcodebuild -scheme Foo\n")
+            return (0, "")
+
+        with (
+            patch.object(reaper, "pgrep_pids", fake_pgrep),
+            patch.object(reaper, "run", fake_run),
+        ):
+            self.assertEqual(reaper.busy_processes(), ["xcodebuildx1"])  # 102 is a real build
+
+    def test_load_guard_trip_point(self):
+        with patch.object(reaper.os, "getloadavg", lambda: (799.9, 0.0, 0.0)):
+            self.assertIsNone(reaper.load_guard_tripped())
+        with patch.object(reaper.os, "getloadavg", lambda: (800.0, 0.0, 0.0)):
+            self.assertEqual(reaper.load_guard_tripped(), 800.0)
+        with patch.object(reaper.os, "getloadavg", side_effect=OSError):
+            self.assertIsNone(reaper.load_guard_tripped())
+
+    def test_load_guard_emergency_shuts_down_all_and_alerts(self):
+        devs = [dict(self.DEV), {"udid": B, "name": "iPhone 17 Pro", "runtime": "iOS-27-0"}]
+        shut, alerts = [], []
+
+        def fake_run(cmd, timeout=60, stdin_text=None):
+            if cmd[1:3] == ["simctl", "shutdown"]:
+                shut.append(cmd[3])
+                return (0, "")
+            return (0, "")
+
+        state_path = os.path.join(ROOT, "state", "lg.json")
+        with (
+            patch.object(reaper, "list_booted", lambda: devs),
+            patch.object(reaper.os, "getloadavg", lambda: (850.0, 0.0, 0.0)),
+            patch.object(reaper, "run", fake_run),
+            patch.object(reaper, "zulip_alert", lambda c: alerts.append(c) or True),
+        ):
+            self.assertEqual(reaper.main(["--state", state_path]), 0)
+        self.assertEqual(sorted(shut), sorted([A, B]))
+        self.assertEqual(len(alerts), 1)
+        self.assertIn(A, alerts[0])
+        self.assertIn(B, alerts[0])
+
+    def test_load_guard_dry_run_shuts_down_nothing(self):
+        shut = []
+
+        def fake_run(cmd, timeout=60, stdin_text=None):
+            if cmd[1:3] == ["simctl", "shutdown"]:
+                shut.append(cmd[3])
+            return (0, "")
+
+        state_path = os.path.join(ROOT, "state", "lg2.json")
+        with (
+            patch.object(reaper, "list_booted", lambda: [dict(self.DEV)]),
+            patch.object(reaper.os, "getloadavg", lambda: (950.0, 0.0, 0.0)),
+            patch.object(reaper, "run", fake_run),
+            patch.object(reaper, "zulip_alert", lambda c: self.fail("no alert in dry-run")),
+        ):
+            self.assertEqual(reaper.main(["--dry-run", "--state", state_path]), 0)
+        self.assertEqual(shut, [])
+
     def test_running_ui_apps_parses_launchctl(self):
         self.assertEqual(
             reaper.running_ui_apps(LAUNCHCTL), {"codes.clutch.ios", "com.apple.mobilesafari"}

@@ -11,6 +11,8 @@ any of these holds, cheapest check first:
      .xctestrun file (`pgrep`, PIDs only, never command lines):  a build, test or
      `ios-debug --console` may be using it.  A `simctl spawn <udid> log stream` does not count:
      the Claude desktop app keeps one open for every booted device;
+     An `xcodebuild -version` invocation (the Xcode health server's liveness probe) does not
+     count either:  its argv is compared exactly and discarded, never logged or stored;
   2. Simulator.app is running:  someone may be watching;
   2b. Bitrig.app (`Bitrig`) is running:  up to 1 booted simulator (the most recently seen) is
       exempted so Bitrig can keep its single shared simulator alive across projects;
@@ -20,6 +22,9 @@ any of these holds, cheapest check first:
   5. a User app (`simctl listapps`, ApplicationType User) is running in it (`simctl spawn <udid>
      launchctl list` shows UIKitApplication:<bundle> with a pid).  A failed check counts as running.
 Otherwise it runs `xcrun simctl shutdown <udid>`:  never `shutdown all`, never erase or delete.
+A load guard runs before the idle pass:  when the 1-minute load average reaches 800
+(the box is heading toward the 926 seen 2026-10-14), every booted simulator is shut down
+unconditionally and each shutdown is reported to Zulip #Alerts as the MA bot.
 TestFlight ships (com.jay.ios-ship-now, ship-testflight.sh) archive for generic/platform=iOS and
 boot no simulator;  their xcodebuild still trips skip 1 while it runs.
 
@@ -59,6 +64,8 @@ PRE_MAX_AGE_SEC = 3600
 BUSY_EXACT = ("xcodebuild", "xctest", "simctl", "bitrig")
 BUSY_PATTERN = "xctestrun"
 LOG_STREAM_PATTERN = r"simctl spawn [^ ]+ log stream"  # passive streamer, not use
+LOAD_GUARD_TRIP = 800.0  # 1-min loadavg: emergency-shutdown all booted sims before load nears 900
+ZULIP_RC = os.path.join(HOME, ".secrets", "Zulip", "MA-zuliprc")  # chat-report credential
 
 
 def stamp() -> str:
@@ -107,6 +114,25 @@ def pgrep_exact(name: str) -> int:
     return -1 if pids is None else len(pids)
 
 
+def _is_version_check(pid: str) -> bool:
+    """True when PID's argv is exactly `xcodebuild -version`.
+
+    The Xcode health server (~/apps/xcode-health/xcode-health-server.py) runs
+    `xcodebuild -version` as a liveness probe; that is not a build and must not
+    mark the machine busy.  argv is compared and discarded here — never logged
+    or stored — so the "PIDs only, never command lines" posture holds elsewhere.
+    """
+    rc, text = run(["/bin/ps", "-o", "command=", "-p", pid], timeout=10)
+    if rc != 0:
+        return False
+    parts = text.strip().split()
+    return (
+        len(parts) == 2
+        and os.path.basename(parts[0]) == "xcodebuild"
+        and parts[1] == "-version"
+    )
+
+
 def busy_processes() -> list[str]:
     """Processes that may be using a simulator, as name x count ('?' = could not tell).
 
@@ -117,6 +143,9 @@ def busy_processes() -> list[str]:
     hits = []
     for name in BUSY_EXACT:
         pids = pgrep_pids(["-x", name])
+        if pids and name == "xcodebuild":
+            # The Xcode health server's `xcodebuild -version` probe is not a build.
+            pids = {p for p in pids if not _is_version_check(p)}
         if pids and name == "simctl":
             streams = pgrep_pids(["-f", LOG_STREAM_PATTERN])
             pids = pids - streams if streams is not None else pids
@@ -271,6 +300,46 @@ def bitrig_exempt_udid(booted: list[dict], seen: dict[str, float], bitrig_app: i
     return chosen["udid"]
 
 
+def load_guard_tripped() -> float | None:
+    """1-min loadavg when it has reached the emergency trip point, else None."""
+    try:
+        load1 = os.getloadavg()[0]
+    except OSError:
+        return None
+    return load1 if load1 >= LOAD_GUARD_TRIP else None
+
+
+def zulip_alert(content: str) -> bool:
+    """Post one message to Zulip #Alerts as the MA bot. Never raises; returns success."""
+    try:
+        import base64
+        import configparser
+        import urllib.parse
+        import urllib.request
+
+        cp = configparser.ConfigParser()
+        if not cp.read(ZULIP_RC):
+            out("load-guard: no Zulip credential found, skipping chat report")
+            return False
+        email = cp.get("api", "email")
+        key = cp.get("api", "key")
+        site = cp.get("api", "site", fallback="https://simplewithus.zulipchat.com").rstrip("/")
+        data = urllib.parse.urlencode(
+            {"type": "stream", "to": "Alerts", "topic": "sim-load-guard", "content": content}
+        ).encode()
+        req = urllib.request.Request(site + "/api/v1/messages", data=data, method="POST")
+        req.add_header(
+            "Authorization", "Basic " + base64.b64encode(f"{email}:{key}".encode()).decode()
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            ok = 200 <= resp.status < 300
+        out(f"load-guard: Zulip report {'posted' if ok else 'failed'}")
+        return ok
+    except Exception as exc:  # network/auth failure must never break the guard itself
+        out(f"load-guard: Zulip post failed ({type(exc).__name__})")
+        return False
+
+
 def decide(
     dev: dict,
     first_seen: float,
@@ -344,6 +413,32 @@ def main(argv: list | None = None) -> int:
             seen[d["udid"]] = now
     if not args.dry_run:
         write_json(args.state, seen)  # drops devices that are no longer booted
+
+    trip = load_guard_tripped()
+    if trip is not None:
+        if not booted:
+            out(f"load-guard TRIP load1={trip:.0f}: no simulators booted, nothing to shut down")
+        elif args.dry_run:
+            out(
+                "load-guard WOULD-TRIP load1=%.0f: would shut down %d booted sim(s): %s"
+                % (trip, len(booted), ", ".join(f'{d["udid"]} "{d["name"]}"' for d in booted))
+            )
+        else:
+            out(f"load-guard TRIP load1={trip:.0f}: shutting down {len(booted)} booted sim(s)")
+            shut = []
+            for d in booted:
+                rc, _ = run([XCRUN, "simctl", "shutdown", d["udid"]], timeout=120)
+                label = f'{d["udid"]} "{d["name"]}"'
+                out(f"load-guard SHUTDOWN {label}: rc={rc}")
+                shut.append(f"{label} rc={rc}")
+                if rc == 0:
+                    seen.pop(d["udid"], None)
+            write_json(args.state, seen)
+            zulip_alert(
+                "Sim load guard tripped (1-min load %.0f >= %.0f): shut down %d booted "
+                "simulator(s): %s" % (trip, LOAD_GUARD_TRIP, len(booted), "; ".join(shut))
+            )
+            return 0  # emergency handled; skip the normal idle pass this run
 
     targets = [d for d in booted if not args.udid or d["udid"] in args.udid]
     if args.verbose:
