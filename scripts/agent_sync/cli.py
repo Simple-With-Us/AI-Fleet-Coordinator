@@ -1986,9 +1986,7 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
                 # The pinned lookup is a callable, so the host's listener config is read only
                 # when the environment has no id:  a host that exports the id is never broken by
                 # a config file it does not consult (Kody review on AFC-473).
-                operator_user_id=DMP.operator_user_id(
-                    env, lambda: pinned_operator_id(agent)
-                ),
+                operator_user_id=DMP.operator_user_id(env, lambda: pinned_operator_id(agent)),
                 self_id=_int_or_none(agent.me().get("user_id")),
             ),
             clarifying=clarifying,
