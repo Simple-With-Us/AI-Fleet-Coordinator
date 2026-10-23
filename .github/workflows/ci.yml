@@ -105,6 +105,13 @@ jobs:
         python3 scripts/test_fleet_cli_sync.py
         python3 scripts/test_fleet_cli_runtime.py
         bash -n scripts/agent-sync-runtime-sync.sh
+    # The Lark bridge: the eyes marker, the Operator's signal path and the
+    # durable write of a record.  No job ran this file, so every assertion in
+    # it was decoration: the write could lose a record on a crash and CI would
+    # stay green, exactly the way the cleanup lock contract stayed untested
+    # until the Mac scripts job was added.  A step is what makes the test real.
+    - name: Lark bridge tests
+      run: cd scripts && python3 test-lark-mm-bridge.py
     # Keeps the docs/PR-AUTOFIX.md caller template's permissions and secrets
     # block in step with what the pr-autofix reusable declares and consumes.
     - name: Autofix caller template guard

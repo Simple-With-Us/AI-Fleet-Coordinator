@@ -13,6 +13,7 @@ import json
 import os
 import re
 import signal
+import stat
 import sys
 import tempfile
 import threading
@@ -1699,6 +1700,41 @@ class LarkSurfaceTests(unittest.TestCase):
         bridge._prune_done()
         left = sorted(bridge.signal_done_dir.glob("*.json"))
         self.assertEqual(len(left), bridge_mod.SIGNAL_DONE_WINDOW)
+
+    def test_a_record_is_fsynced_then_renamed_then_the_directory_is_fsynced(self):
+        """The write order is pinned, because the order is the durability.
+
+        Kody's finding was that the rename was not durable.  The file was
+        fsynced and renamed over the target, but the directory entry was
+        never flushed, so a crash right after the write could lose the
+        record entirely.  The content has to reach the disk before the
+        rename, and the rename has to reach the disk before the caller
+        believes the write happened.
+        """
+        events = []
+        real_fsync = os.fsync
+        real_replace = os.replace
+
+        def recording_fsync(fd):
+            kind = "dir" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+            events.append("fsync:" + kind)
+            return real_fsync(fd)
+
+        def recording_replace(src, dst):
+            events.append("replace")
+            # The temp file has to sit beside the target, or the rename
+            # crosses a filesystem and stops being atomic.
+            self.assertEqual(os.path.dirname(src), os.path.dirname(dst))
+            return real_replace(src, dst)
+
+        target = Path(self.state_dir.name) / "record.json"
+        fsync_patch = mock.patch.object(bridge_mod.os, "fsync", recording_fsync)
+        replace_patch = mock.patch.object(bridge_mod.os, "replace", recording_replace)
+        with fsync_patch, replace_patch:
+            bridge_mod._write_json_atomic(target, {"outcome": "ok"})
+
+        self.assertEqual(events, ["fsync:file", "replace", "fsync:dir"])
+        self.assertEqual(json.loads(target.read_text(encoding="utf-8")), {"outcome": "ok"})
 
     def test_a_signal_turn_is_attributed_to_the_operator(self):
         from agent_sync import live as L
