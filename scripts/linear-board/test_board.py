@@ -3774,6 +3774,7 @@ class ErrorFieldTests(unittest.TestCase):
         )
         self.assertEqual(cli.credential_vars(""), "")
 
+
 class OwnershipTests(BoardTest):
     """Smart ownership:  with LINEAR_BOARD_OWNER=1 a claim also mirrors onto the seat's own
     Linear user, so the board's assignee column agrees with the claim label, and releasing or
