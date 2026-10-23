@@ -18,9 +18,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from agent_sync import operator_candidates as OC
 from agent_sync import operator_registration as OREG
 from agent_sync import operator_registration_ask as ORASK
 from agent_sync import textfmt
+from agent_sync import zulip as Z
 from agent_sync.tests.fake_zulip import FakeZulip
 
 OPERATOR_ID = 9101
@@ -47,7 +49,7 @@ ENTRY = {
 QUESTION = OREG.question_for(ENTRY)
 
 
-class LocationQuestionTests(unittest.TestCase):
+class _LocationQuestionFixture:
     def setUp(self) -> None:
         self.seat_key = secrets.token_hex(16)
         self.operator_key = secrets.token_hex(16)
@@ -100,6 +102,11 @@ class LocationQuestionTests(unittest.TestCase):
 
     def topic_posts(self) -> list[dict]:
         return [m for m in self.fake.messages if m["type"] == "stream"]
+
+
+
+class LocationQuestionTests(_LocationQuestionFixture, unittest.TestCase):
+    """The send rules, against the fake realm."""
 
     def test_the_question_goes_out_as_the_operator_bot_in_the_chats_topic(self) -> None:
         out = self.send()
@@ -155,6 +162,89 @@ class LocationQuestionTests(unittest.TestCase):
         out = self.send(question="")
         self.assertEqual(out["status"], "refused")
         self.assertEqual(self.topic_posts(), [])
+
+
+class _StubClient:
+    """A scripted client, so the delivery ledger's state machine is testable without a socket."""
+
+    def __init__(self, *, post_error=None, me_error=None):
+        self.post_error = post_error
+        self.me_error = me_error
+        self.posts = []
+
+    def get(self, endpoint):
+        assert endpoint == "users/me", endpoint
+        if self.me_error is not None:
+            raise self.me_error
+        return {
+            "user_id": OPERATOR_ID,
+            "email": OPERATOR_EMAIL,
+            "is_bot": True,
+            "bot_owner_id": OWNER_ID,
+        }
+
+    def post(self, endpoint, params):
+        assert endpoint == "messages", endpoint
+        if self.post_error is not None:
+            raise self.post_error
+        self.posts.append(params)
+        return {"result": "success", "id": 4200 + len(self.posts)}
+
+
+class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase):
+    """The delivery ledger (same machinery as the candidate list):  a landed question is
+    never posted twice, an unknown outcome is never replayed inside the window, and only
+    a definite refusal or a provably-unsent failure frees the key."""
+
+    def test_a_landed_question_is_never_posted_twice(self) -> None:
+        first = self.send()
+        self.assertEqual(first["status"], "sent", first["reason"])
+        second = self.send()
+        self.assertEqual(second["status"], "sent")
+        self.assertEqual(second["message_id"], first["message_id"])
+        self.assertIn("already went", second["reason"])
+        self.assertEqual(len(self.topic_posts()), 1)
+
+    def test_an_unknown_delivery_is_not_replayed(self) -> None:
+        failing = _StubClient(post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True))
+        out = self.send(client=failing)
+        self.assertEqual(out["status"], "refused")
+        self.assertEqual(out["delivery_status"], OC.DELIVERY_UNKNOWN)
+        working = _StubClient()
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "refused")
+        self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
+        self.assertEqual(working.posts, [])
+
+    def test_a_provably_unsent_failure_is_retryable(self) -> None:
+        failing = _StubClient(post_error=Z.NetworkError("connect refused", maybe_sent=False))
+        out = self.send(client=failing)
+        self.assertEqual(out["status"], "refused")
+        self.assertEqual(out["delivery_status"], OC.DELIVERY_RETRYABLE)
+        working = _StubClient()
+        again = self.send(client=working, now=1001.0)
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(len(working.posts), 1)
+
+    def test_an_unknown_delivery_ages_out_of_the_window(self) -> None:
+        failing = _StubClient(post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True))
+        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
+        working = _StubClient()
+        again = self.send(client=working, now=1000.0 + OC.DEDUPE_WINDOW + 1)
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(len(working.posts), 1)
+
+    def test_a_rejected_credential_is_named_by_a_masked_preview_only(self) -> None:
+        error = Z.AgentSyncError("unauthorized")
+        error.status = 401
+        out = self.send(client=_StubClient(me_error=error))
+        self.assertEqual(out["status"], "refused")
+        self.assertEqual(out["delivery_status"], OC.DELIVERY_REFUSED)
+        self.assertEqual(out["code"], "credential_rejected")
+        self.assertNotIn(self.operator_key, out["reason"])
+        preview = OC._masked(self.operator_key)
+        self.assertIn(preview[:8], out["reason"])
+        self.assertIn(preview[-4:], out["reason"])
 
 
 if __name__ == "__main__":
