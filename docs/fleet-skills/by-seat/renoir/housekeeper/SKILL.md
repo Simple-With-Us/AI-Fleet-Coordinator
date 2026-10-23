@@ -32,9 +32,30 @@ Several schedulers reach the same playbook and they all take the **same** lock, 
 ```bash
 export HOUSEKEEPER_LOCK_OWNER=1
 LOCK_DIR="<the housekeeper lock directory>"   # exact path: the operator's private inventory on that Mac
-mkdir "$LOCK_DIR" 2>/dev/null || { echo "skipped, peer holds lock"; exit 0; }
+python3 - "$LOCK_DIR" <<'PY'
+import os
+import sys
+
+try:
+    os.mkdir(sys.argv[1])
+except FileExistsError:
+    raise SystemExit(75)
+except OSError as exc:
+    print("housekeeper lock: cannot create the lock directory: %s" % (exc.strerror or exc), file=sys.stderr)
+    raise SystemExit(1)
+PY
+status=$?
+case "$status" in
+  0) ;;
+  75) echo "skipped, peer holds lock"; exit 0 ;;
+  *) exit "$status" ;;
+esac
 trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
 ```
+
+Only `FileExistsError` means a peer holds the lock, so the lock is skipped.  Any other `OSError` —
+a permission problem, a missing parent, a full disk — exits nonzero and says so, because a lock that
+could not be taken is not a lock another seat holds.
 
 ## Immediate commands
 
@@ -51,7 +72,7 @@ Safe reclaim (idempotent):
 ```bash
 python3 /Users/jay/apps/mac-resource-watch.py --once --no-webhook   # no --clean
 bash /Users/jay/apps/mac-auto-cleanup.sh --pressure
-bash /Users/jay/.claude-disk-janitor/janitor.sh
+bash "<the janitor script path>"   # exact path: the operator's private inventory on that Mac
 cleanmymac clean --force
 ```
 
@@ -59,7 +80,7 @@ cleanmymac clean --force
 
 **Do not pass `--clean`** in a routine.  It means "clean even without a hit", not "ignore the cooldown"; `--force` is the only bypass and is for manual use.
 
-`mac-auto-cleanup` already calls CleanMyMac when the CLI is on PATH.  **Hog Hunter's robotic vacuum** owns idle/merged worktree retirement now that the older disk-janitor daemon is retired; `~/.claude-disk-janitor/janitor.sh` still exists and can be run by hand.  Never `rm -rf` `CoreSimulator/Devices`, never `simctl shutdown all`, never wipe `~/.grok/worktrees`.
+`mac-auto-cleanup` already calls CleanMyMac when the CLI is on PATH.  **Hog Hunter's robotic vacuum** owns idle/merged worktree retirement now that the older disk-janitor daemon is retired; its janitor script can still be run by hand from the operator's private inventory.  Never `rm -rf` `CoreSimulator/Devices`, never `simctl shutdown all`, never wipe the Grok worktree directory.
 
 ## Thresholds that must wake this role
 
@@ -86,7 +107,7 @@ Bot id `d43849b8-5eeb-452b-ac4e-ed4724343838`.  Routines at 09:00 / 15:00 / 21:0
 
 When this wake includes a resource payload: start with that pressure.  Re-run the playbook.  Report before/after disk, swap, load, and what was deleted.
 
-Ask before: user Documents/photos, secrets, live dirty worktrees, CoreSimulator Devices, in-session `~/.grok/worktrees`, anything with `.janitor-keep`.  Do not persist TCPMSS.  Do not change sysctl or network settings.  Do not extra-ship.  Do not post to Zulip unless kicking grok at a repo or after a completed app update.
+Ask before: user Documents/photos, secrets, live dirty worktrees, CoreSimulator Devices, in-session Grok worktrees, anything with `.janitor-keep`.  Do not persist TCPMSS.  Do not change sysctl or network settings.  Do not extra-ship.  Do not post to Zulip unless kicking grok at a repo or after a completed app update.
 
 ## Grok Bot Housekeeper (`GB-HOUSEKEEPER`)
 
@@ -110,7 +131,7 @@ GB-HOUSEKEEPER **owns** this host and does **not** clean the Mac (it may read Ma
 Take the lock or exit.  Sample and record before-numbers.
 
 ```bash
-ssh coolify 'mkdir /run/fleet-housekeeper.lock 2>/dev/null || exit 9'   # 9 = peer holds it, stop
+ssh coolify 'mkdir /run/fleet-housekeeper.lock 2>/dev/null || { [ -d /run/fleet-housekeeper.lock ] && exit 9; exit 1; }'   # 9 = peer holds it (the directory is there), 1 = the lock could not be created
 ssh coolify 'df -h /; free -h; swapon --show; uptime; docker system df'
 ```
 

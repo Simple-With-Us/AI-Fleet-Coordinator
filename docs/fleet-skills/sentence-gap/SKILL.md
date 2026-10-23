@@ -481,16 +481,23 @@ Two more costs it carries, and both are deliberate:
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
 
-A body file holds user-supplied text, so it needs the approved credential scan before it leaves the
-machine.  The approved scanner is `scripts/agent_sync/secretscan.py`:  `scan(text, known)` returns
-the *kind* of secret it found (for example `GitHub token` or `assigned secret`) or `None`, and it
-never returns the matched text, so it is safe to use as the guard.  `known` is the list of exact
-values the process has already loaded, if any.
+A body holds user-supplied text, so it needs the approved credential scan before it is persisted
+and before it leaves the machine.  The scan comes **first**, ahead of every `body*.txt` file:  the
+unsaved body reaches the scanner on stdin, so no body file exists while the scan runs and a
+refusal never leaves the text on disk.  The approved scanner is `scripts/agent_sync/secretscan.py`:
+`scan(text, known)` returns the *kind* of secret it found (for example `GitHub token` or `assigned
+secret`) or `None`, and it never returns the matched text, so it is safe to use as the guard.
+`known` is the list of exact values the process has already loaded, if any.
 
 ```sh
 umask 077
-python3 -c 'import sys; sys.path.insert(0, "scripts"); from agent_sync.secretscan import scan; print(scan(open(sys.argv[1]).read()) or "clean")' body.nbsp.txt
+python3 -c 'import sys; sys.path.insert(0, "scripts"); from agent_sync.secretscan import scan; text = sys.stdin.read(); hit = scan(text); print("body:" + ("secret:" + str(hit) if hit else "clean"), file=sys.stderr); raise SystemExit(2 if hit else 0)' <<'BODY'
+...the body, exactly as it will be posted...
+BODY
 ```
+
+The scan exits nonzero on a hit, so the write step and the relay step never run on a body that
+carries a secret.  Only after it exits zero do you write `body.txt` and convert it.
 
 `scripts/check-routine-prompts.py` carries a local fallback list of the main secret kinds for when
 it runs outside the repo and cannot load `secretscan.py`;  inside the repo `secretscan.py` is the

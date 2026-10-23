@@ -29,7 +29,7 @@ mac-auto-cleanup
 ### 2. What It Cleans (Safe & Idempotent)
 
 1. **Merged Git Worktrees**:
-   - Owned by **Hog Hunter's robotic vacuum** now that the older disk-janitor daemon was retired on 2026-10-11 (clean + idle + no `--force`).  This script does not reap worktrees or wipe `~/.grok/worktrees`.
+   - Owned by **Hog Hunter's robotic vacuum** now that the older disk-janitor daemon was retired on 2026-10-11 (clean + idle + no `--force`).  This script does not reap worktrees or wipe the Grok worktree directory.
 2. **Xcode Developer Caches**:
    - Cleans `~/Library/Developer/Xcode/iOS DeviceSupport` symbols.
    - Cleans `~/Library/Developer/Xcode/DerivedData` build caches.

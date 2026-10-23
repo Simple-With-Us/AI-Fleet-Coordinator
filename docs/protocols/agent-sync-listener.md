@@ -448,7 +448,7 @@ Owner decisions, Sat, Oct 10:  "yes do as they ask and surface all" (Jet's asks)
 
 ### Sentry Heartbeat
 
-Added Sat, Oct 10 (CLAUDE, board `1d688c1d`).  Owner ask:  the listener should report that it is running, on the Mac and on Coolify.  The code is `scripts/agent_sync/heartbeat.py`, called from the daemon's tick.  It adds no LaunchAgent, cron row, pm2 job or process, and uses no SDK (standard library HTTP).
+Added Sat, Oct 10 (CLAUDE, AFC #441).  Owner ask:  the listener should report that it is running, on the Mac and on Coolify.  The code is `scripts/agent_sync/heartbeat.py`, called from the daemon's tick.  It adds no LaunchAgent, cron row, pm2 job or process, and uses no SDK (standard library HTTP).
 
 - **Where to see it.**  Sentry org `simple-with-us` (https://simple-with-us.sentry.io), project `fleet-infra`, **Crons**.  One monitor per instance:  `operator-mac` and `operator-server`.  The first check-in creates the monitor (`monitor_config` upsert), environment `production`.
 - **What it sends.**  A check-in every 5 minutes:  `ok` when healthy, `error` when degraded.  The monitor is an interval schedule of 5 minutes with a 10-minute margin and a failure threshold of 2, so a listener that goes silent (crashed, host off, restart loop) opens a Sentry issue after two missed intervals, about 20 minutes.  An `ok` after that resolves it.
