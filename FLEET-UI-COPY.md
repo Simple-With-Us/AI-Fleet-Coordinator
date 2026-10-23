@@ -187,7 +187,7 @@ sight.
 - Code identifiers, API enums, log lines, internal “live stream” engineering labels
   (SSE, live snapshot) unless user-facing product chrome.
 
-## Two spaces between sentences (owner rule 2026-08-08, strengthened 2026-08-10, 2026-08-14, and 2026-09-03 — ALL agents, ALL contexts)
+## Two spaces between sentences (owner rule 2026-08-08, strengthened 2026-08-10, 2026-08-14, and 2026-09-03; the per-surface gap mechanics re-ruled 2026-10-22 and again 2026-10-23 — ALL agents, ALL contexts)
 
 Owner: **two spaces between sentences everywhere (a real U+00A0 plus a normal space, commit messages included), including App Store
 submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
@@ -197,7 +197,7 @@ submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
 any context, always use 2 spaces to separate a period from the beginning of a new sentence."
 This closes the last loophole -- the rule is NOT limited to product/user-facing copy.  It
 covers every paragraph an agent writes anywhere: **chat replies to the owner**, PR titles and
-bodies, commit messages, Zulip posts to #agent-sync, Apple Notes, Linear issues and comments, rollout
+bodies, commit messages, Zulip posts to #Work-In-Progress, Apple Notes, Linear issues and comments, rollout
 notes, review reports and design docs.  If it is prose, it gets the gap.  (Single space
 remains correct after a non-terminal abbreviation -- "e.g.", "v1.2.3".  In HTML preserve the
 gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Markdown, note that
@@ -244,7 +244,8 @@ chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and
 superseded on 2026-10-08 by the entity again.  Do not re-run these tests.  Owner ruling
 2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or HTML
 renderer), use its working mechanism without asking; confirmation is no longer needed per
-surface.
+surface.  Owner ruling 2026-10-22 split the surfaces (GitHub the entity, Zulip a real U+00A0,
+files read as source two ASCII spaces);  the 2026-10-23 ruling above replaced that split with one mechanism.
 
 **What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
 in the **Claude Code Code tab** (normalized away in the view, even though copy-paste showed

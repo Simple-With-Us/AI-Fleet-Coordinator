@@ -24,6 +24,7 @@ needs-owner notify [--dry-run] [--json]        the fallback notifier (CLAUDE onl
 | `notifier.py` | `notify`:  the fallback notifier's run (replies, notices, notes, nudges, the Grok Bot mirror), the K1 knobs, the event log |
 | `replies.py` | pure rules:  which reactions are taps, the control words, a Grok Bot `needs-owner-request` block, the notifier's own words |
 | `ledger.py` | the notifier's state (caps, once-only marks, notes due, the pause), its lock and the file for CLAUDE's own items |
+| `comment_keys.py` | the comment-key store, one outcome per (item, record) pair, so a record is written once;  it lives in its own directory beside the notifier's state, because the filing seat writes it too |
 | `text.py`, `links.py`, `safety.py`, `seat.py`, `proc.py` | cleaning and the uid, topic links, secret and personal-data refusals, the verified seat, running the children |
 | `f3.py` | loads `agent_sync/textsafe.py`, `secretscan.py` and `identity.py` by file path |
 

@@ -187,6 +187,10 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertIn("ZULIP_ALERT_GB_TRADER_KEY", names)
         self.assertIn("JET_ROUTINE_KEY", names)
         self.assertIn("ZULIP_GROK_WEB_API_KEY", names)
+        # The Operator's own Zulip identity is the host's to provide:  a user id and an address,
+        # never a credential, so they are shared names the loader copies from the store.
+        self.assertIn("OPERATOR_ZULIP_USER_ID", names)
+        self.assertIn("OPERATOR_ZULIP_EMAIL", names)
         for name in ("ZULIP_CLAUDE_API_KEY", "ZULIP_BF_COMPILER_EMAIL", "ZULIP_EMAIL", "ZULIP_API_KEY", "ZULIP_SITE",
                      "ZULIP_ALERT_GB_TRADER_HEADER"):
             self.assertNotIn(name, names)
