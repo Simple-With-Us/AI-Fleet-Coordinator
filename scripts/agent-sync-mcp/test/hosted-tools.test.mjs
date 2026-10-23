@@ -446,6 +446,12 @@ test("seat binding:  only a member bot whose users/me is this seat's email and t
   assert.match(seatProblem({ ...good, is_bot: false }, seat), /not a bot/);
   assert.match(seatProblem({ ...good, email: "claude-bot@simplewithus.zulipchat.com" }, seat), /another bot/);
   assert.match(seatProblem({ ...good, email: "openai-dot-bot@simplewithus.zulipchat.com" }, { seat: "GROK-WEB", email: "openai-dot-bot@simplewithus.zulipchat.com" }), /another seat/);
+  // JET-CHAT runs on Jet's bot (SEAT_TAG_EXPECTATIONS):  the openai-dot key,
+  // signing JET, is its expected signer;  any other tag fails closed.
+  const jetMe = { is_bot: true, email: "openai-dot-bot@simplewithus.zulipchat.com", role: 400, is_admin: false, is_owner: false };
+  assert.equal(seatProblem(jetMe, { seat: "JET-CHAT", email: "openai-dot-bot@simplewithus.zulipchat.com" }), null);
+  assert.match(seatProblem(good, { seat: "JET-CHAT", email: BOT_EMAIL }), /another seat/);
+  assert.match(seatProblem(good, { seat: "JET", email: BOT_EMAIL }), /another seat/);
 });
 
 test("an admin bot key is refused with no post, and the refusal is cached and audited", async () => {

@@ -41,6 +41,7 @@ import {
   tagPrefix,
   composeBody,
   seatTagFor,
+  SEAT_TAG_EXPECTATIONS,
   formatTime,
   sha256Hex,
   stableJson,
@@ -1729,7 +1730,7 @@ export function seatProblem(me, { seat, email }) {
   if (!me || typeof me !== "object") return "users/me answered nothing";
   if (me.is_bot !== true) return "the key is not a bot's";
   if (String(me.email ?? "").toLowerCase() !== email) return "the key belongs to another bot";
-  if (seatTagFor(me) !== seat) return "the key signs as another seat";
+  if (seatTagFor(me) !== (SEAT_TAG_EXPECTATIONS[seat] ?? seat)) return "the key signs as another seat";
   if (me.is_admin === true || me.is_owner === true || me.role !== MEMBER_ROLE) {
     return `its live Zulip role is ${isInt(me.role) ? me.role : "unknown"}; hosted seats accept member (400) only`;
   }

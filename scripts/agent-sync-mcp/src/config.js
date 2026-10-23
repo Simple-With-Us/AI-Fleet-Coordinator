@@ -33,7 +33,16 @@ export const SCOPES = Object.freeze(["zulip:read", "zulip:write"]);
 // Seats this Worker can ever serve.  HOSTED_SEATS (a var) narrows it further.
 // ECHO and WISE are two identities of one third-party app (Instinct), each
 // with its own Zulip bot (instinct-bat-bot and instinct-owl-bot).
-export const KNOWN_SEATS = Object.freeze(["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]);
+// JET-CHAT is Jet's full-access login (owner decision, Oct 23 2026):  the
+// original JET connection is wake-only, so the second ChatGPT connection is
+// its own seat.  Both seats use the same openai-dot-bot;  the seat's expected
+// tag is SEAT_TAG_EXPECTATIONS in src/contract.js.
+export const KNOWN_SEATS = Object.freeze(["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]);
+
+// Seats whose connection serves event notifications only.  tools/list is
+// empty and tools/call refuses every name (src/delegated-identities.js);
+// events stay (src/index.js).  Turning a seat back on is a deploy step.
+export const EVENTS_ONLY_SEATS = Object.freeze(["JET"]);
 
 // AFC-331 (docs/protocols/per-call-identity.md section 3):  a grant for one of these seats may act as
 // either of them and as every enabled Grok Bot persona (GB_IDENTITIES);  every other grant acts only
@@ -63,6 +72,9 @@ export const SEAT_SECRETS = Object.freeze({
   CURSOR: Object.freeze({ key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR" }),
   CLAUDE: Object.freeze({ key: "ZULIP_CLAUDE_API_KEY", email: "ZULIP_CLAUDE_EMAIL" }),
   JET: Object.freeze({ key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" }),
+  // Own env names (this table never shares one), same openai-dot-bot key
+  // value:  install_seat_key.py provisions it from the same Infisical entry.
+  "JET-CHAT": Object.freeze({ key: "ZULIP_KEY_JET_CHAT", email: "ZULIP_EMAIL_JET_CHAT" }),
   "GROK-WEB": Object.freeze({ key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" }),
   ECHO: Object.freeze({ key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" }),
   WISE: Object.freeze({ key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE" }),
@@ -80,7 +92,7 @@ export const WAKE_SECRETS = Object.freeze({
 });
 
 // What /admin and a manual client's name call each seat's app.
-export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise" });
+export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "JET-CHAT": "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise" });
 
 const BOT_EMAIL_RE = /^[a-z0-9-]+-bot@simplewithus\.zulipchat\.com$/;
 

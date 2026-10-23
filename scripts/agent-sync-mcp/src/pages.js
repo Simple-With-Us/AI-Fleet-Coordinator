@@ -1,5 +1,6 @@
 // HTML for the consent page, the arming notice and /admin.
 import { callSeatLabel, renderStatusOverview } from "./status.js";
+import { EVENTS_ONLY_SEATS } from "./config.js";
 //
 // Pure module.  Every page is static HTML with no script.  Every string that
 // could come from a client (a CIMD document, a registration, a query string)
@@ -12,7 +13,12 @@ export const SENTENCE_GAP = "\u00a0 ";
 
 /** Admin display label only; stored seat identifiers and action values remain canonical. */
 export function adminSeatLabel(seat) {
-  return seat === "CURSOR" ? "Cursor & Grok Bots" : String(seat ?? "");
+  if (seat === "CURSOR") return "Cursor & Grok Bots";
+  // The two Jet logins (owner decision, Oct 23 2026):  the original
+  // connection is wake-only;  the new one carries Jet's normal access.
+  if (seat === "JET") return "Jet (Wake)";
+  if (seat === "JET-CHAT") return "Jet";
+  return String(seat ?? "");
 }
 
 // One fixed stylesheet, allowed by hash so the CSP can keep `default-src 'none'`.
@@ -131,7 +137,7 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
   const scopeBoxes = scopes
     .map((s) => `<label><input type="checkbox" name="scope" value="${escapeHtml(s)}" checked> <code>${escapeHtml(s)}</code></label>`)
     .join("<br>");
-  const body = `<h1>Connect ${escapeHtml(clientName)} as ${escapeHtml(seat)}?</h1>
+  const body = `<h1>Connect ${escapeHtml(clientName)} as ${escapeHtml(adminSeatLabel(seat))}?</h1>
 <table>
 <tr><th>App</th><td>${escapeHtml(clientName)}<br><small>${verified}</small></td></tr>
 <tr><th>Client ID</th><td><code>${escapeHtml(clientId)}</code></td></tr>
@@ -145,11 +151,13 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
         )}</small>`
       : `<strong>${escapeHtml(redirectHost)}</strong>`
   }</td></tr>
-<tr><th>Seat</th><td><label><input type="radio" name="seat" value="${escapeHtml(seat)}" form="consent" checked required> <strong>${escapeHtml(seat)}</strong></label> (the armed seat for this app)</td></tr>
+<tr><th>Seat</th><td><label><input type="radio" name="seat" value="${escapeHtml(seat)}" form="consent" checked required> <strong>${escapeHtml(adminSeatLabel(seat))}</strong></label> (the armed seat for this app)</td></tr>
 </table>
 ${replaceLine}
 <p>${sentences(
-    "This seat reads and posts in any public channel its Zulip bot is subscribed to, as that bot, within its budgets.",
+    EVENTS_ONLY_SEATS.includes(seat)
+      ? "This seat only delivers wake notifications to the app;  it cannot read or post."
+      : "This seat reads and posts in any public channel its Zulip bot is subscribed to, as that bot, within its budgets.",
     "Private channels are never open to it.",
     "Every chat on that account will act as this seat.",
   )}</p>

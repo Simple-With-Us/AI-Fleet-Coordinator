@@ -18,9 +18,9 @@
 // server reads too.  No other list of personas exists, here or anywhere.
 import GB_TABLE from "../../agent_sync/mcp/gb-identities.json" with { type: "json" };
 import RENAMED from "../../agent_sync/mcp/renamed-tools.json" with { type: "json" };
-import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS } from "./hosted-tools.js";
+import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS, UnknownTool } from "./hosted-tools.js";
 import { ToolError, errorResult, okResult, schemaProblem } from "./contract.js";
-import { SHARED_IDENTITY_SEATS } from "./config.js";
+import { EVENTS_ONLY_SEATS, SHARED_IDENTITY_SEATS } from "./config.js";
 import { IDENTITIES_SPEC, GUIDE_SPEC } from "./zulip-tool-specs.js";
 import { guideResult, GuideArgs, GUIDE_URL } from "./guide.js";
 import { canonicalSeatName } from "./identity-aliases.js";
@@ -137,8 +137,13 @@ function decorate(spec, allowed, seat) {
 
 const LIST_CACHE = new Map();
 
+const EMPTY_TOOL_SET = Object.freeze({ list: Object.freeze([]), byName: Object.freeze({}) });
+
 /** The tools/list a grant for `seat` gets:  every hosted tool with its identity enum, then identities after whoami. */
 export function toolListFor(seat, config = {}) {
+  // An events-only seat advertises no tools;  the call path refuses every
+  // name too (IdentityRouter.call), so this is never discovery-only hiding.
+  if (EVENTS_ONLY_SEATS.includes(seat)) return EMPTY_TOOL_SET;
   const cacheKey = `${seat}:${config.whatsappEnabled === true}`;
   const cached = LIST_CACHE.get(cacheKey);
   if (cached) return cached;
@@ -196,6 +201,13 @@ export class IdentityRouter {
   }
 
   async call(name, rawArgs) {
+    // An events-only seat serves notifications only:  every name is unknown
+    // to the connection, the same protocol error as any unknown name
+    // (buildServer maps UnknownTool), audited like one.
+    if (EVENTS_ONLY_SEATS.includes(this.seat)) {
+      await this.audit({ acting_identity: "none", tool: typeof name === "string" ? name : "", error_code: "unknown_tool", error_message: "This connection delivers event notifications only;  it has no tools." });
+      throw new UnknownTool(typeof name === "string" ? name : "");
+    }
     if (typeof name === "string" && Object.hasOwn(RENAMED_TOOLS, name)) {
       const replacement = RENAMED_TOOLS[name];
       return this.refuse(name, "none", new ToolError("unknown_tool", `${name} was renamed ${replacement} (AFC-331):  call ${replacement} instead`, { extra: { replacement } }));

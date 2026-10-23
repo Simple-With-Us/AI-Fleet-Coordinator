@@ -157,8 +157,11 @@ test("pause and disabled defaults; Jet-only event and read tool; provenance encl
   assert.equal(s.calls.length, 0);
   assert.equal(loadConfig(testEnv()).whatsappEnabled, false);
   for (const seat of ["CODEX", "CURSOR", "GROK-WEB"]) assert.ok(!toolListFor(seat).byName.whatsapp_read);
+  // JET is wake-only (owner decision, Oct 23 2026):  its tools/list is empty,
+  // so whatsapp_read stays unreachable there even with the flag on.  The JET
+  // gate stays for the seat the WhatsApp surface is assigned to at rollout.
   assert.ok(!toolListFor("JET").byName.whatsapp_read);
-  assert.ok(toolListFor("JET", config).byName.whatsapp_read);
+  assert.ok(!toolListFor("JET", config).byName.whatsapp_read);
   const tools = new HostedTools({ seat: "JET", scopes: ["zulip:read"], config, gate: s.gate, key: "", zulip: null, log: () => {} });
   const result = await tools.call("whatsapp_read", {});
   assert.equal(result.isError, undefined);

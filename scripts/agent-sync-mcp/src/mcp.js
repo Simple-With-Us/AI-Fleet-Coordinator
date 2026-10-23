@@ -17,7 +17,7 @@ import { createMcpHandler } from "agents/mcp/server";
 import { Server, ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 import { UnknownTool, hostedInstructions } from "./hosted-tools.js";
 import { IdentityRouter } from "./delegated-identities.js";
-import { PUBLIC_HOST } from "./config.js";
+import { EVENTS_ONLY_SEATS, PUBLIC_HOST } from "./config.js";
 import { EventError } from "./events.js";
 import { z } from "zod";
 
@@ -61,7 +61,12 @@ export function buildServer(tools, events = null) {
   const toolMap = router.toolsByName;
   const server = new Server(
     { name: "ST-MCP", version: SERVER_VERSION },
-    { capabilities: events ? { tools: {}, events: {} } : { tools: {} }, instructions: hostedInstructions(router.seat) + router.instructions() },
+    {
+      capabilities: events ? { tools: {}, events: {} } : { tools: {} },
+      instructions: EVENTS_ONLY_SEATS.includes(router.seat)
+        ? `${router.seat} is a wake-only connection:  it delivers event notifications and has no tools.  Use events/list, events/subscribe and events/unsubscribe.`
+        : hostedInstructions(router.seat) + router.instructions(),
+    },
   );
   if (events) {
     server.setRequestHandler("events/list", { params: EventParams.list }, async () => events.list());
