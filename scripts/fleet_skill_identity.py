@@ -930,6 +930,12 @@ def _rewrite_reader_voice(text: str, seat: Seat) -> str:
             "from a shared Monet template",
             "from a shared template",
         ),
+        # The skim rule names the seat that owns the pack, so a rendered copy must name its own
+        # reader and never the retired seat the canonical copy was written for (Kody rule 12).
+        (
+            "Skim channel, topic, and sender for `MONET` or a repo you are about to touch.",
+            f"Skim channel, topic, and sender for `{seat.tag}` or a repo you are about to touch.",
+        ),
     ]
     if not is_claude_family(seat):
         home = skill_home_dir(seat)
@@ -991,6 +997,10 @@ def _rewrite_universal_voice(text: str) -> str:
         (
             "(`~/Desktop/fleet-skills/sentence-gap/SKILL.md` — Monet portable paste).",
             "(this pack's `sentence-gap` — Monet portable protocol).",
+        ),
+        (
+            "Skim channel, topic, and sender for `MONET` or a repo you are about to touch.",
+            "Skim channel, topic, and sender for `<YOUR_TAG>` or a repo you are about to touch.",
         ),
     ]
     for old, new in swaps:
