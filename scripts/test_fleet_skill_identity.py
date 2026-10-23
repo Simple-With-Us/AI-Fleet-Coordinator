@@ -496,13 +496,9 @@ class PerSeatVoiceTests(unittest.TestCase):
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
             if "Skim channel, topic, and sender for" not in out:
                 continue  # a retired seat's pack carries no skim rule
-            self.assertIn(
-                f"Skim channel, topic, and sender for `{seat.tag}`", out, tag
-            )
+            self.assertIn(f"Skim channel, topic, and sender for `{seat.tag}`", out, tag)
             if seat.tag != "MONET":
-                self.assertNotIn(
-                    "Skim channel, topic, and sender for `MONET`", out, tag
-                )
+                self.assertNotIn("Skim channel, topic, and sender for `MONET`", out, tag)
 
     def test_the_universal_skim_rule_names_no_seat(self) -> None:
         out = specialize_universal(_session(), skill_name="session-start")
