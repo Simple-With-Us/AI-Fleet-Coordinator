@@ -668,6 +668,22 @@ class WakeTests(DaemonHarness):
         daemon.pump("CLAUDE", timeout=0.5)
         self.assertTrue(L.paused(self.root, "CLAUDE"), "no message ever resumes")
 
+    def test_the_owner_dm_pause_takes_the_current_cli_name(self) -> None:
+        # The docs tell the owner to type `simple-chat pause`, so that phrase has to work.  The
+        # retired `agent-sync pause` stays live too, because that launcher is still on PATH.
+        daemon = self.started()
+        self.fake.add_direct_message("Jay Wedgeworth", "simple-chat pause", deliver=True)
+        self.pump_until(daemon, lambda: "*" in L.read_json(os.path.join(self.root, "listener", "pause.json")))
+        pause = L.read_json(os.path.join(self.root, "listener", "pause.json"))["*"]
+        self.assertEqual((pause["by"], pause["wakes_only"]), ("owner-dm", False))
+        self.assertTrue(L.paused(self.root, "CLAUDE"), "every seat is paused, not one")
+
+    def test_a_near_miss_dm_never_pauses(self) -> None:
+        daemon = self.started()
+        self.fake.add_direct_message("Jay Wedgeworth", "simple-chat pause everything", deliver=True)
+        daemon.pump("CLAUDE", timeout=0.5)
+        self.assertFalse(L.paused(self.root, "CLAUDE"), "only the exact phrase pauses")
+
     # AFC-306:  invalid output must never read as a handled wake.  `wakes.validate` always returns a
     # non-empty coerced dict beside `why`, so a test keyed on the dict being falsy could never fire,
     # and the wake fell through to act() and _surface() -- which is what cleared the held refs.

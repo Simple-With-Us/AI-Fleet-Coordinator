@@ -303,7 +303,7 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
         seat = Z.normalise_seat(args.seat) if args.seat else None
         set_pause(root, seat, wakes_only=args.wakes_only, by="cli", now=time.time())
         rt.out(
-            "paused %s%s; resume with: agent-sync daemon resume%s\n"
+            "paused %s%s; resume with: simple-chat daemon resume%s\n"
             % (
                 seat or "every seat",
                 " (headless wakes only)" if args.wakes_only else " (wakes and live interrupts)",

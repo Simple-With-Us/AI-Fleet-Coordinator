@@ -104,7 +104,10 @@ LOG_ROTATE_BYTES = 5 << 20
 LOG_KEEP = 3
 PROBE_CHANNEL = "sandbox"
 PROBE_TOPIC = "listener probe"
-PAUSE_COMMAND = "agent-sync pause"
+# The owner's DM kill switch.  `simple-chat` is the current CLI name, so that phrase is the
+# canonical one;  the retired `agent-sync` launcher is still on PATH, so its phrase keeps working.
+PAUSE_COMMAND = "simple-chat pause"
+PAUSE_COMMANDS = frozenset((PAUSE_COMMAND, "agent-sync pause"))
 PLUGIN_MANIFEST = os.path.join(
     A.REPO_ROOT, "plugins", "agent-sync", ".claude-plugin", "plugin.json"
 )
@@ -2180,7 +2183,7 @@ class Daemon:
         if (
             c.owner
             and c.dm
-            and str(message.get("content") or "").strip().casefold() == PAUSE_COMMAND
+            and str(message.get("content") or "").strip().casefold() in PAUSE_COMMANDS
         ):
             self.pause(seat=None, wakes_only=False, by="owner-dm", message_id=message["id"])
             return
@@ -5449,7 +5452,7 @@ class Daemon:
         self.notifier.notify(
             self.config.claude_seat or (seat or "LISTENER"),
             "agent-sync listener",
-            "paused by %s; resume with agent-sync daemon resume" % by,
+            "paused by %s; resume with simple-chat daemon resume" % by,
             kind="paused",
             key="paused:%s" % (message_id or by),
             once_per=0,
