@@ -86,7 +86,7 @@ export function noConnectionPage() {
     "No Connection Expected",
     `<h1>No Connection Expected</h1><p>${sentences(
       "No seat is armed for this app right now, so nothing was granted.",
-      "If you meant to connect, open Agent-Sync Admin, arm the seat, and start again within 10 minutes.",
+      "If you meant to connect, open ST-MCP Admin, arm the seat, and start again within 10 minutes.",
     )}</p>`,
     { status: 403 },
   );
@@ -122,7 +122,7 @@ export function errorPage(title, message, status = 400) {
 export function consentPage({ clientName, clientDomain, clientId, redirectHost, loopback = false, scopes, seat, handle, replacing }, headers) {
   const verified = clientDomain
     ? `Published by <strong>${escapeHtml(clientDomain)}</strong> (a client metadata document on that domain).`
-    : `Registered by hand in Agent-Sync Admin.${SENTENCE_GAP}Its name is not verified.`;
+    : `Registered by hand in ST-MCP Admin.${SENTENCE_GAP}Its name is not verified.`;
   const replaceLine = replacing.length
     ? `<p class="warn">${replacing
         .map((g) => `This replaces the grant from ${escapeHtml(g.client)}, created ${escapeHtml(ownerTime(g.createdAt))}.`)
@@ -200,7 +200,7 @@ export function gbBearerRevealPage({ identity, token, expiresAt }) {
 <p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only a hash, so it cannot show it again.", "To get another, mint a new one here, which replaces this one.", "Do not refresh or resubmit this page:  that mints a new token and ends this one.")}</p>
 <p><code id="gb-bearer-token">${escapeHtml(token)}</code></p>
 <p>${sentences(`Expires ${ownerTime(expiresAt)}.`, "Send it as an Authorization: Bearer header to the MCP URL, and it acts only as this bot.")}</p>
-<p><a href="/admin">Back to Agent-Sync Admin</a></p>`;
+<p><a href="/admin">Back to ST-MCP Admin</a></p>`;
   return htmlResponse(`Bearer For ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
@@ -282,7 +282,7 @@ export function adminPage({ gbBearers = [], email, seats, clients, refusals, tok
   // Owner controls first, then everything long folded behind a summary that shows its count (AFC-347).
   const fold = (title, count, inner) =>
     `<details class="fold"><summary><h2>${escapeHtml(title)}</h2> <span class="count">${escapeHtml(count)}</span></summary>${inner}</details>`;
-  const body = `<h1>Agent-Sync Admin</h1>
+  const body = `<h1>ST-MCP Admin</h1>
 <p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}A seat serves tools only with its key installed and a live member role.</p>
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Seats</h2>
@@ -305,5 +305,5 @@ ${fold("Refused Token Requests (Unauthenticated, Counted)", `${tokenRefusals.len
 ${fold("Tool Calls", `${calls.length} calls`, `<p>${sentences("One row per call, newest first.", "Bodies, keys and tokens are never stored.", "A topic that looked like a secret shows as its hash.")}</p>
 <table><tr><th>When</th><th>Seat</th><th>Tool</th><th>Outcome</th><th>Stream</th><th>Topic</th><th>Message</th><th>Ms</th><th>Grant</th><th>Network</th></tr>${callRows}</table>`)}
 ${fold("Audit", `${audits.length} events`, `<table><tr><th>When</th><th>Seat</th><th>Event</th><th>Detail</th></tr>${auditRows}</table>`)}`;
-  return htmlResponse("Agent-Sync Admin", body, { headers });
+  return htmlResponse("ST-MCP Admin", body, { headers });
 }

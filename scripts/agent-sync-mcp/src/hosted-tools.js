@@ -348,7 +348,7 @@ export class HostedTools {
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(publicName);
-      if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in Agent-Sync Admin.");
+      if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP Admin.");
       // Every delegated service call first verifies the selected role's own
       // Zulip bot is present, matches its email and is a member (role 400).
       if (this.callerGate !== this.gate || this.verifySeat) await this.ensureSeat();
@@ -515,7 +515,7 @@ export class HostedTools {
       if (slot?.code === "budget_exhausted") {
         throw new ToolError("budget_exhausted", `This seat's ${kind} budget for the ${slot.window ?? "hour"} is spent.  Try again after reset_at.`, { retryable: true, resetAt: slot.resetAt });
       }
-      if (slot?.code === "paused") throw new ToolError("paused", "This seat is paused.  Jay can unpause it in Agent-Sync Admin.");
+      if (slot?.code === "paused") throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP Admin.");
       throw new ToolError("rate_limited", "Other calls from this seat are queued", { retryable: true, retryAfterS: slot?.retryAfterS ?? 3 });
     }
     if (slot.waitMs > 0) await this.sleep(slot.waitMs);
@@ -1614,7 +1614,7 @@ export class HostedTools {
     const keys = linearLabelKeys(issue);
     const held = keys.find((n) => n.startsWith(CLAIM_PREFIX));
     if (held && held !== `${CLAIM_PREFIX}${seat}`) {
-      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #agent-sync.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
+      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
     }
     const workspace = await this.linearWorkspace();
     const idsOf = async (names) => {
