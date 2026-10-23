@@ -50,6 +50,7 @@ from .textfmt import fix_outbound
 __all__ = [
     "DEFAULT_CHANNEL",
     "MAX_TOPIC_LENGTH",
+    "RETIRED_CHANNEL_NAMES",
     "REALM",
     "USER_AGENT",
     "AgentSyncError",
@@ -155,6 +156,34 @@ def default_channel(env: Mapping[str, str] | None = None) -> str:
         if override and override.strip():
             return override.strip()
     return DEFAULT_CHANNEL
+
+
+#: The names the fleet's coordination channel has had.  The realm renamed it to
+#: Work-In-Progress on Oct 22, 2026 and left the old name behind as a tombstone stream
+#: marked DO NOT USE, so a caller that still names it lands in a stream nobody reads.
+#: A name here means "wherever the fleet's coordination channel is now".
+RETIRED_CHANNEL_NAMES = frozenset({"agent-sync"})
+
+
+def resolve_channel(name: str | None, env: Mapping[str, str] | None = None) -> str:
+    """The live channel a name refers to.
+
+    A retired name resolves to the effective default, so the fleet's coordination channel
+    stays one channel however it is named.  A deployment whose realm still calls that
+    channel agent-sync keeps the name:  its effective default is the same name, so
+    nothing changes for it.
+    """
+    text = str(name or "").strip()
+    if text.startswith("#"):
+        text = text[1:].strip()
+    if not text:
+        return default_channel(env)
+    if text.casefold() not in RETIRED_CHANNEL_NAMES:
+        return text
+    target = default_channel(env)
+    if target.casefold() == text.casefold():
+        return text
+    return target
 
 
 def operator_user_id(env: Mapping[str, str] | None = None) -> int | None:

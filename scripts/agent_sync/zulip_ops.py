@@ -189,6 +189,9 @@ def message_history(agent: Any, message_id: int) -> list[dict[str, Any]]:
 
 
 def newest_in_topic(agent: Any, channel: str, topic: str) -> dict[str, Any]:
+    # The narrow names the channel, so a retired name has to be resolved before it
+    # becomes an operand:  otherwise the lookup reads the tombstone stream.
+    channel = Z.resolve_channel(channel, getattr(getattr(agent, "rt", None), "env", None))
     newest = agent.fetch(
         [{"operator": "channel", "operand": channel}, {"operator": "topic", "operand": topic}],
         anchor="newest",
