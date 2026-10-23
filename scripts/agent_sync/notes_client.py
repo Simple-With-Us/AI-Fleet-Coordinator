@@ -241,6 +241,8 @@ class OperatorClient:
             ValueError,
             RecursionError,
         ):  # RecursionError:  nesting too deep to parse
+            if status >= 300:
+                return status, None  # a proxy's page on an error:  the status says what happened
             raise N.NotesError(
                 "unavailable", "the Operator answered HTTP %d with a body that is not JSON" % status
             ) from None
@@ -255,9 +257,12 @@ class OperatorClient:
         if status in (200, 202) and data is not None:
             return _own_record(data, seat, request["request_id"]), status == 200
         refusal = answer_error(status, data)
-        # The queue's own 503 (full, or not running) is a definite refusal:  nothing was queued, so `call` passes it
-        # on as unavailable instead of an unknown outcome.  A bare 5xx from a proxy stays unknown.
-        refusal.definite = status == 503 and (data or {}).get("error") == "unavailable"
+        # A 429 (rate limited, before anything is queued) and the queue's own 503 (full, or not running) are definite
+        # refusals:  nothing was queued, so `call` passes them on as unavailable instead of an unknown outcome, as
+        # the Worker does.  A bare 5xx from a proxy stays unknown.
+        refusal.definite = status == 429 or (
+            status == 503 and (data or {}).get("error") == "unavailable"
+        )
         raise refusal
 
     def record(self, seat: str, request_id: str) -> dict[str, Any]:

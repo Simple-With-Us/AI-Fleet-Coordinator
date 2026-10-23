@@ -666,9 +666,10 @@ class DirectRunnerTests(unittest.TestCase):
             with self.subTest(action):
                 with self.assertRaises(N.NotesError) as caught:
                     N.check_title("%s note" % token, action)
-                self.assertIn("looks like it contains a secret", caught.exception.message)
+                self.assertEqual(caught.exception.code, "invalid_argument")
+                self.assertIn("argument 'title' looks like it contains a secret", caught.exception.message)
                 self.assertNotIn(token, caught.exception.message)
-        # A create's title gets the write scan with its body instead.
+        # A create's title gets the write scan with its body, which answers refused_secret (test_mcp_extras).
         self.assertTrue(N.check_title("[AFC, Claude] %s" % token, "create"))
 
     def test_a_query_never_starts_with_a_dash(self):

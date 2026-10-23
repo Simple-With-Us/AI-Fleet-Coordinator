@@ -1,7 +1,7 @@
 ---
 name: apple-notes
 description: >-
-  Write, read and fix owner-facing Apple Notes in the `Coding` folder — plans, designs, reviews, handoffs, rollouts, living Completion notes, and static notes such as the Background Jobs Master List. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Works the same on the Mac, the Hetzner server and cloud seats (simple-notes or the notes_* tools). Title [TEAM_KEY, Agent] Topic (Title Case) with a refreshed timestamp.
+  Write, read and fix owner-facing Apple Notes in the `Coding` folder — plans, designs, reviews, handoffs, rollouts, living Completion notes, and static notes such as the Background Jobs Master List. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Works the same on the Mac, the server and cloud seats (simple-notes or the notes_* tools). Title [TEAM_KEY, Agent] Topic (Title Case) with a refreshed timestamp.
 ---
 
 # Apple Notes (Universal)

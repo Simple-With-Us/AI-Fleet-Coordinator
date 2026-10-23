@@ -1,6 +1,6 @@
 """The Operator's Apple Notes queue (AFC-486, docs/protocols/operator-notes.md).
 
-Hosts that cannot run apple-notes-coding.sh (the Hetzner server's CLIs and stdio MCP, the hosted ST-MCP Worker)
+Hosts that cannot run apple-notes-coding.sh (the server's CLIs and stdio MCP, the hosted ST-MCP Worker)
 send a request object here over signed HTTPS (notes_wire.py), and the seatless Mac runner (notes_runner.py) claims
 it, runs the script and reports the result.  No Zulip message is involved.  The routes, served by the listener API
 server (listener_api.py) under /notes/v1/:

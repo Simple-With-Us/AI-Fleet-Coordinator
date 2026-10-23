@@ -602,6 +602,11 @@ class HostTests(unittest.TestCase):
             NC.call(host, "CLAUDE", self.req(rid="requestid-0043"), wait=0, scan=self.scan)
         self.assertEqual(caught.exception.code, "unavailable")  # nothing was queued
         self.assertIn("the notes queue is full", caught.exception.message)
+        # So is a 429:  a rate limit turns the request away before anything is queued, as the Worker reads it too.
+        op.answers[("POST", "/notes/v1/requests")] = (429, b"Too Many Requests")
+        with self.assertRaises(N.NotesError) as caught:
+            NC.call(host, "CLAUDE", self.req(rid="requestid-0048"), wait=0, scan=self.scan)
+        self.assertEqual(caught.exception.code, "unavailable")
         # A refused connection or a name that does not resolve sent nothing:  a plain, retryable unavailable.
         for reason in (ConnectionRefusedError(111, "refused"), socket.gaierror(-2, "Name or service not known")):
             with self.subTest(type(reason).__name__):

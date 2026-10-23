@@ -68,7 +68,7 @@ Apple Notes requests from the server and cloud seats go to the Operator's notes 
 |---|---|---|
 | `OPERATOR_API_URL` (its row in "Fleet knobs" below is the generated one) | root `/`, a fleet knob (`scripts/fleet_knobs/registry.py`) | `simple-notes`, the stdio MCP and the Mac runner, through `fleet_knobs`:  the Operator API's https origin.  Empty means not configured.  The Worker has the same origin as its committed `LISTENER_API_URL` var. |
 | `OPERATOR_NOTES_WORKER_KEY` | `/operator`, a secret | the Operator (container start, `server/infisical_env.py`) and the Worker, as its secret `OPERATOR_NOTES_KEY` (DEPLOY.md, "Notes, recall and the guide") |
-| `OPERATOR_NOTES_SERVER_KEY` | `/operator`, a secret | the Operator, and the Hetzner server's CLIs and stdio MCP (`fleet-secrets get OPERATOR_NOTES_SERVER_KEY --path /operator --project ai-fleet-coordinator`, held in memory) |
+| `OPERATOR_NOTES_SERVER_KEY` | `/operator`, a secret | the Operator, and the server's CLIs and stdio MCP (`fleet-secrets get OPERATOR_NOTES_SERVER_KEY --path /operator --project ai-fleet-coordinator`, held in memory) |
 | `OPERATOR_NOTES_RUNNER_KEY` | `/operator`, a secret | the Operator, and the Mac runner (`com.jay.operator-notes-runner`, the same `fleet-secrets get`) |
 
 Each key is at least 32 random characters and is never printed, logged or written to a file.  The retired relay's knob `NOTES_RELAY_CONSUMER` (AFC-331) is no longer read by anything.
