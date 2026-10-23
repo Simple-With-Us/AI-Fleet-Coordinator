@@ -1,0 +1,53 @@
+import { WA_EVENT, WA_HEADER, WA_MAX_BODY, binding, verifyRequest } from "./contract.js";
+import { subEventName, deliverEvent, eventIdFor } from "../events.js";
+const reply = (body, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
+
+export async function deliverPending(gate, fetchFn, deadline = Date.now() + 10000) {
+  const pending = await gate.waClaim({});
+  if (!pending) return { delivered: 0 };
+  const subs = (await gate.eventSubscriptions({})).filter(s => subEventName(s) === WA_EVENT);
+  let delivered = 0;
+  try {
+    for (const sub of subs) {
+      const event = { name: WA_EVENT, eventId: await eventIdFor(pending.id, sub.id), timestamp: new Date().toISOString(), data: { source: pending.source, owner_authorized: pending.source === "authenticated_owner" }, cursor: null };
+      const result = await deliverEvent(fetchFn, sub, event, { deadline, isLive: () => gate.eventSubLive({ subId: sub.id }) });
+      await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, wakeRef: "wa", messageId: null });
+      if (result.outcome === "delivered") delivered++;
+    }
+  } finally {
+    await gate.waSettle({ key: pending.key, keys: pending.keys, token: pending.token, delivered: delivered > 0 });
+  }
+  return { delivered, pending: delivered === 0 };
+}
+
+// Called only after routing to the private module.  Distinct keys prevent an
+// Operator from forging WhatsApp owner provenance, or the reverse.
+export async function serveWa(request, env, config, gate, fetchFn = fetch) {
+  if (!config.whatsappEnabled || config.mcpDisabled || !config.hostedSeats.includes("JET")) return reply({ ok: false, reason: "disabled" }, 404);
+  const kind = new URL(request.url).pathname === "/internal/wa-operator/JET" ? "operator" : "ingest";
+  const owner = binding(env.WA_OWNER_BINDING_JET);
+  const keyName = kind === "operator" ? "WA_OPERATOR_HMAC_KEY_JET" : "WA_BRIDGE_HMAC_KEY_JET";
+  const rawKey = env[keyName];
+  const otherKeys = Object.entries(env).filter(([k,v]) => /(?:WAKE_HMAC_KEY_|_ROUTINE_KEY$|^SPIKE_HMAC_KEY$|^HEALTH_HMAC_KEY$|^WA_.*HMAC_KEY)/.test(k) && k !== keyName && typeof v === "string").map(([,v]) => v.trim());
+  if (!owner || typeof rawKey !== "string" || rawKey.trim().length < 32 || otherKeys.includes(rawKey.trim())) return reply({ ok: false, reason: "not_configured" }, 404);
+  if (request.method !== "POST") return reply({ ok: false }, 405);
+  // Bounded streaming even when Content-Length is absent or dishonest.
+  const reader = request.body?.getReader();
+  if (!reader) return reply({ ok: false }, 400);
+  const chunks = []; let size = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > WA_MAX_BODY) { await reader.cancel(); return reply({ ok: false }, 413); }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size); let at = 0;
+  for (const c of chunks) { bytes.set(c, at); at += c.length; }
+  const checked = await verifyRequest(bytes, request.headers.get(WA_HEADER), rawKey, kind);
+  if (checked.status !== 200) return reply({ ok: false }, checked.status);
+  const result = kind === "ingest" ? await gate.waIngest({ body: checked.body, owner, known: [rawKey, ...otherKeys] }) : await gate.waOperator({ requestId: checked.body.request_id });
+  if (!result.ok) return reply(result, 403);
+  const delivery = config.whatsappWakeEnabled ? await deliverPending(gate, fetchFn) : { delivered: 0, disabled: true };
+  return reply({ ...result, ...delivery });
+}

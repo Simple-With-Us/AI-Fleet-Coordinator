@@ -12,11 +12,27 @@
 
 import { DurableObject } from "cloudflare:workers";
 import * as state from "./seat-state.js";
+import * as wa from "./wa/state.js";
 
 export class SeatGate extends DurableObject {
   get store() {
     return this.ctx.storage;
   }
+
+  async waIngest(options) {
+    const result = await wa.ingest(this.store, options);
+    if (result.ok && await this.store.getAlarm() === null) await this.store.setAlarm(Date.now() + 3600000);
+    return result;
+  }
+  async alarm() {
+    const more = await wa.sweep(this.store);
+    await this.store.setAlarm(Date.now() + (more ? 1000 : 3600000));
+  }
+  waRead(options) { return wa.read(this.store, options); }
+  waOperator(options) { return wa.operator(this.store, options); }
+  waClaim(options) { return wa.claim(this.store, options); }
+  waSettle(options) { return wa.settle(this.store, options); }
+  eventSubscriptions(options) { return state.eventSubscriptions(this.store, options); }
 
   getState() {
     return state.getState(this.store);

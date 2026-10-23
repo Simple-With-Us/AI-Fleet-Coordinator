@@ -366,3 +366,22 @@ The Agent-Sync MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
 FleetLink's `/mcp`, which maps each seat to its own FleetLink agent account.
 Rotate both Workers from this one value, FleetLink first.  See
 [the FleetLink runbook](scripts/agent-sync-mcp/DEPLOY.md#fleetlink-afc-328).
+
+
+## WhatsApp Wake Bridge (AFC-477, Not Provisioned)
+
+The default-off implementation reads only its approved runtime environment.  Source of truth for a future bridge deployment is this project's `prod` `/jet`, separate from the generated root fleet-knobs block.  These entries document required names, not existing credentials or permission to provision them.
+
+| Name | Consumer | Purpose |
+|---|---|---|
+| `WHATSAPP_API_KEY` | sole poller | Meta Agent Platform Bearer, never installed in the Worker |
+| `WA_BRIDGE_HMAC_KEY_JET` | sole poller and Worker | authenticated WhatsApp ingestion, at least 32 characters |
+| `WA_OPERATOR_HMAC_KEY_JET` | Operator and Worker | independent content-free agent doorbells, never owner authorization |
+| `WA_OWNER_BINDING_JET` | Worker | verified binding JSON from supervised code plus Meta creator check |
+| `WA_AGENT_HASH_JET` | sole poller | verified agent hash for idle poll heartbeats |
+| `WA_WORKER_URL` | sole poller and Operator client | approved HTTPS Worker origin |
+| `WA_STATE_DIRECTORY` | sole poller | approved private durable offset/lock directory |
+| `WHATSAPP_BRIDGE_ENABLED` | sole poller and Worker | exact `on` enables; absent defaults off |
+| `WHATSAPP_BRIDGE_WAKE_ENABLED` | Worker | exact `on` enables delivery; absent defaults off |
+
+No new daily wake quota is introduced.  See [the bridge runbook](scripts/whatsapp_bridge/README.md) for exact action-time approvals, isolated Universal Auth identity, binding verification and activation steps.

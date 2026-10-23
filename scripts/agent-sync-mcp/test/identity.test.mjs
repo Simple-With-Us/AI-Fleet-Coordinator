@@ -179,7 +179,7 @@ test("row 6:  each grant's tools/list offers exactly its own set, required on wr
   for (const seat of KNOWN_SEATS) {
     const { list } = toolListFor(seat);
     assert.deepEqual(list.slice(0, 3).map((t) => t.name), ["whoami", "identities", "guide"]);
-    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2);
+    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET" ? 0 : 1));
     for (const tool of list) {
       const properties = tool.inputSchema.properties ?? {};
       if (tool.name === "identities") {
@@ -193,7 +193,7 @@ test("row 6:  each grant's tools/list offers exactly its own set, required on wr
 });
 
 test("every hosted tool is classified as exactly one of read or write", () => {
-  const names = toolListFor("CURSOR").list.map((t) => t.name);
+  const names = toolListFor("JET").list.map((t) => t.name);
   for (const name of names) assert.notEqual(HOSTED_READ_TOOLS.has(name), HOSTED_WRITE_TOOLS.has(name), name);
   assert.deepEqual(sorted([...HOSTED_READ_TOOLS, ...HOSTED_WRITE_TOOLS]), sorted(names));
 });
