@@ -440,8 +440,9 @@ class NotesToolTests(McpHarness):
         self.assertEqual(sent["request"]["flags"]["summary"], "short")
         self.assertEqual(self.fake.messages, [], "no Zulip message")
 
-    def test_the_wait_is_capped_at_ninety_seconds_and_zero_answers_queued(self):
-        for args, total in (({}, 90), ({"wait_seconds": 300}, 90), ({"wait_seconds": 7}, 7), ({"wait_seconds": 0}, 0)):
+    def test_the_wait_is_25_seconds_by_default_capped_at_ninety_and_zero_answers_queued(self):
+        cases = (({}, 25), ({"wait_seconds": 60}, 60), ({"wait_seconds": 300}, 90), ({"wait_seconds": 7}, 7), ({"wait_seconds": 0}, 0))
+        for args, total in cases:
             with self.subTest(args):
                 op, sleeps, patch = self.operator()
                 with patch:
@@ -533,7 +534,11 @@ class NotesToolTests(McpHarness):
         op, _, patch = self.operator(network)
         with patch:
             down = self.session().call("notes_read", {"title": self.MASTER})
-        self.assertIn("could not be reached", self.assert_tool_error(down, "unavailable")["message"])
+        # The send got no answer, so the request may or may not be queued:  never retryable, same request_id only.
+        error = self.assert_tool_error(down, "outcome_unknown")
+        self.assertIn("could not be reached", error["message"])
+        self.assertIn("never a new one", error["message"])
+        self.assertFalse(error["retryable"])
 
 
 class RecallToolTests(FakePrograms):
