@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import shutil
@@ -234,6 +235,13 @@ def check_query(raw: Any) -> str:
             "invalid_argument",
             "argument 'query' must be text of at most %d characters with no double quote, backslash or "
             "control character, and must not start with -" % QUERY_MAX,
+        )
+    from . import secretscan  # lazy, as in withhold_secrets:  the query is sent to the Operator
+
+    if secretscan.scan(raw):
+        raise NotesError(
+            "invalid_argument",
+            "argument 'query' looks like it contains a secret;  nothing was sent",
         )
     return raw.strip()
 
@@ -1258,7 +1266,9 @@ def clean_log_entry(raw: Any) -> dict[str, Any] | None:
         if isinstance(value, bool) or value is None or isinstance(value, int):
             out[key] = value
         elif isinstance(value, float):
-            out[key] = int(value)
+            out[key] = (
+                int(value) if math.isfinite(value) else None
+            )  # JSON's NaN and Infinity have no int
         else:
             out[key] = str(value)[: 400 if key == "title" else 200]
     return out

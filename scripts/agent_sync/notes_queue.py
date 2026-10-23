@@ -682,24 +682,36 @@ class NotesQueue:
             )
         now = self.clock()
         accepted: list[dict[str, Any]] = []
+        seen: set[str] = set()
         duplicates = 0
         with self.lock:
             self.runner_logged_at = now
             for raw in lines:
-                entry = N.clean_log_entry(raw)
+                try:
+                    entry = N.clean_log_entry(raw)
+                except (
+                    TypeError,
+                    ValueError,
+                    OverflowError,
+                ):  # one odd line never costs the rest of the batch
+                    entry = None
                 if entry is None:
                     continue
-                if entry["id"] in self.log_ids:
+                if entry["id"] in self.log_ids or entry["id"] in seen:
                     duplicates += 1
                     continue
                 entry["received_at"] = N.iso_now(lambda: now)
                 accepted.append(entry)
-                self.log_ids[entry["id"]] = None
-            while len(self.log_ids) > LOG_IDS_KEEP:
-                self.log_ids.popitem(last=False)
+                seen.add(entry["id"])
             if accepted:
                 self._rotate_log()
                 L.append_jsonl(str(self.action_log), accepted)
+            # Marked only once the lines are on disk:  a failed append leaves them unmarked, so the runner's resend
+            # of the same batch is kept instead of being dropped as duplicates.
+            for entry in accepted:
+                self.log_ids[entry["id"]] = None
+            while len(self.log_ids) > LOG_IDS_KEEP:
+                self.log_ids.popitem(last=False)
         return Answer(
             200, {"contract": W.CONTRACT, "accepted": len(accepted), "duplicates": duplicates}
         )

@@ -311,8 +311,13 @@ class KeySourceTests(unittest.TestCase):
         self.assertIsNone(self.source(env).get())
         self.answer = OSError("cannot run")
         self.assertIsNone(self.source(env).get())
+        # A hung lookup is not a missing key:  it says so, and that nothing was sent.
         self.answer = subprocess.TimeoutExpired("fleet-secrets", 30)
-        self.assertIsNone(self.source(env).get())
+        with self.assertRaises(N.NotesError) as caught:
+            self.source(env).get()
+        self.assertEqual(caught.exception.code, "not_configured")
+        self.assertIn("did not answer within 30 seconds", caught.exception.message)
+        self.assertIn("nothing was sent", caught.exception.message)
         self.runs.clear()
         empty = Path(self.tmp.name) / "empty"
         empty.mkdir()
@@ -494,10 +499,11 @@ class WaitTests(unittest.TestCase):
         self.assertEqual((got["state"], got["request_id"]), ("queued", "requestid-0001"))
         self.assertEqual(self.sleeps, [1.0])
         self.op.fail = None
+        # Any other failed poll (a 403, or a key lookup that fails after the enqueue) ends the wait the same way,
+        # as the Worker's wait does:  the request is queued whatever the poll answered.
         self.op.answers[("GET", "/notes/v1/requests/CLAUDE/requestid-0001")] = (403, {"error": "forbidden", "message": "m"})
-        with self.assertRaises(N.NotesError) as caught:
-            self.client.wait("CLAUDE", self.queued, 300)
-        self.assertEqual(caught.exception.code, "forbidden")  # only a failure to reach the Operator ends the wait quietly
+        got = self.client.wait("CLAUDE", self.queued, 300)
+        self.assertEqual((got["state"], got["request_id"]), ("queued", "requestid-0001"))
 
     def test_wait_zero_and_an_already_final_record_answer_at_once(self):
         self.assertEqual(self.client.wait("CLAUDE", self.queued, 0), self.queued)
@@ -784,6 +790,17 @@ class HostTests(unittest.TestCase):
         host, _ = self.elsewhere(done)
         info = NC.status(host, "CLAUDE", "requestid-0001")
         self.assertEqual((info["note_id"], info["pin_skipped"]), ("x-coredata://n4", "busy"))
+        # The CLI prints a record's error to a terminal:  one line, no control character, a code of the contract's shape.
+        odd = record("refused", error={"code": "Not A Code", "message": "line one\n\x1b[31mred\x1b[0m\x00 " + "x" * 500})
+        host, _ = self.elsewhere(FakeClient(odd))
+        error = NC.status(host, "CLAUDE", "requestid-0001")["error"]
+        self.assertEqual(error["code"], "")
+        self.assertTrue(error["message"].startswith("line one [31mred [0m x"), error["message"][:40])
+        self.assertEqual(len(error["message"]), 400)
+        with self.assertRaises(N.NotesError) as caught:
+            NC.call(host, "CLAUDE", self.req(rid="requestid-0001"), wait=0)
+        self.assertEqual(caught.exception.code, "internal")
+        self.assertNotIn("\x1b", caught.exception.message)
         client.entries = [{"id": "e1", "ts": "2026-10-22T22:00:00Z"}]
         host, _ = self.elsewhere(client)
         self.assertEqual(

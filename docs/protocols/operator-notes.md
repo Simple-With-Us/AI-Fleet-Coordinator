@@ -33,7 +33,7 @@ The script is the one place formatting is enforced (the title row, the date row,
 - **update, pin, unpin, read:**  any note in the Coding folder (owner, Oct 22).  An update whose title does not carry the caller's name runs with `--existing-only`, so a missing note answers `not_found` instead of a new untagged note.
 - **list:**  the whole Coding folder.
 - Every title is at most 200 characters, holds no double quote, backslash or control character, and does not start with `-`.
-- Write text (title, body, summary, pr) gets the fleet secret scan before it leaves the caller.
+- Write text (title, body, summary, pr) gets the fleet secret scan before it leaves the caller, and so do a list query and a log title filter.
 - A read gets the same scan on the Mac, before its result leaves:  each line it flags is replaced by `[withheld: secret-shaped]` (a `<div>` line keeps its `<div>`), and `note.withheld` counts them, so a credential pasted into a note never reaches the Operator, a cloud seat or a model.  A write whose body holds that marker is refused, so a read, edited and written back, never erases the real line;  edit such a note on the Mac.
 
 ## The Wire Protocol

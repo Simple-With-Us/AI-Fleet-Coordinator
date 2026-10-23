@@ -439,6 +439,19 @@ class ActionLogTests(QueueHarness):
         self.append([self.entry("log-4", body="SECRET NOTE TEXT")])
         self.assertNotIn("SECRET NOTE TEXT", (Path(self.root) / NQ.QUEUE_DIR / NQ.ACTION_LOG).read_text())
 
+    def test_an_odd_line_never_costs_the_batch_and_a_failed_append_keeps_its_ids_unmarked(self) -> None:
+        # JSON's Infinity parses to a float with no int:  that one field is dropped, and the rest of the batch is kept.
+        body = self.append([self.entry("odd-1", exit=float("inf"), duration_ms=float("nan")), self.entry("odd-2")])
+        self.assertEqual((body["accepted"], body["duplicates"]), (2, 0))
+        kept = [json.loads(line) for line in (Path(self.root) / NQ.QUEUE_DIR / NQ.ACTION_LOG).read_text().splitlines()]
+        self.assertEqual([(e["id"], e.get("exit")) for e in kept], [("odd-1", None), ("odd-2", 0)])
+        # A failed append marks no id, so the runner's resend of the same batch is kept, not dropped as duplicates.
+        with mock.patch.object(NQ.L, "append_jsonl", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.call("POST", "/notes/v1/runner/log", {"lines": [self.entry("late-1")]}, principal=W.RUNNER)
+        body = self.append([self.entry("late-1"), self.entry("late-1")])
+        self.assertEqual((body["accepted"], body["duplicates"]), (1, 1), "a repeat inside one batch is still one line")
+
     def test_the_log_read_filters_newest_first(self) -> None:
         older = N.iso_now(lambda: time.time() - 7200)
         self.append([

@@ -29,7 +29,7 @@
 import NOTES_JSON from "../../agent_sync/mcp/notes-tools.json" with { type: "json" };
 import FLEET_APPS from "../../../fleet-apps.json" with { type: "json" };
 import { z } from "zod";
-import { ToolError, okResult, clean, NAME_LIMIT, MESSAGE_LIMIT, newNonce } from "./contract.js";
+import { ToolError, okResult, clean, NAME_LIMIT, MESSAGE_LIMIT, newNonce, scanSecret } from "./contract.js";
 import { parseArgs } from "./args.js";
 import { listenerBaseUrl } from "./eavesdropper.js";
 import { OPERATOR_NOTES_SECRET } from "./config.js";
@@ -54,6 +54,7 @@ export const FORMATS = Object.freeze(["html", "text", "raw"]);
 export const TITLE_MAX = 200;
 export const SUMMARY_MAX = 280;
 export const MARKDOWN_MAX = 500_000;
+export const NOTES_ANSWER_MAX = 4 * 1024 * 1024; // the most of an Operator answer the Worker reads (notes_wire.MAX_BODY)
 // What a read shows for a line that looks like a credential (notes.WITHHELD);  a body holding it is never written back.
 export const WITHHELD = "[withheld: secret-shaped]";
 export const QUERY_MAX = 100;
@@ -344,13 +345,14 @@ export function makeRequest({ action, requestId, identity, title, markdown, flag
 
 /**
  * A list query or a log title filter:  at most 100 characters, no double quote, backslash or control character, and no
- * leading - (the script would read it as an option);  trimmed.
+ * leading - (the script would read it as an option);  trimmed.  It is sent to the Operator, so it gets the secret scan.
  */
 export function checkQuery(raw, name = "query") {
   if (raw === undefined || raw === null) return "";
   if (typeof raw !== "string" || points(raw).length > QUERY_MAX || TITLE_BAD_RE.test(raw) || raw.trim().startsWith("-")) {
     throw invalid(`argument '${name}' must be text of at most ${QUERY_MAX} characters with no double quote, backslash or control character, and must not start with -`);
   }
+  if (scanSecret(raw)) throw invalid(`argument '${name}' looks like it contains a secret;  nothing was sent`);
   return raw.trim();
 }
 
@@ -434,9 +436,11 @@ export class OperatorNotesClient {
       const timeout = error?.name === "TimeoutError" || error?.name === "AbortError";
       throw new ToolError("unavailable", `could not reach the Operator${timeout ? " (timed out)" : ""}`, { retryable: true });
     }
+    // At most NOTES_ANSWER_MAX bytes are read (the Operator's own body cap);  a larger or unparseable answer is null.
     let data = null;
     try {
-      data = await response.json();
+      const text = await readCapped(response, NOTES_ANSWER_MAX);
+      data = text ? JSON.parse(text) : null;
     } catch {
       data = null;
     }
@@ -451,6 +455,31 @@ export function operatorNotesClientFromEnv(env, { fetch: fetchImpl = globalThis.
   const key = typeof raw === "string" ? raw.trim() : "";
   if (!baseUrl || key.length < NOTES_MIN_KEY_LEN || typeof fetchImpl !== "function") return null;
   return new OperatorNotesClient({ baseUrl, key, fetch: fetchImpl, now });
+}
+
+/** A response body as text, or null once it passes `cap` bytes (the rest is never read). */
+async function readCapped(response, cap) {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > cap) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /** The ToolError for an Operator answer that is not a success.  `seat` names the seat in a 403. */

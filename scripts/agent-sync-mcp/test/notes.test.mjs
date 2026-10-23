@@ -15,7 +15,7 @@ import { ERROR_META_KEY, schemaProblem } from "../src/contract.js";
 import {
   NOTES_TOOLS, NOTES_WRITE_TOOLS, NOTES_MARKER_BEGIN, NOTES_MARKER_END, NOTES_POLL_MS, NOTES_WAIT_MAX_S, OperatorNotesClient,
   operatorNotesClientFromEnv, notesSigningString, checkTitle, checkAnyTitle, checkFlags, titleProblem, notesNames, makeRequest,
-  logQuery, logEntry, waitFor, WITHHELD,
+  logQuery, logEntry, waitFor, WITHHELD, NOTES_ANSWER_MAX,
 } from "../src/notes.js";
 import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
 
@@ -521,6 +521,9 @@ test("the title checks mirror notes.py:  check_title, the any-title rule and tit
   // The script would read a leading - as one of its own options.
   for (const query of ["-x", " --read", "-"]) assert.throws(() => makeRequest({ action: "list", requestId: "abcdefgh12", identity: "CLAUDE", query }), /must not start with -/);
   assert.equal(makeRequest({ action: "list", requestId: "abcdefgh12", identity: "CLAUDE", query: "a-b" }).query, "a-b");
+  // A query or a log title filter is sent to the Operator, so it gets the secret scan.
+  const token = `${"ghp_"}${"EXAMPLE0".repeat(5)}`;
+  assert.throws(() => makeRequest({ action: "list", requestId: "abcdefgh12", identity: "CLAUDE", query: token }), /looks like it contains a secret/);
   // A body from a read that withheld a secret-shaped line is never written back over the real line.
   assert.throws(() => makeRequest({ action: "update", requestId: "abcdefgh12", identity: "CLAUDE", title: "t", markdown: `<div>${WITHHELD}</div>` }), /Edit the note on the Mac/);
   assert.throws(() => makeRequest({ action: "read", requestId: "abcdefgh12", identity: "CLAUDE", title: "t", format: "pdf" }), /format/);
@@ -634,6 +637,14 @@ test("the Operator's HTTP answers map to clear tool errors", async () => {
     assert.match(error.message, message, `${answer.status ?? answer} ${error.message}`);
     if (code === "outcome_unknown") assert.notEqual(error.retryable, true);
   }
+});
+
+test("an Operator answer larger than 4 MiB is never read whole:  its data is null", async () => {
+  const { tools } = harness();
+  tools.notes.fetch = async () => new Response(`{"entries":[${'"x",'.repeat(NOTES_ANSWER_MAX / 4)}"x"]}`, { status: 200 });
+  assert.equal((await tools.notes.send("GET", "/notes/v1/log")).data, null);
+  tools.notes.fetch = async () => new Response('{"entries":[]}', { status: 200 });
+  assert.deepEqual((await tools.notes.send("GET", "/notes/v1/log")).data, { entries: [] });
 });
 
 test("a 202 whose body is not a record still reads as queued, and the next poll fetches the record", async () => {

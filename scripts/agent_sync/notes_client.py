@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -131,6 +132,14 @@ class KeySource:
                 check=False,
                 env=dict(self.env),
             )
+        except subprocess.TimeoutExpired:
+            # A hung lookup is not a missing key:  say so, so the caller does not go looking for a key that is there.
+            # Nothing has been sent yet, so this is never an unknown outcome.
+            raise N.NotesError(
+                "not_configured",
+                "fleet-secrets did not answer within 30 seconds reading %s, so nothing was sent;  try again"
+                % self.name,
+            ) from None
         except (OSError, subprocess.SubprocessError):
             return ""
         if done.returncode != 0:
@@ -245,9 +254,10 @@ class OperatorClient:
         raise answer_error(status, data)
 
     def wait(self, seat: str, record: Mapping[str, Any], seconds: float) -> dict[str, Any]:
-        """The record once it is final, or as it stands when `seconds` have passed.  A poll that cannot reach the
-        Operator ends the wait with the record as last seen (queued or running, with its request_id), never an error:
-        the request is already queued, and an error would send the caller to retry under a new id and write twice."""
+        """The record once it is final, or as it stands when `seconds` have passed.  A poll that fails for any reason
+        (no answer, or a key lookup that fails after the enqueue) ends the wait with the record as last seen (queued or
+        running, with its request_id), never an error:  the request is already queued, and an error would send the
+        caller to retry under a new id and write twice.  The Worker's wait does the same."""
         current = dict(record)
         waited, polls = 0.0, 0
         # Counted from the sleeps, not a clock:  a call's own time only makes the wait a little longer, never shorter.
@@ -261,9 +271,7 @@ class OperatorClient:
             polls += 1
             try:
                 current = self.record(seat, str(current.get("request_id")))
-            except N.NotesError as exc:
-                if exc.code != "unavailable":
-                    raise
+            except N.NotesError:
                 break
         return current
 
@@ -406,12 +414,25 @@ class Host:
         return self._client
 
 
+_CODE_RE = re.compile(r"[a-z_]{1,40}")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f  ]+")
+
+
+def _record_error(record: Mapping[str, Any]) -> dict[str, str]:
+    """A record's error as {code, message}:  a code of the contract's shape (else empty), and the message as one line
+    of at most 400 characters with no control character, since the CLI prints it to a terminal."""
+    error = record.get("error") if isinstance(record.get("error"), Mapping) else {}
+    code = str(error.get("code") or "")
+    message = " ".join(_CONTROL_RE.sub(" ", str(error.get("message") or "")).split())
+    return {"code": code if _CODE_RE.fullmatch(code) else "", "message": message[:400]}
+
+
 def _shape(record: Mapping[str, Any], duplicate: bool) -> dict[str, Any]:
     """A tool's answer from an Operator record:  the same keys the direct path answers with."""
     state = str(record.get("state") or "")
     request_id = str(record.get("request_id") or "")
     action = record.get("action")
-    error = record.get("error") if isinstance(record.get("error"), Mapping) else {}
+    error = _record_error(record)
     if state == "refused":
         raise N.NotesError(
             str(error.get("code") or "internal"),
@@ -536,9 +557,11 @@ def status(host: Host, seat: str, request_id: str) -> dict[str, Any]:
         "action": record.get("action"),
         "transport": "operator",
     }
-    for key in ("title", "queued_at", "finished_at", "error"):
+    for key in ("title", "queued_at", "finished_at"):
         if record.get(key):
             out[key] = record[key]
+    if record.get("error"):
+        out["error"] = _record_error(record)
     result = record.get("result") if isinstance(record.get("result"), Mapping) else {}
     for key in ("note_id", "pin_skipped", "note", "notes"):
         if result.get(key):

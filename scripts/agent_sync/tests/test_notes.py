@@ -638,6 +638,12 @@ class DirectRunnerTests(unittest.TestCase):
                     N.check_query(query)
                 self.assertIn("must not start with -", caught.exception.message)
         self.assertEqual(N.check_query("a-b"), "a-b")
+        # A query or a log title filter is sent to the Operator, so it gets the secret scan.
+        token = "ghp_" + "a1B2" * 9  # built at run time:  no token-shaped literal in the source
+        with self.assertRaises(N.NotesError) as caught:
+            N.check_log_args({"title": token})
+        self.assertIn("looks like it contains a secret", caught.exception.message)
+        self.assertNotIn(token, caught.exception.message)
 
     def test_a_list_answers_four_text_fields_per_note(self):
         answer = {
