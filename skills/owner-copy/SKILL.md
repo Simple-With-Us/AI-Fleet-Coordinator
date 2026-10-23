@@ -25,7 +25,7 @@ Headings / titles / buttons: **Title Case**.  Body: sentence case.  Values that 
 
 Single space stays correct after non-terminal abbreviations (`e.g.`, `v1.2.3`).  Two trailing spaces at the **end** of a Markdown line are a hard break — a different rule.
 
-HTML/JSX/SwiftUI source: `\u00A0 ` or `SENTENCE_GAP`, never `&nbsp; `.  Do not "fix" `Congress.Trade`, `Socratic.Trade`, URLs, emails, or `U.S.`.
+HTML/JSX/SwiftUI source: `{"\u00A0 "}` in JSX text, `\u00A0 ` in JS/TS strings, `\u{00A0}` in Swift, or `SENTENCE_GAP`, never `&nbsp; `.  Do not "fix" `Congress.Trade`, `Socratic.Trade`, URLs, emails, or `U.S.`.
 
 Does not apply: identifiers, log lines, API enums, commit **subjects** that are fragments with no terminator.
 
