@@ -21,7 +21,7 @@ Binding for every paragraph a human reads — in-app UI, ASC description / promo
 
 Every message to Jay needs the gap, including a one-line progress note and an acknowledgement:  getting it right in artifacts while writing plain single spaces in the chat is still a failure (owner ruling 2026-10-20).  **Read the reply back before sending it** and check every `.`, `!` and `?` boundary.
 
-- **Every surface** (owner ruling 2026-10-23):  chat replies in any pane, Zulip, GitHub PR and issue text and review comments, Linear, Slack, commit messages, repo docs, skills, agent instructions and UI copy all take a real U+00A0 plus a normal space after each sentence.  Generate it in the shell rather than typing it.
+- **Every surface** (owner ruling 2026-10-23):  chat replies in any pane, Zulip, GitHub PR and issue text and review comments, Linear, commit messages, repo docs, skills, agent instructions and UI copy all take a real U+00A0 plus a normal space after each sentence.  Generate it in the shell rather than typing it.
 - **Never the `&nbsp;` entity.**  It shows up as literal text in squash-merge commits, plain-text email and many APIs.
 - **Never two plain ASCII spaces.**  Rendered surfaces collapse them to one.
 - Code, identifiers and machine-readable config never get a U+00A0.  If a surface strips it, leave the text as it is and report the surface;  do not switch to the entity.
