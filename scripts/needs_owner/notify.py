@@ -354,10 +354,16 @@ def _detail(result: Result) -> str:
     text = _board_text(result)
     if result.code == 4:
         names = _missing_names(text)
-        return "credential variable: %s" % ", ".join(names) if names else "credential variable: (not named)"
+        return (
+            "credential variable: %s" % ", ".join(names)
+            if names
+            else "credential variable: (not named)"
+        )
     if result.code == 6:
         preview = _credential_preview(text)
-        return "credential rejected: %s" % preview if preview else "credential rejected: (no preview)"
+        return (
+            "credential rejected: %s" % preview if preview else "credential rejected: (no preview)"
+        )
     parts = ["board write failed (code=%d)" % result.code]
     reason = _reason_token(text)
     if reason:
