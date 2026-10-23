@@ -250,6 +250,15 @@ def begin(
                     entry["route"] = clean_route
                     save(registry_db, data)
                 return {"status": "pending", "entry": dict(entry), "question": question_for(entry)}
+        for entry in data["entries"].values():
+            if entry["state"] == STATE_CONFLICT and _identity(entry) == (platform, scope, native):
+                # An unsettled conflict stays terminal until the owner settles it:  opening
+                # another question would re-ask every wake and grow the queue without bound.
+                return {
+                    "status": "conflict",
+                    "reason": entry.get("reason") or "",
+                    "entry": dict(entry),
+                }
         entry_id = "reg-" + secrets.token_hex(6)
         entry = {
             "entry_id": entry_id,
