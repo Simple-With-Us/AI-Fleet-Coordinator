@@ -126,11 +126,7 @@ def _is_version_check(pid: str) -> bool:
     if rc != 0:
         return False
     parts = text.strip().split()
-    return (
-        len(parts) == 2
-        and os.path.basename(parts[0]) == "xcodebuild"
-        and parts[1] == "-version"
-    )
+    return len(parts) == 2 and os.path.basename(parts[0]) == "xcodebuild" and parts[1] == "-version"
 
 
 def busy_processes() -> list[str]:
