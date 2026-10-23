@@ -31,8 +31,11 @@ class StopBridge(BridgeError):
     pass
 
 
-def digest(value):
-    return hashlib.sha256(value.encode()).hexdigest()
+def digest(value, key=None):
+    if key is None:
+        raise StopBridge("missing_hash_key")
+    derived = hmac.new(key.encode(), b"wa-id-hashes/1", hashlib.sha256).digest()
+    return hmac.new(derived, value.encode(), hashlib.sha256).hexdigest()
 
 
 def bounded_tree(value):
@@ -49,7 +52,7 @@ def bounded_tree(value):
             stack.extend((v, depth + 1) for v in item)
 
 
-def normalize(payload, offset):
+def normalize(payload, offset, hash_key):
     """Meta manual's boundary schema; preserves signed 64-bit offsets exactly."""
     bounded_tree(payload)
     try:
@@ -99,13 +102,13 @@ def normalize(payload, offset):
                 raise ValueError
             if not isinstance(m["type"], str) or not 0 < len(m["type"]) <= 64:
                 raise ValueError
-            text = m["text"]["body"] if m["type"] == "text" else None
+            text = m["text"]["body"] if m["type"] == "text" else m.get(m["type"], {}).get("caption")
             if text is not None and (not isinstance(text, str) or len(text) > 4096):
                 raise ValueError
             result.append(
                 {
-                    "id_hash": digest(m["id"]),
-                    "sender_hash": digest(m["from"]),
+                    "id_hash": digest(m["id"], hash_key),
+                    "sender_hash": digest(m["from"], hash_key),
                     "timestamp": int(m["timestamp"]),
                     "type": m["type"],
                     "text": text,
@@ -121,7 +124,11 @@ def normalize(payload, offset):
                 or not s["timestamp"].isdigit()
             ):
                 raise ValueError
-        return {"agent_hash": digest(entry["id"]), "messages": result, "next_offset": str(nxt)}
+        return {
+            "agent_hash": digest(entry["id"], hash_key),
+            "messages": result,
+            "next_offset": str(nxt),
+        }
     except (KeyError, TypeError, ValueError, AttributeError, IndexError):
         raise BridgeError("schema_error") from None
 
@@ -149,7 +156,7 @@ def request_json(url, headers, body=None):
             except (ValueError, RecursionError):
                 raise BridgeError("invalid_json") from None
     except urllib.error.HTTPError as error:
-        if error.code in (400, 401, 403, 404, 409):
+        if error.code in (400, 401, 403, 404, 409, 413):
             # Stand down on competing pollers or rejected credentials.  Never
             # recover by fetching another credential or fighting the poller.
             raise StopBridge(f"http_{error.code}") from None
@@ -180,6 +187,39 @@ class State:
             "CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK(id=1), offset TEXT NOT NULL)"
         )
         self.db.commit()
+
+    def begin_binding(self, signing_key, now, code=None):
+        import secrets
+
+        code = code or "JET-" + secrets.token_hex(8).upper()
+        with self.db:
+            self.db.execute(
+                "CREATE TABLE IF NOT EXISTS binding_window (id INTEGER PRIMARY KEY, code_hash TEXT, opened INTEGER, expires INTEGER, spent INTEGER)"
+            )
+            self.db.execute(
+                "INSERT OR REPLACE INTO binding_window VALUES(1,?,?,?,0)",
+                (digest(code, signing_key), int(now), int(now) + 600),
+            )
+        return code
+
+    def binding_window(self, code, signing_key, now):
+        row = self.db.execute(
+            "SELECT code_hash,opened,expires,spent FROM binding_window WHERE id=1"
+        ).fetchone()
+        if (
+            not row
+            or row[3]
+            or not row[1] <= now <= row[2]
+            or not hmac.compare_digest(row[0], digest(code, signing_key))
+        ):
+            raise StopBridge("binding_window_closed")
+        return row[1], row[2]
+
+    def spend_binding(self, code, signing_key, now):
+        window = self.binding_window(code, signing_key, now)
+        with self.db:
+            self.db.execute("UPDATE binding_window SET spent=1 WHERE id=1")
+        return window
 
     def offset(self):
         row = self.db.execute("SELECT offset FROM cursor WHERE id=1").fetchone()
@@ -221,7 +261,7 @@ class Bridge:
         )
         payload = self.request(poll_url, {"Authorization": f"Bearer {self.api_key}"})
         batch = (
-            normalize(payload, offset)
+            normalize(payload, offset, self.signing_key)
             if payload is not None
             else {
                 "agent_hash": os.environ.get("WA_AGENT_HASH_JET", ""),
@@ -229,9 +269,14 @@ class Bridge:
                 "next_offset": str(offset),
             }
         )
+        sender_hash = os.environ.get("WA_SENDER_HASH_JET", "")
+        if not sender_hash:
+            raise StopBridge("missing_owner_binding")
+        batch["messages"] = [m for m in batch["messages"] if m["sender_hash"] == sender_hash]
         body = json.dumps(
             {"contract": "wa-ingest/1", "seat": "JET", "sent_at": int(self.clock()), **batch},
             separators=(",", ":"),
+            ensure_ascii=False,
         ).encode()
         signature = hmac.new(self.signing_key.encode(), body, hashlib.sha256).hexdigest()
         ack = self.request(
@@ -257,6 +302,7 @@ def main():
         "WA_WORKER_URL",
         "WA_STATE_DIRECTORY",
         "WA_AGENT_HASH_JET",
+        "WA_SENDER_HASH_JET",
     )
     for name in names:
         if not os.environ.get(name):

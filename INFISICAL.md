@@ -370,7 +370,7 @@ Rotate both Workers from this one value, FleetLink first.  See
 
 ## WhatsApp Wake Bridge (AFC-477, Not Provisioned)
 
-The default-off implementation reads only its approved runtime environment.  Source of truth for a future bridge deployment is this project's `prod` `/jet`, separate from the generated root fleet-knobs block.  These entries document required names, not existing credentials or permission to provision them.
+The default-off implementation reads only its approved runtime environment.  Source of truth for a future bridge deployment is this project's `prod` `/jet`, except the distinct Operator key in Fleet-OPS `prod` `/zulip`, separate from the generated root fleet-knobs block.  These entries document required names, not existing credentials or permission to provision them.
 
 | Name | Consumer | Purpose |
 |---|---|---|
@@ -378,7 +378,8 @@ The default-off implementation reads only its approved runtime environment.  Sou
 | `WA_BRIDGE_HMAC_KEY_JET` | sole poller and Worker | authenticated WhatsApp ingestion, at least 32 characters |
 | `WA_OPERATOR_HMAC_KEY_JET` | Operator and Worker | independent content-free agent doorbells, never owner authorization |
 | `WA_OWNER_BINDING_JET` | Worker | verified binding JSON from supervised code plus Meta creator check |
-| `WA_AGENT_HASH_JET` | sole poller | verified agent hash for idle poll heartbeats |
+| `WA_AGENT_HASH_JET` | sole poller | keyed verified agent hash for idle poll heartbeats |
+| `WA_SENDER_HASH_JET` | sole poller | keyed verified sender filter before forwarding any text |
 | `WA_WORKER_URL` | sole poller and Operator client | approved HTTPS Worker origin |
 | `WA_STATE_DIRECTORY` | sole poller | approved private durable offset/lock directory |
 | `WHATSAPP_BRIDGE_ENABLED` | sole poller and Worker | exact `on` enables; absent defaults off |

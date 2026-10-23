@@ -43,11 +43,15 @@ def wake(base_url, signing_key, request_id, request=request_json):
         separators=(",", ":"),
     ).encode()
     signature = hmac.new(signing_key.strip().encode(), body, hashlib.sha256).hexdigest()
-    return request(
+    result = request(
         base_url.rstrip("/") + "/internal/wa-operator/JET",
         {"Content-Type": "application/json", "X-WA-Bridge-Signature": signature},
         body,
     )
+
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise BridgeError("operator_not_acknowledged")
+    return result
 
 
 if __name__ == "__main__":
@@ -56,6 +60,22 @@ if __name__ == "__main__":
             os.environ["WA_WORKER_URL"], os.environ["WA_OPERATOR_HMAC_KEY_JET"], sys.argv[1]
         )
         print(json.dumps(result))
-    except (BridgeError, KeyError, ValueError, IndexError):
+    except BridgeError as error:
+        code = str(error)
+        if code.startswith("rate_limited:"):
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "reason": "operator_busy",
+                        "retry_after_s": int(code.split(":")[1]),
+                    }
+                ),
+                file=sys.stderr,
+            )
+        else:
+            print('{"ok":false,"reason":"operator_not_acknowledged"}', file=sys.stderr)
+        sys.exit(1)
+    except (KeyError, ValueError, IndexError):
         print('{"ok":false,"reason":"operator_wake_failed"}', file=sys.stderr)
         sys.exit(1)

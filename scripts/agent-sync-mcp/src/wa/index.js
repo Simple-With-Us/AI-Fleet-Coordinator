@@ -3,21 +3,23 @@ import { subEventName, deliverEvent, eventIdFor } from "../events.js";
 const reply = (body, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 
 export async function deliverPending(gate, fetchFn, deadline = Date.now() + 10000) {
-  const pending = await gate.waClaim({});
-  if (!pending) return { delivered: 0 };
   const subs = (await gate.eventSubscriptions({})).filter(s => subEventName(s) === WA_EVENT);
-  let delivered = 0;
+  const destination = subs.map(s => `${s.id}:${s.refresh_before}`).join(",");
+  const pending = await gate.waClaim({ destination });
+  if (!pending) return { delivered: 0 };
+  let delivered = 0; let permanent = false;
   try {
     for (const sub of subs) {
-      const event = { name: WA_EVENT, eventId: await eventIdFor(pending.id, sub.id), timestamp: new Date().toISOString(), data: { source: pending.source, owner_authorized: pending.source === "authenticated_owner" }, cursor: null };
+      const event = { name: WA_EVENT, eventId: await eventIdFor(`${pending.id}:ring:${pending.ring ?? 0}`, sub.id), timestamp: new Date().toISOString(), data: { source: pending.source, owner_authorized: pending.source === "authenticated_owner" }, cursor: null };
       const result = await deliverEvent(fetchFn, sub, event, { deadline, isLive: () => gate.eventSubLive({ subId: sub.id }) });
       await gate.eventDeliveryResult({ subId: sub.id, outcome: result.outcome, status: result.status, attempts: result.attempts, wakeRef: "wa", messageId: null });
       if (result.outcome === "delivered") delivered++;
+      if (["rejected", "gone"].includes(result.outcome)) permanent = true;
     }
   } finally {
-    await gate.waSettle({ key: pending.key, keys: pending.keys, token: pending.token, delivered: delivered > 0 });
+    await gate.waSettle({ key: pending.key, keys: pending.keys, token: pending.token, delivered: delivered > 0, permanent, noSubscriber: !subs.length });
   }
-  return { delivered, pending: delivered === 0 };
+  return { delivered, pending: pending.source === "authenticated_owner" || delivered === 0 };
 }
 
 // Called only after routing to the private module.  Distinct keys prevent an
@@ -47,7 +49,7 @@ export async function serveWa(request, env, config, gate, fetchFn = fetch) {
   const checked = await verifyRequest(bytes, request.headers.get(WA_HEADER), rawKey, kind);
   if (checked.status !== 200) return reply({ ok: false }, checked.status);
   const result = kind === "ingest" ? await gate.waIngest({ body: checked.body, owner, known: [rawKey, ...otherKeys] }) : await gate.waOperator({ requestId: checked.body.request_id });
-  if (!result.ok) return reply(result, 403);
+  if (!result.ok) return result.reason === "operator_busy" ? Response.json(result, { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(result.retry_after_s) } }) : reply(result, 403);
   const delivery = config.whatsappWakeEnabled ? await deliverPending(gate, fetchFn) : { delivered: 0, disabled: true };
   return reply({ ...result, ...delivery });
 }

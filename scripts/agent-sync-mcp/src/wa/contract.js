@@ -1,9 +1,9 @@
 // AFC-477:  WhatsApp owns its event and signing domains.  No Zulip carrier.
 import { safeEqual } from "../policy.js";
-import { scanSecret } from "../contract.js";
+import { redactSecret } from "../contract.js";
 
 export const WA_EVENT = "whatsapp.message";
-export const WA_MAX_BODY = 1024 * 1024;
+export const WA_MAX_BODY = 8 * 1024 * 1024;
 export const WA_HEADER = "x-wa-bridge-signature";
 export const WA_TOOLS = [{
   name: "whatsapp_read",
@@ -45,13 +45,12 @@ export async function verifyRequest(bytes, given, key, kind, now = Date.now()) {
   } else {
     if (Object.keys(b).sort().join() !== "agent_hash,contract,messages,next_offset,seat,sent_at" || typeof b.agent_hash !== "string" || !/^[a-f0-9]{64}$/.test(b.agent_hash) || !Array.isArray(b.messages) || b.messages.length > 100 || typeof b.next_offset !== "string" || !/^(0|[1-9][0-9]{0,18})$/.test(b.next_offset) || BigInt(b.next_offset) > 9223372036854775807n) return { status: 400 };
     for (const m of b.messages) {
-      if (!m || Object.keys(m).sort().join() !== "id_hash,sender_hash,text,timestamp,type" || typeof m.id_hash !== "string" || !/^[a-f0-9]{64}$/.test(m.id_hash) || typeof m.sender_hash !== "string" || !/^[a-f0-9]{64}$/.test(m.sender_hash) || !Number.isSafeInteger(m.timestamp) || m.timestamp <= 0 || m.timestamp > Math.floor(now / 1000) + 60 || typeof m.type !== "string" || !m.type.length || m.type.length > 64 || !(m.text === null || (typeof m.text === "string" && [...m.text].length <= 4096)) || (m.type === "text" && m.text === null)) return { status: 400 };
+      if (!m || Object.keys(m).sort().join() !== "id_hash,sender_hash,text,timestamp,type" || typeof m.id_hash !== "string" || !/^[a-f0-9]{64}$/.test(m.id_hash) || typeof m.sender_hash !== "string" || !/^[a-f0-9]{64}$/.test(m.sender_hash) || !Number.isSafeInteger(m.timestamp) || m.timestamp <= 0 || typeof m.type !== "string" || !m.type.length || m.type.length > 64 || !(m.text === null || (typeof m.text === "string" && [...m.text].length <= 4096)) || (m.type === "text" && m.text === null)) return { status: 400 };
     }
   }
   return { status: 200, body: b };
 }
 export function redact(text, known = []) {
   if (text === null) return null;
-  const rule = scanSecret(text, known);
-  return rule ? `[redacted:${rule}]` : text;
+  return redactSecret(text, known);
 }

@@ -46,7 +46,7 @@ test("automatic owner wake; leading eyes retained silently; replay does not ring
   const b = batch([msg(1), msg(2, "👀 read later")]);
   const first = await request(s.gate, s.fetchFn, b);
   assert.equal(first.status, 200);
-  assert.deepEqual(await first.json(), { ok: true, processed: true, next_offset: b.next_offset, stored: 2, delivered: 1, pending: false });
+  assert.deepEqual(await first.json(), { ok: true, processed: true, next_offset: b.next_offset, stored: 2, delivered: 1, pending: true });
   assert.equal(s.calls.length, 1);
   assert.equal(s.calls[0].name, WA_EVENT);
   assert.deepEqual(s.calls[0].data, { source: "authenticated_owner", owner_authorized: true });
@@ -75,6 +75,8 @@ test("Operator request is idempotent and never owner authority; ingest key canno
   await request(s.gate, s.fetchFn, b, "operator");
   assert.equal(s.calls.length, 1);
   assert.deepEqual(s.calls[0].data, { source: "operator", owner_authorized: false });
+  const busy = await request(s.gate, s.fetchFn, { ...b, request_id: randomUUID() }, "operator");
+  assert.equal(busy.status, 429); assert.match(busy.headers.get("Retry-After"), /^[1-9][0-9]*$/);
   const bytes = new TextEncoder().encode(JSON.stringify(b));
   assert.equal((await verifyRequest(bytes, await signature(KEY, bytes), OPKEY, "operator")).status, 401);
   assert.equal((await request(s.gate, s.fetchFn, b, "operator", { WA_OPERATOR_HMAC_KEY_JET: KEY })).status, 404);
@@ -105,7 +107,7 @@ test("offline subscription keeps pending; restart and replay deliver once with s
 });
 
 test("callback failure retries use stable event ids and queue leases prevent concurrent duplicates", async () => {
-  const s = setup(); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  let now = NOW; const s = setup(() => now); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
   await s.gate.waIngest({ body: batch([msg(6), msg(7)]), owner });
   const pending = await s.gate.waClaim({});
   assert.equal(pending.keys.length, 2, "coalesce one batch into one turn");
@@ -114,6 +116,7 @@ test("callback failure retries use stable event ids and queue leases prevent con
   const ids = [];
   const failure = async (_url, init) => { ids.push(JSON.parse(init.body).eventId); return new Response("down", { status: 400 }); };
   await deliverPending(s.gate, failure);
+  now += wa.RERING_MS + 1;
   await deliverPending(s.gate, s.fetchFn);
   assert.equal(ids[0], s.calls[0].eventId);
 });
@@ -171,10 +174,70 @@ test("loaded signing credentials are redacted before storage and retention check
   const b = batch([msg(20, `credential ${KEY}`)]);
   await s.gate.waIngest({ body: b, owner, known: [KEY] });
   const item = (await s.gate.waRead({})).items[0];
-  assert.match(item.text, /^\[redacted:/);
+  assert.match(item.text, /^credential \[redacted:/);
   assert.ok(!JSON.stringify([...s.store.map]).includes(KEY));
   await s.gate.waRead({ ack_through: "1" });
   now += 86400001;
   await wa.sweep(s.store, now);
   assert.equal((await s.store.get("wa:message:00000000000000000001")).text, null);
+});
+
+test("flags refuse ingestion or suppress delivery independently; future item does not poison a batch", async () => {
+  const s = setup(); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  const b = batch([msg(30)]), bytes = new TextEncoder().encode(JSON.stringify(b));
+  const make = () => new Request("https://test/internal/wa-ingest/JET", { method: "POST", body: bytes, headers: { [WA_HEADER]: signatureValue } });
+  const signatureValue = await signature(KEY, bytes);
+  assert.equal((await serveWa(make(), env, { ...config, whatsappEnabled: false }, s.gate, s.fetchFn)).status, 404);
+  const held = await (await serveWa(make(), env, { ...config, whatsappWakeEnabled: false }, s.gate, s.fetchFn)).json();
+  assert.equal(held.stored, 1); assert.equal(held.delivered, 0); assert.equal(s.calls.length, 0);
+  const next = await request(s.gate, s.fetchFn, batch([msg(31, "future", { timestamp: Math.floor(Date.now()/1000) + 3600 }), msg(32)]));
+  assert.equal(next.status, 200); assert.equal((await next.json()).stored, 1);
+});
+
+test("full 100-message emoji batch exceeds old 1 MiB limit and is acknowledged", async () => {
+  const s = setup();
+  const b = batch(Array.from({ length: 100 }, (_, i) => msg(100 + i, "😀".repeat(4096))));
+  assert.ok(new TextEncoder().encode(JSON.stringify(b)).length > 1024 * 1024);
+  const result = await (await request(s.gate, s.fetchFn, b)).json();
+  assert.equal(result.processed, true); assert.equal(result.stored, 100);
+});
+
+test("silent prefix tolerates whitespace, invisible marks and non-text captions", async () => {
+  const s = setup(); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  await request(s.gate, s.fetchFn, batch([msg(40, " \n\u200b👀 later"), msg(41, "👀 photo", { type: "image" })]));
+  assert.equal(s.calls.length, 0); assert.equal((await s.gate.waRead({})).items.length, 2);
+});
+
+test("one outstanding owner ring survives delivery until read/ack, re-rings with a fresh event id", async () => {
+  let now = NOW; const s = setup(() => now); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  await request(s.gate, s.fetchFn, batch([msg(50)]));
+  const id = s.calls[0].eventId;
+  await request(s.gate, s.fetchFn, batch([msg(51)]));
+  assert.equal(s.calls.length, 1, "new messages coalesce while Jet's original ring is outstanding");
+  now += wa.RERING_MS + 1;
+  await deliverPending(s.gate, s.fetchFn);
+  assert.equal(s.calls.length, 2); assert.notEqual(s.calls[1].eventId, id);
+  await s.gate.waRead({}); await s.gate.waRead({ ack_through: "2" });
+  now += wa.RERING_MS + 1;
+  assert.equal(await s.gate.waClaim({}), null);
+});
+
+test("Operator flood receives explicit backpressure without daily quotas or permanent rejected callbacks", async () => {
+  let now = NOW; const s = setup(() => now); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+  await s.gate.waOperator({ requestId: randomUUID() });
+  const seen = [...s.store.map.keys()].length;
+  for (let i=0;i<30;i++) assert.equal((await s.gate.waOperator({ requestId: randomUUID() })).reason, "operator_busy");
+  assert.equal([...s.store.map.keys()].length, seen, "refused floods consume no ledger rows");
+  const reject = async () => new Response("no", { status: 400 });
+  for (let i=0;i<3;i++) { await deliverPending(s.gate, reject); now += wa.RERING_MS + 1; }
+  assert.equal(await s.gate.waClaim({ destination: (await s.gate.eventSubscriptions({})).filter(x=>x.name===WA_EVENT).map(x=>`${x.id}:${x.refresh_before}`).join(",") }), null);
+});
+
+test("35-day content-free ledgers expire; provider-age cutoff still prevents historical replay", async () => {
+  let now = NOW; const s = setup(() => now);
+  const b = batch([msg(60)]); await s.gate.waIngest({ body:b,owner });
+  now += 36*86400000;
+  while (await wa.sweep(s.store,now)) {}
+  assert.equal((await s.gate.waIngest({ body:b,owner })).stored,0);
+  assert.equal((await s.store.list({prefix:"wa:seen:"})).size,0);
 });

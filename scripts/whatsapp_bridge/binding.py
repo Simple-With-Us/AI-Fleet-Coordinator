@@ -14,13 +14,20 @@ from .bridge import StopBridge, digest, normalize, request_json
 
 
 def verify_candidate(
-    payload, expected_code, api_key, opened_at, expires_at, request=request_json, now=time.time
+    payload,
+    expected_code,
+    api_key,
+    opened_at,
+    expires_at,
+    request=request_json,
+    now=time.time,
+    hash_key=None,
 ):
     if not isinstance(expected_code, str) or not re.fullmatch(r"JET-[A-F0-9]{16}", expected_code):
         raise StopBridge("invalid_binding_code")
     if not opened_at <= now() <= expires_at or expires_at - opened_at > 600:
         raise StopBridge("binding_window_closed")
-    normalized = normalize(payload, 0)
+    normalized = normalize(payload, 0, hash_key)
     raw_messages = payload["entry"][0]["changes"][0]["value"].get("messages", [])
     candidates = [
         (raw, msg)
@@ -45,13 +52,15 @@ def verify_candidate(
         raise StopBridge("creator_not_verified")
     return {
         "agent_hash": normalized["agent_hash"],
-        "sender_hash": digest(raw["from"]),
+        "sender_hash": digest(raw["from"], hash_key),
         "cutoff": msg["timestamp"],
         "verified_via": "code+creator_check",
     }
 
 
-def bind_once(state, api_key, code, opened_at, expires_at, request=request_json, now=time.time):
+def bind_once(
+    state, api_key, code, opened_at, expires_at, request=request_json, now=time.time, hash_key=None
+):
     """Temporarily owns the same poller lock; never advances the live cursor."""
     import urllib.parse
 
@@ -59,7 +68,9 @@ def bind_once(state, api_key, code, opened_at, expires_at, request=request_json,
         raise StopBridge("invalid_binding_code")
     if not opened_at <= now() <= expires_at or not 0 < expires_at - opened_at <= 600:
         raise StopBridge("binding_window_closed")
+    state.binding_window(code, hash_key, now())
     offset = state.offset()
+    attempts = {}
     while now() <= expires_at:
         query = urllib.parse.urlencode({"offset": offset, "timeout": 25, "limit": 100})
         payload = request(
@@ -68,9 +79,43 @@ def bind_once(state, api_key, code, opened_at, expires_at, request=request_json,
         )
         if payload is None:
             continue
-        batch = normalize(payload, offset)
-        if any(m["type"] == "text" and m["text"] == code for m in batch["messages"]):
-            return verify_candidate(payload, code, api_key, opened_at, expires_at, request, now)
+        batch = normalize(payload, offset, hash_key)
+        raw_messages = payload["entry"][0]["changes"][0]["value"].get("messages", [])
+        for raw, message in zip(raw_messages, batch["messages"]):
+            text = message["text"]
+            sender = message["sender_hash"]
+            if (
+                message["type"] != "text"
+                or not re.fullmatch(r"JET-[A-F0-9]{16}", text or "")
+                or attempts.get(sender, 0) >= 3
+            ):
+                continue
+            if text != code:
+                attempts[sender] = attempts.get(sender, 0) + 1
+                continue
+            state.spend_binding(code, hash_key, now())
+            candidate = {
+                "object": "whatsapp_agent_platform",
+                "entry": [
+                    {
+                        "id": payload["entry"][0]["id"],
+                        "changes": [
+                            {
+                                "field": "messages",
+                                "value": {
+                                    "messaging_product": "whatsapp",
+                                    "messages": [raw],
+                                    "statuses": [],
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "next_offset": int(batch["next_offset"]),
+            }
+            return verify_candidate(
+                candidate, code, api_key, opened_at, expires_at, request, now, hash_key=hash_key
+            )
         offset = int(batch["next_offset"])
     raise StopBridge("binding_window_closed")
 
@@ -82,27 +127,27 @@ if __name__ == "__main__":
     from .bridge import BridgeError, State
 
     try:
-        names = (
-            "WHATSAPP_API_KEY",
-            "WA_STATE_DIRECTORY",
-            "WA_BINDING_CODE",
-            "WA_BINDING_OPENED_AT",
-            "WA_BINDING_EXPIRES_AT",
-        )
+        names = ("WHATSAPP_API_KEY", "WA_BRIDGE_HMAC_KEY_JET", "WA_STATE_DIRECTORY")
         if any(not os.environ.get(name) for name in names):
             raise StopBridge("binding_configuration_missing")
-        opened_at = int(os.environ["WA_BINDING_OPENED_AT"])
-        expires_at = int(os.environ["WA_BINDING_EXPIRES_AT"])
-        if not opened_at <= time.time() <= expires_at or not 0 < expires_at - opened_at <= 600:
-            raise StopBridge("binding_window_closed")
         state = State(os.environ["WA_STATE_DIRECTORY"])
         try:
+            opened_at = int(time.time())
+            key = os.environ["WA_BRIDGE_HMAC_KEY_JET"]
+            code = state.begin_binding(key, opened_at)
+            print(
+                "Send this one-time code in the intended WhatsApp Jet chat within ten minutes: "
+                + code,
+                file=sys.stderr,
+                flush=True,
+            )
             pin = bind_once(
                 state,
                 os.environ["WHATSAPP_API_KEY"],
-                os.environ["WA_BINDING_CODE"],
+                code,
                 opened_at,
-                expires_at,
+                opened_at + 600,
+                hash_key=key,
             )
             print(json.dumps(pin))
         finally:
