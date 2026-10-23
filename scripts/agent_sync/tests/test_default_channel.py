@@ -32,6 +32,31 @@ def _channels(text: str) -> set:
     return set(CHANNEL_TAG.findall(text))
 
 
+#: Every tree this repository renders a skill copy into.  The platform trees hold the skill
+#: under a ``skills`` directory, and the repo root tree holds it directly, so the root tree is
+#: not built the platform way:  that path resolves to nothing and the tree is then skipped
+#: without saying so, which is the failure this list exists to catch.
+RENDERED_TREES = (
+    ".claude",
+    ".codex",
+    ".config/muse",
+    ".cursor",
+    ".fx",
+    ".gemini",
+    ".grok",
+    ".clutch/dsh",
+    ".minimax",
+    "skills",
+)
+
+
+def _rendered_copy(repo_root: pathlib.Path, tree: str, name: str) -> pathlib.Path:
+    """The rendered copy of a skill in one tree, or a path that does not exist."""
+    if tree == "skills":
+        return repo_root / "skills" / name / "SKILL.md"
+    return repo_root / tree / "skills" / name / "SKILL.md"
+
+
 def _without_comments(text: str, suffix: str) -> str:
     """The file's text with its comments taken out.
 
@@ -217,11 +242,47 @@ class DefaultChannelTests(unittest.TestCase):
         # Every tree a seat loads, not just the ones the generator happens to write first:  the
         # muse, the dsh and the plain skills trees are loaded by seats too, so a rename that
         # missed one of them would leave that seat without a channel.
-        for tree in (".claude", ".codex", ".config/muse", ".cursor", ".fx", ".gemini", ".grok",
-                     ".clutch/dsh", ".minimax", "skills"):
-            path = repo_root / tree / "skills" / "session-start" / "SKILL.md"
+        for tree in RENDERED_TREES:
+            path = _rendered_copy(repo_root, tree, "session-start")
             if path.exists():
                 self.assertIn(live, path.read_text(), "%s does not name the live channel" % tree)
+
+    def test_every_rendered_tree_matches_the_channel_of_its_canonical(self) -> None:
+        # The by-seat copies are checked against their canonical above.  The platform trees and
+        # the repo root tree carry the same content, so the same equality has to hold for them:
+        # a rendered copy that lost a channel its canonical names leaves the seat that reads it
+        # without a channel to post in, and the suite stayed green while it happened.
+        repo_root = AGENT_SYNC_DIR.parents[1]
+        pack = repo_root / "docs" / "fleet-skills"
+        drifted = []
+        compared = {tree: 0 for tree in RENDERED_TREES}
+        for canonical in sorted(pack.glob("*/SKILL.md")):
+            name = canonical.parent.name
+            source_channels = _channels(canonical.read_text())
+            for tree in RENDERED_TREES:
+                rendered = _rendered_copy(repo_root, tree, name)
+                if not rendered.exists():
+                    continue
+                compared[tree] += 1
+                rendered_channels = _channels(rendered.read_text())
+                extra = rendered_channels - source_channels
+                missing = source_channels - rendered_channels
+                if extra or missing:
+                    drifted.append(
+                        "%s/%s does not match its canonical:  extra %s, missing %s"
+                        % (
+                            tree,
+                            name,
+                            ", ".join(sorted(extra)) or "none",
+                            ", ".join(sorted(missing)) or "none",
+                        )
+                    )
+        # A tree whose path resolves to nothing would compare zero copies and still pass, so
+        # every tree has to contribute:  that is the check that catches a tree the path shape
+        # silently skipped.
+        skipped = sorted(tree for tree, count in compared.items() if not count)
+        self.assertEqual(skipped, [], "no rendered copy was compared for:  %s" % ", ".join(skipped))
+        self.assertEqual(drifted, [], ";  ".join(drifted))
 
     def test_no_onboarding_prompt_names_the_old_channel(self) -> None:
         # An onboarding prompt is the first thing a seat reads, so a prompt that names the old
