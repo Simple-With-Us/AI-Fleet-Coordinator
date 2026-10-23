@@ -177,6 +177,14 @@ class MockLinear:
             "app:agent-bar",
         ):
             self._label(name, None)
+        # Workspace users, mirroring the fleet's Linear bot seats.  Names differ
+        # in case from the claim labels on purpose:  a seat resolves to its user
+        # by name, and the deactivated one must never be assigned to anything.
+        self.users: dict = {}
+        for n in ("Codex", "Claude", "Cursor", "GB-Plumber", "GB-Deployer"):
+            self.users[n] = {"id": f"user-{n.lower()}", "name": n, "displayName": n, "active": True}
+        self.users["GB-Retired"] = {"id": "user-gb-retired", "name": "GB-Retired",
+                                    "displayName": "GB-Retired", "active": False}
         self.issues: dict = {}
         self.comments: dict = {}
         self.relations: list = []
@@ -522,6 +530,10 @@ class MockLinear:
                 for lb in self.labels.values()
             ]
             return {"issueLabels": self.page(nodes, v.get("first"), v.get("after"))}, None
+        if op == "BoardUsers":
+            nodes = [{"id": u["id"], "name": u["name"], "displayName": u["displayName"],
+                      "active": u["active"]} for u in self.users.values()]
+            return {"users": self.page(nodes, v.get("first"), v.get("after"))}, None
         if op == "BoardIssue":
             iss = self.find(v["id"])
             if not iss:
@@ -619,6 +631,14 @@ class MockLinear:
                     return {"issueUpdate": None}, [{"message": f"label {lid} not found"}]
                 if lid not in iss["labels"]:
                     iss["labels"].append(lid)
+            if "assigneeId" in inp:
+                uid = inp["assigneeId"]
+                if uid is not None:
+                    # Linear only accepts an existing, active user here.
+                    m = next((u for u in self.users.values() if u["id"] == uid), None)
+                    if not m or not m["active"]:
+                        return {"issueUpdate": None}, [{"message": f"assignee {uid} not found or deactivated"}]
+                iss["assignee"] = uid
             groups = [self.labels[x]["parent"] for x in iss["labels"] if self.labels[x]["parent"]]
             if len(groups) != len(set(groups)):
                 self.violations.append("two labels from one exclusive group")
@@ -3549,6 +3569,74 @@ class TokenBlobTests(BoardTest):
         self.board("list", extra=pair)
         self.assertEqual(self.mock.mints, 2)
         self.assertEqual(self.sets(), [])
+
+
+class OwnershipTests(BoardTest):
+    """Smart ownership:  with LINEAR_BOARD_OWNER=1 a claim also mirrors onto the seat's own
+    Linear user, so the board's assignee column agrees with the claim label, and releasing or
+    closing clears it again.  The label stays the record of who holds an issue, and a seat with
+    no Linear user of its own still claims:  it simply owns nothing."""
+
+    OWNED = {"LINEAR_BOARD_OWNER": "1"}
+
+    def todo_issue(self, title="Ownership probe"):
+        return self.mock.add_issue(str(uuid.uuid4()), "AFC", "Todo", title, 3, ["Kind/agent-report"])
+
+    def test_by_default_a_claim_stays_a_label_and_writes_no_assignee(self):
+        """The frozen contract:  the seat rides in the label and the tag line, not a Linear field."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE")
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+
+    def test_claim_mirrors_ownership_onto_the_seats_linear_user(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)    # AGENT_SEAT=CLAUDE
+        inp = self.mock.updates[-1][1]
+        self.assertEqual(inp.get("assigneeId"), "user-claude")       # seat CLAUDE -> user Claude
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))      # the label is still the record
+
+    def test_a_seat_with_no_linear_user_still_claims_and_assigns_nobody(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "SENTRY", extra=dict(self.OWNED, AGENT_SEAT="SENTRY"))
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:SENTRY", self.label_names(iss))
+
+    def test_a_deactivated_seat_is_never_assigned(self):
+        """A seat Linear has deactivated owns nothing:  the label is kept, the assignee is not."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "GB-RETIRED", extra=dict(self.OWNED, AGENT_SEAT="GB-RETIRED"))
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:GB-RETIRED", self.label_names(iss))
+
+    def test_a_steal_moves_the_owner_with_the_claim(self):
+        iss = self.mock.add_issue(str(uuid.uuid4()), "AFC", "In Progress", "Held", 3,
+                                  ["Kind/agent-report", "seat:CODEX", "claimed:CODEX"])
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", "--steal", "--reason", "CODEX is capped out",
+                   extra=self.OWNED)
+        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude")
+        self.assertEqual(iss.get("assignee"), "user-claude")
+
+    def test_closing_clears_the_owner(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.board("status", iss["identifier"], "completed", extra=self.OWNED)
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+
+    def test_releasing_the_claim_clears_the_owner(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.board("status", iss["identifier"], "open", extra=self.OWNED)
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+
+    def test_closing_by_default_writes_no_assignee_at_all(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE")
+        self.board("status", iss["identifier"], "completed")
+        self.assertEqual(sorted(self.mock.updates[-1][1]), ["stateId"])
 
 
 if __name__ == "__main__":

@@ -1384,6 +1384,12 @@ Q_LABELS = """query BoardLabels($first: Int!, $after: String) {
     nodes { id name isGroup parent { name } team { key } }
   }
 }"""
+Q_USERS = """query BoardUsers($first: Int!, $after: String) {
+  users(first: $first, after: $after) {
+    pageInfo { hasNextPage endCursor }
+    nodes { id name displayName active }
+  }
+}"""
 Q_WHOAMI = """query BoardWhoami {
   viewer { id name displayName email app }
   organization { name urlKey }
@@ -1436,6 +1442,10 @@ class Workspace:
         # flat label (needs-owner and the rest) is looked up.  A team-scoped label of the same name can
         # only be put on that team's issues, so it never counts.
         self.flat: dict = {}
+        # Active workspace users by name, so a claim can mirror itself onto the
+        # seat's own Linear user (the smart ownership pattern).  A seat with no
+        # matching user is not an error:  the claim label is still the record.
+        self.users: dict = {}
         self.fresh = False
         self._load()
 
@@ -1444,10 +1454,13 @@ class Workspace:
 
     def _load(self, refresh: bool = False) -> None:
         d = None if refresh else read_json_file(self._path())
-        # A cache written before flat labels existed has no "flat" key:  it is stale, read Linear once.
+        # A cache written before flat labels existed has no "flat" key, and one
+        # written before seat users existed has no "users" key:  either is stale,
+        # read Linear once.
         if d and d.get("api") == self.L.url and time.time() - float(d.get("at") or 0) < self.TTL \
-                and "flat" in d:
+                and "flat" in d and "users" in d:
             self.teams, self.labels, self.flat = d.get("teams") or {}, d.get("labels") or {}, d.get("flat") or {}
+            self.users = d.get("users") or {}
             return
         teams = {}
         for t in self.L.paginate(Q_TEAMS, {}, ("teams",), 50):
@@ -1461,9 +1474,15 @@ class Workspace:
             if not lb.get("team") and not lb.get("parent") and not lb.get("isGroup"):
                 flat.setdefault(str(lb["name"]).lower(), lb["id"])
         labels = dict(team_labels, **workspace_labels)  # a workspace label wins over a team label
-        self.teams, self.labels, self.flat, self.fresh = teams, labels, flat, True
+        users: dict = {}
+        for u in self.L.paginate(Q_USERS, {}, ("users",), 250):
+            # A deactivated seat must never be written onto an issue:  its
+            # user stays visible in Linear but no longer owns work.
+            if u.get("active", True) and u.get("name"):
+                users.setdefault(str(u["name"]), u["id"])
+        self.teams, self.labels, self.flat, self.users, self.fresh = teams, labels, flat, users, True
         write_json_file(self._path(), {"api": self.L.url, "at": time.time(), "teams": teams, "labels": labels,
-                                       "flat": flat})
+                                       "flat": flat, "users": users})
 
     def team(self, key: str) -> dict:
         if key not in self.teams and not self.fresh:
@@ -1529,6 +1548,21 @@ class Workspace:
             d.setdefault("labels", {}).setdefault(name, lid)
             write_json_file(self._path(), d)
         return lid
+
+    def user_id(self, seat: str) -> str | None:
+        """The Linear user id for `seat`, or None when the workspace has no
+        active user by that name.  Ownership is an enhancement on top of the
+        claim label, never its replacement:  a seat that has no user of its own
+        keeps working exactly as before, so this returns None instead of dying."""
+        if seat not in self.users and not self.fresh:
+            self._load(refresh=True)
+        if seat in self.users:
+            return self.users[seat]
+        lowered = seat.strip().lower()
+        for name, uid in self.users.items():
+            if name.strip().lower() == lowered:
+                return uid
+        return None
 
 
 # ----------------------------------------------------------------- ids
@@ -2240,11 +2274,22 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     inp = {"stateId": ws.state_id(team, "In Progress"),
            "addedLabelIds": [x for x in added if x and x not in current.values()],
            "removedLabelIds": removed}
+    # Smart ownership:  mirror the claim onto the seat's own Linear user, so the
+    # board's assignee column agrees with the claim label.  Same write, and only
+    # when the workspace really has that seat.  Off by default:  the design keeps
+    # the seat in the label and the tag line, and Linear identity fields wait on
+    # pilot gates 2 and 4 (README, "Not built yet"), so LINEAR_BOARD_OWNER=1 opts in.
+    owner = ws.user_id(by) if env("LINEAR_BOARD_OWNER") == "1" else None
+    if owner:
+        inp["assigneeId"] = owner
     try:
         L.call(M_UPDATE, {"id": n["id"], "input": inp})
     except GqlError as e:
         L.fail(f"Linear refused the claim: {e}")
-    L.landed.append(f"{n['identifier']} is In Progress with {by}'s claim label")
+    landed = f"{n['identifier']} is In Progress with {by}'s claim label"
+    if env("LINEAR_BOARD_OWNER") == "1":
+        landed += f" and assignee {by}" if owner else " (no Linear user for the seat)"
+    L.landed.append(landed)
     text = "CLAIMED"
     if stolen:
         text += f" from {', '.join(stolen)}: {a.reason.strip()}"
@@ -2355,11 +2400,18 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
                     if label_key(x).startswith(CLAIM_PREFIX)]
         if released:
             inp["removedLabelIds"] = released
+        # Releasing a claim releases the owner with it, whenever ownership is
+        # mirrored at all (LINEAR_BOARD_OWNER=1;  see `claim`).
+        if env("LINEAR_BOARD_OWNER") == "1":
+            inp["assigneeId"] = None
     elif value in CLOSING_STATUSES:
         # Closed:  the question was answered or the ask handled, so it stops waiting on the owner.
         drop = closing_label_ids(n)
         if drop:
             inp["removedLabelIds"] = drop
+        # "Clear on Done":  a closed issue owns nothing, whoever held it.
+        if env("LINEAR_BOARD_OWNER") == "1":
+            inp["assigneeId"] = None
     try:
         L.call(M_UPDATE, {"id": n["id"], "input": inp})
     except GqlError as e:
