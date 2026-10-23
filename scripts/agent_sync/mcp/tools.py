@@ -907,12 +907,14 @@ class Tools:
         except (IndexError, ValueError, KeyError, TypeError):
             raise ToolError("internal", "the post command printed no message id") from None
 
-    @staticmethod
-    def _channel(value: str) -> str:
+    def _channel(self, value: str) -> str:
         try:
-            return CLI._channel(value)
+            channel = CLI._channel(value)
         except argparse.ArgumentTypeError as exc:
             raise ToolError("invalid_argument", "argument 'channel':  %s" % exc) from None
+        # A retired channel name means the channel the fleet reads, so a tool call that
+        # still names it lands in the live channel and not in the tombstone stream.
+        return Z.resolve_channel(channel, self.agent.rt.env)
 
     @staticmethod
     def _topic(value: str) -> str:
