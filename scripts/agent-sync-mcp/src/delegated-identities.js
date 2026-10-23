@@ -138,16 +138,17 @@ function decorate(spec, allowed, seat) {
 const LIST_CACHE = new Map();
 
 /** The tools/list a grant for `seat` gets:  every hosted tool with its identity enum, then identities after whoami. */
-export function toolListFor(seat) {
-  const cached = LIST_CACHE.get(seat);
+export function toolListFor(seat, config = {}) {
+  const cacheKey = `${seat}:${config.whatsappEnabled === true}`;
+  const cached = LIST_CACHE.get(cacheKey);
   if (cached) return cached;
   const allowed = allowedIdentities(seat);
-  const decorated = HOSTED_TOOL_LIST.map((spec) => decorate(spec, allowed, seat));
+  const decorated = HOSTED_TOOL_LIST.filter(spec => !spec.name.startsWith("whatsapp_") || (seat === "JET" && config.whatsappEnabled === true)).map((spec) => decorate(spec, allowed, seat));
   const at = decorated.findIndex((spec) => spec.name === "whoami") + 1;
   const list = Object.freeze([...decorated.slice(0, at), IDENTITIES_SPEC, decorate(GUIDE_SPEC, allowed, seat), ...decorated.slice(at)]);
   const byName = Object.freeze(Object.fromEntries(list.map((spec) => [spec.name, spec])));
   const entry = Object.freeze({ list, byName });
-  LIST_CACHE.set(seat, entry);
+  LIST_CACHE.set(cacheKey, entry);
   return entry;
 }
 
@@ -168,7 +169,7 @@ export class IdentityRouter {
     this.createIdentity = createIdentity;
     this.identityStatus = identityStatus;
     this.allowed = allowedIdentities(this.seat);
-    const { list, byName } = toolListFor(this.seat);
+    const { list, byName } = toolListFor(this.seat, callerTools.config);
     this.toolList = list;
     this.toolsByName = byName;
     this.built = new Map();

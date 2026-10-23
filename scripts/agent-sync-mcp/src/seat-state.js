@@ -8,6 +8,7 @@
 // between the read and the write).  Tests hand it a Map.
 // Spec:  docs/protocols/agent-sync-mcp.md sections 3.4, 3.5 and 3.10.
 
+import { WA_EVENT } from "./wa/contract.js";
 import { ARM_WINDOW_MS, GRANT_MAX_AGE_MS, PROPS_PHASE } from "./config.js";
 import { scanSecret } from "./contract.js";
 import { EVENT_NAME, SPIKE_EVENT_NAME, subEventName } from "./events.js";
@@ -732,6 +733,21 @@ async function persistDropped(store, subs, dropped, now) {
 /** The live subscriptions for one event name (AFC-477:  the cap and the fan-out are per name). */
 const subsNamed = (subs, name) => Object.values(subs).filter((sub) => subEventName(sub) === name);
 
+function waConversation(subs, name, url) {
+  const wa = subsNamed(subs, WA_EVENT);
+  if (name === WA_EVENT) {
+    const zulip = subsNamed(subs, EVENT_NAME);
+    return zulip.length === 1 && zulip[0].url === url;
+  }
+  return name !== EVENT_NAME || wa.every(sub => sub.url === url);
+}
+
+export async function eventSubscriptions(store, {}, now = Date.now()) {
+  const { subs, dropped } = await liveSubs(store, now);
+  await persistDropped(store, subs, dropped, now);
+  return Object.values(subs);
+}
+
 /**
  * Is there room for subscription `id` of event `name`?  It exists already (a
  * refresh), or the seat is under the cap for that name.  With a cap of one, a
@@ -739,9 +755,10 @@ const subsNamed = (subs, name) => Object.values(subs).filter((sub) => subEventNa
  * (`until` says when the live one lapses).  Another event's subscription
  * never counts.
  */
-export async function eventSubRoom(store, { id, max = 1, name = EVENT_NAME }, now = Date.now()) {
+export async function eventSubRoom(store, { id, max = 1, name = EVENT_NAME, url }, now = Date.now()) {
   const { subs, dropped } = await liveSubs(store, now);
   await persistDropped(store, subs, dropped, now);
+  if (!waConversation(subs, name, url)) return { ok: false, reason: "conversation" };
   const same = subsNamed(subs, name);
   if (Object.hasOwn(subs, id) || same.length < max) return { ok: true };
   return { ok: false, until: Math.min(...same.map((sub) => sub.refresh_before)) };
@@ -756,6 +773,7 @@ export async function eventSubRoom(store, { id, max = 1, name = EVENT_NAME }, no
 export async function eventSubUpsert(store, { sub, ttlMs, rotationMs = 10 * MINUTE_MS, max = 1 }, now = Date.now()) {
   const { subs, dropped } = await liveSubs(store, now);
   await persistDropped(store, subs, dropped, now);
+  if (!waConversation(subs, subEventName(sub), sub.url)) return { ok: false, reason: "conversation" };
   const prior = subs[sub.id];
   if (!prior && subsNamed(subs, subEventName(sub)).length >= max) {
     await audit(store, { event: "event_subscribe_refused", sub_ref: subRef(sub.id), reason: "cap" }, now);
@@ -1032,8 +1050,8 @@ export function memoryStore() {
     async delete(keys) {
       for (const key of Array.isArray(keys) ? keys : [keys]) map.delete(key);
     },
-    async list({ prefix = "", end, limit = 1000 } = {}) {
-      return new Map([...map.entries()].filter(([key]) => key.startsWith(prefix) && (!end || key < end))
+    async list({ prefix = "", start, end, limit = 1000 } = {}) {
+      return new Map([...map.entries()].filter(([key]) => key.startsWith(prefix) && (!start || key >= start) && (!end || key < end))
         .sort(([a], [b]) => a.localeCompare(b)).slice(0, limit).map(([key, value]) => [key, structuredClone(value)]));
     },
     transaction(callback) {

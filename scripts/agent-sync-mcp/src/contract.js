@@ -354,6 +354,17 @@ export function scanSecret(text, known = []) {
   return null;
 }
 
+/** Redact secret matches without discarding surrounding owner text. */
+export function redactSecret(text, known = []) {
+  let out = text.replace(/-----BEGIN ([A-Z ]*PRIVATE KEY)-----[\s\S]*?(?:-----END \1-----|$)/g, "[redacted:private key block]");
+  for (const value of known) if (value && value.length >= 8) out = out.split(value).join("[redacted:loaded credential]");
+  for (const [kind, pattern] of SECRET_PATTERNS) {
+    const all = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : pattern.flags + "g");
+    out = out.replace(all, () => `[redacted:${kind}]`);
+  }
+  return out.replace(ZULIP_SHAPED_RE, token => /[A-Z]/.test(token) && /[a-z]/.test(token) && /[0-9]/.test(token) ? "[redacted:Zulip-shaped key]" : token);
+}
+
 /** The key and its base64 Basic-auth token, for `known`. */
 export function basicForms(email, key) {
   return [key, btoa(String.fromCharCode(...new TextEncoder().encode(`${email}:${key}`)))];
