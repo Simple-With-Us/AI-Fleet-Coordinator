@@ -172,14 +172,18 @@ def question_for(entry: Mapping[str, Any]) -> str:
 
 
 def _route(route: Mapping[str, Any] | None) -> dict[str, str] | None:
-    """The chat's Zulip channel/topic as a clean pair, or None when no route is known."""
+    """The chat's Zulip channel/topic as a clean pair, or None when no route is known.
+
+    Channel and topic are user-controlled text (topic names are), so they are scanned
+    like every other caller-supplied field before one is stored.
+    """
     if not isinstance(route, Mapping):
         return None
-    channel = str(route.get("channel") or "").strip()
-    topic = str(route.get("topic") or "").strip()
+    channel = _text(str(route.get("channel") or ""), "route.channel", MAX_LABEL)
+    topic = _text(str(route.get("topic") or ""), "route.topic", MAX_LABEL)
     if not channel or not topic:
         return None
-    return {"channel": channel[:MAX_LABEL], "topic": topic[:MAX_LABEL]}
+    return {"channel": channel, "topic": topic}
 
 
 def _refresh_route(
@@ -241,6 +245,10 @@ def retarget_routes(
     route matches the old channel/topic (casefolded) move;  a route_lost entry whose
     stale route matches is revived, because the event proves where its question went.
     """
+    # The renamed-to names arrive from a Zulip event, but topic names are still
+    # user-controlled text:  scan before one is stored, same as every other field.
+    new_channel = _text(new_channel, "route.channel", MAX_LABEL)
+    new_topic = _text(new_topic, "route.topic", MAX_LABEL)
     old_key = (old_channel.casefold(), old_topic.casefold())
     seat_key = seat.casefold()
     moved: list[dict[str, Any]] = []
@@ -260,10 +268,7 @@ def retarget_routes(
             )
             if route_key != old_key:
                 continue
-            entry["route"] = {
-                "channel": new_channel[:MAX_LABEL],
-                "topic": new_topic[:MAX_LABEL],
-            }
+            entry["route"] = {"channel": new_channel, "topic": new_topic}
             entry.pop("route_lost", None)
             moved.append(dict(entry))
         if moved:

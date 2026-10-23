@@ -257,10 +257,6 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(cells[1], "A")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class RegistrationsForNativeIdTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -273,6 +269,14 @@ class RegistrationsForNativeIdTest(unittest.TestCase):
 
     def test_unlettered_session_is_an_empty_answer(self):
         self.assertEqual(R.registrations_for_native_id(self.db, "zulip", "native-9"), [])
+
+    def test_an_unreadable_registry_names_its_path(self):
+        bad = os.path.join(self.tmp.name, "not-a-registry.sqlite3")
+        with open(bad, "w") as handle:
+            handle.write("this is not sqlite")
+        with self.assertRaises(R.RegistryUnavailable) as raised:
+            R.registrations_for_native_id(bad, "zulip", "native-9")
+        self.assertIn(bad, str(raised.exception))
 
     def test_finds_the_session_at_each_of_its_locations(self):
         self.reg.resolve_or_register(ident(host="mac-1", native="native-7"))
@@ -309,3 +313,7 @@ class RegistrationsForNativeIdTest(unittest.TestCase):
         made = self.reg.resolve_or_register(ident(native="native-7"))
         self.assertTrue(self.reg.close(made["record_id"], actor="MM", source="test"))
         self.assertEqual(R.registrations_for_native_id(self.db, "zulip", "native-7"), [])
+
+
+if __name__ == "__main__":
+    unittest.main()

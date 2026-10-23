@@ -202,7 +202,15 @@ class OperatorRegistrationTest(unittest.TestCase):
 
     def test_secret_shaped_text_is_refused_and_nothing_is_stored(self):
         with self.assertRaises(OREG.RegistrationRefused):
-            self.begin(requester="api_key=sk-abcdef0123456789abcdef0123456789")
+            self.begin(requester="api_key=sk-" + "abcdef0123456789" * 2)
+        self.assertEqual(OREG.pending_entries(self.db), [])
+
+    def test_a_secret_shaped_route_is_refused_and_nothing_is_stored(self):
+        with self.assertRaises(OREG.RegistrationRefused):
+            self.begin(
+                route={"channel": "agent-sync", "topic": "sk-" + "abcdef0123456789" * 2},
+                route_topics=[{"channel": "agent-sync", "topic": "t", "expires": None}],
+            )
         self.assertEqual(OREG.pending_entries(self.db), [])
 
     def test_a_bad_session_id_is_refused(self):

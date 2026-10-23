@@ -4060,6 +4060,11 @@ class Daemon:
                 lease = L.load_lease(paths, lease_id)
                 if str(lease.get("session_id") or "") != session_id:
                     continue
+                alive, _why = self.lease_alive(paths, lease)
+                if not alive:
+                    # A stale or recycled lease must not route a question to a dead or
+                    # unrelated session (same liveness discipline as the wake path).
+                    continue
                 live = []
                 for entry in lease.get("topics") or []:
                     if not isinstance(entry, dict):
@@ -4113,18 +4118,21 @@ class Daemon:
     def maybe_ask_registrations(
         self, rows: list[dict[str, Any]], labels: dict[str, tuple[str, str]]
     ) -> None:
-        """Ask the owner for the location of each unlettered active chat.
+        """Ask each unlettered active chat for its location in its own topic.
 
         Owner direction, Oct 23 2026:  when the Operator receives a session/chat id, it asks
         the location (mac, server, cloud) before the session letter is assigned.  This is
         the receipt point:  the catalog surfaced the session id, the registry has no letter
-        for it, so the Operator asks.  One question per session (the queue dedupes), one DM
+        for it, so the Operator asks.  One question per session (the queue dedupes), one topic post
         per question (the notified stamp), and a failure here never breaks the wake that
         found the chats - the worst case is a chat that stays unlettered, which is today.
         """
         try:
             owner = int(getattr(self.config, "owner_user_id", 0) or 0)
-            if not owner or not self.operator_dm_allowed(owner):
+            # The question posts in the chat's own topic, never a DM:  owner DM permission
+            # must not gate this flow.  The owner id is still required - it is one of the
+            # two senders allowed to answer.
+            if not owner:
                 return
             db = self._registration_db()
             for entry in OREG.sweep(db):

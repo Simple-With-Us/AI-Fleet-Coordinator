@@ -755,7 +755,9 @@ def registrations_for_native_id(
     try:
         registry = SessionRegistry(str(db_path), read_only=True)
     except Exception as exc:
-        raise RegistryUnavailable(type(exc).__name__) from exc
+        raise RegistryUnavailable(
+            "the registry %s is unavailable (%s)" % (db_path, type(exc).__name__)
+        ) from exc
     try:
         rows = registry._conn.execute(
             "SELECT s.verified_host AS verified_host, s.seat AS seat, s.state AS state,"
@@ -768,7 +770,9 @@ def registrations_for_native_id(
             (namespace, namespace, native),
         ).fetchall()
     except Exception as exc:
-        raise RegistryUnavailable(type(exc).__name__) from exc
+        raise RegistryUnavailable(
+            "the registry %s is unavailable (%s)" % (db_path, type(exc).__name__)
+        ) from exc
     finally:
         try:
             registry.close_db()

@@ -1882,6 +1882,20 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertEqual(pending[0].get("route"), {"channel": "agent-sync", "topic": "AFC Work"})
         self.assertTrue(pending[0].get("notified_at"))
 
+    def test_a_dead_chat_lease_gives_no_route(self):
+        # A lease whose pid is gone must not route the question (review finding:
+        # cached leases need liveness checks).
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        paths = self.seat_paths("CLAUDE")
+        lease = D.L.load_lease(paths, "L1")
+        lease["pid"] = 999999937  # no such process
+        D.L.write_json(paths.lease("L1"), lease)
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 0)
+        self.assertNotIn("route", D.OREG.pending_entries(db)[0])
+
     def test_a_chat_with_no_known_route_stays_pending_and_recovers(self):
         daemon = self.daemon()
         db = self._registry(daemon)

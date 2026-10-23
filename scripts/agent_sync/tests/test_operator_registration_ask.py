@@ -147,7 +147,7 @@ class LocationQuestionTests(unittest.TestCase):
         self.assertEqual(self.topic_posts(), [])
 
     def test_a_secret_shaped_question_is_withheld(self) -> None:
-        out = self.send(question="api_key=sk-abcdef0123456789abcdef0123456789 (ref %s)" % ENTRY["entry_id"])
+        out = self.send(question="api_key=sk-" + "abcdef0123456789" * 2 + " (ref %s)" % ENTRY["entry_id"])
         self.assertEqual(out["status"], "refused")
         self.assertEqual(self.topic_posts(), [])
 
