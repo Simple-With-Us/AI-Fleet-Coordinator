@@ -12,7 +12,7 @@ import { SEAT_TAG_EXPECTATIONS } from "../src/contract.js";
 import { IdentityRouter, allowedIdentities, toolListFor } from "../src/delegated-identities.js";
 import { UnknownTool } from "../src/hosted-tools.js";
 import { adminSeatLabel, consentPage } from "../src/pages.js";
-import { ROOT, testEnv } from "./helpers.mjs";
+import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
 
 test("JET is the wake-only seat;  JET-CHAT is a full seat on the same bot", () => {
   assert.deepEqual([...EVENTS_ONLY_SEATS], ["JET"]);
@@ -95,6 +95,17 @@ test("the key installer provisions JET-CHAT from Jet's Infisical entry with the 
   const installer = readFileSync(path.join(ROOT, "install_seat_key.py"), "utf8");
   assert.match(installer, /"JET-CHAT": \("ZULIP_JET", "ZULIP_KEY_JET_CHAT", "ZULIP_EMAIL_JET_CHAT"\)/);
   assert.match(installer, /EXPECTED_TAGS = \{"JET-CHAT": "JET"\}/);
+});
+
+test("JET-CHAT is absent by default, and only hosting it unprovisioned fails closed", () => {
+  // An absent optional seat loads safely:  the default production config has
+  // no JET-CHAT and loads unchanged.
+  const prod = loadConfig(wranglerConfig().vars);
+  assert.ok(!prod.hostedSeats.includes("JET-CHAT"), "HOSTED_SEATS gains JET-CHAT only with its captured pair at deploy");
+  assert.equal(prod.botEmails["JET-CHAT"], undefined);
+  // The fail-closed 500 is reserved for explicitly hosting an incompletely
+  // provisioned seat.
+  assert.throws(() => loadConfig(testEnv({ HOSTED_SEATS: "JET,JET-CHAT" })), /ZULIP_EMAIL_JET_CHAT/, "an unprovisioned email var refuses config load rather than serving a wrong binding");
 });
 
 test("JET-CHAT loads with Jet's bot email under its own var name", () => {
