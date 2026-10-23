@@ -45,19 +45,28 @@ def body_hash(body: bytes) -> str:
     return hashlib.sha256(body or b"").hexdigest()
 
 
-def signing_string(method: str, path: str, query: str, timestamp: str, principal: str, body: bytes) -> bytes:
+def signing_string(
+    method: str, path: str, query: str, timestamp: str, principal: str, body: bytes
+) -> bytes:
     return (
-        "%s\n%s\n%s\n%s\n%s\n%s\n%s" % (CONTRACT, method.upper(), path, query, timestamp, principal, body_hash(body))
+        "%s\n%s\n%s\n%s\n%s\n%s\n%s"
+        % (CONTRACT, method.upper(), path, query, timestamp, principal, body_hash(body))
     ).encode("utf-8")
 
 
-def sign(key: str, method: str, path: str, query: str, timestamp: str, principal: str, body: bytes) -> str:
+def sign(
+    key: str, method: str, path: str, query: str, timestamp: str, principal: str, body: bytes
+) -> str:
     return hmac.new(
-        key.encode("utf-8"), signing_string(method, path, query, timestamp, principal, body), hashlib.sha256
+        key.encode("utf-8"),
+        signing_string(method, path, query, timestamp, principal, body),
+        hashlib.sha256,
     ).hexdigest()
 
 
-def headers(key: str, method: str, path: str, query: str, principal: str, body: bytes, now: float) -> dict[str, str]:
+def headers(
+    key: str, method: str, path: str, query: str, principal: str, body: bytes, now: float
+) -> dict[str, str]:
     """The three signed headers (and the content type) for one request."""
     timestamp = str(int(now))
     out = {

@@ -26,6 +26,7 @@ case for a newly enabled persona); otherwise `agent-sync daemon reload` is enoug
 
 Exit codes:  0 done (or nothing to do), 1 a file is missing or unreadable, 2 the result would be refused.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,9 +40,11 @@ import tomllib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent.parent))   # scripts/, so `agent_sync` imports (the image keeps the repo layout)
+sys.path.insert(
+    0, str(HERE.parent.parent)
+)  # scripts/, so `agent_sync` imports (the image keeps the repo layout)
 
-from agent_sync import config as C  # noqa: E402
+from agent_sync import config as C
 
 _HEADER_RE = re.compile(r"^\[([^\[\]]+)\]\s*(#.*)?$")
 # Settings sections copied from the sample only when the live file has none, and never replaced.
@@ -61,19 +64,21 @@ def blocks(text: str) -> tuple[list[str], list[tuple[str, list[str]]]]:
     for n, head in enumerate(heads):
         floor = heads[n - 1] if n else -1
         start = head
-        while start - 1 > floor and (not lines[start - 1].strip() or lines[start - 1].lstrip().startswith("#")):
+        while start - 1 > floor and (
+            not lines[start - 1].strip() or lines[start - 1].lstrip().startswith("#")
+        ):
             start -= 1
         starts.append(start)
-    preamble = lines[:starts[0]] if heads else lines
+    preamble = lines[: starts[0]] if heads else lines
     out = []
     for n, head in enumerate(heads):
         end = starts[n + 1] if n + 1 < len(heads) else len(lines)
-        out.append((_HEADER_RE.match(lines[head].strip()).group(1).strip(), lines[starts[n]:end]))
+        out.append((_HEADER_RE.match(lines[head].strip()).group(1).strip(), lines[starts[n] : end]))
     return preamble, out
 
 
 def _seat(name: str) -> str | None:
-    return name[len("seat."):] if name.startswith("seat.") else None
+    return name[len("seat.") :] if name.startswith("seat.") else None
 
 
 def _flat(prefix: str, value: object, out: dict[str, object]) -> None:
@@ -95,7 +100,10 @@ def section_diff(old: str | None, new: str) -> list[str]:
     changes = []
     for key in sorted(set(a) | set(b)):
         if a.get(key, "<unset>") != b.get(key, "<unset>"):
-            changes.append("%s: %r -> %r" % (key.split(".", 2)[-1], a.get(key, "<unset>"), b.get(key, "<unset>")))
+            changes.append(
+                "%s: %r -> %r"
+                % (key.split(".", 2)[-1], a.get(key, "<unset>"), b.get(key, "<unset>"))
+            )
     return changes or ["comments only"]
 
 
@@ -180,14 +188,26 @@ def write(path: Path, text: str, stamp: str) -> Path:
 
 def main(argv: list[str] | None = None, out=sys.stdout) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--live", default=os.environ.get("AGENT_SYNC_CONFIG") or "/data/listener.toml",
-                    help="the live config (default: $AGENT_SYNC_CONFIG, else /data/listener.toml)")
-    ap.add_argument("--sample", default=str(HERE / "listener.toml"), help="the sample (default: the image's copy)")
-    ap.add_argument("--apply", action="store_true", help="back up the live file, then write the change")
+    ap.add_argument(
+        "--live",
+        default=os.environ.get("AGENT_SYNC_CONFIG") or "/data/listener.toml",
+        help="the live config (default: $AGENT_SYNC_CONFIG, else /data/listener.toml)",
+    )
+    ap.add_argument(
+        "--sample",
+        default=str(HERE / "listener.toml"),
+        help="the sample (default: the image's copy)",
+    )
+    ap.add_argument(
+        "--apply", action="store_true", help="back up the live file, then write the change"
+    )
     args = ap.parse_args(argv)
     live_path, sample_path = Path(args.live), Path(args.sample)
     try:
-        live, sample = live_path.read_text(encoding="utf-8"), sample_path.read_text(encoding="utf-8")
+        live, sample = (
+            live_path.read_text(encoding="utf-8"),
+            sample_path.read_text(encoding="utf-8"),
+        )
     except OSError as exc:
         print("cannot read %s: %s" % (exc.filename, exc.strerror), file=out)
         return 1
@@ -219,10 +239,13 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:
     if not args.apply:
         print("dry run:  nothing written; run again with --apply", file=out)
         return 0
-    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = write(live_path, new, stamp)
-    print("wrote %s (backup %s).  Restart the app if a section names a new variable; else agent-sync daemon reload."
-          % (live_path, backup), file=out)
+    print(
+        "wrote %s (backup %s).  Restart the app if a section names a new variable; else agent-sync daemon reload."
+        % (live_path, backup),
+        file=out,
+    )
     return 0
 
 

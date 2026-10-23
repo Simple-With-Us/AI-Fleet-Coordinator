@@ -45,7 +45,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -213,7 +213,9 @@ def check_format(raw: Any) -> str:
     if raw is None:
         return "html"
     if raw not in FORMATS:
-        raise NotesError("invalid_argument", "argument 'format' must be one of %s" % ", ".join(FORMATS))
+        raise NotesError(
+            "invalid_argument", "argument 'format' must be one of %s" % ", ".join(FORMATS)
+        )
     return str(raw)
 
 
@@ -233,7 +235,9 @@ def check_limit(raw: Any, default: int = LIST_DEFAULT, maximum: int = LIST_MAX) 
     if raw is None:
         return default
     if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= maximum:
-        raise NotesError("invalid_argument", "argument 'limit' must be an integer from 1 to %d" % maximum)
+        raise NotesError(
+            "invalid_argument", "argument 'limit' must be an integer from 1 to %d" % maximum
+        )
     return raw
 
 
@@ -307,7 +311,9 @@ def direct_status(store: Any, request_id: str) -> dict[str, Any] | None:
         return None
     state = row.get("state")
     if state == "sent":
-        return dict(row.get("result") or {}, request_id=request_id, status="done", transport="direct")
+        return dict(
+            row.get("result") or {}, request_id=request_id, status="done", transport="direct"
+        )
     if state == "unknown":
         return {"request_id": request_id, "status": "unknown", "transport": "direct"}
     return {"request_id": request_id, "status": "running", "transport": "direct"}
@@ -382,7 +388,19 @@ def title_problem(
 # --------------------------------------------------------------------------------------------
 
 REQUEST_FIELDS = frozenset(
-    {"v", "action", "request_id", "identity", "title", "markdown", "flags", "session", "format", "query", "limit"}
+    {
+        "v",
+        "action",
+        "request_id",
+        "identity",
+        "title",
+        "markdown",
+        "flags",
+        "session",
+        "format",
+        "query",
+        "limit",
+    }
 )
 _ACTION_FIELDS = {
     "create": frozenset({"title", "markdown", "flags", "session"}),
@@ -467,7 +485,8 @@ def check_request(raw: Any) -> dict[str, Any]:
     unused = [
         key
         for key in raw
-        if key not in {"v", "action", "request_id", "identity"} and key not in _ACTION_FIELDS[action]
+        if key not in {"v", "action", "request_id", "identity"}
+        and key not in _ACTION_FIELDS[action]
     ]
     if unused:
         raise NotesError("invalid_argument", "the request has a field %s does not use" % action)
@@ -495,15 +514,27 @@ def request_problem(
     """None when `identity` may send this request:  it is the request's own identity, a create's title carries its
     agent name, and a create or update carries a session id unless the identity is a single-thread one."""
     if request.get("identity") != identity:
-        return "the request names identity %s, not %s" % (str(request.get("identity"))[:32], identity)
+        return "the request names identity %s, not %s" % (
+            str(request.get("identity"))[:32],
+            identity,
+        )
     if request.get("action") == "create":
-        problem = title_problem(str(request.get("title") or ""), identity, registry_path=registry_path, env=env)
+        problem = title_problem(
+            str(request.get("title") or ""), identity, registry_path=registry_path, env=env
+        )
         if problem:
-            return "%s;  a new note's title carries the Agent of the identity that creates it (%s)" % (
-                problem,
-                identity,
+            return (
+                "%s;  a new note's title carries the Agent of the identity that creates it (%s)"
+                % (
+                    problem,
+                    identity,
+                )
             )
-    if request.get("action") in BODY_ACTIONS and not request.get("session") and not SID.is_exempt(identity):
+    if (
+        request.get("action") in BODY_ACTIONS
+        and not request.get("session")
+        and not SID.is_exempt(identity)
+    ):
         return SID.refusal(identity, "relay")
     return None
 
@@ -520,7 +551,10 @@ def existing_only(
         return False
     return (
         title_problem(
-            str(request.get("title") or ""), str(request.get("identity") or ""), registry_path=registry_path, env=env
+            str(request.get("title") or ""),
+            str(request.get("identity") or ""),
+            registry_path=registry_path,
+            env=env,
         )
         is not None
     )
@@ -529,7 +563,9 @@ def existing_only(
 def request_digest(request: Mapping[str, Any]) -> str:
     """One request's fingerprint:  a request_id sent again with a different request is a conflict, not a repeat."""
     return hashlib.sha256(
-        json.dumps(dict(request), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        json.dumps(dict(request), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode(
+            "utf-8"
+        )
     ).hexdigest()
 
 
@@ -537,29 +573,27 @@ def request_digest(request: Mapping[str, Any]) -> str:
 # Provenance and the body a read returns
 # --------------------------------------------------------------------------------------------
 
-_FOOTER_TEXT = (
-    r"(?:Relayed for [^<\n]{1,80}? by the notes relay on|Written for [^<\n]{1,80}? through the Operator on)"
-)
+_FOOTER_TEXT = r"(?:Relayed for [^<\n]{1,80}? by the notes relay on|Written for [^<\n]{1,80}? through the Operator on)"
 # The footer the way Notes stores it:  its own <div> (italic text, maybe a link), after an <hr> that Notes keeps as a
 # <div><br><br></div> and any spacer rows, at the very end of the body.
 _HTML_FOOTER_RE = re.compile(
     r"(?:\s*(?:<div>(?:\s*<br\s*/?>)+\s*</div>|<hr\s*/?>))*\s*"
     r"<(div|p)>(?:(?!<(?:div|p)>).){0,200}?" + _FOOTER_TEXT + r"(?:(?!<(?:div|p)>).){0,600}?</\1>"
     r"(?:\s*<div>(?:\s*<br\s*/?>)+\s*</div>)*\s*$",
-    re.S | re.I,
+    re.DOTALL | re.IGNORECASE,
 )
 _MD_FOOTER_RE = re.compile(r"\n*(?:-{3,}[ \t]*\n+)?\*" + _FOOTER_TEXT + r"[^\n]*\*\s*$")
 _TEXT_FOOTER_RE = re.compile(r"(?:\n[ \t￼]*)*\n?" + _FOOTER_TEXT + r"[^\n]*\s*$")
-_SPACER_TAIL_RE = re.compile(r"(?:\s*<div>(?:\s*<br\s*/?>)+\s*</div>)+\s*$", re.I)
+_SPACER_TAIL_RE = re.compile(r"(?:\s*<div>(?:\s*<br\s*/?>)+\s*</div>)+\s*$", re.IGNORECASE)
 _STAMP_RE = re.compile(
     r"^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, "
     r"\d{1,2}:\d{2}[ap]m(?:\s*[·|—-]\s*(?:PR\s*#?\s*[\d\s,#]+)+)?$",
-    re.I,
+    re.IGNORECASE,
 )
 _SESSION_ROW_RE = re.compile(r"^Session:\s*[A-Za-z0-9][A-Za-z0-9._:-]{3,127}(?:\s+-\s+.{0,40})?$")
 _BANNER_PREFIXES = ("⚠️ NEEDS OWNER REVIEW", "📌 Mobile Quick View:")
 _LEAD_BLOCK_RE = re.compile(
-    r"\s*(<(div|p|h[1-6])\b[^>]*>(?:(?!<(?:div|p|h[1-6])\b).)*?</\2>)", re.S | re.I
+    r"\s*(<(div|p|h[1-6])\b[^>]*>(?:(?!<(?:div|p|h[1-6])\b).)*?</\2>)", re.DOTALL | re.IGNORECASE
 )
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -570,21 +604,34 @@ def strip_provenance(body: str, is_html: bool) -> str:
     if is_html:
         out = _HTML_FOOTER_RE.sub("", body)
         out = re.sub(
-            r"(?:\s*<hr\s*/?>)?\s*<p>\s*<i>\s*" + _FOOTER_TEXT + r".{0,600}?</i>\s*</p>\s*$", "", out, flags=re.S | re.I
+            r"(?:\s*<hr\s*/?>)?\s*<p>\s*<i>\s*" + _FOOTER_TEXT + r".{0,600}?</i>\s*</p>\s*$",
+            "",
+            out,
+            flags=re.DOTALL | re.IGNORECASE,
         )
         return out
     return _MD_FOOTER_RE.sub("", body)
 
 
-def with_provenance(request: Mapping[str, Any], requester: str, *, now: datetime | None = None) -> dict[str, Any]:
+def with_provenance(
+    request: Mapping[str, Any], requester: str, *, now: datetime | None = None
+) -> dict[str, Any]:
     """The request with a last line saying who asked for the write (owner, Oct 18:  a note written on another host's
     behalf says so).  Apple Notes has no authorship, so a title like `[TEAM_KEY, Agent]` is only text.  Pin, unpin,
     read and list carry no body and are returned unchanged."""
     if request.get("action") not in BODY_ACTIONS:
         return dict(request)
-    moment = (now or datetime.now(timezone.utc)).astimezone(ZoneInfo("America/Chicago"))
-    when = "%s %d, %d" % (moment.strftime("%a, %b"), moment.day, moment.year)  # no %-d:  not portable
-    line = "Written for %s through the Operator on %s (request %s)." % (requester, when, request["request_id"])
+    moment = (now or datetime.now(UTC)).astimezone(ZoneInfo("America/Chicago"))
+    when = "%s %d, %d" % (
+        moment.strftime("%a, %b"),
+        moment.day,
+        moment.year,
+    )  # no %-d:  not portable
+    line = "Written for %s through the Operator on %s (request %s)." % (
+        requester,
+        when,
+        request["request_id"],
+    )
     body = str(request.get("markdown") or "")
     if (request.get("flags") or {}).get("html"):
         footer = "<hr><p><i>%s</i></p>" % html.escape(line)
@@ -632,7 +679,7 @@ def content_html(body: str, title: str) -> str:
             seen_session = True
         elif text.startswith(_BANNER_PREFIXES):
             pass  # the needs-owner and quick-view banners follow the spacer;  the flags write them again
-        elif header and (seen_title or seen_stamp) and not text and re.search(r"<br", block, re.I):
+        elif header and (seen_title or seen_stamp) and not text and re.search(r"<br", block, re.IGNORECASE):
             seen_spacer = True  # the one spacer after the header rows
         else:
             break
@@ -690,7 +737,12 @@ def list_result(raw: Mapping[str, Any]) -> dict[str, Any]:
     rows = []
     for row in raw.get("notes") or []:
         if isinstance(row, Mapping):
-            rows.append({key: str(row.get(key) or "")[:400] for key in ("title", "id", "created", "modified")})
+            rows.append(
+                {
+                    key: str(row.get(key) or "")[:400]
+                    for key in ("title", "id", "created", "modified")
+                }
+            )
     total = raw.get("total")
     return {
         "notes": rows,
@@ -932,7 +984,9 @@ def run_direct(
         if requester:
             request = with_provenance(request, requester)
         else:
-            request = dict(request, markdown=strip_provenance(str(request.get("markdown") or ""), is_html))
+            request = dict(
+                request, markdown=strip_provenance(str(request.get("markdown") or ""), is_html)
+            )
     flags = request.get("flags") or {}
     markdown = str(request.get("markdown") or "")
     if len(markdown) > MARKDOWN_MAX + 1000:  # the provenance line may add a little to a full body
@@ -982,7 +1036,8 @@ def run_direct(
         except subprocess.TimeoutExpired:
             if not writes:
                 raise NotesError(
-                    "unavailable", "the notes script did not answer within %d seconds" % int(child_timeout)
+                    "unavailable",
+                    "the notes script did not answer within %d seconds" % int(child_timeout),
                 ) from None
             # A timeout does not prove nothing was written (the script may have created the note and then hung),
             # so it is an unknown outcome, never a safe failure that a retry may repeat.
@@ -1011,9 +1066,13 @@ def run_direct(
             try:
                 raw = json.loads(stdout)
             except ValueError:
-                raise NotesError("internal", "the notes script's %s answer did not parse" % action) from None
+                raise NotesError(
+                    "internal", "the notes script's %s answer did not parse" % action
+                ) from None
             if not isinstance(raw, Mapping):
-                raise NotesError("internal", "the notes script's %s answer is not an object" % action)
+                raise NotesError(
+                    "internal", "the notes script's %s answer is not an object" % action
+                )
             if action == "read":
                 return {"note": read_result(raw, str(request.get("format") or "html"))}
             return list_result(raw)
@@ -1105,7 +1164,11 @@ def action_log_path(env: Mapping[str, str], home: Path) -> Path | None:
 def clean_log_entry(raw: Any) -> dict[str, Any] | None:
     """One log line reduced to the known fields, each a short scalar (or the two small objects), or None when it is not
     a log line at all.  The log holds no note text, and nothing that arrives through it can add any."""
-    if not isinstance(raw, Mapping) or not isinstance(raw.get("id"), str) or not isinstance(raw.get("ts"), str):
+    if (
+        not isinstance(raw, Mapping)
+        or not isinstance(raw.get("id"), str)
+        or not isinstance(raw.get("ts"), str)
+    ):
         return None
     out: dict[str, Any] = {}
     for key in LOG_FIELDS:
@@ -1124,7 +1187,7 @@ def clean_log_entry(raw: Any) -> dict[str, Any] | None:
         elif isinstance(value, float):
             out[key] = int(value)
         else:
-            out[key] = str(value)[:400 if key == "title" else 200]
+            out[key] = str(value)[: 400 if key == "title" else 200]
     return out
 
 
@@ -1133,7 +1196,7 @@ def _entry_time(entry: Mapping[str, Any]) -> datetime | None:
         moment = datetime.fromisoformat(str(entry.get("ts") or "").replace("Z", "+00:00"))
     except ValueError:
         return None
-    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+    return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
 
 
 def log_filter(
@@ -1147,7 +1210,7 @@ def log_filter(
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """The entries that match, newest first, at most `limit`."""
-    floor = (now or datetime.now(timezone.utc)) - timedelta(hours=since_hours)
+    floor = (now or datetime.now(UTC)) - timedelta(hours=since_hours)
     wanted_seat = seat.upper() if seat else None
     needle = title.casefold() if title else None
     picked: list[tuple[datetime, dict[str, Any]]] = []
@@ -1197,15 +1260,26 @@ def read_action_log(env: Mapping[str, str], home: Path, **filters: Any) -> list[
 def check_log_args(args: Mapping[str, Any]) -> dict[str, Any]:
     """The filters of a log call, validated (the notes_log tool's arguments)."""
     since = args.get("since_hours", 24)
-    if isinstance(since, bool) or not isinstance(since, int) or not 1 <= since <= LOG_SINCE_MAX_HOURS:
-        raise NotesError("invalid_argument", "argument 'since_hours' must be an integer from 1 to %d" % LOG_SINCE_MAX_HOURS)
+    if (
+        isinstance(since, bool)
+        or not isinstance(since, int)
+        or not 1 <= since <= LOG_SINCE_MAX_HOURS
+    ):
+        raise NotesError(
+            "invalid_argument",
+            "argument 'since_hours' must be an integer from 1 to %d" % LOG_SINCE_MAX_HOURS,
+        )
     limit = check_limit(args.get("limit"), default=50, maximum=500)
     seat = args.get("by_seat")
     if seat is not None and (not isinstance(seat, str) or not SEAT_RE.fullmatch(seat.upper())):
-        raise NotesError("invalid_argument", "argument 'by_seat' must be a seat name such as CLAUDE")
+        raise NotesError(
+            "invalid_argument", "argument 'by_seat' must be a seat name such as CLAUDE"
+        )
     action = args.get("action")
     if action is not None and action not in ACTIONS:
-        raise NotesError("invalid_argument", "argument 'action' must be one of %s" % ", ".join(ACTIONS))
+        raise NotesError(
+            "invalid_argument", "argument 'action' must be one of %s" % ", ".join(ACTIONS)
+        )
     title = check_query(args.get("title")) or None
     return {
         "since_hours": since,
@@ -1217,4 +1291,4 @@ def check_log_args(args: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def iso_now(clock: Callable[[], float] = time.time) -> str:
-    return datetime.fromtimestamp(clock(), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.fromtimestamp(clock(), UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

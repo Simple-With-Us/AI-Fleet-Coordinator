@@ -197,18 +197,25 @@ class ListenerReadApi:
                 if method == "POST":
                     raw_length = self.headers.get("Content-Length")
                     if raw_length is None or not raw_length.strip().isdigit():
-                        self._respond(411, {"error": "length_required", "message": "Content-Length is required"})
+                        self._respond(
+                            411,
+                            {"error": "length_required", "message": "Content-Length is required"},
+                        )
                         return True
                     length = int(raw_length.strip())
                     if length > NW.MAX_BODY:
-                        self._respond(413, {"error": "too_large", "message": "the request body is too large"})
+                        self._respond(
+                            413, {"error": "too_large", "message": "the request body is too large"}
+                        )
                         return True
                     try:
                         body = self.rfile.read(length)
                     except OSError:
                         return True
                     if len(body) != length:
-                        self._respond(400, {"error": "invalid_argument", "message": "the body ended early"})
+                        self._respond(
+                            400, {"error": "invalid_argument", "message": "the body ended early"}
+                        )
                         return True
                 try:
                     status, answer = owner.notes.handle(method, self.path, self.headers, body)

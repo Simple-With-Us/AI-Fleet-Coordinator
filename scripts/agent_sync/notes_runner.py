@@ -111,7 +111,9 @@ class Runner:
                 continue
             seat, request_id, claim = entry.get("seat"), entry.get("request_id"), entry.get("claim")
             if "result" in entry or "error" in entry:
-                outcome = {"result": entry["result"]} if "result" in entry else {"error": entry["error"]}
+                outcome = (
+                    {"result": entry["result"]} if "result" in entry else {"error": entry["error"]}
+                )
             elif entry.get("action") in ("read", "list") and isinstance(entry.get("request"), dict):
                 outcome = self._execute(seat, entry["request"])
             else:
@@ -135,7 +137,9 @@ class Runner:
                 raise N.NotesError("invalid_argument", problem[:400])
             script = self.script_finder(self.env, self.home)
             if script is None:
-                raise N.NotesError("unavailable", "this Mac cannot run apple-notes-coding.sh;  nothing was written")
+                raise N.NotesError(
+                    "unavailable", "this Mac cannot run apple-notes-coding.sh;  nothing was written"
+                )
             requester = seat if checked["action"] in N.BODY_ACTIONS else None
             return {
                 "result": self.run(
@@ -152,9 +156,17 @@ class Runner:
         self._note(last_poll_at=N.iso_now(self.clock))
         if claimed is None:
             return False
-        seat, request_id, claim = claimed.get("seat"), claimed.get("request_id"), claimed.get("claim")
+        seat, request_id, claim = (
+            claimed.get("seat"),
+            claimed.get("request_id"),
+            claimed.get("claim"),
+        )
         request = claimed.get("request") if isinstance(claimed.get("request"), dict) else {}
-        if not isinstance(seat, str) or not isinstance(request_id, str) or not isinstance(claim, str):
+        if (
+            not isinstance(seat, str)
+            or not isinstance(request_id, str)
+            or not isinstance(claim, str)
+        ):
             return False
         key = "%s/%s" % (seat, request_id)
         action = request.get("action")
@@ -180,7 +192,15 @@ class Runner:
         state["last_ok_at"] = N.iso_now(self.clock)
         state["handled"] = int(state.get("handled") or 0) + 1
         self._save(state)
-        self.log("notes-runner: %s %s for %s:  %s" % (action, request_id, seat, "error " + outcome["error"]["code"] if "error" in outcome else "done"))
+        self.log(
+            "notes-runner: %s %s for %s:  %s"
+            % (
+                action,
+                request_id,
+                seat,
+                "error " + outcome["error"]["code"] if "error" in outcome else "done",
+            )
+        )
         return True
 
     # ---- the action log ----------------------------------------------------------------------------
@@ -213,8 +233,13 @@ class Runner:
             batch = lines[start : start + LOG_BATCH]
             self.client.send_log([entry for _, entry in batch])
             sent += len(batch)
-            self._note(log={"inode": current.st_ino, "offset": batch[-1][0]}, log_shipped_at=N.iso_now(self.clock))
-        self._note(log={"inode": current.st_ino, "offset": end})  # past every whole line, the unparsable ones too
+            self._note(
+                log={"inode": current.st_ino, "offset": batch[-1][0]},
+                log_shipped_at=N.iso_now(self.clock),
+            )
+        self._note(
+            log={"inode": current.st_ino, "offset": end}
+        )  # past every whole line, the unparsable ones too
         return sent
 
     def _ship_from(self, path: Path, offset: int) -> int:
@@ -263,14 +288,19 @@ class Runner:
         failures = 0
         while not stop.is_set():
             if stamp() != started:
-                self.log("notes-runner: the code changed on disk;  exiting so launchd starts the new one")
+                self.log(
+                    "notes-runner: the code changed on disk;  exiting so launchd starts the new one"
+                )
                 return
             try:
                 self.ship_log()
                 self.once(wait)
                 failures = 0
             except N.NotesError as exc:
-                self._note(last_error_at=N.iso_now(self.clock), last_error="%s: %s" % (exc.code, exc.message[:200]))
+                self._note(
+                    last_error_at=N.iso_now(self.clock),
+                    last_error="%s: %s" % (exc.code, exc.message[:200]),
+                )
                 self.log("notes-runner: %s" % exc.code)
                 delay = ERROR_BACKOFF_S[min(failures, len(ERROR_BACKOFF_S) - 1)]
                 failures += 1

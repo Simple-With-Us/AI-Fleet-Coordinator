@@ -2277,7 +2277,9 @@ class Tools:
         return guide_result(args, self.agent.rt.env)
 
     # ---- Apple Notes (AFC-486, docs/protocols/operator-notes.md) -----------------------------
-    NOTES_WAIT_DEFAULT = 90  # seconds a tool waits for the Mac runner off a Mac (wait_seconds may lower it)
+    NOTES_WAIT_DEFAULT = (
+        90  # seconds a tool waits for the Mac runner off a Mac (wait_seconds may lower it)
+    )
     NOTES_MARKER_BEGIN = "BEGIN_UNTRUSTED_NOTES"
     NOTES_MARKER_END = "END_UNTRUSTED_NOTES"
     NOTES_UNTRUSTED = (
@@ -2390,7 +2392,10 @@ class Tools:
                 ", cut" if note.get("truncated") else "",
             )
         else:
-            header = "notes_list:  %d of %d notes" % (len(result.get("notes") or []), int(result.get("total") or 0))
+            header = "notes_list:  %d of %d notes" % (
+                len(result.get("notes") or []),
+                int(result.get("total") or 0),
+            )
         return self.ok(self._notes_fenced(header, result), result)
 
     def _tool_notes_create(self, args: Mapping[str, Any]) -> dict[str, Any]:

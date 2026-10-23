@@ -33,11 +33,19 @@ POLL_FIRST_S, POLL_LATER_S = 1.0, 2.0
 KEY_CACHE_S = 600.0
 USER_AGENT = "agent-sync notes client"
 # The log filters on the wire, in a fixed order:  (query name, notes.check_log_args key).
-LOG_WIRE = (("since_hours", "since_hours"), ("limit", "limit"), ("by_seat", "seat"), ("action", "action"), ("title", "title"))
+LOG_WIRE = (
+    ("since_hours", "since_hours"),
+    ("limit", "limit"),
+    ("by_seat", "seat"),
+    ("action", "action"),
+    ("title", "title"),
+)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, *args: Any, **kwargs: Any) -> None:  # a signed request never follows a redirect
+    def redirect_request(
+        self, *args: Any, **kwargs: Any
+    ) -> None:  # a signed request never follows a redirect
         return None
 
 
@@ -50,7 +58,9 @@ def base_url(env: Mapping[str, str]) -> str | None:
     raw = (env.get(KNOB) or "").strip()
     if not raw:
         try:
-            from fleet_knobs import knobs  # scripts/fleet_knobs:  absent on a host that does not ship it
+            from fleet_knobs import (
+                knobs,
+            )  # scripts/fleet_knobs:  absent on a host that does not ship it
 
             raw = str(knobs.resolve(KNOB, "", "str").value or "").strip()
         except Exception:  # noqa: BLE001 - an unreadable knob reads as not configured, never as a crash
@@ -58,7 +68,13 @@ def base_url(env: Mapping[str, str]) -> str | None:
     if not raw:
         return None
     parts = urllib.parse.urlsplit(raw)
-    if parts.scheme != "https" or not parts.hostname or parts.path not in ("", "/") or parts.query or parts.fragment:
+    if (
+        parts.scheme != "https"
+        or not parts.hostname
+        or parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+    ):
         return None
     if parts.username or parts.password:
         return None
@@ -101,7 +117,9 @@ class KeySource:
             self._value = None
 
     def _fetch(self) -> str:
-        binary = shutil.which("fleet-secrets", path=self.env.get("PATH")) or os.path.expanduser("~/.local/bin/fleet-secrets")
+        binary = shutil.which("fleet-secrets", path=self.env.get("PATH")) or os.path.expanduser(
+            "~/.local/bin/fleet-secrets"
+        )
         if not os.access(binary, os.X_OK):
             return ""
         try:
@@ -144,7 +162,13 @@ class OperatorClient:
         return self.key.get() if isinstance(self.key, KeySource) else self.key()
 
     def call(
-        self, method: str, path: str, *, query: str = "", payload: Any = None, timeout: float = CALL_TIMEOUT_S
+        self,
+        method: str,
+        path: str,
+        *,
+        query: str = "",
+        payload: Any = None,
+        timeout: float = CALL_TIMEOUT_S,
     ) -> tuple[int, dict[str, Any] | None]:
         """(status, JSON body or None).  Raises NotesError for a missing key, a network failure or a body that is not
         JSON;  an HTTP error status is returned, not raised."""
@@ -155,10 +179,18 @@ class OperatorClient:
                 "no %s key on this host (%s in Infisical AI Fleet Coordinator prod %s)"
                 % (self.principal, W.KEY_NAMES[self.principal], W.KEY_PATH),
             )
-        body = b"" if payload is None else json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        body = (
+            b""
+            if payload is None
+            else json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
         url = self.base + path + ("?" + query if query else "")
-        request = urllib.request.Request(url, data=body if method == "POST" else None, method=method)
-        for name, value in W.headers(key, method, path, query, self.principal, body, self.clock()).items():
+        request = urllib.request.Request(
+            url, data=body if method == "POST" else None, method=method
+        )
+        for name, value in W.headers(
+            key, method, path, query, self.principal, body, self.clock()
+        ).items():
             request.add_header(name, value)
         request.add_header("Accept", "application/json")
         request.add_header("User-Agent", USER_AGENT)
@@ -177,20 +209,25 @@ class OperatorClient:
                 self.key.forget()
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise N.NotesError(
-                "unavailable", "the Operator notes API could not be reached (%s)" % type(exc).__name__
+                "unavailable",
+                "the Operator notes API could not be reached (%s)" % type(exc).__name__,
             ) from None
         if not raw:
             return status, None
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
-            raise N.NotesError("unavailable", "the Operator answered HTTP %d with a body that is not JSON" % status) from None
+            raise N.NotesError(
+                "unavailable", "the Operator answered HTTP %d with a body that is not JSON" % status
+            ) from None
         return status, data if isinstance(data, dict) else None
 
     # ---- writers --------------------------------------------------------------------------------
     def enqueue(self, seat: str, request: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
         """(the record, whether it was already there)."""
-        status, data = self.call("POST", "/notes/v1/requests", payload={"seat": seat, "request": dict(request)})
+        status, data = self.call(
+            "POST", "/notes/v1/requests", payload={"seat": seat, "request": dict(request)}
+        )
         if status in (200, 202) and data is not None:
             return data, status == 200
         raise answer_error(status, data)
@@ -206,7 +243,10 @@ class OperatorClient:
         current = dict(record)
         waited, polls = 0.0, 0
         # Counted from the sleeps, not a clock:  a call's own time only makes the wait a little longer, never shorter.
-        while current.get("state") not in ("done", "refused", "unknown", "expired") and waited < seconds:
+        while (
+            current.get("state") not in ("done", "refused", "unknown", "expired")
+            and waited < seconds
+        ):
             step = min(seconds - waited, POLL_FIRST_S if polls < 5 else POLL_LATER_S)
             self.sleep(step)
             waited += step
@@ -216,11 +256,19 @@ class OperatorClient:
 
     def log(self, filters: Mapping[str, Any]) -> list[dict[str, Any]]:
         query = urllib.parse.urlencode(
-            [(wire, str(filters[name])) for wire, name in LOG_WIRE if filters.get(name) not in (None, "")]
+            [
+                (wire, str(filters[name]))
+                for wire, name in LOG_WIRE
+                if filters.get(name) not in (None, "")
+            ]
         )
         status, data = self.call("GET", "/notes/v1/log", query=query)
         if status == 200 and data is not None:
-            return [N.clean_log_entry(entry) or {} for entry in data.get("entries") or [] if isinstance(entry, dict)]
+            return [
+                N.clean_log_entry(entry) or {}
+                for entry in data.get("entries") or []
+                if isinstance(entry, dict)
+            ]
         raise answer_error(status, data)
 
     def health(self) -> dict[str, Any]:
@@ -240,7 +288,9 @@ class OperatorClient:
             return data
         raise answer_error(status, data)
 
-    def report(self, seat: str, request_id: str, claim: str, *, result: Any = None, error: Any = None) -> int:
+    def report(
+        self, seat: str, request_id: str, claim: str, *, result: Any = None, error: Any = None
+    ) -> int:
         payload: dict[str, Any] = {"seat": seat, "request_id": request_id, "claim": claim}
         if error is not None:
             payload["error"] = error
@@ -263,9 +313,15 @@ def answer_error(status: int, data: Mapping[str, Any] | None) -> N.NotesError:
     code = str((data or {}).get("error") or "")
     message = str((data or {}).get("message") or "")[:400]
     if status == 400:
-        return N.NotesError(code if code in ("invalid_argument", "session_required") else "invalid_argument", message or "the Operator refused the request")
+        return N.NotesError(
+            code if code in ("invalid_argument", "session_required") else "invalid_argument",
+            message or "the Operator refused the request",
+        )
     if status == 409:
-        return N.NotesError("invalid_argument", message or "this request_id was already used for a different request")
+        return N.NotesError(
+            "invalid_argument",
+            message or "this request_id was already used for a different request",
+        )
     if status == 404 and code == "not_found" and message.startswith("no request"):
         return N.NotesError("not_found", message)
     if status in (401, 404):
@@ -278,7 +334,11 @@ def answer_error(status: int, data: Mapping[str, Any] | None) -> N.NotesError:
         return N.NotesError("forbidden", message or "the Operator refused this seat")
     if status == 413:
         return N.NotesError("invalid_argument", message or "the request is too large")
-    return N.NotesError("unavailable", "the Operator notes API answered HTTP %d%s" % (status, (":  " + message) if message else ""))
+    return N.NotesError(
+        "unavailable",
+        "the Operator notes API answered HTTP %d%s"
+        % (status, (":  " + message) if message else ""),
+    )
 
 
 def operator_client(
@@ -289,7 +349,8 @@ def operator_client(
     if base is None:
         raise N.NotesError(
             "not_configured",
-            "this host cannot run apple-notes-coding.sh and the Operator API is not configured (fleet knob %s)" % KNOB,
+            "this host cannot run apple-notes-coding.sh and the Operator API is not configured (fleet knob %s)"
+            % KNOB,
         )
     return OperatorClient(base, principal, KeySource(principal, env), **kwargs)
 
@@ -337,15 +398,29 @@ def _shape(record: Mapping[str, Any], duplicate: bool) -> dict[str, Any]:
     action = record.get("action")
     error = record.get("error") if isinstance(record.get("error"), Mapping) else {}
     if state == "refused":
-        raise N.NotesError(str(error.get("code") or "internal"), str(error.get("message") or "the request was refused"))
+        raise N.NotesError(
+            str(error.get("code") or "internal"),
+            str(error.get("message") or "the request was refused"),
+        )
     if state == "unknown":
         raise N.NotesError(
             "outcome_unknown",
-            str(error.get("message") or "the outcome is unknown;  check the note, then send it again with a new request_id"),
+            str(
+                error.get("message")
+                or "the outcome is unknown;  check the note, then send it again with a new request_id"
+            ),
         )
     if state == "expired":
-        raise N.NotesError("unavailable", str(error.get("message") or "nobody picked the request up within 24 hours"))
-    out: dict[str, Any] = {"request_id": request_id, "action": action, "status": state, "transport": "operator"}
+        raise N.NotesError(
+            "unavailable",
+            str(error.get("message") or "nobody picked the request up within 24 hours"),
+        )
+    out: dict[str, Any] = {
+        "request_id": request_id,
+        "action": action,
+        "status": state,
+        "transport": "operator",
+    }
     if record.get("title"):
         out["title"] = record["title"]
     result = record.get("result") if isinstance(record.get("result"), Mapping) else {}
@@ -353,7 +428,11 @@ def _shape(record: Mapping[str, Any], duplicate: bool) -> dict[str, Any]:
         if action == "read":
             out["note"] = result.get("note")
         elif action == "list":
-            out.update(notes=result.get("notes") or [], total=result.get("total", 0), truncated=bool(result.get("truncated")))
+            out.update(
+                notes=result.get("notes") or [],
+                total=result.get("total", 0),
+                truncated=bool(result.get("truncated")),
+            )
         else:
             for key in ("note_id", "pin_skipped"):
                 if result.get(key):
@@ -376,7 +455,10 @@ def call(
     first (it raises to refuse).  Raises NotesError."""
     problem = N.request_problem(request, seat, env=host.env)
     if problem:
-        raise N.NotesError("session_required" if "session id is required" in problem else "invalid_argument", problem)
+        raise N.NotesError(
+            "session_required" if "session id is required" in problem else "invalid_argument",
+            problem,
+        )
     action = request["action"]
     if action in N.WRITE_ACTIONS and scan is not None:
         scan(request)
@@ -405,7 +487,9 @@ def status(host: Host, seat: str, request_id: str) -> dict[str, Any]:
     if host.script is not None:
         found = N.direct_status(host.store, request_id)
         if found is None:
-            raise N.NotesError("not_found", "this Mac wrote no note with that request_id in the last 24 hours")
+            raise N.NotesError(
+                "not_found", "this Mac wrote no note with that request_id in the last 24 hours"
+            )
         return found
     record = host.client.record(seat, request_id)
     out: dict[str, Any] = {

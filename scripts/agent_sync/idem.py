@@ -8,10 +8,12 @@ dropped when it provably did nothing.  Rows expire.
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from . import live as LIVE
 
@@ -28,8 +30,13 @@ class IdemStore:
             data = LIVE.read_json(self.path)
             now = self.clock()
             rows = data.get("rows") if isinstance(data.get("rows"), dict) else {}
-            rows = {k: r for k, r in rows.items()
-                    if isinstance(r, dict) and isinstance(r.get("expires"), (int, float)) and r["expires"] > now}
+            rows = {
+                k: r
+                for k, r in rows.items()
+                if isinstance(r, dict)
+                and isinstance(r.get("expires"), (int, float))
+                and r["expires"] > now
+            }
             result = change(rows, now)
             data["rows"] = rows
             LIVE.write_json(self.path, data, durable=True)
@@ -37,7 +44,11 @@ class IdemStore:
 
     def peek(self, key: str) -> dict[str, Any] | None:
         row = (LIVE.read_json(self.path).get("rows") or {}).get(key)
-        if isinstance(row, dict) and row.get("state") == "sent" and float(row.get("expires") or 0) > self.clock():
+        if (
+            isinstance(row, dict)
+            and row.get("state") == "sent"
+            and float(row.get("expires") or 0) > self.clock()
+        ):
             return dict(row)
         return None
 
@@ -48,14 +59,21 @@ class IdemStore:
             return dict(row)
         return None
 
-    def begin(self, key: str, ttl: float, fields: Mapping[str, Any]) -> tuple[str, dict[str, Any] | None]:
+    def begin(
+        self, key: str, ttl: float, fields: Mapping[str, Any]
+    ) -> tuple[str, dict[str, Any] | None]:
         """('send', None) for a new key, ('duplicate', row) for a sent one, ('reconcile', row) for an unknown or
         abandoned one, ('busy', row) while another process's write is in flight."""
+
         def change(rows: dict[str, Any], now: float) -> tuple[str, dict[str, Any] | None]:
             row = rows.get(key)
             if row and row.get("state") == "sent":
                 return "duplicate", dict(row)
-            if row and row.get("state") == "pending" and now - float(row.get("claimed_at") or 0) < PENDING_FRESH:
+            if (
+                row
+                and row.get("state") == "pending"
+                and now - float(row.get("claimed_at") or 0) < PENDING_FRESH
+            ):
                 return "busy", dict(row)
             if row and row.get("state") in ("unknown", "pending"):
                 row["state"] = "pending"
@@ -70,6 +88,7 @@ class IdemStore:
         def change(rows: dict[str, Any], now: float) -> None:
             if key in rows:
                 rows[key].update(changes)
+
         self.mutate(change)
 
     def drop(self, key: str) -> None:

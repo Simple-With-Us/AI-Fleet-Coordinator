@@ -75,7 +75,14 @@ _STAMP_RE = re.compile(r"^\d{1,12}$")
 _CLAIM_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 _LOG_PARAMS = {"since_hours", "limit", "by_seat", "action", "title"}
 _ERROR_CODES = frozenset(
-    {"invalid_argument", "not_found", "unavailable", "outcome_unknown", "internal", "session_required"}
+    {
+        "invalid_argument",
+        "not_found",
+        "unavailable",
+        "outcome_unknown",
+        "internal",
+        "session_required",
+    }
 )
 
 
@@ -118,14 +125,18 @@ class NotesQueue:
         for name, (key, seats) in principals.items():
             if name in W.PRINCIPALS and isinstance(key, str) and len(key) >= W.MIN_KEY_LEN:
                 self.principals[name] = Principal(
-                    name, key, frozenset(str(seat).upper() for seat in seats if isinstance(seat, str))
+                    name,
+                    key,
+                    frozenset(str(seat).upper() for seat in seats if isinstance(seat, str)),
                 )
         self.env = dict(env or {})
         self.clock = clock
         self.log = log or (lambda *_args, **_kwargs: None)
         self.lock = threading.Lock()
         self.changed = threading.Condition(self.lock)
-        self.active: dict[tuple[str, str], dict[str, Any]] = {}  # queued and running records, by (seat, request_id)
+        self.active: dict[
+            tuple[str, str], dict[str, Any]
+        ] = {}  # queued and running records, by (seat, request_id)
         self.log_ids: OrderedDict[str, None] = OrderedDict()
         self._last_prune = 0.0
         # When the runner last asked for work, last reported and last sent log lines (health, for the doctor and
@@ -140,7 +151,9 @@ class NotesQueue:
         return self.requests_dir / seat / ("%s.json" % request_id)
 
     def _save(self, record: Mapping[str, Any]) -> None:
-        L.write_json(str(self._path(record["seat"], record["request_id"])), dict(record), durable=True)
+        L.write_json(
+            str(self._path(record["seat"], record["request_id"])), dict(record), durable=True
+        )
 
     def _read(self, seat: str, request_id: str) -> dict[str, Any] | None:
         record = L.read_json(str(self._path(seat, request_id)))
@@ -214,7 +227,11 @@ class NotesQueue:
                         record,
                         now,
                         state="refused",
-                        error={"code": "unavailable", "message": "the Mac runner took this read %d times and never answered" % READ_ATTEMPTS},
+                        error={
+                            "code": "unavailable",
+                            "message": "the Mac runner took this read %d times and never answered"
+                            % READ_ATTEMPTS,
+                        },
                     )
                 else:
                     record.update(state="queued", claim=None, lease_until=None)
@@ -224,7 +241,10 @@ class NotesQueue:
                     record,
                     now,
                     state="expired",
-                    error={"code": "unavailable", "message": "the Mac runner did not pick this up within 24 hours;  nothing was written"},
+                    error={
+                        "code": "unavailable",
+                        "message": "the Mac runner did not pick this up within 24 hours;  nothing was written",
+                    },
                 )
         if now - self._last_prune >= PRUNE_EVERY_S:
             self._last_prune = now
@@ -261,17 +281,24 @@ class NotesQueue:
     ) -> None:
         record["state"] = state
         record["finished_at"] = now
-        record.pop("request", None)  # the body (and a read's format) is not kept past the request's run
+        record.pop(
+            "request", None
+        )  # the body (and a read's format) is not kept past the request's run
         record.pop("lease_until", None)
         if result is not None:
             record["result"] = dict(result)
             if record.get("action") in ("read", "list"):
                 record["result_expires_at"] = now + RESULT_TTL_S
         if error is not None:
-            record["error"] = {"code": str(error.get("code"))[:40], "message": str(error.get("message") or "")[:400]}
+            record["error"] = {
+                "code": str(error.get("code"))[:40],
+                "message": str(error.get("message") or "")[:400],
+            }
         self.active.pop((record["seat"], record["request_id"]), None)
         self._save(record)
-        self.log("notes-queue-finished", seat=record["seat"], action=record.get("action"), state=state)
+        self.log(
+            "notes-queue-finished", seat=record["seat"], action=record.get("action"), state=state
+        )
 
     # ---- authentication --------------------------------------------------------------------------
     def authenticate(
@@ -347,7 +374,10 @@ class NotesQueue:
         try:
             problem = X.agent_identity_problem(seat, registry=I.load_seat_registry(env=self.env))
         except I.SeatRegistryError:
-            problem = "the seat registry cannot be read, so %s cannot be checked as an agent identity" % seat
+            problem = (
+                "the seat registry cannot be read, so %s cannot be checked as an agent identity"
+                % seat
+            )
         if problem:
             return _error(403, "forbidden", problem[:300])
         return None
@@ -358,7 +388,9 @@ class NotesQueue:
         if refused:
             return refused
         if set(payload) - {"seat", "request"}:
-            return _error(400, "invalid_argument", "the body has a field this version does not know")
+            return _error(
+                400, "invalid_argument", "the body has a field this version does not know"
+            )
         try:
             request = N.check_request(payload.get("request"))
         except N.NotesError as exc:
@@ -371,18 +403,29 @@ class NotesQueue:
             for field, text in N.text_fields(request).items():
                 kind = secretscan.scan(text)
                 if kind:
-                    return _error(400, "invalid_argument", "refusing to write:  the %s looks like it contains %s" % (field, kind))
+                    return _error(
+                        400,
+                        "invalid_argument",
+                        "refusing to write:  the %s looks like it contains %s" % (field, kind),
+                    )
         digest = N.request_digest(request)
         now = self.clock()
         with self.lock:
             self._sweep(now)
-            existing = self.active.get((seat, request["request_id"])) or self._read(seat, request["request_id"])
+            existing = self.active.get((seat, request["request_id"])) or self._read(
+                seat, request["request_id"]
+            )
             if existing is not None:
                 if existing.get("digest") != digest:
-                    return _error(409, "conflict", "this request_id was already used for a different request")
+                    return _error(
+                        409, "conflict", "this request_id was already used for a different request"
+                    )
                 return Answer(200, self.view(existing))
             waiting = [r for r in self.active.values() if r["state"] == "queued"]
-            if len(waiting) >= QUEUE_MAX or sum(1 for r in waiting if r["seat"] == seat) >= SEAT_QUEUE_MAX:
+            if (
+                len(waiting) >= QUEUE_MAX
+                or sum(1 for r in waiting if r["seat"] == seat) >= SEAT_QUEUE_MAX
+            ):
                 return _error(503, "unavailable", "the notes queue is full;  try again later")
             record = {
                 "seat": seat,
@@ -399,7 +442,9 @@ class NotesQueue:
             self._save(record)
             self.active[(seat, request["request_id"])] = record
             self.changed.notify_all()
-        self.log("notes-queue-queued", seat=seat, action=request["action"], principal=principal.name)
+        self.log(
+            "notes-queue-queued", seat=seat, action=request["action"], principal=principal.name
+        )
         return Answer(202, self.view(record))
 
     def status(self, principal: Principal, seat: str, request_id: str) -> Answer:
@@ -423,13 +468,17 @@ class NotesQueue:
         for name in ("since_hours", "limit"):
             if name in args:
                 if not re.fullmatch(r"\d{1,6}", args[name]):
-                    return _error(400, "invalid_argument", "argument '%s' must be an integer" % name)
+                    return _error(
+                        400, "invalid_argument", "argument '%s' must be an integer" % name
+                    )
                 args[name] = int(args[name])
         try:
             filters = N.check_log_args(args)
         except N.NotesError as exc:
             return _error(400, exc.code, exc.message)
-        entries = N.log_filter(N.iter_log_files(self.action_log, rotations=LOG_ROTATIONS), **filters)
+        entries = N.log_filter(
+            N.iter_log_files(self.action_log, rotations=LOG_ROTATIONS), **filters
+        )
         return Answer(200, {"contract": W.CONTRACT, "entries": entries, "count": len(entries)})
 
     def health(self) -> Answer:
@@ -458,8 +507,14 @@ class NotesQueue:
     # ---- the runner --------------------------------------------------------------------------------
     def claim(self, payload: Mapping[str, Any]) -> Answer:
         wait = payload.get("wait", 0)
-        if isinstance(wait, bool) or not isinstance(wait, (int, float)) or not 0 <= wait <= W.CLAIM_WAIT_MAX:
-            return _error(400, "invalid_argument", "wait must be 0 to %d seconds" % W.CLAIM_WAIT_MAX)
+        if (
+            isinstance(wait, bool)
+            or not isinstance(wait, (int, float))
+            or not 0 <= wait <= W.CLAIM_WAIT_MAX
+        ):
+            return _error(
+                400, "invalid_argument", "wait must be 0 to %d seconds" % W.CLAIM_WAIT_MAX
+            )
         deadline = time.monotonic() + float(wait)
         with self.lock:
             while True:
@@ -467,7 +522,8 @@ class NotesQueue:
                 self.runner_polled_at = now
                 self._sweep(now)
                 waiting = sorted(
-                    (r for r in self.active.values() if r["state"] == "queued"), key=lambda r: float(r["queued_at"])
+                    (r for r in self.active.values() if r["state"] == "queued"),
+                    key=lambda r: float(r["queued_at"]),
                 )
                 if waiting:
                     record = waiting[0]
@@ -479,7 +535,9 @@ class NotesQueue:
                         attempts=int(record.get("attempts") or 0) + 1,
                     )
                     self._save(record)
-                    self.log("notes-queue-claimed", seat=record["seat"], action=record.get("action"))
+                    self.log(
+                        "notes-queue-claimed", seat=record["seat"], action=record.get("action")
+                    )
                     return Answer(
                         200,
                         {
@@ -498,7 +556,11 @@ class NotesQueue:
                 self.changed.wait(timeout=min(left, 5.0))
 
     def result(self, payload: Mapping[str, Any]) -> Answer:
-        seat, request_id, claim = payload.get("seat"), payload.get("request_id"), payload.get("claim")
+        seat, request_id, claim = (
+            payload.get("seat"),
+            payload.get("request_id"),
+            payload.get("claim"),
+        )
         if (
             not isinstance(seat, str)
             or not isinstance(request_id, str)
@@ -506,7 +568,13 @@ class NotesQueue:
             or not _CLAIM_RE.fullmatch(claim)
         ):
             return _error(400, "invalid_argument", "seat, request_id and claim are required")
-        if ("result" in payload) == ("error" in payload) or set(payload) - {"seat", "request_id", "claim", "result", "error"}:
+        if ("result" in payload) == ("error" in payload) or set(payload) - {
+            "seat",
+            "request_id",
+            "claim",
+            "result",
+            "error",
+        }:
             return _error(400, "invalid_argument", "send exactly one of result and error")
         now = self.clock()
         with self.lock:
@@ -516,7 +584,9 @@ class NotesQueue:
                 return _error(404, "not_found", "no such request")
             if record["state"] in FINAL:
                 if record.get("claim") == claim:
-                    return Answer(200, self.view(record))  # the same report again:  already recorded
+                    return Answer(
+                        200, self.view(record)
+                    )  # the same report again:  already recorded
                 return _error(409, "conflict", "this request is already finished")
             if record["state"] != "running" or record.get("claim") != claim:
                 return _error(409, "conflict", "this claim does not hold the request")
@@ -525,11 +595,15 @@ class NotesQueue:
                 code = str(error.get("code") or "internal")
                 code = code if code in _ERROR_CODES else "internal"
                 state = "unknown" if code == "outcome_unknown" else "refused"
-                self._finish(record, now, state=state, error={"code": code, "message": error.get("message")})
+                self._finish(
+                    record, now, state=state, error={"code": code, "message": error.get("message")}
+                )
             else:
                 cleaned = self._clean_result(record.get("action"), payload["result"])
                 if cleaned is None:
-                    return _error(400, "invalid_argument", "the result does not fit the request's action")
+                    return _error(
+                        400, "invalid_argument", "the result does not fit the request's action"
+                    )
                 self._finish(record, now, state="done", result=cleaned)
             return Answer(200, self.view(record))
 
@@ -547,7 +621,19 @@ class NotesQueue:
             note = raw.get("note")
             if not isinstance(note, Mapping) or not isinstance(note.get("body"), str):
                 return None
-            keep = {key: note.get(key) for key in ("title", "id", "created", "modified", "format", "body", "bytes", "truncated")}
+            keep = {
+                key: note.get(key)
+                for key in (
+                    "title",
+                    "id",
+                    "created",
+                    "modified",
+                    "format",
+                    "body",
+                    "bytes",
+                    "truncated",
+                )
+            }
             if len(str(keep.get("body") or "")) > N.READ_MAX:
                 return None
             return {"note": keep}
@@ -560,7 +646,11 @@ class NotesQueue:
     def append_log(self, payload: Mapping[str, Any]) -> Answer:
         lines = payload.get("lines")
         if not isinstance(lines, list) or len(lines) > LOG_BATCH_MAX:
-            return _error(400, "invalid_argument", "lines must be a list of at most %d entries" % LOG_BATCH_MAX)
+            return _error(
+                400,
+                "invalid_argument",
+                "lines must be a list of at most %d entries" % LOG_BATCH_MAX,
+            )
         now = self.clock()
         accepted: list[dict[str, Any]] = []
         duplicates = 0
@@ -581,7 +671,9 @@ class NotesQueue:
             if accepted:
                 self._rotate_log()
                 L.append_jsonl(str(self.action_log), accepted)
-        return Answer(200, {"contract": W.CONTRACT, "accepted": len(accepted), "duplicates": duplicates})
+        return Answer(
+            200, {"contract": W.CONTRACT, "accepted": len(accepted), "duplicates": duplicates}
+        )
 
     def _rotate_log(self) -> None:
         try:

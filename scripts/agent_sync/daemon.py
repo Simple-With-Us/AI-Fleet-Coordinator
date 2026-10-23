@@ -638,7 +638,9 @@ class Daemon:
         # The Operator's Apple Notes queue (AFC-486), served by the listener API under /notes/v1/:  rebuilt with the
         # API server on every start and reload (_configure_listener_api), None while [notes_queue] is off.
         self.notes_queue: NQ.NotesQueue | None = None
-        self._notes_queue_spec: tuple[Any, ...] | None = None  # the principals that queue was built with
+        self._notes_queue_spec: tuple[Any, ...] | None = (
+            None  # the principals that queue was built with
+        )
         self.backfill_lock = threading.Lock()
         self.started_at = self.clock.time()
         self.last_tick = {
@@ -916,14 +918,18 @@ class Daemon:
             self.log.write(
                 "notes-queue-off",
                 reason=(
-                    "the key of %s is shorter than %d characters" % (", ".join(short), NW.MIN_KEY_LEN)
+                    "the key of %s is shorter than %d characters"
+                    % (", ".join(short), NW.MIN_KEY_LEN)
                     if short
-                    else "no key is set (%s)" % ", ".join(NW.KEY_NAMES[name] for name in NW.PRINCIPALS)
+                    else "no key is set (%s)"
+                    % ", ".join(NW.KEY_NAMES[name] for name in NW.PRINCIPALS)
                 ),
                 hint=ENV_RESTART_HINT,
             )
             return None
-        spec = tuple(sorted((name, key, tuple(sorted(seats))) for name, (key, seats) in principals.items()))
+        spec = tuple(
+            sorted((name, key, tuple(sorted(seats))) for name, (key, seats) in principals.items())
+        )
         if old is not None and old_spec == spec:
             queue = old
         else:
@@ -952,7 +958,8 @@ class Daemon:
             self._notes_queue_spec = None
             if self.config.notes_queue_enabled:
                 self.log.write(
-                    "notes-queue-off", reason="[listener_api] is off, and only the listener API serves the queue"
+                    "notes-queue-off",
+                    reason="[listener_api] is off, and only the listener API serves the queue",
                 )
             return
         keys = self.listener_api_keys()
@@ -990,7 +997,9 @@ class Daemon:
             if missing:
                 fields["warning"] = "no usable key for %s, so %s" % (
                     ", ".join(missing),
-                    "nothing can claim a request" if NW.RUNNER in missing else "those callers get 404",
+                    "nothing can claim a request"
+                    if NW.RUNNER in missing
+                    else "those callers get 404",
                 )
             self.log.write("notes-queue-started", **fields)
 

@@ -2303,7 +2303,9 @@ def apply_skew(docs: list) -> None:
 NOTES_RUNNER_LABEL = "com.jay.operator-notes-runner"
 NOTES_RUNNER_STATE = HOME / ".local/state/operator/notes-runner.json"
 NOTES_ACTION_LOG = HOME / "Library/Logs/fleet/apple-notes-actions.jsonl"
-NOTES_POLL_STALE_S = 180  # the runner long-polls every 25 s, so three minutes of silence means it is not polling
+NOTES_POLL_STALE_S = (
+    180  # the runner long-polls every 25 s, so three minutes of silence means it is not polling
+)
 NOTES_QUEUE_STALE_S = 600  # a request waiting ten minutes means the runner is not taking work
 NOTES_LOG_STALE_S = 1800  # unsent log lines older than this mean the runner stopped sending them
 
@@ -2329,7 +2331,9 @@ def notes_health(env: dict[str, str]) -> dict:
     scripts = str(Path(__file__).resolve().parent)
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
-    from agent_sync import notes_client as NC  # the shipped runtime carries it;  imported only on the server
+    from agent_sync import (
+        notes_client as NC,
+    )  # the shipped runtime carries it;  imported only on the server
 
     return NC.operator_client(env).health()
 
@@ -2355,7 +2359,14 @@ def check_notes(
         error = str(state.get("last_error") or "")[:160]
         fields = dict(base, tool="notes-runner")
         if job is None:
-            report.add("notes:runner", "WARN", "launchctl could not be read", state="unknown", reason="launchctl", **fields)
+            report.add(
+                "notes:runner",
+                "WARN",
+                "launchctl could not be read",
+                state="unknown",
+                reason="launchctl",
+                **fields,
+            )
         elif not job.get("loaded"):
             report.add(
                 "notes:runner",
@@ -2367,47 +2378,121 @@ def check_notes(
             )
         elif polled is None or polled > NOTES_POLL_STALE_S:
             detail = f"loaded ({job.get('state') or 'unknown state'}) but last polled the Operator {_ago(polled)}"
-            report.add("notes:runner", "WARN", detail + (f";  last error:  {error}" if error else ""), state="stale", reason="not polling", **fields)
+            report.add(
+                "notes:runner",
+                "WARN",
+                detail + (f";  last error:  {error}" if error else ""),
+                state="stale",
+                reason="not polling",
+                **fields,
+            )
         else:
             handled = int(state.get("handled") or 0)
-            report.add("notes:runner", "OK", f"polling (last {_ago(polled)}), {handled} requests run", state="current", **fields)
+            report.add(
+                "notes:runner",
+                "OK",
+                f"polling (last {_ago(polled)}), {handled} requests run",
+                state="current",
+                **fields,
+            )
         fields = dict(base, tool="notes-log")
         try:
             size = NOTES_ACTION_LOG.stat().st_size
         except OSError:
-            report.add("notes:action-log", "WARN", "no action log yet (apple-notes-coding.sh has not run since it gained one)", state="unknown", reason="absent", **fields)
+            report.add(
+                "notes:action-log",
+                "WARN",
+                "no action log yet (apple-notes-coding.sh has not run since it gained one)",
+                state="unknown",
+                reason="absent",
+                **fields,
+            )
             return
         cursor = state.get("log") if isinstance(state.get("log"), dict) else {}
         unsent = max(0, size - int(cursor.get("offset") or 0))
         shipped = _age(state.get("log_shipped_at"), now)
-        if unsent and (shipped is None or shipped > NOTES_LOG_STALE_S) and job and job.get("loaded"):
-            report.add("notes:action-log", "WARN", f"{unsent} bytes not yet sent to the Operator (last sent {_ago(shipped)})", state="stale", reason="unsent", **fields)
+        if (
+            unsent
+            and (shipped is None or shipped > NOTES_LOG_STALE_S)
+            and job
+            and job.get("loaded")
+        ):
+            report.add(
+                "notes:action-log",
+                "WARN",
+                f"{unsent} bytes not yet sent to the Operator (last sent {_ago(shipped)})",
+                state="stale",
+                reason="unsent",
+                **fields,
+            )
         else:
-            report.add("notes:action-log", "OK", f"{size} bytes;  sent to the Operator {_ago(shipped)}", state="current", **fields)
+            report.add(
+                "notes:action-log",
+                "OK",
+                f"{size} bytes;  sent to the Operator {_ago(shipped)}",
+                state="current",
+                **fields,
+            )
         return
     if host != "server":
         return
     fields = dict(base, tool="notes-queue")
     if not network:
-        report.add("notes:queue", "WARN", "not checked (--no-network)", state="unknown", reason="no network", **fields)
+        report.add(
+            "notes:queue",
+            "WARN",
+            "not checked (--no-network)",
+            state="unknown",
+            reason="no network",
+            **fields,
+        )
         return
     try:
         data = health(env)
     except Exception as exc:  # noqa: BLE001 - a failed probe is a row, never a crash
         code = getattr(exc, "code", type(exc).__name__)
         message = str(getattr(exc, "message", "") or "")[:200]
-        status, state_name = ("WARN", "unknown") if code == "not_configured" else ("FAIL", "missing")
-        report.add("notes:queue", status, f"the Operator notes queue:  {code}{(':  ' + message) if message else ''}", state=state_name, reason=str(code), **fields)
+        status, state_name = (
+            ("WARN", "unknown") if code == "not_configured" else ("FAIL", "missing")
+        )
+        report.add(
+            "notes:queue",
+            status,
+            f"the Operator notes queue:  {code}{(':  ' + message) if message else ''}",
+            state=state_name,
+            reason=str(code),
+            **fields,
+        )
         return
     polled = _age(data.get("runner_polled_at"), now)
     oldest = data.get("oldest_queued_seconds")
     counts = f"{data.get('queued', 0)} queued, {data.get('running', 0)} running"
     if polled is None or polled > NOTES_POLL_STALE_S:
-        report.add("notes:queue", "WARN", f"{counts};  the Mac runner last polled {_ago(polled)}", state="stale", reason="runner silent", **fields)
+        report.add(
+            "notes:queue",
+            "WARN",
+            f"{counts};  the Mac runner last polled {_ago(polled)}",
+            state="stale",
+            reason="runner silent",
+            **fields,
+        )
     elif isinstance(oldest, int) and oldest > NOTES_QUEUE_STALE_S:
-        report.add("notes:queue", "WARN", f"{counts};  the oldest has waited {_ago(oldest).replace(' ago', '')}", state="stale", reason="backlog", **fields)
+        report.add(
+            "notes:queue",
+            "WARN",
+            f"{counts};  the oldest has waited {_ago(oldest).replace(' ago', '')}",
+            state="stale",
+            reason="backlog",
+            **fields,
+        )
     else:
-        report.add("notes:queue", "OK", f"{counts};  the Mac runner polled {_ago(polled)}", state="current", **fields)
+        report.add(
+            "notes:queue",
+            "OK",
+            f"{counts};  the Mac runner polled {_ago(polled)}",
+            state="current",
+            **fields,
+        )
 
 
 # --- AFC-461:  the document, the server route and the report file -------------------------------

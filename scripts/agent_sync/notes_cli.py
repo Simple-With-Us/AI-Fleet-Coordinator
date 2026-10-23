@@ -85,10 +85,14 @@ def add_parsers(
             type=int,
             metavar="SECONDS",
             default=None,
-            help="off a Mac:  how long to wait for the Mac runner (default %d, 0 answers at once)" % CLI_WAIT_DEFAULT,
+            help="off a Mac:  how long to wait for the Mac runner (default %d, 0 answers at once)"
+            % CLI_WAIT_DEFAULT,
         )
         p.add_argument(
-            "--no-wait", dest="no_wait", action="store_true", help="off a Mac:  answer queued at once (--wait 0)"
+            "--no-wait",
+            dest="no_wait",
+            action="store_true",
+            help="off a Mac:  answer queued at once (--wait 0)",
         )
         identity_opt(p)
 
@@ -98,8 +102,14 @@ def add_parsers(
     )
 
     for action, summary in (
-        ("create", "create a note (title [TEAM_KEY, Agent] Topic;  body from stdin, --body-file or --html)"),
-        ("update", "replace a note's body, any note in Coding (body from stdin, --body-file or --html)"),
+        (
+            "create",
+            "create a note (title [TEAM_KEY, Agent] Topic;  body from stdin, --body-file or --html)",
+        ),
+        (
+            "update",
+            "replace a note's body, any note in Coding (body from stdin, --body-file or --html)",
+        ),
     ):
         q = add(sub, action, summary)
         q.add_argument("title", metavar="TITLE", help="the exact note title")
@@ -145,24 +155,64 @@ def add_parsers(
         q = add(sub, action, "%s the note with this exact title, any note in Coding" % action)
         q.add_argument("title", metavar="TITLE")
         request_opts(q)
-    q = add(sub, "read", "print a note, any note in Coding (html is its content, ready for update --html)")
+    q = add(
+        sub,
+        "read",
+        "print a note, any note in Coding (html is its content, ready for update --html)",
+    )
     q.add_argument("title", metavar="TITLE")
-    q.add_argument("--format", choices=N.FORMATS, default=None, help="html (the default), text or raw")
+    q.add_argument(
+        "--format", choices=N.FORMATS, default=None, help="html (the default), text or raw"
+    )
     request_opts(q)
     q = add(sub, "list", "list the notes in Coding, newest change first")
-    q.add_argument("--query", metavar="TEXT", default=None, help="only titles that contain this text")
-    q.add_argument("--limit", type=int, metavar="N", default=None, help="at most this many (1 to %d, default %d)" % (N.LIST_MAX, N.LIST_DEFAULT))
+    q.add_argument(
+        "--query", metavar="TEXT", default=None, help="only titles that contain this text"
+    )
+    q.add_argument(
+        "--limit",
+        type=int,
+        metavar="N",
+        default=None,
+        help="at most this many (1 to %d, default %d)" % (N.LIST_MAX, N.LIST_DEFAULT),
+    )
     request_opts(q)
     q = add(sub, "log", "the action log of apple-notes-coding.sh, newest first (never note text)")
-    q.add_argument("--since-hours", dest="since_hours", type=int, metavar="H", default=None, help="entries from the last H hours (default 24)")
-    q.add_argument("--limit", type=int, metavar="N", default=None, help="at most N entries (default 50)")
-    q.add_argument("--by-seat", dest="by_seat", metavar="SEAT", default=None, help="only the entries this seat made")
+    q.add_argument(
+        "--since-hours",
+        dest="since_hours",
+        type=int,
+        metavar="H",
+        default=None,
+        help="entries from the last H hours (default 24)",
+    )
+    q.add_argument(
+        "--limit", type=int, metavar="N", default=None, help="at most N entries (default 50)"
+    )
+    q.add_argument(
+        "--by-seat",
+        dest="by_seat",
+        metavar="SEAT",
+        default=None,
+        help="only the entries this seat made",
+    )
     q.add_argument("--action", choices=N.ACTIONS, default=None, help="only this mode")
-    q.add_argument("--title", metavar="TEXT", default=None, help="only entries whose title contains this text")
+    q.add_argument(
+        "--title", metavar="TEXT", default=None, help="only entries whose title contains this text"
+    )
     identity_opt(q)
-    q = add(sub, "runner", "the Mac runner for the Operator's notes queue (the LaunchAgent runs this)")
+    q = add(
+        sub, "runner", "the Mac runner for the Operator's notes queue (the LaunchAgent runs this)"
+    )
     q.add_argument("--once", action="store_true", help="one pass, then exit")
-    q.add_argument("--claim-wait", dest="claim_wait", type=int, metavar="SECONDS", default=None, help="how long one claim waits for work (default 25)")
+    q.add_argument(
+        "--claim-wait",
+        dest="claim_wait",
+        type=int,
+        metavar="SECONDS",
+        default=None,
+        help="how long one claim waits for work (default 25)",
+    )
     q = add(sub, "status", "where a request sent through the Operator stands")
     q.add_argument("request_id", metavar="REQUEST_ID")
     identity_opt(q)
@@ -254,12 +304,18 @@ def _action(args: argparse.Namespace) -> str:
 
 
 def _home(rt: Any) -> Path:
-    return Path(rt.home) if rt.home is not None else Path(rt.env.get("HOME") or os.path.expanduser("~"))
+    return (
+        Path(rt.home)
+        if rt.home is not None
+        else Path(rt.env.get("HOME") or os.path.expanduser("~"))
+    )
 
 
 def _host(rt: Any, identity: str | None) -> NC.Host:
     home = _home(rt)
-    store = IdemStore(str(state_root(rt.env, home) / identity / "mcp-idem.json")) if identity else None
+    store = (
+        IdemStore(str(state_root(rt.env, home) / identity / "mcp-idem.json")) if identity else None
+    )
     return NC.Host(rt.env, home, store, caller="cli")
 
 
@@ -279,7 +335,8 @@ def _scan(request: dict[str, Any]) -> None:
         found = scan_text(text)
         if found:
             raise N.NotesError(
-                "invalid_argument", "refusing to write:  the %s looks like it contains %s" % (field, found)
+                "invalid_argument",
+                "refusing to write:  the %s looks like it contains %s" % (field, found),
             )
 
 
@@ -361,7 +418,11 @@ def _cmd_notes(rt: Any, args: argparse.Namespace, audit: dict[str, Any]) -> int:
             flags["summary"] = args.summary
         if args.pr:
             flags["pr"] = args.pr
-        flags = {name: value for name, value in flags.items() if value not in (False, None, "") or name == "pin"}
+        flags = {
+            name: value
+            for name, value in flags.items()
+            if value not in (False, None, "") or name == "pin"
+        }
         # AFC-361:  the session id, from the CLI's global --session ID or the environment, judged for the resolved
         # identity.
         try:
@@ -429,7 +490,10 @@ def _cmd_runner(rt: Any, args: argparse.Namespace) -> int:
             rt.out("notes runner:  %s\n" % ("handled one request" if handled else "nothing queued"))
             return 0
         stop = threading.Event()
-        previous = {sig: signal.signal(sig, lambda *_: stop.set()) for sig in (signal.SIGTERM, signal.SIGINT)}
+        previous = {
+            sig: signal.signal(sig, lambda *_: stop.set())
+            for sig in (signal.SIGTERM, signal.SIGINT)
+        }
         try:
             runner.loop(stop, wait)
         finally:
@@ -467,7 +531,9 @@ def _print(rt: Any, info: dict[str, Any], use_json: bool) -> None:
     if info.get("pin_skipped"):
         line += ", pin skipped:  %s" % info["pin_skipped"]
     if info.get("status") in ("queued", "running"):
-        line += ";  the Mac runner has not finished it:  simple-notes status %s" % info.get("request_id")
+        line += ";  the Mac runner has not finished it:  simple-notes status %s" % info.get(
+            "request_id"
+        )
     rt.out(line + "\n")
 
 
@@ -507,6 +573,9 @@ def _print_log(rt: Any, info: dict[str, Any], use_json: bool) -> None:
         ]
         reformatted = entry.get("reformatted") if isinstance(entry.get("reformatted"), dict) else {}
         if reformatted.get("dates") or reformatted.get("gaps"):
-            parts.append("reformatted %s dates, %s gaps" % (reformatted.get("dates", 0), reformatted.get("gaps", 0)))
+            parts.append(
+                "reformatted %s dates, %s gaps"
+                % (reformatted.get("dates", 0), reformatted.get("gaps", 0))
+            )
         rt.out("%s  %s\n" % ("  ".join(parts), entry.get("title") or ""))
     rt.out("(%d entries from the %s log)\n" % (info.get("count", 0), info.get("source")))

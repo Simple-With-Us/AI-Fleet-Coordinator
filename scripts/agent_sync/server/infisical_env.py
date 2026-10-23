@@ -184,7 +184,12 @@ def login(env: Mapping[str, str], **kw) -> str:
 
 
 def fetch(
-    env: Mapping[str, str], *, path: str | None = None, token: str | None = None, stage: str = "read", **kw
+    env: Mapping[str, str],
+    *,
+    path: str | None = None,
+    token: str | None = None,
+    stage: str = "read",
+    **kw,
 ) -> dict[str, str]:
     """{name: value} for every secret in one folder (default INFISICAL_SECRET_PATH, else /zulip).  Logs in first
     unless `token` is given.  Raises LoadError."""
@@ -248,10 +253,16 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     try:
         operator = {
             name: value
-            for name, value in fetch(env, path=OPERATOR_PATH, token=token, stage="read operator", **kw).items()
+            for name, value in fetch(
+                env, path=OPERATOR_PATH, token=token, stage="read operator", **kw
+            ).items()
             if name in OPERATOR_NAMES
         }
-        operator_note = "; notes-queue keys from %s: %d of %d" % (OPERATOR_PATH, len(operator), len(OPERATOR_NAMES))
+        operator_note = "; notes-queue keys from %s: %d of %d" % (
+            OPERATOR_PATH,
+            len(operator),
+            len(OPERATOR_NAMES),
+        )
     except LoadError as exc:
         operator, operator_note = {}, "; notes-queue keys not loaded (%s)" % exc
     found = dict(found, **operator)

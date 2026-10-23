@@ -26,7 +26,6 @@ Run:  cd scripts && python3 -m unittest test_apple_notes_actions
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -287,7 +286,10 @@ class ReadTests(ActionsTestCase):
                 p = self.run_script(*args)
                 self.assertEqual(p.returncode, 0, p.stderr)
                 self.assertEqual(json.loads(p.stdout), note)
-                self.assertEqual(set(json.loads(p.stdout)), {"title", "id", "created", "modified", "body", "plaintext"})
+                self.assertEqual(
+                    set(json.loads(p.stdout)),
+                    {"title", "id", "created", "modified", "body", "plaintext"},
+                )
         #  nothing but the JXA read reached osascript, and nothing pinned, showed or activated anything
         for call in self.calls():
             self.assertEqual(call["argv"], ["-l", "JavaScript"])
@@ -303,7 +305,7 @@ class ReadTests(ActionsTestCase):
         self.assertEqual(json.loads(p.stdout)["id"], NOTES[2]["id"])
 
     def test_the_title_reaches_the_jxa_program_through_the_environment_only(self):
-        title = "[AFC, Claude] It's \"quoted\" $(touch pwned) `tick` ');Application(\"Finder\")//"
+        title = '[AFC, Claude] It\'s "quoted" $(touch pwned) `tick` \');Application("Finder")//'
         p = self.run_script("--read", "--title", title)
         self.assertEqual(p.returncode, 3, p.stderr)
         (call,) = self.calls()
@@ -353,7 +355,11 @@ class ListTests(ActionsTestCase):
         out = self.listed("--query", "RELAY")
         self.assertEqual(
             [row["title"] for row in out["notes"]],
-            ["[AFC, Claude] Notes Relay Retirement", "[AFC, MM] Relay Live Test", "[CT, Codex] relay cutover"],
+            [
+                "[AFC, Claude] Notes Relay Retirement",
+                "[AFC, MM] Relay Live Test",
+                "[CT, Codex] relay cutover",
+            ],
         )
         self.assertEqual(out["total"], 3)
         self.assertEqual(self.listed("--query", "master list")["notes"][0]["id"], NOTES[1]["id"])
@@ -463,7 +469,12 @@ class ExistingOnlyTests(ActionsTestCase):
     def test_the_check_returns_before_both_makes_in_the_same_applescript(self):
         """The not-found answer comes from inside the one AppleEvent that would have made the folder or the note."""
         self.run_script(
-            "--update", "--existing-only", "--session", "test-session-1234", "[AFC, Claude] X", "Body."
+            "--update",
+            "--existing-only",
+            "--session",
+            "test-session-1234",
+            "[AFC, Claude] X",
+            "Body.",
         )
         (call,) = self.calls()
         lines = [line.strip() for line in call["source"].splitlines()]
@@ -538,17 +549,28 @@ class ActionLogTests(ActionsTestCase):
         self.assertEqual(entry["pin"], "pinned")
         self.assertEqual(
             entry["flags"],
-            {"notify": False, "needs_owner": False, "html": False, "existing_only": False, "summary": True, "pr": "46"},
+            {
+                "notify": False,
+                "needs_owner": False,
+                "html": False,
+                "existing_only": False,
+                "summary": True,
+                "pr": "46",
+            },
         )
         self.assertNotIn("count", entry)
         self.assertNotIn("bytes", entry)
 
     def test_the_trap_still_removes_the_temp_files(self):
         """The log and the cleanup share one EXIT trap, so neither replaces the other."""
-        p = self.run_script("--update", "--session", "test-session-1234", NOTES[2]["title"], "Body.")
+        p = self.run_script(
+            "--update", "--session", "test-session-1234", NOTES[2]["title"], "Body."
+        )
         self.assertEqual(p.returncode, 0, p.stderr)
         (call,) = self.calls()
-        self.assertFalse(Path(call["html_path"]).exists(), "the note HTML temp file was left behind")
+        self.assertFalse(
+            Path(call["html_path"]).exists(), "the note HTML temp file was left behind"
+        )
         self.assertFalse(Path(call["title_file"]).exists(), "the title temp file was left behind")
         self.assertEqual(self.only_log_line()["mode"], "update")
 
@@ -577,13 +599,26 @@ class ActionLogTests(ActionsTestCase):
             (("[AFC, Claude] No Session", "Body."), {}, 2, "usage", "create"),
             (("--existing-only", "[AFC, Claude] X"), {}, 2, "usage", "create"),
             (
-                ("--update", "--existing-only", "--session", "test-session-1234", "[AFC, Claude] Gone", "Body."),
+                (
+                    "--update",
+                    "--existing-only",
+                    "--session",
+                    "test-session-1234",
+                    "[AFC, Claude] Gone",
+                    "Body.",
+                ),
                 {},
                 3,
                 "not_found",
                 "update",
             ),
-            (("--pin-only", NOTES[2]["title"]), {"STUB_SHORTCUT_FAIL": "1"}, 4, "pin_failed", "pin"),
+            (
+                ("--pin-only", NOTES[2]["title"]),
+                {"STUB_SHORTCUT_FAIL": "1"},
+                4,
+                "pin_failed",
+                "pin",
+            ),
             (("--pin-only", "[AFC, Claude] Gone"), {}, 3, "not_found", "pin"),
             (("--read", NOTES[0]["title"]), {"STUB_OSA_FAIL": "1"}, 1, "error", "read"),
         )
@@ -595,19 +630,31 @@ class ActionLogTests(ActionsTestCase):
                 self.assertEqual(p.returncode, code, p.stdout + p.stderr)
                 entry = self.only_log_line()
                 self.assert_shape(entry)
-                self.assertEqual((entry["exit"], entry["outcome"], entry["mode"]), (code, outcome, mode))
+                self.assertEqual(
+                    (entry["exit"], entry["outcome"], entry["mode"]), (code, outcome, mode)
+                )
                 self.assertIsNone(entry["body_sha256"])
         self.assertEqual(entry["pin"], None)
 
     def test_a_skipped_pin_is_logged_on_a_write_that_still_succeeds(self):
         p = self.run_script(
-            "--update", "--session", "test-session-1234", NOTES[2]["title"], "Body.", STUB_SHORTCUT_FAIL="1"
+            "--update",
+            "--session",
+            "test-session-1234",
+            NOTES[2]["title"],
+            "Body.",
+            STUB_SHORTCUT_FAIL="1",
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         entry = self.only_log_line()
         self.assertEqual((entry["outcome"], entry["pin"]), ("done", "skipped"))
         p = self.run_script(
-            "--update", "--session", "test-session-1234", NOTES[2]["title"], "Body.", APPLE_NOTES_PIN="0"
+            "--update",
+            "--session",
+            "test-session-1234",
+            NOTES[2]["title"],
+            "Body.",
+            APPLE_NOTES_PIN="0",
         )
         self.assertEqual(self.log_lines()[-1]["pin"], "off")
         p = self.run_script("--pin-only", NOTES[2]["title"], STUB_SHORTCUT_FAIL="1")
@@ -637,7 +684,9 @@ class ActionLogTests(ActionsTestCase):
             with self.subTest(value=value):
                 p = self.run_script("--read", NOTES[0]["title"], APPLE_NOTES_ACTION_LOG=value)
                 self.assertEqual(p.returncode, 0, p.stderr)
-                p = self.run_script("--read", "[AFC, Claude] No Such Note", APPLE_NOTES_ACTION_LOG=value)
+                p = self.run_script(
+                    "--read", "[AFC, Claude] No Such Note", APPLE_NOTES_ACTION_LOG=value
+                )
                 self.assertEqual(p.returncode, 3)
                 self.assertFalse(self.log.exists())
                 self.assertFalse((self.tmp / "Library").exists())
@@ -645,7 +694,11 @@ class ActionLogTests(ActionsTestCase):
 
     def test_a_preview_logs_nothing(self):
         p = self.run_script(
-            "--session", "test-session-1234", "[AFC, Claude] Preview", "Body.", APPLE_NOTES_PRINT_HTML="1"
+            "--session",
+            "test-session-1234",
+            "[AFC, Claude] Preview",
+            "Body.",
+            APPLE_NOTES_PRINT_HTML="1",
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(self.log_lines(), [])
@@ -696,7 +749,13 @@ class ActionLogTests(ActionsTestCase):
             ("--read", NOTES[0]["title"]),
             ("--read", "[AFC, Claude] No Such Note"),
             ("--list", "--limit", "2"),
-            ("--update", "--session", "test-session-1234", NOTES[2]["title"], "Body.  2026-10-19 done."),
+            (
+                "--update",
+                "--session",
+                "test-session-1234",
+                NOTES[2]["title"],
+                "Body.  2026-10-19 done.",
+            ),
             ("--list", "--limit", "0"),
         )
         for unwritable in (str(blocker / "actions.jsonl"), str(a_directory)):
@@ -711,7 +770,9 @@ class ActionLogTests(ActionsTestCase):
 
 
 def _jxa_program() -> str:
-    found = re.search(r"osascript -l JavaScript <<'JXA'\n(.*?)\nJXA\n", SCRIPT.read_text(), re.DOTALL)
+    found = re.search(
+        r"osascript -l JavaScript <<'JXA'\n(.*?)\nJXA\n", SCRIPT.read_text(), re.DOTALL
+    )
     assert found, "the quoted JXA heredoc is gone from apple-notes-coding.sh"
     return found.group(1)
 
@@ -798,7 +859,12 @@ class JxaProgramTests(unittest.TestCase):
             }
             child.update(env)
             return subprocess.run(
-                ["node", str(harness)], capture_output=True, text=True, env=child, timeout=60, check=False
+                ["node", str(harness)],
+                capture_output=True,
+                text=True,
+                env=child,
+                timeout=60,
+                check=False,
             )
 
     def test_read_answers_the_note_in_plain_ascii_json(self):
@@ -810,8 +876,12 @@ class JxaProgramTests(unittest.TestCase):
                 self.assertEqual(json.loads(p.stdout), note)
 
     def test_read_of_a_missing_note_or_folder_answers_the_sentinel(self):
-        self.assertEqual(self.run_jxa("read", "[AFC, Claude] No Such Note").stdout.strip(), NOT_FOUND)
-        self.assertEqual(self.run_jxa("read", NOTES[0]["title"], FAKE_FOLDER="0").stdout.strip(), NOT_FOUND)
+        self.assertEqual(
+            self.run_jxa("read", "[AFC, Claude] No Such Note").stdout.strip(), NOT_FOUND
+        )
+        self.assertEqual(
+            self.run_jxa("read", NOTES[0]["title"], FAKE_FOLDER="0").stdout.strip(), NOT_FOUND
+        )
 
     def test_list_answers_four_aligned_columns(self):
         p = self.run_jxa("list")
