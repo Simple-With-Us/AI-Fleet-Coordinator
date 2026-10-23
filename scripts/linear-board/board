@@ -1526,24 +1526,40 @@ class Workspace:
         if env("LINEAR_BOARD_OWNER") == "1":
             # Ownership is the only consumer of the users map, so the listing is
             # gated on its flag:  with the flag off no board command can fail on
-            # this optional query.  When the flag is on and Linear refuses the
-            # listing, or lists a malformed record, ownership degrades to nothing
-            # (the claim label stays the record) instead of aborting the verb:
-            # one bad record must not abort every claim.
-            try:
-                raw = list(self.L.paginate(Q_USERS, {}, ("users",), 250))
-            except GqlError as e:
-                warn(f"Linear would not list the workspace users; ownership stays off: "
-                     f"{gql_summary(e)}")
-                raw = []
-            try:
-                users = parse_linear_users(raw)
-            except ValueError as e:
-                warn(f"Linear listed user record(s) with an unexpected shape; ownership stays off: {e}")
-                users = {}
+            # this optional query.
+            users = self._fetch_users()
         self.teams, self.labels, self.flat, self.users, self.fresh = teams, labels, flat, users, True
         write_json_file(self._path(), {"api": self.L.url, "at": time.time(), "teams": teams, "labels": labels,
                                        "flat": flat, "users": users})
+
+    def _fetch_users(self) -> dict:
+        """The active workspace users by name.  When Linear refuses the
+        listing, or lists a malformed record, ownership degrades to nothing
+        (the claim label stays the record) instead of aborting the verb:
+        one bad record must not abort every claim."""
+        try:
+            raw = list(self.L.paginate(Q_USERS, {}, ("users",), 250))
+        except GqlError as e:
+            warn(f"Linear would not list the workspace users; ownership stays off: "
+                 f"{gql_summary(e)}")
+            return {}
+        try:
+            return parse_linear_users(raw)
+        except ValueError as e:
+            warn(f"Linear listed user record(s) with an unexpected shape; ownership stays off: {e}")
+            return {}
+
+    def _refresh_users(self) -> None:
+        """Re-read only the users listing after a user miss, so a seat with no
+        Linear user (or a refused listing) does not repay teams and labels on
+        every command.  A refused listing is retried per command:  one small
+        query, and a transient refusal heals itself."""
+        if env("LINEAR_BOARD_OWNER") == "1":
+            self.users = self._fetch_users()
+            d = read_json_file(self._path()) or {}
+            if d.get("api") == self.L.url:
+                d["users"] = self.users
+                write_json_file(self._path(), d)
 
     def team(self, key: str) -> dict:
         if key not in self.teams and not self.fresh:
@@ -1618,7 +1634,7 @@ class Workspace:
         found = self._match_user(seat)
         if found is not None or self.fresh:
             return found
-        self._load(refresh=True)
+        self._refresh_users()
         return self._match_user(seat)
 
     def _match_user(self, seat: str) -> str | None:
@@ -2364,15 +2380,19 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
     try:
         L.call(M_UPDATE, {"id": n["id"], "input": inp})
     except GqlError as e:
-        if not inp.get("assigneeId"):
+        if "assigneeId" not in inp:
             L.fail(f"Linear refused the claim: {gql_summary(e)}")
         # Ownership is an enhancement on the claim label, never its replacement:
-        # a refused assignee (a user deactivated after the users snapshot, or an
-        # id Linear no longer knows) must not lose the state change, the labels,
-        # or the CLAIMED comment.  Retry without the owner;  the landing is
-        # reported only after the retry succeeds.
-        warn(f"Linear refused the assignee {owner}; retrying the claim without an owner: "
-             f"{gql_summary(e)}")
+        # a refused assignee write (an id Linear no longer knows, or a clear
+        # from a steal by a seat with no Linear user) must not lose the state
+        # change, the labels, or the CLAIMED comment.  Retry without the owner
+        # field at all;  the landing is reported only after the retry succeeds.
+        if owner:
+            warn(f"Linear refused the assignee {owner}; retrying the claim without an owner: "
+                 f"{gql_summary(e)}")
+        else:
+            warn("Linear refused the assignee clear; retrying the claim without it: "
+                 f"{gql_summary(e)}")
         del inp["assigneeId"]
         owner = None
         try:
@@ -2381,13 +2401,17 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
             L.fail(f"Linear refused the claim: {gql_summary(e2)}")
         refused_owner = True
     landed = f"{n['identifier']} is In Progress with {by}'s claim label"
+    owner_note = ""
     if env("LINEAR_BOARD_OWNER") == "1":
         if owner:
             landed += f" and assignee {by}"
+            owner_note = f"assignee {by}"
         elif refused_owner:
             landed += " (Linear refused the assignee; the label holds the claim)"
+            owner_note = "Linear refused the assignee; the label holds the claim"
         else:
             landed += " (no Linear user for the seat)"
+            owner_note = "no Linear user for the seat"
     L.landed.append(landed)
     text = "CLAIMED"
     if stolen:
@@ -2396,7 +2420,8 @@ def cmd_claim(L: Linear, ids: IdIndex, a, seat: str) -> int:
         text += f"\n\n{a.comment.strip()}"
     post_comment(L, n, comment_body(by, sessions, text, a.location, env_label), by, "claim", sessions)
     remember([n])
-    print(f"claimed {short_id(n['id'])} by {by} -> in_progress{session_tail(sessions)}  {n['identifier']}")
+    print(f"claimed {short_id(n['id'])} by {by} -> in_progress{session_tail(sessions)}  {n['identifier']}"
+          + (f"  ({owner_note})" if owner_note else ""))
     return 0
 
 
@@ -2472,9 +2497,12 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
             state = (fetch_issue(L, n["id"], a.id).get("state") or {}).get("name")
         drop = closing_label_ids(n)
         # The relation path skips the CLOSING_STATUSES branch below, so "clear
-        # on Done" is repeated here:  a duplicate owns nothing either.
+        # on Done" is repeated here, with the same claimed-only guard:  a
+        # duplicate of an unclaimed issue keeps its human assignee.
         dup_inp = {"removedLabelIds": drop} if drop else {}
-        if env("LINEAR_BOARD_OWNER") == "1":
+        dup_claimed = any(label_key(x).startswith(CLAIM_PREFIX)
+                          for x in (n.get("labels") or {}).get("nodes") or [])
+        if dup_claimed and env("LINEAR_BOARD_OWNER") == "1":
             dup_inp["assigneeId"] = None
         if dup_inp:
             try:
@@ -2483,7 +2511,7 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
                 L.fail(f"Linear refused the duplicate cleanup update: {gql_summary(e)}")
             if drop:
                 L.landed.append(f"{n['identifier']} lost needs-owner and ask-capture")
-            if env("LINEAR_BOARD_OWNER") == "1":
+            if dup_claimed and env("LINEAR_BOARD_OWNER") == "1":
                 L.landed.append(f"{n['identifier']} cleared its assignee")
         text = f"Duplicate of {canon['identifier']}"
         if a.resolution:
@@ -2518,8 +2546,12 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
         drop = closing_label_ids(n)
         if drop:
             inp["removedLabelIds"] = drop
-        # "Clear on Done":  a closed issue owns nothing, whoever held it.
-        if env("LINEAR_BOARD_OWNER") == "1":
+        # "Clear on Done":  a closed claim owns nothing.  Only when the issue
+        # carries a claim marker, like the release path:  closing an unclaimed
+        # issue keeps its human assignee.
+        claimed = any(label_key(x).startswith(CLAIM_PREFIX)
+                      for x in (n.get("labels") or {}).get("nodes") or [])
+        if claimed and env("LINEAR_BOARD_OWNER") == "1":
             inp["assigneeId"] = None
     try:
         L.call(M_UPDATE, {"id": n["id"], "input": inp})
