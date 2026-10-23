@@ -65,7 +65,9 @@ QUERY_MAX = 100
 LIST_DEFAULT, LIST_MAX = 100, 500
 MARKDOWN_MAX = 500_000  # characters a tool accepts
 BODY_TOO_LONG = "the note body is longer than %d characters;  nothing was written"
-READ_MAX = 2_000_000  # characters of a note a read returns;  past it the body is cut and `truncated` is true
+#  UTF-8 bytes of a note a read returns;  past it the body is cut and `truncated` is true.  Counted in bytes, not
+#  characters, so a runner's result (the body as JSON, quotes escaped) always fits the Operator's 4 MiB request body.
+READ_MAX = 1_500_000
 SCRIPT_NAME = "apple-notes-coding.sh"
 #  The helper wraps its Notes calls in a 900 s AppleEvent timeout (NOTES_APPLE_EVENT_TIMEOUT_S in
 #  scripts/apple-notes-coding.sh),  because a body the size of the master list takes longer than
@@ -598,19 +600,31 @@ _LEAD_BLOCK_RE = re.compile(
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
+TAIL_SCAN = (
+    4096  # the footer and its spacers are a few hundred characters at the very end of a body
+)
+_FOOTER_P_RE = re.compile(
+    r"(?:\s*<hr\s*/?>)?\s*<p>\s*<i>\s*" + _FOOTER_TEXT + r".{0,600}?</i>\s*</p>\s*$", re.DOTALL | re.IGNORECASE
+)
+
+
+def _on_tail(text: str, *patterns: re.Pattern[str]) -> str:
+    """`text` with each end-anchored pattern removed from its last TAIL_SCAN characters only.  Searched over a whole
+    body, these patterns try every start position, and a body of many newlines (500,000 characters pass every check)
+    then costs minutes of a runner's lease before the write even starts."""
+    cut = max(0, len(text) - TAIL_SCAN)
+    tail = text[cut:]
+    for pattern in patterns:
+        tail = pattern.sub("", tail)
+    return text[:cut] + tail
+
+
 def strip_provenance(body: str, is_html: bool) -> str:
     """The body without a trailing provenance line (the Operator's, or the old relay's):  an update replaces it rather
     than piling one on another."""
     if is_html:
-        out = _HTML_FOOTER_RE.sub("", body)
-        out = re.sub(
-            r"(?:\s*<hr\s*/?>)?\s*<p>\s*<i>\s*" + _FOOTER_TEXT + r".{0,600}?</i>\s*</p>\s*$",
-            "",
-            out,
-            flags=re.DOTALL | re.IGNORECASE,
-        )
-        return out
-    return _MD_FOOTER_RE.sub("", body)
+        return _on_tail(body, _HTML_FOOTER_RE, _FOOTER_P_RE)
+    return _on_tail(body, _MD_FOOTER_RE)
 
 
 def with_provenance(
@@ -679,18 +693,12 @@ def content_html(body: str, title: str) -> str:
             seen_session = True
         elif text.startswith(_BANNER_PREFIXES):
             pass  # the needs-owner and quick-view banners follow the spacer;  the flags write them again
-        elif (
-            header
-            and (seen_title or seen_stamp)
-            and not text
-            and re.search(r"<br", block, re.IGNORECASE)
-        ):
+        elif header and (seen_title or seen_stamp) and not text and re.search(r"<br", block, re.IGNORECASE):
             seen_spacer = True  # the one spacer after the header rows
         else:
             break
         rest = rest[match.end() :]
-    rest = strip_provenance(rest, True)
-    rest = _SPACER_TAIL_RE.sub("", rest)
+    rest = _on_tail(strip_provenance(rest, True), _SPACER_TAIL_RE)
     return rest.strip("\n")
 
 
@@ -708,8 +716,7 @@ def content_text(plaintext: str, title: str) -> str:
         index += 1
     while index < len(lines) and lines[index].strip().startswith(_BANNER_PREFIXES):
         index += 1
-    text = "\n".join(lines[index:])
-    text = _TEXT_FOOTER_RE.sub("", text)
+    text = _on_tail("\n".join(lines[index:]), _TEXT_FOOTER_RE)
     return text.rstrip()
 
 
@@ -722,9 +729,12 @@ def read_result(raw: Mapping[str, Any], fmt: str, *, limit: int = READ_MAX) -> d
         body = content_text(str(raw.get("plaintext") or ""), title)
     else:
         body = content_html(str(raw.get("body") or ""), title)
-    truncated = len(body) > limit
+    data = body.encode("utf-8")
+    truncated = len(data) > limit
     if truncated:
-        body = body[:limit]
+        body = data[:limit].decode(
+            "utf-8", "ignore"
+        )  # cut on a byte limit, never inside a character
     return {
         "title": title,
         "id": str(raw.get("id") or ""),

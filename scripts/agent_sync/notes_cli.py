@@ -545,7 +545,7 @@ def _print_read(rt: Any, info: dict[str, Any], use_json: bool) -> None:
     body = str(note.get("body") or "")
     rt.out(body if body.endswith("\n") else body + "\n")
     if note.get("truncated"):
-        rt.err("notes:  the note is longer than %d characters;  the body was cut\n" % N.READ_MAX)
+        rt.err("notes:  the note is longer than %d bytes;  the body was cut\n" % N.READ_MAX)
 
 
 def _print_list(rt: Any, info: dict[str, Any], use_json: bool) -> None:

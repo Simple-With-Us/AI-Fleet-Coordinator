@@ -478,6 +478,19 @@ class WaitTests(unittest.TestCase):
         self.assertEqual(self.sleeps, [1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 0.5])
         self.assertAlmostEqual(sum(self.sleeps), 9.5)
 
+    def test_a_poll_that_cannot_reach_the_operator_ends_the_wait_with_the_record_it_had(self):
+        # PR #876 review:  the request is already queued, so an error here would send the caller to retry under a new
+        # request_id and write the note twice.  The wait ends, answering queued with the id.
+        self.op.fail = urllib.error.URLError("connection reset")
+        got = self.client.wait("CLAUDE", self.queued, 300)
+        self.assertEqual((got["state"], got["request_id"]), ("queued", "requestid-0001"))
+        self.assertEqual(self.sleeps, [1.0])
+        self.op.fail = None
+        self.op.answers[("GET", "/notes/v1/requests/CLAUDE/requestid-0001")] = (403, {"error": "forbidden", "message": "m"})
+        with self.assertRaises(N.NotesError) as caught:
+            self.client.wait("CLAUDE", self.queued, 300)
+        self.assertEqual(caught.exception.code, "forbidden")  # only a failure to reach the Operator ends the wait quietly
+
     def test_wait_zero_and_an_already_final_record_answer_at_once(self):
         self.assertEqual(self.client.wait("CLAUDE", self.queued, 0), self.queued)
         done = record("done")
@@ -554,6 +567,17 @@ class HostTests(unittest.TestCase):
 
     def scan(self, request):
         self.scans.append(dict(request))
+
+    def test_a_lost_answer_to_the_post_tells_the_caller_to_resend_with_the_same_request_id(self):
+        class Unreachable(FakeClient):
+            def enqueue(self, seat, request):
+                raise N.NotesError("unavailable", "the Operator notes API could not be reached (TimeoutError)")
+
+        host, _ = self.elsewhere(Unreachable(record("queued")))
+        with self.assertRaises(N.NotesError) as caught:
+            NC.call(host, "CLAUDE", self.req(rid="requestid-0042"), wait=30, scan=self.scan)
+        self.assertEqual(caught.exception.code, "unavailable")
+        self.assertIn("same request_id, requestid-0042, never a new one", caught.exception.message)
 
     def test_the_mac_seam_is_notes_direct_available_looked_up_when_the_host_is_made(self):
         with mock.patch.object(N, "direct_available", return_value=self.SCRIPT) as found:

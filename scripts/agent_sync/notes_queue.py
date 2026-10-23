@@ -211,6 +211,9 @@ class NotesQueue:
         for key, record in list(self.active.items()):
             if record["state"] == "running" and now > float(record.get("lease_until") or 0):
                 if record.get("action") in N.WRITE_ACTIONS:
+                    record["lease_expired"] = (
+                        True  # a late, definite report from the same claim may still settle it
+                    )
                     self._finish(
                         record,
                         now,
@@ -583,12 +586,23 @@ class NotesQueue:
             if record is None:
                 return _error(404, "not_found", "no such request")
             if record["state"] in FINAL:
-                if record.get("claim") == claim:
+                if record.get("claim") != claim:
+                    return _error(409, "conflict", "this request is already finished")
+                definite = "result" in payload or (
+                    isinstance(payload.get("error"), Mapping)
+                    and payload["error"].get("code") != "outcome_unknown"
+                )
+                if not (record.get("lease_expired") and definite):
                     return Answer(
                         200, self.view(record)
                     )  # the same report again:  already recorded
-                return _error(409, "conflict", "this request is already finished")
-            if record["state"] != "running" or record.get("claim") != claim:
+                # The lease ran out (the Mac slept or lost the network) and the write was called unknown, but the
+                # runner now knows what happened:  record that, so notes_status tells the truth instead of leaving
+                # the caller to send a note that was written again under a new request_id.
+                record.pop("error", None)
+                record.pop("lease_expired", None)
+                record["late_report"] = True
+            elif record["state"] != "running" or record.get("claim") != claim:
                 return _error(409, "conflict", "this claim does not hold the request")
             if "error" in payload:
                 error = payload["error"] if isinstance(payload["error"], Mapping) else {}
@@ -634,7 +648,7 @@ class NotesQueue:
                     "truncated",
                 )
             }
-            if len(str(keep.get("body") or "")) > N.READ_MAX:
+            if len(str(keep.get("body") or "").encode("utf-8")) > N.READ_MAX:
                 return None
             return {"note": keep}
         if action == "list":

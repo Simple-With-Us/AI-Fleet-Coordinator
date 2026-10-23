@@ -239,7 +239,9 @@ class OperatorClient:
         raise answer_error(status, data)
 
     def wait(self, seat: str, record: Mapping[str, Any], seconds: float) -> dict[str, Any]:
-        """The record once it is final, or as it stands when `seconds` have passed."""
+        """The record once it is final, or as it stands when `seconds` have passed.  A poll that cannot reach the
+        Operator ends the wait with the record as last seen (queued or running, with its request_id), never an error:
+        the request is already queued, and an error would send the caller to retry under a new id and write twice."""
         current = dict(record)
         waited, polls = 0.0, 0
         # Counted from the sleeps, not a clock:  a call's own time only makes the wait a little longer, never shorter.
@@ -251,7 +253,12 @@ class OperatorClient:
             self.sleep(step)
             waited += step
             polls += 1
-            current = self.record(seat, str(current.get("request_id")))
+            try:
+                current = self.record(seat, str(current.get("request_id")))
+            except N.NotesError as exc:
+                if exc.code != "unavailable":
+                    raise
+                break
         return current
 
     def log(self, filters: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -297,8 +304,10 @@ class OperatorClient:
         else:
             payload["result"] = result
         status, data = self.call("POST", "/notes/v1/runner/result", payload=payload)
-        if status in (200, 404, 409):
-            return status  # recorded, or the Operator no longer holds this claim:  either way nothing to resend
+        if status in (200, 400, 404, 409, 413):
+            # Recorded;  or the Operator no longer holds this claim;  or it refuses this report and always will (400,
+            # 413).  Sending it again changes nothing, so the runner never holds on to it.
+            return status
         raise answer_error(status, data)
 
     def send_log(self, lines: list[dict[str, Any]]) -> int:
@@ -475,7 +484,18 @@ def call(
         if action in ("read", "list"):
             return send()  # a read changes nothing:  no idempotency row
         return N.direct_once(host.store, request, send)
-    record, duplicate = host.client.enqueue(seat, request)
+    try:
+        record, duplicate = host.client.enqueue(seat, request)
+    except N.NotesError as exc:
+        if exc.code != "unavailable":
+            raise
+        # The request may have reached the Operator before the answer was lost.  Retrying under the same request_id
+        # is safe (the Operator answers the record it has);  a new id could write the note twice.
+        raise N.NotesError(
+            "unavailable",
+            "%s.  The request may already be queued:  send it again with the same request_id, %s, never a new one"
+            % (exc.message.rstrip(". "), request["request_id"]),
+        ) from None
     if wait > 0:
         record = host.client.wait(seat, record, wait)
     return _shape(record, duplicate)

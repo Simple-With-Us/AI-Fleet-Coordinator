@@ -124,9 +124,26 @@ class Runner:
                         "been written.  Check the Coding folder, then send it again with a new request_id.",
                     }
                 }
-            self.client.report(seat, request_id, claim, **outcome)
+            self._deliver(seat, request_id, claim, outcome)
             state["inflight"].pop(key, None)
             self._save(state)
+
+    def _deliver(self, seat: Any, request_id: Any, claim: Any, outcome: Mapping[str, Any]) -> None:
+        """Report one outcome.  A result the Operator refuses for good (400, 413:  a read too large to send back, say)
+        is replaced by an error report, so the caller hears why instead of waiting the lease out;  either way the
+        runner then lets the request go.  A network or server failure raises, and the entry stays for the next pass."""
+        status = self.client.report(seat, request_id, claim, **outcome)
+        if status in (400, 413) and "result" in outcome:
+            self.client.report(
+                seat,
+                request_id,
+                claim,
+                error={
+                    "code": "unavailable",
+                    "message": "the Operator refused the runner's answer (HTTP %d), for example a note too large to send "
+                    "back;  nothing more can be done for this request" % status,
+                },
+            )
 
     def _execute(self, seat: str, request: Mapping[str, Any]) -> dict[str, Any]:
         """{"result": ...} or {"error": {...}} for one request.  Never raises NotesError."""
@@ -183,10 +200,14 @@ class Runner:
         state["inflight"][key] = entry
         self._save(state)
         outcome = self._execute(seat, request)
-        state = self._state()
-        state["inflight"].setdefault(key, entry).update(outcome)
-        self._save(state)
-        self.client.report(seat, request_id, claim, **outcome)
+        if action not in ("read", "list"):
+            # A write's outcome is recorded before it is reported, so a crash in between reports it again rather than
+            # calling it unknown.  A read's is not:  it holds the note's text (or the folder's titles), which never
+            # goes to disk here, and a read lost in a crash is simply run again.
+            state = self._state()
+            state["inflight"].setdefault(key, entry).update(outcome)
+            self._save(state)
+        self._deliver(seat, request_id, claim, outcome)
         state = self._state()
         state["inflight"].pop(key, None)
         state["last_ok_at"] = N.iso_now(self.clock)

@@ -48,6 +48,7 @@ class FakeClient:
         self.batches: list[list[dict[str, Any]]] = []
         self.fail_log_at: int | None = None  # the 1-based send_log call that fails
         self.log_calls = 0
+        self.report_statuses: list[int] = []  # what the next report calls answer;  200 once empty
 
     def state(self) -> dict[str, Any]:
         return json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
@@ -68,7 +69,7 @@ class FakeClient:
                 "state_text_then": self.state_path.read_text() if self.state_path.exists() else "",
             }
         )
-        return 200
+        return self.report_statuses.pop(0) if self.report_statuses else 200
 
     def send_log(self, lines):
         self.log_calls += 1
@@ -327,6 +328,37 @@ class ShipLogTests(RunnerHarness):
         self.write(1)
         self.assertEqual(self.make().ship_log(), 0)
         self.assertEqual(self.client.batches, [])
+
+
+class ReviewFixTests(RunnerHarness):
+    """PR #876 review:  a read's text never goes to the state file, and a result the Operator refuses for good is
+    replaced by an error report instead of stalling the runner."""
+
+    def test_a_read_result_is_reported_but_never_written_to_the_state_file(self):
+        self.answer = {"note": {"title": MASTER, "body": "SECRET NOTE TEXT", "format": "html"}}
+        self.claim(req("read"))
+        self.assertTrue(self.runner.once(0))
+        report = self.client.reports[0]
+        self.assertEqual(report["result"]["note"]["body"], "SECRET NOTE TEXT")
+        self.assertNotIn("SECRET NOTE TEXT", report["state_text_then"])
+        self.assertNotIn("SECRET NOTE TEXT", self.state_path.read_text())
+
+    def test_a_result_the_operator_refuses_for_good_becomes_an_error_report(self):
+        self.answer = {"note": {"title": MASTER, "body": "x", "format": "html"}}
+        self.client.report_statuses = [413]
+        self.claim(req("read"))
+        self.assertTrue(self.runner.once(0))
+        self.assertEqual([("result" in r, r["error"]) for r in self.client.reports][0], (True, None))
+        self.assertEqual(self.client.reports[1]["error"]["code"], "unavailable")
+        self.assertEqual(self.client.state()["inflight"], {})  # the runner let it go
+
+    def test_recover_lets_go_of_a_report_the_operator_will_never_take(self):
+        state = {"inflight": {"CODEX/requestid-0009": {"seat": "CODEX", "request_id": "requestid-0009", "claim": "c9", "action": "pin", "result": {"status": "done"}}}}
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.state_path.write_text(json.dumps(state))
+        self.client.report_statuses = [400]
+        self.runner.recover()
+        self.assertEqual(self.client.state()["inflight"], {})
 
 
 class LoopTests(RunnerHarness):

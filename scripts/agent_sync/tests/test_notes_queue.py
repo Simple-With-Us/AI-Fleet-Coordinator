@@ -329,6 +329,27 @@ class RunnerTests(QueueHarness):
         self.assertEqual((body["state"], body["error"]["code"]), ("refused", "unavailable"))
         self.assertEqual(self.claim(), NQ.Answer(204, None))
 
+    def test_a_late_definite_report_settles_a_write_the_lease_called_unknown(self) -> None:
+        # The Mac slept past the lease:  the write reads unknown, then the runner reports what really happened.
+        self.assert_answer(self.enqueue(request(rid="late-write-1")), 202)
+        write = self.assert_answer(self.claim(), 200)
+        self.clock.advance(NQ.LEASE_S + 1)
+        self.assertEqual(self.assert_answer(self.status("CLAUDE", "late-write-1"), 200)["state"], "unknown")
+        self.assert_answer(self.report(write, result={"status": "done", "note_id": "x-coredata://late"}), 200)
+        body = self.assert_answer(self.status("CLAUDE", "late-write-1"), 200)
+        self.assertEqual((body["state"], body["result"]["note_id"]), ("done", "x-coredata://late"))
+        self.assertNotIn("error", body)
+        # Once settled it stays settled:  the same report again is a no-op, and another claim is still refused.
+        self.assert_answer(self.report(write, result={"status": "done"}), 200)
+        self.assert_answer(self.report(dict(write, claim="c" * 24), result={"status": "done"}), 409, "conflict")
+        # A late report that is itself unknown changes nothing.
+        self.assert_answer(self.enqueue(request(rid="late-write-2")), 202)
+        second = self.assert_answer(self.claim(), 200)
+        self.clock.advance(NQ.LEASE_S + 1)
+        self.assertEqual(self.assert_answer(self.status("CLAUDE", "late-write-2"), 200)["state"], "unknown")
+        self.assert_answer(self.report(second, error={"code": "outcome_unknown", "message": "m"}), 200)
+        self.assertEqual(self.assert_answer(self.status("CLAUDE", "late-write-2"), 200)["state"], "unknown")
+
     def test_a_request_nobody_claims_expires_after_24_hours(self) -> None:
         self.assert_answer(self.enqueue(request()), 202)
         self.clock.advance(NQ.QUEUED_TTL_S - 1)

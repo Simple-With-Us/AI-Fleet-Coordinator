@@ -903,6 +903,34 @@ class ContentTests(unittest.TestCase):
         self.assertEqual(N.content_text(text, STORED_TITLE), STORED_CONTENT_TEXT)
 
 
+class ReviewFixTests(unittest.TestCase):
+    """PR #876 review:  the end-anchored footer patterns must not scan a whole body, and a read is cut by bytes."""
+
+    def test_a_body_of_many_newlines_is_handled_at_once(self):
+        import time
+
+        footer = "\n\n---\n\n*Written for CODEX through the Operator on Thu, Oct 22, 2026 (request nr0001).*"
+        for body in ("\n" * 400_000 + "text" + footer, "x\n" * 200_000 + footer):
+            started = time.monotonic()
+            stripped = N.strip_provenance(body, False)
+            N.strip_provenance(body.replace("\n", "<div><br></div>\n"), True)
+            N.content_text(body, "t")
+            N.content_html("<div>a</div>" + "<div><br></div>\n" * 100_000, "t")
+            self.assertLess(time.monotonic() - started, 2.0)
+            self.assertFalse(stripped.endswith("*"), "the footer at the end is still removed")
+            # The pattern takes the blank lines before the footer with it, as it always has.
+            self.assertEqual(stripped.rstrip("\n"), body[: len(body) - len(footer)].rstrip("\n"))
+
+    def test_a_read_is_cut_by_utf8_bytes_and_never_inside_a_character(self):
+        raw = {"title": "t", "body": "", "plaintext": "😀" * 1000}
+        note = N.read_result(raw, "text", limit=401)  # 100 emoji are 400 bytes;  the 101st would pass the limit
+        self.assertTrue(note["truncated"])
+        self.assertEqual(note["body"], "😀" * 100)
+        self.assertEqual(note["bytes"], 400)
+        self.assertLessEqual(len(note["body"].encode("utf-8")), 401)
+        self.assertFalse(N.read_result(raw, "text")["truncated"])
+
+
 class ActionLogTests(unittest.TestCase):
     NOW = datetime(2026, 10, 22, 22, 0, tzinfo=timezone.utc)
 
