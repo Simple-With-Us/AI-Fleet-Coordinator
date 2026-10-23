@@ -1483,7 +1483,7 @@ class LarkSurfaceTests(unittest.TestCase):
     def test_a_message_that_starts_with_the_eyes_marker_never_wakes_the_seat(self):
         bridge = self.make_bridge()
         bridge._handle(
-            self.owner_message("om_eyes", "\U0001F440 thinking out loud, no answer needed")
+            self.owner_message("om_eyes", "\U0001f440 thinking out loud, no answer needed")
         )
         self.assertTrue(bridge.turns.empty())
         # No delivery row either:  a marked message is not a message this
@@ -1492,14 +1492,16 @@ class LarkSurfaceTests(unittest.TestCase):
 
     def test_the_marker_only_counts_at_the_very_start(self):
         bridge = self.make_bridge()
-        bridge._handle(self.owner_message("om_late", "hey \U0001F440 what do you think?"))
+        bridge._handle(self.owner_message("om_late", "hey \U0001f440 what do you think?"))
         self.assertEqual(bridge.turns.qsize(), 1)
 
     def test_the_marker_is_checked_before_the_secret_scan(self):
         """A marked message is dropped, and its text never reaches the log."""
         bridge = self.make_bridge()
         with mock.patch.object(bridge_mod, "scan_secret", side_effect=AssertionError("scanned")):
-            bridge._handle(self.owner_message("om_eyes2", "\U0001F440 token sk-abcdefghijklmnopqrstuvwx"))
+            bridge._handle(
+                self.owner_message("om_eyes2", "\U0001f440 token sk-abcdefghijklmnopqrstuvwx")
+            )
         self.assertTrue(bridge.turns.empty())
 
     def test_a_signal_is_sent_into_the_chat_and_queued_as_a_turn(self):
@@ -1511,7 +1513,9 @@ class LarkSurfaceTests(unittest.TestCase):
             return json.dumps({"message_id": "om_sig", "chat_id": "oc_1"})
 
         signal = self.write_signal(
-            bridge, "sig-1.json", {"signal_id": "sig-1", "text": "the operator spoke", "chat_id": "oc_1"}
+            bridge,
+            "sig-1.json",
+            {"signal_id": "sig-1", "text": "the operator spoke", "chat_id": "oc_1"},
         )
         with mock.patch.object(bridge_mod, "run", fake_run):
             bridge._handle_signal(signal)
@@ -1589,15 +1593,15 @@ class LarkSurfaceTests(unittest.TestCase):
 
     def test_a_send_answer_without_a_message_id_is_not_guessed(self):
         self.assertEqual(bridge_mod._message_id_from(json.dumps({"message_id": "om_x"})), "om_x")
-        self.assertEqual(bridge_mod._message_id_from(json.dumps({"data": {"message_id": "om_y"}})), "om_y")
+        self.assertEqual(
+            bridge_mod._message_id_from(json.dumps({"data": {"message_id": "om_y"}})), "om_y"
+        )
         self.assertIsNone(bridge_mod._message_id_from("not json"))
         self.assertIsNone(bridge_mod._message_id_from(json.dumps({"chat_id": "oc_1"})))
         self.assertIsNone(bridge_mod._message_id_from(json.dumps([1, 2])))
 
     def test_the_signal_cli_leaves_a_file_the_bridge_picks_up(self):
-        code = bridge_mod.main(
-            ["--signal", "wake up", "--state-dir", self.state_dir.name]
-        )
+        code = bridge_mod.main(["--signal", "wake up", "--state-dir", self.state_dir.name])
         self.assertEqual(code, 0)
         files = list((Path(self.state_dir.name) / bridge_mod.SIGNAL_DIRNAME).glob("*.json"))
         self.assertEqual(len(files), 1)
