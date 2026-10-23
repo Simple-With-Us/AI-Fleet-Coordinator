@@ -3,6 +3,7 @@
 Credentials come only from the approved runtime environment.  Starting this
 program with live credentials is an activation step requiring separate approval.
 """
+
 from __future__ import annotations
 
 import fcntl
@@ -10,13 +11,13 @@ import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
 import sqlite3
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 MAX_RESPONSE = 8 * 1024 * 1024
 MAX_OFFSET = 2**63 - 1
@@ -55,7 +56,12 @@ def normalize(payload, offset):
         if payload["object"] != "whatsapp_agent_platform" or len(payload["entry"]) != 1:
             raise ValueError
         entry = payload["entry"][0]
-        if not isinstance(entry["id"], str) or not entry["id"].isascii() or not entry["id"].isdigit() or len(entry["changes"]) != 1:
+        if (
+            not isinstance(entry["id"], str)
+            or not entry["id"].isascii()
+            or not entry["id"].isdigit()
+            or len(entry["changes"]) != 1
+        ):
             raise ValueError
         change = entry["changes"][0]
         value = change["value"]
@@ -65,24 +71,55 @@ def normalize(payload, offset):
         if type(nxt) is not int or not offset <= nxt <= MAX_OFFSET:
             raise ValueError
         messages, statuses = value.get("messages", []), value.get("statuses", [])
-        if not isinstance(messages, list) or not isinstance(statuses, list) or len(messages) + len(statuses) > 100:
+        if (
+            not isinstance(messages, list)
+            or not isinstance(statuses, list)
+            or len(messages) + len(statuses) > 100
+        ):
             raise ValueError
         result = []
         for m in messages:
-            if not isinstance(m["id"], str) or not m["id"].startswith("wamid.") or not 6 < len(m["id"]) <= 512:
+            if (
+                not isinstance(m["id"], str)
+                or not m["id"].startswith("wamid.")
+                or not 6 < len(m["id"]) <= 512
+            ):
                 raise ValueError
-            if not isinstance(m["from"], str) or not m["from"].startswith("user:") or not 5 < len(m["from"]) <= 128:
+            if (
+                not isinstance(m["from"], str)
+                or not m["from"].startswith("user:")
+                or not 5 < len(m["from"]) <= 128
+            ):
                 raise ValueError
-            if not isinstance(m["timestamp"], str) or not m["timestamp"].isascii() or not m["timestamp"].isdigit():
+            if (
+                not isinstance(m["timestamp"], str)
+                or not m["timestamp"].isascii()
+                or not m["timestamp"].isdigit()
+            ):
                 raise ValueError
             if not isinstance(m["type"], str) or not 0 < len(m["type"]) <= 64:
                 raise ValueError
             text = m["text"]["body"] if m["type"] == "text" else None
             if text is not None and (not isinstance(text, str) or len(text) > 4096):
                 raise ValueError
-            result.append({"id_hash": digest(m["id"]), "sender_hash": digest(m["from"]), "timestamp": int(m["timestamp"]), "type": m["type"], "text": text})
+            result.append(
+                {
+                    "id_hash": digest(m["id"]),
+                    "sender_hash": digest(m["from"]),
+                    "timestamp": int(m["timestamp"]),
+                    "type": m["type"],
+                    "text": text,
+                }
+            )
         for s in statuses:
-            if not isinstance(s["id"], str) or not isinstance(s["status"], str) or not s["status"] or not s["recipient_id"].startswith("user:") or not s["timestamp"].isascii() or not s["timestamp"].isdigit():
+            if (
+                not isinstance(s["id"], str)
+                or not isinstance(s["status"], str)
+                or not s["status"]
+                or not s["recipient_id"].startswith("user:")
+                or not s["timestamp"].isascii()
+                or not s["timestamp"].isdigit()
+            ):
                 raise ValueError
         return {"agent_hash": digest(entry["id"]), "messages": result, "next_offset": str(nxt)}
     except (KeyError, TypeError, ValueError, AttributeError, IndexError):
@@ -95,7 +132,11 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def request_json(url, headers, body=None):
-    request = urllib.request.Request(url, data=body, headers={**headers, "User-Agent": "AFC-WhatsApp-Bridge/1", "Accept": "application/json"})
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={**headers, "User-Agent": "AFC-WhatsApp-Bridge/1", "Accept": "application/json"},
+    )
     try:
         with urllib.request.build_opener(NoRedirect()).open(request, timeout=40) as response:
             if response.status == 204:
@@ -135,7 +176,9 @@ class State:
         self.db = sqlite3.connect(directory / "state.sqlite3")
         os.chmod(directory / "state.sqlite3", 0o600)
         self.db.execute("PRAGMA synchronous=FULL")
-        self.db.execute("CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK(id=1), offset TEXT NOT NULL)")
+        self.db.execute(
+            "CREATE TABLE IF NOT EXISTS cursor (id INTEGER PRIMARY KEY CHECK(id=1), offset TEXT NOT NULL)"
+        )
         self.db.commit()
 
     def offset(self):
@@ -152,9 +195,19 @@ class State:
 
 
 class Bridge:
-    def __init__(self, state, api_key, signing_key, worker_url, request=request_json, clock=time.time):
+    def __init__(
+        self, state, api_key, signing_key, worker_url, request=request_json, clock=time.time
+    ):
         parsed = urllib.parse.urlsplit(worker_url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+        ):
             raise StopBridge("invalid_worker_url")
         if not api_key or len(signing_key.strip()) < 32:
             raise StopBridge("missing_credentials")
@@ -163,27 +216,60 @@ class Bridge:
 
     def step(self):
         offset = self.state.offset()
-        poll_url = "https://api.whatsapp.com/agent/v1/updates?" + urllib.parse.urlencode({"offset": offset, "timeout": 25, "limit": 100})
+        poll_url = "https://api.whatsapp.com/agent/v1/updates?" + urllib.parse.urlencode(
+            {"offset": offset, "timeout": 25, "limit": 100}
+        )
         payload = self.request(poll_url, {"Authorization": f"Bearer {self.api_key}"})
-        batch = normalize(payload, offset) if payload is not None else {"agent_hash": os.environ.get("WA_AGENT_HASH_JET", ""), "messages": [], "next_offset": str(offset)}
-        body = json.dumps({"contract": "wa-ingest/1", "seat": "JET", "sent_at": int(self.clock()), **batch}, separators=(",", ":")).encode()
+        batch = (
+            normalize(payload, offset)
+            if payload is not None
+            else {
+                "agent_hash": os.environ.get("WA_AGENT_HASH_JET", ""),
+                "messages": [],
+                "next_offset": str(offset),
+            }
+        )
+        body = json.dumps(
+            {"contract": "wa-ingest/1", "seat": "JET", "sent_at": int(self.clock()), **batch},
+            separators=(",", ":"),
+        ).encode()
         signature = hmac.new(self.signing_key.encode(), body, hashlib.sha256).hexdigest()
-        ack = self.request(self.worker_url + "/internal/wa-ingest/JET", {"Content-Type": "application/json", "X-WA-Bridge-Signature": signature}, body)
-        if not isinstance(ack, dict) or ack.get("ok") is not True or ack.get("processed") is not True or ack.get("next_offset") != batch["next_offset"]:
+        ack = self.request(
+            self.worker_url + "/internal/wa-ingest/JET",
+            {"Content-Type": "application/json", "X-WA-Bridge-Signature": signature},
+            body,
+        )
+        if (
+            not isinstance(ack, dict)
+            or ack.get("ok") is not True
+            or ack.get("processed") is not True
+            or ack.get("next_offset") != batch["next_offset"]
+        ):
             raise BridgeError("ingest_not_acknowledged")
         self.state.save(batch["next_offset"])
         return ack
 
 
 def main():
-    names = ("WHATSAPP_API_KEY", "WA_BRIDGE_HMAC_KEY_JET", "WA_WORKER_URL", "WA_STATE_DIRECTORY", "WA_AGENT_HASH_JET")
+    names = (
+        "WHATSAPP_API_KEY",
+        "WA_BRIDGE_HMAC_KEY_JET",
+        "WA_WORKER_URL",
+        "WA_STATE_DIRECTORY",
+        "WA_AGENT_HASH_JET",
+    )
     for name in names:
         if not os.environ.get(name):
             raise StopBridge(f"missing_{name}")
     if os.environ.get("WHATSAPP_BRIDGE_ENABLED") != "on":
         raise StopBridge("disabled")
     state = State(os.environ["WA_STATE_DIRECTORY"])
-    bridge = Bridge(state, os.environ["WHATSAPP_API_KEY"], os.environ["WA_BRIDGE_HMAC_KEY_JET"], os.environ["WA_WORKER_URL"])
+    bridge = Bridge(
+        state,
+        os.environ["WHATSAPP_API_KEY"],
+        os.environ["WA_BRIDGE_HMAC_KEY_JET"],
+        os.environ["WA_WORKER_URL"],
+    )
     errors = 0
     try:
         while not (Path(os.environ["WA_STATE_DIRECTORY"]) / "disabled").exists():
@@ -196,7 +282,10 @@ def main():
             except BridgeError as error:
                 errors += 1
                 print(json.dumps({"state": str(error).split(":")[0]}), flush=True)
-                if str(error).startswith(("schema_", "invalid_json", "response_too_large")) and errors >= 3:
+                if (
+                    str(error).startswith(("schema_", "invalid_json", "response_too_large"))
+                    and errors >= 3
+                ):
                     raise StopBridge("schema_stop") from None
                 delay = min(120, 5 * 2 ** min(errors - 1, 5))
                 if str(error).startswith("rate_limited:"):
