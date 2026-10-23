@@ -148,7 +148,7 @@ def admin_allowed(config: Any, seat_cfg: Any) -> bool:
     """Which seats may hold an administrator (200) key:  the [notes_relay] seat while it is inbox-only
     (AFC-331, owner 2026-10-18) and the OPERATOR seat (owner decision, Oct 22 2026).
 
-    OPERATOR is the admin [Operator] Zulip bot (user 1217148, role 200, GitHub `swu-operator`), so the
+    OPERATOR is the admin [Operator] Zulip bot (role 200, GitHub `swu-operator`), so the
     refusal below would otherwise stop it from ever authenticating.  The exception is by seat name and
     only for an administrator:  an owner (100) key is still refused, and every other seat keeps the
     member-only rule.  A fixed rule, not a setting, so nothing can be misconfigured."""

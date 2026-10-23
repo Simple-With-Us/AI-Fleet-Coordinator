@@ -28,7 +28,9 @@ Also: `--notify` / `--pushover`, `--needs-owner` / `--action-required`, `--summa
 
 Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do not `APPLE_NOTES_ACTIVATE=1` unless the owner is sitting at the Mac.
 
-**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
+There is no GUI fallback.  When the Shortcut does not pin, the helper prints `pin skipped: ... note saved unpinned` on stderr and the create or update still succeeds (exit 0);  `--pin-only` exits 4.  Nothing brings Notes to the front except an explicit `--activate` or `APPLE_NOTES_ACTIVATE=1`.  `--pin` and `APPLE_NOTES_PIN=1` are accepted and change nothing.  Never loop on a failed pin:  one pin or unpin Shortcut runs at a time across processes, a run that timed out is not repeated, and `APPLE_NOTES_PIN=0` skips pinning when you only need the write.  The `notes_create` and `notes_update` results and `simple-notes` carry a `pin_skipped` reason when that happened, so "done" with `pin_skipped` means the note is saved but not pinned.
+
+**Pass your session id.**  Every `simple-board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `simple-notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
 
 ## Title
 
@@ -66,7 +68,7 @@ Then: type line (`Completion` / `Plan` / `Review` / `Design` / `Handoff` / `Roll
 
 Order: `Needs owner` first when applicable, then Problem → What was done → Decisions → Next steps.
 
-Two ASCII spaces between sentences in the body file you pass the helper.
+A real U+00A0 plus a normal space between sentences in the body file you pass the helper (owner ruling 2026-10-23).  Never write the `&nbsp;` entity yourself.
 
 ## Layout (owner 2026-08-21; updated 2026-10-01 — binding)
 
@@ -86,7 +88,7 @@ Never pass empty `- ` bullets (they render as blank dots).  Put identifiers with
 
 Do Notes: plans, design docs, reviews, handoffs, rollouts, **Completion / work-complete** for anything the owner might ask about.
 
-Skip: pure #agent-sync topic chatter, Linear issue edits, routine commit messages, peer-only PR nits.
+Skip: pure #Work-In-Progress topic chatter, Linear issue edits, routine commit messages, peer-only PR nits.
 
 Open a living work note when substantial work starts.  Always Completion at the end.  Update in place; unpin stale Completion notes when the lane closes (`--unpin-only`).
 

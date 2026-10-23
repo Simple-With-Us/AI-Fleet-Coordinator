@@ -62,9 +62,12 @@ LIVE_DEFAULTS = {
     "owner_per_day": 20,
     "loop_turns": 3,
 }
+# The channel the owner renamed to #Work-In-Progress on 2026-10-22.  This literal cannot come from
+# `zulip.DEFAULT_CHANNEL`:  live.py sits on the hook fast path, and test_live.py forbids importing
+# agent_sync.zulip there.  test_default_channel.py holds the two in step.
 DEFAULT_PRESENCE = [
-    ["agent-sync", "roll call"],
-    ["agent-sync", "fleet"],
+    ["work-in-progress", "roll call"],
+    ["work-in-progress", "fleet"],
     ["builds", "gates"],
     ["alerts", "*"],
 ]
