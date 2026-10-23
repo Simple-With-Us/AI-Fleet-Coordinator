@@ -93,6 +93,23 @@ const CHATGPT_CIMD = {
   jwks_uri: "https://chatgpt.com/oauth/jwks.json",
 };
 
+// Test-only second ChatGPT connector for JET-CHAT:  mirrors how Jay's own
+// connector got a connector-specific pair (wrangler.jsonc SEATS.JET, second
+// entry).  Production's real pair is captured from the refusal log when the
+// connector is created, never guessed.
+const JETCHAT_CLIENT = "https://chatgpt.com/oauth/TestJetChat1/client.json";
+const JETCHAT_REDIRECT = "https://chatgpt.com/connector/oauth/TestJetChat1";
+const JETCHAT_CIMD = {
+  client_id: JETCHAT_CLIENT,
+  client_uri: "https://chatgpt.com/",
+  redirect_uris: [JETCHAT_REDIRECT],
+  token_endpoint_auth_method: "private_key_jwt",
+  token_endpoint_auth_methods_supported: ["none", "private_key_jwt"],
+  grant_types: ["authorization_code", "refresh_token"],
+  response_types: ["code"],
+  client_name: "ChatGPT",
+};
+
 const GROK_CLIENT = "https://grok.com/oauth/mcp-client.json";
 const GROK_REDIRECT = "https://grok.com/connectors-oauth-exchange-code/";
 // Fetched from the live URL on 2026-10-09.
@@ -168,6 +185,7 @@ async function outboundFetch(request) {
     }
     return Response.json(CHATGPT_CIMD);
   }
+  if (request.url === JETCHAT_CLIENT) return Response.json(JETCHAT_CIMD);
   if (request.url === GROK_CLIENT) return Response.json(GROK_CIMD);
   if (request.url === CURSOR_CIMD_CLIENT) return Response.json(CURSOR_CIMD);
   if (request.url.startsWith("https://api.linear.app/")) return linear.fetch(request);
@@ -212,7 +230,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, SPIKE_HMAC_KEY: SPIKE_KEY, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", SEATS: { ...wranglerConfig().vars.SEATS, "JET-CHAT": { redirect_uris: [JETCHAT_REDIRECT], cimd_client_ids: [JETCHAT_CLIENT] } }, ZULIP_KEY_JET_CHAT: JET_KEY, ZULIP_EMAIL_JET_CHAT: "openai-dot-bot@simplewithus.zulipchat.com", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, SPIKE_HMAC_KEY: SPIKE_KEY, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -395,6 +413,12 @@ function spikePost(seat, bytes, { key = SPIKE_KEY, signature } = {}) {
 const INIT = { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "workerd-test", version: "0" } };
 const call = (accessToken, name, args = {}) => mcp(accessToken, "tools/call", { name, arguments: args });
 const seatOf = async (accessToken) => (await call(accessToken, "whoami")).json?.result?.structuredContent?.seat;
+// JET is events-only, so whoami is denied even for a live grant:  a JSON-RPC
+// error (not a 401) is the signal that the token still authenticates.
+const jetAlive = async (accessToken) => {
+  const res = await call(accessToken, "whoami");
+  return res.status === 200 && Boolean(res.json.error);
+};
 
 // ---------------------------------------------------------------- flow
 
@@ -533,14 +557,38 @@ try {
     assert.equal(tokens.scope, "zulip:read");
   });
 
-  await step("tools/list is tools.json plus recall plus DMs, and whoami shows JET with a read-only grant", async () => {
-    const init = await mcp(tokens.access_token, "initialize", INIT);
+  await step("JET (Wake) serves events only:  an empty tools/list and every tools/call a protocol error", async () => {
+    const list = await mcp(tokens.access_token, "tools/list");
+    assert.equal(list.status, 200, JSON.stringify(list.json));
+    assert.deepEqual(list.json.result.tools, []);
+    const who = await call(tokens.access_token, "whoami");
+    assert.ok(who.json.error, JSON.stringify(who.json));
+  });
+
+  let chatTokens;
+  await step("arm JET-CHAT, consent, and exchange the code (the normal Jet login)", async () => {
+    assert.equal((await adminAction("arm", { seat: "JET-CHAT" })).status, 303);
+    const c = pkce();
+    const handle = await openConsent(c.challenge, "st-chat", { clientId: JETCHAT_CLIENT, redirect: JETCHAT_REDIRECT });
+    const res = await browser("/authorize", { method: "POST", form: { handle, seat: "JET-CHAT", decision: "approve", scope: "zulip:read" } });
+    assert.equal(res.status, 302, await res.clone().text());
+    const loc = new URL(res.headers.get("location"));
+    assert.equal(`${loc.origin}${loc.pathname}`, JETCHAT_REDIRECT);
+    const tt = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: c.verifier, redirect_uri: JETCHAT_REDIRECT, client_id: JETCHAT_CLIENT, resource: RESOURCE });
+    assert.equal(tt.status, 200, JSON.stringify(tt.body));
+    chatTokens = tt.body;
+    assert.ok(chatTokens.access_token && chatTokens.refresh_token);
+  });
+
+  await step("tools/list is tools.json plus recall plus DMs, and whoami shows JET-CHAT with a read-only grant", async () => {
+    const init = await mcp(chatTokens.access_token, "initialize", INIT);
     assert.equal(init.status, 200, JSON.stringify(init.json));
-    assert.match(init.json.result.instructions, /a read acts as JET\./);
+    assert.match(init.json.result.instructions, /a read acts as JET-CHAT\./);
     assert.match(init.json.result.instructions, /writes must name it/);
     assert.match(init.json.result.instructions, /BEGIN_UNTRUSTED_ZULIP and END_UNTRUSTED_ZULIP/);
-    assert.deepEqual(init.json.result.capabilities, { tools: {}, events: {} });
-    const list = await mcp(tokens.access_token, "tools/list");
+    // JET-CHAT is the chat half of the split:  tools, and no events capability.
+    assert.deepEqual(init.json.result.capabilities, { tools: {} });
+    const list = await mcp(chatTokens.access_token, "tools/list");
     assert.equal(list.status, 200);
     const tools = list.json.result.tools;
     assert.deepEqual(tools.map((t) => t.name), HOSTED_NAMES);
@@ -549,7 +597,7 @@ try {
       assert.ok(served, spec.name);
       // Served as the shared spec plus this grant's identity property (AFC-331).
       const { identity, ...rest } = served.inputSchema.properties;
-      assert.deepEqual(identity.enum, ["JET"], spec.name);
+      assert.deepEqual(identity.enum, ["JET-CHAT"], spec.name);
       const required = (served.inputSchema.required ?? []).filter((name) => name !== "identity");
       const inputSchema = { ...served.inputSchema, properties: rest, ...(spec.inputSchema.required ? { required } : {}) };
       if (!spec.inputSchema.required) delete inputSchema.required;
@@ -557,8 +605,8 @@ try {
     }
     for (const name of ["zulip_dm_list", "zulip_dm_read", "zulip_dm_send"]) assert.ok(tools.find((item) => item.name === name).outputSchema, name);
     assert.match(init.json.result.instructions, /Direct messages \(zulip_dm_list, zulip_dm_read, zulip_dm_send/);
-    const who = await call(tokens.access_token, "whoami");
-    assert.equal(who.json.result.structuredContent.seat, "JET");
+    const who = await call(chatTokens.access_token, "whoami");
+    assert.equal(who.json.result.structuredContent.seat, "JET-CHAT");
     assert.equal(who.json.result.structuredContent.transport, "hosted");
     assert.equal(who.json.result.structuredContent.email, "openai-dot-bot@simplewithus.zulipchat.com");
   });
@@ -800,15 +848,15 @@ try {
   });
 
   await step("a seat argument is a tool error, an unknown tool a protocol error, and a missing scope names the challenge", async () => {
-    const r = await call(tokens.access_token, "whoami", { seat: "GROK-WEB" });
+    const r = await call(chatTokens.access_token, "whoami", { seat: "GROK-WEB" });
     assert.equal(r.json.result.isError, true, JSON.stringify(r.json));
     assert.equal(r.json.result.structuredContent, undefined);
     assert.equal(r.json.result._meta["agent-sync/error"].code, "invalid_argument");
     assert.match(r.json.result._meta["agent-sync/error"].message, /unknown argument 'seat'/);
-    const unknown = await call(tokens.access_token, "hello");
+    const unknown = await call(chatTokens.access_token, "hello");
     assert.ok(unknown.json.error, JSON.stringify(unknown.json));
     const before = zulip.requestsTo("POST", "messages").length;
-    const w2 = await call(tokens.access_token, "zulip_post", { channel: "sandbox", topic: "t", text: "x" });
+    const w2 = await call(chatTokens.access_token, "zulip_post", { channel: "sandbox", topic: "t", text: "x" });
     assert.equal(w2.json.result.isError, true);
     assert.equal(w2.json.result.structuredContent, undefined);
     assert.ok(w2.json.result._meta["mcp/www_authenticate"][0].includes('error="insufficient_scope"'));
@@ -816,46 +864,46 @@ try {
   });
 
   await step("recall without its secrets:  a read-only grant reaches recall_search, which says not_configured;  contribute needs zulip:write", async () => {
-    const init = await mcp(tokens.access_token, "initialize", INIT);
+    const init = await mcp(chatTokens.access_token, "initialize", INIT);
     assert.match(init.json.result.instructions, /BEGIN_UNTRUSTED_RECALL and END_UNTRUSTED_RECALL/);
-    const r = await call(tokens.access_token, "recall_search", { query: "agent-sync bridge" });
+    const r = await call(chatTokens.access_token, "recall_search", { query: "agent-sync bridge" });
     assert.equal(r.json.result.isError, true, JSON.stringify(r.json));
     assert.equal(r.json.result._meta["agent-sync/error"].code, "not_configured");
-    const w = await call(tokens.access_token, "recall_contribute", { text: "x".repeat(50), category: "lesson" });
+    const w = await call(chatTokens.access_token, "recall_contribute", { text: "x".repeat(50), category: "lesson" });
     assert.equal(w.json.result.isError, true);
     assert.ok(w.json.result._meta["mcp/www_authenticate"][0].includes('scope="zulip:write"'));
     // The Zulip tools are untouched by recall's missing config.
-    const who = await call(tokens.access_token, "whoami");
-    assert.equal(who.json.result.structuredContent.seat, "JET");
+    const who = await call(chatTokens.access_token, "whoami");
+    assert.equal(who.json.result.structuredContent.seat, "JET-CHAT");
   });
 
   await step("DMs with a read-only grant:  dm_list and dm_read answer fenced, dm_send names the zulip:write challenge and sends nothing", async () => {
-    const list = await call(tokens.access_token, "zulip_dm_list");
+    const list = await call(chatTokens.access_token, "zulip_dm_list");
     assert.equal(list.json.result.isError, undefined, JSON.stringify(list.json));
     assert.deepEqual(list.json.result.structuredContent, { count: 0, ids: [], unread_total: 0 });
     assert.match(list.json.result.content[0].text, /^BEGIN_UNTRUSTED_ZULIP nonce=[0-9a-f]{16}$/m);
-    const read = await call(tokens.access_token, "zulip_dm_read", { user_ids: [OWNER_ID] });
+    const read = await call(chatTokens.access_token, "zulip_dm_read", { user_ids: [OWNER_ID] });
     assert.deepEqual(read.json.result.structuredContent, { count: 0, ids: [], next_since_id: null });
     const before = zulip.requestsTo("POST", "messages").length;
-    const send = await call(tokens.access_token, "zulip_dm_send", { user_ids: [OWNER_ID], text: "x" });
+    const send = await call(chatTokens.access_token, "zulip_dm_send", { user_ids: [OWNER_ID], text: "x" });
     assert.equal(send.json.result.isError, true);
     assert.equal(send.json.result.structuredContent, undefined);
     assert.ok(send.json.result._meta["mcp/www_authenticate"][0].includes('scope="zulip:write"'));
     assert.equal(zulip.requestsTo("POST", "messages").length, before);
-    const bad = await call(tokens.access_token, "zulip_dm_read", {});
+    const bad = await call(chatTokens.access_token, "zulip_dm_read", {});
     assert.equal(bad.json.result._meta["agent-sync/error"].code, "invalid_argument");
   });
 
   await step("pause:  tools say paused, refresh is temporarily_unavailable, and the grant survives", async () => {
-    assert.equal((await adminAction("pause", { seat: "JET" })).status, 303);
-    const r = await call(tokens.access_token, "whoami");
+    assert.equal((await adminAction("pause", { seat: "JET-CHAT" })).status, 303);
+    const r = await call(chatTokens.access_token, "whoami");
     assert.equal(r.json.result._meta["agent-sync/error"].code, "paused");
-    const t = await token({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: CHATGPT_CLIENT });
+    const t = await token({ grant_type: "refresh_token", refresh_token: chatTokens.refresh_token, client_id: JETCHAT_CLIENT });
     assert.equal(t.body.error, "temporarily_unavailable");
-    assert.equal((await adminAction("unpause", { seat: "JET" })).status, 303);
-    const t2 = await token({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: CHATGPT_CLIENT });
+    assert.equal((await adminAction("unpause", { seat: "JET-CHAT" })).status, 303);
+    const t2 = await token({ grant_type: "refresh_token", refresh_token: chatTokens.refresh_token, client_id: JETCHAT_CLIENT });
     assert.equal(t2.status, 200, JSON.stringify(t2.body));
-    tokens = t2.body;
+    chatTokens = t2.body;
   });
 
   await step("two parallel approvals leave one grant", async () => {
@@ -871,7 +919,7 @@ try {
     const statuses = [r1.status, r2.status].sort();
     assert.deepEqual(statuses, [302, 409]);
     const admin = await (await browser("/admin")).text();
-    assert.equal((admin.match(/ChatGPT <small>/g) ?? []).length, 1, "exactly one grant for JET");
+    assert.equal((admin.match(/ChatGPT <small>/g) ?? []).length, 2, "exactly one grant each for JET and JET-CHAT");
   });
 
   await step("the new grant replaced the old:  old tokens get 401 and old refresh gets invalid_grant", async () => {
@@ -942,7 +990,8 @@ try {
     const c = new URL(res.headers.get("location")).searchParams.get("code");
     const t = await token({ grant_type: "authorization_code", code: c, code_verifier: p.verifier, redirect_uri: CHATGPT_REDIRECT, client_id: CHATGPT_CLIENT, resource: RESOURCE });
     assert.equal(t.status, 200);
-    assert.equal(await seatOf(t.body.access_token), "JET");
+    // JET is events-only:  a live token gets a protocol error from whoami.
+    assert.ok((await call(t.body.access_token, "whoami")).json.error);
     // Bump the epoch directly in the Durable Object, leaving the KV grant in place.
     const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
     await ns.get(ns.idFromName("JET")).bumpEpoch({ by: "test", reason: "epoch_only" });
@@ -956,7 +1005,8 @@ try {
   await step("revoke all and bump epoch kills the live grant", async () => {
     assert.equal((await adminAction("revoke", { seat: "JET" })).status, 303);
     const admin = await (await browser("/admin")).text();
-    assert.equal((admin.match(/ChatGPT <small>/g) ?? []).length, 0);
+    // The JET-CHAT grant is a separate seat:  it survives a JET revoke.
+    assert.equal((admin.match(/ChatGPT <small>/g) ?? []).length, 1);
   });
 
   let grokCimdTokens;
@@ -1352,10 +1402,10 @@ try {
     assert.notEqual(refreshed.body.refresh_token, issued.body.refresh_token);
     claudeHostedTokens = refreshed.body;
     assert.equal(await seatOf(refreshed.body.access_token), "CLAUDE");
-    assert.equal(await seatOf(jet.body.access_token), "JET");
+    assert.ok(await jetAlive(jet.body.access_token));
     const jetRefresh = await token({ grant_type: "refresh_token", refresh_token: jet.body.refresh_token, client_id: CHATGPT_CLIENT, resource: RESOURCE });
     assert.equal(jetRefresh.status, 200);
-    assert.equal(await seatOf(jetRefresh.body.access_token), "JET");
+    assert.ok(await jetAlive(jetRefresh.body.access_token));
     const forgedSeat = await call(refreshed.body.access_token, "whoami", { seat: "JET" });
     assert.equal(forgedSeat.json.result._meta["agent-sync/error"].code, "invalid_argument");
   });
@@ -1468,7 +1518,7 @@ try {
     assert.equal(refreshed.status, 200);
     assert.notEqual(refreshed.body.refresh_token, granted.body.refresh_token);
     assert.equal(await seatOf(refreshed.body.access_token), "CURSOR");
-    assert.equal(await seatOf(jet.body.access_token), "JET");
+    assert.ok(await jetAlive(jet.body.access_token));
     assert.equal(await seatOf(claudeHostedTokens.access_token), "CLAUDE");
     const jetAfter = await jetGate.getState();
     for (const field of ["epoch", "paused", "armed", "armedUntil", "armedBy"]) {
@@ -1477,7 +1527,7 @@ try {
     const jetRefreshed = await token({ grant_type: "refresh_token", refresh_token: jet.body.refresh_token,
       client_id: CHATGPT_CLIENT, resource: RESOURCE });
     assert.equal(jetRefreshed.status, 200);
-    assert.equal(await seatOf(jetRefreshed.body.access_token), "JET");
+    assert.ok(await jetAlive(jetRefreshed.body.access_token));
   });
 
   await step("CLAUDE legacy key alias alone fails closed without borrowing another seat credential", async () => {
@@ -1714,20 +1764,39 @@ try {
     assert.equal(callbackCalls.length, 1, "replay is deduped durably");
     await postWa({ ...body, messages: [message("2", "👀 silent fixture")] });
     assert.equal(callbackCalls.length, 1, "eyes message did not wake");
-    const early = await call(access, "whatsapp_read", { ack_through: "2" });
-    assert.equal(early.json.result.isError, true);
-    const read = await call(access, "whatsapp_read", {});
-    assert.ok(!read.json.result.isError, JSON.stringify(read.json));
-    assert.match(read.json.result.content[0].text, /received owner fixture/);
-    assert.match(read.json.result.content[0].text, /👀 silent fixture/);
-    const acknowledged = await call(access, "whatsapp_read", { ack_through: "2" });
-    assert.ok(!acknowledged.json.result.isError);
+    // whatsapp_read is a tool, so the wake seat refuses it outright, and the tool's
+    // own gate is still JET-only:  transferring private WhatsApp read to JET-CHAT is
+    // held for an owner decision, so the read/ack tool path is intentionally not
+    // exercised here while the feature stays default-off.
+    const denied = await call(access, "whatsapp_read", {});
+    assert.ok(denied.json.error, JSON.stringify(denied.json));
+    assert.equal((await adminAction("arm", { seat: "JET-CHAT" })).status, 303);
+    const cc = pkce();
+    const chatHandle = await openConsent(cc.challenge, "wa-chat", { clientId: JETCHAT_CLIENT, redirect: JETCHAT_REDIRECT });
+    const chatConsent = await browser("/authorize", { method: "POST", form: { handle: chatHandle, seat: "JET-CHAT", decision: "approve", scope: "zulip:read" } });
+    assert.equal(chatConsent.status, 302);
+    const chatLoc = new URL(chatConsent.headers.get("location"));
+    const chatGrant = await token({ grant_type: "authorization_code", code: chatLoc.searchParams.get("code"), code_verifier: cc.verifier, redirect_uri: JETCHAT_REDIRECT, client_id: JETCHAT_CLIENT, resource: RESOURCE });
+    assert.equal(chatGrant.status, 200, JSON.stringify(chatGrant.body));
+    const heldOut = await call(chatGrant.body.access_token, "whatsapp_read", {});
+    assert.equal(heldOut.json.result.isError, true, JSON.stringify(heldOut.json));
+    assert.equal(heldOut.json.result._meta["agent-sync/error"].code, "not_authorized");
     const op = { contract: "wa-operator/1", seat: "JET", request_id: crypto.randomUUID(), sent_at: Math.floor(Date.now() / 1000) };
     await postWa(op, "operator", operatorKey);
     assert.equal(callbackCalls.length, 2);
     assert.deepEqual(callbackCalls[1].body.data, { source: "operator", owner_authorized: false });
     const ns = await mf.getDurableObjectNamespace("SEAT_GATE");
     assert.equal((await ns.get(ns.idFromName("JET")).eventSubscriptions({})).length, 2);
+    // A delivered owner wake re-rings after RERING_MS until the owner acks.
+    // That ack normally arrives through the whatsapp_read tool;  with the tool
+    // held (JET is events-only and the JET-CHAT transfer is undecided) the
+    // test acks through the SeatGate's storage seam, the same wa.read the
+    // tool calls, so the coalescing assertion below stays reachable.
+    const jetGate = ns.get(ns.idFromName("JET"));
+    const surfaced = await jetGate.waRead({});
+    assert.ok(surfaced.items.length > 0);
+    const acked = await jetGate.waRead({ ack_through: surfaced.items[surfaced.items.length - 1].seq });
+    assert.equal(acked.ok, true);
     const maximum = { ...body, messages: Array.from({ length: 100 }, (_, i) => ({ ...message("3", "😀".repeat(4096)), id_hash: (100 + i).toString(16).padStart(64, "0") })) };
     const full = await (await postWa(maximum)).json();
     assert.equal(full.stored, 100, "maximum provider batch commits to real SQLite storage");
