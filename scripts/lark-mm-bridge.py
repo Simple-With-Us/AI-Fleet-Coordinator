@@ -95,7 +95,7 @@ ACP_HANDSHAKE_TIMEOUT = 300
 # very first character is the eyes emoji is read and dropped:  no turn, no
 # reply, no record of it.  The owner asked for it on Oct 22, 2026;  Jet's
 # WhatsApp bridge takes the same marker.
-SILENT_MARKER = "\U0001F440"
+SILENT_MARKER = "\U0001f440"
 
 # The Operator (the agent-sync listener) can put a message into the Lark chat.
 # It drops a JSON file into the signal directory and the bridge picks it up,
@@ -1293,7 +1293,10 @@ class Bridge:
         # claimed, so a marked message never becomes a turn, never gets a
         # reply, and leaves no delivery row behind.
         if content.startswith(SILENT_MARKER):
-            log("ignoring message %s in %s: the silent marker is at the start" % (message_id, chat_id))
+            log(
+                "ignoring message %s in %s: the silent marker is at the start"
+                % (message_id, chat_id)
+            )
             return
         if not self._mentioned(event):
             log("ignoring message %s in %s: bot was not mentioned" % (message_id, chat_id))

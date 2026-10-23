@@ -15,8 +15,8 @@ import re
 import signal
 import sys
 import tempfile
-import time
 import threading
+import time
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -1499,7 +1499,7 @@ class LarkSurfaceTests(unittest.TestCase):
     def test_a_message_that_starts_with_the_eyes_marker_never_wakes_the_seat(self):
         bridge = self.make_bridge()
         bridge._handle(
-            self.owner_message("om_eyes", "\U0001F440 thinking out loud, no answer needed")
+            self.owner_message("om_eyes", "\U0001f440 thinking out loud, no answer needed")
         )
         self.assertTrue(bridge.turns.empty())
         # No delivery row either:  a marked message is not a message this
@@ -1508,14 +1508,16 @@ class LarkSurfaceTests(unittest.TestCase):
 
     def test_the_marker_only_counts_at_the_very_start(self):
         bridge = self.make_bridge()
-        bridge._handle(self.owner_message("om_late", "hey \U0001F440 what do you think?"))
+        bridge._handle(self.owner_message("om_late", "hey \U0001f440 what do you think?"))
         self.assertEqual(bridge.turns.qsize(), 1)
 
     def test_the_marker_is_checked_before_the_secret_scan(self):
         """A marked message is dropped, and its text never reaches the log."""
         bridge = self.make_bridge()
         with mock.patch.object(bridge_mod, "scan_secret", side_effect=AssertionError("scanned")):
-            bridge._handle(self.owner_message("om_eyes2", "\U0001F440 " + self.credential_shaped_text()))
+            bridge._handle(
+                self.owner_message("om_eyes2", "\U0001f440 " + self.credential_shaped_text())
+            )
         self.assertTrue(bridge.turns.empty())
 
     def test_a_signal_is_sent_into_the_chat_and_queued_as_a_turn(self):
@@ -1620,7 +1622,9 @@ class LarkSurfaceTests(unittest.TestCase):
         signal = self.write_signal(
             bridge, "sig-6.json", {"signal_id": "sig-6", "text": "wake up", "chat_id": "oc_1"}
         )
-        with mock.patch.object(bridge_mod, "run", side_effect=bridge_mod.CommandError("429 rate limit")):
+        with mock.patch.object(
+            bridge_mod, "run", side_effect=bridge_mod.CommandError("429 rate limit")
+        ):
             bridge._handle_signal(signal)
         # A rate limit is not the signal's fault, so it stays pending.
         self.assertTrue(signal.exists())
@@ -1634,7 +1638,9 @@ class LarkSurfaceTests(unittest.TestCase):
         signal = self.write_signal(
             bridge, "sig-7.json", {"signal_id": "sig-7", "text": "wake up", "chat_id": "oc_1"}
         )
-        with mock.patch.object(bridge_mod, "run", side_effect=bridge_mod.CommandError("400 bad request")):
+        with mock.patch.object(
+            bridge_mod, "run", side_effect=bridge_mod.CommandError("400 bad request")
+        ):
             bridge._handle_signal(signal)
         record = self.read_outcome(bridge, "sig-7.json")
         self.assertEqual(record["outcome"], "refused")
@@ -1677,11 +1683,10 @@ class LarkSurfaceTests(unittest.TestCase):
             sent.append(command)
             return json.dumps({"message_id": "om_sig"})
 
-        with mock.patch.object(bridge_mod, "run", fake_run):
-            with mock.patch.object(
-                bridge, "_handle_signal", side_effect=[RuntimeError("boom"), None]
-            ):
-                bridge._signal_worker_once()
+        with mock.patch.object(bridge_mod, "run", fake_run), mock.patch.object(
+            bridge, "_handle_signal", side_effect=[RuntimeError("boom"), None]
+        ):
+            bridge._signal_worker_once()
         # The second file is still handed to the handler.
         self.assertTrue(first.exists() or second.exists())
 
@@ -1731,8 +1736,13 @@ class LarkSurfaceTests(unittest.TestCase):
             return ""
 
         with mock.patch.object(bridge_mod, "run", fake_run):
-            bridge._mirror("oc_1", "mvs_abc123", "the operator spoke", "the answer",
-                           sender_id=bridge_mod.OPERATOR_SENDER)
+            bridge._mirror(
+                "oc_1",
+                "mvs_abc123",
+                "the operator spoke",
+                "the answer",
+                sender_id=bridge_mod.OPERATOR_SENDER,
+            )
         self.assertIn("Operator: the operator spoke", bodies[0])
 
     def test_the_signal_idempotency_key_comes_from_the_signal_id_alone(self):
@@ -1745,15 +1755,15 @@ class LarkSurfaceTests(unittest.TestCase):
 
     def test_a_send_answer_without_a_message_id_is_not_guessed(self):
         self.assertEqual(bridge_mod._message_id_from(json.dumps({"message_id": "om_x"})), "om_x")
-        self.assertEqual(bridge_mod._message_id_from(json.dumps({"data": {"message_id": "om_y"}})), "om_y")
+        self.assertEqual(
+            bridge_mod._message_id_from(json.dumps({"data": {"message_id": "om_y"}})), "om_y"
+        )
         self.assertIsNone(bridge_mod._message_id_from("not json"))
         self.assertIsNone(bridge_mod._message_id_from(json.dumps({"chat_id": "oc_1"})))
         self.assertIsNone(bridge_mod._message_id_from(json.dumps([1, 2])))
 
     def test_the_signal_cli_leaves_a_file_the_bridge_picks_up(self):
-        code = bridge_mod.main(
-            ["--signal", "wake up", "--state-dir", self.state_dir.name]
-        )
+        code = bridge_mod.main(["--signal", "wake up", "--state-dir", self.state_dir.name])
         self.assertEqual(code, 0)
         files = list((Path(self.state_dir.name) / bridge_mod.SIGNAL_DIRNAME).glob("*.json"))
         self.assertEqual(len(files), 1)
