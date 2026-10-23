@@ -23,7 +23,6 @@ Standard library only, Python 3.11+.
 from __future__ import annotations
 
 import os
-import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 

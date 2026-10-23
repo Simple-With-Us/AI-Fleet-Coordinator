@@ -2186,9 +2186,8 @@ class Daemon:
         ):
             self.pause(seat=None, wakes_only=False, by="owner-dm", message_id=message["id"])
             return
-        if (
-            not c.dm
-            and self._maybe_registration_answer(message, now, channel=c.channel, topic=c.topic)
+        if not c.dm and self._maybe_registration_answer(
+            message, now, channel=c.channel, topic=c.topic
         ):
             # A location answer is carried out here, deterministically:  it never becomes a
             # wake for the Operator's responder to interpret.
