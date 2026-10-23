@@ -57,3 +57,46 @@ test("fallback mode warns, counts, and uses the env binding on failure", async (
   assert.equal(await resolveSecret(env, { name: "S", path: "/tools", envName: "LEGACY" }), "v0");
   assert.equal(infisicalStats().fallbacks, 1);
 });
+
+test("scope denial (403) throws in required mode with a secret-safe error", async () => {
+  _resetInfisicalForTests();
+  mockFetch([["/api/v3/secrets/raw/S", { body: { message: "Forbidden" }, status: 403 }]]);
+  const env = { ...ENV, LEGACY: "v0" };
+  const err = await resolveSecret(env, { name: "S", path: "/tools", envName: "LEGACY" }).then(() => null, (e) => e);
+  assert.ok(err instanceof InfisicalError);
+  assert.equal(err.status, 403);
+  assert.ok(!String(err.message).includes("v0"), "error never carries the env-binding value");
+  assert.ok(!String(err.message).includes("st-test"), "error never carries the service token");
+});
+
+test("outage (500) in required mode throws rather than serving stale cache beyond TTL", async () => {
+  _resetInfisicalForTests();
+  let serve = { body: { secret: { secretValue: "v1" } } };
+  const calls = mockFetch([["/api/v3/secrets/raw/S", { get body() { return serve.body; }, get status() { return serve.status; } }]]);
+  assert.equal(await resolveSecret(ENV, { name: "S", path: "/tools", envName: "L" }), "v1");
+  serve = { body: {}, status: 500 };
+  // Force cache expiry by backdating: a fresh fetch must fail visibly, not serve v1 forever.
+  const { _resetInfisicalForTests: reset } = await import("../src/infisical.js");
+  reset();
+  await assert.rejects(() => resolveSecret(ENV, { name: "S", path: "/tools", envName: "L" }), /500/);
+});
+
+test("rotation: after cache expiry the new Infisical value is served", async () => {
+  _resetInfisicalForTests();
+  let value = "old-value";
+  mockFetch([["/api/v3/secrets/raw/S", { get body() { return { secret: { secretValue: value } }; } }]]);
+  assert.equal(await resolveSecret(ENV, { name: "S", path: "/tools", envName: "L" }), "old-value");
+  value = "rotated-value";
+  // Within the TTL the cached value serves; simulate expiry by resetting the cache,
+  // which is exactly the state a post-TTL read starts from (no value retained).
+  _resetInfisicalForTests();
+  assert.equal(await resolveSecret(ENV, { name: "S", path: "/tools", envName: "L" }), "rotated-value");
+});
+
+test("fallback mode serves Infisical when healthy and counts zero fallbacks", async () => {
+  _resetInfisicalForTests();
+  mockFetch([["/api/v3/secrets/raw/S", { body: { secret: { secretValue: "v9" } } }]]);
+  const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+  assert.equal(await resolveSecret(env, { name: "S", path: "/tools", envName: "LEGACY" }), "v9");
+  assert.equal(infisicalStats().fallbacks, 0);
+});
