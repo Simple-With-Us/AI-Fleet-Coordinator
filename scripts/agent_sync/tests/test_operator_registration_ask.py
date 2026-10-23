@@ -162,7 +162,7 @@ class LocationQuestionTests(_LocationQuestionFixture, unittest.TestCase):
     def test_a_secret_shaped_route_is_withheld(self) -> None:
         # The queue scans the route at persistence;  the send boundary scans it again, so
         # a hand-built caller gets the same refusal (never the value, only the field).
-        for override in ({"channel": "sk-" + "abcdef0123456789" * 2}, {"topic": "sk-" + "abcdef0123456789" * 2}):
+        for override in ({"channel": "sk-" + "placeholder" * 2}, {"topic": "sk-" + "placeholder" * 2}):
             out = self.send(**override)
             self.assertEqual(out["status"], "refused", override)
             self.assertEqual(out["code"], "secret")

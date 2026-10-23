@@ -368,6 +368,11 @@ def begin(
     """
     now = time.time() if now is None else float(now)
     native = SI.check(session_id, "the native session id")
+    # A session id is caller-supplied text:  it is persisted in the entry and relayed in
+    # the question, so it gets the same secret scan as every other text field.
+    kind = secretscan.scan(native)
+    if kind:
+        raise RegistrationRefused("session_id", kind)
     platform = _text(platform, "platform", MAX_LABEL).lower()
     scope = _text(profile_scope, "profile_scope", MAX_LABEL)
     seat_label = _text(seat, "seat", MAX_LABEL)
