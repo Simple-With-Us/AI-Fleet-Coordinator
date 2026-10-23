@@ -168,11 +168,19 @@ def fleet_bot_ids(
 
 
 class SeatIdentity:
-    def __init__(self, seat: str, user_id: int, full_name: str, email: str) -> None:
+    def __init__(
+        self,
+        seat: str,
+        user_id: int,
+        full_name: str,
+        email: str,
+        bot_owner_id: int | None = None,
+    ) -> None:
         self.seat = seat
         self.user_id = user_id
         self.full_name = full_name
         self.email = email
+        self.bot_owner_id = bot_owner_id
 
 
 class Context:

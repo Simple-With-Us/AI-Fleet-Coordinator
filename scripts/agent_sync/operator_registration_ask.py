@@ -96,8 +96,13 @@ def _question_message_id(
         }
         if anchor != "newest":
             params["include_anchor"] = "false"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None, "the topic read-back ran out of time", False
         try:
-            result = client.get("messages", params)
+            # Each page gets only what is left of the shared absolute deadline, so one
+            # hung request can never stretch the walk past it.
+            result = client.get("messages", params, timeout=remaining)
         except Exception as exc:
             return None, type(exc).__name__, False
         rows = result.get("messages") if isinstance(result, Mapping) else None
@@ -222,7 +227,7 @@ def send_location_question(
             )
         return _outcome(
             "refused",
-            "the Operator identity could not be confirmed: %s" % exc,
+            "the Operator identity could not be confirmed: %s" % type(exc).__name__,
             delivery_status=OC.DELIVERY_REFUSED,
         )
     except Exception as exc:
@@ -339,13 +344,13 @@ def send_location_question(
             OC._record(path, key, at, window, 0, None, OC.DELIVERY_UNKNOWN)
             return _outcome(
                 "refused",
-                "the location question delivery is unknown: %s" % exc,
+                "the location question delivery is unknown: %s" % type(exc).__name__,
                 delivery_status=OC.DELIVERY_UNKNOWN,
             )
         OC._release(path, key, at, window)
         return _outcome(
             "refused",
-            "the location question was not sent and may be retried: %s" % exc,
+            "the location question was not sent and may be retried: %s" % type(exc).__name__,
             delivery_status=OC.DELIVERY_RETRYABLE,
         )
     except Z.AgentSyncError as exc:
@@ -363,14 +368,16 @@ def send_location_question(
             OC._release(path, key, at, window)
             return _outcome(
                 "refused",
-                "the location question was rate-limited and may be retried: %s" % exc,
+                "the location question was rate-limited and may be retried: %s"
+                % type(exc).__name__,
                 delivery_status=OC.DELIVERY_RETRYABLE,
             )
         if isinstance(status, int) and (status == 408 or 500 <= status < 600):
             OC._record(path, key, at, window, 0, None, OC.DELIVERY_UNKNOWN)
             return _outcome(
                 "refused",
-                "the location question delivery is unknown (%s): %s" % (status, exc),
+                "the location question delivery is unknown (%s): %s"
+                % (status, type(exc).__name__),
                 delivery_status=OC.DELIVERY_UNKNOWN,
             )
         if not isinstance(status, int) or isinstance(status, bool):
@@ -380,7 +387,7 @@ def send_location_question(
             OC._record(path, key, at, window, 0, None, OC.DELIVERY_UNKNOWN)
             return _outcome(
                 "refused",
-                "the location question delivery is unknown: %s" % exc,
+                "the location question delivery is unknown: %s" % type(exc).__name__,
                 delivery_status=OC.DELIVERY_UNKNOWN,
             )
         OC._release(path, key, at, window)
@@ -394,7 +401,7 @@ def send_location_question(
             )
         return _outcome(
             "refused",
-            "the location question could not be sent: %s" % exc,
+            "the location question could not be sent: %s" % type(exc).__name__,
             delivery_status=OC.DELIVERY_REFUSED,
         )
     except Exception as exc:

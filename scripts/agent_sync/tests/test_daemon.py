@@ -1986,6 +1986,33 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertIn(db, log)
         self.assertEqual(len(D.OREG.pending_entries(db)), 1)
 
+    def test_an_unknown_delivery_reconciles_at_most_once_per_interval(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        unknown = {
+            "status": "refused",
+            "reason": "the location question delivery is unknown",
+            "delivery_status": D.OC.DELIVERY_UNKNOWN,
+        }
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=unknown) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+            # The reconciliation ran once and stamped the attempt:  a pass inside the
+            # interval skips instead of re-running the whole topic read-back.
+            daemon.maybe_ask_registrations(self._rows(), {})
+            self.assertEqual(send.call_count, 1)
+            entry = D.OREG.pending_entries(db)[0]
+            self.assertTrue(entry.get("reconciled_at"))
+            self.assertFalse(entry.get("notified_at"))
+            # Past the interval the question reconciles again.
+            data = D.OREG.load(db)
+            data["entries"][entry["entry_id"]]["reconciled_at"] = (
+                entry["reconciled_at"] - D.REGISTRATION_RECONCILE_INTERVAL - 1
+            )
+            D.OREG.save(db, data)
+            daemon.maybe_ask_registrations(self._rows(), {})
+            self.assertEqual(send.call_count, 2)
+
     def test_a_failed_send_is_retried_on_the_next_pass(self):
         self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
         daemon = self.daemon()
@@ -2171,7 +2198,7 @@ class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
     def test_the_chats_own_seat_bot_may_answer(self):
         daemon = self.daemon()
         entry = self._pending_entry(daemon)
-        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
         self.assertTrue(self._answer(daemon, entry, 4242))
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
         self.assertEqual([row["verified_host"] for row in rows], ["mac"])
@@ -2181,14 +2208,27 @@ class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
         # topic is as much a stranger as any other poster (cross-seat refusal).
         daemon = self.daemon()
         entry = self._pending_entry(daemon)
-        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
         daemon.seats["CURSOR"] = types.SimpleNamespace(
-            me=types.SimpleNamespace(user_id=5555)
+            me=types.SimpleNamespace(user_id=5555, bot_owner_id=12)
         )
         # A stub seat is not a runner:  drop it again before the harness shuts the
         # daemon down (cleanups run last-in-first-out, so this beats the shutdown).
         self.addCleanup(daemon.seats.pop, "CURSOR", None)
         self.assertFalse(self._answer(daemon, entry, 5555))
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
+
+    def test_a_bot_owned_by_another_owner_may_not_answer(self):
+        # The seat-bot leg is pinned-owner-only:  a bot whose users/me names a different
+        # owner never speaks for this fleet's registrations, even with the right user id.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=999)
+        self.assertFalse(self._answer(daemon, entry, 4242))
         self.assertEqual(
             D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
             [],

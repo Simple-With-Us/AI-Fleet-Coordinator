@@ -70,6 +70,8 @@ from .cli import format_time, seat_tag_for
 
 # "stream" and "subscription" keep the bot on every public channel and `streams` current (owner 2026-10-10).
 EVENT_TYPES = ["message", "update_message", "user_topic", "realm_user", "stream", "subscription"]
+# How often an unknown-delivery registration question re-runs its topic read-back.
+REGISTRATION_RECONCILE_INTERVAL = 900.0
 FLEET_ROLES = (
     300,
     400,
@@ -349,8 +351,13 @@ class SeatRunner:
                     "the credential for seat %s belongs to the bot of seat %s (users/me); a seat "
                     "holds only its own bot, so it is refused" % (self.seat, tag)
                 )
+        bot_owner = me.get("bot_owner_id")
         self.me = R.SeatIdentity(
-            self.seat, int(me["user_id"]), str(me.get("full_name") or ""), self.creds.email
+            self.seat,
+            int(me["user_id"]),
+            str(me.get("full_name") or ""),
+            self.creds.email,
+            bot_owner_id=int(bot_owner) if isinstance(bot_owner, int) and not isinstance(bot_owner, bool) else None,
         )
         self.daemon.join_public(self, "connect")
         self.daemon.ensure_notes_channel(self, "connect")
@@ -4111,6 +4118,13 @@ class Daemon:
             return int(user_id)
         return None
 
+    def _seat_bot_owned_by(self, seat: str, owner: int) -> bool:
+        """A seat bot speaks for the fleet's registrations only when the pinned owner owns it."""
+        runner = self.seats.get(str(seat or ""))
+        me = getattr(runner, "me", None) if runner is not None else None
+        bot_owner = getattr(me, "bot_owner_id", None) if me is not None else None
+        return isinstance(bot_owner, int) and not isinstance(bot_owner, bool) and bot_owner == owner
+
     def _registration_db(self) -> str:
         db = getattr(self, "_oreg_db", None)
         if db is None:
@@ -4222,6 +4236,17 @@ class Daemon:
                         session_id=session_id,
                     )
                     continue
+                reconciled = entry.get("reconciled_at")
+                if (
+                    isinstance(reconciled, (int, float))
+                    and not isinstance(reconciled, bool)
+                    and time.time() - float(reconciled) < REGISTRATION_RECONCILE_INTERVAL
+                ):
+                    # The last pass could not prove this question's delivery and already
+                    # spent its topic read-back:  reconcile at most once per interval, so
+                    # a stuck-unknown entry cannot stall the wake with a 10-page walk
+                    # every pass.
+                    continue
                 try:
                     sent = ORASK.send_location_question(
                         question=out["question"],
@@ -4242,6 +4267,8 @@ class Daemon:
                     )
                     if sent.get("status") == "sent":
                         OREG.mark_notified(db, entry["entry_id"])
+                    elif sent.get("delivery_status") == OC.DELIVERY_UNKNOWN:
+                        OREG.mark_reconciled(db, entry["entry_id"])
                     sent_status = sent.get("status")
                     sent_reason = str(sent.get("reason") or "")[:80]
                     # The log line stays inside the row's guard:  the complete begin,
@@ -4341,8 +4368,13 @@ class Daemon:
                 # client) must not mint a durable session letter.
                 if self.owner_of(message):
                     allowed.add(owner)
+                # The seat-bot leg is pinned-owner-only:  the bot's own users/me says who
+                # owns it, and a bot owned by anyone else never speaks for this fleet's
+                # registrations (fail closed when the owner is unknown).
                 bot_user_id = self._seat_bot_user_id(str(entry.get("seat") or ""))
-                if bot_user_id is not None:
+                if bot_user_id is not None and self._seat_bot_owned_by(
+                    str(entry.get("seat") or ""), owner
+                ):
                     allowed.add(bot_user_id)
             if not isinstance(sender, int) or isinstance(sender, bool) or sender not in allowed:
                 self.log.write(

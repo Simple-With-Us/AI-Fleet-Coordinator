@@ -183,8 +183,10 @@ class _StubClient:
         self.messages = list(messages)
         self.messages_error = messages_error
         self.posts = []
+        self.get_timeouts = []
 
-    def get(self, endpoint, params=None):
+    def get(self, endpoint, params=None, timeout=None):
+        self.get_timeouts.append((endpoint, timeout))
         if endpoint == "messages":
             if self.messages_error is not None:
                 raise self.messages_error
@@ -227,6 +229,33 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
         self.assertEqual(second["message_id"], first["message_id"])
         self.assertIn("already went", second["reason"])
         self.assertEqual(len(self.topic_posts()), 1)
+
+    def test_the_read_back_bounds_each_request_by_the_shared_deadline(self) -> None:
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
+        working = _StubClient(messages=[])
+        self.send(client=working, now=1001.0)
+        # Every page request carries the remaining slice of the one absolute deadline:
+        # never None (unbounded) and never more than the full budget.
+        read_back = [t for endpoint, t in working.get_timeouts if endpoint == "messages"]
+        self.assertTrue(read_back)
+        for timeout in read_back:
+            self.assertIsNotNone(timeout)
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, ORASK.READ_BACK_DEADLINE_SECONDS)
+
+    def test_a_send_failure_reason_names_the_exception_class_not_its_text(self) -> None:
+        # The exception's str() can copy response bodies or request data into a logged
+        # outcome:  the reason carries the class name, never the text.
+        noisy = _StubClient(
+            post_error=Exception("response body echoing the request payload")
+        )
+        out = self.send(client=noisy)
+        self.assertEqual(out["status"], "refused")
+        self.assertIn("Exception", out["reason"])
+        self.assertNotIn("response body echoing the request payload", out["reason"])
 
     def test_a_landed_but_unconfirmed_question_is_recovered_by_readback(self) -> None:
         # The post landed but its outcome was unknown:  the ledger says unknown, the

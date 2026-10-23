@@ -73,6 +73,78 @@ class OperatorRegistrationTest(unittest.TestCase):
         kwargs.update(overrides)
         return OREG.answer(self.db, **kwargs)
 
+    def test_load_rejects_unknown_top_level_sections(self):
+        self.begin()
+        path = OREG.queue_path(self.db)
+        data = OREG.L.read_json(path)
+        data["surprise"] = {"x": 1}
+        OREG.L.write_json(path, data, durable=True)
+        with self.assertRaises(ValueError):
+            OREG.load(self.db)
+
+    def test_answer_rejects_a_malformed_entry_id(self):
+        out = self.answer("garbage", "mac")
+        self.assertEqual(out, {"status": "invalid", "reason": "malformed_entry_id"})
+        self.assertEqual(self.registry.writes, [])
+
+    def test_answer_refuses_when_the_registry_writer_refuses(self):
+        entry = self.begin()["entry"]
+
+        def refusing_register(**identity):
+            return {
+                "record_id": "r",
+                "label": "",
+                "generation": 0,
+                "created": False,
+                "outcome": "resumed_closed",
+            }
+
+        out = self.answer(entry["entry_id"], "mac", register=refusing_register)
+        self.assertEqual(out["status"], "refused")
+        self.assertEqual(out["reason"], "resumed_closed")
+        # The question stays open:  no false "Registered" confirmation, and no endless
+        # re-ask loop over a session the registry will not letter.
+        pending = OREG.pending_entries(self.db)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["state"], OREG.STATE_ASKED)
+        self.assertEqual(pending[0]["reason"], "register:resumed_closed")
+
+    def test_answer_refuses_a_seat_mismatch_outcome(self):
+        entry = self.begin()["entry"]
+
+        def mismatch_register(**identity):
+            return {
+                "record_id": "r",
+                "label": "A",
+                "generation": 1,
+                "created": False,
+                "outcome": "seat_mismatch",
+            }
+
+        out = self.answer(entry["entry_id"], "mac", register=mismatch_register)
+        self.assertEqual(out["status"], "refused")
+        self.assertEqual(out["reason"], "seat_mismatch")
+        self.assertEqual(len(OREG.pending_entries(self.db)), 1)
+
+    def test_answer_reply_words_a_refusal(self):
+        text = OREG.answer_reply(
+            {"status": "refused", "reason": "resumed_closed", "entry_id": "reg-aaaaaaaaaaaa"}
+        )
+        self.assertIn("refused", text)
+        self.assertIn("reg-aaaaaaaaaaaa", text)
+
+    def test_cli_registrations_read_a_missing_file_as_empty(self):
+        registrations, _ = OREG._registry_functions(os.path.join(self.tmp.name, "no-such.db"))
+        self.assertEqual(registrations("minimax", _session_id()), [])
+
+    def test_mark_reconciled_stamps_only_a_live_asked_entry(self):
+        entry = self.begin()["entry"]
+        self.assertTrue(OREG.mark_reconciled(self.db, entry["entry_id"], now=3000.0))
+        stamped = OREG.pending_entries(self.db)[0]
+        self.assertEqual(stamped["reconciled_at"], 3000.0)
+        self.assertFalse(stamped.get("notified_at"))
+        self.assertFalse(OREG.mark_reconciled(self.db, "reg-bbbbbbbbbbbb", now=3001.0))
+
     def test_begin_creates_one_pending_question(self):
         out = self.begin()
         self.assertEqual(out["status"], "ask")
@@ -211,7 +283,7 @@ class OperatorRegistrationTest(unittest.TestCase):
         self.assertEqual(self.registry.writes, [])
 
     def test_unknown_and_late_answers_are_ignored(self):
-        self.assertEqual(self.answer("reg-missing", "mac")["status"], "ignored")
+        self.assertEqual(self.answer("reg-ffffffffffff", "mac")["status"], "ignored")
         entry = self.begin()["entry"]
         dropped = OREG.sweep(self.db, now=1000.0 + OREG.DEFAULT_TIMEOUT_SECONDS + 1)
         self.assertEqual([row["entry_id"] for row in dropped], [entry["entry_id"]])

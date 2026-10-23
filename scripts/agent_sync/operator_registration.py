@@ -109,7 +109,14 @@ _ENTRY_STR_FIELDS = {
     "location": MAX_LABEL,
     "label": MAX_LABEL,
 }
-_ENTRY_TIME_FIELDS = ("asked_at", "deadline", "notified_at", "answered_at", "dropped_at")
+_ENTRY_TIME_FIELDS = (
+    "asked_at",
+    "deadline",
+    "notified_at",
+    "answered_at",
+    "dropped_at",
+    "reconciled_at",
+)
 _ENTRY_KNOWN_KEYS = frozenset(
     (
         "entry_id",
@@ -201,6 +208,13 @@ def load(registry_db: str) -> dict[str, Any]:
     if not isinstance(data, dict) or not data:
         raise ValueError(
             "operator_registration: the queue file is unreadable or malformed, not an empty queue"
+        )
+    extra = sorted(str(key) for key in data if key != "entries")
+    if extra:
+        # No forward compatibility:  a section this build does not know is a corrupted or
+        # foreign file, and failing closed beats silently discarding it.
+        raise ValueError(
+            "operator_registration: the queue file has unknown sections %s" % ",".join(extra)
         )
     entries = data.get("entries")
     if not isinstance(entries, Mapping):
@@ -475,7 +489,12 @@ def answer(
     word = str(location or "").strip().lower()
     with L.locked(queue_path(registry_db)):
         data = load(registry_db)
-        entry = data["entries"].get(str(entry_id or ""))
+        eid = str(entry_id or "")
+        if not _ENTRY_ID_RE.fullmatch(eid):
+            # A malformed token is rejected by name, never confused with an unknown or
+            # expired entry:  each failure shape gets its own explicit status.
+            return {"status": "invalid", "reason": "malformed_entry_id"}
+        entry = data["entries"].get(eid)
         # An asked entry answers directly;  a conflicted one settles through the same
         # path - the owner names the true location and every cross-check runs again, so
         # the confirmation's "settle which is right and I will re-register it" is real.
@@ -517,10 +536,26 @@ def answer(
             native_session_id=entry["session_id"],
             seat=entry["seat"],
         )
+        outcome = str(out.get("outcome") or "")
+        label = str(out.get("label") or "")
+        if outcome not in ("registered", "resumed") or not label:
+            # The registry writer refused without raising (seat_mismatch, resumed_closed)
+            # or returned no live letter.  Closing the entry here would post a false
+            # "Registered" confirmation and, with the session still unlettered, the next
+            # wake would open the same question again forever.  Refuse, keep the entry
+            # answerable, and record only the outcome word - never identity content.
+            entry["answered_at"] = round(now, 3)
+            entry["reason"] = "register:" + (outcome or "no_letter")
+            save(registry_db, data)
+            return {
+                "status": "refused",
+                "reason": outcome or "no_letter",
+                "entry_id": entry["entry_id"],
+            }
         entry["state"] = STATE_REGISTERED
         entry["answered_at"] = round(now, 3)
         entry["location"] = word
-        entry["label"] = str(out.get("label") or "")
+        entry["label"] = label
         entry["generation"] = int(out.get("generation") or 1)
         save(registry_db, data)
         return {
@@ -645,6 +680,25 @@ def mark_notified(registry_db: str, entry_id: str, *, now: float | None = None) 
         return True
 
 
+def mark_reconciled(registry_db: str, entry_id: str, *, now: float | None = None) -> bool:
+    """Stamp the last delivery-reconciliation attempt on a live asked entry.
+
+    An unknown delivery must not re-run the whole topic read-back on every wake:  the
+    stamp lets the daemon reconcile at most once per reconcile interval.  The entry is
+    NOT stamped notified - the question's delivery is still unproven, so the interval
+    retry (and the sweep's deadline) still apply.
+    """
+    now = time.time() if now is None else float(now)
+    with L.locked(queue_path(registry_db)):
+        data = load(registry_db)
+        entry = data["entries"].get(str(entry_id or ""))
+        if not isinstance(entry, dict) or entry.get("state") != STATE_ASKED:
+            return False
+        entry["reconciled_at"] = round(now, 3)
+        save(registry_db, data)
+        return True
+
+
 def answer_reply(result: Mapping[str, Any]) -> str:
     """The one-line reply posted where the answer arrived.  Ids and the letter only, never a body."""
     status = str(result.get("status") or "")
@@ -670,7 +724,14 @@ def answer_reply(result: Mapping[str, Any]) -> str:
             "Settle which is right and I will re-register it (ref %s)."
             % (result.get("evidence") or "another location", result.get("claimed"), entry_id)
         )
+    if status == "refused":
+        return (
+            "Not registered:  the registry refused this answer (%s); the question stays "
+            "open (ref %s)." % (result.get("reason") or "refused", entry_id)
+        )
     if status == "invalid":
+        if result.get("reason") == "malformed_entry_id":
+            return "No open question with that ref - it was answered already or expired unanswered."
         return (
             "That is not a location I can use:  answer mac, server, or cloud (ref %s)." % entry_id
         )
@@ -686,6 +747,11 @@ def _registry_functions(db_path: str):
     from . import operator_registry as OR
 
     def registrations(platform: str, session_id: str) -> list[dict[str, Any]]:
+        # First run:  nothing has ever registered, so the file does not exist yet, and a
+        # missing file is the truthful "no letters yet" (the daemon reads the boundary
+        # the same way).  An existing but unreadable file still raises RegistryUnavailable.
+        if not os.path.isfile(str(db_path)):
+            return []
         return OR.registrations_for_native_id(db_path, platform, session_id)
 
     def register(**identity: Any) -> dict[str, Any]:
@@ -756,7 +822,7 @@ def main(argv: list[str] | None = None) -> int:
                 registrations=registrations,
                 register=register,
             )
-    except (ValueError, RegistrationRefused) as exc:
+    except (ValueError, RegistrationRefused, OR.RegistryUnavailable) as exc:
         print(json.dumps({"error": str(exc)}))
         return 2
     print(json.dumps(out))
