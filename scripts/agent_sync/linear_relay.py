@@ -684,14 +684,18 @@ class RelayWorker:
                     # call and the save is recoverable.
                     entry["pending"] = True
                     self.ledger.save()
-                    entry["comment_id"] = self.linear.create_comment(uuid, render_comment(entry, self.realm))
+                    entry["comment_id"] = self.linear.create_comment(
+                        uuid, render_comment(entry, self.realm)
+                    )
                     entry["pending"] = False
                     self.log("created a relay comment for %s (topic %r)" % (issue, entry["topic"]))
             else:
                 if now - float(entry["last_edit"]) < EDIT_INTERVAL:
                     return  # batched; tick() flushes it later
                 try:
-                    self.linear.update_comment(entry["comment_id"], render_comment(entry, self.realm))
+                    self.linear.update_comment(
+                        entry["comment_id"], render_comment(entry, self.realm)
+                    )
                 except LinearNotFound:
                     uuid = self._issue_uuid(issue)
                     if uuid is None:
@@ -699,7 +703,9 @@ class RelayWorker:
                     entry["comment_id"] = None
                     entry["pending"] = True
                     self.ledger.save()
-                    entry["comment_id"] = self.linear.create_comment(uuid, render_comment(entry, self.realm))
+                    entry["comment_id"] = self.linear.create_comment(
+                        uuid, render_comment(entry, self.realm)
+                    )
                     entry["pending"] = False
                 self.log("updated the relay comment for %s (topic %r)" % (issue, entry["topic"]))
             entry["last_edit"] = now
