@@ -15,13 +15,13 @@ const facts = {
 };
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-  test(`Agent Sync Admin Status ${viewport.width}`, async ({ page }) => {
+  test(`ST-MCP Admin Status ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const response = adminPage(facts);
     const html = await response.text();
     await page.route('https://visual-tests.invalid/admin', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));
     await page.goto('/admin');
-    await expect(page.getByRole('heading', { name: 'Agent-Sync Admin', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'ST-MCP Admin', exact: true })).toBeVisible();
     // The status overview folds by default (AFC-347); open it before asserting on its cards.
     await page.locator('details#status-overview > summary').click();
     await expect(page.locator('.error-card').filter({ hasText: 'The hourly Linear read budget is exhausted.' }).first()).toBeVisible();
