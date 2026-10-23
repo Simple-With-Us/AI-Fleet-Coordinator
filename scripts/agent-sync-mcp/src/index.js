@@ -76,6 +76,7 @@ import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
 import { serveWa } from "./wa/index.js";
+import { resolveSecret, infisicalStats } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 
 export { SeatGate };
@@ -227,7 +228,7 @@ async function serveMcp(request, env, ctx) {
   const scopes = Array.isArray(auth.scope) ? auth.scope.map(String) : [];
   // The key comes from the seat in the verified props, through SEAT_SECRETS only.
   const secretNames = SEAT_SECRETS[seat];
-  const key = typeof env[secretNames.key] === "string" ? env[secretNames.key].trim() : "";
+  const key = await resolveSecret(env, { name: secretNames.key, path: "/tools", envName: secretNames.key });
   const email = config.botEmails[seat];
   const grantId = typeof auth.token === "string" ? auth.token.split(":")[1] ?? "" : "";
   const tools = new HostedTools({
@@ -260,7 +261,11 @@ async function serveMcp(request, env, ctx) {
   // every enabled Grok Bot persona;  any other grant only as its own seat (src/delegated-identities.js).
   const sharedGroup = SHARED_IDENTITY_SEATS.includes(seat);
   const delegatedCredentials = sharedGroup ? loadDelegatedCredentials(env) : null;
-  const seatKeyOf = (identity) => (typeof env[SEAT_SECRETS[identity]?.key] === "string" ? env[SEAT_SECRETS[identity].key].trim() : "");
+  // Seat keys resolve through Infisical when INFISICAL_MODE allows (src/infisical.js);
+  // prefetched so the router's synchronous identityStatus keeps its contract.
+  const seatKeys = new Map(await Promise.all(Object.entries(SEAT_SECRETS).map(async ([identity, names]) =>
+    [identity, await resolveSecret(env, { name: names.key, path: "/tools", envName: names.key })])));
+  const seatKeyOf = (identity) => seatKeys.get(identity) ?? "";
   const routedTools = new IdentityRouter({
     callerTools: tools,
     credentials: delegatedCredentials,
@@ -604,7 +609,7 @@ async function serveLinearHealth(request, env, config) {
  * refused;  a Zulip failure throws, which deliverWake answers with a retry.
  */
 async function wakeChannels(env, config, seat, seatGate) {
-  const key = typeof env[SEAT_SECRETS[seat].key] === "string" ? env[SEAT_SECRETS[seat].key].trim() : "";
+  const key = await resolveSecret(env, { name: SEAT_SECRETS[seat].key, path: "/tools", envName: SEAT_SECRETS[seat].key });
   if (!key) return null;
   const tools = new HostedTools({ seat, scopes: [], config, zulip: new ZulipClient({ email: config.botEmails[seat], key }), key, gate: seatGate });
   try {
@@ -893,6 +898,9 @@ async function serveAdmin(request, env, config, oauth, email) {
     const statusErrors = [];
     const configured = (name) => typeof env[name] === "string" && env[name].trim() !== "";
     const recallConfigured = recallClientFromEnv(env) !== null;
+    // Observability for the Infisical transition: the mode and the bounded
+    // fallback counters render on the admin status payload (src/infisical.js).
+    const infisical = { mode: String(env.INFISICAL_MODE ?? "off").trim().toLowerCase() || "off", ...infisicalStats() };
     // Collect seats independently so a diagnostic read failure is visible on
     // the page rather than hiding every other seat behind an admin 500.
     await Promise.all(config.hostedSeats.map(async (seat) => {
@@ -953,6 +961,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         calls: calls.slice(0, 40),
         statusCalls: calls,
         statusErrors,
+        infisical,
         runtimeErrors,
         statusAudits: audits,
         generatedAt,
