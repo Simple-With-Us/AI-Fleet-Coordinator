@@ -961,9 +961,7 @@ def cmd_detach(ctx: Ctx, argv: list[str]) -> int:
 
     L.update_lease(paths, lease_id, mutate)
     ctx.out(
-        "".join(
-            "detached #%s > %s\n" % (L.escape_line(channel), L.escape_line(t)) for t in removed
-        )
+        "".join("detached #%s > %s\n" % (L.escape_line(channel), L.escape_line(t)) for t in removed)
         or "no such topic on lease %s\n" % lease_id
     )
     return 0
