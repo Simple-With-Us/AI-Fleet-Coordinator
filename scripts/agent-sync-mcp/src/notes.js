@@ -808,6 +808,8 @@ export const NOTES_METHODS = {
     const client = this.requireNotes();
     const args = parseArgs(NotesLogArgs, rawArgs);
     if (args.title !== undefined) args.title = checkQuery(args.title, "title");
+    // The seat pattern still fits a key's shape, and the filter is sent to the Operator, so it gets the scan too.
+    if (args.by_seat !== undefined && scanSecret(args.by_seat)) throw invalid("argument 'by_seat' looks like it contains a secret;  nothing was sent");
     const query = logQuery(args);
     if (query.length > LOG_QUERY_MAX) throw invalid("the log filters are too long once encoded;  shorten the title filter");
     await this.reserve("read");

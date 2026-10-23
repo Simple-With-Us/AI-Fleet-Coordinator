@@ -661,6 +661,18 @@ class NotesQueue:
                 error = payload["error"]
                 code = str(error.get("code") or "internal")
                 code = code if code in _ERROR_CODES else "internal"
+                if (
+                    record.get("action") in ("read", "list")
+                    and code == "unavailable"
+                    and record["state"] == "running"
+                    and int(record.get("attempts") or 0) < READ_ATTEMPTS
+                ):
+                    # A read the runner could not finish this time (its script timed out, say) changes nothing, so it
+                    # goes back to the queue for another try, as a read whose lease runs out does;  the last try's
+                    # answer is final.
+                    record.update(state="queued", claim=None, lease_until=None)
+                    self._save(record)
+                    return Answer(200, self._report_view(record))
                 if record.get("action") in ("create", "update") and code not in DEFINITE_CODES:
                     # A create or update that failed in a way that does not prove nothing was written (an
                     # unplanned exit, say) may have written the note:  unknown, never a refusal a retry repeats.

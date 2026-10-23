@@ -841,6 +841,10 @@ class HostTests(unittest.TestCase):
                     self.assertEqual(caught.exception.code, expected[1])
                     if extra:
                         self.assertEqual(caught.exception.message, extra["error"]["message"])
+                    if state == "expired":
+                        # Final:  the same request_id answers this record again, so the way on is a new one.
+                        self.assertIn("nothing was written", caught.exception.message)
+                        self.assertIn("new request_id", caught.exception.message)
 
     def test_the_duplicate_flag_and_a_wait_of_zero(self):
         client = FakeClient(record("done", result={"note_id": "x-coredata://n3"}), duplicate=True)

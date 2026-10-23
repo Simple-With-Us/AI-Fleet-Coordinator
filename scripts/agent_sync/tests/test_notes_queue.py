@@ -375,6 +375,24 @@ class RunnerTests(QueueHarness):
         self.assertEqual((body["state"], body["error"]["code"]), ("refused", "unavailable"))
         self.assertEqual(self.claim(), NQ.Answer(204, None))
 
+    def test_a_read_the_runner_reports_unavailable_is_tried_again(self) -> None:
+        # Its script timed out, say:  a read changes nothing, so it goes back to the queue, and the third try's answer
+        # is final.  A write reported unavailable is final at once (nothing ran).
+        self.assert_answer(self.enqueue(request("read", rid="slow-read-01")), 202)
+        timed_out = {"code": "unavailable", "message": "the notes script did not answer within 180 seconds"}
+        for attempt in (1, 2):
+            claimed = self.assert_answer(self.claim(), 200)
+            body = self.assert_answer(self.report(claimed, error=timed_out), 200)
+            self.assertEqual((body["state"], body["request_id"]), ("queued", "slow-read-01"), attempt)
+        claimed = self.assert_answer(self.claim(), 200)
+        self.assert_answer(self.report(claimed, error=timed_out), 200)
+        body = self.assert_answer(self.status("CLAUDE", "slow-read-01"), 200)
+        self.assertEqual((body["state"], body["error"]["code"]), ("refused", "unavailable"))
+        self.assert_answer(self.enqueue(request("pin", rid="busy-pin-01")), 202)
+        claimed = self.assert_answer(self.claim(), 200)
+        self.assert_answer(self.report(claimed, error={"code": "unavailable", "message": "busy"}), 200)
+        self.assertEqual(self.assert_answer(self.status("CLAUDE", "busy-pin-01"), 200)["state"], "refused")
+
     def test_a_late_definite_report_settles_a_write_the_lease_called_unknown(self) -> None:
         # The Mac slept past the lease:  the write reads unknown, then the runner reports what really happened.
         self.assert_answer(self.enqueue(request(rid="late-write-1")), 202)

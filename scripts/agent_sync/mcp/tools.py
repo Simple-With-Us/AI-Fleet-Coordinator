@@ -2339,7 +2339,9 @@ class Tools:
             return ToolError(
                 "refused_secret", exc.message
             )  # the tools' code for a secret in what they would write
-        return ToolError(exc.code, exc.message)
+        # unavailable means nothing was written, so it may be sent again (its message says with which request_id);
+        # the hosted Worker marks it retryable too.  outcome_unknown never is.
+        return ToolError(exc.code, exc.message, retryable=exc.code == "unavailable")
 
     def _own_session_env(self) -> Mapping[str, str]:
         """The server's environment, but only when it is this identity's own.  A process that serves several

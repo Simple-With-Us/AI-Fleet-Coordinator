@@ -684,6 +684,24 @@ class DirectRunnerTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, "invalid_argument")
         self.assertIn("Edit the note on the Mac", caught.exception.message)
 
+    def test_a_private_key_block_is_withheld_whole(self):
+        # Its base64 lines match no pattern on their own line, so the block goes from its BEGIN line through its END
+        # line, or to the end of the body when the END line is gone (a read cut short, say).  Built at run time.
+        begin, end = "-----BEGIN " + "RSA PRIVATE KEY-----", "-----END " + "RSA PRIVATE KEY-----"
+        body_lines = ["MIIE" + "Qx" * 30, "abc+/def" + "Z" * 40, "q" * 20 + "=="]
+        text = "\n".join(["Before.", begin, *body_lines, end, "After."])
+        marked, count = N.withhold_secrets(text)
+        self.assertEqual(marked.split("\n"), ["Before.", *[N.WITHHELD] * 5, "After."])
+        self.assertEqual(count, 5)
+        html = "\n".join("<div>%s</div>" % line for line in ["Before.", begin, *body_lines, end, "After."])
+        marked, count = N.withhold_secrets(html)
+        self.assertEqual(marked.split("\n")[1:6], ["<div>%s</div>" % N.WITHHELD] * 5)
+        self.assertEqual((marked.split("\n")[0], marked.split("\n")[6], count), ("<div>Before.</div>", "<div>After.</div>", 5))
+        marked, count = N.withhold_secrets("\n".join(["Before.", begin, *body_lines]))  # no END line
+        self.assertEqual((marked.split("\n"), count), (["Before.", *[N.WITHHELD] * 4], 4))
+        for line in body_lines:
+            self.assertNotIn(line, N.read_result({"title": "t", "body": html}, "raw")["body"])
+
     def test_a_secret_shaped_title_is_refused_for_every_action(self):
         token = "ghp_" + "a" * 36  # built at run time from one repeated letter:  plainly synthetic
         for action in ("read", "update", "pin", "unpin"):
@@ -1166,6 +1184,7 @@ class ActionLogTests(unittest.TestCase):
             {"limit": 501},
             {"by_seat": "bad seat!"},
             {"by_seat": 5},
+            {"by_seat": "AKIA" + "Q" * 16},  # fits the seat pattern, and is a key's shape:  never sent
             {"action": "delete"},
             {"title": 'a "q"'},
             {"title": "x" * 101},

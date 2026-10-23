@@ -783,4 +783,7 @@ test("tool arguments are parsed by strict zod schemas even when the JSON schema 
   await assert.rejects(tools.tool_notes_list({ limit: 0 }, audit), (e) => e.code === "invalid_argument");
   await assert.rejects(tools.tool_notes_status({ request_id: 5 }, audit), (e) => e.code === "invalid_argument");
   await assert.rejects(tools.tool_notes_log({ by_seat: "not a seat" }, audit), (e) => e.code === "invalid_argument");
+  // A seat filter that fits the seat pattern but is a key's shape is never sent.
+  const keyShaped = `AKIA${"Q".repeat(16)}`;
+  await assert.rejects(tools.tool_notes_log({ by_seat: keyShaped }, audit), (e) => e.code === "invalid_argument" && /looks like it contains a secret/.test(e.message) && !e.message.includes(keyShaped));
 });

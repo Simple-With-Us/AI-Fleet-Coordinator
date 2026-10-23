@@ -525,9 +525,12 @@ def _shape(record: Mapping[str, Any], duplicate: bool) -> dict[str, Any]:
             ),
         )
     if state == "expired":
+        # Final:  the queue answers this same record to the same request_id for 14 days, so the way on is a new one
+        # (nothing was written).  The Worker's outcomeError says the same.
         raise N.NotesError(
             "unavailable",
-            str(error.get("message") or "nobody picked the request up within 24 hours"),
+            "nobody picked the request up within 24 hours (the Mac runner may be off), so nothing was written.  "
+            "Send it again with a new request_id.",
         )
     if state not in ("queued", "running", "done"):
         # Not a state this client knows, so it cannot tell whether the note was written:  never a plain retry.

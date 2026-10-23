@@ -808,19 +808,32 @@ def content_text(plaintext: str, title: str) -> str:
 
 
 WITHHELD = "[withheld: secret-shaped]"
+#  A private key's header:  its body lines are base64 that no pattern matches on its own line, so the whole block goes.
+_KEY_BEGIN_RE = re.compile(r"-----BEGIN ([A-Z ]*PRIVATE KEY)-----")
 
 
 def withhold_secrets(body: str) -> tuple[str, int]:
     """`body` with every line the fleet secret scan flags replaced by WITHHELD (a `<div>` line keeps its `<div>`), and
-    how many lines that was.  A note can hold a credential an agent once pasted into it;  a read must not carry it on
-    to the Operator, a cloud seat or a model.  make_request refuses a body that still holds the marker, so a read,
-    edited and written back, can never erase the withheld line from the real note."""
+    how many lines that was.  A private key block is withheld whole, from its BEGIN line through its END line (or to
+    the end of the body when it has none), since its key lines match no pattern one at a time.  A note can hold a
+    credential an agent once pasted into it;  a read must not carry it on to the Operator, a cloud seat or a model.
+    make_request refuses a body that still holds the marker, so a read, edited and written back, can never erase the
+    withheld line from the real note."""
     from . import secretscan  # lazy:  only a read needs it
 
     out: list[str] = []
     withheld = 0
+    block_end: str | None = None  # the END line of the private key block this line is inside
     for line in body.split("\n"):
-        if line and secretscan.scan(line):
+        inside = block_end is not None
+        if inside:
+            if block_end in line:
+                block_end = None  # this line ends the block, and goes with it
+        else:
+            begin = _KEY_BEGIN_RE.search(line)
+            if begin and "-----END %s-----" % begin.group(1) not in line[begin.end() :]:
+                block_end = "-----END %s-----" % begin.group(1)
+        if line and (inside or secretscan.scan(line)):
             withheld += 1
             line = (
                 "<div>%s</div>" % WITHHELD if line.lstrip().lower().startswith("<div") else WITHHELD
@@ -1455,6 +1468,16 @@ def check_log_args(args: Mapping[str, Any]) -> dict[str, Any]:
         raise NotesError(
             "invalid_argument", "argument 'by_seat' must be a seat name such as CLAUDE"
         )
+    if seat is not None:
+        from . import (
+            secretscan,
+        )  # lazy, as in withhold_secrets:  the filter is sent to the Operator
+
+        if secretscan.scan(seat):  # the seat pattern still fits a key's shape (AKIA and 16 more)
+            raise NotesError(
+                "invalid_argument",
+                "argument 'by_seat' looks like it contains a secret;  nothing was sent",
+            )
     action = args.get("action")
     if action is not None and action not in ACTIONS:
         raise NotesError(
