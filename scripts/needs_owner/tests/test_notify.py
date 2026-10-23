@@ -377,7 +377,7 @@ class NoticeTests(unittest.TestCase):
         self.assertEqual([c["argv"][0] for c in sends], ["reply"], "no post:  the persona's topic is the notice")
         self.assertEqual(sends[0]["argv"], ["reply", "--as", "CLAUDE", "--session", "needsown", "--json", "--id", "777", "--", "-"])
         self.assertIn("Filed in Linear as AFC-300", sends[0]["stdin"])
-        self.assertIn("https://linear.app/simple-with-us/issue/AFC-300", sends[0]["stdin"])
+        self.assertIn("https://linear.app/test-fleet/issue/AFC-300", sends[0]["stdin"])
         record = self._records()[0]
         self.assertIn("[needs-owner] notified msg 777", record)
         self.assertIn("topic: OWNER AFC-9 Plumber needs a key", record)
@@ -418,7 +418,7 @@ class BoardWriteTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.home, True)
         self.env = {"HOME": self.home}
         self.item = itemsmod.Item(
-            identifier="AFC-300", id="id-300", url="https://linear.app/simple-with-us/issue/AFC-300",
+            identifier="AFC-300", id="id-300", url="https://linear.app/test-fleet/issue/AFC-300",
             title="Revive PR 761 or close it?", status="Todo", severity=None, app="AFC", created_at=None,
             labels=[itemsmod.LABEL], kind=itemsmod.KIND, reported_by="CLAUDE",
             block=blockmod.Block(uid="needs-owner:CLAUDE:abc12345", question=Q, options=["Yes", "No"],
