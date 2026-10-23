@@ -247,7 +247,7 @@ class OperatorClient:
             "POST", "/notes/v1/requests", payload={"seat": seat, "request": dict(request)}
         )
         if status in (200, 202) and data is not None:
-            return data, status == 200
+            return _own_record(data, seat, request["request_id"]), status == 200
         refusal = answer_error(status, data)
         # The queue's own 503 (full, or not running) is a definite refusal:  nothing was queued, so `call` passes it
         # on as unavailable instead of an unknown outcome.  A bare 5xx from a proxy stays unknown.
@@ -257,7 +257,7 @@ class OperatorClient:
     def record(self, seat: str, request_id: str) -> dict[str, Any]:
         status, data = self.call("GET", "/notes/v1/requests/%s/%s" % (seat, request_id))
         if status == 200 and data is not None:
-            return data
+            return _own_record(data, seat, request_id)
         raise answer_error(status, data)
 
     def wait(self, seat: str, record: Mapping[str, Any], seconds: float) -> dict[str, Any]:
@@ -268,7 +268,10 @@ class OperatorClient:
         current = dict(record)
         request_id = record.get("request_id")
         if not isinstance(request_id, str) or not N.REQUEST_ID_RE.fullmatch(request_id):
-            return current  # no id to poll by:  the caller answers the record as it stands
+            # enqueue and record check every record against its own request, so this is a caller's mistake
+            raise N.NotesError(
+                "invalid_argument", "the record to wait on names no valid request_id"
+            )
         waited, polls = 0.0, 0
         # Counted from the sleeps, not a clock:  a call's own time only makes the wait a little longer, never shorter.
         while (
@@ -341,6 +344,16 @@ class OperatorClient:
         if status == 200 and data is not None:
             return int(data.get("accepted") or 0)
         raise answer_error(status, data)
+
+
+def _own_record(data: Mapping[str, Any], seat: str, request_id: str) -> dict[str, Any]:
+    """`data` when it is the record of this seat's request, as the Worker's readRecord checks;  else unavailable (an
+    enqueue answered that way may still have queued the request, so `call` makes it outcome_unknown)."""
+    if data.get("seat") != seat or data.get("request_id") != request_id:
+        raise N.NotesError(
+            "unavailable", "the Operator answered with the record of another request"
+        )
+    return dict(data)
 
 
 def answer_error(status: int, data: Mapping[str, Any] | None) -> N.NotesError:

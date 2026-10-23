@@ -696,7 +696,8 @@ export const NOTES_METHODS = {
     }
     // The queue's own 503 (full, or not running) is a definite refusal:  nothing was queued, so it stays unavailable
     // and retryable under the same request_id.  Any other 5xx, a proxy's included, may have queued it.
-    const refused = posted.status === 503 && posted.data?.error === "unavailable";
+    const refusal = OperatorRefusal.safeParse(posted.data);
+    const refused = posted.status === 503 && refusal.success && refusal.data.error === "unavailable";
     if (posted.status >= 500 && !refused) throw enqueueUnknown(notesHttpError(posted.status, posted.data).message, requestId);
     if (posted.status !== 200 && posted.status !== 202) throw notesHttpError(posted.status, posted.data, { seat: this.seat, requestId });
     // A 202 is queued;  a 200 is the record of the same request sent before.  An answer that does not parse is read

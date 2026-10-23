@@ -512,10 +512,12 @@ class WaitTests(unittest.TestCase):
 
     def test_wait_zero_and_an_already_final_record_answer_at_once(self):
         self.assertEqual(self.client.wait("CLAUDE", self.queued, 0), self.queued)
-        # A record with no valid request_id is never polled by a made-up one ("None", "").
+        # A record with no valid request_id is never polled by a made-up one ("None", ""):  refused outright.
         for bad in (None, "", "short"):
-            no_id = dict(self.queued, request_id=bad)
-            self.assertEqual(self.client.wait("CLAUDE", no_id, 300), no_id)
+            with self.assertRaises(N.NotesError) as caught:
+                self.client.wait("CLAUDE", dict(self.queued, request_id=bad), 300)
+            self.assertEqual(caught.exception.code, "invalid_argument")
+        self.assertEqual((self.sleeps, self.op.calls), ([], []))
         done = record("done")
         self.assertEqual(self.client.wait("CLAUDE", done, 300), done)
         self.assertEqual((self.sleeps, self.op.calls), ([], []))
@@ -599,6 +601,12 @@ class HostTests(unittest.TestCase):
             NC.call(host, "CLAUDE", self.req(rid="requestid-0043"), wait=0, scan=self.scan)
         self.assertEqual(caught.exception.code, "unavailable")  # nothing was queued
         self.assertIn("the notes queue is full", caught.exception.message)
+        # An enqueue answered with another request's record may still have queued this one:  outcome_unknown.
+        op.answers[("POST", "/notes/v1/requests")] = (202, record("queued", "someone-else-01"))
+        with self.assertRaises(N.NotesError) as caught:
+            NC.call(host, "CLAUDE", self.req(rid="requestid-0045"), wait=0, scan=self.scan)
+        self.assertEqual(caught.exception.code, "outcome_unknown")
+        self.assertIn("another request", caught.exception.message)
         for answer in ((503, b"<html>no available server</html>"), (502, None)):
             with self.subTest(answer[0]):
                 op.answers[("POST", "/notes/v1/requests")] = answer
