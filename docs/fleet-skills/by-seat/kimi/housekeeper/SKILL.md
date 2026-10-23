@@ -102,7 +102,7 @@ The watch runs the safe scripts itself, then POSTs BotFleet Housekeeper webhook 
 
 ## BotFleet Housekeeper
 
-The BotFleet housekeeper bot id is private resource inventory, so it is not in this pack: it lives in the operator's own inventory on that Mac.  Routines at 09:00 / 15:00 / 21:00 plus the resource webhook.  Local webhook receiver `127.0.0.1:8800`.  BotFleet server `127.0.0.1:8799`.
+The BotFleet housekeeper bot id is private resource inventory, so it is not in this pack: it lives in the operator's own inventory on that Mac.  Routines at 09:00 / 15:00 / 21:00 plus the resource webhook.  The local webhook receiver and the BotFleet server address are private deployment inventory: they live in the operator's own inventory on that Mac, not in this pack.
 
 **Status of in-app resource triggers (verified 2026-09-01, do not assume otherwise).**  PR #65 added an Automations → Resources tab, but it is **not yet live on this host**: `~/.botfleet/resource-triggers.json` does not exist (zero triggers), and the packaged `/Applications/BotFleet.app` was built *before* #65 merged, so `GET /api/resource-triggers` returns 404.  Until BotFleet is rebuilt, the **launchd path is the one that actually works**: the resource-watch launchd job samples every 5 min independently of the GUI and POSTs the webhook.  Do not claim the Resources tab is wired up until `GET /api/resource-triggers` returns 200.
 
@@ -129,13 +129,14 @@ Do not skip that hop and invent a cloud-side `du`.
 
 ## Hetzner — GB-HOUSEKEEPER's playbook
 
-The host address is private deployment inventory, so it is not in this pack: it lives in the operator's own inventory on that Mac.  The `coolify` ssh alias below resolves it through the operator's own ssh config, which is how every other fleet document reaches the same box.
+The host address is private deployment inventory, so it is not in this pack: it lives in the operator's own inventory on that Mac.  The ssh target below is private deployment inventory too: it arrives in the environment as `HOUSEKEEPER_SSH_ALIAS`, and the operator's own ssh config is what resolves it, which is how every other fleet document reaches the same box.  The snippet fails closed when `HOUSEKEEPER_SSH_ALIAS` is unset, because a placeholder target would reach the wrong host instead of the one the caller meant.
 
 Take the lock or exit.  Sample and record before-numbers.
 
 ```bash
-ssh coolify 'mkdir /run/fleet-housekeeper.lock 2>/dev/null || { [ -d /run/fleet-housekeeper.lock ] && exit 9; exit 1; }'   # 9 = peer holds it (the directory is there), 1 = the lock could not be created
-ssh coolify 'df -h /; free -h; swapon --show; uptime; docker system df'
+: "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target before reaching the host}"
+ssh "$HOUSEKEEPER_SSH_ALIAS" 'mkdir /run/fleet-housekeeper.lock 2>/dev/null || { [ -d /run/fleet-housekeeper.lock ] && exit 9; exit 1; }'   # 9 = peer holds it (the directory is there), 1 = the lock could not be created
+ssh "$HOUSEKEEPER_SSH_ALIAS" 'df -h /; free -h; swapon --show; uptime; docker system df'
 ```
 
 Act without asking — regenerable only:
