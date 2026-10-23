@@ -1683,8 +1683,9 @@ class LarkSurfaceTests(unittest.TestCase):
             sent.append(command)
             return json.dumps({"message_id": "om_sig"})
 
-        with mock.patch.object(bridge_mod, "run", fake_run), mock.patch.object(
-            bridge, "_handle_signal", side_effect=[RuntimeError("boom"), None]
+        with (
+            mock.patch.object(bridge_mod, "run", fake_run),
+            mock.patch.object(bridge, "_handle_signal", side_effect=[RuntimeError("boom"), None]),
         ):
             bridge._signal_worker_once()
         # The second file is still handed to the handler.
