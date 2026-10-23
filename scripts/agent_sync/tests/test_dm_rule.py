@@ -415,8 +415,12 @@ class ToolRefusalContextTests(unittest.TestCase):
                     "display_recipient": [{"id": 7}, {"id": 9}],
                 }
             ]
-            with self.assertRaises(T.ToolError) as caught:
-                tools._check_dm_rule([{"user_id": 9, "is_bot": True}], {})
+            # Pin the id source:  the attribution falls back to `Z.operator_user_id()` with no env,
+            # which reads the process environment, so an ambient OPERATOR_ZULIP_USER_ID would
+            # resolve an operator and the outcome would depend on the host rather than the fixture.
+            with mock.patch.object(Z, "operator_user_id", return_value=None):
+                with self.assertRaises(T.ToolError) as caught:
+                    tools._check_dm_rule([{"user_id": 9, "is_bot": True}], {})
             self.assertEqual(caught.exception.code, "missing_operator_user_id")
             self.assertEqual(caught.exception.extra["reason"], "missing_operator_user_id")
             self.assertEqual(caught.exception.extra["authenticated_seat"], "CODEX")
@@ -927,8 +931,14 @@ class CliRuleSwitchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as home:
             agent = self._agent({"HOME": home}, opened)
             to = cli.DmRecipients([{"user_id": 9}], ["CODEX"])
-            with self.assertRaises(DMP.MissingOperatorId) as caught:
-                cli._dm_rule(agent, types.SimpleNamespace(), to)
+            # The ambient process environment must not decide this outcome:  the attribution
+            # falls back to `Z.operator_user_id()` with no env, which reads `os.environ`, so a host
+            # or CI runner that exports OPERATOR_ZULIP_USER_ID would resolve an operator and
+            # refuse with the generic `dm_not_allowed` instead of naming the missing variable
+            # (Kody review on AFC-473).
+            with mock.patch.object(Z, "operator_user_id", return_value=None):
+                with self.assertRaises(DMP.MissingOperatorId) as caught:
+                    cli._dm_rule(agent, types.SimpleNamespace(), to)
         self.assertEqual(caught.exception.reason, "missing_operator_user_id")
         self.assertEqual(caught.exception.code, "missing_operator_user_id")
         self.assertEqual(caught.exception.exit_code, 3, "a refusal, not a malformed command")
