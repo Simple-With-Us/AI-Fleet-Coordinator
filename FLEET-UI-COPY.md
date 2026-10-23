@@ -189,7 +189,7 @@ sight.
 
 ## Two spaces between sentences (owner rule 2026-08-08, strengthened 2026-08-10, 2026-08-14, and 2026-09-03 — ALL agents, ALL contexts)
 
-Owner: **two spaces between sentences everywhere, including App Store
+Owner: **two spaces between sentences everywhere (a real U+00A0 plus a normal space, commit messages included), including App Store
 submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
 **Every single agent, every app, every surface, forever.**
 
@@ -198,7 +198,7 @@ any context, always use 2 spaces to separate a period from the beginning of a ne
 This closes the last loophole -- the rule is NOT limited to product/user-facing copy.  It
 covers every paragraph an agent writes anywhere: **chat replies to the owner**, PR titles and
 bodies, commit messages, Zulip posts to #agent-sync, Apple Notes, Linear issues and comments, rollout
-notes, review reports and design docs.  If it is prose, it gets two spaces.  (Single space
+notes, review reports and design docs.  If it is prose, it gets the gap.  (Single space
 remains correct after a non-terminal abbreviation -- "e.g.", "v1.2.3".  In HTML preserve the
 gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Markdown, note that
 two spaces at the END of a line is a hard line break -- a different thing; this rule is about
@@ -234,7 +234,7 @@ the gap BETWEEN sentences.)
   2026-10-23):  the same U+00A0 plus a space.  Rewrite only text you are already editing;  do
   not mass-reformat existing prose.
 - **HTML a renderer shows** (Apple Notes `--html`, in-app HTML/JSX, SwiftUI):  a real U+00A0 plus
-  a space, written `\u00A0 ` in JS, `\u{00A0}` in Swift, or a shared `SENTENCE_GAP` helper.
+  a space, spelled Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant.
   Notes.app is an HTML renderer, so two ASCII spaces in a `<p>` collapse to one.  Never
   `&nbsp; `.
 - **Any surface not listed above:**  the same U+00A0 plus a space.
@@ -270,16 +270,16 @@ other owner-visible surface.  The gap still has to be two visible spaces.
 If a renderer collapses ASCII doubles, the **backend** inserts a real U+00A0
 (or equivalent) before the pixels.  BotFleet desktop `ChatMarkdown` already
 maps the entity to U+00A0 for bot bubbles.  JSX/settings/iOS/marketing HTML
-must not leak the entity as text — use `\u00A0` in JS strings, Unicode NBSP
-in Swift, or a shared `SENTENCE_GAP` helper.  Agents writing into BotFleet /
-OpenMausBot chat emit two ASCII spaces and let the renderer expand them.
+must not leak the entity as text — use the per-language spelling above or a shared
+`SENTENCE_GAP` helper.  Since 2026-10-23, agents writing into BotFleet /
+OpenMausBot chat emit a real U+00A0 plus a space like everywhere else.
 
 Caught live 2026-08-14: Congress.Trade App Store **review notes** still said
 “1-month free trial” with single spaces after periods, while the description
 already said 2 weeks.  Agents had treated review notes as exempt.  They are
 not.
 
-**Where it applies (non-exhaustive — if a human reads it, use two spaces):**
+**Where it applies (non-exhaustive — if a human reads it, use the gap):**
 - In-app UI strings (web, PWA, iOS native, widgets)
 - **App Store Connect — all of it:** description, promotional text, What’s New,
   **App Review notes**, **subscription / IAP review notes**, subscription
@@ -290,14 +290,13 @@ not.
 
 **How:**
 - Between sentences in a paragraph, on every surface:  a real U+00A0 plus a space after `.` `!` `?` (owner ruling 2026-10-23).  Never `&nbsp;`, never two plain ASCII spaces.
-- HTML/JSX/SwiftUI source:  `{"\u00A0 "}` / `\u00A0 ` or a shared helper (ST: `SENTENCE_GAP`)
+- HTML/JSX/SwiftUI source:  Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant (ST: `SENTENCE_GAP`)
 - Code, identifiers and config never get a U+00A0.
 - Prefer ONE paragraph for short related sentences over stacked one-liners when
   the owner asked for density (see Socratic proposals empty-state, 2026-08-08)
 - Do not insert spaces after brand periods (`Congress.Trade`), URLs, emails, or `U.S.`
 
-**Does NOT apply:** code identifiers, commit messages (normal spacing is fine
-for git), log lines, API enums, pure bullet lists of fragments with no
+**Does NOT apply:** code identifiers, log lines, API enums, pure bullet lists of fragments with no
 sentence terminator.
 
 **Agent failure mode:** shipping App Store description, review notes, or UI
