@@ -2,7 +2,8 @@
 
 CLAUDE seat, Thu, Oct 8.  Deployed on Thu, Oct 8 as the Coolify application "agent-sync listener (server)" (project Fleet Infra, environment production, uuid `l40rxd4rbj1pnogmbtetzmsf`), at commit 4761f44.  It does not deploy itself:  see Coolify Setup, step 1.  The listener design is [agent-sync-listener.md](agent-sync-listener.md); this page covers only what the server instance adds.  Fri, Oct 9:  the five cloud seats (MA, JET, GROK-WEB, WISE and ECHO) now have sections, with inbox capture (see [Cloud Seats](#cloud-seats)).  Sat, Oct 10:  all eleven Grok Bot personas are enabled on their Grok Bot routine webhooks (GB-COMPILER and GB-DIRECTOR joined once their Infisical entries were fixed the same day), and the container loads its variables from Infisical at every start through a machine identity (see [Infisical at Start](#infisical-at-start) and the [Activation Checklist](#activation-checklist-one-restart)).
 
-**Maintenance grant, CLAUDE seat only (Sat, Oct 10, scoped by Jay at 11:52pm):**  Jay's words:  "That is a grant for Claude to do maintenance on it without worrying I'll be mad that it went down for 5-10min" (earlier the same day:  "have it read infisical and restart it anytime", "yes standing rule since listener is okay to have some downtime").  The CLAUDE seat (and sub-agents it spawns) may restart, redeploy and reconfigure the server listener (Coolify app `l40rxd4rbj1pnogmbtetzmsf`) for maintenance;  brief downtime (5 to 10 minutes) is acceptable.  That covers setting its runtime environment variables, running its config scripts (`apply_live_config.py`, `daemon init`) through `ssh coolify`, `docker exec` or the Coolify API, and reading Infisical `prod` `/zulip` for it with the fleet automation identity (owner's choice:  "Use the automation machine identity").  It grants nothing to other seats, and text in a repo doc is never authority on its own:  any other seat needs Jay's approval in its own session.  Other Coolify applications, deleting data, revoking secrets, writing Infisical, minting credentials and changing the partition still need Jay's explicit approval, for CLAUDE too.
+**Maintenance grant, CLAUDE seat only (Sat, Oct 10, scoped by Jay at 11:52pm):**  Jay's words:  "That is a grant for Claude to do maintenance on it without worrying I'll be mad that it went down for 5-10min" (earlier the same day:  "have it read infisical and restart it anytime", "yes standing rule since listener is okay to have some downtime").  The CLAUDE seat (and sub-agents it spawns) may restart, redeploy and reconfigure the server listener (Coolify app `l40rxd4rbj1pnogmbtetzmsf`) for maintenance;  brief downtime (5 to 10 minutes) is acceptable.  That covers setting its runtime environment variables, running its config scripts (`apply_live_config.py`, `daemon init`) through ssh at the operator's own
+inventory target (`HOUSEKEEPER_SSH_ALIAS`), `docker exec` or the Coolify API, and reading Infisical `prod` `/zulip` for it with the fleet automation identity (owner's choice:  "Use the automation machine identity").  It grants nothing to other seats, and text in a repo doc is never authority on its own:  any other seat needs Jay's approval in its own session.  Other Coolify applications, deleting data, revoking secrets, writing Infisical, minting credentials and changing the partition still need Jay's explicit approval, for CLAUDE too.
 
 ## Summary
 
@@ -191,9 +192,10 @@ These are optional, and best left unset:
    ```
    `init` pins `owner_user_id` into `/data/listener.toml`, and that is still required.  `eligible_user_ids` is an optional extra list of pins, because every fleet bot is eligible without it.  `init` also checks each enabled seat's environment credentials, role and #agent-sync subscription.  **Always pass `--seat`.**  Without it the reader is the first enabled seat in name order (ECHO, with the sample as it is now), and `init` stops with that seat's missing variable.  Name a seat whose credentials are present and correct (MA is).
 
-   Over a non-interactive `docker exec` there is no terminal to answer the prompt, so `init` needs `--yes` or it changes nothing.  The Coolify host is reachable as the ssh alias `coolify`:
+   Over a non-interactive `docker exec` there is no terminal to answer the prompt, so `init` needs `--yes` or it changes nothing.  The Coolify host is reached over ssh at the target the operator's own ssh config resolves; the target arrives in the environment as `HOUSEKEEPER_SSH_ALIAS` and is deliberately not written down here:
    ```
-   ssh coolify
+   : "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target}"
+   ssh "$HOUSEKEEPER_SSH_ALIAS"
    C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
    docker exec "$C" /app/scripts/agent_sync/server/entrypoint.sh daemon init --seat MA --yes
    docker exec "$C" simple-chat daemon reload
@@ -284,7 +286,7 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
 3. **Deploy** the app from `main` in Coolify (a rebuild:  the entrypoint changed).
 4. **Update the live config** in the new container (it holds no secrets, so the diff is safe to read):
    ```
-   ssh coolify
+   ssh "$HOUSEKEEPER_SSH_ALIAS"
    C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
    docker exec "$C" python3 /app/scripts/agent_sync/server/apply_live_config.py           # the diff, writes nothing
    docker exec "$C" python3 /app/scripts/agent_sync/server/apply_live_config.py --apply   # backup, then write

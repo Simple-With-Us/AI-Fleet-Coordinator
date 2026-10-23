@@ -971,9 +971,19 @@ fi
 # including in-session trees #93 was just fixed to keep.
 
 # 5. Remote Hetzner Coolify maintenance trigger
-if ssh -o ConnectTimeout=3 -o BatchMode=yes coolify "exit 0" 2>/dev/null; then
-    echo "Triggering remote Hetzner Coolify maintenance..."
-    ssh -o ConnectTimeout=5 coolify "/etc/cron.daily/coolify-auto-maintenance" >> /dev/null 2>&1 || true
+# The ssh target is private deployment inventory: it arrives in the environment as
+# HOUSEKEEPER_SSH_ALIAS, and the operator's own ssh config is what resolves it.
+# With the variable unset the hop is skipped rather than guessed at, because a
+# placeholder target would reach the wrong host.  The hop is redundant with the
+# host's own /etc/cron.daily/coolify-auto-maintenance, so skipping it costs no
+# maintenance: the host still self-maintains on its own schedule.
+if [ -n "${HOUSEKEEPER_SSH_ALIAS:-}" ]; then
+    if ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOUSEKEEPER_SSH_ALIAS" "exit 0" 2>/dev/null; then
+        echo "Triggering remote Hetzner Coolify maintenance..."
+        ssh -o ConnectTimeout=5 "$HOUSEKEEPER_SSH_ALIAS" "/etc/cron.daily/coolify-auto-maintenance" >> /dev/null 2>&1 || true
+    fi
+else
+    echo "Skipping the remote Hetzner maintenance trigger: HOUSEKEEPER_SSH_ALIAS is unset."
 fi
 
 echo "[$(date)] Mac cleanup completed successfully."

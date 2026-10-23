@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1656,6 +1657,89 @@ class VMSeatLaneTests(unittest.TestCase):
                 _load_skill(name), SEATS["muse-assist"], skill_name=name
             )
             self.assertNotIn("~/apps/lane ", rendered, name)
+
+
+class PrivateInventoryTests(unittest.TestCase):
+    """AFC-504: the published copies name where the private inventory lives.
+
+    They never carry the values.  The patterns below are the shapes the fleet's own
+    internal addressing uses, so a copy that grows one is caught whatever host it
+    names, and this test source never carries an address itself.
+    """
+
+    # Tailscale hands every node an address in the CGNAT range 100.64.0.0/10.
+    MESH_IP = re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b")
+    # MagicDNS names end in the tailnet domain.
+    MAGICDNS = re.compile(r"\b[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.ts\.net\b")
+    # A shell line that hands ssh a host.  The target arrives in the environment
+    # instead, as the operator's own inventory value, so the command has to carry
+    # a quoted variable or the house's explicit placeholder.
+    SSH_COMMAND = re.compile(r"(?m)^[ \t]*(?:if[ \t]+)?ssh[ \t]+")
+    QUOTED_VARIABLE = re.compile(r"\"\$[A-Za-z_]")
+    PLACEHOLDER = re.compile(r"<[A-Z][A-Z0-9_]*>")
+
+    def _published_skill_files(self) -> list[Path]:
+        roots = [Path(DOCS), Path(ROOT, "skills")]
+        for dest, _seat in repo_platform_copies(ROOT):
+            roots.append(Path(dest))
+        files: list[Path] = []
+        for base in roots:
+            if not base.is_dir():
+                continue
+            for path in sorted(base.rglob("SKILL.md")):
+                files.append(path)
+        return files
+
+    def test_published_skill_copies_carry_no_private_addresses(self) -> None:
+        files = self._published_skill_files()
+        self.assertTrue(files, "no published skill copy was found to scan")
+        hits: list[str] = []
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            for pattern in (self.MESH_IP, self.MAGICDNS):
+                for match in pattern.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    hits.append(f"{path.relative_to(ROOT)}:{line}")
+        self.assertEqual(
+            hits,
+            [],
+            "a published skill copy must name the private inventory, not carry it:\n"
+            + "\n".join(hits),
+        )
+
+    def test_no_tracked_file_sshes_a_literal_target(self) -> None:
+        # Markdown and shell only: a line that opens with `ssh` there is a command
+        # somebody can copy and paste.  A Python file builds its argv in a list, so
+        # the target is a value it resolves at runtime, and the fleet's own tools
+        # that reach the origin box are outside this guard.
+        tracked = subprocess.run(
+            ["git", "-C", ROOT, "ls-files", "-z", "*.md", "*.sh"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split("\0")
+        hits: list[str] = []
+        for rel in sorted(p for p in tracked if p):
+            path = Path(ROOT, rel)
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            for match in self.SSH_COMMAND.finditer(text):
+                start = text.rfind("\n", 0, match.start()) + 1
+                end = text.find("\n", match.start())
+                line = text[start:] if end == -1 else text[start:end]
+                if not (
+                    self.QUOTED_VARIABLE.search(line) or self.PLACEHOLDER.search(line)
+                ):
+                    number = text.count("\n", 0, match.start()) + 1
+                    hits.append(f"{rel}:{number}")
+        self.assertEqual(
+            hits,
+            [],
+            "a tracked file must not ssh a literal host target; the target arrives in "
+            "the environment as the operator's own inventory value:\n" + "\n".join(hits),
+        )
 
 
 if __name__ == "__main__":

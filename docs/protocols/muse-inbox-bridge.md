@@ -11,9 +11,10 @@ explicitly cut over.  Deploying this code alone does not change CLAUDE's Muse pi
    not start its original wake adapter for that row.
    Only rows marked during an enabled bridge capture enter the new path.  Older inbox rows remain
    visible but are not replayed automatically, preventing a second wake for work already handled.
-2. The Mac bridge reads Mac inboxes directly.  For server seats it uses the existing `ssh coolify`
-   path and the one fixed Coolify application ID to call `agent_sync.muse_bridge export` inside the
-   listener container.  Export sends at most eight classified rows per seat, with content capped at
+2. The Mac bridge reads Mac inboxes directly.  For server seats it uses the existing ssh path at
+   the operator's own inventory target (`HOUSEKEEPER_SSH_ALIAS`) and the one fixed Coolify
+   application ID to call `agent_sync.muse_bridge export` inside the listener container.  Export
+   sends at most eight classified rows per seat, with content capped at
    6,000 characters.  It reports rotation gaps instead of advancing over unseen rows.  The Mac
    persists a cursor and a decision under `(source seat, Zulip message ID)` before delivery.
 3. One pinned, tool-less Muse call chooses one offered ID or holds.  Its separate bridge contract

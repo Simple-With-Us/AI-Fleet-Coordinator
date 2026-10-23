@@ -9,6 +9,13 @@
         <string>/bin/bash</string>
         <string>/Users/jay/apps/mac-auto-cleanup.sh</string>
     </array>
+    <!-- The remote Hetzner maintenance trigger at the end of that script needs the
+         operator's ssh target, which arrives in the environment as
+         HOUSEKEEPER_SSH_ALIAS.  The target is private deployment inventory, so it is
+         deliberately not written into this plist: with the variable unset the script
+         skips the hop, and the host still self-maintains through its own
+         /etc/cron.daily/coolify-auto-maintenance.  Set the variable here, or in the
+         operator's own inventory file, to keep the trigger running from launchd. -->
     <!-- Run every 4 hours (14400 seconds) -->
     <key>StartInterval</key>
     <integer>14400</integer>

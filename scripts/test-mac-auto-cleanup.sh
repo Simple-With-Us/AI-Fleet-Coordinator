@@ -56,6 +56,31 @@ if ! grep -q 'name Journals' "$SCRIPT"; then
   fail "mac-auto-cleanup.sh must prune every PipelineStorage Journals dir, not only Urgent"
 fi
 
+# AFC-504: the remote maintenance trigger must reach the host through the
+# operator's own inventory, not through a target written into a published script.
+#
+# The ssh target is private deployment inventory: it arrives in the environment as
+# HOUSEKEEPER_SSH_ALIAS, and the operator's own ssh config is what resolves it.
+# A literal target in this script would ship the host name to every reader of a
+# public repository, and a placeholder would reach the wrong host instead of the
+# one the caller meant.
+#
+# The hop is skipped rather than refused when the variable is unset, because the
+# hop is redundant: the host self-maintains through its own
+# /etc/cron.daily/coolify-auto-maintenance, and the local cleanup that runs
+# before it is the part that matters.
+if [ -n "$(code_lines 'ssh ' | grep -v '"[$][A-Z_]')" ]; then
+  fail "mac-auto-cleanup.sh must not ssh a literal host target (private deployment inventory)"
+fi
+
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must reach the remote host through HOUSEKEEPER_SSH_ALIAS"
+fi
+
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS:-' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must skip the remote hop when HOUSEKEEPER_SSH_ALIAS is unset"
+fi
+
 # The housekeeper lock must be taken over atomically.
 #
 # Checking that a lock is stale and then removing it is two steps, and two

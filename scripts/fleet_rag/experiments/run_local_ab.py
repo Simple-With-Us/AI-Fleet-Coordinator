@@ -1,7 +1,8 @@
 """Full A/B (Parts A/B/C) run against the LOCAL bge-m3 dense fallback, for when the live TEI /
 Qdrant path on the shared Hetzner box is unreachable (see the results doc's Operational note --
 this session confirmed the outage via core.embedder_healthy()==False, core.Qdrant.healthz()==
-False, a core.embed() call exceeding 90s, and `ssh coolify` timing out during the banner exchange,
+False, a core.embed() call exceeding 90s, and the ssh hop to the Coolify host timing out during
+the banner exchange,
 before falling back to this path). Zero writes, zero LLM calls, and the only network call this
 script itself makes is Infisical credential fetch (to build `cfg`, unused beyond that) -- no
 live Qdrant or TEI call is ever attempted here.
