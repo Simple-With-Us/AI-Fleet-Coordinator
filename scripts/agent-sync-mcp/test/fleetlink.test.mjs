@@ -18,6 +18,9 @@ import {
   FLEETLINK_WRITE_TOOLS,
   FLEETLINK_MARKER_BEGIN,
   FLEETLINK_MARKER_END,
+  fleetlinkClientFromSecret,
+  resolveFleetlinkSeatTokens,
+  FLEETLINK_SEATS_DISABLED,
 } from "../src/fleetlink.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { testEnv, wranglerConfig } from "./helpers.mjs";
@@ -347,4 +350,23 @@ test("a seat with its own bot token signs in with it;  the rest use the server c
   assert.deepEqual(parseSeatTokens(JSON.stringify({ JET: jetToken, ECHO: "not-a-token" })), {});
   assert.deepEqual(parseSeatTokens("{nope"), {});
   assert.equal(fleetlinkClientFromEnv({ FLEETLINK_SEAT_TOKENS: "{nope" }, { fetch }), null);
+});
+
+test("GB-ENGINEER is visibly off: denied even with the agent secret bound, no silent substitution", async () => {
+  const client = fleetlinkClientFromSecret(`fls_${"a".repeat(64)}`, {}, { fetch: async () => { throw new Error("must not be called"); } });
+  assert.equal(client.credentialFor("GB-ENGINEER"), null, "no credential - never the agent secret");
+  await assert.rejects(() => client.call("GB-ENGINEER", "fleet_search", {}), /disabled for GB-ENGINEER/, "visible, named failure");
+  assert.equal(client.credentialFor("GB-FIXER")?.kind, "agent", "other seats keep the designed agent + seat-header path");
+});
+
+test("resolveFleetlinkSeatTokens skips disabled seats and still denies them", async () => {
+  let reads = 0;
+  const env = { INFISICAL_MODE: "required", INFISICAL_WORKSPACE_ID: "ws", INFISICAL_SERVICE_TOKEN: "t", INFISICAL_ENVIRONMENT: "prod" };
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => { reads++; return new Response("{}", { status: 404 }); };
+  try {
+    const r = await resolveFleetlinkSeatTokens(env, ["GB-ENGINEER", "GB-FIXER"]);
+    assert.ok(r.deniedSeats.has("GB-ENGINEER") && !r.seatTokens.has("GB-ENGINEER"), "disabled seat denied");
+    assert.ok(FLEETLINK_SEATS_DISABLED.includes("GB-ENGINEER"));
+  } finally { globalThis.fetch = orig; }
 });
