@@ -266,7 +266,14 @@ function parseBody(text) {
 /** A FleetLinkClient from the Worker's env, or null when FLEETLINK_AGENT_SECRET is missing or malformed. */
 export function fleetlinkClientFromEnv(env, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis) } = {}) {
   const raw = typeof env?.[FLEETLINK_SECRET] === "string" ? env[FLEETLINK_SECRET].trim() : "";
-  const secret = /^fls_[0-9a-f]{64}$/.test(raw) ? raw : "";
+  return fleetlinkClientFromSecret(raw, env, { fetch: fetchImpl });
+}
+
+/** A FleetLinkClient from an already-resolved agent secret (src/infisical.js).
+ * The seat-token bundle still reads the legacy binding:  FLEETLINK_SEAT_TOKENS
+ * has no Infisical source yet and its custody is held. */
+export function fleetlinkClientFromSecret(rawSecret, env, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis) } = {}) {
+  const secret = /^fls_[0-9a-f]{64}$/.test((rawSecret ?? "").trim()) ? rawSecret.trim() : "";
   const seatTokens = parseSeatTokens(env?.[FLEETLINK_SEAT_TOKENS]);
   if ((!secret && !Object.keys(seatTokens).length) || typeof fetchImpl !== "function") return null;
   return new FleetLinkClient({ secret, seatTokens, fetch: fetchImpl });

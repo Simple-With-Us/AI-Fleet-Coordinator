@@ -67,7 +67,7 @@ import { IdentityRouter, loadDelegatedCredentials, GB_IDENTITIES } from "./deleg
 import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromEnv } from "./recall.js";
-import { fleetlinkClientFromEnv } from "./fleetlink.js";
+import { fleetlinkClientFromEnv, fleetlinkClientFromSecret } from "./fleetlink.js";
 import { LinearClient, linearClientFromEnv, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat, LINEAR_SECRETS } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { listenerClientFromEnv } from "./eavesdropper.js";
@@ -236,6 +236,10 @@ async function serveMcp(request, env, ctx) {
   // contract.  In required mode a missing pair throws here, visibly.
   const linearPairs = new Map(await Promise.all(Object.keys(LINEAR_SECRETS).map(async (canonical) =>
     [canonical, await resolveLinearPair(env, canonical)])));
+  // FleetLink's agent secret resolves through /fleetlink (read-tools scope);
+  // the folder awaits the population approval, so fallback mode covers the
+  // gap observably and required mode throws visibly until it is populated.
+  const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET" });
 
   const tools = new HostedTools({
     seat,
@@ -258,7 +262,7 @@ async function serveMcp(request, env, ctx) {
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     // Null without FLEETLINK_AGENT_SECRET:  the FleetLink tools then answer
     // not_configured and every other tool works as before (AFC-328).
-    fleetlink: fleetlinkClientFromEnv(env),
+    fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env),
     // Null unless LISTENER_API_URL and this seat's WAKE_HMAC_KEY_<SEAT> are set:  the listener_*
     // tools then answer not_configured and every other tool works as before (AFC-330).
     listener: listenerClientFromEnv(env, seat),
@@ -406,6 +410,7 @@ async function serveGbBearerMcp(request, env, token) {
   if (state.paused) return invalidToken("This identity is paused.");
   const scopes = ["zulip:read", "zulip:write"];
   const grantRef = await sha256Ref(`gb-bearer:${identity}`);
+  const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET" });
   const tools = new HostedTools({
     seat: identity,
     callerSeat: identity,
@@ -418,7 +423,7 @@ async function serveGbBearerMcp(request, env, token) {
     gate: identityGate,
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     recall: recallClientFromEnv(env),
-    fleetlink: fleetlinkClientFromEnv(env),
+    fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     delegatedLinear: true,
     config: { ...config, botEmails: { ...config.botEmails, [identity]: credentials.email } },
