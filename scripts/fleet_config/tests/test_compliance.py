@@ -19,7 +19,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from fleet_config import contract, manifest as manifest_module
+from fleet_config import contract
+from fleet_config import manifest as manifest_module
+from fleet_config.certs import ExpiryUnknown, not_after_from_pem, profile_expiry
 from fleet_config.checks import CheckContext
 from fleet_config.checks_compliance import (
     KnobAnswer,
@@ -28,7 +30,6 @@ from fleet_config.checks_compliance import (
     check_secrets_hygiene,
     read_knob,
 )
-from fleet_config.certs import ExpiryUnknown, not_after_from_pem, profile_expiry
 from fleet_config.manifest import (
     ManifestError,
     load_manifest,

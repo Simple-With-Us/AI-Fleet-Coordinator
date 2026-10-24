@@ -375,7 +375,7 @@ def check_command(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
 # The shapes that say "this published file names an internal asset".  They match SHAPES,
 # never the fleet's own values:  a rule that carried the values would put them in a
 # public repository,  which is the very thing it checks for.
-LEAK_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+LEAK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "an internal host address",
         re.compile(

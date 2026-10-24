@@ -1,19 +1,19 @@
 """``python3 -m fleet_knobs`` (run from scripts/):  look at knobs, never at secrets.
 
-  status [--json]            fetch once and show each knob's source and whether it is set;
-                             secrets show only set or empty.  Exit 0, or 3 when Infisical was
-                             unreachable (the answers are last-known-good or defaults).
-  get NAME                   print one NON-secret knob's value (lists and caps as text);
-                             "stale" goes to stderr when Infisical was unreachable
-  inventory [--check F|--write F]
-                             print the INFISICAL.md table, or check or rewrite it in file F
+status [--json]            fetch once and show each knob's source and whether it is set;
+                           secrets show only set or empty.  Exit 0, or 3 when Infisical was
+                           unreachable (the answers are last-known-good or defaults).
+get NAME                   print one NON-secret knob's value (lists and caps as text);
+                           "stale" goes to stderr when Infisical was unreachable
+inventory [--check F|--write F]
+                           print the INFISICAL.md table, or check or rewrite it in file F
 """
+
 from __future__ import annotations
 
 import argparse
 import json
 import sys
-from typing import List, Optional
 
 from . import inventory, knobs, values
 from .registry import BY_NAME, REGISTRY
@@ -25,29 +25,58 @@ def _status(args, out) -> int:
         if spec.secret:
             try:
                 knobs.resolve(spec.name)
-                rows.append({"name": spec.name, "owner": spec.owner, "set": True,
-                             "source": "infisical", "stale": False})
+                rows.append(
+                    {
+                        "name": spec.name,
+                        "owner": spec.owner,
+                        "set": True,
+                        "source": "infisical",
+                        "stale": False,
+                    }
+                )
             except knobs.SecretUnavailable as exc:
-                rows.append({"name": spec.name, "owner": spec.owner, "set": False,
-                             "source": "none", "stale": False, "reason": exc.reason})
+                rows.append(
+                    {
+                        "name": spec.name,
+                        "owner": spec.owner,
+                        "set": False,
+                        "source": "none",
+                        "stale": False,
+                        "reason": exc.reason,
+                    }
+                )
             continue
         k = knobs.resolve(spec.name)
-        row = {"name": spec.name, "owner": spec.owner, "set": k.source != "default",
-               "source": k.source, "stale": k.stale}
+        row = {
+            "name": spec.name,
+            "owner": spec.owner,
+            "set": k.source != "default",
+            "source": k.source,
+            "stale": k.stale,
+        }
         if k.reason:
             row["reason"] = k.reason
         rows.append(row)
     rep = knobs.report()
     if args.json:
-        json.dump({"fetch": rep["fetch"], "fetch_reason": rep.get("fetch_reason"),
-                   "knobs": rows}, out, indent=1)
+        json.dump(
+            {"fetch": rep["fetch"], "fetch_reason": rep.get("fetch_reason"), "knobs": rows},
+            out,
+            indent=1,
+        )
         out.write("\n")
     else:
-        out.write(f"fetch: {rep['fetch']}" + (f" ({rep['fetch_reason']})" if rep.get("fetch_reason") else "") + "\n")
+        out.write(
+            f"fetch: {rep['fetch']}"
+            + (f" ({rep['fetch_reason']})" if rep.get("fetch_reason") else "")
+            + "\n"
+        )
         for r in rows:
             flag = " stale" if r["stale"] else ""
-            out.write(f"{r['name']:<32} {r['owner']:<3} {'set' if r['set'] else 'unset':<6} "
-                      f"{r['source']}{flag}\n")
+            out.write(
+                f"{r['name']:<32} {r['owner']:<3} {'set' if r['set'] else 'unset':<6} "
+                f"{r['source']}{flag}\n"
+            )
     return 0 if rep["fetch"] == "ok" else 3
 
 
@@ -92,8 +121,10 @@ def _inventory(args, out) -> int:
         if args.check:
             if inventory.check(text):
                 return 0
-            sys.stderr.write(f"{path}: the fleet-knobs block is out of date;  run "
-                             f"`python3 -m fleet_knobs inventory --write {path}` from scripts/\n")
+            sys.stderr.write(
+                f"{path}: the fleet-knobs block is out of date;  run "
+                f"`python3 -m fleet_knobs inventory --write {path}` from scripts/\n"
+            )
             return 1
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(inventory.splice(text))
@@ -102,7 +133,7 @@ def _inventory(args, out) -> int:
     return 0
 
 
-def main(argv: Optional[List[str]] = None, out=None) -> int:
+def main(argv: list[str] | None = None, out=None) -> int:
     out = out or sys.stdout
     parser = argparse.ArgumentParser(prog="fleet_knobs", description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
