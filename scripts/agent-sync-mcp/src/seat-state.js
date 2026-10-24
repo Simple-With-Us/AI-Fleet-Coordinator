@@ -1132,8 +1132,15 @@ export async function gbBearerMintChecked(store, { mintId, hash, by, expiresAt, 
       return { minted: false, reason };
     };
     const forms = (await txn.get(GB_MINT_FORMS_KEY)) ?? { consumed: [] };
+    // A tombstone lives exactly as long as its own form could possibly be
+    // accepted, derived from the form id's timestamp - never from consumption
+    // time:  a form future-dated within the 60s skew outlives a record timed
+    // by `at`, and evicting that record early would reopen a replay window.
     // Only records whose form is already too old to mint may drop off.
-    forms.consumed = forms.consumed.filter((c) => now - c.at <= GB_MINT_FORM_TTL_MS);
+    forms.consumed = forms.consumed.filter((c) => {
+      const cts = mintFormTs(c.mint_id);
+      return cts !== null && now - cts <= GB_MINT_FORM_TTL_MS;
+    });
     if (forms.consumed.some((c) => c.mint_id === mintId)) return refuse("consumed");
     const ts = mintFormTs(mintId);
     if (ts === null || now - ts > GB_MINT_FORM_TTL_MS || ts - now > GB_MINT_FORM_SKEW_MS) return refuse("stale");

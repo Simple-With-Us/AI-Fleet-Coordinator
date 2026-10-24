@@ -223,6 +223,24 @@ test("replay rejection spans the whole validity window: 64+ mints, then the olde
   assert.deepEqual(oldReplay, { minted: false, reason: "stale" });
 });
 
+test("a future-dated (max-skew) form cannot replay after a consumption-timed tombstone would have dropped", async () => {
+  const store = S.memoryStore();
+  const a = await newGbBearer(ID);
+  // Dated 60s into the future:  the largest accepted clock skew.
+  const mintId = mintIdAt(NOW + 60_000, "f".repeat(20));
+  const first = await S.gbBearerMintChecked(store, { mintId, hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW);
+  assert.equal(first.minted, true, "a form dated within the future skew is accepted");
+  // One hour plus 1ms after CONSUMPTION:  a consumption-timed tombstone would
+  // already have dropped, but the form itself stays fresh for ~60s more.  The
+  // replay must still refuse - retention follows the form's own validity.
+  const replay = await S.gbBearerMintChecked(store, { mintId, hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 2e9 }, NOW + S.GB_MINT_FORM_TTL_MS + 1);
+  assert.deepEqual(replay, { minted: false, reason: "consumed" });
+  assert.equal((await S.gbBearerStatus(store, NOW + S.GB_MINT_FORM_TTL_MS + 1)).mint_count, 1, "no second mint");
+  // Once the form's own validity ends, the same id refuses as stale, never mints.
+  const expired = await S.gbBearerMintChecked(store, { mintId, hash: a.hash, by: "j", expiresAt: NOW + 3e9 }, NOW + S.GB_MINT_FORM_TTL_MS + 60_001);
+  assert.deepEqual(expired, { minted: false, reason: "stale" });
+});
+
 test("concurrent identical submissions mint exactly once", async () => {
   const store = S.memoryStore();
   const a = await newGbBearer(ID);
