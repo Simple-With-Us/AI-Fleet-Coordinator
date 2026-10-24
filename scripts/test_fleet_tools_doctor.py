@@ -1121,6 +1121,20 @@ class ServerTests(HomeCase):
             row = report.row("updater:fleet-cli-git-update.timer")
             self.assertEqual((row["state"], row["status"]), want, answer)
 
+    def test_service_run_newer_than_the_timer_counts_as_a_run(self):
+        now = int(time.time())
+        out = (
+            "LoadState=loaded\nActiveState=active\nLastTriggerUSec=@%d\n"
+            "NextElapseUSecRealtime=\nExecMainStartTimestamp=\n\n"
+            "LoadState=loaded\nActiveState=inactive\nLastTriggerUSec=\n"
+            "NextElapseUSecRealtime=\nExecMainStartTimestamp=@%d\n"
+        ) % (now - 300 * 60, now - 20 * 60)
+        report = doctor.Report()
+        doctor.check_server_timers(report, fake_runner([(("systemctl",), (0, out))]))
+        row = report.row("updater:fleet-cli-git-update.timer")
+        self.assertEqual((row["state"], row["status"]), ("current", "OK"))
+        self.assertIn("fired 20 minutes ago", row["reason"])
+
     def test_wrappers_and_the_fleet_secrets_link(self):
         current = str(self.fleet_cli / "current")
         self.touch(
