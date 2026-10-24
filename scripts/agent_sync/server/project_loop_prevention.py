@@ -53,7 +53,12 @@ def project(text: str, value: bool) -> str:
 
 
 def verified_value(obj: dict, project_id: str, environment: str, secret_path: str) -> bool:
-    secret = obj.get("secret", {})
+    if not isinstance(obj, dict) or not isinstance(obj.get("secret"), dict):
+        raise ValueError("source must contain a secret object")
+    secret = obj["secret"]
+    required = ("secretKey", "workspace", "environment", "secretPath", "secretValue")
+    if any(not isinstance(secret.get(field), str) for field in required):
+        raise ValueError("source fields must be strings")
     if (
         secret.get("secretKey") != KEY
         or secret.get("workspace") != project_id
@@ -96,6 +101,11 @@ def main() -> int:
             if path.read_text() != old:
                 raise ValueError("config changed during projection")
             os.replace(tmp, path)
+            dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
