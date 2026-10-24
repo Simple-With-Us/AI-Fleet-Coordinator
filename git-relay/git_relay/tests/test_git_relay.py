@@ -745,9 +745,7 @@ class TestFleetSecretsSource(unittest.TestCase):
             calls=calls,
         )
         pair = source.secrets(["GH_APP_SWU_ECHO_ID", "GH_APP_SWU_ECHO_PRIVATE_KEY"])
-        self.assertEqual(
-            pair, {"GH_APP_SWU_ECHO_ID": "42", "GH_APP_SWU_ECHO_PRIVATE_KEY": "pem"}
-        )
+        self.assertEqual(pair, {"GH_APP_SWU_ECHO_ID": "42", "GH_APP_SWU_ECHO_PRIVATE_KEY": "pem"})
         self.assertEqual(len(calls), 1)
         self.assertEqual(
             calls[0],
@@ -1890,9 +1888,13 @@ class LegacyStateAdoption(unittest.TestCase):
             return real_source(runner=lambda *a, **k: None, **kwargs)
 
         origin = pathlib.Path.cwd()
-        with self._app_mint_env(GIT_RELAY_SECRETS_PATH="/other-apps"), unittest.mock.patch.object(
-            server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
-        ), unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source):
+        with (
+            self._app_mint_env(GIT_RELAY_SECRETS_PATH="/other-apps"),
+            unittest.mock.patch.object(
+                server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
+            ),
+            unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source),
+        ):
             os.chdir(directory)
             try:
                 server.from_env()
@@ -1906,8 +1908,11 @@ class LegacyStateAdoption(unittest.TestCase):
         directory = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, directory, True)
         origin = pathlib.Path.cwd()
-        with self._app_mint_env(GIT_RELAY_SECRETS_PATH=""), unittest.mock.patch.object(
-            server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
+        with (
+            self._app_mint_env(GIT_RELAY_SECRETS_PATH=""),
+            unittest.mock.patch.object(
+                server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
+            ),
         ):
             os.chdir(directory)
             try:

@@ -157,9 +157,7 @@ class FleetSecretsSource:
                 self._missing.update(absent)
                 raise AppTokenError(f"fleet-secrets has no value for {absent[0]}")
             if result.returncode == 2 and detail:
-                raise AppTokenError(
-                    f"fleet-secrets lookup failed for {wanted[0]}: {detail}"
-                )
+                raise AppTokenError(f"fleet-secrets lookup failed for {wanted[0]}: {detail}")
             raise AppTokenError(
                 f"fleet-secrets lookup failed for {wanted[0]} (exit {result.returncode})"
             )
