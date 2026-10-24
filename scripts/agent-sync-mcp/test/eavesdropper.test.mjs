@@ -164,3 +164,11 @@ test("the read API's answer is parsed before use:  odd fields fall back on their
   const wrongContract = harness({ listener: client(answer({ contract: "other/9", seat: "GROK-WEB", record: "status", view: {} })) });
   toolError(await wrongContract.tools.call("eavesdropper_status", {}), "upstream_error");
 });
+
+test("listenerClientFromEnv: a resolved wake key builds the client with no env binding (required mode)", () => {
+  const env = { LISTENER_API_URL: "https://listener.example.test" };
+  const client = listenerClientFromEnv(env, "GROK-WEB", { fetch: async () => new Response("[]"), wakeKey: "w".repeat(40) });
+  assert.ok(client, "resolved key serves the listener with no legacy binding");
+  assert.equal(listenerClientFromEnv(env, "GROK-WEB", { fetch: async () => new Response("[]"), wakeKey: "" }), null, "empty resolved key = not configured, env never consulted");
+  assert.equal(listenerClientFromEnv({ ...env, WAKE_HMAC_KEY_GROK_WEB: "legacy-value-ignored" }, "GROK-WEB", { fetch: async () => new Response("[]"), wakeKey: "w".repeat(40) }) === null, false, "an explicit resolved key wins over the env binding");
+});

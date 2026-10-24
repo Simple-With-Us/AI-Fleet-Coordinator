@@ -245,6 +245,11 @@ async function serveMcp(request, env, ctx) {
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
   const recallSecrets = await resolveRecallSecrets(env);
 
+  // The listener key resolves through Infisical too (optional:  no wake key
+  // means no listener tools, never a 500 - src/eavesdropper.js).
+  const listenerWakeKey = Object.hasOwn(WAKE_SECRETS, seat)
+    ? await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true })
+    : "";
   const tools = new HostedTools({
     seat,
     scopes,
@@ -269,7 +274,7 @@ async function serveMcp(request, env, ctx) {
     fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     // Null unless LISTENER_API_URL and this seat's WAKE_HMAC_KEY_<SEAT> are set:  the listener_*
     // tools then answer not_configured and every other tool works as before (AFC-330).
-    listener: listenerClientFromEnv(env, seat),
+    listener: listenerClientFromEnv(env, seat, { wakeKey: listenerWakeKey }),
   });
   // AFC-331:  every grant is routed by identity.  A CURSOR or GROK-WEB grant may act as either seat and as
   // every enabled Grok Bot persona;  any other grant only as its own seat (src/delegated-identities.js).
@@ -339,7 +344,11 @@ async function serveMcp(request, env, ctx) {
         zulip: new ZulipClient({ email: peerEmail, key: peerKey }),
         key: peerKey,
         linear: linearClientFromPair(linearPairs.get(seatTagForSeat(identity)) ?? null, identity, { gate: identityGate }),
-        listener: listenerClientFromEnv(env, identity),
+        listener: listenerClientFromEnv(env, identity, {
+          wakeKey: Object.hasOwn(WAKE_SECRETS, identity)
+            ? await resolveSecret(env, { name: WAKE_SECRETS[identity], path: "/wake", envName: WAKE_SECRETS[identity], optional: true })
+            : "",
+        }),
       });
     },
   });
@@ -602,9 +611,11 @@ async function serveLinearHealth(request, env, config) {
   const identities = [];
   const missing = [];
   for (const seat of LINEAR_SEATS) {
-    const names = linearSecretNames(seat);
-    if (!names || !config.hostedSeats.includes(seat)) continue;
-    if ([names.clientId, names.clientSecret].every((n) => typeof env[n] === "string" && env[n].trim() !== "")) identities.push(seat);
+    if (!linearSecretNames(seat) || !config.hostedSeats.includes(seat)) continue;
+    // Resolved through Infisical (src/linear.js), not env:  in required mode
+    // the legacy bindings are absent and an env read would misreport missing.
+    const pair = await resolveLinearPair(env, seat);
+    if (pair && pair.clientId && pair.clientSecret) identities.push(seat);
     else missing.push(seat);
   }
   const delegated = await resolveDelegatedCredentials(env);
@@ -924,10 +935,15 @@ async function serveAdmin(request, env, config, oauth, email) {
     await Promise.all(config.hostedSeats.map(async (seat) => {
       const g = gate(env, seat);
       const pair = linearSecretNames(seat);
+      // Resolved through Infisical (optional reads):  in required mode the
+      // legacy bindings are absent, so env-name checks would misreport every
+      // seat uninstalled.  A genuine miss reports not-installed, never a 500.
+      const resolvedKey = await resolveSecret(env, { name: SEAT_SECRETS[seat].infisical.name, path: SEAT_SECRETS[seat].infisical.path, envName: SEAT_SECRETS[seat].key, optional: true });
+      const resolvedPair = pair ? await resolveLinearPair(env, seat) : null;
       const facts = {
-        seat, keyInstalled: configured(SEAT_SECRETS[seat].key), grants: [],
+        seat, keyInstalled: Boolean(resolvedKey), grants: [],
         linearEnabled: LINEAR_SEATS.includes(seat),
-        linearConfigured: Boolean(pair && configured(pair.clientId) && configured(pair.clientSecret)),
+        linearConfigured: Boolean(resolvedPair && resolvedPair.clientId && resolvedPair.clientSecret),
         linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
         recallConfigured,
       };
