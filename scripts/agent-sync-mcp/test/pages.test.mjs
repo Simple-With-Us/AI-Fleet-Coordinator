@@ -32,6 +32,7 @@ test("consent page escapes client-controlled strings and has no script", async (
     seat: "JET",
     handle: `h"><b>`,
     replacing: [{ client: "Old <Client>", createdAt: Date.parse("2026-10-08T20:00:00Z") }],
+    eventsOnly: false,
   }, new Headers({ "Set-Cookie": "__Host-oauth-consent-x=1; Path=/; Secure; HttpOnly" }));
   const html = await res.text();
   assert.ok(!html.includes("<img"));
@@ -87,7 +88,7 @@ test("admin page renders state and escapes refusal-log values", async () => {
   assert.equal((html.match(/name="csrf"/g) ?? []).length >= 4, true);
 });
 
-const consentFacts = { clientName: "ChatGPT", clientDomain: "chatgpt.com", clientId: "https://chatgpt.com/oauth/client.json", redirectHost: "chatgpt.com", scopes: ["zulip:read"], seat: "JET", handle: "h", replacing: [] };
+const consentFacts = { clientName: "ChatGPT", clientDomain: "chatgpt.com", clientId: "https://chatgpt.com/oauth/client.json", redirectHost: "chatgpt.com", scopes: ["zulip:read"], seat: "JET", handle: "h", replacing: [], eventsOnly: false };
 const adminFacts = { email: "mail@jays.services", seats: [], clients: [], refusals: [], audits: [], csrf: "c".repeat(64), notice: "", manualSeats: [] };
 
 test("P1:  every page that posts a form keeps Origin, so Approve and Arm work in a real browser", async () => {
@@ -140,7 +141,7 @@ test("admin page keeps authorize and token refusals apart and shows the Access e
 });
 
 test("consent for a loopback callback says the tokens go to a program on this computer", async () => {
-  const html = await consentPage({ ...consentFacts, clientName: "Echo (manual form, ECHO)", clientDomain: "", clientId: "AbCdEf1234567890", redirectHost: "127.0.0.1:8737", loopback: true, seat: "ECHO" }).text();
+  const html = await consentPage({ ...consentFacts, clientName: "Echo (manual form, ECHO)", clientDomain: "", clientId: "AbCdEf1234567890", redirectHost: "127.0.0.1:8737", loopback: true, seat: "ECHO", eventsOnly: false }).text();
   assert.match(html, /A program on the computer running this browser \(127\.0\.0\.1:8737\)/);
   assert.match(html, /Approve only if you opened this page on the app/);
   assert.match(html, /Connect Echo \(manual form, ECHO\) as ECHO\?/);

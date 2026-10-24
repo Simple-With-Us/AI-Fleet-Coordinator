@@ -92,8 +92,8 @@ test("the consent page names the wake seat and states its real capability", asyn
   assert.match(wake, /name="seat" value="JET"/, "the posted value stays the canonical seat");
   assert.match(wake, /This seat only delivers wake notifications to the app/);
   assert.ok(!wake.includes("This seat reads and posts"));
-  const full = await (await consentPage({ ...facts, seat: "JET-CHAT" }, {})).text();
-  const stagedJet = await (await consentPage({ ...facts, seat: "JET" }, {})).text();
+  const full = await (await consentPage({ ...facts, seat: "JET-CHAT", eventsOnly: false }, {})).text();
+  const stagedJet = await (await consentPage({ ...facts, seat: "JET", eventsOnly: false }, {})).text();
   assert.match(stagedJet, /This seat reads and posts/, "staging state: the wake copy is flag-driven, not seat-name-driven");
   assert.match(full, /Connect ChatGPT as Jet\?/);
   assert.match(full, /name="seat" value="JET-CHAT"/);
@@ -104,7 +104,7 @@ test("the consent page names the wake seat and states its real capability", asyn
   assert.ok(!wake.includes("WhatsApp"), "the wake-only seat never mentions WhatsApp");
   assert.ok(!full.includes("WhatsApp"), "no WhatsApp sentence while the bridge is off");
   assert.match(full, /Private Zulip channels are never open to it/);
-  const wa = await (await consentPage({ ...facts, seat: "JET-CHAT", whatsapp: true }, {})).text();
+  const wa = await (await consentPage({ ...facts, seat: "JET-CHAT", whatsapp: true, eventsOnly: false }, {})).text();
   assert.match(wa, /read and acknowledge messages in the owner&#39;s private WhatsApp inbox/);
   assert.match(wa, /Private Zulip channels are never open to it/);
 });

@@ -1,6 +1,5 @@
 // HTML for the consent page, the arming notice and /admin.
 import { callSeatLabel, renderStatusOverview } from "./status.js";
-import { EVENTS_ONLY_SEATS } from "./seats.js";
 //
 // Pure module.  Every page is static HTML with no script.  Every string that
 // could come from a client (a CIMD document, a registration, a query string)
@@ -125,7 +124,13 @@ export function errorPage(title, message, status = 400) {
  * The consent page (spec 3.4 step 5).  `facts` come from the library's parsed
  * request and client lookup;  every string is escaped here.
  */
-export function consentPage({ clientName, clientDomain, clientId, redirectHost, loopback = false, scopes, seat, handle, replacing, whatsapp = false, eventsOnly = EVENTS_ONLY_SEATS.includes(seat) }, headers) {
+export function consentPage({ clientName, clientDomain, clientId, redirectHost, loopback = false, scopes, seat, handle, replacing, whatsapp = false, eventsOnly }, headers) {
+  // eventsOnly is required and must come from the request's own loaded config:  a
+  // default read of the static staging set would show full-tool consent copy to a
+  // wake-only seat and misstate what the owner is approving.
+  if (typeof eventsOnly !== "boolean") {
+    throw new Error("consentPage: eventsOnly must be passed explicitly from the loaded config");
+  }
   const verified = clientDomain
     ? `Published by <strong>${escapeHtml(clientDomain)}</strong> (a client metadata document on that domain).`
     : `Registered by hand in Agent-Sync Admin.${SENTENCE_GAP}Its name is not verified.`;
