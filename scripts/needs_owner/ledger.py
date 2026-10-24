@@ -12,6 +12,7 @@ Everything lives under `~/apps/needs-owner/state/` (mode 0700, HOME from the cal
 
 The files hold no question, option, answer or message text and no credential.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -20,7 +21,7 @@ import json
 import os
 import tempfile
 import time
-from typing import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 
 SCHEMA = 1
 STATE_FILE = "notify-state.json"
@@ -38,6 +39,18 @@ DEFAULT_CAPS = {"urgent_per_hour": 3, "per_hour": 6, "per_day": 30}
 def state_dir(environ: Mapping[str, str]) -> str:
     home = environ.get("HOME") or os.path.expanduser("~")
     return os.path.join(home, "apps", "needs-owner", "state")
+
+
+def comment_keys_dir(environ: Mapping[str, str]) -> str:
+    """The comment-key store's own directory:  beside the notifier's state, not inside it.
+
+    The state directory belongs to the notifier:  it holds the notifier's own state, its
+    lock and the file for CLAUDE's items, and a dry run must leave no state and no lock.
+    The filing seat writes the same comment-key store, so the store cannot live inside
+    that directory:  filing an item would create the notifier's state.
+    """
+    home = environ.get("HOME") or os.path.expanduser("~")
+    return os.path.join(home, "apps", "needs-owner", "comment-keys")
 
 
 def private_dir(path: str) -> None:
@@ -73,10 +86,16 @@ def read_json(path: str):
 
 # ---- the lock ------------------------------------------------------------------------------------
 
+
 class Lock:
     """One notifier run at a time.  `acquire` returns False when another run holds a fresh lock."""
 
-    def __init__(self, path: str, stale_seconds: int = LOCK_STALE_SECONDS, wall: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        path: str,
+        stale_seconds: int = LOCK_STALE_SECONDS,
+        wall: Callable[[], float] = time.time,
+    ) -> None:
         self.path = path
         self.stale = stale_seconds
         self.wall = wall
@@ -142,9 +161,23 @@ class Lock:
 
 # ---- the state -----------------------------------------------------------------------------------
 
+
 def _empty() -> dict:
-    return {"schema": SCHEMA, "sent": [], "once": {}, "notes": {}, "pause": {"on": False, "msg": 0, "at": 0.0},
-            "retry": {}, "mirror": {}, "topics": {}, "decided": {}, "stream_id": None, "ctl": {}, "ctl_ready": False, "last_run": 0.0}
+    return {
+        "schema": SCHEMA,
+        "sent": [],
+        "once": {},
+        "notes": {},
+        "pause": {"on": False, "msg": 0, "at": 0.0},
+        "retry": {},
+        "mirror": {},
+        "topics": {},
+        "decided": {},
+        "stream_id": None,
+        "ctl": {},
+        "ctl_ready": False,
+        "last_run": 0.0,
+    }
 
 
 class State:
@@ -179,7 +212,11 @@ class State:
     def _prune(self) -> None:
         now = self.now()
         d = self.data
-        d["sent"] = [s for s in d["sent"] if isinstance(s, dict) and now - float(s.get("t", 0)) < SENT_KEEP_SECONDS]
+        d["sent"] = [
+            s
+            for s in d["sent"]
+            if isinstance(s, dict) and now - float(s.get("t", 0)) < SENT_KEEP_SECONDS
+        ]
         d["once"] = {k: t for k, t in d["once"].items() if now - float(t) < ONCE_KEEP_SECONDS}
         for key in ("mirror", "topics", "decided", "retry", "ctl"):
             if len(d[key]) > MAX_KEYS:
@@ -188,8 +225,12 @@ class State:
     # ---- sends and caps --------------------------------------------------------------------
     def sent_within(self, seconds: float, *, urgent: bool | None = None) -> int:
         now = self.now()
-        return sum(1 for s in self.data["sent"] if now - float(s.get("t", 0)) < seconds
-                   and (urgent is None or bool(s.get("u")) == urgent))
+        return sum(
+            1
+            for s in self.data["sent"]
+            if now - float(s.get("t", 0)) < seconds
+            and (urgent is None or bool(s.get("u")) == urgent)
+        )
 
     def record_send(self, kind: str, ident: str, urgent: bool = False) -> None:
         self.data["sent"].append({"t": self.now(), "k": kind, "i": ident, "u": bool(urgent)})
@@ -205,7 +246,14 @@ class State:
 
     # ---- notes still due --------------------------------------------------------------------
     def add_note(self, ident: str, kind: str, ref: str, option: int | None) -> None:
-        self.data["notes"][ident] = {"kind": kind, "id": ref, "option": option, "since": self.now(), "tries": 0, "next": 0.0}
+        self.data["notes"][ident] = {
+            "kind": kind,
+            "id": ref,
+            "option": option,
+            "since": self.now(),
+            "tries": 0,
+            "next": 0.0,
+        }
         self.dirty = True
 
     def drop_note(self, ident: str) -> None:
@@ -241,6 +289,7 @@ class State:
 
 # ---- caps ----------------------------------------------------------------------------------------
 
+
 def read_caps(raw: object) -> dict[str, int]:
     """The knob's caps as three counts, each a whole number from 0 up.  A missing or odd entry takes the default."""
     caps = dict(DEFAULT_CAPS)
@@ -273,11 +322,18 @@ class Caps:
 
 # ---- the file for CLAUDE's own items ----------------------------------------------------------------
 
+
 def write_pending_claude(directory: str, rows: list[dict], now: dt.datetime) -> None:
     """The replies waiting for a CLAUDE session, newest last.  `rows` hold ids, links and numbers only."""
     private_dir(directory)
-    document = {"schema": SCHEMA, "updated_at": now.isoformat(timespec="seconds"), "items": rows[-PENDING_CLAUDE_MAX:]}
-    write_private(os.path.join(directory, PENDING_CLAUDE_FILE), json.dumps(document, indent=1, sort_keys=True))
+    document = {
+        "schema": SCHEMA,
+        "updated_at": now.isoformat(timespec="seconds"),
+        "items": rows[-PENDING_CLAUDE_MAX:],
+    }
+    write_private(
+        os.path.join(directory, PENDING_CLAUDE_FILE), json.dumps(document, indent=1, sort_keys=True)
+    )
 
 
 def read_pending_claude(directory: str) -> list[dict]:

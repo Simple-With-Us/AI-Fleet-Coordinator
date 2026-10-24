@@ -58,6 +58,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# The fleet's coordination channel, from the runtime that owns it:  a provisioned bot has to be
+# subscribed to the channel the seats actually use, and a name written here goes stale the day
+# the realm renames it.  This script runs from scripts/, which is where the package lives.
+from agent_sync.zulip import default_channel
+
 REALM = "https://simplewithus.zulipchat.com"
 ADMIN_FOLDER = "/zulip_operator"
 DEFAULT_OUT_DIR = "~/.agent-sync/provisioned"
@@ -106,7 +111,7 @@ def admin_secret(name, required=True):
     )
 
 
-CHANNELS = ["agent-sync", "alerts", "builds", "trading", "ideas"]
+CHANNELS = [default_channel(os.environ), "alerts", "builds", "trading", "ideas"]
 
 # (full name shown in Zulip, short name, zuliprc file stem).
 # Zulip appends "-bot" to the short name, in the API and in the web form alike:
