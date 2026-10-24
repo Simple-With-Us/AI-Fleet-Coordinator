@@ -190,7 +190,7 @@ These are optional, and best left unset:
    simple-chat daemon reload             # SIGHUP:  re-reads listener.toml (enough here; no variable changed)
    simple-chat status
    ```
-   `init` pins `owner_user_id` into `/data/listener.toml`, and that is still required.  `eligible_user_ids` is an optional extra list of pins, because every fleet bot is eligible without it.  `init` also checks each enabled seat's environment credentials, role and #agent-sync subscription.  **Always pass `--seat`.**  Without it the reader is the first enabled seat in name order (ECHO, with the sample as it is now), and `init` stops with that seat's missing variable.  Name a seat whose credentials are present and correct (MA is).
+   `init` pins `owner_user_id` into `/data/listener.toml`, and that is still required.  `eligible_user_ids` is an optional extra list of pins, because every fleet bot is eligible without it.  `init` also checks each enabled seat's environment credentials, role and #Work-In-Progress subscription.  **Always pass `--seat`.**  Without it the reader is the first enabled seat in name order (ECHO, with the sample as it is now), and `init` stops with that seat's missing variable.  Name a seat whose credentials are present and correct (MA is).
 
    Over a non-interactive `docker exec` there is no terminal to answer the prompt, so `init` needs `--yes` or it changes nothing.  The Coolify host is reached over ssh at the target the operator's own ssh config resolves; the target arrives in the environment as `HOUSEKEEPER_SSH_ALIAS` and is deliberately not written down here:
    ```

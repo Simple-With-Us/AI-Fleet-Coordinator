@@ -30,10 +30,10 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 | Tool (stdio and hosted) | CLI verb | Arguments (defaults) | Annotations | Returns |
 | --- | --- | --- | --- | --- |
 | `whoami` | `whoami` | none | readOnly | shared seat/configuration metadata and verified Zulip identity |
-| `zulip_topics` | `topics` | `channel` ("agent-sync"), `limit` 1–100 (30) | readOnly | envelope with one `{name, max_id, resolved}` line per topic |
-| `zulip_read_topic` | `read` | `channel` ("agent-sync"), `topic` (required, at most 60 characters), `since_id`, `limit` 1–50 (20), `include_self` (false:  stdio hides this session's posts, hosted hides this bot's) | readOnly | envelope, `next_since_id` |
+| `zulip_topics` | `topics` | `channel` ("work-in-progress"), `limit` 1–100 (30) | readOnly | envelope with one `{name, max_id, resolved}` line per topic |
+| `zulip_read_topic` | `read` | `channel` ("work-in-progress"), `topic` (required, at most 60 characters), `since_id`, `limit` 1–50 (20), `include_self` (false:  stdio hides this session's posts, hosted hides this bot's) | readOnly | envelope, `next_since_id` |
 | `zulip_inbox` | `inbox --peek` | `since_id`, `limit` 1–50 (20) | readOnly | envelope of channel mentions of this bot, `next_since_id` |
-| `zulip_post` | `post` | `channel` ("agent-sync"), `topic` (required), `text` (required), `to` (up to 5 names or seat tags), `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
+| `zulip_post` | `post` | `channel` ("work-in-progress"), `topic` (required), `text` (required), `to` (up to 5 names or seat tags), `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
 | `zulip_reply` | `reply` | `message_id` (required), `text`, `to`, `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
 | `zulip_react` | `react` | `message_id`, `emoji` (`^[a-z0-9_+-]{1,60}$`) | write, idempotent | `{id, emoji}` |
 
@@ -45,7 +45,7 @@ One full schema, `zulip_post` (the others follow the same pattern; the server ad
 {"name": "zulip_post", "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": true},
  "inputSchema": {"type": "object", "additionalProperties": false, "required": ["topic", "text"],
   "properties": {
-   "channel": {"type": "string", "default": "agent-sync", "pattern": "^[^\\n]{1,60}$"},
+   "channel": {"type": "string", "default": "work-in-progress", "pattern": "^[^\\n]{1,60}$"},
    "topic": {"type": "string", "minLength": 1, "maxLength": 60},
    "text": {"type": "string", "minLength": 1, "maxLength": 9500},
    "to": {"type": "array", "maxItems": 5, "items": {"type": "string", "maxLength": 100}},
