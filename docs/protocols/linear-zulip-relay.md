@@ -130,10 +130,9 @@ Zulip poll loop keeps polling.
 
 Errors carry only allow-listed fields: an HTTP status, Linear's error codes, and a fixed
 description.  The response body never reaches an exception or the log, and neither does the token.
-A refused token is reported as "linear refused LINEAR_RELAY_TOKEN (http 401); key abcdefgh…wxyz":
-the variable to check and the fleet's masked preview of the key (`zulip.masked_credential`, the
-same one the agent-sync CLI uses: the first eight and last four characters of a key of 24 or more,
-one character of a shorter one), so the operator can tell which key was refused.
+A refused token names only the variable to check, for example
+"linear refused LINEAR_RELAY_TOKEN (http 401)".  No key value, prefix, suffix or masked
+preview is included in the error, log or stop message.
 
 Failures are sorted by what waiting can change:
 
