@@ -771,6 +771,7 @@ class Daemon:
 
     def _apply_config(self) -> None:
         cfg = self.config
+        self.loopguard.enabled = cfg.wake_loop_prevention
         self.notifier.banners = self.banners_allowed and cfg.notify_banners
         for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values()):
             # Routine secrets are hidden as soon as the config names them, before any wake.
@@ -1143,7 +1144,6 @@ class Daemon:
             return
         self.reload_refused = []
         self.config = new
-        self.loopguard.enabled = new.wake_loop_prevention
         self.config_notified = False
         self._apply_config()
         self._configure_outgoing_webhook()

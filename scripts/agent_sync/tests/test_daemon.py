@@ -976,6 +976,18 @@ class WakeTests(DaemonHarness):
         self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
         self.assertEqual(len(self.ledger()), 1)
 
+    def test_lock_handover_rebuild_applies_disabled_guard(self) -> None:
+        daemon = self.started()
+        for _ in range(3):
+            daemon.loopguard.note(TOPIC_KEY, wake_reply=True, owner=False)
+        self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+        daemon.rebuild_from_disk()
+        self.assertFalse(daemon.loopguard.enabled)
+        self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY))
+        self.assertEqual(daemon.loopguard.count(TOPIC_KEY), 3)
+
     def test_the_loop_guard_resets_only_on_an_owner_post(self) -> None:
         daemon = self.started()
         jay = self.fake.user_named("Jay Wedgeworth")
