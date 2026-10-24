@@ -1419,6 +1419,8 @@ def state_path(env: Mapping[str, str], dry_run: bool) -> Path:
     dry run marks topics written that the live relay would then never create a comment for."""
     raw = (env.get("LINEAR_RELAY_STATE") or "").strip()
     live = Path(raw).expanduser() if raw else Path(LIVE_STATE).expanduser()
+    if not live.name or live.name in (".", ".."):
+        raise SystemExit("LINEAR_RELAY_STATE must name a ledger file, not %s" % live)
     if dry_run:
         return live.with_name(live.stem + ".dry-run" + (live.suffix or ".json"))
     return live

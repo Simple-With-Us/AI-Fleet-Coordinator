@@ -507,9 +507,13 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(lr.state_path({}, True), Path(lr.DRY_STATE).expanduser())
         # A configured live ledger on a volume: the dry run writes a sibling, never the file the
         # live run will use, so it cannot mark topics written that were never created.
-        env = {"LINEAR_RELAY_STATE": "/data/linear-relay.json"}
-        self.assertEqual(lr.state_path(env, False), Path("/data/linear-relay.json"))
-        self.assertEqual(lr.state_path(env, True), Path("/data/linear-relay.dry-run.json"))
+        env = {"LINEAR_RELAY_STATE": "/tmp/fixture/linear-relay.json"}
+        self.assertEqual(lr.state_path(env, False), Path("/tmp/fixture/linear-relay.json"))
+        self.assertEqual(lr.state_path(env, True), Path("/tmp/fixture/linear-relay.dry-run.json"))
+        # A path with no file name is refused by name, not with a traceback.
+        for bad in ("/", "."):
+            with self.assertRaises(SystemExit):
+                lr.state_path({"LINEAR_RELAY_STATE": bad}, True)
 
     def test_one_failing_entry_does_not_stop_the_tick(self) -> None:
         self.w.handle_event(message(1, "AFC-1 a", "hello"))
