@@ -91,16 +91,35 @@ NO_WAKE_MARKERS = (":eyes:", "\U0001f440")
 _NO_WAKE_RE = re.compile(r"^\s*(?:%s)" % "|".join(re.escape(m) for m in NO_WAKE_MARKERS))
 #: One leading bracket seat tag (`[MM\u00b7session8] `, `[CLAUDE\u00b7needsown\u2192SEAT] `).  The
 #: marker may follow it, because `agent-sync post` prepends that tag to whatever the agent wrote.
-_SEAT_TAG_PREFIX_RE = re.compile(r"^\s*\[[A-Za-z0-9_.-]+\u00b7[^\]]*\]\s*")
+#: The session part is optional:  a seat with no session tag writes `[MM] `, and a labelled post
+#: writes `[MM\u2192CODEX] `, so the tag is the seat name, then optionally a `\u00b7` session, then
+#: optionally a `\u2192` label list, then the closing bracket.
+_SEAT_TAG_PREFIX_RE = re.compile(
+    r"^\s*\[(?P<seat>[A-Z0-9][A-Z0-9_-]*)(?P<session>(?:\u00b7[^\]]*)?)(?:\u2192[^\]]*)?\]\s*"
+)
 
 
-def strip_no_wake(content: str) -> tuple[str, bool]:
+def _sender_seat_tag(message: Mapping[str, Any]) -> str | None:
+    """The seat tag the sender signs its posts with (`MM`, `CLAUDE`), or None when the sender is
+    not a seat bot and so has no tag of its own."""
+    email = message.get("sender_email")
+    if not email:
+        return None
+    return seat_tag_for({"is_bot": True, "email": email})
+
+
+def strip_no_wake(content: str, seat: str | None = None) -> tuple[str, bool]:
     """(the content without a leading no-wake marker, whether the marker was there).
 
     The marker is the first non-space character of the content, or the first non-space
     character after one leading bracket seat tag.  A marker inside a quote line, a code span, a
     code block or a sentence is not a marker:  only a leading one is.  The rest of the content
     comes back unchanged, so the anchored tag regexes still match where they did.
+
+    `seat` is the sender's own seat tag (`MM`, `CLAUDE`).  A bracket after which the marker is
+    read must be a seat tag:  either it carries the `\u00b7` session separator, which no ordinary
+    word has, or its seat name is the sender's own.  So `[TODO] :eyes: hi` stays a normal
+    message, while `[MM] :eyes: hi` from MM is the signal.
     """
     text = str(content or "")
     lead = len(text) - len(text.lstrip())
@@ -109,7 +128,7 @@ def strip_no_wake(content: str) -> tuple[str, bool]:
     if match:
         return text[:lead] + rest[match.end() :], True
     tag = _SEAT_TAG_PREFIX_RE.match(rest)
-    if tag:
+    if tag and (tag.group("session") or (seat and tag.group("seat") == seat)):
         after = rest[tag.end() :]
         match = _NO_WAKE_RE.match(after)
         if match:
@@ -327,8 +346,9 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     sender_id = message.get("sender_id")
     content = str(message.get("content") or "")
     # The owner's per-message no-wake signal.  The marker comes off the content first, so the
-    # anchored tag regexes below still match where they did before it was stripped.
-    content, c.no_wake = strip_no_wake(content)
+    # anchored tag regexes below still match where they did before it was stripped.  The sender's
+    # own seat tag is what makes a bare `[MM] ` prefix a seat tag rather than an ordinary word.
+    content, c.no_wake = strip_no_wake(content, _sender_seat_tag(message))
     flags = list(message.get("flags") or [])
     c.dm = message.get("type") == "private"
     if c.dm:

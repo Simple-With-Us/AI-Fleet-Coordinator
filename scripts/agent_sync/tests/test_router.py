@@ -628,6 +628,44 @@ class NoWakeTests(unittest.TestCase):
         self.assertTrue(c.no_wake)
         self.assertEqual(d.drop_reason, "no_wake")
 
+    def test_a_sessionless_seat_tag_suppresses(self) -> None:
+        # A seat with no session tag writes `[CLAUDE] `, and the marker still has to be read
+        # there, or a sessionless seat's own quiet post would wake people (AFC-468).
+        c, d = self.route(msg(content="[CLAUDE] %s@**Claude** please look" % MARKER,
+                               flags=["mentioned"], email="claude-bot@zulip.test"))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+
+    def test_a_labelled_seat_tag_suppresses(self) -> None:
+        c, d = self.route(msg(content="[CLAUDE→MM] %s@**Claude** please look" % MARKER,
+                               flags=["mentioned"], email="claude-bot@zulip.test"))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+
+    def test_an_ordinary_bracket_word_is_not_a_seat_tag(self) -> None:
+        # `[TODO]` is a word, not a seat tag, so the marker after it is mid-sentence and the
+        # message still wakes (AFC-468).
+        c, d = self.route(msg(content="[TODO] %s@**Claude** please look" % MARKER,
+                               flags=["mentioned"], email="codex-bot@zulip.test"))
+        self.assertFalse(c.no_wake)
+        self.assertNotEqual(d.drop_reason, "no_wake")
+
+    def test_another_seats_tag_is_not_the_senders_seat_tag(self) -> None:
+        # The bracket has to be the sender's own seat tag, so a seat cannot borrow another's
+        # tag to smuggle the marker past the check.
+        c, d = self.route(msg(content="[CLAUDE] %s@**Claude** please look" % MARKER,
+                               flags=["mentioned"], email="codex-bot@zulip.test"))
+        self.assertFalse(c.no_wake)
+        self.assertNotEqual(d.drop_reason, "no_wake")
+
+    def test_a_session_separator_is_a_seat_tag_on_its_own(self) -> None:
+        # The `·` separator is the fleet's own, so a tag that carries it is a seat tag whatever
+        # the sender is, and the marker after it is read.
+        c, d = self.route(msg(content="[CLAUDE·mvs36f02] %s@**Claude** please look" % MARKER,
+                               flags=["mentioned"], email="codex-bot@zulip.test"))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+
     def test_the_wake_tag_still_counts_with_a_marker(self) -> None:
         # The loop guard counts wake replies, so a marker must not hide a wake tag from it.
         c, _ = self.route(msg(content="%s[CLAUDE\u00b7wake] hello" % MARKER))
