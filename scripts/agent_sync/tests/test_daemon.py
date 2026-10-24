@@ -652,6 +652,20 @@ class WakeTests(DaemonHarness):
         self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
         self.assertEqual(len(self.dumps()), 2)
 
+    def test_peer_budget_per_topic_with_loop_prevention_off(self) -> None:
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+        daemon = self.started()
+        self.assertFalse(daemon.loopguard.enabled)
+        for n in range(3):
+            self.fake.add_message("Codex", "agent-sync", "t", MENTION + " %d" % n)
+            self.pump_until(daemon, lambda n=n: sum(1 for r in self.ledger() if r["state"] == "queued") >= n + 1)
+            self.wake_cycle(daemon, 95)
+        reasons = [r.get("reason") for r in self.ledger() if r["state"] == "held_back"]
+        self.assertEqual(reasons, ["per_topic_per_hour"], "held back, not dropped (owner, Sat, Oct 10)")
+        self.assertEqual([r for r in self.ledger() if r["state"] == "dropped"], [])
+        self.assertEqual(len(self.dumps()), 2)
+
     def test_the_kill_switch_and_the_owner_dm_pause(self) -> None:
         daemon = self.started()
         self.assertEqual(self.run_cli("daemon", "pause", "--wakes-only").code, 0)
@@ -954,6 +968,39 @@ class WakeTests(DaemonHarness):
         # simple-board is a plain symlink to scripts/simple-board and exports nothing itself, so the
         # daemon must pass the write switch the old ~/.local/bin/board wrapper used to export.
         self.assertEqual(board_envs[0].get("LINEAR_BOARD_WRITES"), "1")
+
+    def test_disabled_loop_guard_allows_new_wake_without_owner_and_reload_keeps_history(self) -> None:
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+        daemon = self.started()
+        for n in range(4):
+            self.fake.add_message("Codex", "agent-sync", "t", "[CODEX·wake] re=%d\nreply" % n)
+        mid = self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.assertEqual(self.ledger()[0]["state"], "queued")
+        self.assertEqual(self.ledger()[0]["trigger_ids"], [mid])
+        self.assertFalse(daemon.status()["wake_loop_prevention"])
+        self.assertEqual(daemon.status()["loop_guard"], [])
+        self.assertGreaterEqual(daemon.loopguard.count(TOPIC_KEY), 4)
+        daemon.reload()
+        self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY))
+        # No counter deletion or backlog replay. Re-enable is an explicit separate config action.
+        path.write_text(path.read_text().replace("wake_loop_prevention = false", "wake_loop_prevention = true"))
+        daemon.reload()
+        self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
+        self.assertEqual(len(self.ledger()), 1)
+
+    def test_lock_handover_rebuild_applies_disabled_guard(self) -> None:
+        daemon = self.started()
+        for _ in range(3):
+            daemon.loopguard.note(TOPIC_KEY, wake_reply=True, owner=False)
+        self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+        daemon.rebuild_from_disk()
+        self.assertFalse(daemon.loopguard.enabled)
+        self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY))
+        self.assertEqual(daemon.loopguard.count(TOPIC_KEY), 3)
 
     def test_the_loop_guard_resets_only_on_an_owner_post(self) -> None:
         daemon = self.started()
@@ -1598,8 +1645,35 @@ class RecoveryTests(DaemonHarness):
         self.assertEqual(self.dumps(), [])
         self.assertTrue(any("stopped mid-run" in b[8] for b in self.banners))
 
+    def test_a_crash_between_started_and_done_never_reruns_with_loop_prevention_off(self) -> None:
+        paths = self.seat_paths()
+        L.append_jsonl(paths.wakes, [{"ts": self.clock.time(), "wake_id": "w1", "seat": "CLAUDE", "state": "started",
+                                      "owner": True, "reserved_usd": 0.25, "trigger_ids": [5], "topic_key": TOPIC_KEY}])
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+        daemon = self.started()
+        self.assertFalse(daemon.loopguard.enabled)
+        self.wake_cycle(daemon)
+        self.assertEqual([r["state"] for r in self.ledger()], ["started", "failed"])
+        self.assertEqual(self.dumps(), [])
+        self.assertTrue(any("stopped mid-run" in b[8] for b in self.banners))
+
     def test_a_peer_wake_that_went_stale_while_the_daemon_was_down_never_runs(self) -> None:
         daemon = self.started()
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        daemon.shutdown()
+        self.clock.advance(5 * 3600)
+        again = self.started()
+        self.wake_cycle(again)
+        self.assertEqual([(r["state"], r.get("reason")) for r in self.ledger()], [("queued", None), ("dropped", "stale")])
+        self.assertEqual(self.dumps(), [])
+
+    def test_a_peer_wake_that_went_stale_while_the_daemon_was_down_never_runs_with_loop_prevention_off(self) -> None:
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+        daemon = self.started()
+        self.assertFalse(daemon.loopguard.enabled)
         self.fake.add_message("Codex", "agent-sync", "t", MENTION)
         self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
         daemon.shutdown()
