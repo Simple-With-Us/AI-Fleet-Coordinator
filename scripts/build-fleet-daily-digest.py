@@ -20,6 +20,7 @@ Env:
   ICS_OUT (default calendar/daily-digest.ics)
   SITE_BASE_URL (optional, e.g. https://simple-with-us.github.io/AI-Fleet-Coordinator/)
 """
+
 from __future__ import annotations
 
 import html
@@ -32,17 +33,18 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 # Allow `python3 scripts/build-fleet-daily-digest.py` from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from ics_utils import ics_escape, join_ics  # noqa: E402
-from public_activity_repos import DEFAULT_FLEET_OWNER, PUBLIC_REPOS, select_public_repos  # noqa: E402
+from ics_utils import ics_escape, join_ics
+from public_activity_repos import DEFAULT_FLEET_OWNER, PUBLIC_REPOS, select_public_repos
 
 DEFAULT_REPOS = PUBLIC_REPOS
+
 
 @dataclass
 class DayBucket:
@@ -52,11 +54,7 @@ class DayBucket:
     issues_closed: list[dict[str, Any]] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not (
-            self.merged_prs
-            or self.issues_opened
-            or self.issues_closed
-        )
+        return not (self.merged_prs or self.issues_opened or self.issues_closed)
 
     def counts_line(self) -> str:
         return (
@@ -146,7 +144,7 @@ def fetch_merged_prs(
             merged = parse_iso(it.get("merged_at"))
             if not merged:
                 continue
-            if merged < since_dt.astimezone(timezone.utc) and to_local_day(merged, tz) < since:
+            if merged < since_dt.astimezone(UTC) and to_local_day(merged, tz) < since:
                 # list is updated-desc; once we are well before since on updated_at, stop
                 updated = parse_iso(it.get("updated_at"))
                 if updated and to_local_day(updated, tz) < since:
@@ -176,7 +174,7 @@ def fetch_issue_churn(
     """List issues via REST since= (created/updated filter); bucket by created/closed day."""
     opened: list[tuple[date, dict[str, Any]]] = []
     closed: list[tuple[date, dict[str, Any]]] = []
-    since_iso = datetime.combine(since, datetime.min.time(), tzinfo=timezone.utc).strftime(
+    since_iso = datetime.combine(since, datetime.min.time(), tzinfo=UTC).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
     for repo in repos:
@@ -197,13 +195,9 @@ def fetch_issue_churn(
                 "state": it.get("state") or "",
             }
             if created and to_local_day(created, tz) >= since:
-                opened.append(
-                    (to_local_day(created, tz), {**base, "when": created})
-                )
+                opened.append((to_local_day(created, tz), {**base, "when": created}))
             if closed_at and to_local_day(closed_at, tz) >= since:
-                closed.append(
-                    (to_local_day(closed_at, tz), {**base, "when": closed_at})
-                )
+                closed.append((to_local_day(closed_at, tz), {**base, "when": closed_at}))
     return opened, closed
 
 
@@ -254,7 +248,7 @@ REPO_BADGE: dict[str, tuple[str, str]] = {
     "AI-Fleet-Coordinator": ("AFC", "repo-fleet"),
     "BotFleet": ("BF", "repo-bf"),
     "HogHunter": ("HH", "repo-hh"),
-    "Clutch": ("CLUTCH", "repo-clutch"),
+    "Clutch": ("C", "repo-clutch"),
     "codecaps": ("CC", "repo-cc"),
 }
 
@@ -263,12 +257,12 @@ REPO_APP_ICON: dict[str, str] = {
     "Socratic-Trade": "agent-logos/app-st.svg",  # offset ST logo
     "Socratic.Trade": "agent-logos/app-st.svg",  # offset ST logo
     "Congress.Trade": "agent-logos/app-ct.png",  # latest CT iOS app icon
-    "Usage-Monitor": "agent-logos/app-um.png",   # latest Usage Monitor client icon
-    "DealDex": "agent-logos/app-dd.png",         # DealDex favicon (card/ask mark)
-    "Autorotate": "agent-logos/app-ar.png",      # Autorotate shield/lock icon
-    "ContactLogo": "agent-logos/app-cl.png",     # ContactLogo crest mark
-    "Personal-Site": "agent-logos/app-ps.png",   # Jay's headshot for jays.services
-    "BotFleet": "agent-logos/app-bf.png",        # BotFleet app icon
+    "Usage-Monitor": "agent-logos/app-um.png",  # latest Usage Monitor client icon
+    "DealDex": "agent-logos/app-dd.png",  # DealDex favicon (card/ask mark)
+    "Autorotate": "agent-logos/app-ar.png",  # Autorotate shield/lock icon
+    "ContactLogo": "agent-logos/app-cl.png",  # ContactLogo crest mark
+    "Personal-Site": "agent-logos/app-ps.png",  # Jay's headshot for jays.services
+    "BotFleet": "agent-logos/app-bf.png",  # BotFleet app icon
     "HogHunter": "agent-logos/app-hh.png",
     "Clutch": "agent-logos/app-clutch.png",
     "codecaps": "agent-logos/app-cc.png",
@@ -369,10 +363,12 @@ REPO_STRIP_ALIASES: dict[str, tuple[str, ...]] = {
     "Clutch": (
         "Clutch",
         "clutch",
+        "C",
         "CLUTCH",
-        # Retired name.  Every fetched item is now assigned repo "Clutch", so the
+        # Retired names.  Every fetched item is now assigned repo "Clutch", so the
         # old Harness prefixes on historical titles must strip under this key.
-        # "CK" is the retired acronym:  historical "CK: ..." titles must still strip.
+        # "C" is the app acronym (owner 2026-10-23, AFC-333).  "CLUTCH" and "CK"
+        # are retired acronyms:  historical titles must still strip.
         "CK",
         "Harness",
         "harness",
@@ -828,9 +824,15 @@ def _format_created_lede(generated: datetime, tz: ZoneInfo) -> str:
 def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_url: str) -> str:
     esc = html.escape
     created_lede = esc(_format_created_lede(generated, tz))
-    ics_daily = esc((base_url.rstrip("/") + "/calendar/daily-digest.ics") if base_url else "calendar/daily-digest.ics")
+    ics_daily = esc(
+        (base_url.rstrip("/") + "/calendar/daily-digest.ics")
+        if base_url
+        else "calendar/daily-digest.ics"
+    )
     ics_act = esc(
-        (base_url.rstrip("/") + "/calendar/agent-activity.ics") if base_url else "../calendar/agent-activity.ics"
+        (base_url.rstrip("/") + "/calendar/agent-activity.ics")
+        if base_url
+        else "../calendar/agent-activity.ics"
     )
     md_href = "digest.md"
 
@@ -893,9 +895,7 @@ def build_html(days: list[DayBucket], generated: datetime, tz: ZoneInfo, base_ur
         sections.append(
             f'<section class="day" id="{day.day.isoformat()}">'
             f"<h2>{day_label}</h2>"
-            f'<p class="meta">{esc(day.counts_line())}</p>'
-            + "".join(blocks)
-            + "</section>"
+            f'<p class="meta">{esc(day.counts_line())}</p>' + "".join(blocks) + "</section>"
         )
 
     body = "\n".join(sections) if sections else "<p>No activity in the lookback window.</p>"
@@ -1177,7 +1177,7 @@ def build_daily_ics(days: list[DayBucket], now: datetime, base_url: str) -> str:
             [
                 "BEGIN:VEVENT",
                 f"UID:{uid}",
-                f"DTSTAMP:{now.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
+                f"DTSTAMP:{now.astimezone(UTC).strftime('%Y%m%dT%H%M%SZ')}",
                 f"DTSTART;VALUE=DATE:{d.strftime('%Y%m%d')}",
                 f"DTEND;VALUE=DATE:{next_d.strftime('%Y%m%d')}",
                 f"SUMMARY:{ics_escape(day_summary_title(day))}",
@@ -1214,8 +1214,8 @@ def main() -> int:
 
     tok = token()
     repos = select_public_repos(owner, requested, tok)
-    now = datetime.now(timezone.utc)
-    since = (now.astimezone(tz).date() - timedelta(days=lookback))
+    now = datetime.now(UTC)
+    since = now.astimezone(tz).date() - timedelta(days=lookback)
 
     print(f"owner={owner} repos={repos} since={since} tz={tz_name}")
     print("fetching merged PRs…")
