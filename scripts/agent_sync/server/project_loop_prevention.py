@@ -6,16 +6,18 @@ The caller supplies the current raw Infisical secret object on stdin after a sco
 Infisical remains authoritative; this derived projection survives restart/outage without
 silently re-enabling an explicitly disabled guard. Run again only after owner approval.
 """
+
 from __future__ import annotations
+
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import stat
 import sys
 import tempfile
 import tomllib
+from pathlib import Path
 
 KEY = "AGENT_SYNC_WAKE_LOOP_PREVENTION"
 SETTING = "wake_loop_prevention"
@@ -34,22 +36,30 @@ def project(text: str, value: bool) -> str:
     section = text[start:end]
     line = SETTING + " = " + str(value).lower()
     setting = re.compile(r"(?m)^\s*" + SETTING + r"\s*=.*$")
-    section = setting.sub("\n" + line, section) if setting.search(section) else "\n" + line + section
+    section = (
+        setting.sub("\n" + line, section) if setting.search(section) else "\n" + line + section
+    )
     new = text[:start] + section + text[end:]
     check = tomllib.loads(new)
     before = dict(raw["daemon"])
     after = dict(check["daemon"])
     before.pop(SETTING, None)
     after.pop(SETTING, None)
-    if before != after or {k:v for k,v in raw.items() if k != "daemon"} != {k:v for k,v in check.items() if k != "daemon"}:
+    if before != after or {k: v for k, v in raw.items() if k != "daemon"} != {
+        k: v for k, v in check.items() if k != "daemon"
+    }:
         raise ValueError("projection would alter unrelated configuration")
     return new
 
 
 def verified_value(obj: dict, project_id: str, environment: str, secret_path: str) -> bool:
     secret = obj.get("secret", {})
-    if (secret.get("secretKey") != KEY or secret.get("workspace") != project_id
-            or secret.get("environment") != environment or secret.get("secretPath") != secret_path):
+    if (
+        secret.get("secretKey") != KEY
+        or secret.get("workspace") != project_id
+        or secret.get("environment") != environment
+        or secret.get("secretPath") != secret_path
+    ):
         raise ValueError("source identity/path mismatch")
     value = secret.get("secretValue")
     if value not in ("true", "false"):
@@ -68,7 +78,9 @@ def main() -> int:
     path = Path(args.config)
     if path.is_symlink() or not path.is_file():
         raise ValueError("config must be a regular non-symlink file")
-    value = verified_value(json.load(sys.stdin), args.project_id, args.environment, args.secret_path)
+    value = verified_value(
+        json.load(sys.stdin), args.project_id, args.environment, args.secret_path
+    )
     old = path.read_text()
     new = project(old, value)
     if args.apply and old != new:
@@ -87,10 +99,22 @@ def main() -> int:
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
-    print(json.dumps({"key": KEY, "source": "Infisical", "project_id": args.project_id,
-                      "environment": args.environment, "secret_path": args.secret_path,
-                      "setting": SETTING, "enabled": value, "changed": old != new,
-                      "applied": args.apply, "daemon_reloaded": False}))
+    print(
+        json.dumps(
+            {
+                "key": KEY,
+                "source": "Infisical",
+                "project_id": args.project_id,
+                "environment": args.environment,
+                "secret_path": args.secret_path,
+                "setting": SETTING,
+                "enabled": value,
+                "changed": old != new,
+                "applied": args.apply,
+                "daemon_reloaded": False,
+            }
+        )
+    )
     return 0
 
 
