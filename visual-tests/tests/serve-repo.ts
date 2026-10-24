@@ -32,7 +32,7 @@ const MIME: Record<string, string> = {
 
 export async function serveRepo(
   page: Page,
-  opts: { stripMetaRefresh?: boolean } = {},
+  opts: { stripMetaRefresh?: boolean; deferMetaRefresh?: boolean } = {},
 ): Promise<void> {
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url());
@@ -64,6 +64,19 @@ export async function serveRepo(
         body = body
           .toString('utf-8')
           .replace(/<meta[^>]*http-equiv=["']refresh["'][^>]*>/i, '');
+      } else if (opts.deferMetaRefresh && file.endsWith('.html')) {
+        // Same redirect, different need:  the smoke spec asserts the tag's own
+        // content, so the tag must stay - but a zero-delay refresh races the
+        // assertions (its provisional navigation suspends locator polling;
+        // CI 05:24Z read href="" on a loaded runner).  Deferring the firing
+        // delay far past the test keeps the tag, its URL and the real DOM
+        // readable;  the spec asserts nothing about the delay value.
+        body = body
+          .toString('utf-8')
+          .replace(
+            /(<meta[^>]*http-equiv=["']refresh["'][^>]*>)/i,
+            (tag) => tag.replace(/(content=["'])0(;)/i, '$13600$2'),
+          );
       }
       await route.fulfill({
         body,

@@ -6,7 +6,7 @@ description: >-
 
 # Session start (MA)
 
-> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM):  use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM):  use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
@@ -52,6 +52,14 @@ recall "<what this session is about>" --limit 5
 ```
 
 or MCP `recall_search`.  A hit is a lead, not a verdict — open the Linear issue / note / doc.  Cloud seats: `https://agents.jays.services/mcp` or REST `/recall/search`.  Owner 2026-09-02: **contribute every reusable lesson** at closeout (`recall_contribute`); do not bulk-ingest chat logs as lessons.
+
+## 2c.  The tools you have
+
+The CLIs are `simple-chat` (chat; also the local stdio MCP server, `simple-chat mcp`), `simple-board` (Linear), `simple-notes` (Apple Notes), `recall` (the fleet knowledge corpus: search, stats, contribute), `lane` (worktrees), `fleet-mode`, `fleet-share`, and `fleet-secrets` (the Infisical reader:  the process environment comes first when it already holds the secret, and `fleet-secrets` is the approved fallback).  FleetLink shares are the `fleetlink_*` tools, and a FleetLink link inside Zulip is lowercase `fl/<path>`.  The `agent-sync` name is a retired product name: on PATH it survives only as a compatibility launcher that runs `simple-chat`, so never write a command under the retired name — write `simple-chat …` instead.
+
+The two MCP servers are **ST-MCP** (Simple-Tools MCP) and **GR-MCP**.  ST-MCP is the hosted server at `https://agents.simplewithus.com/mcp` with OAuth, and the owner arms the seat in the admin page first; the local stdio server for it is `simple-chat mcp`.  GR-MCP is the MCP wrapper for `git-relay` (`git-relay mcp`): a stdio server that holds only the seat's own bearer token and forwards over HTTP, so policy, caps and audit stay server-side.  Its seven tools are `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`, and `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the GitHub tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **git-relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so seats keep using the interim `gh` and shell path until the owner decides the cutover.
+
+The Operator, the fleet's chat listener service, records what arrived while no session held a lease, and those records are read with the `eavesdropper_*` tools: `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes`, `eavesdropper_held_back` and `eavesdropper_ack` (`eavesdropper_ack` is stdio only).
 
 ## 3. Use The Durable VM Checkout
 

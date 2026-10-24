@@ -4,6 +4,8 @@ Status:  revision 3, Fri, Oct 9;  hosted DM tools (section 1.2) added Sat, Oct 1
 
 Tool names, identity, connections and the CLI equivalents are in the [Agent-Sync Tools Guide](agent-sync-tools-guide.md) (https://fleetlink.online/agent-sync-tools-guide/);  this page is the design.
 
+Naming:  the hosted server is now **ST-MCP** (Simple-Tools MCP) and the local stdio server is `simple-chat mcp`.  This page keeps the older name in its title and in the decisions below, because those records name the artifact as it was built.  The current names live in the tools guide.
+
 Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet in ChatGPT, Grok on Web and iOS) one shared hosted endpoint.  Each caller acts only as its own bot.  Bot keys never reach the client.
 
 ## 0. Decisions at a Glance
@@ -30,10 +32,10 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 | Tool (stdio and hosted) | CLI verb | Arguments (defaults) | Annotations | Returns |
 | --- | --- | --- | --- | --- |
 | `whoami` | `whoami` | none | readOnly | shared seat/configuration metadata and verified Zulip identity |
-| `zulip_topics` | `topics` | `channel` ("agent-sync"), `limit` 1–100 (30) | readOnly | envelope with one `{name, max_id, resolved}` line per topic |
-| `zulip_read_topic` | `read` | `channel` ("agent-sync"), `topic` (required, at most 60 characters), `since_id`, `limit` 1–50 (20), `include_self` (false:  stdio hides this session's posts, hosted hides this bot's) | readOnly | envelope, `next_since_id` |
+| `zulip_topics` | `topics` | `channel` ("work-in-progress"), `limit` 1–100 (30) | readOnly | envelope with one `{name, max_id, resolved}` line per topic |
+| `zulip_read_topic` | `read` | `channel` ("work-in-progress"), `topic` (required, at most 60 characters), `since_id`, `limit` 1–50 (20), `include_self` (false:  stdio hides this session's posts, hosted hides this bot's) | readOnly | envelope, `next_since_id` |
 | `zulip_inbox` | `inbox --peek` | `since_id`, `limit` 1–50 (20) | readOnly | envelope of channel mentions of this bot, `next_since_id` |
-| `zulip_post` | `post` | `channel` ("agent-sync"), `topic` (required), `text` (required), `to` (up to 5 names or seat tags), `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
+| `zulip_post` | `post` | `channel` ("work-in-progress"), `topic` (required), `text` (required), `to` (up to 5 names or seat tags), `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
 | `zulip_reply` | `reply` | `message_id` (required), `text`, `to`, `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
 | `zulip_react` | `react` | `message_id`, `emoji` (`^[a-z0-9_+-]{1,60}$`) | write, idempotent | `{id, emoji}` |
 
@@ -45,7 +47,7 @@ One full schema, `zulip_post` (the others follow the same pattern; the server ad
 {"name": "zulip_post", "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": true},
  "inputSchema": {"type": "object", "additionalProperties": false, "required": ["topic", "text"],
   "properties": {
-   "channel": {"type": "string", "default": "agent-sync", "pattern": "^[^\\n]{1,60}$"},
+   "channel": {"type": "string", "default": "work-in-progress", "pattern": "^[^\\n]{1,60}$"},
    "topic": {"type": "string", "minLength": 1, "maxLength": 60},
    "text": {"type": "string", "minLength": 1, "maxLength": 9500},
    "to": {"type": "array", "maxItems": 5, "items": {"type": "string", "maxLength": 100}},
@@ -202,7 +204,7 @@ Owner, Thu, Oct 15:  "I'd like Agent-Sync and whatever local agents use to be ab
 
 `scripts/agent_sync/mcp/eavesdropper-tools.json` holds six more tools:  `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes`, `eavesdropper_held_back` (read-only) and `eavesdropper_ack` (stdio only).  They show the named identity's records (the identity comes from the call's `identity` argument or the connection's default, never a `seat` argument;  see `docs/protocols/per-call-identity.md`), with every Zulip-authored string fenced.
 
-- **Stdio** reads the local state root (`$AGENT_SYNC_STATE_DIR` or `~/.agent-sync`) through `scripts/agent_sync/listener_records.py`, which the CLI's `agent-sync listener ...` uses too.  Reading never moves a cursor;  `eavesdropper_ack` moves the seat-inbox cursor or the owner queue's surfaced mark forward (never back, never past the newest item) or clears one held-back entry.  A seat directory or record file open to group or other users, or owned by someone else, is refused.
+- **Stdio** reads the local state root (`$AGENT_SYNC_STATE_DIR` or `~/.agent-sync`) through `scripts/agent_sync/listener_records.py`, which the CLI's `simple-chat listener ...`  uses too.  Reading never moves a cursor;  `eavesdropper_ack` moves the seat-inbox cursor or the owner queue's surfaced mark forward (never back, never past the newest item) or clears one held-back entry.  A seat directory or record file open to group or other users, or owned by someone else, is refused.
 - **Hosted** reads the server listener's signed read API (`scripts/agent_sync/listener_api.py`, `docs/protocols/agent-sync-server.md`):  `GET <LISTENER_API_URL>/listener/v1/<SEAT>/<record>` with `X-Agent-Sync-Timestamp` and `X-Agent-Sync-Signature`, the hex HMAC-SHA256 of `agent-sync-read/1\nGET\n<path>\n<query>\n<timestamp>` keyed with the seat's `WAKE_HMAC_KEY_<SEAT>`, good for five minutes.  The API is read-only, so the hosted server lists no `eavesdropper_ack`.  Without `LISTENER_API_URL` or the seat's wake key, every listener tool answers `not_configured`.  The key joins the scrub list;  a 401 is `not_authorized`, a 404 `not_configured`, a 5xx or network failure `unavailable` (retryable), and a body that is not a view for this seat and record `upstream_error`.  No listener response body is echoed.
 
 ## 2. Local Stdio Server (`simple-chat mcp`)

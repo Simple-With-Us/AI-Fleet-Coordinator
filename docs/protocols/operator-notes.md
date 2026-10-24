@@ -38,7 +38,7 @@ The script is the one place formatting is enforced (the title row, the date row,
 
 ## The Wire Protocol
 
-Contract `agent-sync-notes/1`, on the Operator's API server (the listener API, `listener_api.py`, port 8788), under `/notes/v1/`.  The Worker reaches it at `LISTENER_API_URL`;  Python clients and the runner read the fleet knob `OPERATOR_API_URL`.  Both are the same https origin.
+Contract `agent-sync-notes/1`, on the Operator's API server (the listener API, `listener_api.py`, port 8788), under `/notes/v1/`.  The Worker reaches it at `LISTENER_API_URL`;  Python clients and the runner read the fleet knob `OPERATOR_API_URL`.  Both are the same https origin.  When the knob reads empty, the Python side asks `fleet-secrets get OPERATOR_API_URL --path / --project ai-fleet-coordinator` for the same key, the way it reads its principal's key.  This is for the server:  its agent shells carry no Infisical automation pair, so fleet_knobs there has only its last-known-good copy, which lapses after 48 hours, while `fleet-secrets` logs in for itself.
 
 **Principals.**  Every request is signed by one of three principals, each with its own key in Infisical (project AI Fleet Coordinator, `prod`, folder `/operator`, at least 32 characters):
 

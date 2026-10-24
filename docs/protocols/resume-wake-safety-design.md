@@ -338,7 +338,7 @@ and at the end `[CLAUDE·resume] re=<trigger id> done:  <turns> turns, <minutes>
 |---|---|---|
 | `simple-chat daemon pause --resumes-only [--seat S]` | No new resumes;  capture and tool-less wakes continue | Immediate |
 | `simple-chat daemon stop-resumes [--seat S]` | Kills running resumes (SIGTERM, then SIGKILL), records `killed` | Immediate |
-| An owner DM saying `simple-chat pause` | Pauses every seat, resumes included (existing) | Immediate |
+| An owner DM saying `simple-chat pause` (the retired `agent-sync pause` phrase also works) | Pauses every seat, resumes included (existing) | Immediate |
 | `~/.agent-sync/listener/resume.STOP` | The fleet-knobs STOP file:  every resume knob reads its narrowest value | Next check |
 | `RESUME_WAKE_SEATS` minus a seat, or `RESUME_WAKE_MODE=off` | Per-seat or global off from Infisical | Within 5 minutes |
 | `launchctl bootout gui/$(id -u)/com.jay.operator` | Hard stop of the whole listener | Immediate |
