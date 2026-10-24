@@ -36,10 +36,11 @@ class NotesCliHarness(Harness):
         super().setUp()
         self.script = Path("/fake/apple-notes-coding.sh")
         # Off a Mac by default, on every host (a test run on the owner's Mac must never reach the real script), and
-        # the fleet knob is never read for real.
+        # neither the fleet knob nor fleet-secrets is read for real.
         for patcher in (
             mock.patch.object(N, "direct_available", return_value=None),
             mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no fleet knobs in tests")),
+            mock.patch.object(NC, "fleet_secrets_get", return_value=""),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)
