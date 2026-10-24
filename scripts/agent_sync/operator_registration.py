@@ -602,7 +602,10 @@ def sweep(registry_db: str, *, now: float | None = None) -> list[dict[str, Any]]
                 dropped.append(dict(entry))
         settled = []
         for entry_id, entry in data["entries"].items():
-            if entry["state"] == STATE_ASKED:
+            # Conflicts are never cleanup:  they stay answerable until the owner
+            # settles which location is right (kody 4366048276) - pruning one
+            # after seven days would delete the very entry the owner must settle.
+            if entry["state"] in (STATE_ASKED, STATE_CONFLICT):
                 continue
             touched = max(
                 float(entry.get(field) or 0)

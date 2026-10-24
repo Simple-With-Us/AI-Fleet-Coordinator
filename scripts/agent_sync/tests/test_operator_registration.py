@@ -609,6 +609,11 @@ class QueueValidationAndPruningTests(unittest.TestCase):
             "reg-bbbbbbbbbbbb": self._entry(
                 entry_id="reg-bbbbbbbbbbbb", state=OREG.STATE_ASKED, asked_at=old, deadline=now + 100
             ),
+            # An old conflict is NOT settled cleanup:  it stays answerable until the
+            # owner settles it (kody 4366048276).
+            "reg-cccccccccccc": self._entry(
+                entry_id="reg-cccccccccccc", state=OREG.STATE_CONFLICT, answered_at=old, asked_at=old - 10, deadline=old
+            ),
         }
         self._write_queue(entries)
         OREG.sweep(self.db, now=now)
@@ -616,6 +621,7 @@ class QueueValidationAndPruningTests(unittest.TestCase):
         self.assertNotIn("reg-0123456789ab", kept)
         self.assertIn("reg-aaaaaaaaaaaa", kept)
         self.assertIn("reg-bbbbbbbbbbbb", kept)
+        self.assertIn("reg-cccccccccccc", kept)
 
 
 if __name__ == "__main__":
