@@ -3682,12 +3682,12 @@ class Daemon:
     def _registrations(db: str, platform: str, session_id: str) -> list[dict[str, Any]]:
         """The registry scan for the ask/answer flow;  a MISSING file reads as empty.
 
-                First run:  nothing has ever registered, so the file does not exist yet, and the
-                registry layer fails closed on that (its wake-path rule:  never let a lookup
-                bring a registry into being).  At this boundary a missing file is the truthful
-                "no letters yet" - asking is harmless, and the answer path's register creates
-                the file.  A file that exists but cannot be read still raises
-                RegistryUnavailable:  that is a broken identity source, not an empty one.
+        First run:  nothing has ever registered, so the file does not exist yet, and the
+        registry layer fails closed on that (its wake-path rule:  never let a lookup
+        bring a registry into being).  At this boundary a missing file is the truthful
+        "no letters yet" - asking is harmless, and the answer path's register creates
+        the file.  A file that exists but cannot be read still raises
+        RegistryUnavailable:  that is a broken identity source, not an empty one.
         """
         if not os.path.isfile(str(db)):
             return []
