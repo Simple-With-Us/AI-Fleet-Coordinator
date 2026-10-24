@@ -1251,7 +1251,13 @@ class RelayWorker:
         if now < float(entry.get("retry_after", 0.0)):
             return  # a failed write is backing off
         if self._budget_spent():
-            return  # this cycle's write budget is spent: the entry stays dirty for the next one
+            # This cycle's write budget is spent: the entry stays dirty for the next one, and the
+            # log says why a handled message has no comment yet.
+            self.log(
+                "this cycle's write budget is spent; %s waits for the next cycle"
+                % self._label(entry)
+            )
+            return
         issue = entry["issue"]
         label = self._label(entry)
         try:

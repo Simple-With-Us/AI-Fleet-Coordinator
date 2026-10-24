@@ -230,7 +230,10 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
    `LINEAR_RELAY_DRY_RUN=1`, watch the log, then unset it.  The image's Infisical loader
    (`scripts/agent_sync/server/infisical_env.py`) copies only the names on its allow-list, and the
    relay's three are not on it, so the relay service gets them as its own runtime environment.
-   Adding them to the shared loader would hand the relay's keys to the daemon as well.
+   Adding them to the shared loader would hand the relay's keys to the daemon as well.  The image's
+   entrypoint always runs `simple-chat`, and the package sits in `/app/scripts`, so the relay
+   service overrides the entrypoint with `PYTHONPATH=/app/scripts python3 -m agent_sync.linear_relay
+   run`.
 
 The relay runs on the Coolify server instance, the same image as the simple-chat daemon.  No new
 Cloudflare Worker is involved.
