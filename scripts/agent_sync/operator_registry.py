@@ -727,6 +727,61 @@ def resolve_label(
     return found
 
 
+def registrations_for_native_id(
+    db_path: str, platform: str, native_session_id: str
+) -> list[dict[str, Any]]:
+    """Every live registration of one native session id on a platform, across locations.
+
+    The ask-before-letter flow (operator_registration) needs this direction:  a session id
+    arrives without a location, and the answer is the set of locations that id is currently
+    lettered at.  Only live letters count:  a session whose letter was retired reads as
+    unlettered, so the flow asks again and the register path resumes its record with a fresh
+    letter.  A closed session is not a live registration either - the same filter every
+    other registry read (resolve_ref, the letter reads) applies.  An empty list means unlettered, one row is the short-circuit, and several rows
+    are the contradiction the owner settles - the same id lettered on both the Mac and the
+    server is never merged or picked between here.
+
+    Read-only by behaviour, on the same handle discipline as resolve_label:  no DDL, no
+    migration row, a hot journal recovered rather than reported as an empty registry.  A
+    missing or broken registry raises RegistryUnavailable;  an empty list is a real answer.
+    """
+    if not isinstance(platform, str) or not platform.strip():
+        raise ValueError("platform is required")
+    native = SI.check(native_session_id, "the native session id")
+    if not db_path:
+        raise RegistryUnavailable("no registry path was given")
+    if not os.path.isfile(str(db_path)):
+        raise RegistryUnavailable("the registry %s is not there" % db_path)
+    namespace = normalize_platform(platform)
+    try:
+        registry = SessionRegistry(str(db_path), read_only=True)
+    except Exception as exc:
+        raise RegistryUnavailable(
+            "the registry %s is unavailable (%s)" % (db_path, type(exc).__name__)
+        ) from exc
+    try:
+        rows = registry._conn.execute(
+            "SELECT s.verified_host AS verified_host, s.seat AS seat, s.state AS state,"
+            " a.letter AS label, a.generation AS generation"
+            " FROM sessions s"
+            " JOIN alias_assignments a"
+            "   ON a.record_id = s.record_id AND a.platform = ? AND a.retired_at IS NULL"
+            " WHERE s.platform = ? AND s.native_session_id = ? AND s.closed_at IS NULL"
+            " ORDER BY s.registered_at",
+            (namespace, namespace, native),
+        ).fetchall()
+    except Exception as exc:
+        raise RegistryUnavailable(
+            "the registry %s is unavailable (%s)" % (db_path, type(exc).__name__)
+        ) from exc
+    finally:
+        try:
+            registry.close_db()
+        except Exception:
+            pass
+    return [dict(row) for row in rows]
+
+
 def resolve_ref(db_path: str, platform: str, ref: str) -> dict[str, Any] | None:
     """The session a reference form names, or None when it names none.
 

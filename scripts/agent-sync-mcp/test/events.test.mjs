@@ -52,7 +52,7 @@ const config = loadConfig(testEnv());
 // The seat's channels as src/channels.js reads them from users/me/subscriptions:
 // three public streams and one private one (secret-plans) the bot is also in.
 const SUBSCRIPTIONS = [
-  { stream_id: 642232, name: "agent-sync", invite_only: false },
+  { stream_id: 642232, name: "work-in-progress", invite_only: false },
   { stream_id: 642167, name: "sandbox", invite_only: false },
   { stream_id: 700001, name: "design", invite_only: false },
   { stream_id: 999001, name: "secret-plans", invite_only: true },
@@ -77,7 +77,7 @@ function wake(overrides = {}) {
     wake_id: "w-1",
     message_id: 77,
     dm: false,
-    channel: "agent-sync",
+    channel: "work-in-progress",
     topic: "t",
     stream_id: 642232,
     sender_full_name: "Jay",
@@ -86,7 +86,7 @@ function wake(overrides = {}) {
     owner: true,
     excerpt: "<<<x>>>",
     zulip_link: "https://simplewithus.zulipchat.com/#narrow/near/77",
-    reply_to: { type: "stream", channel: "agent-sync", topic: "t" },
+    reply_to: { type: "stream", channel: "work-in-progress", topic: "t" },
     sent_at: Math.floor(Date.now() / 1000),
     ...overrides,
   };
@@ -230,17 +230,17 @@ test("arguments:  a channel must be one the seat may use now, and is stored as s
 test("the channel filter matches stream messages in that channel only", () => {
   assert.ok(wakeMatches({}, wake(), allowed));
   assert.ok(wakeMatches({}, wake({ dm: true, stream_id: null, reply_to: { type: "direct", to: [1] } }), allowed));
-  assert.ok(wakeMatches({ channel: "agent-sync" }, wake(), allowed));
-  assert.ok(wakeMatches({ channel: "Agent-Sync" }, wake(), allowed), "names match case-insensitively");
+  assert.ok(wakeMatches({ channel: "work-in-progress" }, wake(), allowed));
+  assert.ok(wakeMatches({ channel: "Work-In-Progress" }, wake(), allowed), "names match case-insensitively");
   assert.ok(!wakeMatches({ channel: "sandbox" }, wake(), allowed));
-  assert.ok(!wakeMatches({ channel: "agent-sync" }, wake({ dm: true, stream_id: null, reply_to: { type: "direct", to: [1] } }), allowed));
-  assert.ok(!wakeMatches({ channel: "agent-sync" }, wake(), null), "no set, no filtered match");
+  assert.ok(!wakeMatches({ channel: "work-in-progress" }, wake({ dm: true, stream_id: null, reply_to: { type: "direct", to: [1] } }), allowed));
+  assert.ok(!wakeMatches({ channel: "work-in-progress" }, wake(), null), "no set, no filtered match");
 });
 
 test("a channel filter resolves the name to its current stream id and matches the wake by id", () => {
   const sandbox = (over) => wake({ channel: "sandbox", reply_to: { type: "stream", channel: "sandbox", topic: "t" }, stream_id: 642167, ...over });
   assert.ok(wakeMatches({ channel: "sandbox" }, sandbox(), allowed));
-  // The name says sandbox but the id is agent-sync's (or another stream's, or missing):  no match.
+  // The name says sandbox but the id is work-in-progress's (or another stream's, or missing):  no match.
   assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: 642232 }), allowed));
   assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: 999001 }), allowed));
   assert.ok(!wakeMatches({ channel: "sandbox" }, sandbox({ stream_id: undefined }), allowed));
@@ -296,11 +296,11 @@ function heldItem(overrides = {}) {
   return {
     message_id: 70,
     dm: false,
-    channel: "agent-sync",
+    channel: "work-in-progress",
     topic: "budget",
     stream_id: 642232,
     sender_full_name: "Codex",
-    zulip_link: "https://simplewithus.zulipchat.com/#narrow/channel/642232-agent-sync/topic/budget/near/70",
+    zulip_link: "https://simplewithus.zulipchat.com/#narrow/channel/642232-work-in-progress/topic/budget/near/70",
     reason: "wakes_per_hour",
     at: 1_790_000_000,
     ...overrides,
@@ -603,7 +603,7 @@ test("fan-out:  matching subscriptions get one signed event each;  410 drops the
   const w = wake();
   const claim = await gate.eventClaimWake({ wakeId: w.wake_id });
   const results = await fanOut({ gate, wake: w, subs: claim.subs, allowed, fetchFn, sleep: async () => {} });
-  assert.equal(results.length, 2, "the sandbox-only subscription does not match an agent-sync mention");
+  assert.equal(results.length, 2, "the sandbox-only subscription does not match a work-in-progress mention");
   assert.deepEqual(results.map((r) => r.outcome).sort(), ["delivered", "gone"]);
   const body = deliveries.find((d) => d.url === CALLBACK).body;
   assert.equal(body.name, EVENT_NAME);

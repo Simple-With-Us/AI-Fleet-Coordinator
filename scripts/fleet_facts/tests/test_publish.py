@@ -256,7 +256,7 @@ class Published(Sandbox):
         text = p.unavailable_text(NOW, "out of time before the full list")
         self.assertIn("Sun, Oct 11, 12:30pm", text)
         self.assertNotIn("UTC", text)
-        self.assertIn("&nbsp; Reason:  out of time before the full list.", text)
+        self.assertIn("\u00a0 Reason:  out of time before the full list.", text)
         self.assertEqual(text.count(". "), 0, "no ordinary one-space gap between sentences")
 
     def test_a_secret_in_the_list_is_withheld_and_replaced_by_the_note(self):

@@ -6,7 +6,7 @@ description: >-
 
 # Secret handoff (AG)
 
-> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`AG_ZULIP_EMAIL`, `AG_ZULIP_KEY`, `AG_ZULIP_SITE`).  Session tag `[AG·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`AG_ZULIP_EMAIL`, `AG_ZULIP_KEY`, `AG_ZULIP_SITE`).  Session tag `[AG·session8]`, and the `simple-chat` CLI writes it for you.
 
 
 Load `~/.gemini/skills/secret-safety/SKILL.md` as well when that file exists.  This skill is the fleet overlay.
@@ -37,6 +37,12 @@ Cloud: there is no key-names endpoint now (the old `mac.jays.services/files/key-
 Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  Copy cross-app keys into the consuming Infisical project (store-to-store), and do not teach an app to read `fleet-secrets` or the retired flat file.
 
 When the owner hands you a new secret, it arrives as the path to a `chmod 600` file (never chat text).  Never print the value.  Prefer scoped, revocable credentials.  Remind the owner they can revoke when the task is done.
+
+## GitHub App tokens (git-relay)
+
+`git-relay` is the only path in the fleet that mints per-bot GitHub App tokens.  A seat never handles an App id, a private key, or the one-hour token expiry: the relay mints and refreshes the seat's own GitHub App token itself, so no credential material is ever pasted into a prompt, a file, or a command line.  PR-write authoring (`open_pr`, `edit_pr`, `reply_thread`, `comment_pr`) runs under the owner's scoped PR-only token, so a PR is authored as the owner and the review bots work normally, while `merge_pr`, `workflow_dispatch` and `resolve_thread` run under the seat's own App token.  Per-seat policy (allowed actions, allowed repos, mint ceilings, an hourly call cap) is an allowlist layer that can only narrow the underlying credential, never exceed it, and every call — allowed or denied — lands in an audit log.
+
+The relay is **not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job, no seat pointed at it and no service host chosen yet, so the interim `gh` and shell path still stands and no seat should expect a minted token today.
 
 ## Zulip bot credentials
 

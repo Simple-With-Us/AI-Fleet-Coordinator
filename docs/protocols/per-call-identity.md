@@ -53,7 +53,7 @@ Every tool name is `<family>_<verb>`, identical on stdio and hosted wherever bot
 |---|---|---|
 | (none) | `whoami`, `identities` | Both |
 | `zulip_` | The 43 Zulip operations from AFC-330, e.g. `zulip_post`, `zulip_dm_send`, `zulip_edit_message`, `zulip_search`, `zulip_upload` | Both |
-| `listener_` | The local listener's records (AFC-330) | Stdio on the Mac and server;  hosted through the signed read API |
+| `eavesdropper_` | The local listener's records (AFC-330) | Stdio on the Mac and server;  hosted through the signed read API |
 | `linear_` | The hosted Linear catalog (AFC-329), so `simple-board run <name>` and `linear_<name>` are the same command | Both;  stdio runs it through `simple-board` |
 | `recall_` | `recall_search`, `recall_stats`, `recall_contribute` | Both |
 | `notes_` | `notes_create`, `notes_update`, `notes_pin`, `notes_unpin` | Both (section 5) |

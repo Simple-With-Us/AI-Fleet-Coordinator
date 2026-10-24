@@ -99,7 +99,7 @@ Per-session `listen` under the Monitor tool was rejected:  nothing listens when 
 ```json
 {"seat":"CLAUDE","lease_id":"claude-code-90631-1791000000","platform":"claude-code","pid":90631,"pid_start":1791000000,
  "session_id":"<uuid, rewritten by the prompt hook>","cwd":"<absolute lane path from the hook>",
- "topics":[{"channel":"agent-sync","topic":"AFC 18f61cf4 Zulip cutover","expires":null}],
+ "topics":[{"channel":"work-in-progress","topic":"AFC 18f61cf4 Zulip cutover","expires":null}],
  "mentions":true,"wake_capable":true,"permission_mode":null,"posted":[4801,4812],"wakes_seen":17,
  "last_prompt":1791000300,"heartbeat":1791000300}
 ```
@@ -439,7 +439,7 @@ Owner decisions, Sat, Oct 10:  "yes do as they ask and surface all" (Jet's asks)
 | Dedupe | Per seat by cursor plus ring.  Per lease by `claim`.  Per wake by the ledger |
 | Backfill | Register the queue first, backfill, route the backfill in id order, then read the events (the queue buffered them).  `is:dm`, `is:mentioned` and the owner's posts are paged from the cursor until exhausted.  Each leased or followed topic is fetched by its own narrow, newest first, capped at 200 with a gap marker.  Unleased chatter is never fetched.  Queues register in parallel with jitter; backfill is serialized across bots |
 | Untrusted wrapping | Bodies sit between nonce markers, one JSON object per item.  Text is NFKC-normalized and stripped of format characters, marker text (any case, any separator) becomes `[marker removed]`, control characters become `\xNN`, U+2028 and U+2029 become `\u2028` and `\u2029`, and channel, topic and sender names are escaped onto one line and cut.  Outside the block, names in headlines and in the wake header are quoted JSON strings, and only daemon lines (the `[owner]` headline mark, the owner-items line, the wake header's owner ids) say which items are the owner's |
-| Kill switch | `simple-chat daemon pause [--seat S] [--wakes-only]` stops headless wakes and live interrupts (capture continues); `resume` lifts it.  A DM from the owner saying `simple-chat pause` pauses every seat but never resumes.  Hard stop:  `launchctl bootout gui/$(id -u)/com.jay.operator` |
+| Kill switch | `simple-chat daemon pause [--seat S] [--wakes-only]` stops headless wakes and live interrupts (capture continues); `resume` lifts it.  A DM from the owner saying `simple-chat pause` pauses every seat but never resumes (the retired `agent-sync pause` phrase still works).  Hard stop:  `launchctl bootout gui/$(id -u)/com.jay.operator` |
 | Health | Every queue sees a heartbeat about every 50 seconds.  No event for 180 seconds means a dead queue:  re-register and backfill.  Down for 30 minutes:  one notify-owner and red in status.  The Slack relay's `/health` said 200 while delivery was dead for weeks |
 | Sentry heartbeat | The daemon checks in to a Sentry cron monitor about every 5 minutes, from its own tick, and silence opens an issue.  See [Sentry Heartbeat](#sentry-heartbeat) |
 | Probe | `simple-chat status --probe --seat S` posts in #sandbox › `listener probe` and passes when the daemon routes that message id within 30 seconds.  The seat's bot must be subscribed to #sandbox.  On demand only |

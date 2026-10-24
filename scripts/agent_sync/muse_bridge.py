@@ -90,11 +90,12 @@ def find_source(root: str, cfg: C.Config, seat: str, message_id: int) -> dict[st
     )
 
 
-def source_blocked(root: str, row: Mapping[str, Any]) -> bool:
+def source_blocked(root: str, cfg: C.Config, row: Mapping[str, Any]) -> bool:
     key = L.topic_key(str(row.get("channel") or ""), str(row.get("topic") or ""))
-    return W.LoopGuard(os.path.join(L.listener_dir(root), "loopguard.json")).blocked(
-        key, time.time()
-    )
+    return W.LoopGuard(
+        os.path.join(L.listener_dir(root), "loopguard.json"),
+        enabled=cfg.wake_loop_prevention,
+    ).blocked(key, time.time())
 
 
 def source_stale(cfg: C.Config, row: Mapping[str, Any]) -> bool:
@@ -181,7 +182,7 @@ def export(root: str, cfg: C.Config, cursors: Mapping[str, Any]) -> dict[str, An
                     "ts": row.get("ts"),
                     "stale": row.get("stale") is True,
                     "native": cfg.seats[seat].wake == "http",
-                    "blocked": source_blocked(root, row),
+                    "blocked": source_blocked(root, cfg, row),
                     "paused": L.paused(root, seat, wakes=True),
                 }
             )
@@ -249,7 +250,7 @@ def export_local(root: str, cfg: C.Config, cursors: Mapping[str, Any]) -> dict[s
                     "ts": row.get("ts"),
                     "stale": row.get("stale") is True,
                     "native": False,
-                    "blocked": source_blocked(root, row),
+                    "blocked": source_blocked(root, cfg, row),
                     "paused": L.paused(root, seat, wakes=True),
                 }
             )
@@ -299,7 +300,7 @@ def submit(root: str, cfg: C.Config, request: Mapping[str, Any]) -> dict[str, An
         raise Refused("invalid bridge decision")
     if kind == "native" and cfg.seats[seat].wake != "http":
         raise Refused("source seat has no configured native routine")
-    if kind != "hold" and source_blocked(root, row):
+    if kind != "hold" and source_blocked(root, cfg, row):
         raise Refused("source loop guard blocks delivery")
     if kind != "hold" and source_stale(cfg, row):
         raise Refused("source message became stale")

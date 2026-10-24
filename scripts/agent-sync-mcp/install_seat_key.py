@@ -44,6 +44,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 WRANGLER_JSONC = HERE / "wrangler.jsonc"
 INFISICAL_API = "https://app.infisical.com"
 INFISICAL_PROJECT = "9bf7417a-fbbb-42ca-870c-2b45207233f5"  # AI Fleet Coordinator (INFISICAL.md)
+FLEET_OPS_PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"  # Fleet-OPS (fleet-secrets core.py)
 INFISICAL_ENV = "prod"
 INFISICAL_PATH = "/zulip"
 REALM = "https://simplewithus.zulipchat.com"
@@ -54,14 +55,38 @@ MEMBER_ROLE = 400
 SEATS = {
     "CURSOR": ("ZULIP_CURSOR", "ZULIP_KEY_CURSOR", "ZULIP_EMAIL_CURSOR"),
     "CLAUDE": ("ZULIP_CLAUDE", "ZULIP_CLAUDE_API_KEY", "ZULIP_CLAUDE_EMAIL"),
+    # MA (Muse Assist, the seat Jay calls Rob):  its bot key already lives in
+    # Fleet-OPS prod /zulip as MA_ZULIP_* (names verified live 2026-10-23), so
+    # read it there instead of duplicating it into the AI Fleet Coordinator
+    # project (secret consolidation).  The 5-tuple is (project, email name,
+    # key name, Worker secret name, email var).
+    "MA": (
+        FLEET_OPS_PROJECT,
+        "MA_ZULIP_EMAIL",
+        "MA_ZULIP_KEY",
+        "ZULIP_KEY_MA",
+        "ZULIP_EMAIL_MA",
+    ),
     "JET": ("ZULIP_JET", "ZULIP_KEY_JET", "ZULIP_EMAIL_JET"),
+    # Jet's second login (full tools;  JET itself is wake-only):  the same
+    # openai-dot-bot key from the same Infisical entry, under its own names.
+    "JET-CHAT": ("ZULIP_JET", "ZULIP_KEY_JET_CHAT", "ZULIP_EMAIL_JET_CHAT"),
     "GROK-WEB": ("ZULIP_GROK_WEB", "ZULIP_KEY_GROK_WEB", "ZULIP_EMAIL_GROK_WEB"),
     "ECHO": ("ZULIP_ECHO", "ZULIP_KEY_ECHO", "ZULIP_EMAIL_ECHO"),
     "WISE": ("ZULIP_WISE", "ZULIP_KEY_WISE", "ZULIP_EMAIL_WISE"),
 }
 # Bot email local parts whose seat tag is not the upper-cased local part
 # (cli.py EMAIL_TAG_OVERRIDES, src/contract.js EMAIL_TAG_OVERRIDES).
-TAG_OVERRIDES = {"openai-dot": "JET", "instinct-bat": "ECHO", "instinct-owl": "WISE"}
+TAG_OVERRIDES = {
+    "muse-assist": "MA",
+    "openai-dot": "JET",
+    "instinct-bat": "ECHO",
+    "instinct-owl": "WISE",
+}
+
+# Seats whose bot signs as another seat's tag (src/contract.js
+# SEAT_TAG_EXPECTATIONS):  JET-CHAT runs on Jet's bot, so its key signs JET.
+EXPECTED_TAGS = {"JET-CHAT": "JET"}
 
 
 def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
@@ -133,7 +158,9 @@ def http_json(
         )
 
 
-def infisical_pair(prefix: str) -> tuple[str, str]:
+def infisical_pair(
+    email_name: str, key_name: str, project: str = INFISICAL_PROJECT
+) -> tuple[str, str]:
     """(email, key) for a seat from Infisical.  Neither is printed."""
     login = http_json(
         "POST",
@@ -146,7 +173,7 @@ def infisical_pair(prefix: str) -> tuple[str, str]:
     token = login.get("accessToken") or fail("Infisical login returned no access token")
     query = urllib.parse.urlencode(
         {
-            "workspaceId": INFISICAL_PROJECT,
+            "workspaceId": project,
             "environment": INFISICAL_ENV,
             "secretPath": INFISICAL_PATH,
         }
@@ -156,10 +183,10 @@ def infisical_pair(prefix: str) -> tuple[str, str]:
         "GET", f"{INFISICAL_API}/api/v3/secrets/raw?{query}", headers={"Authorization": auth_header}
     )
     found = {s.get("secretKey"): s.get("secretValue") or "" for s in data.get("secrets", [])}
-    email, key = found.get(f"{prefix}_EMAIL", ""), found.get(f"{prefix}_API_KEY", "")
+    email, key = found.get(email_name, ""), found.get(key_name, "")
     if not email or not key:
         fail(
-            f"{prefix}_EMAIL or {prefix}_API_KEY is missing or empty in Infisical {INFISICAL_ENV}{INFISICAL_PATH}"
+            f"{email_name} or {key_name} is missing or empty in Infisical {INFISICAL_ENV}{INFISICAL_PATH} (project {project})"
         )
     return email.strip(), key.strip()
 
@@ -213,7 +240,12 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    prefix, secret_name, email_var = SEATS[args.seat]
+    entry = SEATS[args.seat]
+    if len(entry) == 5:
+        project, email_name, key_name, secret_name, email_var = entry
+    else:
+        prefix, secret_name, email_var = entry
+        project, email_name, key_name = INFISICAL_PROJECT, f"{prefix}_EMAIL", f"{prefix}_API_KEY"
     vars_ = wrangler_vars()
     hosted = [s.strip() for s in str(vars_.get("HOSTED_SEATS", "")).split(",") if s.strip()]
 
@@ -229,7 +261,7 @@ def main() -> int:
         )
     expected_email = str(vars_.get(email_var, "")).strip().lower()
     source = "Infisical"
-    email, key = infisical_pair(prefix)
+    email, key = infisical_pair(email_name, key_name, project=project)
     checks = []
     checks.append((f"{source} email equals {email_var}", email.lower() == expected_email))
     checks.append(("key is 32 letters and digits", bool(re.fullmatch(r"[A-Za-z0-9]{32}", key))))
@@ -239,7 +271,20 @@ def main() -> int:
     checks.append(
         ("users/me email is the seat's bot", str(me.get("email") or "").lower() == expected_email)
     )
-    checks.append((f"users/me signs as {args.seat}", seat_tag(me) == args.seat))
+    checks.append(
+        (
+            f"users/me signs as {EXPECTED_TAGS.get(args.seat, args.seat)}",
+            seat_tag(me) == EXPECTED_TAGS.get(args.seat, args.seat),
+        )
+    )
+    # The signing tag alone never grants the seat:  the bot's owner must be the
+    # pinned fleet owner.  handoff fails closed when the pin is unavailable.
+    checks.append(
+        (
+            "users/me bot owner is the pinned fleet owner (ZULIP_OWNER_USER_ID)",
+            str(me.get("bot_owner_id")) == handoff("ZULIP_OWNER_USER_ID"),
+        )
+    )
     checks.append(
         (
             f"role is member (400), live role {role}",
