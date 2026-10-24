@@ -489,24 +489,35 @@ class TestApply(Base):
                 self.assertEqual(self.fake.upserts, [])
                 self.assertEqual(self.fake.reads, [])
 
-    def test_write_timeout_exits_124(self):
-        # kody 4368465375:  a stalled write is a timeout too, after the copies
-        # before it;  a re-run reconciles.
+    def test_write_timeout_is_an_unknown_outcome_like_a_5xx(self):
+        # kody 4368532647:  a stalled write may have landed, as a write answered
+        # with a 5xx may have, so both exit 1 and a re-run reconciles.  Here the
+        # write lands and its answer never comes back.
         seeded(self.fake)
         victim = psf.MAPPING[40][4]
 
-        def write_stalls(request, timeout=35):
+        def write_lands_then_stalls(request, timeout=35):
+            answer = self.fake.open(request, timeout)
             if request.get_method() == "POST" and request.full_url.endswith("/" + victim):
                 raise TimeoutError("timed out")
-            return self.fake.open(request, timeout)
+            return answer
 
-        psf.urlopen = write_stalls
+        psf.urlopen = write_lands_then_stalls
         code, out = self.run_main("--apply")
-        self.assertEqual(code, psf.TIMED_OUT)
-        self.assertIn(f"STOP at 41/72 ({psf.MAPPING[40][3]}/{victim}): ", out)
-        self.assertIn("the Infisical write timed out.  40 copied, 0 already in sync.", out)
-        self.assertEqual(len(self.fake.upserts), 40)
+        self.assertEqual(code, 1)
+        self.assertIn(
+            f"STOP at 41/72 ({psf.MAPPING[40][3]}/{victim}): the Infisical write timed out, "
+            "so its outcome is unknown.  40 copied, 0 already in sync.  Re-run reconciles;",
+            out,
+        )
         self.assertNotIn("VALUE-", out)
+        psf.urlopen = self.fake.open
+        code, out = self.run_main("--apply")
+        self.assertIsNone(code)
+        self.assertIn(f"already in sync: {psf.MAPPING[40][3]}/{victim}", out)
+        self.assertIn("Done: 31 copies applied, 41 already in sync.", out)
+        for sws, spath, sname, dpath, dname in psf.MAPPING:
+            self.assertEqual(self.fake.values[(psf.FLEETOPS, dpath, dname)], "VALUE-" + sname)
 
     def test_terminal_messages_use_two_spaces_between_sentences(self):
         # Kody issue comment 6383398733:  plain-text output takes two ASCII spaces.

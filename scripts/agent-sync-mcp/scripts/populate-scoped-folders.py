@@ -138,9 +138,10 @@ USER_AGENT = "AI-Fleet-Coordinator populate-scoped-folders"
 # Exit status when fleet-secrets itself is not installed (the shell's "command
 # not found"), apart from 1 for every other stop (kody 4366921905).
 MISSING_EXECUTABLE = 127
-# Exit status when anything the copy waits on times out (a fleet-secrets run,
-# the Infisical login or a write), the status timeout(1) uses (kody 4367021960,
-# 4368415894, 4368465375).
+# Exit status when a read times out (a fleet-secrets run or the Infisical login),
+# the status timeout(1) uses (kody 4367021960, 4368415894, 4368465375).  A
+# stalled write exits 1 like a write answered with a 5xx:  either may have
+# landed, and a re-run reconciles (kody 4368532647).
 TIMED_OUT = 124
 
 # Explicit limits on every Infisical answer (kody 4367021839), the caps
@@ -554,14 +555,19 @@ def main():
             )
             sys.exit(status)
         except Exception as e:  # noqa: BLE001 - any copy failure stops visibly, re-run reconciles
-            # A stalled write exits 124 too (kody 4368465375).
-            stalled = timed_out_error(e)
+            # A stalled write may still have landed, like a write answered with a
+            # 5xx, so it shares that outcome:  exit 1, and a re-run reconciles
+            # (kody 4368532647).  124 stays for a stalled read or login.
+            what = (
+                "the Infisical write timed out, so its outcome is unknown"
+                if timed_out_error(e)
+                else type(e).__name__
+            )
             print(
-                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): "
-                f"{'the Infisical write timed out' if stalled else type(e).__name__}.  "
+                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): {what}.  "
                 f"{done} copied, {skipped} already in sync.  Re-run reconciles;  equal values are skipped."
             )
-            sys.exit(TIMED_OUT if stalled else 1)
+            sys.exit(1)
         done += 1
         print(f"  copied {done}/72: {dpath}/{dname}")  # names only, never values
     print(
