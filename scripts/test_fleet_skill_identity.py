@@ -11,6 +11,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -1656,6 +1657,546 @@ class VMSeatLaneTests(unittest.TestCase):
                 _load_skill(name), SEATS["muse-assist"], skill_name=name
             )
             self.assertNotIn("~/apps/lane ", rendered, name)
+
+
+def _tracked_files() -> list[str]:
+    """Every tracked file in the repository, so a guard can see all of them.
+
+    The git call carries a timeout and its own exit codes:  a hung git is 124, a
+    missing git is 127 and a git that refuses is 128, so a caller can tell the
+    three apart instead of seeing one generic failure.  The call is made at
+    import time on purpose:  an exit code raised inside a test method is caught
+    by the test runner and reported as an ordinary error, which is exactly the
+    indistinguishability this is here to remove.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "-C", ROOT, "ls-files", "-z"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise SystemExit(124)
+    except FileNotFoundError:
+        raise SystemExit(127)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(128) from exc
+    return [p for p in done.stdout.split("\0") if p]
+
+
+TRACKED_FILES = _tracked_files()
+
+
+class PrivateInventoryTests(unittest.TestCase):
+    """AFC-504: the published copies name where the private inventory lives.
+
+    They never carry the values.  The patterns below are the shapes the fleet's own
+    internal addressing uses, so a copy that grows one is caught whatever host it
+    names, and this test source never carries an address itself.
+
+    The alias of the origin box is found the same way.  The guard used to hold
+    its value in a pattern, which put the value in the indexed test source; it
+    now holds the shapes a private host travels in, so the source carries none
+    and the guard still catches the value in whatever file it reaches.
+
+    The guard reads every tracked text file, not only the published copies: a guard
+    that cannot see a file gives false assurance.  The files that still carry the
+    inventory on purpose are listed with the reason and the board item that owns the
+    decision to move them, so the list is the fleet's own published inventory of
+    where its private inventory lives, and it shrinks as AFC-505 is worked through.
+    """
+
+    # Tailscale hands every node an address in the CGNAT range 100.64.0.0/10.
+    MESH_IP = re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b")
+    # MagicDNS names end in the tailnet domain.
+    MAGICDNS = re.compile(r"\b[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.ts\.net\b")
+    # The private host of the origin box, found by shape and never by value.
+    # An ssh target is written as a user and a host, and a file that keeps a
+    # host in a variable says so in the name of the variable.  These patterns
+    # carry no host of their own, so the guard source never carries the
+    # inventory it looks for.
+    ALIAS_ROOT_AT = re.compile(r"\broot@(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)")
+    ALIAS_NAMED = re.compile(
+        r"""(?i:\b(?:ssh[_ -]?alias|host[_ -]?alias)\b[ \t]*(?:=|:=|:|\bis\b)[ \t]*"""
+        r"""["'](?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)["'])"""
+    )
+    # A variable whose name says it holds a host or an alias.  The name is
+    # upper case because a default lives in a constant, and the value is a
+    # single label because an ssh alias is one.
+    HOST_NAME = re.compile(r"^(?:[A-Z0-9]+_)*(?:SSH_)?(?:HOST|HOSTNAME|ALIAS|SSH_ALIAS)$")
+    HOST_ASSIGNMENT = re.compile(
+        r"""^[ \t]*(?:export[ \t]+|declare[ \t]+-\w+[ \t]+|local[ \t]+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)"""
+        r"""[ \t]*=[ \t]*(?P<value>"[^"]*"|'[^']*'|[^\s#]+)"""
+    )
+    HOST_ENV_DEFAULT = re.compile(
+        r"""os\.environ\.get\(\s*["'](?P<name>[A-Za-z_][A-Za-z0-9_]*)["']\s*,\s*"""
+        r"""(?P<value>"[^"]*"|'[^']*')"""
+    )
+    # A single label, which is the shape of an ssh alias.
+    SINGLE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    # The names and the addresses reserved for documentation.  They carry no
+    # inventory, and the house convention in a fixture is one of them.
+    RESERVED_HOST = re.compile(
+        r"^(?:localhost|local|invalid|example|example\.(?:com|net|org|test))$", re.IGNORECASE
+    )
+    DOC_ADDRESS = re.compile(r"^(?:192\.0\.2\.\d{1,3}|198\.51\.100\.\d{1,3}|203\.0\.113\.\d{1,3})$")
+    LOOPBACK = re.compile(r"^(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0|::1)$")
+    # The ssh command forms a shell line can take.  A prose file only counts a
+    # command that starts its line, because a paragraph that mentions ssh is
+    # not a command.  A code file also counts a command after a shell keyword
+    # or an operator, so `if ssh ...` and `$(ssh ...)` are commands there too.
+    SSH_COMMAND_PROSE = re.compile(r"^[ \t]*(?P<ssh>ssh[ \t]+)(?![=])")
+    SSH_COMMAND_CODE = re.compile(
+        r"(?:^[ \t]*(?:(?:if|then|else|while|until|do|!)[ \t]+)?"
+        r"|(?:&&|\|\||[;&|]|\$\(|`|\{)[ \t]*)"
+        r"(?P<ssh>ssh[ \t]+)(?![=])"
+    )
+    # A prose file is a document, so a command in one has to start its line.
+    PROSE_SUFFIXES = (".md", ".txt", ".rst")
+    PLACEHOLDER = re.compile(r"<[A-Z][A-Z0-9_]*>")
+    # The ssh options that take a value in the next token, so a host search
+    # steps over the option and its value instead of taking one of them.
+    SSH_OPTIONS_WITH_VALUE = {
+        "-b",
+        "-c",
+        "-D",
+        "-E",
+        "-e",
+        "-F",
+        "-I",
+        "-i",
+        "-J",
+        "-L",
+        "-l",
+        "-m",
+        "-o",
+        "-O",
+        "-p",
+        "-Q",
+        "-R",
+        "-S",
+        "-W",
+        "-w",
+    }
+    # A shell assignment, so a target hoisted into a variable is still a target.
+    ASSIGNMENT = re.compile(
+        r"^[ \t]*(?:export[ \t]+|declare[ \t]+-\w+[ \t]+|local[ \t]+)?"
+        r"([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"]*\"|'[^']*'|[^\s#]+)"
+    )
+
+    # The files that still carry a private address on purpose.  Each one names
+    # the reason, so the list reads as an inventory and not as a backlog of
+    # accidents.
+    ADDRESS_ALLOWLIST = {
+        "docs/EFFORT-LOG.md": "history: a record of what was done, never rewritten",
+        "docs/MAC-LOCAL-PROCESSES.md": "AFC-505: the live inventory of Mac local processes",
+        "docs/operator-listener-hosting.md": "AFC-505: the hosting table names a live address",
+        "docs/RAG-FLEET-INFRA.md": "AFC-505: the service endpoint table names a live address",
+        "docs/reviews/2026-09-14-fleet-rag-bm25-reranker-ab.md": "history: a review record",
+        "docs/rollouts/2026-09-01-dsh-tailscale-shellular-thinking.md": "history: a rollout record",
+        "docs/rollouts/2026-09-02-fleet-rag-memory-platform.md": "history: a rollout record",
+        "scripts/agent_sync/tests/test_wake_alerter.py": "AFC-505: a fixture that names the address it alerts on",
+        "scripts/agent_sync/wake_alerter.py": "AFC-505: a live script that reads the address it alerts on",
+        "scripts/fleet-recall-service/.env.example": "AFC-505: the service example names the address it points at",
+        "scripts/fleet-recall-service/README.md": "AFC-505: the service readme names the address it points at",
+        "scripts/fleet-recall-service/compose.example.yaml": "AFC-505: the service example names the address it points at",
+        "scripts/fleet_rag/public_fallback.py": "AFC-505: a live fallback that reaches the service by address",
+        "scripts/fleet_rag/tests/test_public_fallback.py": "AFC-505: a fixture for the fallback above",
+        "scripts/hetzner/fleet-qdrant-health.sh": "AFC-505: a live health script that reaches the box by address",
+        "scripts/hetzner/fleet-qdrant-snapshot.sh": "AFC-505: a live snapshot script that reaches the box by address",
+        "scripts/recall-tunnel": "AFC-505: a live tunnel that reaches the box by address",
+    }
+
+    # The files that still carry a private host on purpose, for the same
+    # reason.  The guard finds each of them by shape, so an entry earns its
+    # place while the file still trips one of those shapes.
+    ALIAS_ALLOWLIST = {
+        "docs/MAC-LOCAL-PROCESSES.md": "AFC-505: the live inventory of Mac local processes",
+        "docs/protocols/coolify-fleet-cli-sync.md": "AFC-505: the protocol for the sync that reaches the box",
+        "fleet-sentry-monitor/monitor.py": "AFC-505: a live monitor that defaults to the alias",
+        "scripts/agent_sync/muse_bridge_mac.py": "AFC-505: the live bridge that defaults to the alias",
+        "scripts/fleet-cli-sync.py": "AFC-505: a live sync that names the receiver it ships to",
+        "scripts/fleet_rag/doctor.py": "AFC-505: a live doctor that defaults to the alias",
+        "scripts/recall-tunnel": "AFC-505: a live tunnel that reaches the box by alias and address",
+        "scripts/test_fleet_cli_sync.py": "AFC-505: a fixture that asserts the receiver the sync names",
+    }
+
+    # The files that may carry a literal ssh target on purpose.  A fixture that
+    # names a command has to name it literally to mean anything, and the house
+    # convention is an RFC 5737 documentation address for exactly that.
+    SSH_ALLOWLIST = {
+        "scripts/fleet_lanes/tests/fixtures_guard.py": "a fixture that names the command shape it allows",
+    }
+
+    def _published_skill_files(self) -> list[Path]:
+        roots = [Path(DOCS), Path(ROOT, "skills")]
+        for dest, _seat in repo_platform_copies(ROOT):
+            roots.append(Path(dest))
+        files: list[Path] = []
+        for base in roots:
+            if not base.is_dir():
+                continue
+            for path in sorted(base.rglob("SKILL.md")):
+                files.append(path)
+        return files
+
+    def _tracked_text_files(self) -> list[str]:
+        """Every tracked file that reads as text, so the guard sees the repository.
+
+        The list comes from git rather than from a glob, so a file with no
+        extension is scanned like any other.
+        """
+        this_file = os.path.relpath(os.path.abspath(__file__), ROOT)
+        files: list[str] = []
+        for rel in sorted(TRACKED_FILES):
+            if rel == this_file:
+                # This source carries the patterns themselves.
+                continue
+            try:
+                Path(ROOT, rel).read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            files.append(rel)
+        return files
+
+    def _logical_lines(self, text: str) -> list[tuple[int, str]]:
+        """The text as logical lines, with a backslash continuation joined on.
+
+        A command split over two lines is one command, and a target that sits on
+        the second line is still a target.
+        """
+        out: list[tuple[int, str]] = []
+        lines = text.split("\n")
+        number = 0
+        index = 0
+        while index < len(lines):
+            number += 1
+            line = lines[index]
+            while line.rstrip().endswith("\\") and index + 1 < len(lines):
+                index += 1
+                line = line.rstrip()[:-1] + " " + lines[index].strip()
+            out.append((number, line))
+            index += 1
+        return out
+
+    def _tokens(self, line: str) -> list[str]:
+        """The line's tokens, with a quoted run kept as one token.
+
+        A quoted run stays whole, so an option value with spaces in it does
+        not come apart and turn into a host.
+        """
+        out: list[str] = []
+        current: list[str] = []
+        quote: str | None = None
+        for char in line:
+            if quote is None:
+                if char in "\"'":
+                    quote = char
+                    current.append(char)
+                    continue
+                if char.isspace():
+                    if current:
+                        out.append("".join(current))
+                        current = []
+                    continue
+                current.append(char)
+                continue
+            current.append(char)
+            if char == quote:
+                quote = None
+        if current:
+            out.append("".join(current))
+        return out
+
+    def _ssh_commands(self, rel: str, line: str) -> list[str]:
+        """The ssh commands on a line, each as its text from the word ssh on.
+
+        A prose file only counts a command that starts its line, because a
+        paragraph that mentions ssh is not a command.  A code file also counts
+        a command after a shell keyword or an operator, so `if ssh ...` and
+        `$(ssh ...)` are commands there too.
+        """
+        pattern = (
+            self.SSH_COMMAND_PROSE if rel.endswith(self.PROSE_SUFFIXES) else self.SSH_COMMAND_CODE
+        )
+        return [line[match.start("ssh") :] for match in pattern.finditer(line)]
+
+    def _ssh_host(self, command: str) -> str:
+        """The host an ssh command names, or an empty string when it names none.
+
+        The options and their values come off first, so the first token left is
+        the host and not an option.
+        """
+        tokens = self._tokens(command)
+        if not tokens or tokens[0] != "ssh":
+            return ""
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token in self.SSH_OPTIONS_WITH_VALUE:
+                index += 2
+                continue
+            if token.startswith("-"):
+                index += 1
+                continue
+            return token.strip("\"'")
+        return ""
+
+    def _literal_variables(self, text: str) -> dict[str, str]:
+        """The variables a file gives a literal value, so a target hoisted into
+        one is a target in disguise.
+
+        A variable that carries a variable or a placeholder is resolved at
+        runtime and stays out of this list.
+        """
+        out: dict[str, str] = {}
+        for line in text.split("\n"):
+            match = self.ASSIGNMENT.match(line)
+            if not match:
+                continue
+            name = match.group(1)
+            value = match.group(2).strip("\"'")
+            if "$" in value or self.PLACEHOLDER.search(value):
+                continue
+            out[name] = value
+        return out
+
+    def test_published_skill_copies_carry_no_private_addresses(self) -> None:
+        files = self._published_skill_files()
+        self.assertTrue(files, "no published skill copy was found to scan")
+        hits: list[str] = []
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            for pattern in (self.MESH_IP, self.MAGICDNS):
+                for match in pattern.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    hits.append(f"{path.relative_to(ROOT)}:{line}")
+        self.assertEqual(
+            hits,
+            [],
+            "a published skill copy must name the private inventory, not carry it:\n"
+            + "\n".join(hits),
+        )
+
+    def _address_hits(self, rel: str, text: str) -> list[str]:
+        """The private addresses a file carries."""
+        hits: list[str] = []
+        for pattern in (self.MESH_IP, self.MAGICDNS):
+            for match in pattern.finditer(text):
+                line = text.count("\n", 0, match.start()) + 1
+                hits.append(f"{rel}:{line}")
+        return hits
+
+    def _reserved_host(self, value: str) -> bool:
+        """Whether a value is a name or an address reserved for documentation."""
+        return bool(
+            self.RESERVED_HOST.match(value)
+            or self.DOC_ADDRESS.match(value)
+            or self.LOOPBACK.match(value)
+        )
+
+    def _host_literals(self, text: str) -> list[tuple[int, str, str]]:
+        """The variables whose name says they hold a host, with the value.
+
+        The value is a literal, because a variable that carries a variable or
+        a placeholder is resolved at runtime and is not inventory.
+        """
+        out: list[tuple[int, str, str]] = []
+        for number, line in enumerate(text.split("\n"), 1):
+            for pattern in (self.HOST_ASSIGNMENT, self.HOST_ENV_DEFAULT):
+                for match in pattern.finditer(line):
+                    name = match.group("name")
+                    if not self.HOST_NAME.match(name):
+                        continue
+                    value = match.group("value").strip("\"'")
+                    if "$" in value or "<" in value:
+                        continue
+                    if not self.SINGLE_LABEL.match(value):
+                        continue
+                    out.append((number, name, value))
+        return out
+
+    def _alias_hits(self, rel: str, text: str) -> list[str]:
+        """The places a file carries a host in the shape of private inventory.
+
+        The shapes are the ones in which a private host reaches a file: an ssh
+        target written as a user and a host, and a variable whose name says it
+        holds a host given a literal value.  Neither shape names a host, so
+        this source carries no inventory of its own, and a copy of the guard
+        in a published pack is as safe as the tree.
+        """
+        hits: list[str] = []
+        for pattern in (self.ALIAS_ROOT_AT, self.ALIAS_NAMED):
+            for match in pattern.finditer(text):
+                if self._reserved_host(match.group("host")):
+                    continue
+                line = text.count("\n", 0, match.start()) + 1
+                hits.append(f"{rel}:{line} (an ssh target written as a host)")
+        for number, name, value in self._host_literals(text):
+            if self._reserved_host(value):
+                continue
+            hits.append(f"{rel}:{number} ({name} holds a literal host)")
+        return hits
+
+    def _ssh_hits(self, rel: str, text: str) -> list[str]:
+        """The ssh commands in a file whose target is a literal.
+
+        A target that arrives in the environment is fine, and so is a target
+        that is hoisted into a variable the file itself gives a literal value:
+        that is a literal in disguise, so it counts.
+        """
+        hits: list[str] = []
+        literals = self._literal_variables(text)
+        for number, line in self._logical_lines(text):
+            if line.strip().startswith("#"):
+                # A comment explains a command, it is not one.
+                continue
+            for command in self._ssh_commands(rel, line):
+                host = self._ssh_host(command)
+                if not host or self.PLACEHOLDER.search(host):
+                    continue
+                variables = re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", host)
+                if not variables:
+                    hits.append(f"{rel}:{number} (an ssh line with a literal target)")
+                    continue
+                hoisted = sorted(v for v in variables if v in literals)
+                if hoisted:
+                    hits.append(
+                        f"{rel}:{number} (an ssh target hoisted into " + ", ".join(hoisted) + ")"
+                    )
+        return hits
+
+    def _zip_members(self) -> list[tuple[str, str, str]]:
+        """Every member of every published pack archive, with its archive, name
+        and text.
+
+        The archives are what a seat installs, so a guard that opens only the
+        files in the tree cannot see what the tree ships.  A stale archive
+        carries the text the tree no longer has, which is exactly the exposure
+        this guard has to catch.
+        """
+        out: list[tuple[str, str, str]] = []
+        for path in sorted(Path(DOCS).glob("*.zip")):
+            with zipfile.ZipFile(path) as archive:
+                for name in archive.namelist():
+                    if name.endswith("/"):
+                        continue
+                    try:
+                        text = archive.read(name).decode("utf-8")
+                    except (UnicodeDecodeError, KeyError):
+                        continue
+                    out.append((path.name, name, text))
+        return out
+
+    def test_no_published_pack_archive_carries_private_inventory(self) -> None:
+        hits: list[str] = []
+        for archive, member, text in self._zip_members():
+            label = f"{archive}::{member}"
+            for hit in self._address_hits(member, text):
+                hits.append(hit.replace(member, label, 1))
+            for hit in self._alias_hits(member, text):
+                hits.append(hit.replace(member, label, 1))
+            for hit in self._ssh_hits(member, text):
+                hits.append(hit.replace(member, label, 1))
+        self.assertEqual(
+            hits,
+            [],
+            "a published pack archive must not carry private inventory, because "
+            "the archive is what a seat installs:\n" + "\n".join(hits),
+        )
+
+    def test_no_tracked_file_carries_a_private_address(self) -> None:
+        hits: list[str] = []
+        for rel in self._tracked_text_files():
+            if rel in self.ADDRESS_ALLOWLIST:
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            hits.extend(self._address_hits(rel, text))
+        self.assertEqual(
+            hits,
+            [],
+            "a tracked file must not carry a private address; the address is "
+            "operator inventory, and the files that keep it on purpose are listed "
+            "in ADDRESS_ALLOWLIST:\n" + "\n".join(hits),
+        )
+
+    def test_no_tracked_file_carries_the_ssh_alias(self) -> None:
+        hits: list[str] = []
+        for rel in self._tracked_text_files():
+            if rel in self.ALIAS_ALLOWLIST:
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            hits.extend(self._alias_hits(rel, text))
+        self.assertEqual(
+            hits,
+            [],
+            "a tracked file must not carry the ssh alias; the alias is operator "
+            "inventory, and the files that keep it on purpose are listed in "
+            "ALIAS_ALLOWLIST:\n" + "\n".join(hits),
+        )
+
+    def test_no_tracked_file_sshes_a_literal_target(self) -> None:
+        hits: list[str] = []
+        for rel in self._tracked_text_files():
+            if rel in self.ALIAS_ALLOWLIST or rel in self.SSH_ALLOWLIST:
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            hits.extend(self._ssh_hits(rel, text))
+        self.assertEqual(
+            hits,
+            [],
+            "a tracked file must not ssh a literal host target; the target arrives "
+            "in the environment, and the files that keep a literal on purpose are "
+            "listed in ALIAS_ALLOWLIST and SSH_ALLOWLIST:\n" + "\n".join(hits),
+        )
+
+    def test_the_allowlists_name_only_files_that_still_carry_the_inventory(self) -> None:
+        """An allowlist entry earns its place by still carrying the inventory.
+
+        A file that has been cleaned up must come off the list, so the list
+        shrinks as the board items that own each file are worked through
+        instead of becoming a blanket that covers everything.
+        """
+        tracked = set(self._tracked_text_files())
+        stale: list[str] = []
+        for rel, reason in sorted(self.ADDRESS_ALLOWLIST.items()):
+            if not reason.strip():
+                stale.append(f"{rel} (no reason given)")
+                continue
+            if rel not in tracked:
+                stale.append(f"{rel} (not a tracked text file)")
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            if not self._address_hits(rel, text):
+                stale.append(f"{rel} (no longer carries a private address)")
+        for rel, reason in sorted(self.ALIAS_ALLOWLIST.items()):
+            if not reason.strip():
+                stale.append(f"{rel} (no reason given)")
+                continue
+            if rel not in tracked:
+                stale.append(f"{rel} (not a tracked text file)")
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            if not self._alias_hits(rel, text):
+                stale.append(f"{rel} (no longer carries the ssh alias)")
+        for rel, reason in sorted(self.SSH_ALLOWLIST.items()):
+            if not reason.strip():
+                stale.append(f"{rel} (no reason given)")
+                continue
+            if rel not in tracked:
+                stale.append(f"{rel} (not a tracked text file)")
+                continue
+            text = Path(ROOT, rel).read_text(encoding="utf-8")
+            if not self._ssh_hits(rel, text):
+                stale.append(f"{rel} (no longer carries a literal ssh target)")
+        self.assertEqual(
+            stale,
+            [],
+            "an allowlist entry must name a file that still carries the private "
+            "inventory; clean the file up and take the entry off the list:\n" + "\n".join(stale),
+        )
 
 
 if __name__ == "__main__":
