@@ -138,8 +138,9 @@ USER_AGENT = "AI-Fleet-Coordinator populate-scoped-folders"
 # Exit status when fleet-secrets itself is not installed (the shell's "command
 # not found"), apart from 1 for every other stop (kody 4366921905).
 MISSING_EXECUTABLE = 127
-# Exit status when a fleet-secrets run times out, the status timeout(1) uses
-# (kody 4367021960).
+# Exit status when anything the copy waits on times out (a fleet-secrets run,
+# the Infisical login or a write), the status timeout(1) uses (kody 4367021960,
+# 4368415894, 4368465375).
 TIMED_OUT = 124
 
 # Explicit limits on every Infisical answer (kody 4367021839), the caps
@@ -172,6 +173,15 @@ _OPENER = urllib.request.build_opener(RefuseRedirects)
 def urlopen(request, timeout):
     """Every Infisical call this script makes goes through here."""
     return _OPENER.open(request, timeout=timeout)
+
+
+def timed_out_error(error):
+    """Whether an Infisical call failed by timing out:  urllib raises TimeoutError
+    (socket.timeout) on a stalled read, and a URLError wrapping one on a stalled
+    connect."""
+    return isinstance(error, TimeoutError) or isinstance(
+        getattr(error, "reason", None), TimeoutError
+    )
 
 
 def _within_shape(value):
@@ -468,17 +478,30 @@ def main():
     if not check_read_tools_scope():
         sys.exit(1)
     # A failed login stops visibly, names only, before any copy (kody 4368415797):
-    # never a traceback.  The handoff's own exits (124, 127) are SystemExit and
-    # pass through unchanged.
+    # never a traceback.  A refused login names the two variables to check and
+    # nothing derived from their values (no prefix, suffix or masked preview, as
+    # #937 settled for the Linear relay;  kody 4368465194).  A stalled login exits
+    # 124 like every other timeout (kody 4368465375).  The handoff's own exits
+    # (124, 127) are SystemExit and pass through unchanged.
     try:
         token = login()
     except urllib.error.HTTPError as e:
+        check = (
+            ";  check INFISICAL_AUTOMATION_CLIENT_ID and INFISICAL_AUTOMATION_CLIENT_SECRET"
+            if e.code in (401, 403)
+            else ""
+        )
         print(
-            f"STOP before the first copy: the Infisical login was refused (HTTP {e.code}).  "
+            f"STOP before the first copy: the Infisical login was refused (HTTP {e.code}){check}.  "
             "Nothing was copied."
         )
         sys.exit(1)
     except Exception as e:  # noqa: BLE001 - any login failure stops visibly before any copy
+        if timed_out_error(e):
+            print(
+                "STOP before the first copy: the Infisical login timed out.  Nothing was copied."
+            )
+            sys.exit(TIMED_OUT)
         print(
             f"STOP before the first copy: the Infisical login failed ({type(e).__name__}).  "
             "Nothing was copied."
@@ -533,11 +556,14 @@ def main():
             )
             sys.exit(status)
         except Exception as e:  # noqa: BLE001 - any copy failure stops visibly, re-run reconciles
+            # A stalled write exits 124 too (kody 4368465375).
+            stalled = timed_out_error(e)
             print(
-                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): {type(e).__name__}.  "
+                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): "
+                f"{'the Infisical write timed out' if stalled else type(e).__name__}.  "
                 f"{done} copied, {skipped} already in sync.  Re-run reconciles;  equal values are skipped."
             )
-            sys.exit(1)
+            sys.exit(TIMED_OUT if stalled else 1)
         done += 1
         print(f"  copied {done}/72: {dpath}/{dname}")  # names only, never values
     print(

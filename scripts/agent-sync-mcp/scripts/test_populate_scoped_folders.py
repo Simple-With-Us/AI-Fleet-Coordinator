@@ -402,27 +402,45 @@ class TestApply(Base):
         self.assertNotIn("VALUE-", out)
 
     def test_login_failure_stops_names_only_before_any_copy(self):
-        # kody 4368415797:  a refused, oversized, malformed or unreachable login
-        # stops with a names-only STOP line and exit 1, never a traceback.
+        # kody 4368415797:  a refused, oversized, malformed, unreachable or stalled
+        # login stops with one names-only STOP line, never a traceback.  A refused
+        # login names the variables to check and nothing derived from their values
+        # (kody 4368465194);  a stalled one exits 124 (kody 4368465375).  Nothing
+        # reaches stderr (kody 4368465538):  the STOP line is on stdout with the
+        # rest of the run's report.
         seeded(self.fake)
 
-        def refused(url):
-            self.fake._err(url, 401, "leak VALUE-x")
+        def refused(code):
+            def answer(url):
+                self.fake._err(url, code, "leak VALUE-x")
 
-        def unreachable(url):
-            raise urllib.error.URLError("unreachable")
+            return answer
 
+        def raises(error):
+            def answer(url):
+                raise error
+
+            return answer
+
+        check = (
+            ";  check INFISICAL_AUTOMATION_CLIENT_ID and INFISICAL_AUTOMATION_CLIENT_SECRET"
+        )
         answers = [
-            ("was refused (HTTP 401)", refused),
+            (f"was refused (HTTP 401){check}", 1, refused(401)),
+            (f"was refused (HTTP 403){check}", 1, refused(403)),
+            ("was refused (HTTP 500)", 1, refused(500)),
             (
                 "failed (ResponseLimitError)",
+                1,
                 lambda url: io.BytesIO(b"x" * (psf.MAX_RESPONSE_BYTES + 1)),
             ),
-            ("failed (ValueError)", lambda url: io.BytesIO(b"{}")),
-            ("failed (URLError)", unreachable),
+            ("failed (ValueError)", 1, lambda url: io.BytesIO(b"{}")),
+            ("failed (URLError)", 1, raises(urllib.error.URLError("unreachable"))),
+            ("timed out", psf.TIMED_OUT, raises(TimeoutError("timed out"))),
+            ("timed out", psf.TIMED_OUT, raises(urllib.error.URLError(TimeoutError()))),
         ]
-        for expected, answer in answers:
-            with self.subTest(expected):
+        for expected, status, answer in answers:
+            with self.subTest(expected=expected, status=status):
 
                 def login_fails(request, timeout=35, answer=answer):
                     if request.full_url.endswith("/auth/universal-auth/login"):
@@ -430,17 +448,67 @@ class TestApply(Base):
                     return self.fake.open(request, timeout)
 
                 psf.urlopen = login_fails
-                code, out = self.run_main("--apply")
-                self.assertEqual(code, 1)
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    code, out = self.run_main("--apply")
+                self.assertEqual(code, status)
                 self.assertIn(
-                    f"STOP before the first copy: the Infisical login {expected}.  Nothing was copied.",
+                    f"STOP before the first copy: the Infisical login {expected}.  "
+                    "Nothing was copied.",
                     out,
                 )
-                self.assertNotIn("Traceback", out)
-                self.assertNotIn("VALUE-", out)
-                self.assertNotIn("leak", out)
+                # stderr may carry the fake HTTPError's ResourceWarning under unittest,
+                # never a traceback, a STOP line or server text.
+                for stream in (out, err.getvalue()):
+                    self.assertNotIn("Traceback", stream)
+                    self.assertNotIn("VALUE-", stream)
+                    self.assertNotIn("leak", stream)
+                self.assertNotIn("STOP", err.getvalue())
                 self.assertEqual(self.fake.upserts, [])
                 self.assertEqual(self.fake.reads, [], "no value is read before the login succeeds")
+
+    def test_login_handoff_exits_pass_through_main(self):
+        # kody 4368465667:  the handoff's own 124 and 127 reach main()'s caller
+        # unchanged, through the new login handler, with no read and no write.
+        seeded(self.fake)
+        del os.environ["INFISICAL_AUTOMATION_CLIENT_ID"]
+
+        def slow(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+        def missing(argv, **kwargs):
+            raise FileNotFoundError(argv[0])
+
+        for run, status in ((slow, psf.TIMED_OUT), (missing, psf.MISSING_EXECUTABLE)):
+            with self.subTest(status=status):
+                subprocess.run = run
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    code, out = self.run_main("--apply")
+                self.assertEqual(code, status)
+                self.assertIn("INFISICAL_AUTOMATION_CLIENT_ID", err.getvalue())
+                self.assertNotIn("STOP before the first copy", out)
+                self.assertEqual(self.fake.upserts, [])
+                self.assertEqual(self.fake.reads, [])
+
+    def test_write_timeout_exits_124(self):
+        # kody 4368465375:  a stalled write is a timeout too, after the copies
+        # before it;  a re-run reconciles.
+        seeded(self.fake)
+        victim = psf.MAPPING[40][4]
+
+        def write_stalls(request, timeout=35):
+            if request.get_method() == "POST" and request.full_url.endswith("/" + victim):
+                raise TimeoutError("timed out")
+            return self.fake.open(request, timeout)
+
+        psf.urlopen = write_stalls
+        code, out = self.run_main("--apply")
+        self.assertEqual(code, psf.TIMED_OUT)
+        self.assertIn(f"STOP at 41/72 ({psf.MAPPING[40][3]}/{victim}): ", out)
+        self.assertIn("the Infisical write timed out.  40 copied, 0 already in sync.", out)
+        self.assertEqual(len(self.fake.upserts), 40)
+        self.assertNotIn("VALUE-", out)
 
     def test_terminal_messages_use_two_spaces_between_sentences(self):
         # Kody issue comment 6383398733:  plain-text output takes two ASCII spaces.
