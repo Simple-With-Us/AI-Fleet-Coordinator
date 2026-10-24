@@ -966,8 +966,8 @@ async function serveAdmin(request, env, config, oauth, email) {
   if (path === "/admin" && request.method === "GET") {
     const csrf = newCsrf();
     // One idempotency key per rendered page for the bearer mint forms:  an
-    // accidental resubmit of the same form returns the same reveal instead of
-    // rotating the bearer (src/pages.js gbBearerSection).
+    // accidental resubmit of the same form is refused without changing the
+    // bearer or showing it again (src/pages.js gbBearerSection).
     const mintId = Date.now().toString(16).padStart(12, "0") + newCsrf().slice(0, 20);
     const done = new URL(request.url).searchParams.get("done");
     const generatedAt = Date.now();
