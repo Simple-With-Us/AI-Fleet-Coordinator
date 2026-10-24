@@ -155,11 +155,9 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
 </table>
 ${replaceLine}
 <p>${sentences(
-    EVENTS_ONLY_SEATS.includes(seat)
-      ? "This seat only delivers wake notifications to the app;  it cannot read or post."
-      : "This seat reads and posts in any public channel its Zulip bot is subscribed to, as that bot, within its budgets.",
-    "Private channels are never open to it.",
-    "Every chat on that account will act as this seat.",
+    ...(EVENTS_ONLY_SEATS.includes(seat)
+      ? ["This seat only delivers wake notifications to the app;  it cannot read or post.", "Private channels are never open to it."]
+      : ["This seat reads and posts in any public channel its Zulip bot is subscribed to, as that bot, within its budgets.", "Private channels are never open to it.", "Every chat on that account will act as this seat."]),
   )}</p>
 <form id="consent" method="post" action="/authorize">
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">

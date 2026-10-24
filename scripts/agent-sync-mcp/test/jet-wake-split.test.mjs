@@ -109,8 +109,11 @@ test("JET-CHAT is absent by default, and only hosting it unprovisioned fails clo
 });
 
 test("JET-CHAT loads with Jet's bot email under its own var name", () => {
-  const cfg = loadConfig(testEnv({ HOSTED_SEATS: "JET,JET-CHAT", ZULIP_EMAIL_JET_CHAT: "openai-dot-bot@simplewithus.zulipchat.com" }));
-  assert.equal(cfg.botEmails["JET-CHAT"], "openai-dot-bot@simplewithus.zulipchat.com");
+  // No pasted address literal (kody 4365545858):  the value comes from the
+  // same wrangler.jsonc var production serves for JET.
+  const jetEmail = wranglerConfig().vars.ZULIP_EMAIL_JET;
+  const cfg = loadConfig(testEnv({ HOSTED_SEATS: "JET,JET-CHAT", ZULIP_EMAIL_JET_CHAT: jetEmail }));
+  assert.equal(cfg.botEmails["JET-CHAT"], jetEmail);
   assert.equal(cfg.botEmails.JET, cfg.botEmails["JET-CHAT"], "one bot, two seats");
 });
 

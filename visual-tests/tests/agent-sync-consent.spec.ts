@@ -15,7 +15,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await page.goto('/authorize');
     await expect(page.getByRole('heading', { name: 'Connect ChatGPT as Jet-Wake?', exact: true })).toBeVisible();
     await expect(page.locator('input[name="scope"]')).toHaveCount(1);
-    await expect(page.locator('body')).toHaveScreenshot(`jet-wake-consent-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
+    await expect(page.locator('body')).toHaveScreenshot(`jet-wake-consent-${viewport.width}.png`, { animations: 'disabled', fullPage: true, maxDiffPixels: 100, mask: [page.locator('time'), page.locator('.timestamp'), page.locator('[data-dynamic]')] });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 }

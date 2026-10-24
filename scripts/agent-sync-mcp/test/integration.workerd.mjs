@@ -1811,12 +1811,12 @@ try {
     // router:  the delivered owner fixture is returned, and an unrelated seat
     // (the wake seat above, the foreign-seat unit case) stays denied.
     const chatRead = await call(chatGrant.body.access_token, "whatsapp_read", {});
-    assert.equal(chatRead.json.result.isError, undefined, JSON.stringify(chatRead.json));
+    assert.equal(chatRead.json.result.isError, undefined, summarize(chatRead.json));
     assert.match(chatRead.json.result.content[0].text, /received owner fixture/);
     const seqs = [...chatRead.json.result.content[0].text.matchAll(/"seq":"(\d+)"/g)].map((m) => m[1]);
     assert.ok(seqs.length > 0, "the read returned at least one seq");
     const chatAck = await call(chatGrant.body.access_token, "whatsapp_read", { ack_through: seqs[seqs.length - 1] });
-    assert.equal(chatAck.json.result.isError, undefined, JSON.stringify(chatAck.json));
+    assert.equal(chatAck.json.result.isError, undefined, summarize(chatAck.json));
     const op = { contract: "wa-operator/1", seat: "JET", request_id: crypto.randomUUID(), sent_at: Math.floor(Date.now() / 1000) };
     await postWa(op, "operator", operatorKey);
     assert.equal(callbackCalls.length, 2);

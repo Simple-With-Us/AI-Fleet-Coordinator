@@ -339,7 +339,10 @@ export class HostedTools {
       // The thrown object carries the AUDITED name (scanSecret-checked,
       // length-capped):  a secret-shaped tool name never rides along for any
       // consumer of UnknownTool.toolName (kody 4363581984, sibling path).
-      const auditedUnknown = scanSecret(typeof name === "string" ? name : "") ? "<omitted after secret scan>" : [...String(name)].slice(0, 64).join("");
+      // Bound the client-controlled name BEFORE the secret scan (kody 4365544427):
+      // scanning an unbounded string costs unbounded CPU/memory.
+      const cappedUnknown = [...String(name)].slice(0, 64).join("");
+      const auditedUnknown = scanSecret(cappedUnknown) ? "<omitted after secret scan>" : cappedUnknown;
       throw new UnknownTool(auditedUnknown);
     }
     const publicName = name;
