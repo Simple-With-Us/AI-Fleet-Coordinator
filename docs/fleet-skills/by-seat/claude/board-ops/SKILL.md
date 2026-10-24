@@ -79,4 +79,4 @@ The full verb table, id forms and exit codes are in `scripts/linear-board/README
 - `scripts/linear-board/README.md` and `docs/protocols/linear-migration.md` in AI-Fleet-Coordinator
 - `simple-board --help` / `simple-board file --help`
 
-CLUTCH is the canonical app name. Its verified live Linear team key is `C`. `C`, `CLUTCH`, legacy `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Prior `CK-n` and `CLUTCH-n` identifiers remain resolvable after the rename.
+Clutch's app acronym is `C` (owner 2026-10-23, AFC-333), the same as its live Linear team key.  `C-n` is a Clutch Linear issue and `C#n` a Clutch PR.  `CLUTCH`, legacy `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same team, and prior `CK-n` and `CLUTCH-n` identifiers remain resolvable.  `CC` is CodeCaps, never Clutch.

@@ -65,6 +65,8 @@ The Operator, the fleet's chat listener service, records what arrived while no s
 
 The shared checkout is the human/fleet review base.  Mid-task branch flips there have landed one seat's commits on another seat's branch.  Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders` (Lane Map, owner 2026-10-07: `docs/protocols/lane-map.md` in AI-Fleet-Coordinator).
 
+On the server, `~/Code` is `/mnt/fleet-extra/Code` and `~/apps` is `/mnt/fleet-extra/apps` (the same folders, reached through symlinks), so `lane new` prints `/mnt/fleet-extra/apps/lanes/<Repo>/<seat>-<slug>`.  Every lane on the server lives in `/mnt/fleet-extra/apps/lanes`, and no fleet checkout lives anywhere else there:  not in `/tmp`, a scratchpad, `~/.local/state` or `<repo>/.claude/worktrees`.
+
 Use the existing durable `muse-assist-<repo>` checkout on the VM, outside scratch directories.  Require a clean checkout before switching branches.  For a new task, run `git fetch origin` and `git switch --no-track -c muse-assist/<new-task-slug> refs/remotes/origin/main`, then publish with `git push -u origin HEAD`.  For a follow-up, switch to the existing task branch instead; never reset it or discard previous work.  Reuse this durable VM checkout across tasks; do not invoke the Mac lane tool or create Mac lane directories.
 
 | App | Zulip `repo:` | Acronym (Linear team) |

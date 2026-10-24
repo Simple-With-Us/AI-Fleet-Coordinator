@@ -27,7 +27,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.gemini/config/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+            "sha256": "873645b1a30d95676ebb17305dc30cdb8ee0c68c7d03c16794b431ba864e70b7"
           },
           "id": "ag-instructions-lane-map",
           "kind": "instructions",
@@ -209,7 +209,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.claude/CLAUDE.md matches the installer template",
             "present": true,
-            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+            "sha256": "873645b1a30d95676ebb17305dc30cdb8ee0c68c7d03c16794b431ba864e70b7"
           },
           "id": "claude-instructions-lane-map",
           "kind": "instructions",
@@ -433,7 +433,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "183bbc6d4ae913803bd304e36f6b289f2b58b2165698e0484597e88edc235d22"
+            "sha256": "3d25def81d144305a7abe0cdc156a86f1dcfc9f694ae6c79d3cb66cd9afc91ac"
           },
           "id": "clutch-instructions-lane-map",
           "kind": "instructions",
@@ -589,7 +589,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.codex/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+            "sha256": "873645b1a30d95676ebb17305dc30cdb8ee0c68c7d03c16794b431ba864e70b7"
           },
           "id": "codex-instructions-lane-map",
           "kind": "instructions",
@@ -806,7 +806,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.cursor/rules/fleet-lane-map.mdc matches the installer template",
             "present": true,
-            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+            "sha256": "873645b1a30d95676ebb17305dc30cdb8ee0c68c7d03c16794b431ba864e70b7"
           },
           "id": "cursor-instructions-lane-map",
           "kind": "instructions",
@@ -1039,7 +1039,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.fx/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+            "sha256": "873645b1a30d95676ebb17305dc30cdb8ee0c68c7d03c16794b431ba864e70b7"
           },
           "id": "fx-instructions-lane-map",
           "kind": "instructions",
@@ -1250,7 +1250,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.grok/GROK.md matches the installer template",
             "present": true,
-            "sha256": "053931996140f9f798a83933d6ffa52c5484dbcc806aecb49fdd800c2e1c0c44"
+            "sha256": "873645b1a30d95676ebb17305dc30cdb8ee0c68c7d03c16794b431ba864e70b7"
           },
           "id": "grok-instructions-lane-map",
           "kind": "instructions",
@@ -1814,7 +1814,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.minimax/memory/user.md matches the installer template",
             "present": true,
-            "sha256": "a826d43e37461ba49ec35cd67265c81800c7305688a1d2f194eab5f2b91e039b"
+            "sha256": "511b1cdc6777201ecea3de61287a30f408d0c2cb96a23ba6b5707cc80e00ca2a"
           },
           "id": "mm-instructions-lane-map",
           "kind": "instructions",
@@ -2053,7 +2053,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.config/opencode/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "a0dd629ce0c7a16d9acfb2e359cdaee3c726e3c6d0fc4bca0bb215d7fd411c3a"
+            "sha256": "2ef7c84633a73118f902510ed33935afc51eb794976bc7834c2167d2ac11700a"
           },
           "id": "opencode-instructions-lane-map",
           "kind": "instructions",
