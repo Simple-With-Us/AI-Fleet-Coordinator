@@ -2176,6 +2176,38 @@ class LarkSurfaceTests(unittest.TestCase):
         payload = json.loads(files[0].read_text(encoding="utf-8"))
         self.assertEqual(payload["chat_id"], "oc_other")
 
+    def test_the_signal_cli_refuses_a_symlinked_signal_directory(self):
+        """The CLI keeps the signal inside the private state directory.
+
+        A symlinked signal directory would carry the Operator's text to
+        wherever the link points, so the CLI refuses it the same way the
+        bridge's own start does, and writes nothing there.
+        """
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        state = Path(root.name) / "state"
+        state.mkdir(mode=0o700)
+        (state / bridge_mod.SIGNAL_DIRNAME).symlink_to(elsewhere.name, target_is_directory=True)
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            code = bridge_mod.main(["--signal", "wake up", "--state-dir", str(state)])
+        self.assertEqual(code, 2)
+        self.assertIn("symlinked signal directory", stderr.getvalue())
+        self.assertEqual(list(Path(elsewhere.name).iterdir()), [])
+
+    def test_the_signal_cli_creates_a_private_state_directory(self):
+        """A state directory the CLI has to create is private, like the bridge's."""
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        state = Path(root.name) / "fresh-state"
+        code = bridge_mod.main(["--signal", "wake up", "--state-dir", str(state)])
+        self.assertEqual(code, 0)
+        self.assertEqual(stat.S_IMODE(state.stat().st_mode), 0o700)
+        signal_dir = state / bridge_mod.SIGNAL_DIRNAME
+        self.assertEqual(stat.S_IMODE(signal_dir.stat().st_mode), 0o700)
+
     def test_the_last_chat_survives_a_restart(self):
         bridge = self.make_bridge()
         bridge._handle(self.owner_message("om_1", "hello", chat_id="oc_home"))

@@ -1862,9 +1862,17 @@ def signal_out(args):
     if state_dir.is_symlink():
         print("refusing a symlinked state directory: %s" % state_dir, file=sys.stderr)
         return 2
+    # The same rules as the bridge's own start:  the state directory is
+    # created private, and the signal directory refuses a symlink and is
+    # created without parents, so the Operator's text cannot be carried out of
+    # the private state location or land in a directory other eyes can read.
+    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     signal_dir = state_dir / SIGNAL_DIRNAME
-    signal_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    signal_id = "sig-%d-%s" % (int(time.time()), os.urandom(4).hex())
+    if signal_dir.is_symlink():
+        print("refusing a symlinked signal directory: %s" % signal_dir, file=sys.stderr)
+        return 2
+    signal_dir.mkdir(mode=0o700, exist_ok=True)
+    signal_id ="sig-%d-%s" % (int(time.time()), os.urandom(4).hex())
     payload = {"signal_id": signal_id, "text": text}
     if args.signal_chat_id:
         payload["chat_id"] = args.signal_chat_id
