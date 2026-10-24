@@ -37,8 +37,9 @@ export const SCOPES = Object.freeze(["zulip:read", "zulip:write"]);
 // original JET connection is wake-only, so the second ChatGPT connection is
 // its own seat.  Both seats use the same openai-dot-bot;  the seat's expected
 // tag is SEAT_TAG_EXPECTATIONS in src/contract.js.
-// MA (Rob's admin-arming seat) landed on main via #894;  both seat sets stay.
-export const KNOWN_SEATS = Object.freeze(["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "MA"]);
+// MA (Rob's admin-arming seat) landed on main via #894, and CODEX (Codex's
+// admin-arming seat, #890) joins beside it;  every seat set stays.
+export const KNOWN_SEATS = Object.freeze(["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "MA", "CODEX"]);
 
 // Seats whose connection serves event notifications only.  tools/list is
 // empty and tools/call refuses every name (src/delegated-identities.js);
@@ -82,6 +83,9 @@ export const PROPS_PHASE = 2;
 export const SEAT_SECRETS = Object.freeze({
   CURSOR: Object.freeze({ key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR", infisical: Object.freeze({ name: "CURSOR_ZULIP_KEY", path: "/zulip" }) }),
   CLAUDE: Object.freeze({ key: "ZULIP_CLAUDE_API_KEY", email: "ZULIP_CLAUDE_EMAIL", infisical: Object.freeze({ name: "CLAUDE_ZULIP_KEY", path: "/zulip" }) }),
+  // CODEX's key already lives in Fleet-OPS /zulip as CODEX_ZULIP_KEY
+  // (install_seat_key.py, names verified live 2026-10-23).
+  CODEX: Object.freeze({ key: "ZULIP_KEY_CODEX", email: "ZULIP_EMAIL_CODEX", infisical: Object.freeze({ name: "CODEX_ZULIP_KEY", path: "/zulip" }) }),
   // MA's key already lives in Fleet-OPS /zulip as MA_ZULIP_KEY
   // (install_seat_key.py, names verified live 2026-10-23).
   MA: Object.freeze({ key: "ZULIP_KEY_MA", email: "ZULIP_EMAIL_MA", infisical: Object.freeze({ name: "MA_ZULIP_KEY", path: "/zulip" }) }),
@@ -114,7 +118,7 @@ export const WAKE_SECRETS = Object.freeze({
 export const OPERATOR_NOTES_SECRET = "OPERATOR_NOTES_KEY";
 
 // What /admin and a manual client's name call each seat's app.
-export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "JET-CHAT": "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise", MA: "Rob" });
+export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "JET-CHAT": "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise", MA: "Rob", CODEX: "Codex" });
 
 const BOT_EMAIL_RE = /^[a-z0-9-]+-bot@simplewithus\.zulipchat\.com$/;
 
