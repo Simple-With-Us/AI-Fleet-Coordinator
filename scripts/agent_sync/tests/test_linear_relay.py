@@ -53,6 +53,7 @@ class FakeLinear:
         self.create_lands = False  # with create_error: the comment landed all the same
         self.create_calls = 0
         self.update_error: Exception | None = None
+        self.find_error: Exception | None = None
 
     def issue_id(self, identifier: str) -> str:
         self.lookups.append(identifier)
@@ -79,6 +80,8 @@ class FakeLinear:
     def find_comment(self, issue_uuid: str, marker: str) -> str | None:
         if self.fail_find:
             raise lr.LinearError("boom")
+        if self.find_error is not None:
+            raise self.find_error
         return self.by_marker.get(marker)
 
     def viewer(self) -> str:
@@ -377,6 +380,30 @@ class RelayTests(unittest.TestCase):
         self.assertTrue(entry["dirty"])  # retried later
         self.assertGreater(entry["retry_after"], self.t[0])
 
+    def test_a_permanently_refused_edit_is_not_retried(self) -> None:
+        # An edit the app may not make: the comment is kept, and waiting changes nothing.
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.lin.update_error = lr.LinearPermanentError("linear refused the request (FORBIDDEN)")
+        self.w.handle_event(message(2, "AFC-1 relay", "again"))
+        self.t[0] += 600
+        self.w.tick()
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        self.assertEqual(entry["comment_id"], "c1")
+        self.assertEqual(len(self.lin.created), 1)
+        self.assertFalse(entry["dirty"])
+        self.assertEqual(entry["retry_after"], 0.0)
+
+    def test_a_reconcile_of_a_deleted_issue_releases_the_entry(self) -> None:
+        entry = lr.new_entry("AFC-1", 5, "builds", "AFC-1 relay", 1)
+        entry["pending"] = True
+        self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")] = entry
+        self.lin.find_error = lr.LinearNotFound("linear: not found")
+        self.w.reconcile()
+        self.assertFalse(entry["pending"])
+        self.lin.find_error = lr.LinearError("must not be asked again")
+        self.w.reconcile()  # released: not probed again
+        self.assertFalse(any("must not" in line for line in self.logs))
+
     def test_an_edit_of_a_deleted_comment_creates_it_again(self) -> None:
         self.w.handle_event(message(1, "AFC-1 relay", "hello"))
         self.lin.update_error = lr.LinearNotFound("linear: not found")
@@ -631,6 +658,26 @@ class RelayTests(unittest.TestCase):
             code = lr.run_check(None, CheckLinear(lr.LinearAuthError("no token")), env,
                                 "https://z.example")
         self.assertEqual(code, 1)
+        # A malformed id Linear refuses as invalid input is an issue problem, not an auth one.
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = lr.run_check(None, CheckLinear(lr.LinearPermanentError("INVALID_INPUT")), env,
+                                "https://z.example")
+        self.assertEqual(code, 0)
+        self.assertIn("the token works", out.getvalue())
+
+    def test_linear_error_codes_are_sorted_by_what_waiting_can_change(self) -> None:
+        def classify(code: str) -> lr.LinearError:
+            return lr.classify_errors([{"message": "x", "extensions": {"code": code}}])
+
+        for code in ("INVALID_INPUT", "FEATURE_NOT_ACCESSIBLE", "USAGE_LIMIT_EXCEEDED",
+                     "FORBIDDEN", "INPUT_ERROR", "BAD_USER_INPUT"):
+            self.assertIsInstance(classify(code), lr.LinearPermanentError, code)
+        self.assertIsInstance(classify("AUTHENTICATION_ERROR"), lr.LinearAuthError)
+        for code in ("RATELIMITED", "INTERNAL_ERROR"):
+            self.assertIs(type(classify(code)), lr.LinearError, code)
+        typed = lr.classify_errors([{"message": "x", "extensions": {"type": "invalid input"}}])
+        self.assertIsInstance(typed, lr.LinearPermanentError)
 
     def test_a_transient_error_is_retried_and_a_not_found_is_not(self) -> None:
         sleeps: list[float] = []

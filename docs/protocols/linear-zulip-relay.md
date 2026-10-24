@@ -30,7 +30,8 @@ load the public-stream set") and retried every 30 seconds, and the event queue i
 until it succeeds.  A reload after a stream event forgets the old set first, so a reload that fails
 leaves the relay knowing nothing rather than trusting a set that may be stale.  The relay keeps
 running through a Zulip outage instead of exiting, because it does nothing while the set is
-unknown.  Archived public streams count as public: only `invite_only` makes a stream private.
+unknown.  A message that arrives while the set is unknown is not held for later: like a message
+sent while the queue is down, it is not mirrored.  Archived public streams count as public: only `invite_only` makes a stream private.
 
 Nothing is ever posted from Linear to Zulip, and there is no #issues stream.
 

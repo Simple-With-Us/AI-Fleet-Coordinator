@@ -469,14 +469,15 @@ class LinearUncertain(LinearError):
     next attempt reads the issue's comments for the marker first."""
 
 
+# Matched against Linear's codes and types after underscores become spaces, so INVALID_INPUT and
+# "invalid input" are the same hint.
 _PERMANENT_HINTS = (
     "forbidden",
     "invalid input",
-    "input_error",
+    "input error",
     "user error",
-    "user_error",
     "validation",
-    "bad_user_input",
+    "bad user input",
     "feature not accessible",
     "usage limit",
 )
@@ -503,7 +504,7 @@ def classify_errors(errors: list[Any]) -> LinearError:
     copied into the exception."""
     messages = [str(e.get("message") or "").strip().lower() for e in errors if isinstance(e, dict)]
     codes = _error_codes(errors)
-    low = " ".join(codes).lower()
+    low = " ".join(codes).lower().replace("_", " ")
     label = ", ".join(codes) or "no code"
     if "authentication" in low or any(m.startswith("authentication") for m in messages):
         return LinearAuthError("linear refused LINEAR_RELAY_TOKEN (%s)" % label)
@@ -1136,12 +1137,20 @@ class RelayWorker:
             self.linear.update_comment(entry["comment_id"], render_comment(entry, self.realm))
             return "updated the"
         except (LinearNotFound, LinearRejected, LinearPermanentError) as exc:
-            refused = type(exc).__name__
+            refusal = exc
+        refused = type(refusal).__name__
         # The edit did not land.  Only a comment that is really gone is created again: the marker
         # scan confirms it first, and a comment that is still there is kept.
         found = self.linear.find_comment(uuid, entry["marker"])
         if found:
             entry["comment_id"] = found
+            if isinstance(refusal, LinearPermanentError):
+                # Waiting does not change this refusal (an edit the app may not make), so it is
+                # not retried until a new message gives the entry new content.
+                raise LinearPermanentError(
+                    "linear refused the edit (%s); the comment is kept, and the edit is not "
+                    "retried" % refused
+                )
             raise LinearError(
                 "linear refused the edit (%s); the comment is still there, so it is kept" % refused
             )
@@ -1241,6 +1250,16 @@ class RelayWorker:
                 found = self.linear.find_comment(uuid, entry["marker"])
             except LinearAuthError:
                 raise _stop_on_auth() from None
+            except (LinearNotFound, LinearPermanentError) as exc:
+                # The issue is gone or refused for good: there is nothing to adopt and nothing
+                # to write, so the entry is released instead of being probed at every start.
+                self._uuid_cache[entry["issue"]] = None
+                self._missing_issues.add(entry["issue"])
+                entry["pending"] = False
+                entry["dirty"] = False
+                self.ledger.mark_dirty()
+                self.log("reconcile for %s not retried: %s" % (self._label(entry), exc))
+                continue
             except LinearError as exc:
                 # A transient Linear failure must not kill the relay; the entry
                 # stays pending and is reconciled on the next registration.
@@ -1333,6 +1352,13 @@ def run_check(client: ZulipClient, linear: LinearClient, env: Mapping[str, str],
         linear.issue_id(ident)
     except LinearNotFound:
         print("linear lookup: %s does not exist (the token works; the issue id is wrong)" % ident)
+        return 0
+    except LinearPermanentError as exc:
+        # A malformed id, or an issue the app may not read: an issue problem, not an auth one.
+        print(
+            "linear lookup: %s was refused (%s); the token works, and the id is malformed or the "
+            "app cannot see that issue" % (ident, exc)
+        )
         return 0
     except LinearError as exc:
         print("linear lookup failed for %s: %s" % (ident, exc))
