@@ -2262,6 +2262,11 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertNotIn((42, "send-confirmation"), done)
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
         self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+        # kody 4366047501:  the escaping confirmation failure still leaves its outcome
+        # row - "letter minted, confirmation outstanding" is diagnosable from the log.
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("operator-registration-answer", log)
+        self.assertIn('"delivery": "raised:RuntimeError"', log)
         # The retry:  no second answer() (the settled entry would read "ignored" and post
         # a wrong reply) - the recorded reply goes out once and the step is stamped.
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:

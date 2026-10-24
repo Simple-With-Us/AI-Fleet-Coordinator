@@ -3883,6 +3883,7 @@ class Daemon:
         route's retry (not the ordinary wake path) finishes the confirmation.
         """
         reply_ready = False
+        out: dict[str, Any] | None = None
         try:
             # The cheap pure check comes first:  almost every routed message is not an
             # answer, so the queue file is only opened for text that parses as one.
@@ -4035,6 +4036,16 @@ class Daemon:
             return False
         except Exception as exc:
             if reply_ready:
+                # Audit BEFORE the raise (kody 4366047501):  an escaping confirmation
+                # failure still leaves exactly one outcome row - the fresh-answer path
+                # names the registration status, the confirm-retry path names the
+                # retry - so "letter minted, confirmation outstanding" is diagnosable.
+                self.log.write(
+                    "operator-registration-answer",
+                    entry_id=parsed["entry_id"],
+                    status=(out or {}).get("status") or "confirm-retried",
+                    delivery="raised:" + type(exc).__name__,
+                )
                 # The mutation is recorded in the route's done set:  let the route
                 # retry finish the confirmation rather than dropping the answer into
                 # the ordinary wake path with its letter already minted.
