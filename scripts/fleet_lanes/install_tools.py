@@ -6142,14 +6142,17 @@ def _fleet_opencode_path(entry: str) -> bool:
 
 
 def _is_opencode_ours(entry: object, paths: Paths) -> bool:
-    """Whether `entry` is this tool's own plugin entry:  the stable directory itself, or the file forms
-    earlier releases listed inside it, including entries a previous machine or stable path recorded.
-    Never a bare suffix test:  a user's plugin that happens to sit in a directory called
-    `opencode-plugin` is not ours."""
-    want = opencode_entry(paths)
+    """Whether `entry` is this tool's own plugin entry:  this stable directory itself, the file forms earlier
+    releases listed inside it (whatever `--stable-dir` named it), and an entry a previous machine or stable
+    root recorded under a `lane-tools` directory.  Never a bare suffix test:  a user's plugin that happens to
+    sit in a directory called `opencode-plugin` is not ours."""
+    ours_here = {opencode_entry(paths)}
+    ours_here.update(
+        os.path.join(paths.stable, "opencode-plugin", name) for name in _OPENCODE_PLUGIN_FILES
+    )
 
     def ours(value: str) -> bool:
-        return value == want or _fleet_opencode_path(value)
+        return value in ours_here or _fleet_opencode_path(value)
 
     if isinstance(entry, str):
         return ours(entry)
