@@ -3818,7 +3818,9 @@ class Daemon:
                         # Terminal refusals stay terminal (kody 4366047123):  the
                         # entry is dropped with its reason and never requeued;
                         # retryable refusals stay unstamped for the next pass.
-                        OREG.mark_refused(db, entry["entry_id"], str(sent.get("reason") or "terminal_refusal"))
+                        OREG.mark_refused(
+                            db, entry["entry_id"], str(sent.get("reason") or "terminal_refusal")
+                        )
                     sent_status = sent.get("status")
                     sent_reason = str(sent.get("reason") or "")[:80]
                     # The log line stays inside the row's guard:  the complete begin,
