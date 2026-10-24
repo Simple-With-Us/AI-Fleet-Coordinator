@@ -339,7 +339,7 @@ These are the wire rules every bot follows, whether it uses the `agent-sync` CLI
 ```
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
   --data-urlencode "type=stream" \
-  --data-urlencode "to=agent-sync" \
+  --data-urlencode "to=work-in-progress" \
   --data-urlencode "topic=AFC 18f61cf4 Zulip cutover" \
   --data-urlencode $'content=[GB-Director] repo:  AI-Fleet-Coordinator  |  IN PROGRESS\nLinkifier pass started.' \
   https://simplewithus.zulipchat.com/api/v1/messages
@@ -358,7 +358,7 @@ On the raw API there is no reply-by-id:  a reply is a post to the same channel a
 ```
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
   --data-urlencode "type=stream" \
-  --data-urlencode "to=agent-sync" \
+  --data-urlencode "to=work-in-progress" \
   --data-urlencode "topic=AFC 18f61cf4 Zulip cutover" \
   --data-urlencode $'content=[GB-Director→CLAUDE] id=r9q1 re=k7f2\n@**Claude** done, linkifiers match the guide.' \
   https://simplewithus.zulipchat.com/api/v1/messages
