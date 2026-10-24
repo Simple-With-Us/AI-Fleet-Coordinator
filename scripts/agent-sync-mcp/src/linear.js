@@ -545,7 +545,7 @@ export const LINEAR_TOOLS = Object.freeze([
   {
     name: "linear_claim",
     title: "Linear Claim",
-    description: "Claim an issue for your seat:  sets the claimed:<seat> label where it exists and delegates the issue to the seat's Linear app user, and posts a CLAIMED comment.  An issue another seat holds is refused.  Writes need the server's write switch on.",
+    description: "Claim an issue for your seat:  sets the claimed:<seat> label and posts a CLAIMED comment.  On the hosted server the claim label is optional and the issue is also delegated to the seat's Linear app user;  the stdio server's board CLI claims by label only and sends no delegate.  An issue another seat holds is refused.  Writes need the server's write switch on.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
