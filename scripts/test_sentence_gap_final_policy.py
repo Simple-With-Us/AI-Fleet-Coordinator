@@ -149,7 +149,9 @@ class PaneExceptionTests(unittest.TestCase):
         for rel in EXCEPTION_FILES:
             with self.subTest(rel=rel):
                 text = _read(rel)
-                self.assertIn("Claude Code", text, "%s does not name the Claude Code Code tab" % rel)
+                self.assertIn(
+                    "Claude Code", text, "%s does not name the Claude Code Code tab" % rel
+                )
                 self.assertIn(
                     "MiniMax Code", text, "%s does not name the MiniMax Code chat pane" % rel
                 )
