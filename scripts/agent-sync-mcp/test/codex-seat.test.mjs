@@ -8,15 +8,24 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { KNOWN_SEATS, SEAT_LABELS, SEAT_SECRETS, WAKE_SECRETS, loadConfig } from "../src/config.js";
 import { allowedIdentities, toolListFor } from "../src/delegated-identities.js";
 import { seatTagFor } from "../src/contract.js";
 import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
 
+// codex-bot's address comes from the fleet registry (the CODEX row of
+// fleet-apps.json, the file src/notes.js bundles), so the test carries no
+// address of its own.  It has to be a real realm address:  loadConfig refuses
+// any ZULIP_EMAIL_<SEAT> outside the realm (BOT_EMAIL_RE in src/config.js).
+const CODEX_EMAIL = JSON.parse(readFileSync(path.join(ROOT, "../../fleet-apps.json"), "utf8"))
+  .seats.find((s) => s.tag === "CODEX")?.zulipBotEmail;
+
 test("CODEX is a known seat with its own secret names, label and full tools", () => {
+  assert.equal(typeof CODEX_EMAIL, "string", "fleet-apps.json carries the CODEX bot address");
   assert.ok(KNOWN_SEATS.includes("CODEX"));
   assert.deepEqual(SEAT_SECRETS.CODEX, { key: "ZULIP_KEY_CODEX", email: "ZULIP_EMAIL_CODEX" });
   assert.equal(SEAT_LABELS.CODEX, "Codex");
@@ -24,15 +33,15 @@ test("CODEX is a known seat with its own secret names, label and full tools", ()
   assert.deepEqual([...allowedIdentities("CODEX")], ["CODEX"], "a Codex grant acts only as Codex");
   assert.ok(toolListFor("CODEX").list.length > 0, "Codex gets the full hosted tool set");
   // codex-bot signs as its own seat:  no tag expectation entry is needed.
-  assert.equal(seatTagFor({ is_bot: true, email: "codex-bot@simplewithus.zulipchat.com", full_name: "Codex" }), "CODEX");
+  assert.equal(seatTagFor({ is_bot: true, email: CODEX_EMAIL, full_name: "Codex" }), "CODEX");
 });
 
 test("CODEX is not hosted yet, and hosting it without its email var fails closed", () => {
   const prod = loadConfig(wranglerConfig().vars);
   assert.ok(!prod.hostedSeats.includes("CODEX"), "HOSTED_SEATS gains CODEX only with its captured pair at deploy");
   assert.throws(() => loadConfig(testEnv({ HOSTED_SEATS: "JET,CODEX" })), /ZULIP_EMAIL_CODEX/, "an unprovisioned email var refuses config load rather than serving a wrong binding");
-  const cfg = loadConfig(testEnv({ HOSTED_SEATS: "JET,CODEX", ZULIP_EMAIL_CODEX: "codex-bot@simplewithus.zulipchat.com" }));
-  assert.equal(cfg.botEmails.CODEX, "codex-bot@simplewithus.zulipchat.com");
+  const cfg = loadConfig(testEnv({ HOSTED_SEATS: "JET,CODEX", ZULIP_EMAIL_CODEX: CODEX_EMAIL }));
+  assert.equal(cfg.botEmails.CODEX, CODEX_EMAIL);
 });
 
 test("the key installer reads Codex's existing Fleet-OPS entry instead of duplicating it", () => {
@@ -42,28 +51,59 @@ test("the key installer reads Codex's existing Fleet-OPS entry instead of duplic
   // rule);  the test pins the consolidation mapping, not the literal.
   // The project is resolved at call time (None marker in the table);  the
   // behavioral resolution is pinned in the seat_entry test below.
-  assert.match(flat, /"CODEX": \( None, .*"CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY", "ZULIP_KEY_CODEX", "ZULIP_EMAIL_CODEX", \)/);
+  assert.match(flat, /"CODEX": \( None, "CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY", "ZULIP_KEY_CODEX", "ZULIP_EMAIL_CODEX", \)/);
 });
 
-test("install_seat_key seat_entry: CODEX 5-tuple and legacy derivation are behavioral, project id resolvable (kody 4363264472 + 4363264918)", () => {
+test("install_seat_key seat_entry: CODEX and MA resolve the Fleet-OPS project at call time, legacy seats derive theirs (kody 4363264472, 4363264918, 4366278313, 4366278510, 4366279206)", () => {
   const program = [
     "import json, sys",
     "sys.path.insert(0, sys.argv[1])",
     "import install_seat_key as m",
-    "print(json.dumps({'codex': m.seat_entry('CODEX'), 'cursor': m.seat_entry('CURSOR'), 'afc': m.INFISICAL_PROJECT, 'fleetops': m.FLEET_OPS_PROJECT}))",
+    "print(json.dumps({'codex': m.seat_entry('CODEX'), 'ma': m.seat_entry('MA'), 'cursor': m.seat_entry('CURSOR'), 'afc': m.INFISICAL_PROJECT, 'fleetops': m.FLEET_OPS_PROJECT}))",
   ].join("\n");
+  // An empty HOME and a cleared INFISICAL_FLEET_OPS_PROJECT_ID, so the host's
+  // own ~/.agent-sync/fleet-ops-project-id or environment cannot stand in for
+  // the committed fallback.
+  const home = mkdtempSync(path.join(tmpdir(), "codex-seat-home-"));
   const run = (env = {}) =>
-    JSON.parse(execFileSync("python3", ["-c", program, ROOT], { env: { ...process.env, ...env }, encoding: "utf8" }));
-  const d = run();
-  // Ordered tuples, names pinned; the project ids themselves come from the
-  // module (fleet-infra mock-data rule: no literal ids in fixtures).
-  assert.deepEqual(d.codex, [d.fleetops, "CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY", "ZULIP_KEY_CODEX", "ZULIP_EMAIL_CODEX"]);
-  assert.deepEqual(d.cursor, [d.afc, "ZULIP_CURSOR_EMAIL", "ZULIP_CURSOR_API_KEY", "ZULIP_KEY_CURSOR", "ZULIP_EMAIL_CURSOR"]);
-  // Env resolution wins over the committed fallback; legacy seats unaffected.
-  const mockId = "00000000-0000-4000-8000-000000000000";
-  const d2 = run({ INFISICAL_FLEET_OPS_PROJECT_ID: mockId });
-  assert.equal(d2.codex[0], mockId, "INFISICAL_FLEET_OPS_PROJECT_ID resolves ahead of the fallback");
-  assert.equal(d2.cursor[0], d.afc);
+    execFileSync("python3", ["-c", program, ROOT], {
+      env: { ...process.env, HOME: home, INFISICAL_FLEET_OPS_PROJECT_ID: "", ...env },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  const refusesNonUuid = (bad) => (err) =>
+    /\(INFISICAL_FLEET_OPS_PROJECT_ID or ~\/\.agent-sync\/fleet-ops-project-id\) is not a UUID/.test(err.stderr) &&
+    !err.stderr.includes(bad);
+  try {
+    const d = JSON.parse(run());
+    // Ordered tuples, names pinned; the project ids themselves come from the
+    // module (fleet-infra mock-data rule: no literal ids in fixtures).
+    assert.deepEqual(d.codex, [d.fleetops, "CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY", "ZULIP_KEY_CODEX", "ZULIP_EMAIL_CODEX"]);
+    assert.deepEqual(d.ma, [d.fleetops, "MA_ZULIP_EMAIL", "MA_ZULIP_KEY", "ZULIP_KEY_MA", "ZULIP_EMAIL_MA"]);
+    assert.deepEqual(d.cursor, [d.afc, "ZULIP_CURSOR_EMAIL", "ZULIP_CURSOR_API_KEY", "ZULIP_KEY_CURSOR", "ZULIP_EMAIL_CURSOR"]);
+    // The environment wins over the committed fallback, for both Fleet-OPS
+    // seats;  legacy seats are unaffected.
+    const envId = "00000000-0000-4000-8000-000000000000";
+    const d2 = JSON.parse(run({ INFISICAL_FLEET_OPS_PROJECT_ID: envId }));
+    assert.equal(d2.codex[0], envId, "INFISICAL_FLEET_OPS_PROJECT_ID resolves ahead of the fallback");
+    assert.equal(d2.ma[0], envId, "MA follows the same resolution as CODEX");
+    assert.equal(d2.cursor[0], d.afc);
+    // With the environment unset, the first line of ~/.agent-sync/fleet-ops-project-id.
+    const fileId = "11111111-1111-4111-8111-111111111111";
+    const idFile = path.join(home, ".agent-sync", "fleet-ops-project-id");
+    mkdirSync(path.dirname(idFile));
+    writeFileSync(idFile, `${fileId}\n`);
+    const d3 = JSON.parse(run());
+    assert.equal(d3.codex[0], fileId);
+    assert.equal(d3.ma[0], fileId);
+    // A value that is set but is not a UUID fails closed, naming both sources
+    // and never echoing the value, whichever source holds it.
+    assert.throws(() => run({ INFISICAL_FLEET_OPS_PROJECT_ID: "zz-typo-zz" }), refusesNonUuid("zz-typo-zz"));
+    writeFileSync(idFile, "yy-typo-yy\n");
+    assert.throws(() => run(), refusesNonUuid("yy-typo-yy"));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
 });
 
 test("install_seat_key refuses malformed Infisical responses instead of reading partial data (kody 4363264042)", () => {
