@@ -162,6 +162,9 @@ export class SeatGate extends DurableObject {
     return state.gbBearerCheck(this.store, hash);
   }
 
+  gbBearerMintChecked(entry) {
+    return state.gbBearerMintChecked(this.store, entry);
+  }
   gbBearerStatus() {
     return state.gbBearerStatus(this.store);
   }

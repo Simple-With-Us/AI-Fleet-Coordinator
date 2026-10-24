@@ -38,6 +38,7 @@ import {
   SHARED_IDENTITY_SEATS,
   SEAT_LABELS,
   WAKE_SECRETS,
+  KNOWN_SEATS,
 } from "./config.js";
 import {
   hostAllowed,
@@ -59,8 +60,9 @@ import {
   safeEqual,
 } from "./policy.js";
 import { verifyAccessJwt } from "./access.js";
-import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerRevealPage } from "./pages.js";
-import { gbBearerFromRequest, parseGbBearer, newGbBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
+import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
+import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
+import { serveGrBearerVerify } from "./gr-verify.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
 import { IdentityRouter, loadDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
@@ -432,6 +434,69 @@ async function serveGbBearerMcp(request, env, token) {
   return serveMcpRequest(request, routed, authInfo, null);
 }
 
+// ---------------------------------------------------------------- /mcp with a seat bearer
+
+/**
+ * A seat's own admin-minted bearer (sbt_<seat>_..., src/gb-bearer.js) in place of
+ * its OAuth grant.  Accepted ONLY when the mint recorded the owner's per-seat
+ * choice (mcp_accept, shown with its disclosure in /admin):  a bearer that
+ * bypasses the consent flow is never inferred.  The connection acts only as
+ * that seat (no createIdentity, whatever shared group it is in).  Every refusal
+ * is the same generic 401.  A paused seat, an unhosted seat, a missing key and
+ * an expired bearer all refuse.
+ */
+async function serveSbtBearerMcp(request, env, token) {
+  const config = loadConfig(env);
+  const refuse = () => invalidToken("This token is not valid.");
+  const parsed = parseSbtBearer(token);
+  if (!parsed) return refuse();
+  const { identity: seat } = parsed;
+  if (!config.hostedSeats.includes(seat)) return refuse();
+  const secretNames = SEAT_SECRETS[seat];
+  const key = typeof env[secretNames?.key] === "string" ? env[secretNames.key].trim() : "";
+  const email = config.botEmails[seat];
+  if (!key || !email) return refuse();
+  const seatGate = gate(env, seat);
+  const checked = await seatGate.gbBearerCheck(await sha256Hex(parsed.token));
+  if (!checked.ok) {
+    // Same cap discipline as serveGbBearerMcp:  only an expired-but-matching
+    // bearer writes a row;  guesses are free to send.
+    if (checked.reason === "expired") {
+      try { await seatGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
+    }
+    return refuse();
+  }
+  if (checked.mcp_accept !== true) return refuse();
+  const state = await seatGate.getState();
+  if (state.paused) return invalidToken("This identity is paused.");
+  const scopes = ["zulip:read", "zulip:write"];
+  const grantRef = await sha256Ref(`sbt-bearer:${seat}`);
+  const tools = new HostedTools({
+    seat,
+    callerSeat: seat,
+    callerGate: seatGate,
+    verifySeat: true,
+    scopes,
+    clientId: "sbt-bearer",
+    grantRef,
+    paused: false,
+    config,
+    zulip: new ZulipClient({ email, key }),
+    key,
+    gate: seatGate,
+    cf: { asn: request.cf?.asn, country: request.cf?.country },
+    recall: recallClientFromEnv(env),
+    linear: linearClientFromEnv(env, seat, { gate: seatGate }),
+    linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
+    fleetlink: fleetlinkClientFromEnv(env),
+    listener: listenerClientFromEnv(env, seat),
+    notes: operatorNotesClientFromEnv(env),
+  });
+  const routed = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
+  const authInfo = { token: grantRef, clientId: "sbt-bearer", scopes, extra: { seat } };
+  return serveMcpRequest(request, routed, authInfo, null);
+}
+
 // ---------------------------------------------------------------- /internal/wake/<SEAT>
 
 function jsonResponse(body, status, headers = {}) {
@@ -672,7 +737,7 @@ async function authorizeGet(request, env, config, oauth, email) {
   if (!pick.ok) {
     await logRefusal(env, { where: "authorize", reason: pick.reason, clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
     if (pick.reason === "not_armed") return noConnectionPage();
-    return errorPage("More Than One Seat Armed", `These seats share this app's callback:  ${pre.seats.join(", ")}.  More than one is armed, so the connection cannot tell which one you meant.  Disarm all but one in Agent-Sync Admin, then start the connection again.`, 409);
+    return errorPage("More Than One Seat Armed", `These seats share this app's callback:  ${pre.seats.join(", ")}.  More than one is armed, so the connection cannot tell which one you meant.  Disarm all but one in ST-MCP Admin, then start the connection again.`, 409);
   }
   const seat = pick.seat;
   // An allowlisted CIMD id names its seat;  it must be the armed one.  Checked
@@ -702,7 +767,7 @@ async function authorizeGet(request, env, config, oauth, email) {
   // callback) cannot mint a grant for this one.
   if (!clientBoundToSeat(client, seat, authRequest.redirectUri, config)) {
     await logRefusal(env, { where: "authorize", reason: "client_seat_mismatch", clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
-    return errorPage("Request Refused", `This client is not bound to ${seat}.  Create a manual client for ${seat} in Agent-Sync Admin and use its client ID.`, 400);
+    return errorPage("Request Refused", `This client is not bound to ${seat}.  Create a manual client for ${seat} in ST-MCP Admin and use its client ID.`, 400);
   }
 
   const consent = await oauth.beginConsent(authRequest);
@@ -805,7 +870,7 @@ async function authorizePost(request, env, config, oauth, email) {
   if (!pick.ok || pick.seat !== seat) {
     const reason = pick.ok ? "seat_family_mismatch" : pick.reason;
     await logRefusal(env, { where: "consent", reason, clientId: approved.request.clientId, redirectUri: approved.request.redirectUri, by: email });
-    if (reason === "not_armed") return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in Agent-Sync Admin.", 409);
+    if (reason === "not_armed") return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in ST-MCP Admin.", 409);
     return errorPage("Request Refused", `The armed seat is no longer ${seat}, or more than one seat sharing this app's callback is armed.  Leave exactly one armed and start the connection again.`, 409);
   }
   // Resolve the display name first:  it may fetch a CIMD document, and a failure
@@ -826,7 +891,7 @@ async function authorizePost(request, env, config, oauth, email) {
   const seatGate = gate(env, seat);
   const won = await seatGate.approve({ by: email });
   if (!won.ok) {
-    return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in Agent-Sync Admin.", 409);
+    return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in ST-MCP Admin.", 409);
   }
 
   const approvedAt = Date.now();
@@ -900,6 +965,10 @@ async function serveAdmin(request, env, config, oauth, email) {
   const path = new URL(request.url).pathname;
   if (path === "/admin" && request.method === "GET") {
     const csrf = newCsrf();
+    // One idempotency key per rendered page for the bearer mint forms:  an
+    // accidental resubmit of the same form returns the same reveal instead of
+    // rotating the bearer (src/pages.js gbBearerSection).
+    const mintId = Date.now().toString(16).padStart(12, "0") + newCsrf().slice(0, 20);
     const done = new URL(request.url).searchParams.get("done");
     const generatedAt = Date.now();
     const seats = [];
@@ -951,14 +1020,26 @@ async function serveAdmin(request, env, config, oauth, email) {
     const [refusals, tokenRefusals, runtimeErrors] = [0, 1, 2].map(globalValue);
     const diagnosticsUnavailable = globalReads.some((r) => r.status === "rejected");
     const delegatedRoles = loadDelegatedCredentials(env).roles;
-    const gbBearers = await Promise.all(GB_IDENTITIES.map(async (identity) => {
-      let status = null;
-      try { status = await gate(env, identity).gbBearerStatus(); } catch { /* Shown as unknown. */ }
-      return { identity, credentials: delegatedRoles.has(identity), status };
-    }));
+    const seatKeyOf = (seat) => (typeof env[SEAT_SECRETS[seat]?.key] === "string" && env[SEAT_SECRETS[seat].key].trim() !== "");
+    const gbBearers = await Promise.all([
+      ...GB_IDENTITIES.map(async (identity) => {
+        let status = null;
+        try { status = await gate(env, identity).gbBearerStatus(); } catch { /* Shown as unknown. */ }
+        return { identity, kind: "persona", credentials: delegatedRoles.has(identity), status };
+      }),
+      // Every seat may hold a bearer too (owner direction 2026-10-23:  all apps in
+      // this panel, one credential per identity, honored by ST-MCP and GR-MCP).
+      // Mintable only while the seat is hosted and its Zulip key is configured.
+      ...KNOWN_SEATS.map(async (identity) => {
+        let status = null;
+        try { status = await gate(env, identity).gbBearerStatus(); } catch { /* Shown as unknown. */ }
+        return { identity, kind: "seat", credentials: config.hostedSeats.includes(identity) && seatKeyOf(identity), status };
+      }),
+    ]);
     return adminPage(
       {
         gbBearers,
+        mintId,
         email,
         seats,
         clients: clients.filter((c) => !isUrlShapedClientId(c.clientId)).map((c) => ({ ...c, seat: manualClientSeat(c) })),
@@ -985,8 +1066,8 @@ async function serveAdmin(request, env, config, oauth, email) {
   if (path === "/admin/action" && request.method === "POST") {
     if (!sameOriginPost(request, config.issuer, { requireFetchSite: true })) return errorPage("Request Refused", "Admin changes must come from the admin page.", 403);
     const parsed = await readForm(request, AdminForm, []);
-    if (!parsed.ok) return errorPage("Request Refused", "That form was not valid.  Reload Agent-Sync Admin and try again.", 400);
-    if (!safeEqual(parsed.data.csrf, readCookie(request, CSRF_COOKIE))) return errorPage("Request Refused", "The admin form expired.  Reload Agent-Sync Admin and try again.", 403);
+    if (!parsed.ok) return errorPage("Request Refused", "That form was not valid.  Reload ST-MCP Admin and try again.", 400);
+    if (!safeEqual(parsed.data.csrf, readCookie(request, CSRF_COOKIE))) return errorPage("Request Refused", "The admin form expired.  Reload ST-MCP Admin and try again.", 403);
     const { action, seat = "" } = parsed.data;
     const needsSeat = ["arm", "disarm", "pause", "unpause", "revoke", "create_manual_client"].includes(action);
     if (needsSeat && !config.hostedSeats.includes(seat)) return errorPage("Request Refused", "Unknown seat.", 400);
@@ -1046,16 +1127,38 @@ async function serveAdmin(request, env, config, oauth, email) {
       }
       case "mint_gb_bearer": {
         const identity = parsed.data.identity ?? "";
-        if (!GB_IDENTITIES.includes(identity) || !loadDelegatedCredentials(env).roles.has(identity)) return errorPage("Request Refused", "Unknown Grok Bot, or its credentials are not loaded.", 400);
-        const { token, hash } = await newGbBearer(identity);
+        if (!GB_IDENTITIES.includes(identity) && !KNOWN_SEATS.includes(identity)) return errorPage("Request Refused", "Unknown identity.", 400);
+        const mintId = parsed.data.mint_id ?? "";
         const expiresAt = Date.now() + GB_BEARER_TTL_MS;
-        await gate(env, identity).gbBearerMint({ hash, by: email, expiresAt });
-        // The only response that ever carries the token:  no redirect, no log line, nothing stored.
-        return gbBearerRevealPage({ identity, token, expiresAt });
+        let token, mcpAccept, kind;
+        if (GB_IDENTITIES.includes(identity)) {
+          if (!loadDelegatedCredentials(env).roles.has(identity)) return errorPage("Request Refused", "Unknown Grok Bot, or its credentials are not loaded.", 400);
+          ({ token } = await newGbBearer(identity));
+          // A persona's bearer is its only credential:  accepted on /mcp by design.
+          mcpAccept = true; kind = "persona";
+        } else {
+          const keyVar = SEAT_SECRETS[identity]?.key;
+          if (!config.hostedSeats.includes(identity) || typeof env[keyVar] !== "string" || env[keyVar].trim() === "") {
+            return errorPage("Request Refused", "That seat is not hosted or its credentials are not loaded.", 400);
+          }
+          ({ token } = await newSeatBearer(identity));
+          // The owner's per-seat consent choice travels with the mint and is
+          // recorded in the gate row and audit:  /mcp accepts this bearer only
+          // when the box was ticked (src/pages.js states what that means).
+          mcpAccept = parsed.data.mcp_accept === "1"; kind = "seat";
+        }
+        // Check-consume-mint is one transaction in the identity's own gate
+        // (src/seat-state.js gbBearerMintChecked):  a stale or already-used form
+        // refuses WITHOUT touching the bearer, so no refresh, resubmit or
+        // days-later replay can rotate it.  The only response that ever carries
+        // the token:  no redirect, no log line, nothing stored.
+        const minted = await gate(env, identity).gbBearerMintChecked({ mintId, hash: await sha256Hex(token), by: email, expiresAt, mcpAccept });
+        if (!minted.minted) return gbBearerMintRefusedPage({ identity, reason: minted.reason });
+        return gbBearerRevealPage({ identity, token, expiresAt, kind, mcpAccept });
       }
       case "revoke_gb_bearer": {
         const identity = parsed.data.identity ?? "";
-        if (!GB_IDENTITIES.includes(identity)) return errorPage("Request Refused", "Unknown Grok Bot.", 400);
+        if (!GB_IDENTITIES.includes(identity) && !KNOWN_SEATS.includes(identity)) return errorPage("Request Refused", "Unknown identity.", 400);
         await gate(env, identity).gbBearerRevoke({ by: email });
         break;
       }
@@ -1204,8 +1307,14 @@ export default {
       await pauseOnRefreshMismatch(env, config, gated.form, response);
       return response;
     }
+    if (route === "gr_verify") return serveGrBearerVerify(request, env, gate);
     const gbBearer = route === "mcp" ? gbBearerFromRequest(request) : null;
-    const response = gbBearer ? await serveGbBearerMcp(request, env, gbBearer) : await fetchProvider(request, env, ctx);
+    const sbtBearer = route === "mcp" && !gbBearer ? sbtBearerFromRequest(request) : null;
+    const response = gbBearer
+      ? await serveGbBearerMcp(request, env, gbBearer)
+      : sbtBearer
+        ? await serveSbtBearerMcp(request, env, sbtBearer)
+        : await fetchProvider(request, env, ctx);
     // An unauthenticated MCP discovery 401 is normal OAuth negotiation.
     // Count only failed requests that actually supplied authorization.
     if (route === "mcp" && response.status >= 400 && request.headers.has("authorization") && response.headers.get("X-Agent-Sync-Diagnostic") !== "recorded") {

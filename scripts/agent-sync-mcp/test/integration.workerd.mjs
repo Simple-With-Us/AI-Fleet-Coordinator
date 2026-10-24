@@ -321,9 +321,12 @@ async function browser(pathname, { method = "GET", form, jwt = true, origin = tr
 async function adminAction(action, fields = {}) {
   const page = await browser("/admin");
   assert.equal(page.status, 200);
-  const csrf = (await page.text()).match(/name="csrf" value="([0-9a-f]{64})"/)[1];
-  return browser("/admin/action", { method: "POST", form: { csrf, action, ...fields } });
+  const text = await page.text();
+  const csrf = text.match(/name="csrf" value="([0-9a-f]{64})"/)[1];
+  const mintId = text.match(/name="mint_id" value="([0-9a-f]{32})"/)?.[1];
+  return browser("/admin/action", { method: "POST", form: { csrf, ...(mintId ? { mint_id: mintId } : {}), action, ...fields } });
 }
+
 
 function pkce() {
   const verifier = b64url(randomBytes(32));
@@ -1728,7 +1731,7 @@ try {
     // Never again:  the admin page shows state, not the token.
     const page = await (await browser("/admin")).text();
     assert.ok(!page.includes(bearer));
-    assert.match(page, /Grok Bot Bearers/);
+    assert.match(page, /Per-Identity Bearers/);
     const who = (await call(bearer, "whoami")).json.result;
     assert.equal(who.isError, undefined, JSON.stringify(who));
     assert.equal(who.structuredContent.seat, PERSONA);
@@ -1759,6 +1762,101 @@ try {
     // A persona with no credentials cannot mint.
     const none = await adminAction("mint_gb_bearer", { identity: other });
     assert.equal(none.status, 400);
+  });
+
+  await step("a seat bearer: minted on /admin, serves /mcp only with the recorded acceptance, acts only as JET-CHAT, rotates and revokes", async () => {
+    // Minted without the tick:  GR-MCP's verify route may honor it, /mcp itself refuses.
+    const grOnly = await adminAction("mint_gb_bearer", { identity: "JET-CHAT" });
+    assert.equal(grOnly.status, 200);
+    const grOnlyHtml = await grOnly.text();
+    const grToken = grOnlyHtml.match(/sbt_jet-chat_[A-Za-z0-9_-]{43}/)?.[0];
+    assert.ok(grToken, "the mint response shows the seat token once");
+    assert.ok(grOnlyHtml.includes("ST-MCP&#39;s /mcp refuses this bearer"), "the unticked mint's reveal says /mcp refuses it");
+    assert.ok(!grOnlyHtml.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"), "and never implies it works on /mcp");
+    assert.equal((await mcp(grToken, "tools/list")).status, 401, "no recorded acceptance, no /mcp");
+    // Re-minted with the acceptance ticked.
+    const minted = await adminAction("mint_gb_bearer", { identity: "JET-CHAT", mcp_accept: "1" });
+    assert.equal(minted.status, 200);
+    const bearer = (await minted.text()).match(/sbt_jet-chat_[A-Za-z0-9_-]{43}/)?.[0];
+    assert.ok(bearer && bearer !== grToken, "rotation mints a different token");
+    assert.equal((await mcp(grToken, "tools/list")).status, 401, "the unticked token died with the rotation");
+    const listed = await mcp(bearer, "tools/list");
+    assert.equal(listed.status, 200, "the accepted seat bearer serves /mcp");
+    const who = (await call(bearer, "whoami")).json.result;
+    assert.equal(who.isError, undefined, JSON.stringify(who));
+    assert.equal(who.structuredContent.seat, "JET-CHAT");
+    // It acts only as JET-CHAT, even when asked to be another identity.
+    const echo = await call(bearer, "whoami", { identity: "ECHO" });
+    assert.equal(echo.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
+    // The admin page shows state, never the token.
+    const page = await (await browser("/admin")).text();
+    assert.ok(!page.includes(bearer));
+    // Revoke kills it at once.
+    const revoked = await adminAction("revoke_gb_bearer", { identity: "JET-CHAT" });
+    assert.equal(revoked.status, 303);
+    assert.equal((await mcp(bearer, "tools/list")).status, 401, "a revoked seat bearer is dead");
+  });
+
+  await step("a wake-only seat's bearer keeps it wake-only:  /mcp acceptance authenticates, it never widens the surface", async () => {
+    // JET is events-only post-split.  A bearer minted with the /mcp acceptance
+    // ticked authenticates on /mcp, but the seat's surface does not grow:  an
+    // empty tools/list and every tools/call a protocol error, exactly like the
+    // seat's own OAuth grant.  The acceptance records consent-flow replacement,
+    // never a capability grant.
+    const minted = await adminAction("mint_gb_bearer", { identity: "JET", mcp_accept: "1" });
+    assert.equal(minted.status, 200);
+    const bearer = (await minted.text()).match(/sbt_jet_[A-Za-z0-9_-]{43}/)?.[0];
+    assert.ok(bearer, "the wake-only seat's mint shows its token once");
+    const listed = await mcp(bearer, "tools/list");
+    assert.equal(listed.status, 200, "the accepted bearer authenticates on /mcp");
+    assert.deepEqual(listed.json.result.tools, [], "wake-only seat:  no tools, bearer or not");
+    const who = await call(bearer, "whoami");
+    assert.equal(who.status, 200);
+    assert.ok(who.json.error && !who.json.result, "whoami is a protocol error, the token still authenticates");
+    const revoked = await adminAction("revoke_gb_bearer", { identity: "JET" });
+    assert.equal(revoked.status, 303);
+    assert.equal((await mcp(bearer, "tools/list")).status, 401, "a revoked wake-only bearer is dead");
+  });
+
+  await step("a resubmitted or stale mint form is refused without mutation; a fresh deliberate mint still works", async () => {
+    const page = await browser("/admin");
+    const pageText = await page.text();
+    const csrf = pageText.match(/name="csrf" value="([0-9a-f]{64})"/)[1];
+    const mintId = pageText.match(/name="mint_id" value="([0-9a-f]{32})"/)[1];
+    const form = { csrf, mint_id: mintId, action: "mint_gb_bearer", identity: PERSONA };
+    const first = await browser("/admin/action", { method: "POST", form });
+    assert.equal(first.status, 200);
+    const bearer = (await first.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
+    // The exact resubmit (a refresh or double-click): refused, no mutation.
+    const second = await browser("/admin/action", { method: "POST", form });
+    assert.equal(second.status, 200);
+    const secondHtml = await second.text();
+    assert.match(secondHtml, /Nothing Was Minted/);
+    assert.ok(!/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/.test(secondHtml), "no token on the refusal page");
+    const who = (await call(bearer, "whoami")).json.result;
+    assert.equal(who.structuredContent.seat, PERSONA, "the original bearer survived the resubmit");
+    // A stale form (rendered over an hour ago, never used): refused, no mutation.
+    const staleId = (Date.now() - 2 * 3600_000).toString(16).padStart(12, "0") + "0".repeat(20);
+    const stale = await browser("/admin/action", { method: "POST", form: { ...form, mint_id: staleId } });
+    assert.match(await stale.text(), /Nothing Was Minted/);
+    const who2 = (await call(bearer, "whoami")).json.result;
+    assert.equal(who2.structuredContent.seat, PERSONA, "the stale replay changed nothing");
+    // A fresh deliberate mint (newly rendered page) still rotates on purpose.
+    const deliberate = await adminAction("mint_gb_bearer", { identity: PERSONA });
+    assert.equal(deliberate.status, 200);
+    const next = (await deliberate.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
+    assert.ok(next !== bearer, "a fresh form mints a replacement");
+    assert.equal((await mcp(bearer, "tools/list")).status, 401, "the deliberate rotation ended the old bearer");
+    await adminAction("revoke_gb_bearer", { identity: PERSONA });
+  });
+
+  await step("the seat rotation form states that an unticked rotation drops existing /mcp access", async () => {
+    await adminAction("mint_gb_bearer", { identity: "JET", mcp_accept: "1" });
+    const page = await (await browser("/admin")).text();
+    assert.match(page, /currently accepted on \/mcp\.  Rotating without the box ticked removes that/);
+    await adminAction("revoke_gb_bearer", { identity: "JET" });
+    const cleared = await (await browser("/admin")).text();
+    assert.ok(!cleared.includes("Rotating without the box ticked removes that"), "the consequence text disappears with no /mcp-accepted bearer");
   });
 
   await step("AFC-477 WhatsApp: real SeatGate storage, signed ingestion, owner and Operator provenance, eyes suppression and read/ack", async () => {

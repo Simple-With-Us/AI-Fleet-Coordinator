@@ -31,6 +31,16 @@ class SeatPolicy:
             "repos": ["Simple-With-Us/AI-Fleet-Coordinator", "Simple-With-Us/*"]
           }
         }
+
+    Auth modes (per seat):
+        "token"  (default) the seat presents its static provisioned bearer;
+                 "token" is required.
+        "shared" the seat presents its admin-minted ST-MCP bearer, resolved
+                 to its identity through the shared verifier
+                 (shared_bearer.SharedBearerVerifier);  "token" must be
+                 absent, and "identity" may name the identity the verifier
+                 must return (default: the seat name itself).  A shared seat
+                 is unreachable when no verifier is configured.
     """
 
     # PR-write actions are authored as the owner (PR-only token);  everything
@@ -51,7 +61,7 @@ class SeatPolicy:
     )
     ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS
 
-    def __init__(self, seats_json: str, rate_per_hour: int = 120):
+    def __init__(self, seats_json: str, rate_per_hour: int = 120, verifier=None):
         if not seats_json:
             raise PolicyError("GIT_RELAY_SEATS_JSON is empty")
         try:
@@ -64,9 +74,17 @@ class SeatPolicy:
         for seat, cfg in raw.items():
             if not isinstance(cfg, dict):
                 raise PolicyError(f"seat {seat!r}: config must be an object")
+            auth = str(cfg.get("auth") or "token")
+            if auth not in ("token", "shared"):
+                raise PolicyError(f"seat {seat!r}: auth must be \"token\" or \"shared\"")
             token = str(cfg.get("token") or "")
-            if len(token) < 16:
+            if auth == "shared" and token:
+                raise PolicyError(f"seat {seat!r}: a shared-auth seat must not carry a static token")
+            if auth == "token" and len(token) < 16:
                 raise PolicyError(f"seat {seat!r}: token missing or shorter than 16 characters")
+            identity = str(cfg.get("identity") or seat)
+            if auth == "shared" and not identity:
+                raise PolicyError(f"seat {seat!r}: shared auth needs an identity")
             actions = cfg.get("actions") or []
             repos = cfg.get("repos") or []
             unknown = [a for a in actions if a not in self.ALL_ACTIONS]
@@ -107,28 +125,58 @@ class SeatPolicy:
                         f"seat {seat!r}: mint_permissions outside the mint ceiling {outside}"
                     )
             self._seats[seat] = {
-                "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                "auth": auth,
+                "identity": identity,
+                "token_hash": hashlib.sha256(token.encode()).hexdigest() if token else None,
                 "actions": set(actions),
                 "repos": [str(r) for r in repos],
                 "app_slug": app_slug,
                 "mint_permissions": dict(mint_perms),
             }
+        # Two seats may never claim the same verified identity:  resolution
+        # would be order-dependent, and attribution is the point of the design.
+        claimed = {}
+        for seat, cfg in self._seats.items():
+            if cfg["auth"] == "shared":
+                other = claimed.get(cfg["identity"])
+                if other is not None:
+                    raise PolicyError(
+                        f"seats {other!r} and {seat!r} both claim verified identity {cfg['identity']!r}"
+                    )
+                claimed[cfg["identity"]] = seat
         if rate_per_hour < 1:
             raise PolicyError("rate_per_hour must be at least 1")
+        self._verifier = verifier
         self._rate_per_hour = rate_per_hour
         self._calls: dict[str, list[float]] = {}
         self._lock = threading.Lock()
 
     def authenticate(self, token: str) -> str | None:
-        """Return the seat whose token matches, or None.  Constant-time over seats."""
+        """Return the seat the presented credential resolves to, or None.
+
+        Static tokens compare constant-time over the seats that have one.
+        With no static match and a shared verifier configured, the bearer is
+        resolved through ST-MCP;  it must land on a seat in "shared" mode
+        whose configured identity the verifier confirmed.
+        """
         if not token:
             return None
         candidate = hashlib.sha256(token.encode()).hexdigest()
         match = None
         for seat, cfg in self._seats.items():
-            if hmac.compare_digest(candidate, cfg["token_hash"]):
+            if cfg["token_hash"] and hmac.compare_digest(candidate, cfg["token_hash"]):
                 match = seat
-        return match
+        if match is not None:
+            return match
+        if self._verifier is None:
+            return None
+        identity = self._verifier.resolve(token)
+        if identity is None:
+            return None
+        for seat, cfg in self._seats.items():
+            if cfg["auth"] == "shared" and cfg["identity"] == identity:
+                return seat
+        return None
 
     def _repo_allowed(self, seat: str, repo: str) -> bool:
         for pattern in self._seats[seat]["repos"]:

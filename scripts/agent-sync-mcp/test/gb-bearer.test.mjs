@@ -8,7 +8,7 @@ import {
   parseGbBearer, newGbBearer, sha256Hex, gbBearerFromRequest, roleOf, GB_BEARER_TTL_MS,
 } from "../src/gb-bearer.js";
 import { IdentityRouter, GB_IDENTITIES, allowedIdentities } from "../src/delegated-identities.js";
-import { gbBearerRevealPage, adminPage } from "../src/pages.js";
+import { gbBearerRevealPage, gbBearerMintRefusedPage, adminPage } from "../src/pages.js";
 import { AdminForm } from "../src/forms.js";
 import { okResult } from "../src/contract.js";
 
@@ -63,12 +63,12 @@ test("check accepts the hash, refuses a wrong one, and rotating replaces the old
   const store = S.memoryStore();
   const a = await newGbBearer(ID);
   await S.gbBearerMint(store, { hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW);
-  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 5), { ok: true });
+  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 5), { ok: true, mcp_accept: false });
   const b = await newGbBearer(ID);
   assert.deepEqual(await S.gbBearerCheck(store, b.hash, NOW + 5), { ok: false, reason: "mismatch" });
   await S.gbBearerMint(store, { hash: b.hash, by: "j", expiresAt: NOW + 1e9 }, NOW + 10);
   assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 20), { ok: false, reason: "mismatch" });
-  assert.deepEqual(await S.gbBearerCheck(store, b.hash, NOW + 20), { ok: true });
+  assert.deepEqual(await S.gbBearerCheck(store, b.hash, NOW + 20), { ok: true, mcp_accept: false });
   assert.equal((await S.gbBearerStatus(store, NOW + 20)).mint_count, 2);
 });
 
@@ -134,21 +134,148 @@ test("a bearer connection can act only as its own persona", async () => {
   assert.equal(caller.calls.length, 1);
 });
 
-test("the reveal page shows the token once, escaped, and is not cacheable", async () => {
-  const res = gbBearerRevealPage({ identity: ID, token: "gbb_fixer_<script>x", expiresAt: NOW });
+test("the reveal page shows the token once, escaped, single-use form, and is not cacheable", async () => {
+  const res = gbBearerRevealPage({ identity: ID, token: "gbb_fixer_<script>x", expiresAt: NOW, kind: "persona", mcpAccept: true });
   const html = await res.text();
   assert.match(html, /only time it is shown/);
+  assert.match(html, /resubmit is refused and the bearer stays exactly as it is/);
   assert.ok(html.includes("gbb_fixer_&#60;script&#62;x"));
   assert.ok(!html.includes("<script>x"));
   assert.match(res.headers.get("cache-control"), /no-store/);
 });
 
-test("the admin form accepts the bearer actions with a GB identity only", () => {
+test("the reveal send line matches what the minted bearer can actually do", async () => {
+  // Persona:  ST-MCP /mcp and GR-MCP.
+  const persona = await gbBearerRevealPage({ identity: ID, token: "t", expiresAt: NOW, kind: "persona", mcpAccept: true }).text();
+  assert.ok(persona.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  // Ticked seat:  same reach.
+  const ticked = await gbBearerRevealPage({ identity: "JET", token: "t", expiresAt: NOW, kind: "seat", mcpAccept: true }).text();
+  assert.ok(ticked.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  // Unticked seat:  GR-MCP ONLY, and the page says /mcp refuses it - it must
+  // never imply the bearer works on ST-MCP's /mcp.
+  const unticked = await gbBearerRevealPage({ identity: "JET", token: "t", expiresAt: NOW, kind: "seat", mcpAccept: false }).text();
+  assert.ok(unticked.includes("to GR-MCP (git-relay) only"));
+  assert.ok(unticked.includes("ST-MCP&#39;s /mcp refuses this bearer"));
+  assert.ok(!unticked.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+});
+
+test("the refused mint page never shows a token and states nothing changed", async () => {
+  const res = gbBearerMintRefusedPage({ identity: ID });
+  const html = await res.text();
+  assert.match(html, /Nothing Was Minted/);
+  assert.match(html, /current one is unchanged/);
+  assert.ok(!/gbb_|sbt_/.test(html));
+  assert.match(res.headers.get("cache-control"), /no-store/);
+});
+
+const mintIdAt = (ms, tail = "a".repeat(20)) => ms.toString(16).padStart(12, "0") + tail;
+
+test("checked mint: fresh form mints, resubmit refuses consumed, stale and future refuse, nothing mutates", async () => {
+  const store = S.memoryStore();
+  const a = await newGbBearer(ID);
+  const ok = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW), hash: a.hash, by: "j", expiresAt: NOW + 1e9, mcpAccept: true }, NOW);
+  assert.equal(ok.minted, true);
+  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 5), { ok: true, mcp_accept: true });
+  // Same form again: refused, bearer untouched.
+  const again = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW), hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 2e9, mcpAccept: false }, NOW + 1000);
+  assert.deepEqual(again, { minted: false, reason: "consumed" });
+  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 1005), { ok: true, mcp_accept: true }, "the first bearer survives the replay");
+  assert.equal((await S.gbBearerStatus(store, NOW + 1005)).expires_at, NOW + 1e9, "no state mutation on refusal");
+  // Stale form (older than the TTL): refused, nothing minted.
+  const stale = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW - S.GB_MINT_FORM_TTL_MS - 1000, "b".repeat(20)), hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW);
+  assert.deepEqual(stale, { minted: false, reason: "stale" });
+  // Future form beyond the skew: refused.
+  const future = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW + 120_000, "c".repeat(20)), hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW);
+  assert.deepEqual(future, { minted: false, reason: "stale" });
+  // A fresh deliberate mint still works after refusals.
+  const b = await newGbBearer(ID);
+  const ok2 = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW + 2000, "d".repeat(20)), hash: b.hash, by: "j", expiresAt: NOW + 3e9, mcpAccept: false }, NOW + 2000);
+  assert.equal(ok2.minted, true);
+  assert.deepEqual(await S.gbBearerCheck(store, b.hash, NOW + 2005), { ok: true, mcp_accept: false });
+  // The refusal was audited, the refused mint left no trace in the bearer row.
+  const auditRows = JSON.stringify([...store.map.keys()]);
+  assert.ok(auditRows.includes("audit"));
+});
+
+test("replay rejection spans the whole validity window: 64+ mints, then the oldest form replays refused", async () => {
+  const store = S.memoryStore();
+  const firstId = mintIdAt(NOW, "0".repeat(20));
+  for (let i = 0; i < 64; i++) {
+    const b = await newGbBearer(ID);
+    const r = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW + i * 1000, String(i).padStart(20, "0")), hash: b.hash, by: "j", expiresAt: NOW + 1e9 }, NOW + i * 1000);
+    assert.equal(r.minted, true, `mint ${i}`);
+  }
+  // The 64-record window is full of still-fresh forms: the oldest form's
+  // tombstone was NOT evicted, its replay still refuses...
+  const replay = await S.gbBearerMintChecked(store, { mintId: firstId, hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 2e9 }, NOW + 64_000);
+  assert.deepEqual(replay, { minted: false, reason: "consumed" });
+  // ... and a 65th fresh form refuses fail-closed instead of evicting it.
+  const sixtyFive = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW + 64_000, "f".repeat(20)), hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 1e9 }, NOW + 64_000);
+  assert.deepEqual(sixtyFive, { minted: false, reason: "busy" });
+  assert.equal((await S.gbBearerStatus(store, NOW + 64_000)).mint_count, 64, "no 65th mutation");
+  // Only records past their validity window evict; the old form then refuses as stale, never mints.
+  const later = NOW + S.GB_MINT_FORM_TTL_MS + 1000;
+  const b2 = await newGbBearer(ID);
+  const ok = await S.gbBearerMintChecked(store, { mintId: mintIdAt(later, "e".repeat(20)), hash: b2.hash, by: "j", expiresAt: later + 1e9 }, later);
+  assert.equal(ok.minted, true, "mints resume once the window drains");
+  assert.ok(store.map.get("gb_bearer_mint_forms").consumed.length <= 64, "bounded");
+  const oldReplay = await S.gbBearerMintChecked(store, { mintId: firstId, hash: b2.hash, by: "j", expiresAt: later + 1e9 }, later + 1000);
+  assert.deepEqual(oldReplay, { minted: false, reason: "stale" });
+});
+
+test("concurrent identical submissions mint exactly once", async () => {
+  const store = S.memoryStore();
+  const a = await newGbBearer(ID);
+  const b = await newGbBearer(ID);
+  const mintId = mintIdAt(NOW);
+  const [r1, r2] = await Promise.all([
+    S.gbBearerMintChecked(store, { mintId, hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW),
+    S.gbBearerMintChecked(store, { mintId, hash: b.hash, by: "j", expiresAt: NOW + 1e9 }, NOW),
+  ]);
+  assert.equal([r1.minted, r2.minted].filter(Boolean).length, 1, "exactly one mint landed");
+  assert.equal((await S.gbBearerStatus(store, NOW)).mint_count, 1);
+});
+
+test("a mid-mint failure rolls back: no bearer, no consumed form, retry succeeds", async () => {
+  // A transactional store that really rolls back (the Durable Object's
+  // storage.transaction semantics), rigged to fail the consumed-marker write.
+  const base = S.memoryStore();
+  const store = Object.create(base);
+  store.transaction = async (cb) => {
+    const snapshot = new Map([...base.map.entries()]);
+    try { return await cb(base); }
+    catch (e) { base.map.clear(); for (const [k, v] of snapshot) base.map.set(k, v); throw e; }
+  };
+  const a = await newGbBearer(ID);
+  const mintId = mintIdAt(NOW);
+  const realPut = base.put.bind(base);
+  base.put = async (k, v) => { if (k === "gb_bearer_mint_forms") throw new Error("storage fault"); return realPut(k, v); };
+  await assert.rejects(S.gbBearerMintChecked(store, { mintId, hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW), /storage fault/);
+  base.put = realPut;
+  assert.equal((await S.gbBearerStatus(store, NOW)).active, false, "no bearer row survived the fault");
+  assert.equal(store.map.has("gb_bearer_mint_forms"), false, "no consumed marker survived the fault");
+  const retry = await S.gbBearerMintChecked(store, { mintId, hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW + 1000);
+  assert.equal(retry.minted, true, "the same form is usable after a rolled-back fault");
+  // And the whole mint happens inside ONE transaction.
+  let transactions = 0;
+  const spy = Object.create(base);
+  spy.transaction = (cb) => { transactions++; return base.transaction(cb); };
+  await S.gbBearerMintChecked(spy, { mintId: mintIdAt(NOW + 5000, "9".repeat(20)), hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW + 5000);
+  assert.equal(transactions, 1, "check-consume-mint is a single transaction");
+});
+
+test("the admin form accepts the bearer actions for a persona or a known seat only", () => {
   const csrf = "a".repeat(64);
   assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: ID }).success, true);
   assert.equal(AdminForm.safeParse({ csrf, action: "revoke_gb_bearer", identity: ID }).success, true);
-  assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: "ECHO" }).success, false);
+  assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: "ECHO", mcp_accept: "1" }).success, true);
+  assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: "ECHO" }).success, true);
   assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: "GB-FIXER; DROP" }).success, false);
+  assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: "gb-fixer" }).success, false);
+  assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: ID, mint_id: "a".repeat(32) }).success, true);
+  assert.equal(AdminForm.safeParse({ csrf, action: "mint_gb_bearer", identity: ID, mint_id: "not-hex" }).success, false);
+  // An uppercase unknown name passes the form's shape check;  the admin
+  // handler is what refuses an identity that is no persona and no seat.
 });
 
 test("the admin section lists status and buttons and never a token or hash", async () => {
@@ -159,7 +286,7 @@ test("the admin section lists status and buttons and never a token or hash", asy
       { identity: GB_IDENTITIES[1], credentials: false, status: { active: false } },
     ],
   }, new Headers()).text();
-  assert.match(html, /Grok Bot Bearers/);
+  assert.match(html, /Per-Identity Bearers/);
   assert.match(html, /Rotate \(Mint New\)/);
   assert.match(html, /No credentials loaded/);
   assert.ok(!/gbb_/.test(html));
