@@ -30,10 +30,10 @@ Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet 
 | Tool (stdio and hosted) | CLI verb | Arguments (defaults) | Annotations | Returns |
 | --- | --- | --- | --- | --- |
 | `whoami` | `whoami` | none | readOnly | shared seat/configuration metadata and verified Zulip identity |
-| `zulip_topics` | `topics` | `channel` ("agent-sync"), `limit` 1–100 (30) | readOnly | envelope with one `{name, max_id, resolved}` line per topic |
-| `zulip_read_topic` | `read` | `channel` ("agent-sync"), `topic` (required, at most 60 characters), `since_id`, `limit` 1–50 (20), `include_self` (false:  stdio hides this session's posts, hosted hides this bot's) | readOnly | envelope, `next_since_id` |
+| `zulip_topics` | `topics` | `channel` ("work-in-progress"), `limit` 1–100 (30) | readOnly | envelope with one `{name, max_id, resolved}` line per topic |
+| `zulip_read_topic` | `read` | `channel` ("work-in-progress"), `topic` (required, at most 60 characters), `since_id`, `limit` 1–50 (20), `include_self` (false:  stdio hides this session's posts, hosted hides this bot's) | readOnly | envelope, `next_since_id` |
 | `zulip_inbox` | `inbox --peek` | `since_id`, `limit` 1–50 (20) | readOnly | envelope of channel mentions of this bot, `next_since_id` |
-| `zulip_post` | `post` | `channel` ("agent-sync"), `topic` (required), `text` (required), `to` (up to 5 names or seat tags), `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
+| `zulip_post` | `post` | `channel` ("work-in-progress"), `topic` (required), `text` (required), `to` (up to 5 names or seat tags), `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
 | `zulip_reply` | `reply` | `message_id` (required), `text`, `to`, `idempotency_key`, `session` | write, not destructive, openWorld | `{id, channel_id, duplicate}` |
 | `zulip_react` | `react` | `message_id`, `emoji` (`^[a-z0-9_+-]{1,60}$`) | write, idempotent | `{id, emoji}` |
 
@@ -45,7 +45,7 @@ One full schema, `zulip_post` (the others follow the same pattern; the server ad
 {"name": "zulip_post", "annotations": {"readOnlyHint": false, "destructiveHint": false, "openWorldHint": true},
  "inputSchema": {"type": "object", "additionalProperties": false, "required": ["topic", "text"],
   "properties": {
-   "channel": {"type": "string", "default": "agent-sync", "pattern": "^[^\\n]{1,60}$"},
+   "channel": {"type": "string", "default": "work-in-progress", "pattern": "^[^\\n]{1,60}$"},
    "topic": {"type": "string", "minLength": 1, "maxLength": 60},
    "text": {"type": "string", "minLength": 1, "maxLength": 9500},
    "to": {"type": "array", "maxItems": 5, "items": {"type": "string", "maxLength": 100}},
@@ -138,8 +138,8 @@ The hosted server supports the enabled seats listed in `LINEAR_SEATS` in `src/li
 - **Identity is server-side, and there is no `by` parameter.**  The seat comes from the OAuth grant's props, exactly as for Zulip.  `LINEAR_SECRETS` is the only table that turns a seat into a credential name, so a GROK-WEB grant cannot reach ECHO's pair.
 - **The writer is the seat's own Linear app**, not the shared `Fleet` app (owner ruling, Oct 11:  "use bot ID").  Before any write the server asks Linear who the token belongs to and refuses unless the viewer is an app whose name is one of that seat's accepted names or the seat tag itself — the CLI's swapped-credentials check (`board:810-829`).  Renaming an app in Linear does not break its seat, because the seat tag is always accepted.
 - **Ported rules, not re-invented ones.**  The scope string, team routing, status→state mapping, flat label whitelist, claim label and the one-mint-a-day rule come from `scripts/linear-board/board`, which stays the reference.  The files are in different languages and cannot share code, so a test asserts the constants that must not drift.
-- **Claim** is In Progress plus `claimed:<seat>` and `seat:<seat>`, dropping any other seat's claim and `stale-claim`, with a `CLAIMED` comment — `board:1871-1893`.  It refuses with `claim_held` when another seat holds the issue, before any mutation.
-- **`duplicate` is never a state write.**  It is a duplicate relation to the issue named by `of`, which is required (`board:1950-1987`).  Releasing to `open` or `backlog` drops the claim markers;  a closing status drops `needs-owner` and `ask-capture` (`board:1991-2002`).
+- **Claim** sets the claimed:<seat> label where it exists and delegates the issue to the seat's Linear app user:  In Progress plus `claimed:<seat>` and `seat:<seat>` where they exist, dropping any other seat's claim and `stale-claim`, with a `CLAIMED` comment — `board:1871-1893`.  It refuses with `claim_held` when another seat holds the issue (label or delegate), before any mutation.
+- **`duplicate` is never a state write.**  It is a duplicate relation to the issue named by `of`, which is required (`board:1950-1987`).  Releasing to `open` or `backlog` drops the claim markers and clears an app delegate (a human delegation is left alone);  a closing status drops `needs-owner` and `ask-capture` and leaves the delegate alone (`board:1991-2002`).
 - **Token handling.**  Client credentials mint through `client_credentials` with the fixed scope.  The token is cached in the seat's Durable Object, not KV, because the DO's input gate is what serializes the mint;  Linear allows one mint per app per 24 hours, so a cached token minted under a day ago is never replaced, not even after a 401.  A 401 retries exactly once and only when the cache still holds the token that failed.  Jay forces a new mint by rotating the app's credentials, which changes the fingerprint.
 - **Idempotency.**  Comments post under a fixed id derived from issue, seat, verb, body digest and session (the Central day when there is none), so a rerun of a verb that stopped part way cannot post twice while the same words next week still post (`board:1813-1819`).  Duplicate relations use a fixed id for the same reason.
 - **The convenience tools’ flat label whitelist.**  Only `needs-owner`, `ask-capture`, `fleet-report` and `stale-claim` are nameable, so no seat can forge `claimed:*`, `seat:*` or a member of the single-select Kind, Severity and Env groups through this door.  A claim label is reachable only through `linear_claim`.
