@@ -306,7 +306,7 @@ Title rule for a create:  `[TEAM_KEY, Agent] Topic`, such as `[AFC, Codex] Topic
 
 ## CLI Equivalents
 
-Every MCP tool has a command.  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3);  the `notes` commands also take `--identity`, except `simple-notes log`, which acts as no one (filter it with `--by-seat`).  Add `--json` for machine output.
+Every MCP tool has a command except the hosted-only `whatsapp_read`, which has none (the WhatsApp row below).  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3);  the `notes` commands also take `--identity`, except `simple-notes log`, which acts as no one (filter it with `--by-seat`).  Add `--json` for machine output.
 
 | Group | Commands |
 |---|---|
@@ -319,6 +319,7 @@ Every MCP tool has a command.  Identity for the CLI comes from `--as NAME`, `AGE
 | Linear | `simple-board list|show|file|claim|comment|status|whoami`, `simple-board commands`, `simple-board run NAME`, `simple-board api schema|query|mutation`, `simple-board mcp list|call` |
 | MCP server | `simple-chat mcp` (what an MCP client's config runs) |
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool;  stdio runs it that way) |
+| WhatsApp | None:  `whatsapp_read` is hosted only (the whatsapp section above), so no CLI command or stdio tool serves it |
 | GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio);  the relay is not deployed yet, so the interim `gh` path is the one that works today |
 
 Long text stays out of `argv`:  `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.
