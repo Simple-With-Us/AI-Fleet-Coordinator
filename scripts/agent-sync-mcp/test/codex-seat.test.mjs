@@ -109,33 +109,61 @@ test("install_seat_key seat_entry: CODEX and MA resolve the Fleet-OPS project at
 });
 
 test("install_seat_key refuses malformed Infisical responses instead of reading partial data (kody 4363264042)", () => {
+  // Each case is (login response, secrets response).  Every secrets list also
+  // holds both requested secrets (E and K), so a case is refused only by the
+  // check it targets:  without that check it would succeed or crash with an
+  // error other than SystemExit.  The program reports each refusal's own
+  // message, so the test pins which check refused it.
   const program = [
     "import json, sys",
     "sys.path.insert(0, sys.argv[1])",
     "import install_seat_key as m",
+    "ok = {'accessToken': 't'}",
+    "good = [{'secretKey': 'E', 'secretValue': 'e'}, {'secretKey': 'K', 'secretValue': 'k'}]",
     "cases = [",
-    "  {'login': ['not-a-dict']},                       # login not an object",
-    "  {'login': {'accessToken': 7}},                   # token not a string",
-    "  {'login': {'accessToken': 't'}, 'secrets': None},  # missing secrets list",
-    "  {'login': {'accessToken': 't'}, 'secrets': [{'secretKey': 'A', 'secretValue': 3}]},  # non-string value",
-    "  {'login': {'accessToken': 't'}, 'secrets': [{'secretKey': 'A'}]},  # missing value is ok (None)",
+    "  (['not-a-dict'], {'secrets': good}),                 # login not an object",
+    "  ({'accessToken': 7}, {'secrets': good}),             # token not a string",
+    "  (ok, ['not-a-dict']),                                # secrets response not an object",
+    "  (ok, {'secrets': None}),                             # missing secrets list",
+    "  (ok, {'secrets': ['not-a-dict'] + good}),            # entry not an object",
+    "  (ok, {'secrets': [{'secretKey': 7, 'secretValue': 'v'}] + good}),  # non-string key",
+    "  (ok, {'secrets': [{'secretKey': 'E', 'secretValue': 3}, good[1]]}),  # non-string value",
+    "  (ok, {'secrets': [{'secretKey': 'E'}, good[1]]}),    # missing value reads as empty, no KeyError",
+    "  (ok, {'secrets': good}),                             # well formed",
     "]",
     "results = []",
-    "for c in cases:",
-    "    calls = iter([c['login'], {'secrets': c.get('secrets')}])",
+    "for login, secrets in cases:",
+    "    calls = iter([login, secrets])",
     "    m.http_json = lambda *a, **k: next(calls)",
     "    try:",
-    "        m.infisical_pair('p', 'E', 'K')",
-    "        results.append('no-fail')",
-    "    except SystemExit:",
-    "        results.append('refused')",
+    "        results.append(['ok', list(m.infisical_pair('E', 'K', 'p'))])",
+    "    except SystemExit as exc:",
+    "        results.append(['refused', str(exc)])",
+    "    except Exception as exc:",
+    "        results.append(['crashed', type(exc).__name__])",
     "print(json.dumps(results))",
   ].join("\n");
   const out = JSON.parse(execFileSync("python3", ["-c", program, ROOT], {
     env: { ...process.env, INFISICAL_AUTOMATION_CLIENT_ID: "x", INFISICAL_AUTOMATION_CLIENT_SECRET: "y" },
     encoding: "utf8",
   }));
-  // Every malformed shape refused; only the missing-value case (None -> "") proceeds
-  // far enough to fail on the missing E/K names instead of a shape error - still refused.
-  assert.deepEqual(out, ["refused", "refused", "refused", "refused", "refused"]);
+  const login = "install_seat_key: Infisical login returned a malformed response (not an object)";
+  const token = "install_seat_key: Infisical login returned no access token";
+  const list = "install_seat_key: Infisical secrets response is malformed (missing secrets list)";
+  const entry = "install_seat_key: Infisical secrets response has a malformed entry - refusing to continue on partial data";
+  assert.deepEqual(out.slice(0, 7), [
+    ["refused", login],
+    ["refused", token],
+    ["refused", list],
+    ["refused", list],
+    ["refused", entry],
+    ["refused", entry],
+    ["refused", entry],
+  ]);
+  // A missing secretValue is read as empty (not a KeyError), so the empty
+  // email is refused by the missing-secret check rather than a crash.
+  assert.equal(out[7][0], "refused");
+  assert.match(out[7][1], /E or K is missing or empty in Infisical/);
+  // The well-formed response passes every check.
+  assert.deepEqual(out[8], ["ok", ["e", "k"]]);
 });
