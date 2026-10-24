@@ -204,9 +204,11 @@ gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Markd
 two spaces at the END of a line is a hard line break -- a different thing; this rule is about
 the gap BETWEEN sentences.)
 
-**HOW to emit it (owner ruling 2026-10-23, the same on every surface):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity, which shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
+**HOW to emit it (owner ruling 2026-10-23, the same on every surface but two chat panes):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity, which shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
 
-- **Chat replies in every pane, Zulip, Linear, Slack, cloud and BotFleet chat:**  a real U+00A0 plus a
+- **Claude Code Code tab and MiniMax Code chat panes (the one exception, owner ruling 2026-10-23):**
+  the `&nbsp;` entity plus a normal space, outside code spans.  Both renderers decode it.
+- **Chat replies in every other pane, Zulip, Linear, Slack, cloud and BotFleet chat:**  a real U+00A0 plus a
   space.  If a pane strips it, leave the text as it is, report the pane, and do not switch to the entity.
 - **GitHub PR and issue titles, bodies and comments, review comments, and Zulip posts**
   (anything a tool writes that a Markdown or HTML renderer then shows):  a real U+00A0 plus a
@@ -294,7 +296,7 @@ not.
 - Marketing, screenshot captions, TestFlight “What to Test”
 
 **How:**
-- Between sentences in a paragraph, on every surface:  a real U+00A0 plus a space after `.` `!` `?` (owner ruling 2026-10-23).  Never `&nbsp;`, never two plain ASCII spaces.
+- Between sentences in a paragraph, on every surface:  a real U+00A0 plus a space after `.` `!` `?` (owner ruling 2026-10-23).  Never `&nbsp;` except in the Claude Code Code tab and MiniMax Code chat panes, never two plain ASCII spaces.
 - HTML/JSX/SwiftUI source:  Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant (ST: `SENTENCE_GAP`)
 - Code, identifiers and config never get a U+00A0.
 - Prefer ONE paragraph for short related sentences over stacked one-liners when
