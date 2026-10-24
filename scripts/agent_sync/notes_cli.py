@@ -96,7 +96,7 @@ def add_parsers(
         )
         identity_opt(p)
 
-    p = add(sub, "guide", "print the Agent-Sync tools guide, or one ## section of it")
+    p = add(sub, "guide", "print the simple-tools guide, or one ## section of it")
     p.add_argument(
         "section", nargs="?", metavar="SECTION", help="a section heading (case does not matter)"
     )
