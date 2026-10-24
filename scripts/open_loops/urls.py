@@ -9,22 +9,41 @@ wrote into the facts (`facts["urls"]`).  Nothing here takes a URL from outside t
   * Zulip links are built from the realm, the channel id and a topic or message id;
   * the full-list link is a constant.
 """
+
 from __future__ import annotations
 
 import re
 import urllib.parse
 
-__all__ = ["REALM", "CHANNEL", "STREAM_ID", "FULL_LIST_URL", "MAC_FACTS_API_URL", "MAC_FACTS_RAW_URL", "UrlBook",
-           "hash_part", "topic_url", "message_url", "pr_url", "linear_url"]
+__all__ = [
+    "CHANNEL",
+    "FULL_LIST_URL",
+    "MAC_FACTS_API_URL",
+    "MAC_FACTS_RAW_URL",
+    "REALM",
+    "STREAM_ID",
+    "UrlBook",
+    "hash_part",
+    "linear_url",
+    "message_url",
+    "pr_url",
+    "topic_url",
+]
 
 REALM = "https://simplewithus.zulipchat.com"
-CHANNEL = "agent-sync"
+CHANNEL = "work-in-progress"  # the channel the owner renamed #agent-sync to on 2026-10-22
 STREAM_ID = 642232
 FULL_LIST_URL = "https://github.com/Simple-With-Us/fleet-loops-data/blob/main/gb/full-list.md"
-MAC_FACTS_API_URL = "https://api.github.com/repos/Simple-With-Us/fleet-loops-data/contents/gb/mac-facts.json"
-MAC_FACTS_RAW_URL = "https://raw.githubusercontent.com/Simple-With-Us/fleet-loops-data/main/gb/mac-facts.json"
+MAC_FACTS_API_URL = (
+    "https://api.github.com/repos/Simple-With-Us/fleet-loops-data/contents/gb/mac-facts.json"
+)
+MAC_FACTS_RAW_URL = (
+    "https://raw.githubusercontent.com/Simple-With-Us/fleet-loops-data/main/gb/mac-facts.json"
+)
 
-_LINEAR = re.compile(r"^https://linear\.app/([A-Za-z0-9._-]+)/issue/([A-Za-z][A-Za-z0-9]*-\d{1,7})(?:/[A-Za-z0-9._/-]*)?$")
+_LINEAR = re.compile(
+    r"^https://linear\.app/([A-Za-z0-9._-]+)/issue/([A-Za-z][A-Za-z0-9]*-\d{1,7})(?:/[A-Za-z0-9._/-]*)?$"
+)
 _REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
 
 
@@ -42,7 +61,13 @@ def message_url(topic: str, message_id: int) -> str:
 
 
 def pr_url(repo: str, number: int) -> str | None:
-    if isinstance(repo, str) and _REPO.match(repo) and isinstance(number, int) and not isinstance(number, bool) and number > 0:
+    if (
+        isinstance(repo, str)
+        and _REPO.match(repo)
+        and isinstance(number, int)
+        and not isinstance(number, bool)
+        and number > 0
+    ):
         return "https://github.com/%s/pull/%d" % (repo, number)
     return None
 

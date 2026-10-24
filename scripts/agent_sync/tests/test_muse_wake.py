@@ -13,12 +13,14 @@ import os
 import stat
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
 
 from agent_sync import adapters as A
 from agent_sync import config as C
+from agent_sync import daemon as D
 from agent_sync import live as L
 from agent_sync import wakes as W
 
@@ -85,6 +87,223 @@ class MuseArgvTest(unittest.TestCase):
             self.assertIsNone(A.resolve_muse("relative/path", "/nonexistent"))
             # With no explicit path, only the fixed wake PATH is searched.
             self.assertEqual(A.resolve_muse(None, tmp), os.path.abspath(exe))
+
+    def test_a_deleted_versioned_build_falls_back_to_the_newest_one(self) -> None:
+        """AFC-491.  The muse launcher replaces its versioned build on every release and DELETES the
+        one it replaced, so a config naming one absolute `muse-bin-<version>` path pointed at a file
+        that no longer existed.  The seat went dead and READ AS HEALTHY, because a missing binary
+        resolves to None and reports no pin state at all."""
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.path.join(tmp, "muse-bin-1.4.11-R6667.1")
+            new = os.path.join(tmp, "muse-bin-1.4.12-R6909.1")
+            for path in (old, new):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("#!/bin/sh\n")
+                os.chmod(path, 0o755)
+            # The launcher deleted the build the config named.
+            os.unlink(old)
+            self.assertEqual(A.resolve_muse(old, tmp), os.path.realpath(new))
+            # With no explicit path the newest versioned build wins over the launcher shim, so the
+            # pin names a real build rather than an auto-updating shim.
+            shim = os.path.join(tmp, "muse")
+            with open(shim, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(shim, 0o755)
+            self.assertEqual(A.resolve_muse(None, tmp), os.path.realpath(new))
+
+    def test_a_relative_configured_path_is_refused_rather_than_guessed(self) -> None:
+        """A relative path is a config error, not a moved binary, so it must not resolve to some
+        other build on the PATH."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = os.path.join(tmp, "muse-bin-1.4.12-R6909.1")
+            with open(build, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(build, 0o755)
+            self.assertIsNone(A.resolve_muse("relative/muse", tmp))
+
+    def test_the_newest_versioned_build_wins_regardless_of_listing_order(self) -> None:
+        """1.4.10 sorts after 1.4.9, so the newest build is the one that runs and is pinned."""
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ("muse-bin-1.4.9-R6297.1", "muse-bin-1.4.10-R6427.1"):
+                path = os.path.join(tmp, name)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("#!/bin/sh\n")
+                os.chmod(path, 0o755)
+            self.assertEqual(
+                A.newest_versioned_muse(tmp),
+                os.path.realpath(os.path.join(tmp, "muse-bin-1.4.10-R6427.1")),
+            )
+
+    def test_a_missing_muse_binary_is_red_and_never_reads_as_a_healthy_seat(self) -> None:
+        """AFC-491.  Every wake for the seat is inbox-only, so the status must say so."""
+        line = A.muse_no_binary_red_entry("MM")
+        self.assertIn("no muse binary found", line)
+        self.assertIn("MM", line)
+        # The remediation is to install the runtime, not to re-pin a binary that is not there.
+        self.assertIn("install a muse build", line)
+        self.assertNotIn("run `simple-chat daemon test-wake --seat MM --run`, then", line)
+
+
+class MuseBuildResolutionTest(unittest.TestCase):
+    """Which muse build a seat runs, and which one it is allowed to run.
+
+    The muse launcher replaces its versioned build on every release and DELETES the one it
+    replaced, so a seat naming an absolute ``muse-bin-<version>`` path points at a file that no
+    longer exists after the next release.  The build that wins the scan runs with the daemon's
+    privileges and ingests untrusted Zulip DMs, so PATH order is the trust order (Kody, PR #880).
+    """
+
+    def _build(self, directory: str, name: str) -> str:
+        """An executable fake build, the way the launcher leaves one on disk."""
+        path = os.path.join(directory, name)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def test_the_first_path_directory_wins_even_when_a_later_one_has_a_higher_version(self) -> None:
+        """Kody, PR #880.  The scan used to collect the builds of EVERY PATH directory and return
+        the global maximum, so a later directory (on macOS /opt/homebrew/bin is group-writable)
+        could plant a higher-version build that outranked the first directory's.  The winning
+        build runs with daemon privileges and reads untrusted Zulip DMs, so the first directory
+        that carries a build is the one that wins, whatever version a later one claims."""
+        with tempfile.TemporaryDirectory() as tmp:
+            first = os.path.join(tmp, "first")
+            second = os.path.join(tmp, "second")
+            os.mkdir(first)
+            os.mkdir(second)
+            trusted = self._build(first, "muse-bin-1.4.12-R6909.1")
+            planted = self._build(second, "muse-bin-9.9.9")
+            gone = os.path.join(tmp, "muse-bin-1.4.11-R6667.1")
+            resolved = A.resolve_muse(gone, first + os.pathsep + second)
+            self.assertEqual(resolved, os.path.realpath(trusted))
+            self.assertNotEqual(resolved, os.path.realpath(planted),
+                                "a later PATH directory must not outrank the first one")
+
+    def test_a_deleted_build_falls_back_to_the_launcher_shim_on_the_wake_path(self) -> None:
+        """Kody, PR #880.  With no versioned build anywhere on the PATH the seat still has the
+        launcher shim.  The explicit-path branch stopped at the versioned build and never reached
+        the shim, so a seat whose config named a deleted build had NO binary at all and read as
+        healthy while every wake for it was dropped."""
+        with tempfile.TemporaryDirectory() as tmp:
+            shim = self._build(tmp, "muse")
+            gone = os.path.join(tmp, "muse-bin-1.4.11-R6667.1")
+            self.assertEqual(A.resolve_muse(gone, tmp), os.path.abspath(shim))
+
+    def test_the_path_scan_is_memoized_so_one_tick_does_not_relist_every_directory(self) -> None:
+        """Kody, PR #880.  The daemon's status tick calls the scan once per muse seat every two
+        seconds, and on macOS /usr/bin and /bin are the same directory, so an uncached scan reads
+        ~7,000 dirents per seat per tick.  The memo is keyed by wake PATH and lives for
+        MUSE_SCAN_TTL_SECONDS, so a second call inside the window must not touch the disk."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = self._build(tmp, "muse-bin-1.4.12-R6909.1")
+            listed: list[str] = []
+            real_listdir = os.listdir
+
+            def counting_listdir(path):
+                listed.append(path)
+                return real_listdir(path)
+
+            with mock.patch.object(os, "listdir", counting_listdir):
+                first = A.newest_versioned_muse(tmp)
+                second = A.newest_versioned_muse(tmp)
+            self.assertEqual(first, os.path.realpath(build))
+            self.assertEqual(second, first)
+            self.assertEqual([path for path in listed if path == tmp], [tmp],
+                             "the wake PATH was scanned twice inside the TTL")
+            # The memo holds inside the TTL, so a build that appears now is only visible to the
+            # uncached scan; the daemon picks it up when the memo expires.
+            newer = self._build(tmp, "muse-bin-1.4.13-R7000.1")
+            self.assertEqual(A.newest_versioned_muse(tmp), os.path.realpath(build))
+            self.assertEqual(A._newest_versioned_muse(tmp), os.path.realpath(newer))
+
+    def test_the_repoint_entry_names_the_running_build_and_the_setting_to_change(self) -> None:
+        """Kody, PR #880.  Re-pinning alone records a build the launcher deletes at the next
+        release, so the operator has to be told which build is running and which setting has to
+        name it, or the seat breaks again at every release."""
+        line = A.muse_repoint_red_entry(
+            "MM", "/bin/muse-bin-1.4.12-R6909.1", "/bin/muse-bin-1.4.11-R6667.1"
+        )
+        self.assertIn("/bin/muse-bin-1.4.12-R6909.1", line)
+        self.assertIn("seat.MM.muse", line)
+        self.assertIn("repoint", line)
+        self.assertIn("/bin/muse-bin-1.4.11-R6667.1", line)
+
+    def test_a_configured_path_is_missing_only_when_it_is_an_absolute_path_that_is_gone(self) -> None:
+        """Kody, PR #880.  A relative path is a config error the daemon refuses on its own, and a
+        path that is still there needs no repointing, so neither may be reported as a missing
+        build."""
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = os.path.join(tmp, "muse-bin-1.4.12-R6909.1")
+            with open(exe, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\n")
+            os.chmod(exe, 0o755)
+            self.assertTrue(A.muse_configured_path_missing("/does/not/exist"))
+            self.assertFalse(A.muse_configured_path_missing("relative/muse"))
+            self.assertFalse(A.muse_configured_path_missing(exe))
+
+    def test_the_memo_outlives_the_daemon_status_tick(self) -> None:
+        """Kody, PR #880.  The daemon rewrites its status file at most every two seconds, and the
+        scan is memoized.  A TTL that expires between two ticks is no TTL at all:  every tick
+        still pays the full scan of every PATH directory, so the memo has to span several ticks."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = self._build(tmp, "muse-bin-1.4.12-R6909.1")
+            listed: list[str] = []
+            real_listdir = os.listdir
+
+            def counting_listdir(path):
+                listed.append(path)
+                return real_listdir(path)
+
+            clock = [1000.0]
+            with mock.patch.object(os, "listdir", counting_listdir), mock.patch.object(
+                time, "monotonic", lambda: clock[0]
+            ):
+                first = A.newest_versioned_muse(tmp)
+                clock[0] += D.STATUS_TICK_SECONDS
+                second = A.newest_versioned_muse(tmp)
+            self.assertEqual(first, os.path.realpath(build))
+            self.assertEqual(second, first)
+            self.assertEqual(
+                [path for path in listed if path == tmp],
+                [tmp],
+                "the memo expired between two status ticks, so every tick still rescans",
+            )
+
+    def test_a_build_deleted_inside_the_memo_window_is_not_served_from_the_memo(self) -> None:
+        """Kody, PR #880.  The launcher DELETES the build it replaced, so the build the memo names
+        can vanish while the memo is still warm.  Serving it would point the seat at a file that
+        is not there, so the memoized answer is checked before it is handed back."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = self._build(tmp, "muse-bin-1.4.12-R6909.1")
+            self.assertEqual(A.newest_versioned_muse(tmp), os.path.realpath(build))
+            os.remove(build)
+            self.assertIsNone(
+                A.newest_versioned_muse(tmp),
+                "the memo served a build the launcher deleted",
+            )
+
+    def test_concurrent_scans_of_one_wake_path_agree(self) -> None:
+        """Kody, PR #880.  The daemon's seat threads share the memo, so concurrent scans of one
+        wake PATH must all report the same build and none may raise."""
+        with tempfile.TemporaryDirectory() as tmp:
+            build = self._build(tmp, "muse-bin-1.4.12-R6909.1")
+            results: list[str | None] = []
+            errors: list[BaseException] = []
+
+            def scan() -> None:
+                try:
+                    results.append(A.newest_versioned_muse(tmp))
+                except BaseException as exc:  # noqa: BLE001 - the test reports the failure
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=scan) for _ in range(8)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertEqual(errors, [])
+            self.assertEqual(results, [os.path.realpath(build)] * len(threads))
 
 
 class MuseRunnerPromptTest(unittest.TestCase):

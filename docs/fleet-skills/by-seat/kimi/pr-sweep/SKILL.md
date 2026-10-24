@@ -13,7 +13,8 @@ description: Sweep the open PRs across the fleet repos and land them — invento
 ## 0. Before you start
 
 - Run it from a fresh checkout of `origin/main`, never from `~/Code`:  `d=$(~/apps/lane new AI-Fleet-Coordinator pr-sweep-run) && cd "$d"`, then `PS="$PWD/scripts/pr-sweep"`.
-- Coordination follows `/Users/jay/apps/AGENT-SYNC.md`: claim the sweep in Linear (`board claim`) and post in its Zulip work topic before you start, and close out there.  The workers never post; the seat that runs the sweep does.
+- Every PR checkout, the sweep's and each worker's, is a lane made by `lane new`.  On the server that puts it in `/mnt/fleet-extra/apps/lanes/<Repo>/`, never a clone in `~/.local/state`, a scratchpad or `/tmp`.
+- Coordination follows `/Users/jay/apps/AGENT-SYNC.md`: claim the sweep in Linear (`simple-board claim`) and post in its Zulip work topic before you start, and close out there.  The workers never post; the seat that runs the sweep does.
 - Your seat comes from `AGENT_SEAT` (see `session-start`).  Every worker the sweep launches inherits it.  `pr-sweep` refuses to run without it.
 - The owner rulings the rules carry: merge by default; a hold only for the owner-needed reasons in rule 10; the do-not-automerge and needs-human-merge labels and the CODEOWNERS gate stop only auto-merge; stale Kody reviews may be dismissed under rule 7 (never a human review); a real reply on every thread before it is resolved; no Codex fix requests; merged PRs get a deploy check.  Read them in full with `$PS prompt --common` and `$PS prompt <owner/repo#n> --offline`.
 

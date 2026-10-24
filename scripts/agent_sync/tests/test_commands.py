@@ -183,19 +183,20 @@ class PostTests(Harness):
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])
 
     def test_fleet_adds_at_all_in_agent_sync_fleet(self) -> None:
-        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        result = self.run_cli("post", "--topic", "fleet", "--channel", "work-in-progress", "--fleet", "wake up")
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s] @**all** wake up" % TAG)
-        self.assertEqual(self.last_post().form["to"], "agent-sync")
+        self.assertEqual(self.last_post().form["to"], "work-in-progress")
         self.assertEqual(self.fake.requests_to("GET", "user_groups"), [], "no user group lookup:  there is no fleet group")
 
     def test_fleet_with_to_adds_the_peer_and_the_wildcard(self) -> None:
-        result = self.run_cli("post", "--topic", "fleet", "--fleet", "--to", "Codex", "HALT")
+        result = self.run_cli("post", "--topic", "fleet", "--channel", "work-in-progress",
+                              "--fleet", "--to", "Codex", "HALT")
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(self.last_post().form["content"], "[CLAUDE·%s\u2192CODEX] @**Codex** @**all** HALT" % TAG)
 
     def test_fleet_topic_and_channel_match_without_case(self) -> None:
-        self.assertEqual(self.run_cli("post", "--topic", "Fleet", "--channel", "Agent-Sync", "--fleet", "x").code, 0)
+        self.assertEqual(self.run_cli("post", "--topic", "Fleet", "--channel", "Work-In-Progress", "--fleet", "x").code, 0)
         self.assertIn("@**all**", self.last_post().form["content"])
 
     def test_fleet_is_refused_outside_agent_sync_fleet_before_any_request(self) -> None:
@@ -205,7 +206,7 @@ class PostTests(Harness):
                 before = len(self.fake.requests)
                 result = self.run_cli("post", *argv, "--fleet", "--to", "Codex", "wake up")
                 self.assertEqual(result.code, 2)
-                self.assertIn("only works in #agent-sync \u203a fleet", result.err)
+                self.assertIn("only works in #work-in-progress \u203a fleet", result.err)
                 self.assertIn("--to", result.err)
                 self.assertEqual(len(self.fake.requests), before, "refused before any request, even the --to lookup")
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])
@@ -218,7 +219,7 @@ class PostTests(Harness):
         self.fake.inject("POST", "messages", status=400, body={
             "result": "error", "code": "STREAM_WILDCARD_MENTION_NOT_ALLOWED",
             "msg": "You do not have permission to use channel wildcard mentions in this channel."})
-        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        result = self.run_cli("post", "--topic", "fleet", "--channel", "work-in-progress", "--fleet", "wake up")
         self.assertEqual(result.code, 5)
         self.assertIn("can_mention_many_users_group", result.err)
         self.assertIn("role:members", result.err, "names the value the fleet expects, not an admin-only claim")
@@ -231,13 +232,13 @@ class PostTests(Harness):
     def test_fleet_refusal_is_recognised_by_message_when_the_code_is_missing(self) -> None:
         self.fake.inject("POST", "messages", status=400, body={
             "result": "error", "msg": "You do not have permission to use wildcard mentions in this channel."})
-        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        result = self.run_cli("post", "--topic", "fleet", "--channel", "work-in-progress", "--fleet", "wake up")
         self.assertEqual(result.code, 5)
         self.assertIn("can_mention_many_users_group", result.err)
 
     def test_other_errors_during_fleet_are_not_rewritten(self) -> None:
         self.fake.inject("POST", "messages", status=400, body={"result": "error", "code": "BAD_REQUEST", "msg": "nope"})
-        result = self.run_cli("post", "--topic", "fleet", "--fleet", "wake up")
+        result = self.run_cli("post", "--topic", "fleet", "--channel", "work-in-progress", "--fleet", "wake up")
         self.assertEqual(result.code, 5)
         self.assertNotIn("can_mention_many_users_group", result.err)
 

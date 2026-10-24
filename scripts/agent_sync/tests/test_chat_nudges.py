@@ -66,7 +66,7 @@ class ChatNudgesTest(unittest.TestCase):
             "channel": "agent-sync",
             "topic": "AFC-305 existing chat nudges",
             "platform": "grok-leader",
-            "host": "coolify",
+            "host": "host",
             "session_id": "session-17",
             "cwd": "/workspace/project",
         }

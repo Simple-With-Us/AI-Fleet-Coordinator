@@ -28,7 +28,7 @@ from agent_sync import identity as I
 from agent_sync.mcp import identity_router as R
 from agent_sync.mcp import stdio as S
 from agent_sync.mcp import tools as T
-from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH
+from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH, FAKE_CHANNEL
 from agent_sync.tests.harness import SESSION, Harness, write_rc
 
 SCRIPT = Path(__file__).resolve().parents[2] / "simple-chat"
@@ -261,6 +261,9 @@ class McpHarness(Harness):
         base = {
             "HOME": str(self.home),
             "AGENT_SYNC_REALM": self.fake.url,
+            # the fake realm's channel:  the suite pins it here so these tests keep
+            # exercising their own channel name instead of the runtime default
+            "AGENT_SYNC_CHANNEL": FAKE_CHANNEL,
             "AGENT_SYNC_STATE_DIR": str(self.state_dir),
             "AGENT_SEAT": "CLAUDE",
             "CLAUDE_CODE_SESSION_ID": SESSION,

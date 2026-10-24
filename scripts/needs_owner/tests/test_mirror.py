@@ -51,7 +51,7 @@ class MirrorTests(MirrorCase):
         (filed,) = self.files()
         self.assertEqual(filed["seat"], "CLAUDE")
         self.assertEqual(filed["argv"][filed["argv"].index("--by") + 1], "CLAUDE")
-        self.assertIn("Mirror of: https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/", filed["files"]["--desc-file"]["text"])
+        self.assertIn("Mirror of: https://simplewithus.zulipchat.com/#narrow/channel/12-%s/topic/" % linkmod.CHANNEL, filed["files"]["--desc-file"]["text"])
         self.assertIn("/near/%d" % message, filed["files"]["--desc-file"]["text"])
         self.assertEqual([c for c in self.w.calls("simple-chat") if c["argv"][0] == "post"], [], "no new topic")
         (reply,) = self.reply_calls()
@@ -222,9 +222,9 @@ class LinkTests(unittest.TestCase):
                 with self.subTest(topic=topic, stream=stream):
                     link = linkmod.make_topic_link(topic, 630000001, stream_id=stream)
                     parsed = linkmod.parse_topic_link(link)
-                    self.assertEqual((parsed.topic, parsed.message_id, parsed.channel), (topic, 630000001, "agent-sync"))
+                    self.assertEqual((parsed.topic, parsed.message_id, parsed.channel), (topic, 630000001, linkmod.CHANNEL))
         self.assertTrue(linkmod.make_topic_link("OWNER x", 5, stream_id=12).startswith(
-            "https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/OWNER.20x/near/5"))
+            "https://simplewithus.zulipchat.com/#narrow/channel/12-%s/topic/OWNER.20x/near/5" % linkmod.CHANNEL))
 
     def test_the_realm_comes_from_the_environment(self) -> None:
         link = linkmod.make_topic_link("OWNER x", 5, environ={"AGENT_SYNC_REALM": "https://other.zulipchat.com"})
