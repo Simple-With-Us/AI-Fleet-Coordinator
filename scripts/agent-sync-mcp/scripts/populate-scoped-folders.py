@@ -138,6 +138,23 @@ USER_AGENT = "AI-Fleet-Coordinator populate-scoped-folders"
 # Exit status when fleet-secrets itself is not installed (the shell's "command
 # not found"), apart from 1 for every other stop (kody 4366921905).
 MISSING_EXECUTABLE = 127
+# Exit status when a fleet-secrets run times out, the status timeout(1) uses
+# (kody 4367021960).
+TIMED_OUT = 124
+
+# Explicit limits on every Infisical answer (kody 4367021839), the caps
+# src/infisical.js INFISICAL_LIMITS puts on one secret's answer:  the body is
+# read up to a byte cap (a longer one is refused), then the parsed tree is
+# walked without recursion against a depth and a node cap.  Every answer this
+# script reads (the login, the token's scope metadata, an upsert's reply) is
+# one small object, far inside these caps.
+MAX_RESPONSE_BYTES = 256 * 1024
+MAX_RESPONSE_DEPTH = 32
+MAX_RESPONSE_NODES = 50_000
+
+
+class ResponseLimitError(ValueError):
+    """An Infisical answer over a cap, or not JSON.  Carries no body text."""
 
 
 class RefuseRedirects(urllib.request.HTTPRedirectHandler):
@@ -157,6 +174,37 @@ def urlopen(request, timeout):
     return _OPENER.open(request, timeout=timeout)
 
 
+def _within_shape(value):
+    stack = [(value, 0)]
+    nodes = 0
+    while stack:
+        node, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_RESPONSE_NODES or depth > MAX_RESPONSE_DEPTH:
+            return False
+        if isinstance(node, dict):
+            stack.extend((child, depth + 1) for child in node.values())
+        elif isinstance(node, list):
+            stack.extend((child, depth + 1) for child in node)
+    return True
+
+
+def read_json(request, timeout):
+    """One Infisical answer as JSON, within the byte, depth and node caps.
+    Raises ResponseLimitError (no body text) for anything else."""
+    with urlopen(request, timeout=timeout) as response:
+        raw = response.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ResponseLimitError("Infisical answer is over the byte cap")
+    try:
+        value = json.loads(raw)
+    except (ValueError, RecursionError):
+        raise ResponseLimitError("Infisical answer is not JSON within the caps") from None
+    if not _within_shape(value):
+        raise ResponseLimitError("Infisical answer is past the depth or node cap")
+    return value
+
+
 def req(url, token, data=None, method=None):
     r = urllib.request.Request(
         url,
@@ -168,7 +216,7 @@ def req(url, token, data=None, method=None):
         },
         method=method,
     )
-    return json.load(urlopen(r, timeout=35))
+    return read_json(r, timeout=35)
 
 
 def fleet_secrets_binary():
@@ -190,6 +238,13 @@ def handoff(name):
         )
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
+    except subprocess.TimeoutExpired:
+        print(
+            f"{name} is not in the environment, and fleet-secrets timed out reading it.  "
+            "Name only;  no value printed.",
+            file=sys.stderr,
+        )
+        raise SystemExit(TIMED_OUT) from None
     except FileNotFoundError:
         print(
             f"{name} is not in the environment, and fleet-secrets is not installed.  "
@@ -209,15 +264,13 @@ def login():
         "clientId": handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
         "clientSecret": handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
     }
-    data = json.load(
-        urlopen(
-            urllib.request.Request(
-                f"{BASE}/api/v1/auth/universal-auth/login",
-                data=json.dumps(body).encode(),
-                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
-            ),
-            timeout=35,
-        )
+    data = read_json(
+        urllib.request.Request(
+            f"{BASE}/api/v1/auth/universal-auth/login",
+            data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+        ),
+        timeout=35,
     )
     token = data.get("accessToken") if isinstance(data, dict) else None
     if not isinstance(token, str) or not token:
@@ -334,14 +387,12 @@ def token_data(token):
     STRICT: any shape other than a list of {environment, secretPath} strings aborts
     fail-safe.  One live response with the real read-tools token is still required
     at execution time; an unrecognized schema keeps this a blocker, never a pass."""
-    return json.load(
-        urlopen(
-            urllib.request.Request(
-                f"{BASE}/api/v2/service-token",
-                headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
-            ),
-            timeout=35,
-        )
+    return read_json(
+        urllib.request.Request(
+            f"{BASE}/api/v2/service-token",
+            headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
+        ),
+        timeout=35,
     )
 
 
@@ -450,12 +501,19 @@ def main():
         except ReadError as e:
             value = existing = None
             missing_tool = e.code == MISSING_EXECUTABLE
+            timed_out = e.code == "timeout"
+            if missing_tool:
+                what, status = "is not installed", MISSING_EXECUTABLE
+            elif timed_out:
+                what, status = "timed out", TIMED_OUT
+            else:
+                what, status = f"exit {e.code}", 1
             print(
                 f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): fleet-secrets get "
-                f"{'is not installed' if missing_tool else f'exit {e.code}'}, reading the {reading}.  "
+                f"{what}, reading the {reading}.  "
                 f"{done} copied, {skipped} already in sync.  Re-run reconciles;  equal values are skipped."
             )
-            sys.exit(MISSING_EXECUTABLE if missing_tool else 1)
+            sys.exit(status)
         except Exception as e:  # noqa: BLE001 - any copy failure stops visibly, re-run reconciles
             print(
                 f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): {type(e).__name__}.  "

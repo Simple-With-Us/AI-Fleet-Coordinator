@@ -23,10 +23,30 @@ import GB_TABLE from "../../agent_sync/mcp/gb-identities.json" with { type: "jso
 
 // The table's shape is checked before any name is derived from it (kody
 // 4366922209, 4366922334):  a missing `enabled` list or a malformed persona
-// fails at load with a precise error, never later as an odd secret name.
-// Other keys (the table's notes) pass through untouched.
+// never becomes an odd secret name.  Other keys (the table's notes) pass
+// through untouched.  The check fails soft (kody 4367022121):  this module
+// loads with the Worker, so a throw here would take every seat, /health and
+// /admin down.  A malformed table logs one structured event and declares no
+// Grok Bot field, which only makes a missing persona field read as
+// capability-off (every one is an optional read) instead of failing loudly.
+// The unit suite asserts the committed table passes, so a malformed table
+// still fails CI before it can ship.
 const GbTable = z.object({ enabled: z.array(z.string().regex(/^GB-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/)).min(1) }).passthrough();
-const GB_IDENTITIES = Object.freeze([...GbTable.parse(GB_TABLE).enabled]);
+
+/** The validated persona list of a personas table:  { valid, identities }.
+ * Never throws;  an invalid table gives { valid: false, identities: [] }. */
+export function gbIdentitiesFrom(table) {
+  const parsed = GbTable.safeParse(table);
+  return parsed.success
+    ? { valid: true, identities: Object.freeze([...parsed.data.enabled]) }
+    : { valid: false, identities: Object.freeze([]) };
+}
+
+const GB_PARSED = gbIdentitiesFrom(GB_TABLE);
+if (!GB_PARSED.valid) console.error(JSON.stringify({ event: "gb_identity_table_invalid", declared_gb_fields: 0 }));
+/** Whether the committed personas table passed the schema (a test pins it). */
+export const GB_TABLE_VALID = GB_PARSED.valid;
+const GB_IDENTITIES = GB_PARSED.identities;
 const gbFieldNames = (identity) => {
   const role = identity.slice(3).replaceAll("-", "_");
   return { zulipKey: `ZULIP_GB_${role}_API_KEY`, zulipEmail: `ZULIP_GB_${role}_EMAIL`,

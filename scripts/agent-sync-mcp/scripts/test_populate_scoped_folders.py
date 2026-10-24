@@ -183,6 +183,31 @@ class TestGate(Base):
                 )
             self.assertEqual(caught.exception.code, code)
 
+    def test_answers_past_the_byte_depth_or_node_cap_are_refused(self):
+        # kody 4367021839:  every Infisical answer is capped before and after parsing.
+        too_big = b'{"scopes": [], "pad": "' + b"x" * psf.MAX_RESPONSE_BYTES + b'"}'
+        # The root is depth 0, so MAX + 2 nested lists put the innermost one at MAX + 1.
+        too_deep = b"[" * (psf.MAX_RESPONSE_DEPTH + 2) + b"]" * (psf.MAX_RESPONSE_DEPTH + 2)
+        # The list itself is one node more than its children.
+        too_many = json.dumps([0] * psf.MAX_RESPONSE_NODES).encode()
+        # Under the byte cap, and past Python's recursion limit.
+        past_recursion = b"[" * 100_000 + b"]" * 100_000
+        self.assertLessEqual(len(past_recursion), psf.MAX_RESPONSE_BYTES)
+        self.assertLessEqual(len(too_many), psf.MAX_RESPONSE_BYTES)
+        request = urllib.request.Request("https://app.infisical.com/api/v2/service-token")
+        for body in (too_big, too_deep, too_many, past_recursion, b"not json"):
+            psf.urlopen = lambda request, timeout=35, body=body: io.BytesIO(body)
+            with self.assertRaises(psf.ResponseLimitError):
+                psf.read_json(request, timeout=35)
+            self.assertFalse(psf.check_read_tools_scope(), "the gate aborts fail safe")
+        at_depth = b"[" * (psf.MAX_RESPONSE_DEPTH + 1) + b"]" * (psf.MAX_RESPONSE_DEPTH + 1)
+        psf.urlopen = lambda request, timeout=35: io.BytesIO(at_depth)
+        self.assertIsInstance(
+            psf.read_json(request, timeout=35), list, "exactly at the depth cap passes"
+        )
+        psf.urlopen = self.fake.open
+        self.assertEqual(psf.token_data("read-tools-st")["id"], "st1", "a normal answer passes")
+
 
 class TestDryRun(Base):
     def test_dry_run_writes_nothing(self):
@@ -332,6 +357,36 @@ class TestApply(Base):
         self.assertEqual(code, 127)
         self.assertIn("fleet-secrets get is not installed", out)
         self.assertEqual(self.fake.upserts, [])
+
+    def test_fleet_secrets_read_timeout_exits_124(self):
+        # kody 4367021960:  a timed-out read is timeout(1)'s 124, apart from 1 and 127.
+        seeded(self.fake)
+
+        def slow(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+        subprocess.run = slow
+        code, out = self.run_main("--apply")
+        self.assertEqual(code, psf.TIMED_OUT)
+        self.assertEqual(code, 124)
+        self.assertIn("fleet-secrets get timed out, reading the source", out)
+        self.assertEqual(self.fake.upserts, [])
+        self.assertNotIn("VALUE-", out)
+
+    def test_login_handoff_timeout_exits_124_names_only(self):
+        # kody 4367021960:  the login handoff's fleet-secrets timeout is 124 too.
+        del os.environ["INFISICAL_AUTOMATION_CLIENT_ID"]
+
+        def slow(argv, **kwargs):
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout"))
+
+        subprocess.run = slow
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as caught:
+            psf.handoff("INFISICAL_AUTOMATION_CLIENT_ID")
+        self.assertEqual(caught.exception.code, 124)
+        self.assertIn("INFISICAL_AUTOMATION_CLIENT_ID", err.getvalue())
+        self.assertIn("timed out", err.getvalue())
 
     def test_terminal_messages_use_two_spaces_between_sentences(self):
         # Kody issue comment 6383398733:  plain-text output takes two ASCII spaces.

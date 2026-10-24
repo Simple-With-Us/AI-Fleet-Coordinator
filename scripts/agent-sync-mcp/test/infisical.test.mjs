@@ -360,6 +360,18 @@ test("INFISICAL_EXPECT_DEFAULT: exactly the 72-copy manifest, drift-guarded agai
   assert.ok(![...set].some((e) => e.includes("SPIKE")), "ephemeral spike key is not durable storage");
 });
 
+test("personas table:  the committed table passes, and a malformed one fails soft instead of throwing at load (kody 4367022121)", async () => {
+  const { GB_TABLE_VALID, gbIdentitiesFrom } = await import("../src/infisical-manifest.js");
+  const { GB_IDENTITIES } = await import("../src/delegated-identities.js");
+  assert.equal(GB_TABLE_VALID, true, "a malformed committed table fails CI here, before it can ship");
+  assert.deepEqual([...gbIdentitiesFrom({ enabled: [...GB_IDENTITIES], "//": "a note" }).identities], [...GB_IDENTITIES]);
+  for (const table of [{}, { enabled: [] }, { enabled: ["gb-fixer"] }, { enabled: ["GB-FIXER", 7] }, { enabled: "GB-FIXER" }, null, []]) {
+    const r = gbIdentitiesFrom(table);
+    assert.equal(r.valid, false, JSON.stringify(table));
+    assert.deepEqual([...r.identities], [], "no persona field is declared from a malformed table");
+  }
+});
+
 test("resolveDelegatedCredentials: required mode assembles validated rows from Infisical", async () => {
   _resetInfisicalForTests();
   const { resolveDelegatedCredentials } = await import("../src/delegated-identities.js");
