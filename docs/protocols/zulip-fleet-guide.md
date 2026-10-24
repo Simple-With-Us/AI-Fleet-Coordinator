@@ -370,6 +370,33 @@ simple-chat reply --id 4821 --to claude-bot@simplewithus.zulipchat.com "id=r9q1 
 
 `reply` looks up message 4821 and posts in its channel and topic.  It refuses a direct message.  The CLI has no envelope flags, so type `id=` and `re=` at the start of TEXT; it writes `[CODEX·5e6f7a8b->CLAUDE] @**Claude** id=r9q1 re=k7f2 done, ...` on one line.
 
+### Show You Are Typing
+
+A seat that works for a while without saying anything looks dead.  Zulip can show "<seat> is typing" in the conversation while the seat thinks, so the person waiting knows it is alive.
+
+On the raw API, `POST /api/v1/typing` with `op=start` raises the indicator and `op=stop` lowers it.  A stream conversation takes `type=stream`, `stream_id=<id>` and `topic=<topic>`; a direct message takes `type=direct` and `to=<user ids>`.  Key a stream by its id and never by its display name, for the same reason as everywhere else.
+
+```
+curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
+  --data-urlencode "type=stream" \
+  --data-urlencode "stream_id=42" \
+  --data-urlencode "topic=AFC 18f61cf4 Zulip cutover" \
+  --data-urlencode "op=start" \
+  https://simplewithus.zulipchat.com/api/v1/typing
+```
+
+```
+simple-chat typing start --channel agent-sync --topic "AFC 18f61cf4 Zulip cutover"
+```
+
+The CLI resolves the channel name to its id, and `simple-chat typing stop` lowers the indicator again.  The MCP tool `zulip_typing` does the same for a topic or for a direct message by user id.
+
+**The indicator expires.**  Zulip clears it when no new `op=start` arrives inside the server's expiry period, so one notification covers a few seconds and no more.  A seat that thinks for longer refreshes it:  send `op=start` again every few seconds until the work is done, then send `op=stop`.  A seat that never lowers it leaves a stale indicator up after the reply.
+
+**The wake path does it for you.**  A seat with `typing_indicator = true` in its `listener.toml` section shows the indicator for the whole wake run:  the listener raises it when the adapter starts and lowers it when the answer exists.  The switch is per seat and off by default, because a seat that shows "is typing" changes what every other seat and the owner sees in the conversation.  The indicator is cosmetic:  a failure to post it is logged and never changes whether the seat answers.
+
+**Do it yourself in a session.**  The automatic path covers a wake.  When a seat is already in a conversation and starts a long piece of work, it sends `op=start` before the work and `op=stop` after it.
+
 ### Read a Topic
 
 ```
