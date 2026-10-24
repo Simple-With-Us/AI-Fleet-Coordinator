@@ -639,7 +639,10 @@ class Daemon:
             owner_window=self.config.owner_coalesce_seconds,
             new_id=self._new_wake_id,
         )
-        self.loopguard = W.LoopGuard(os.path.join(L.listener_dir(self.root), "loopguard.json"))
+        self.loopguard = W.LoopGuard(
+            os.path.join(L.listener_dir(self.root), "loopguard.json"),
+            enabled=self.config.wake_loop_prevention,
+        )
         self.global_ring = Ring()
         self.agents_cache: tuple[float, dict[int, str] | None] = (-1e9, None)
         self.start_cache: dict[int, tuple[float, int]] = {}
@@ -768,6 +771,7 @@ class Daemon:
 
     def _apply_config(self) -> None:
         cfg = self.config
+        self.loopguard.enabled = cfg.wake_loop_prevention
         self.notifier.banners = self.banners_allowed and cfg.notify_banners
         for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values()):
             # Routine secrets are hidden as soon as the config names them, before any wake.
@@ -5765,6 +5769,7 @@ class Daemon:
             ],
             "owner_user_id": self.config.owner_user_id,
             "chat_nudges": all_nudges,
+            "wake_loop_prevention": self.loopguard.enabled,
             "loop_guard": self.loopguard.holding(now),
             "rewake_verified": self.config.rewake_verified,
             "rewake_verified_cli": self.config.rewake_verified_cli,

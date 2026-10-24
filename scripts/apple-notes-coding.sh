@@ -555,7 +555,7 @@ _session_seat() {  # the resolved seat:  launcher's seat, else AGENT_SEAT, else 
 }
 
 _session_exempt() {  # $1 = seat tag:  one thread with the owner, so no session id to pass
-  case "$1" in ECHO|GROK-BOT|JET|MA|WISE|GB-*) return 0 ;; esac
+  case "$1" in ECHO|GROK-BOT|JET|JET-CHAT|MA|WISE|GB-*) return 0 ;; esac
   return 1
 }
 

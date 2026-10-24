@@ -6,7 +6,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { HostedTools, HOSTED_TOOLS_BY_NAME, hostedInstructions } from "../src/hosted-tools.js";
+import { HostedTools, HOSTED_TOOLS_BY_NAME, hostedInstructions, LINEAR_LABEL_MAX_PAGES, LINEAR_LABEL_PAGE_SIZE } from "../src/hosted-tools.js";
 import { ZulipClient } from "../src/zulip.js";
 import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
@@ -490,6 +490,66 @@ test("a claim label past the first label page is still found", async () => {
   assert.deepEqual(update.input.addedLabelIds, [fake.labelId("claimed:GROK-WEB"), fake.labelId("seat:GROK-WEB")]);
   const labelCalls = fake.calls().filter((r) => opOf(r.body.query)?.name === "BoardLabels");
   assert.ok(labelCalls.length >= 2, `expected paged label reads, got ${labelCalls.length}`);
+  // The second page asks for exactly the cursor the first page gave.
+  assert.equal(labelCalls[0].body.variables.after, null);
+  assert.equal(labelCalls[1].body.variables.after, String(LINEAR_LABEL_PAGE_SIZE));
+});
+
+/** Answer the next BoardLabels read with `data` instead of the fake's own page. */
+function nextLabelPage(fake, data) {
+  fake.failNext((entry) => opOf(entry.body?.query)?.name === "BoardLabels", () => fake.json(200, { data }));
+}
+
+const LABEL_NODE = { id: "label-x", name: "filler", isGroup: false, parent: null, team: null };
+
+for (const [what, data] of [
+  ["a page with no label connection", { issueLabels: null }],
+  ["a page whose nodes are not a list", { issueLabels: { nodes: "nope", pageInfo: { hasNextPage: false, endCursor: null } } }],
+  ["a label with no id", { issueLabels: { nodes: [{ name: "claimed:GROK-WEB" }], pageInfo: { hasNextPage: false, endCursor: null } } }],
+  ["a page with no pageInfo", { issueLabels: { nodes: [LABEL_NODE] } }],
+  ["a next page with no cursor", { issueLabels: { nodes: [LABEL_NODE], pageInfo: { hasNextPage: true, endCursor: null } } }],
+  ["a next page with an empty cursor", { issueLabels: { nodes: [LABEL_NODE], pageInfo: { hasNextPage: true, endCursor: "" } } }],
+]) {
+  test(`${what} fails the claim before any write, never reads as fewer labels`, async () => {
+    const { tools, fake } = harness();
+    fake.addIssue({ id: "issue-316", identifier: "AFC-316", team: "AFC" });
+    nextLabelPage(fake, data);
+    const error = toolError(await tools.call("linear_claim", { id: "AFC-316" }), "upstream_error");
+    assert.match(error.message, /issue-label|cursor/);
+    assert.equal(fake.mutations().length, 0);
+  });
+}
+
+test("a repeated label cursor fails the claim instead of looping", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-317", identifier: "AFC-317", team: "AFC" });
+  const page = { issueLabels: { nodes: [LABEL_NODE], pageInfo: { hasNextPage: true, endCursor: "7" } } };
+  nextLabelPage(fake, page);
+  nextLabelPage(fake, page);
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-317" }), "upstream_error");
+  assert.match(error.message, /repeated an issue-label cursor/);
+  assert.equal(fake.calls().filter((r) => opOf(r.body.query)?.name === "BoardLabels").length, 2);
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("the fake's label pages take no cursor or one it handed out, nothing else", () => {
+  const fake = new FakeLinear();
+  assert.equal(fake.query("BoardLabels", { first: 1 }).issueLabels.pageInfo.endCursor, "1");
+  assert.equal(fake.query("BoardLabels", { first: 1, after: null }).issueLabels.nodes.length, 1);
+  assert.equal(fake.query("BoardLabels", { first: 1, after: "1" }).issueLabels.nodes.length, 1);
+  for (const after of ["", "01", "-1", "1.5", "abc", 1, false, {}]) {
+    assert.throws(() => fake.query("BoardLabels", { first: 1, after }), TypeError, JSON.stringify(after));
+  }
+});
+
+test("the label walk stops at its page cap and fails rather than return a partial list", async () => {
+  const { tools, fake } = harness();
+  for (let n = 0; n < LINEAR_LABEL_MAX_PAGES * LINEAR_LABEL_PAGE_SIZE; n += 1) fake.addLabel(`filler-${n}`);
+  fake.addIssue({ id: "issue-318", identifier: "AFC-318", team: "AFC" });
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-318" }), "upstream_error");
+  assert.match(error.message, new RegExp(`more than ${LINEAR_LABEL_MAX_PAGES} pages`));
+  assert.equal(fake.calls().filter((r) => opOf(r.body.query)?.name === "BoardLabels").length, LINEAR_LABEL_MAX_PAGES);
+  assert.equal(fake.mutations().length, 0);
 });
 
 test("re-claiming your own delegated issue stays idempotent", async () => {

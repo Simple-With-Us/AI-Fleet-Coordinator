@@ -143,6 +143,25 @@ final class MiniMaxSurfaceTests: XCTestCase {
         XCTAssertEqual(telegram?.answered, false)
     }
 
+    /// The panel names the fleet channel files, and no platform file for a platform the
+    /// seat is not linked to.
+    ///
+    /// Lark is the only IM platform this seat answers on (owner, Oct 24, 2026).  A retired
+    /// platform is not shown as "not on this Mac" either, because a panel that lists it
+    /// invites the reader to go looking for a connection that was never there.
+    func test_the_panel_names_no_platform_file_for_a_retired_platform() throws {
+        let home = try makeHome()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let surface = MiniMaxReader.read(home: home, liveSeats: ["MM"])
+        let files = surface.channels.map { $0.file }
+        XCTAssertEqual(
+            files,
+            ["channel-bindings.yaml", "channel-routes.yaml", "channel-owner.yaml"]
+        )
+        XCTAssertFalse(files.contains { $0.contains("telegram") })
+        XCTAssertFalse(files.contains { $0.contains("wechat") })
+    }
+
     /// The seat's own runtime agent is the one holding the durable memory.
     func test_the_seat_runtime_agent_is_the_one_holding_the_memory() throws {
         let home = try makeHome()
