@@ -16,17 +16,57 @@ const facts = {
 };
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-  test(`Agent Sync Admin Status ${viewport.width}`, async ({ page }) => {
+  test(`ST-MCP Admin Status ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const response = adminPage(facts);
     const html = await response.text();
     await page.route('https://visual-tests.invalid/admin', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));
     await page.goto('/admin');
-    await expect(page.getByRole('heading', { name: 'Agent-Sync Admin', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'ST-MCP Admin', exact: true })).toBeVisible();
     // The status overview folds by default (AFC-347); open it before asserting on its cards.
     await page.locator('details#status-overview > summary').click();
     await expect(page.locator('.error-card').filter({ hasText: 'The hourly Linear read budget is exhausted.' }).first()).toBeVisible();
+    // Empty manual-seat state: the section is deliberately absent (kody 4364333458 - both
+    // states need coverage; this full-page screenshot is the empty baseline).
+    await expect(page.getByRole('heading', { name: 'Manual seats' })).toHaveCount(0);
     await expect(page.locator('body')).toHaveScreenshot(`agent-sync-status-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+
+  // The runtime-secrets line under the Seats table (PR #901, kody 4366922942), in its warning
+  // state:  fallback mode with fallbacks above zero.  The element alone, so the full-page
+  // baselines above stay as they are.  Nothing in it is live:  the mode and every counter
+  // come from the fixture below and the line has no time, so nothing is masked (a mask
+  // over p.warn would blank the element under test), and the tolerance is an explicit
+  // zero pixels (kody 4367022364, 4367022518).
+  test(`ST-MCP Admin Secrets Mode ${viewport.width}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const response = adminPage({ ...facts, infisical: { mode: 'fallback', fetched: 5, cacheHits: 40, fallbacks: 2, absent: 5 } });
+    const html = await response.text();
+    await page.route('https://visual-tests.invalid/admin', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));
+    await page.goto('/admin');
+    const line = page.locator('p.warn', { hasText: 'Secrets mode:' });
+    await expect(line).toBeVisible();
+    await expect(line).toContainText('2 fallbacks to Worker bindings');
+    await expect(line).toHaveScreenshot(`agent-sync-secrets-mode-${viewport.width}.png`, { animations: 'disabled', maxDiffPixels: 0 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+
+  test(`ST-MCP Admin manual seats populated ${viewport.width}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    // All three redirect-status variants: configured, configured+shared, none yet.
+    const populated = { ...facts, manualSeats: [
+      { seat: 'CURSOR', redirectsConfigured: true, shared: false },
+      { seat: 'GROK_WEB', redirectsConfigured: true, shared: true },
+      { seat: 'JET', redirectsConfigured: false, shared: false },
+    ] };
+    const response = adminPage(populated);
+    const html = await response.text();
+    await page.route('https://visual-tests.invalid/admin', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));
+    await page.goto('/admin');
+    await expect(page.getByRole('heading', { name: 'Manual seats' })).toBeVisible();
+    await expect(page.getByRole('cell', { name: 'Configured, shared with another seat of the same app' })).toBeVisible();
+    await expect(page.locator('body')).toHaveScreenshot(`agent-sync-manual-seats-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 }

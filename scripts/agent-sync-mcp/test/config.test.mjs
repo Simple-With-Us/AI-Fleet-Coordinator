@@ -220,7 +220,7 @@ test("Cursor binds its CIMD client to its exact Cloud callback", () => {
   assert.deepEqual(cfg.seats.CURSOR.cimdClientIds, ["https://cursor.com/oauth/mcp-client.json"]);
   assert.equal(cfg.redirectOwner.get(callback), "CURSOR");
   assert.equal(cfg.botEmails.CURSOR, "cursor-bot@simplewithus.zulipchat.com");
-  assert.deepEqual(SEAT_SECRETS.CURSOR, { key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR" });
+  assert.deepEqual(SEAT_SECRETS.CURSOR, { key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR", infisical: { name: "CURSOR_ZULIP_KEY", path: "/zulip" } });
   for (const wrong of ["https://cursor.com/agents/mcp/oauth/callback", `${callback}/`, "http://localhost:8788/callback"]) {
     assert.equal(cfg.redirectSeats.has(wrong), false);
   }

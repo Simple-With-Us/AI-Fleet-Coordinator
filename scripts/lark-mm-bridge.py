@@ -113,6 +113,9 @@ SIGNAL_DONE_WINDOW = 200
 MAX_SIGNAL_ATTEMPTS = 5
 # Seconds;  the wait between a signal's attempts doubles from here.
 SIGNAL_RETRY_BASE = 5
+# Seconds;  the longest wait a retry-after value in the CLI's error can ask for.
+# A malformed value must not park a signal for hours.
+SIGNAL_RETRY_AFTER_MAX = 600
 # A signal is not the owner's own message, so it carries its own sender id and
 # the seat inbox records the exchange as the Operator's.
 OPERATOR_SENDER = "operator"
@@ -132,6 +135,19 @@ _ERROR_CODE_RE = re.compile(
 )
 _ERROR_REQUEST_ID_RE = re.compile(
     r"\"(?:request_?id|log_?id|x-tt-logid)\"\s*:\s*\"?([A-Za-z0-9_-]{1,64})\"?",
+    re.IGNORECASE,
+)
+# The wait a rate limit asked for, in seconds.  The bridge runs lark-cli and
+# sees only its exit status and its stderr, never the HTTP response, so a wait
+# the server sent in a header (Retry-After, or a rate-limit reset header such
+# as x-ogw-ratelimit-reset) reaches it only when the CLI writes the value into
+# its error text.  Both are a relative wait in seconds (Lark documents
+# x-ogw-ratelimit-reset as the seconds until the window resets).  A long digit
+# run is still read, and retry_after_from caps it at SIGNAL_RETRY_AFTER_MAX, so
+# a server that asks for a very long wait gets the longest one, not the 5 s
+# local backoff.
+_ERROR_RETRY_AFTER_RE = re.compile(
+    r"(?:retry[-_ ]?after|x-ogw-ratelimit-reset)\"?\s*[:=]\s*\"?([0-9]{1,12})(?![0-9])",
     re.IGNORECASE,
 )
 
@@ -212,10 +228,12 @@ class DeliveryError(Exception):
     already has.
     """
 
-    def __init__(self, outcome, detail):
+    def __init__(self, outcome, detail, retry_after=None):
         super().__init__(detail)
         self.outcome = outcome
         self.detail = detail
+        # Seconds the server asked the caller to wait, when the error said.
+        self.retry_after = retry_after
 
 
 # Durable per-message delivery states.  "pending" means claimed but not yet
@@ -318,11 +336,25 @@ def safe_error_detail(prefix, text):
         ("status", _ERROR_STATUS_RE),
         ("code", _ERROR_CODE_RE),
         ("request_id", _ERROR_REQUEST_ID_RE),
+        ("retry_after", _ERROR_RETRY_AFTER_RE),
     ):
         found = pattern.search(text or "")
         if found:
             parts.append(f"{name}={found.group(1)}")
     return " ".join(parts)
+
+
+def retry_after_from(text):
+    """The wait in seconds a rate limit asked for, capped, or None.
+
+    Only a whole number of seconds is read.  The date form of Retry-After
+    is not, and a value that is missing or not read leaves the local
+    backoff in charge.
+    """
+    found = _ERROR_RETRY_AFTER_RE.search(text or "")
+    if not found:
+        return None
+    return min(int(found.group(1)), SIGNAL_RETRY_AFTER_MAX)
 
 
 class TurnQueue:
@@ -870,6 +902,11 @@ class Bridge:
             path.mkdir(mode=0o700, exist_ok=True)
             with contextlib.suppress(OSError):
                 os.chmod(str(path), 0o700)
+        # Signal file name -> (attempts, next attempt).  The signal file holds
+        # both, but a write of it can fail, and the count on the disk would
+        # then stay where it was:  the signal would be tried again on every
+        # pass, and the attempt budget would never run out.
+        self.signal_retry = {}
         # The chat the owner last wrote in.  A signal that names no chat of its
         # own goes there, so the Operator does not have to know the chat id.
         self.last_chat_id = None
@@ -1085,6 +1122,11 @@ class Bridge:
             return "outcome_unknown"
         if re.search(r"\b429\b", detail):
             return "retryable"
+        if re.search(r"\binvalid_grant\b", detail):
+            # A token grant that was refused is a definite auth failure, with
+            # or without a status in the text:  nothing was sent, and no
+            # retry works until the credential is fixed.
+            return "terminal"
         if re.search(r"\b4\d\d\b", detail):
             return "terminal"
         if "could not start" in detail:
@@ -1254,6 +1296,7 @@ class Bridge:
             raise DeliveryError(
                 self._classify_reply_failure(str(exc)),
                 safe_error_detail("command_error", str(exc)),
+                retry_after=retry_after_from(str(exc)),
             ) from exc
         message_id = _message_id_from(output)
         if not message_id:
@@ -1326,7 +1369,18 @@ class Bridge:
                 return
             attempts = record.get("attempts")
             attempts = attempts if isinstance(attempts, int) and attempts >= 0 else 0
-            if time.time() < float(record.get("next_attempt") or 0):
+            next_attempt = float(record.get("next_attempt") or 0)
+            remembered = self.signal_retry.get(path.name)
+            if remembered is not None and remembered[2] == record["signal_id"]:
+                # A pending write that failed left an older count in the
+                # file, so the count in memory is the true one, and the next
+                # write of the record carries it.  A count belongs to one
+                # signal id:  a later file of the same name starts clean.
+                attempts = max(attempts, remembered[0])
+                next_attempt = max(next_attempt, remembered[1])
+                record["attempts"] = attempts
+                record["next_attempt"] = next_attempt
+            if time.time() < next_attempt:
                 # The wait before the next try has not passed yet.  The
                 # signal is not finished, so it stays pending and the
                 # watcher finds it again when the wait has passed.
@@ -1338,19 +1392,38 @@ class Bridge:
                 return
             message_id = record.get("sent")
             if not isinstance(message_id, str) or not message_id:
+                if attempts >= MAX_SIGNAL_ATTEMPTS:
+                    # The budget was spent on an earlier pass whose filing did
+                    # not reach the disk.  Sending again would spend more.
+                    outcome, detail = "unknown", "retries exhausted"
+                    return
                 try:
                     message_id = self._post_signal(chat_id, record["text"], record["signal_id"])
                 except DeliveryError as exc:
                     if exc.outcome == "retryable":
                         attempts += 1
+                        record["attempts"] = attempts
                         if attempts >= MAX_SIGNAL_ATTEMPTS:
+                            # Remembered too, so a filing that fails does not
+                            # put the signal back on a fresh budget.
+                            self.signal_retry[path.name] = (
+                                attempts,
+                                next_attempt,
+                                record["signal_id"],
+                            )
                             outcome, detail = "unknown", "retries exhausted: %s" % exc.detail
                             return
+                        wait = min(SIGNAL_RETRY_BASE * (2 ** (attempts - 1)), 300)
+                        if exc.retry_after:
+                            # The server said how long to wait, and asking
+                            # sooner only spends an attempt on another refusal.
+                            wait = max(wait, exc.retry_after)
+                        next_attempt = time.time() + wait
+                        record["next_attempt"] = next_attempt
+                        # Remembered before the record is written, so a write
+                        # that fails cannot reset the count or the wait.
+                        self.signal_retry[path.name] = (attempts, next_attempt, record["signal_id"])
                         outcome, detail = "pending", "retryable: %s" % exc.detail
-                        record["attempts"] = attempts
-                        record["next_attempt"] = time.time() + min(
-                            SIGNAL_RETRY_BASE * (2 ** (attempts - 1)), 300
-                        )
                         return
                     if exc.outcome == "terminal":
                         outcome, detail = "refused", "terminal: %s" % exc.detail
@@ -1425,6 +1498,9 @@ class Bridge:
         except OSError as exc:
             log("could not file a signal: %s" % type(exc).__name__)
             return
+        # Filed, so the watcher will not see it again.  Until then the count
+        # stays in memory, so a filing that failed is not a fresh budget.
+        self.signal_retry.pop(path.name, None)
         self._prune_done()
 
     def _prune_done(self):
@@ -1452,6 +1528,11 @@ class Bridge:
         except OSError as exc:
             log("could not read the signal directory: %s" % type(exc).__name__)
             return
+        # A count is kept only while its file is still waiting:  a file that
+        # was taken away must not hand its count to a later file of that name.
+        present = {path.name for path in paths}
+        for name in [name for name in self.signal_retry if name not in present]:
+            del self.signal_retry[name]
         for path in paths:
             if path.name.startswith("."):
                 # A dot-prefixed file is a temporary one, not a signal:  the

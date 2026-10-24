@@ -63,12 +63,12 @@ import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sent
 import { gbBearerFromRequest, parseGbBearer, newGbBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
-import { IdentityRouter, loadDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
+import { IdentityRouter, resolveDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
 import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
-import { recallClientFromEnv } from "./recall.js";
-import { fleetlinkClientFromEnv } from "./fleetlink.js";
-import { LinearClient, linearClientFromEnv, LINEAR_SEATS, linearSecretNames } from "./linear.js";
+import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
+import { fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
+import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat, LINEAR_SECRETS } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { listenerClientFromEnv } from "./eavesdropper.js";
 import { operatorNotesClientFromEnv } from "./notes.js";
@@ -77,6 +77,7 @@ import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
 import { serveWa } from "./wa/index.js";
+import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 
 export { SeatGate };
@@ -206,6 +207,9 @@ async function recordDiagnostic(env, entry) {
 
 async function serveMcp(request, env, ctx) {
   const config = loadConfig(env);
+  // One listing per folder beats a cold per-name burst (sentry 4364275308);
+  // the listings also make later optional misses subrequest-free.
+  await Promise.all(["/zulip", "/linear", "/fleetlink", "/wake", "/tools"].map((path) => prefetchFolder(env, path)));
   const props = ctx.props ?? {};
   const auth = ctx.auth ?? {};
   const seat = props.seat;
@@ -227,10 +231,33 @@ async function serveMcp(request, env, ctx) {
 
   const scopes = Array.isArray(auth.scope) ? auth.scope.map(String) : [];
   // The key comes from the seat in the verified props, through SEAT_SECRETS only.
+  // Canonical Fleet-OPS /zulip record (<SEAT>_ZULIP_KEY, verified live); the
+  // legacy binding is the bounded transitional fallback only.  Optional (kody
+  // 4365622648):  a seat key absent from Infisical leaves that seat's Zulip
+  // tools not_configured, as a missing binding did before;  an outage or a
+  // scope denial still throws in required mode.
+  const seatKeyRead = (names) => resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key, optional: true });
   const secretNames = SEAT_SECRETS[seat];
-  const key = typeof env[secretNames.key] === "string" ? env[secretNames.key].trim() : "";
+  const key = await seatKeyRead(secretNames);
   const email = config.botEmails[seat];
   const grantId = typeof auth.token === "string" ? auth.token.split(":")[1] ?? "" : "";
+  // Linear app pairs resolve through Infisical too (src/linear.js); prefetched
+  // with the seat keys so the router's synchronous identityStatus keeps its
+  // contract.  A pair absent from Infisical reads as Linear-off, never a throw.
+  const linearPairs = new Map(await Promise.all(Object.keys(LINEAR_SECRETS).map(async (canonical) =>
+    [canonical, await resolveLinearPair(env, canonical)])));
+  // FleetLink's agent secret resolves through /fleetlink (read-tools scope);
+  // the folder awaits the population approval, so fallback mode covers the
+  // gap observably and required mode throws visibly until it is populated.
+  const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
+  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
+  const recallSecrets = await resolveRecallSecrets(env);
+
+  // The listener key resolves through Infisical too (optional:  no wake key
+  // means no listener tools, never a 500 - src/eavesdropper.js).
+  const listenerWakeKey = Object.hasOwn(WAKE_SECRETS, seat)
+    ? await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true })
+    : "";
   const tools = new HostedTools({
     seat,
     scopes,
@@ -245,18 +272,18 @@ async function serveMcp(request, env, ctx) {
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     // Null when any recall secret is missing:  the recall tools then answer
     // not_configured and every other tool works as before (spec 1.1).
-    recall: recallClientFromEnv(env),
+    recall: recallClientFromResolved(recallSecrets, env),
     // Null when this seat has no Linear app credentials, or when the seat is
     // not on LINEAR_SEATS:  the Linear tools then answer not_configured and
     // every other tool works as before (AFC-289).
-    linear: linearClientFromEnv(env, seat, { gate: seatGate }),
+    linear: linearClientFromPair(linearPairs.get(seatTagForSeat(seat)) ?? null, seat, { gate: seatGate }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     // Null without FLEETLINK_AGENT_SECRET:  the FleetLink tools then answer
     // not_configured and every other tool works as before (AFC-328).
-    fleetlink: fleetlinkClientFromEnv(env),
+    fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     // Null unless LISTENER_API_URL and this seat's WAKE_HMAC_KEY_<SEAT> are set:  the listener_*
     // tools then answer not_configured and every other tool works as before (AFC-330).
-    listener: listenerClientFromEnv(env, seat),
+    listener: listenerClientFromEnv(env, seat, { wakeKey: listenerWakeKey }),
     // Null unless LISTENER_API_URL and OPERATOR_NOTES_KEY are set:  the notes_* tools then answer not_configured
     // and every other tool works as before (AFC-486).  The seat a request names is always this HostedTools' seat.
     notes: operatorNotesClientFromEnv(env),
@@ -264,15 +291,19 @@ async function serveMcp(request, env, ctx) {
   // AFC-331:  every grant is routed by identity.  A CURSOR or GROK-WEB grant may act as either seat and as
   // every enabled Grok Bot persona;  any other grant only as its own seat (src/delegated-identities.js).
   const sharedGroup = SHARED_IDENTITY_SEATS.includes(seat);
-  const delegatedCredentials = sharedGroup ? loadDelegatedCredentials(env) : null;
-  const seatKeyOf = (identity) => (typeof env[SEAT_SECRETS[identity]?.key] === "string" ? env[SEAT_SECRETS[identity].key].trim() : "");
+  const delegatedCredentials = sharedGroup ? await resolveDelegatedCredentials(env) : null;
+  // Seat keys resolve through Infisical when INFISICAL_MODE allows (src/infisical.js);
+  // prefetched so the router's synchronous identityStatus keeps its contract.
+  // Optional reads, so one seat's absent key degrades only that seat, never every seat's request.
+  const seatKeys = new Map(await Promise.all(Object.entries(SEAT_SECRETS).map(async ([identity, names]) =>
+    [identity, await seatKeyRead(names)])));
+  const seatKeyOf = (identity) => seatKeys.get(identity) ?? "";
   const routedTools = new IdentityRouter({
     callerTools: tools,
     credentials: delegatedCredentials,
     identityStatus: (identity) => ({
       zulip: seatKeyOf(identity) && config.botEmails[identity] ? "configured" : "missing",
-      linear: [linearSecretNames(identity)?.clientId, linearSecretNames(identity)?.clientSecret]
-        .every((name) => name && typeof env[name] === "string" && env[name].trim()) ? "configured" : "missing",
+      linear: ((pair) => (pair && pair.clientId && pair.clientSecret ? "configured" : "missing"))(linearPairs.get(seatTagForSeat(identity))),
     }),
     createIdentity: !sharedGroup ? null : async (identity) => {
       // Each identity has its own SeatGate:  its spacing, idempotency rows, role cache and budget.  The
@@ -326,8 +357,12 @@ async function serveMcp(request, env, ctx) {
         config,
         zulip: new ZulipClient({ email: peerEmail, key: peerKey }),
         key: peerKey,
-        linear: linearClientFromEnv(env, identity, { gate: identityGate }),
-        listener: listenerClientFromEnv(env, identity),
+        linear: linearClientFromPair(linearPairs.get(seatTagForSeat(identity)) ?? null, identity, { gate: identityGate }),
+        listener: listenerClientFromEnv(env, identity, {
+          wakeKey: Object.hasOwn(WAKE_SECRETS, identity)
+            ? await resolveSecret(env, { name: WAKE_SECRETS[identity], path: "/wake", envName: WAKE_SECRETS[identity], optional: true })
+            : "",
+        }),
       });
     },
   });
@@ -340,7 +375,11 @@ async function serveMcp(request, env, ctx) {
   };
   // Events only for a seat the listener can wake (its WAKE_HMAC_KEY_<SEAT> is
   // set):  any other seat would list an event that never fires.
-  const wakeSecret = env[WAKE_SECRETS[seat]];
+  // Resolves through Infisical /wake when INFISICAL_MODE allows; the
+  // legacy WAKE_HMAC_KEY_<SEAT> binding is the bounded transitional fallback.
+  // A seat with no wake secret name (CURSOR, CLAUDE, MA, JET-CHAT) reads
+  // nothing:  no lookup of an undefined name, no counted fallback.
+  const wakeSecret = Object.hasOwn(WAKE_SECRETS, seat) ? listenerWakeKey : "";
   const events = typeof wakeSecret === "string" && wakeSecret.trim() ? new SeatEvents({
     seat,
     scopes,
@@ -384,7 +423,11 @@ async function serveGbBearerMcp(request, env, token) {
   const parsed = parseGbBearer(token);
   if (!parsed) return refuse();
   const { identity } = parsed;
-  const credentials = loadDelegatedCredentials(env).roles.get(identity);
+  // One listing per folder instead of a cold per-name burst (kody 4365622780):
+  // the persona rows read /zulip and /linear;  /fleetlink and /tools are
+  // listed only once the bearer has matched.
+  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
+  const credentials = (await resolveDelegatedCredentials(env)).roles.get(identity);
   if (!credentials) return refuse();
   const identityGate = gate(env, identity);
   const checked = await identityGate.gbBearerCheck(await sha256Hex(parsed.token));
@@ -400,6 +443,10 @@ async function serveGbBearerMcp(request, env, token) {
   if (state.paused) return invalidToken("This identity is paused.");
   const scopes = ["zulip:read", "zulip:write"];
   const grantRef = await sha256Ref(`gb-bearer:${identity}`);
+  await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
+  const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
+  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
+  const recallSecrets = await resolveRecallSecrets(env);
   const tools = new HostedTools({
     seat: identity,
     callerSeat: identity,
@@ -411,8 +458,8 @@ async function serveGbBearerMcp(request, env, token) {
     paused: false,
     gate: identityGate,
     cf: { asn: request.cf?.asn, country: request.cf?.country },
-    recall: recallClientFromEnv(env),
-    fleetlink: fleetlinkClientFromEnv(env),
+    recall: recallClientFromResolved(recallSecrets, env),
+    fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     notes: operatorNotesClientFromEnv(env),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     delegatedLinear: true,
@@ -451,7 +498,7 @@ async function serveWake(request, env, ctx, config) {
   const started = Date.now();
   const seat = wakePathSeat(new URL(request.url).pathname);
   if (!seat || !config.hostedSeats.includes(seat) || !Object.hasOwn(WAKE_SECRETS, seat)) return notFound();
-  const rawKey = env[WAKE_SECRETS[seat]];
+  const rawKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true });
   const key = typeof rawKey === "string" ? rawKey.trim() : "";
   if (!key) {
     await recordDiagnostic(env, { kind: "wake", reason: "wake_key_missing", seat, status: 404 });
@@ -514,11 +561,11 @@ async function serveSpike(request, env, ctx, config) {
   if (!config.spikeExtraEvents) return notFound();
   const seat = spikePathSeat(new URL(request.url).pathname);
   if (!seat || !config.hostedSeats.includes(seat) || !Object.hasOwn(WAKE_SECRETS, seat)) return notFound();
-  const wakeKey = typeof env[WAKE_SECRETS[seat]] === "string" ? env[WAKE_SECRETS[seat]].trim() : "";
+  const wakeKey = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true });
   const key = spikeKey(env.SPIKE_HMAC_KEY);
   if (!wakeKey || !key) return notFound();
   // SPIKE_HMAC_KEY must never equal any seat's wake key, not only this seat's.
-  const wakeKeys = Object.values(WAKE_SECRETS).map((name) => (typeof env[name] === "string" ? env[name].trim() : "")).filter(Boolean);
+  const wakeKeys = await resolveWakeKeys(env, Object.values(WAKE_SECRETS));
   if (wakeKeys.includes(key)) {
     console.log(JSON.stringify({ event: "spike_refused", seat, reason: "key_reused" }));
     return notFound();
@@ -567,7 +614,10 @@ async function serveSpike(request, env, ctx, config) {
 async function serveLinearHealth(request, env, config) {
   const key = healthKey(env.HEALTH_HMAC_KEY);
   if (!key) return notFound();
-  const wakeKeys = Object.values(WAKE_SECRETS).map((name) => (typeof env[name] === "string" ? env[name].trim() : ""));
+  // Every wake key Infisical serves, as serveSpike reads them (sentry
+  // 4364275301):  in required mode the wake bindings may be gone, and an env
+  // read would miss a health key equal to a wake key.
+  const wakeKeys = await resolveWakeKeys(env, Object.values(WAKE_SECRETS));
   const spikeKeyRaw = typeof env.SPIKE_HMAC_KEY === "string" ? env.SPIKE_HMAC_KEY.trim() : "";
   if (wakeKeys.includes(key) || (spikeKeyRaw && spikeKeyRaw === key)) {
     console.log(JSON.stringify({ event: "health_refused", reason: "key_reused" }));
@@ -585,13 +635,17 @@ async function serveLinearHealth(request, env, config) {
   }
   const identities = [];
   const missing = [];
+  // /zulip too:  the Grok Bot persona rows below read it (kody 4365622780).
+  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
   for (const seat of LINEAR_SEATS) {
-    const names = linearSecretNames(seat);
-    if (!names || !config.hostedSeats.includes(seat)) continue;
-    if ([names.clientId, names.clientSecret].every((n) => typeof env[n] === "string" && env[n].trim() !== "")) identities.push(seat);
+    if (!linearSecretNames(seat) || !config.hostedSeats.includes(seat)) continue;
+    // Resolved through Infisical (src/linear.js), not env:  in required mode
+    // the legacy bindings are absent and an env read would misreport missing.
+    const pair = await resolveLinearPair(env, seat);
+    if (pair && pair.clientId && pair.clientSecret) identities.push(seat);
     else missing.push(seat);
   }
-  const delegated = loadDelegatedCredentials(env);
+  const delegated = await resolveDelegatedCredentials(env);
   for (const identity of delegated.roles.keys()) identities.push(identity);
   const rows = await Promise.all(identities.map(async (seat) => {
     try {
@@ -611,7 +665,9 @@ async function serveLinearHealth(request, env, config) {
  * refused;  a Zulip failure throws, which deliverWake answers with a retry.
  */
 async function wakeChannels(env, config, seat, seatGate) {
-  const key = typeof env[SEAT_SECRETS[seat].key] === "string" ? env[SEAT_SECRETS[seat].key].trim() : "";
+  // Optional like every seat-key read (kody 4365622648):  an absent key is "no
+  // channels", which the caller already handles;  an outage still throws.
+  const key = await resolveSecret(env, { name: SEAT_SECRETS[seat].infisical.name, path: SEAT_SECRETS[seat].infisical.path, envName: SEAT_SECRETS[seat].key, optional: true });
   if (!key) return null;
   const tools = new HostedTools({ seat, scopes: [], config, zulip: new ZulipClient({ email: config.botEmails[seat], key }), key, gate: seatGate });
   try {
@@ -672,7 +728,7 @@ async function authorizeGet(request, env, config, oauth, email) {
   if (!pick.ok) {
     await logRefusal(env, { where: "authorize", reason: pick.reason, clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
     if (pick.reason === "not_armed") return noConnectionPage();
-    return errorPage("More Than One Seat Armed", `These seats share this app's callback:  ${pre.seats.join(", ")}.  More than one is armed, so the connection cannot tell which one you meant.  Disarm all but one in Agent-Sync Admin, then start the connection again.`, 409);
+    return errorPage("More Than One Seat Armed", `These seats share this app's callback:  ${pre.seats.join(", ")}.  More than one is armed, so the connection cannot tell which one you meant.  Disarm all but one in ST-MCP Admin, then start the connection again.`, 409);
   }
   const seat = pick.seat;
   // An allowlisted CIMD id names its seat;  it must be the armed one.  Checked
@@ -702,7 +758,7 @@ async function authorizeGet(request, env, config, oauth, email) {
   // callback) cannot mint a grant for this one.
   if (!clientBoundToSeat(client, seat, authRequest.redirectUri, config)) {
     await logRefusal(env, { where: "authorize", reason: "client_seat_mismatch", clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
-    return errorPage("Request Refused", `This client is not bound to ${seat}.  Create a manual client for ${seat} in Agent-Sync Admin and use its client ID.`, 400);
+    return errorPage("Request Refused", `This client is not bound to ${seat}.  Create a manual client for ${seat} in ST-MCP Admin and use its client ID.`, 400);
   }
 
   const consent = await oauth.beginConsent(authRequest);
@@ -805,7 +861,7 @@ async function authorizePost(request, env, config, oauth, email) {
   if (!pick.ok || pick.seat !== seat) {
     const reason = pick.ok ? "seat_family_mismatch" : pick.reason;
     await logRefusal(env, { where: "consent", reason, clientId: approved.request.clientId, redirectUri: approved.request.redirectUri, by: email });
-    if (reason === "not_armed") return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in Agent-Sync Admin.", 409);
+    if (reason === "not_armed") return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in ST-MCP Admin.", 409);
     return errorPage("Request Refused", `The armed seat is no longer ${seat}, or more than one seat sharing this app's callback is armed.  Leave exactly one armed and start the connection again.`, 409);
   }
   // Resolve the display name first:  it may fetch a CIMD document, and a failure
@@ -826,7 +882,7 @@ async function authorizePost(request, env, config, oauth, email) {
   const seatGate = gate(env, seat);
   const won = await seatGate.approve({ by: email });
   if (!won.ok) {
-    return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in Agent-Sync Admin.", 409);
+    return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in ST-MCP Admin.", 409);
   }
 
   const approvedAt = Date.now();
@@ -906,17 +962,23 @@ async function serveAdmin(request, env, config, oauth, email) {
     const audits = [];
     const calls = [];
     const statusErrors = [];
-    const configured = (name) => typeof env[name] === "string" && env[name].trim() !== "";
-    const recallConfigured = recallClientFromEnv(env) !== null;
+    // Every folder this page reads, listed once before any per-name read.
+    await Promise.all(["/zulip", "/linear", "/tools"].map((path) => prefetchFolder(env, path)));
+    const recallConfigured = recallClientFromResolved(await resolveRecallSecrets(env), env) !== null;
     // Collect seats independently so a diagnostic read failure is visible on
     // the page rather than hiding every other seat behind an admin 500.
     await Promise.all(config.hostedSeats.map(async (seat) => {
       const g = gate(env, seat);
       const pair = linearSecretNames(seat);
+      // Resolved through Infisical (optional reads):  in required mode the
+      // legacy bindings are absent, so env-name checks would misreport every
+      // seat uninstalled.  A genuine miss reports not-installed, never a 500.
+      const resolvedKey = await resolveSecret(env, { name: SEAT_SECRETS[seat].infisical.name, path: SEAT_SECRETS[seat].infisical.path, envName: SEAT_SECRETS[seat].key, optional: true });
+      const resolvedPair = pair ? await resolveLinearPair(env, seat) : null;
       const facts = {
-        seat, keyInstalled: configured(SEAT_SECRETS[seat].key), grants: [],
+        seat, keyInstalled: Boolean(resolvedKey), grants: [],
         linearEnabled: LINEAR_SEATS.includes(seat),
-        linearConfigured: Boolean(pair && configured(pair.clientId) && configured(pair.clientSecret)),
+        linearConfigured: Boolean(resolvedPair && resolvedPair.clientId && resolvedPair.clientSecret),
         linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
         recallConfigured,
       };
@@ -950,12 +1012,16 @@ async function serveAdmin(request, env, config, oauth, email) {
     const globalValue = (i) => globalReads[i].status === "fulfilled" ? globalReads[i].value : [];
     const [refusals, tokenRefusals, runtimeErrors] = [0, 1, 2].map(globalValue);
     const diagnosticsUnavailable = globalReads.some((r) => r.status === "rejected");
-    const delegatedRoles = loadDelegatedCredentials(env).roles;
+    const delegatedRoles = (await resolveDelegatedCredentials(env)).roles;
     const gbBearers = await Promise.all(GB_IDENTITIES.map(async (identity) => {
       let status = null;
       try { status = await gate(env, identity).gbBearerStatus(); } catch { /* Shown as unknown. */ }
       return { identity, credentials: delegatedRoles.has(identity), status };
     }));
+    // Observability for the Infisical transition (kody 4365623014):  the mode
+    // the Worker actually runs in and this isolate's counters, read after
+    // this page's own reads so they are included;  rendered by adminPage.
+    const infisical = { mode: infisicalMode(env), ...infisicalStats() };
     return adminPage(
       {
         gbBearers,
@@ -968,6 +1034,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         calls: calls.slice(0, 40),
         statusCalls: calls,
         statusErrors,
+        infisical,
         runtimeErrors,
         statusAudits: audits,
         generatedAt,
@@ -985,8 +1052,8 @@ async function serveAdmin(request, env, config, oauth, email) {
   if (path === "/admin/action" && request.method === "POST") {
     if (!sameOriginPost(request, config.issuer, { requireFetchSite: true })) return errorPage("Request Refused", "Admin changes must come from the admin page.", 403);
     const parsed = await readForm(request, AdminForm, []);
-    if (!parsed.ok) return errorPage("Request Refused", "That form was not valid.  Reload Agent-Sync Admin and try again.", 400);
-    if (!safeEqual(parsed.data.csrf, readCookie(request, CSRF_COOKIE))) return errorPage("Request Refused", "The admin form expired.  Reload Agent-Sync Admin and try again.", 403);
+    if (!parsed.ok) return errorPage("Request Refused", "That form was not valid.  Reload ST-MCP Admin and try again.", 400);
+    if (!safeEqual(parsed.data.csrf, readCookie(request, CSRF_COOKIE))) return errorPage("Request Refused", "The admin form expired.  Reload ST-MCP Admin and try again.", 403);
     const { action, seat = "" } = parsed.data;
     const needsSeat = ["arm", "disarm", "pause", "unpause", "revoke", "create_manual_client"].includes(action);
     if (needsSeat && !config.hostedSeats.includes(seat)) return errorPage("Request Refused", "Unknown seat.", 400);
@@ -1046,7 +1113,8 @@ async function serveAdmin(request, env, config, oauth, email) {
       }
       case "mint_gb_bearer": {
         const identity = parsed.data.identity ?? "";
-        if (!GB_IDENTITIES.includes(identity) || !loadDelegatedCredentials(env).roles.has(identity)) return errorPage("Request Refused", "Unknown Grok Bot, or its credentials are not loaded.", 400);
+        if (GB_IDENTITIES.includes(identity)) await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
+        if (!GB_IDENTITIES.includes(identity) || !(await resolveDelegatedCredentials(env)).roles.has(identity)) return errorPage("Request Refused", "Unknown Grok Bot, or its credentials are not loaded.", 400);
         const { token, hash } = await newGbBearer(identity);
         const expiresAt = Date.now() + GB_BEARER_TTL_MS;
         await gate(env, identity).gbBearerMint({ hash, by: email, expiresAt });

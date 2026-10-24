@@ -23,8 +23,8 @@ export function adminSeatLabel(seat) {
 // One fixed stylesheet, allowed by hash so the CSP can keep `default-src 'none'`.
 // test/pages.test.mjs recomputes the hash, so editing the CSS without updating
 // STYLE_HASH fails the build instead of shipping an unstyled page.
-export const STYLE = "body{font:16px/1.5 system-ui,sans-serif;max-width:70rem;margin:2rem auto;padding:0 1rem;background:#fff;color:#1a1a1a}h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:2rem}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:.35rem .5rem;text-align:left;vertical-align:top}code{background:#f3f3f3;padding:0 .2rem}.warn{background:#fff4e5;border:1px solid #f0c36d;padding:.6rem .8rem}.ok{color:#196c2e}button{font:inherit;padding:.4rem .9rem;margin:.2rem .3rem .2rem 0}form.inline{display:inline}.status-overview{border:1px solid #bbb;border-radius:.6rem;padding:1rem;margin:1rem 0 2rem}.overview-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem}.overview-heading h2{margin:.25rem 0}.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:.8rem}.status-card,.error-card{border:1px solid #ddd;border-radius:.45rem;padding:.7rem .85rem;min-width:0}.status-card h3,.error-card p{margin:.2rem 0 .5rem}.status-state{font-weight:700}.state-ready{color:#196c2e}.state-attention{color:#8a4b00}.state-neutral{color:#333}.status-card dl{display:grid;grid-template-columns:minmax(6rem,auto) 1fr;gap:.2rem .7rem;margin:.4rem 0}.status-card dt{font-weight:600}.status-card dd{margin:0;overflow-wrap:anywhere}.coverage,.error-meta{color:#555;font-size:.9rem}.error-list{display:grid;gap:.55rem}.error-card header{display:flex;justify-content:space-between;gap:1rem}.error-card time{white-space:nowrap}.status-overview{overflow-wrap:anywhere}details.fold{border:1px solid #ddd;border-radius:.45rem;margin:1rem 0;padding:0 1rem}details.fold[open]{padding-bottom:1rem}details.fold>summary{cursor:pointer;padding:.6rem 0;list-style-position:outside}details.fold>summary h2{display:inline;font-size:1.05rem;margin:0}details.fold>summary .count,details.fold>summary .status-state{margin-left:.6rem;font-size:.95rem}details.status-overview{padding:0 1rem}@media(max-width:38rem){.overview-heading{align-items:flex-start;flex-direction:column}.error-card header{flex-direction:column;gap:0}.status-card dl{grid-template-columns:1fr}.status-card dd{margin-bottom:.35rem}table{display:block;overflow-x:auto;white-space:nowrap}}";
-export const STYLE_HASH = "sha256-VZRPtCAzyltYKL+L8GIle7XBD0E8CLUC2qn7VccECeM=";
+export const STYLE = "body{font:16px/1.5 system-ui,sans-serif;max-width:70rem;margin:2rem auto;padding:0 1rem;background:#fff;color:#1a1a1a}h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:2rem}h3{font-size:1rem;margin:1.2rem 0 .4rem}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:.35rem .5rem;text-align:left;vertical-align:top}code{background:#f3f3f3;padding:0 .2rem}.warn{background:#fff4e5;border:1px solid #f0c36d;padding:.6rem .8rem}.ok{color:#196c2e}button{font:inherit;padding:.4rem .9rem;margin:.2rem .3rem .2rem 0}form.inline{display:inline}.status-overview{border:1px solid #bbb;border-radius:.6rem;padding:1rem;margin:1rem 0 2rem}.overview-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem}.overview-heading h2{margin:.25rem 0}.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:.8rem}.status-card,.error-card{border:1px solid #ddd;border-radius:.45rem;padding:.7rem .85rem;min-width:0}.status-card h3,.error-card p{margin:.2rem 0 .5rem}.status-state{font-weight:700}.state-ready{color:#196c2e}.state-attention{color:#8a4b00}.state-neutral{color:#333}.status-card dl{display:grid;grid-template-columns:minmax(6rem,auto) 1fr;gap:.2rem .7rem;margin:.4rem 0}.status-card dt{font-weight:600}.status-card dd{margin:0;overflow-wrap:anywhere}.coverage,.error-meta{color:#555;font-size:.9rem}.error-list{display:grid;gap:.55rem}.error-card header{display:flex;justify-content:space-between;gap:1rem}.error-card time{white-space:nowrap}.status-overview{overflow-wrap:anywhere}details.fold{border:1px solid #ddd;border-radius:.45rem;margin:1rem 0;padding:0 1rem}details.fold[open]{padding-bottom:1rem}details.fold>summary{cursor:pointer;padding:.6rem 0;list-style-position:outside}details.fold>summary h2{display:inline;font-size:1.05rem;margin:0}details.fold>summary .count,details.fold>summary .status-state{margin-left:.6rem;font-size:.95rem}details.status-overview{padding:0 1rem}@media(max-width:38rem){.overview-heading{align-items:flex-start;flex-direction:column}.error-card header{flex-direction:column;gap:0}.status-card dl{grid-template-columns:1fr}.status-card dd{margin-bottom:.35rem}table{display:block;overflow-x:auto;white-space:nowrap;background:linear-gradient(to right,#fff 30%,rgba(255,255,255,0)) 0 0,linear-gradient(to left,#fff 30%,rgba(255,255,255,0)) 100% 0,radial-gradient(farthest-side at 0 50%,rgba(0,0,0,.18),rgba(0,0,0,0)) 0 0,radial-gradient(farthest-side at 100% 50%,rgba(0,0,0,.18),rgba(0,0,0,0)) 100% 0;background-color:#fff;background-repeat:no-repeat;background-size:2.5rem 100%,2.5rem 100%,.9rem 100%,.9rem 100%;background-attachment:local,local,scroll,scroll}}";
+export const STYLE_HASH = "sha256-fHAv0rGg4lKHmTPPJ0OWtBBOpqf8dP0ZN5h4BJUDznM=";
 
 export const PAGE_CSP = `default-src 'none'; style-src '${STYLE_HASH}'; frame-ancestors 'none'; base-uri 'none'`;
 
@@ -91,7 +91,7 @@ export function noConnectionPage() {
     "No Connection Expected",
     `<h1>No Connection Expected</h1><p>${sentences(
       "No seat is armed for this app right now, so nothing was granted.",
-      "If you meant to connect, open Agent-Sync Admin, arm the seat, and start again within 10 minutes.",
+      "If you meant to connect, open ST-MCP Admin, arm the seat, and start again within 10 minutes.",
     )}</p>`,
     { status: 403 },
   );
@@ -133,7 +133,7 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
   }
   const verified = clientDomain
     ? `Published by <strong>${escapeHtml(clientDomain)}</strong> (a client metadata document on that domain).`
-    : `Registered by hand in Agent-Sync Admin.${SENTENCE_GAP}Its name is not verified.`;
+    : `Registered by hand in ST-MCP Admin.${SENTENCE_GAP}Its name is not verified.`;
   const replaceLine = replacing.length
     ? `<p class="warn">${replacing
         .map((g) => `This replaces the grant from ${escapeHtml(g.client)}, created ${escapeHtml(ownerTime(g.createdAt))}.`)
@@ -211,12 +211,12 @@ export function gbBearerRevealPage({ identity, token, expiresAt }) {
 <p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only a hash, so it cannot show it again.", "To get another, mint a new one here, which replaces this one.", "Do not refresh or resubmit this page:  that mints a new token and ends this one.")}</p>
 <p><code id="gb-bearer-token">${escapeHtml(token)}</code></p>
 <p>${sentences(`Expires ${ownerTime(expiresAt)}.`, "Send it as an Authorization: Bearer header to the MCP URL, and it acts only as this bot.")}</p>
-<p><a href="/admin">Back to Agent-Sync Admin</a></p>`;
+<p><a href="/admin">Back to ST-MCP Admin</a></p>`;
   return htmlResponse(`Bearer For ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
 /** /admin (spec 3.9):  seat state, keys, grants, clients, refusals, tool calls, audit. */
-export function adminPage({ gbBearers = [], email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [] }, headers) {
+export function adminPage({ gbBearers = [], email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [], infisical = null }, headers) {
   const seatRows = seats
     .map((s) => {
       const unavailable = new Set(s.unavailableFields ?? []);
@@ -290,14 +290,23 @@ export function adminPage({ gbBearers = [], email, seats, clients, refusals, tok
     gap: SENTENCE_GAP,
     seatLabel: adminSeatLabel,
   });
+  // The runtime-secret mode and this isolate's counters (src/infisical.js, DEPLOY.md), so "required mode, zero
+  // fallbacks" is checkable here.  Rendered only when the Worker passes them.
+  const infisicalLine = infisical
+    ? `<p${Number(infisical.fallbacks) > 0 ? ' class="warn"' : ""}>${sentences(
+        `Secrets mode:  ${infisical.mode}.`,
+        `Since this isolate started:  ${Number(infisical.fetched) || 0} Infisical reads, ${Number(infisical.cacheHits) || 0} cache hits and ${Number(infisical.fallbacks) || 0} fallbacks to Worker bindings.`,
+        `${Number(infisical.absent) || 0} reads found an optional secret set nowhere, which every mode answers the same way, and are not fallbacks.`,
+      )}</p>`
+    : "";
   // Owner controls first, then everything long folded behind a summary that shows its count (AFC-347).
   const fold = (title, count, inner) =>
     `<details class="fold"><summary><h2>${escapeHtml(title)}</h2> <span class="count">${escapeHtml(count)}</span></summary>${inner}</details>`;
-  const body = `<h1>Agent-Sync Admin</h1>
+  const body = `<h1>ST-MCP Admin</h1>
 <p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}A seat serves tools only with its key installed and a live member role.</p>
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Seats</h2>
-<table><tr><th>Seat</th><th>Arming</th><th>State</th><th>Epoch</th><th>Zulip Key</th><th>Grants</th><th>Actions</th></tr>${seatRows}</table>
+<table><tr><th>Seat</th><th>Arming</th><th>State</th><th>Epoch</th><th>Zulip Key</th><th>Grants</th><th>Actions</th></tr>${seatRows}</table>${infisicalLine}
 ${gbBearerSection(gbBearers, csrf)}
 <h2>Hand-Registered Clients (Manual Forms)</h2>
 <p>${sentences(
@@ -306,7 +315,8 @@ ${gbBearerSection(gbBearers, csrf)}
     "Each manual client is bound to one seat and gets that seat's redirect URIs.",
     "On a callback two seats share, the client's seat must also be the armed seat.",
   )}</p>
-<table><tr><th>Seat</th><th>Redirect URIs</th><th></th></tr>${manualRows}</table>
+${manualRows ? `<h3>Manual seats</h3>\n<table><tr><th>Seat</th><th>Redirect URIs</th><th></th></tr>${manualRows}</table>` : ""}
+<h3>Hand-registered clients</h3>
 <table><tr><th>Client ID</th><th>Name</th><th>Seat</th><th>Redirect URIs</th><th></th></tr>${clientRows}</table>
 ${statusOverview}
 ${fold("Refused Authorize Requests", `${refusals.length} logged`, `<p>${sentences("Each row is a request that passed Cloudflare Access, so the signed-in email is shown.", "Only copy a redirect URI from here if the time matches your own attempt.")}</p>
@@ -316,5 +326,5 @@ ${fold("Refused Token Requests (Unauthenticated, Counted)", `${tokenRefusals.len
 ${fold("Tool Calls", `${calls.length} calls`, `<p>${sentences("One row per call, newest first.", "Bodies, keys and tokens are never stored.", "A topic that looked like a secret shows as its hash.")}</p>
 <table><tr><th>When</th><th>Seat</th><th>Tool</th><th>Outcome</th><th>Stream</th><th>Topic</th><th>Message</th><th>Ms</th><th>Grant</th><th>Network</th></tr>${callRows}</table>`)}
 ${fold("Audit", `${audits.length} events`, `<table><tr><th>When</th><th>Seat</th><th>Event</th><th>Detail</th></tr>${auditRows}</table>`)}`;
-  return htmlResponse("Agent-Sync Admin", body, { headers });
+  return htmlResponse("ST-MCP Admin", body, { headers });
 }

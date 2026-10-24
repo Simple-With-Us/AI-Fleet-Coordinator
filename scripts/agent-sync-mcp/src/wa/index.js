@@ -1,5 +1,7 @@
 import { WA_EVENT, WA_HEADER, WA_MAX_BODY, binding, verifyRequest } from "./contract.js";
 import { subEventName, deliverEvent, eventIdFor } from "../events.js";
+import { WAKE_SECRETS } from "../config.js";
+import { infisicalMode, prefetchFolder, resolveSecret } from "../infisical.js";
 const reply = (body, status = 200) => Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 
 export async function deliverPending(gate, fetchFn, deadline = Date.now() + 10000, source) {
@@ -38,8 +40,17 @@ export async function serveWa(request, env, config, gate, fetchFn = fetch) {
   const kind = new URL(request.url).pathname === "/internal/wa-operator/JET" ? "operator" : "ingest";
   const owner = binding(env.WA_OWNER_BINDING_JET);
   const keyName = kind === "operator" ? "WA_OPERATOR_HMAC_KEY_JET" : "WA_BRIDGE_HMAC_KEY_JET";
-  const rawKey = env[keyName];
-  const otherKeys = Object.entries(env).filter(([k,v]) => /(?:WAKE_HMAC_KEY_|_ROUTINE_KEY$|^SPIKE_HMAC_KEY$|^HEALTH_HMAC_KEY$|^WA_.*HMAC_KEY)/.test(k) && k !== keyName && typeof v === "string").map(([,v]) => v.trim());
+  const otherWaName = kind === "operator" ? "WA_BRIDGE_HMAC_KEY_JET" : "WA_OPERATOR_HMAC_KEY_JET";
+  // Both WA keys are declared at Fleet-OPS /wake (src/infisical-manifest.js), so they resolve through Infisical
+  // like the wake keys (kody 4365623241);  off mode reads the binding exactly as before, untrimmed.
+  const viaInfisical = infisicalMode(env) !== "off";
+  if (viaInfisical) await prefetchFolder(env, "/wake");
+  const wakeRead = (name) => resolveSecret(env, { name, path: "/wake", envName: name, optional: true });
+  const rawKey = viaInfisical ? await wakeRead(keyName) : env[keyName];
+  const bindingKeys = Object.entries(env).filter(([k,v]) => /(?:WAKE_HMAC_KEY_|_ROUTINE_KEY$|^SPIKE_HMAC_KEY$|^HEALTH_HMAC_KEY$|^WA_.*HMAC_KEY)/.test(k) && k !== keyName && typeof v === "string").map(([,v]) => v.trim());
+  // The reuse guard also sees the keys Infisical serves, which need not be Worker bindings any more.
+  const resolvedKeys = viaInfisical ? (await Promise.all([otherWaName, ...Object.values(WAKE_SECRETS)].map(wakeRead))).map((v) => v.trim()).filter(Boolean) : [];
+  const otherKeys = [...new Set([...bindingKeys, ...resolvedKeys])];
   if (kind === "ingest" && !owner) return reply({ ok: false, reason: "not_configured", required: "WA_OWNER_BINDING_JET" }, 404);
   if (typeof rawKey !== "string" || rawKey.trim().length < 32) return reply({ ok: false, reason: "not_configured", required: keyName }, 404);
   if (otherKeys.includes(rawKey.trim())) return reply({ ok: false, reason: "key_reused", required: keyName }, 404);

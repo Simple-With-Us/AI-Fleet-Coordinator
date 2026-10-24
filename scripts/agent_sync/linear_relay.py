@@ -78,7 +78,6 @@ from .zulip import (
     QueueExpired,
     ZulipClient,
     _NoRedirect,
-    masked_credential,
     realm_url,
     verify_realm,
 )
@@ -638,10 +637,7 @@ class LinearClient:
                 if not isinstance(last, LinearError):
                     return last
             if isinstance(last, LinearAuthError):
-                # The fleet's preview of a refused key (zulip.masked_credential): the first eight
-                # and last four characters of a long key, one character of a short one, so the
-                # operator can tell which key was refused without it ever being written out.
-                raise LinearAuthError("%s; key %s" % (last, masked_credential(self._token)))
+                raise last
             if not _retryable(last):
                 raise last
             if not idempotent:
@@ -795,8 +791,7 @@ def render_comment(entry: Mapping[str, Any], realm: str) -> str:
 
 
 def _stop_on_auth(exc: LinearAuthError) -> SystemExit:
-    """The relay's exit on a refused token.  The message is the client's, which names the
-    variable and carries only the masked preview of the key."""
+    """The relay's exit on a refused token, naming the variable without key-derived text."""
     return SystemExit("%s; the relay stops rather than retry a token that cannot work" % exc)
 
 

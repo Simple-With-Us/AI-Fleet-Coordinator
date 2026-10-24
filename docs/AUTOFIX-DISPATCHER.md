@@ -35,9 +35,9 @@ variable `SWU_AUTOFIX_DISPATCHER_ENABLED` is `true`.  Each tick:
    instructions:  the run has write credentials and runs unattended, so an unfiltered
    read would let anyone who can comment on a PR steer it, and an unbounded one could
    flood its context.  A `[bot]` login belongs to a GitHub App, which no person can
-   register.  The comment's sentences are separated by the `&nbsp;` entity plus a
-   normal space (`SENTENCE_GAP`), since GitHub collapses two ASCII spaces and renders
-   the entity as a real gap.  The comment points at
+   register.  The comment's sentences are separated by a real U+00A0 plus a
+   normal space (`SENTENCE_GAP`), not the `&nbsp;` entity:  GitHub collapses two ASCII
+   spaces, and the entity shows up literally in a plain-text squash-merge commit.  The comment points at
    the findings instead of copying them, so a new review round is never stale and no
    reviewer `@mention` is replayed.
 4. Appends the dispatch to `autofix-dispatcher/tally.jsonl` on the

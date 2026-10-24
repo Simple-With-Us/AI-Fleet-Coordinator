@@ -23,8 +23,9 @@ const TEST_EVENTS_ONLY = ["JET"];
 test("JET is the wake-only seat;  JET-CHAT is a full seat on the same bot", () => {
   assert.deepEqual([...EVENTS_ONLY_SEATS], [], "staging: no seat is events-only until the post-verification flip commit");
   assert.equal(KNOWN_SEATS.indexOf("JET-CHAT"), KNOWN_SEATS.indexOf("JET") + 1);
-  assert.deepEqual(SEAT_SECRETS["JET-CHAT"], { key: "ZULIP_KEY_JET_CHAT", email: "ZULIP_EMAIL_JET_CHAT" });
+  assert.deepEqual(SEAT_SECRETS["JET-CHAT"], { key: "ZULIP_KEY_JET_CHAT", email: "ZULIP_EMAIL_JET_CHAT", infisical: { name: "JET_ZULIP_KEY", path: "/zulip" } });
   assert.notEqual(SEAT_SECRETS["JET-CHAT"].key, SEAT_SECRETS.JET.key, "the table never shares a secret name");
+  assert.deepEqual(SEAT_SECRETS["JET-CHAT"].infisical, SEAT_SECRETS.JET.infisical, "one bot key:  the runtime read is Jet's canonical record, never a copy");
   assert.equal(SEAT_LABELS["JET-CHAT"], "ChatGPT");
   assert.deepEqual(SEAT_TAG_EXPECTATIONS, { "JET-CHAT": "JET" });
   assert.ok(!("JET-CHAT" in WAKE_SECRETS), "no wake secret, so /mcp serves the full login no events");
@@ -174,6 +175,16 @@ test("JET-CHAT carries Jet's Linear app under its own env names (kody 4363263223
   assert.deepEqual([...SEAT_APP_ALIASES["JET-CHAT"]], ["Jet (OpenAI dot)"]);
   assert.deepEqual([...seatAppNames("JET-CHAT")], [...seatAppNames("JET")], "JET-CHAT accepts exactly JET's app names");
   assert.ok(appNameOk("Jet", "JET-CHAT") && appNameOk("jet (openai dot)", "JET-CHAT"), "the viewer check passes for the shared app");
+});
+
+test("JET-CHAT's Linear pair resolves in every Infisical mode (#901 merge with #889)", async () => {
+  const { LINEAR_SECRETS, LINEAR_INFISICAL, resolveLinearPair } = await import("../src/linear.js");
+  const { _resetInfisicalForTests } = await import("../src/infisical.js");
+  for (const seat of Object.keys(LINEAR_SECRETS)) assert.ok(LINEAR_INFISICAL[seat], `${seat} has a Fleet-OPS /linear record`);
+  assert.deepEqual(LINEAR_INFISICAL["JET-CHAT"], LINEAR_INFISICAL.JET, "one Linear app:  Jet's record, never a copy");
+  _resetInfisicalForTests();
+  const off = await resolveLinearPair({ LINEAR_JET_CHAT_CLIENT_ID: "id-chat", LINEAR_JET_CHAT_CLIENT_SECRET: "sec-chat" }, "JET-CHAT");
+  assert.deepEqual(off, { clientId: "id-chat", clientSecret: "sec-chat" }, "off mode reads JET-CHAT's own Worker names");
 });
 
 test("JET-CHAT is session-id exempt like the JET it replaces (kody 4363263820)", async () => {
