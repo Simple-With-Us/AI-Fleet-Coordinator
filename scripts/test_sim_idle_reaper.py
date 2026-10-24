@@ -393,6 +393,33 @@ class Reaper(Base):
         ):
             self.assertEqual(reaper.busy_processes(), ["xcodebuildx1"])  # 102 is a real build
 
+    def test_xcodebuild_that_exited_before_ps_is_not_busy(self):
+        # pgrep saw 101 (a probe) and 102 (a build);  101 exits before ps reads it.
+        def fake_run(args, timeout=60, stdin_text=None):
+            if args[:3] == ["/bin/ps", "-o", "command="]:
+                pid = args[args.index("-p") + 1]
+                return (1, "") if pid == "101" else (0, "xcodebuild -scheme Foo\n")
+            return (0, "")
+
+        for alive, want in (
+            ({"102"}, ["xcodebuildx1"]),  # 101 is gone:  not a build
+            (None, ["xcodebuildx2"]),  # pgrep failed on the re-check:  101 stays busy
+            ({"101", "102"}, ["xcodebuildx2"]),  # ps failed but 101 still runs:  stays busy
+        ):
+            scans = iter([{"101", "102"}])
+
+            def fake_pgrep(args, alive=alive, scans=scans):
+                if tuple(args) != ("-x", "xcodebuild"):
+                    return set()
+                return next(scans, alive)  # the first call is the scan, later ones the re-check
+
+            with (
+                self.subTest(alive=alive),
+                patch.object(reaper, "pgrep_pids", fake_pgrep),
+                patch.object(reaper, "run", fake_run),
+            ):
+                self.assertEqual(reaper.busy_processes(), want)
+
     def test_load_guard_trip_point(self):
         with patch.object(reaper.os, "getloadavg", lambda: (799.9, 0.0, 0.0)):
             self.assertIsNone(reaper.load_guard_tripped())
@@ -568,6 +595,16 @@ class Reaper(Base):
             reaper.main(["--state", state_path])
         self.assertIn("Bitrig is running (1 simulator exempt)", buf.getvalue())
 
+    def test_udid_filter_ignores_letter_case(self):
+        other = {"udid": B, "name": "iPad", "runtime": "iOS-27-0"}
+        old = {A: time.time() - 7200, B: time.time() - 7200}
+        log, shut = self.run_reaper(["--udid", B.lower()], [self.DEV, other], old)
+        self.assertEqual(shut, [B])  # simctl reports uppercase;  a lowercase --udid still matches
+        alerts = []
+        log, shut = self.run_guard(["--udid", B.lower()], [self.DEV, other], alerts)
+        self.assertEqual(shut, [B])
+        self.assertEqual(len(alerts), 1)
+
     def test_udid_filter_never_touches_other_devices(self):
         other = {"udid": B, "name": "iPad", "runtime": "iOS-27-0"}
         old = {A: time.time() - 7200, B: time.time() - 7200}
@@ -660,9 +697,31 @@ class Reaper(Base):
         self.assertEqual(outcome, "ok")
         argv = calls[0]
         self.assertEqual(argv[1:4], ["--as", "MA", "post"])
+        self.assertIn("--no-tag", argv)  # the #Alerts line starts with its severity, not a seat tag
         self.assertEqual(argv[argv.index("--channel") + 1], "Alerts")
         self.assertEqual(argv[argv.index("--topic") + 1], "sim-idle-reaper")
+        self.assertEqual(argv[-1], "SEVERE • sim-idle-reaper • x • y")
         self.assertIn("fleet alert posted", log)
+
+    def test_fleet_alert_explicit_cli_override_wins_over_path(self):
+        with (
+            patch.dict(os.environ, {"SIM_REAPER_SIMPLE_CHAT": "/opt/pinned/simple-chat"}),
+            patch.object(reaper.shutil, "which", lambda name: "/usr/local/bin/simple-chat"),
+        ):
+            _, calls, _ = self.fleet_alert_with(0)
+        self.assertEqual(calls[0][0], "/opt/pinned/simple-chat")
+        with (
+            patch.dict(os.environ, {"SIM_REAPER_SIMPLE_CHAT": ""}),
+            patch.object(reaper.shutil, "which", lambda name: "/usr/local/bin/simple-chat"),
+        ):
+            _, calls, _ = self.fleet_alert_with(0)
+        self.assertEqual(calls[0][0], "/usr/local/bin/simple-chat")
+        with (
+            patch.dict(os.environ, {"SIM_REAPER_SIMPLE_CHAT": ""}),
+            patch.object(reaper.shutil, "which", lambda name: None),
+        ):
+            _, calls, _ = self.fleet_alert_with(0)
+        self.assertEqual(calls[0][0], reaper.SIMPLE_CHAT)
 
     def test_fleet_alert_outcomes(self):
         cases = [
