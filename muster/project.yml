@@ -59,6 +59,7 @@ targets:
       - path: Muster/Model/EngineRunner.swift
       - path: Muster/Model/FleetConfigContract.swift
       - path: Muster/Model/FleetGrid.swift
+      - path: Muster/Model/FleetHost.swift
       - path: Muster/Model/FleetStore.swift
       - path: Muster/Model/FleetToolsReport.swift
       - path: Muster/Model/KnobRegistry.swift

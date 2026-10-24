@@ -113,3 +113,20 @@ The doctor calls it with `-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyC
 
 **What the server's rows look like now.**  The server runs its project mirrors and its lanes on the `fleet-extra` volume (`/mnt/fleet-extra`), with `~/Code` and `~/apps` resolving to it.  That layout is sanctioned and is not a difference the doctor reports:  the doctor's own root lookup follows the symlinks, so the server's rows are about the tools, not about where the trees live.  A server row that says `stale` means a tool is behind its upstream, and `missing` means a required command is absent;  neither says the host is set up wrongly.
 
+### The app's own route (installed)
+
+Muster runs on the Mac and administers two hosts, the Mac and the Hetzner server, so it needs the server's own state, not only a report the Mac's timer wrote.  That route is a second read-only key, separate from the doctor's, because a key that may run one command may not be reused for another.
+
+1. On the Mac, `~/.ssh/muster_ro` (0600, no passphrase).
+2. On the Mac, a `Host muster-hetzner` block in `~/.ssh/config`:  the server's public address `167.233.254.55`, `User root`, `IdentityFile ~/.ssh/muster_ro`, `IdentitiesOnly yes`, `BatchMode yes`, `StrictHostKeyChecking yes`, `UserKnownHostsFile ~/.ssh/known_hosts_hetzner`.
+3. On the server, one line in `/root/.ssh/authorized_keys`:
+   ```
+   restrict,command="cd /root/.local/share/fleet-cli/current/scripts && exec /usr/bin/python3 -m fleet_config status --json" ssh-ed25519 AAAA... muster-ro@app
+   ```
+   The command is the engine's read-only status run in the managed runtime.  `restrict` and the fixed command are the whole permission:  the key can ask the server what its state is and nothing else.  Removing the line revokes the route.
+
+The public address is used for the same reason as the doctor's route:  Tailscale SSH intercepts the tailnet address and ignores the server's `authorized_keys`, so a forced command never applies there.
+
+**Check it.**  `ssh muster-hetzner | head -c 200` prints the server's engine envelope, and the run takes about eight seconds.  An exit of 1 with a document is still an answer, exactly as with the doctor:  the engine exits 1 when the server's verdict is FAIL.
+
+**What the app does with it.**  The answer is the server's own rules, so the app must judge it by the host it came from.  A rule whose collector belongs to another host reads as not applicable on this one, never as a failure:  the registry's rules are Mac rules today, so a run on the server reports the Mac's paths as MISSING, and those rows say nothing about the server.  A host that cannot be reached reads as unknown with the reason, never as an empty healthy host.
