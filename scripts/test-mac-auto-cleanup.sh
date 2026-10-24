@@ -69,7 +69,23 @@ fi
 # hop is redundant: the host self-maintains through its own
 # /etc/cron.daily/coolify-auto-maintenance, and the local cleanup that runs
 # before it is the part that matters.
-if [ -n "$(code_lines 'ssh ' | grep -v '"[$][A-Z_]')" ]; then
+#
+# A line is an ssh command when it still says ssh after its quoted runs are
+# taken out, so a message that merely names ssh is not read as a command.  The
+# target of a real command has to be the inventory variable itself, so a target
+# hoisted into another variable is caught as well.
+ssh_command_lines() {
+  grep -nE 'ssh' "$SCRIPT" \
+    | grep -vE '^[^:]+:[[:space:]]*#' \
+    | while IFS= read -r line; do
+        shape=$(printf '%s' "$line" | sed -e 's/"[^"]*"/QQ/g' -e "s/'[^']*'/QQ/g")
+        case "$shape" in
+          *ssh\ *) printf '%s\n' "$line" ;;
+        esac
+      done
+}
+
+if [ -n "$(ssh_command_lines | grep -v '"[$]HOUSEKEEPER_SSH_ALIAS')" ]; then
   fail "mac-auto-cleanup.sh must not ssh a literal host target (private deployment inventory)"
 fi
 
@@ -79,6 +95,22 @@ fi
 
 if ! grep -q 'HOUSEKEEPER_SSH_ALIAS:-' "$SCRIPT"; then
   fail "mac-auto-cleanup.sh must skip the remote hop when HOUSEKEEPER_SSH_ALIAS is unset"
+fi
+
+# The skip and the fault are different outcomes, and the script has to tell them
+# apart: a hop that is skipped says so on stdout and the run still succeeds,
+# while a hop that is misconfigured or that cannot reach the host says so on
+# stderr and fails the run.  A silent skip is the failure this rules out.
+if ! grep -q 'Skipping the remote Hetzner maintenance trigger' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must say that it skipped the remote hop"
+fi
+
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS is required' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must name HOUSEKEEPER_SSH_ALIAS when the inventory names no target"
+fi
+
+if ! grep -q 'Remote Hetzner maintenance trigger failed' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must report a failed connectivity check instead of skipping it"
 fi
 
 # The housekeeper lock must be taken over atomically.
@@ -982,6 +1014,122 @@ H23E="$LOCK_TEST_ROOT/case23-other-host"
 mkdir -p "$H23E"
 make_owner_lock "$H23E" "$DEAD_PID" "some-other-host"
 check_owner_gone "$H23E" no
+
+# AFC-504: the remote hop has three outcomes and the script has to tell them
+# apart.  A skip says so and the run succeeds; a misconfiguration and a failed
+# connectivity check say so on stderr and fail the run.  A hop that fails
+# quietly and reports success is the failure this rules out.
+#
+# The block is run on its own with a stubbed ssh, so the check is about what the
+# script decides and never reaches a real host.
+HOP_ROOT="$LOCK_TEST_ROOT/hop"
+mkdir -p "$HOP_ROOT" "$HOP_ROOT/bin"
+HOP_BLOCK="$HOP_ROOT/block.sh"
+sed -n '/^# 5\. Remote Hetzner Coolify maintenance trigger/,/^# end remote Hetzner maintenance trigger/p' \
+  "$SCRIPT" > "$HOP_BLOCK"
+if [ ! -s "$HOP_BLOCK" ]; then
+  fail "the remote hop block is missing from the script"
+fi
+
+hop_run() {
+  # $1 the stub's exit code, $2 the alias value ("unset" leaves it out), $3 the
+  # inventory flag, $4 the file the stub records its calls in
+  printf '#!/bin/bash\necho "$@" >> "%s"\nexit %s\n' "$4" "$1" > "$HOP_ROOT/bin/ssh"
+  chmod +x "$HOP_ROOT/bin/ssh"
+  if [ "$2" = "unset" ]; then
+    env -u HOUSEKEEPER_SSH_ALIAS PATH="$HOP_ROOT/bin:$PATH" HOUSEKEEPER_INVENTORY="$3" \
+      bash "$HOP_BLOCK" > "$HOP_ROOT/out" 2> "$HOP_ROOT/err"
+  else
+    env PATH="$HOP_ROOT/bin:$PATH" HOUSEKEEPER_SSH_ALIAS="$2" HOUSEKEEPER_INVENTORY="$3" \
+      bash "$HOP_BLOCK" > "$HOP_ROOT/out" 2> "$HOP_ROOT/err"
+  fi
+}
+
+# A reachable host: the hop runs and the maintenance command is the one asked
+# for.
+HOP_STATUS=0
+hop_run 0 target 1 "$HOP_ROOT/calls-ok" || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "0" ]; then
+  fail "a reachable host must let the remote hop succeed, it exited $HOP_STATUS"
+fi
+if ! grep -q 'Triggering remote Hetzner Coolify maintenance' "$HOP_ROOT/out"; then
+  fail "a reachable host must say that it is triggering the remote maintenance"
+fi
+if ! grep -q 'coolify-auto-maintenance' "$HOP_ROOT/calls-ok"; then
+  fail "a reachable host must run the remote maintenance command"
+fi
+
+# An unreachable host: a real fault, so it says so and fails the run.
+HOP_STATUS=0
+hop_run 255 target 1 "$HOP_ROOT/calls-bad" || HOP_STATUS=$?
+if [ "$HOP_STATUS" = "0" ]; then
+  fail "a failed connectivity check must fail the run, not skip the hop"
+fi
+if ! grep -q 'Remote Hetzner maintenance trigger failed' "$HOP_ROOT/err"; then
+  fail "a failed connectivity check must say so on stderr"
+fi
+
+# An inventory file that names no target: a misconfiguration, so it says so and
+# fails the run.
+HOP_STATUS=0
+hop_run 0 unset 1 "$HOP_ROOT/calls-misconf" || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "1" ]; then
+  fail "an inventory file with no target must fail the run, it exited $HOP_STATUS"
+fi
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS is required' "$HOP_ROOT/err"; then
+  fail "an inventory file with no target must name HOUSEKEEPER_SSH_ALIAS"
+fi
+
+# Neither an inventory file nor the variable: the hop is redundant, so it is
+# skipped loudly and the run still succeeds.
+HOP_STATUS=0
+hop_run 0 unset 0 "$HOP_ROOT/calls-skip" || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "0" ]; then
+  fail "a hop with no inventory must be skipped, not fail the run, it exited $HOP_STATUS"
+fi
+if ! grep -q 'Skipping the remote Hetzner maintenance trigger' "$HOP_ROOT/out"; then
+  fail "a skipped hop must say so"
+fi
+if [ -s "$HOP_ROOT/calls-skip" ]; then
+  fail "a skipped hop must not reach for a host"
+fi
+
+# AFC-504: the script reads the operator's own inventory file, so a private
+# target never has to be written into a tracked file and launchd still finds it.
+# The block is run on its own with a temporary home, so the check is about what
+# the script reads and never reaches a real host.
+INV_BLOCK="$HOP_ROOT/inventory.sh"
+sed -n '/^# begin operator inventory (AFC-504)/,/^# end operator inventory (AFC-504)/p' \
+  "$SCRIPT" > "$INV_BLOCK"
+if [ ! -s "$INV_BLOCK" ]; then
+  fail "the operator inventory block is missing from the script"
+fi
+
+INV_HOME="$HOP_ROOT/home"
+mkdir -p "$INV_HOME/.config/fleet"
+printf 'HOUSEKEEPER_SSH_ALIAS=target\n' > "$INV_HOME/.config/fleet/housekeeper.env"
+
+inv_read() {
+  # $1 the home directory, $2 the file the readback goes to
+  env -u HOUSEKEEPER_SSH_ALIAS -u HOUSEKEEPER_INVENTORY HOME="$1" bash -c \
+    '. "$1"; printf "%s\n%s\n" "$HOUSEKEEPER_INVENTORY" "$HOUSEKEEPER_SSH_ALIAS"' \
+    _ "$INV_BLOCK" > "$2" 2>&1
+}
+
+inv_read "$INV_HOME" "$HOP_ROOT/readback"
+if [ "$(sed -n 1p "$HOP_ROOT/readback")" != "1" ]; then
+  fail "an operator inventory file must set HOUSEKEEPER_INVENTORY to 1"
+fi
+if [ "$(sed -n 2p "$HOP_ROOT/readback")" != "target" ]; then
+  fail "an operator inventory file must supply HOUSEKEEPER_SSH_ALIAS to the script"
+fi
+
+INV_EMPTY="$HOP_ROOT/empty-home"
+mkdir -p "$INV_EMPTY"
+inv_read "$INV_EMPTY" "$HOP_ROOT/readback-empty"
+if [ "$(sed -n 1p "$HOP_ROOT/readback-empty")" != "0" ]; then
+  fail "with no operator inventory file the script must not claim to have one"
+fi
 
 bash -n "$SCRIPT" || fail "bash -n failed"
 

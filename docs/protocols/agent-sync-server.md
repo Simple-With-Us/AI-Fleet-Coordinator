@@ -286,6 +286,7 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
 3. **Deploy** the app from `main` in Coolify (a rebuild:  the entrypoint changed).
 4. **Update the live config** in the new container (it holds no secrets, so the diff is safe to read):
    ```
+   : "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target}"
    ssh "$HOUSEKEEPER_SSH_ALIAS"
    C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
    docker exec "$C" python3 /app/scripts/agent_sync/server/apply_live_config.py           # the diff, writes nothing

@@ -6,6 +6,21 @@
 
 set -u
 
+# begin operator inventory (AFC-504)
+# The operator's own inventory file, outside this repository.  It carries the
+# private deployment values this script needs -- the ssh target of the origin box
+# among them -- so none of them is ever written into a tracked file.  The file is
+# optional: with no file the script runs on whatever the environment gives it.
+HOUSEKEEPER_ENV_FILE="${HOUSEKEEPER_ENV_FILE:-$HOME/.config/fleet/housekeeper.env}"
+HOUSEKEEPER_INVENTORY=0
+if [ -r "$HOUSEKEEPER_ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$HOUSEKEEPER_ENV_FILE"
+  HOUSEKEEPER_INVENTORY=1
+  export HOUSEKEEPER_SSH_ALIAS
+fi
+# end operator inventory (AFC-504)
+
 PRESSURE=0
 for arg in "$@"; do
   case "$arg" in
@@ -970,20 +985,32 @@ fi
 # hits every branch already in main) and then force-deleted the checkout,
 # including in-session trees #93 was just fixed to keep.
 
-# 5. Remote Hetzner Coolify maintenance trigger
+# 5. Remote Hetzner Coolify maintenance trigger  (AFC-504)
 # The ssh target is private deployment inventory: it arrives in the environment as
 # HOUSEKEEPER_SSH_ALIAS, and the operator's own ssh config is what resolves it.
-# With the variable unset the hop is skipped rather than guessed at, because a
-# placeholder target would reach the wrong host.  The hop is redundant with the
-# host's own /etc/cron.daily/coolify-auto-maintenance, so skipping it costs no
-# maintenance: the host still self-maintains on its own schedule.
+# With no target the hop is skipped rather than guessed at, because a placeholder
+# target would reach the wrong host.  The hop is redundant with the host's own
+# /etc/cron.daily/coolify-auto-maintenance, so skipping it costs no maintenance:
+# the host still self-maintains on its own schedule.
+#
+# Two things are a fault and not a skip.  A connectivity check that fails is a
+# real fault the operator has to see, and an inventory file that names no target
+# is a misconfiguration, so both fail the run with the variable named.
 if [ -n "${HOUSEKEEPER_SSH_ALIAS:-}" ]; then
     if ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOUSEKEEPER_SSH_ALIAS" "exit 0" 2>/dev/null; then
         echo "Triggering remote Hetzner Coolify maintenance..."
         ssh -o ConnectTimeout=5 "$HOUSEKEEPER_SSH_ALIAS" "/etc/cron.daily/coolify-auto-maintenance" >> /dev/null 2>&1 || true
+    else
+        status=$?
+        echo "Remote Hetzner maintenance trigger failed: the ssh connectivity check to the operator's inventory target exited $status." >&2
+        exit "$status"
     fi
+elif [ "$HOUSEKEEPER_INVENTORY" = "1" ]; then
+    echo "HOUSEKEEPER_SSH_ALIAS is required: the operator's inventory file is present but names no ssh target." >&2
+    exit 1
 else
-    echo "Skipping the remote Hetzner maintenance trigger: HOUSEKEEPER_SSH_ALIAS is unset."
+    echo "Skipping the remote Hetzner maintenance trigger: no operator inventory file and HOUSEKEEPER_SSH_ALIAS is unset.  The host self-maintains through its own /etc/cron.daily/coolify-auto-maintenance, so no maintenance is lost."
 fi
+# end remote Hetzner maintenance trigger
 
 echo "[$(date)] Mac cleanup completed successfully."
