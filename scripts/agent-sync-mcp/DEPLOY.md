@@ -40,9 +40,29 @@ python3 -I install_seat_key.py JET                 # checks only
 python3 -I install_seat_key.py JET --apply         # wrangler secret put ZULIP_KEY_JET, value on stdin
 python3 -I install_seat_key.py ECHO --apply        # ZULIP_KEY_ECHO
 python3 -I install_seat_key.py WISE --apply        # ZULIP_KEY_WISE, from Infisical's ZULIP_WISE pair
+python3 -I install_seat_key.py JET-CHAT --apply    # ZULIP_KEY_JET_CHAT, from the same ZULIP_JET pair (one bot, two seats)
 ```
 
 Every seat's key comes from Infisical;  `--zuliprc` is gone (AFC-347).  WISE's Worker names are `ZULIP_KEY_WISE` and `ZULIP_EMAIL_WISE` since AFC-347.  Before that the Worker read `ZULIP_KEY_INSTINCT`, installed from Infisical's old `ZULIP_INSTINCT` pair, which Zulip now refuses, so every WISE call answered `not_authorized`.  Delete the old secret once WISE is verified (`wrangler secret delete ZULIP_KEY_INSTINCT`, with Step 1's credentials).
+
+## Step 2a:  The Jet split rolls out without a gap
+
+The old JET login must not lose its tools before the new JET-CHAT login works.  The events-only set is therefore a Worker var (`EVENTS_ONLY_SEATS`), not a source edit:
+
+1. Deploy this change with JET-CHAT configured as deploy-time var overrides, never committed (the pinning tests depend on that absence):  `HOSTED_SEATS` gains JET-CHAT, `ZULIP_EMAIL_JET_CHAT` is set to the shared bot's address, and `SEATS` is the committed registry **plus** a JET-CHAT entry carrying its own captured connector pair (`redirect_uris` and `cimd_client_ids`).  The SEATS override is required, not optional:  a redirect URI binds to exactly one seat (`config.test.mjs` pins the committed ChatGPT redirect to JET), so without a JET-CHAT entry no consent can ever bind to the seat and step 2 cannot succeed.  `--var` replaces a whole var, so pass the full SEATS JSON, not a fragment:
+
+   ```bash
+   WRANGLER_SEND_METRICS=false npx --no-install wrangler deploy \
+     --var 'HOSTED_SEATS:JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE' \
+     --var 'ZULIP_EMAIL_JET_CHAT:<shared bot address>' \
+     --var "SEATS:$(python3 -c 'import json,sys; c=json.load(open("wrangler.jsonc")); c["vars"]["SEATS"]["JET-CHAT"]={"redirect_uris":["<captured JET-CHAT redirect>"],"cimd_client_ids":["<captured JET-CHAT CIMD client id>"]}; print(json.dumps(c["vars"]["SEATS"]))')"
+   ```
+
+   The seats.js staging default is empty, so this deploy restricts nothing and the old login is untouched.
+2. Arm JET-CHAT, connect the new login, approve its consent and verify it end to end.
+3. Only then flip the old login: add `"EVENTS_ONLY_SEATS": "JET"` to `vars` in its own reviewed commit and redeploy.  The suites pin both states, so the flip commit is exactly two lines:  the var, and the production-default assertion in `test/jet-wake-split.test.mjs` changing its expected `eventsOnlySeats` from `[]` to `["JET"]` (the `testEnv({ EVENTS_ONLY_SEATS: "JET" })` pin already covers the flipped behavior).  A var-only flip fails CI by design.
+
+Every run also pins the bot owner:  `users/me`'s `bot_owner_id` must equal `ZULIP_OWNER_USER_ID`, resolved through `handoff()` (environment first, then `fleet-secrets get`, which reads Fleet-OPS prod root).  The pin fails closed:  without it the script exits before any check output, for every seat.  The value is the realm owner's Zulip user id (the same id `wrangler.jsonc` pins as `OWNER_USER_ID`);  each hosted bot's `bot_owner_id` equals it.  Seeding it at Fleet-OPS prod root is a direct Infisical write, owner-gated:  `fleet-secrets set` refuses every name outside its `/linear` CACHE_* allowlist (exit 2 before auth, INFISICAL.md), and widening that list is a reviewed change.  Until the owner seeds it, export it for the run:  `ZULIP_OWNER_USER_ID=<realm owner id> python3 -I install_seat_key.py <SEAT> --apply`.
 
 For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`, `ZULIP_CLAUDE_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals the seat's configured Worker email binding (`ZULIP_EMAIL_<SEAT>` for every seat except CLAUDE, which uses the canonical `ZULIP_CLAUDE_EMAIL`), and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
 

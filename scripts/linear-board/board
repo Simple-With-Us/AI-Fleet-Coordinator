@@ -140,7 +140,7 @@ SESSION_ENV_VAR = "CLAUDE_CODE_SESSION_ID"
 SESSION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$"
 SESSION_ID_RE = re.compile(SESSION_ID_PATTERN)
 SESSION_GENERIC_ENV = "AGENT_SESSION"
-SESSION_EXEMPT_SEATS = frozenset(("ECHO", "GROK-BOT", "JET", "MA", "WISE"))
+SESSION_EXEMPT_SEATS = frozenset(("ECHO", "GROK-BOT", "JET", "JET-CHAT", "MA", "WISE"))
 SESSION_EXEMPT_PATTERNS = ("GB-*",)
 SESSION_ENV_BY_SEAT = {
     "CLAUDE": ("CLAUDE_CODE_SESSION_ID",),
@@ -200,7 +200,7 @@ RETIRED_SEAT_TAGS = frozenset(("MINIMAX", "MUSE", "ANTIGRAVITY"))
 SEAT_APP_NAMES = {
     "CLAUDE": "Claude", "CODEX": "Codex", "CURSOR": "Cursor", "AG": "AG", "GROK": "Grok",
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
-    "MA": "Muse Assist", "JET": "Jet", "OPENCODE": "OpenCode",
+    "MA": "Muse Assist", "JET": "Jet", "JET-CHAT": "Jet", "OPENCODE": "OpenCode",
     "ECHO": "Echo (Instinct)", "WISE": "Wise (Instinct)",
     # BotFleet seats in SEAT_ROSTER.  AGENT-SYNC.md (owner 2026-10-09) names the ten role seats
     # plus BF-DIRECTOR.  BF-PRODUCER is on that same roster (BF_ROLES turns a bare PRODUCER into
@@ -224,6 +224,9 @@ SEAT_APP_ALIASES = {
     "MC": ("Muse Code (MC)",),
     "MA": ("Muse Assist (MA)", "Muse-Assist", "Rob", "Rob-Muse"),
     "JET": ("Jet (OpenAI dot)",),
+    # Deliberate JET/JET-CHAT share (owner, Oct 23 2026):  two logins, one Linear
+    # app, mirroring the Worker tables in scripts/agent-sync-mcp/src/linear.js.
+    "JET-CHAT": ("Jet (OpenAI dot)",),
     "GROK": ("Grok (Build)", "Grok Build"),
     "GROK-WEB": ("Grok (Web/iOS)", "Grok Web/iOS"),
     "OPENCODE": ("OC",),

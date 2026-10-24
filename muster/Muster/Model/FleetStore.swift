@@ -96,10 +96,24 @@ final class FleetStore: ObservableObject {
 
     private let answerLock = NSLock()
     private var answerBox: AnswerBox?
-    private let manifest: SeatManifest?
+    /// The manifest,  which names the paths the seats' rules check.
+    ///
+    /// It is read once and kept,  and it is exposed because it is the only place
+    /// that knows where a seat's config lives:  the panel reads the artifacts from
+    /// it and the drift watcher watches the paths it names.
+    let manifest: SeatManifest?
     private let registry: FleetRegistry?
     private var results: [CheckResult] = []
     private var cellsByKey: [String: GridCell] = [:]
+
+    /// Called when a run finishes,  with whether the run could be trusted.
+    ///
+    /// The grid only changes when a run lands,  so this is how a watcher learns
+    /// that the cells are current.  It is set by the drift monitor.
+    var onRunFinished: ((Bool) -> Void)?
+
+    /// Whether a run is in flight.
+    var isRunning: Bool { phase == .running }
 
     init() {
         let located = EngineLocator.locate()
@@ -277,6 +291,9 @@ final class FleetStore: ObservableObject {
             commonCheckedAt = nil
             phase = .failed(run.failure ?? "the engine did not answer")
             rebuild()
+            // The run could not be trusted,  and a watcher has to hear that:  a run
+            // that failed says nothing about the seats.
+            onRunFinished?(false)
             return
         }
         results = envelope.results
@@ -285,6 +302,7 @@ final class FleetStore: ObservableObject {
         commonCheckedAt = Self.commonCheckTime(in: results)
         phase = .loaded
         rebuild()
+        onRunFinished?(true)
     }
 
     /// The check time the run shares,  which is the one most rules carry.
@@ -310,3 +328,5 @@ final class FleetStore: ObservableObject {
         cellsByKey = Dictionary(uniqueKeysWithValues: built.map { ($0.id, $0) })
     }
 }
+
+extension FleetStore: DriftGridReading {}
