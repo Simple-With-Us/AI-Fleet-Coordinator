@@ -153,12 +153,16 @@ enum MiniMaxReader {
     ]
 
     /// The channel files the panel shows, in the order it shows them.
+    ///
+    /// Lark is the only IM platform this seat is linked to (owner, Oct 24, 2026), so the
+    /// panel names the three fleet channel files and no platform file for a platform
+    /// nothing answers on.  A retired platform is not shown as "not on this Mac" either:
+    /// it is not part of this seat's surface at all, and a panel that lists it invites
+    /// the reader to go looking for a connection that was never there.
     static let channelFiles = [
         "channel-bindings.yaml",
         "channel-routes.yaml",
         "channel-owner.yaml",
-        "telegram-channel.yaml",
-        "wechat-channel.yaml",
     ]
 
     /// Read the whole surface.

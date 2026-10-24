@@ -418,7 +418,8 @@ class LoopGuard:
     LIMIT = 3
     DM_WINDOW = 6 * HOUR
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, *, enabled: bool = True) -> None:
+        self.enabled = enabled
         self.path = path
         self.lock = threading.Lock()
 
@@ -472,13 +473,15 @@ class LoopGuard:
         return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
 
     def blocked(self, key: str, now: float | None = None) -> bool:
-        return self.count(key, now) >= self.LIMIT
+        return self.enabled and self.count(key, now) >= self.LIMIT
 
     def holding(self, now: float | None = None) -> list[dict[str, Any]]:
         """The topics at their limit, for `agent-sync status` (AFC-255):  the channel, the topic, the
         count that holds each and whether that count rolls (a bot DM, where it ages out) or waits for
         the owner however long that takes.  A guard that blocks silently looked like a working one, so
         status names every topic it is holding and why it is still holding it."""
+        if not self.enabled:
+            return []
         at = time.time() if now is None else float(now)
         out = []
         for key, value in L.read_json(self.path).items():

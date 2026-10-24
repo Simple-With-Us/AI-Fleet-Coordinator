@@ -353,7 +353,7 @@ def build_full_list(run: Runner, deadline: Deadline, key: str) -> tuple[dict, st
         shutil.rmtree(folder, ignore_errors=True)
 
 
-GAP = "&nbsp; "  # GitHub renders the entity into a real gap (owner ruling 2026-10-22)
+GAP = "\u00a0 "  # a real U+00A0 plus a space, on GitHub too (owner ruling 2026-10-23)
 
 
 def unavailable_text(now: datetime, reason: str | None) -> str:
