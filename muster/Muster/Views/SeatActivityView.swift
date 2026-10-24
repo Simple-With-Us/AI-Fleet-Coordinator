@@ -11,14 +11,17 @@ import SwiftUI
 /// list or a zero  where a source failed:  an unknown column is unknown.
 struct SeatActivityView: View {
     @EnvironmentObject private var store: FleetStore
+    @Environment(\.scenePhase) private var scenePhase
     @State private var model: SeatActivityModel?
     @State private var loading = false
 
     /// How often the panel reads again on its own.
     ///
     /// The clock is slow on purpose:  a refresh asks the fleet chat CLI one question per
-    /// seat,  and the panel is a glance  not a monitor.
-    static let refreshSeconds = 180
+    /// seat,  and the panel is a glance  not a monitor.  Five minutes is the fleet's own
+    /// cadence for this kind of read (the doctor runs every fifteen, the fleet view every
+    /// five),  and the panel reads again as soon as the app comes back to the front.
+    static let refreshSeconds = 300
 
     private let seatWidth: CGFloat = 128
     private let sessionWidth: CGFloat = 84
@@ -62,6 +65,12 @@ struct SeatActivityView: View {
                 if Task.isCancelled { break }
                 await load()
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // A read costs one question per seat,  so the panel does not read while the
+            // app is in the background:  the reading on screen is still the last one.
+            guard phase == .active else { return }
+            Task { await load() }
         }
     }
 
