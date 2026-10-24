@@ -1647,7 +1647,9 @@ class Daemon:
             classes=c.labels(),
             decision=d.describe(),
         )
-        if c.owner and c.everyone and not c.dm and not c.stale:
+        # A marker message wakes nobody, and the owner typing `@**all**` is exactly the case
+        # where the fanout would wake every seat, so the fanout checks the marker too (AFC-468).
+        if c.owner and c.everyone and not c.dm and not c.stale and not c.no_wake:
             self.start_fanout(message, c)
         if (
             c.owner

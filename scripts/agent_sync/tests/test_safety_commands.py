@@ -315,6 +315,25 @@ class BodyFileTests(BodyFileHarness):
         self.assertEqual(cli.cmd_reply(agent, reply), 0)
         self.assertTrue(self.last_post().form["content"].endswith("via mcp reply"))
 
+    def test_a_namespace_without_the_quiet_flag_still_works(self) -> None:
+        # The MCP layer builds its own Namespace, and a flag added to the CLI later must not break
+        # it:  every optional flag is read with a default, not as a required attribute (AFC-468).
+        self.pin_owner()
+        runtime = cli.Runtime(env=self.env(), stdin=io.StringIO(""), stdout=io.StringIO(), stderr=io.StringIO(),
+                              home=self.home, timeout=5.0)
+        agent = cli.Agent(runtime, argparse.Namespace(json=True))
+        post = argparse.Namespace(channel="agent-sync", topic="t", to=[], fleet=False, no_tag=False,
+                                  text=["no quiet key"], json=True)
+        self.assertEqual(cli.cmd_post(agent, post), 0)
+        self.assertNotIn("eyes", self.last_post().form["content"])
+        first = self.fake.messages[-1]["id"]
+        reply = argparse.Namespace(id=first, to=[], no_tag=False, text=["no quiet key"], json=True)
+        self.assertEqual(cli.cmd_reply(agent, reply), 0)
+        self.assertNotIn("eyes", self.last_post().form["content"])
+        dm = argparse.Namespace(to=[], no_tag=False, text=["no quiet key"], json=True)
+        self.assertEqual(cli.cmd_dm(agent, dm), 0)
+        self.assertNotIn("eyes", self.last_post().form["content"])
+
 
 # --------------------------------------------------------------------------------------------
 # verify-owner-msg
