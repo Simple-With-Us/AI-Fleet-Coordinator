@@ -391,11 +391,11 @@ class FileTests(unittest.TestCase):
 
     def test_mirror_link_shapes(self) -> None:
         bad = {
-            "other realm": "https://evil.example/#narrow/channel/12-agent-sync/topic/OWNER.20x/near/5",
-            "no message": "https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/OWNER.20x",
+            "other realm": "https://evil.example/#narrow/channel/12-work-in-progress/topic/OWNER.20x/near/5",
+            "no message": "https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/OWNER.20x",
             "not an OWNER topic": REALM_LINK % ("CONSULT.20x", 5),
             "other channel": "https://simplewithus.zulipchat.com/#narrow/channel/9-general/topic/OWNER.20x/near/5",
-            "http": "http://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/OWNER.20x/near/5",
+            "http": "http://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/OWNER.20x/near/5",
         }
         for name, link in bad.items():
             r = self.w.file(Q, "Yes", "No", extra=("--mirror-of", link))

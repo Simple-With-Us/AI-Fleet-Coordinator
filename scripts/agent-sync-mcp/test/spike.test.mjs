@@ -48,7 +48,7 @@ const CALLBACK = "https://chatgpt.com/backend-api/mcp-events/callback_123";
 const SPIKE_CALLBACK = "https://chatgpt.com/backend-api/mcp-events/callback_spike";
 const configOff = loadConfig(testEnv());
 const configOn = loadConfig(testEnv({ SPIKE_EXTRA_EVENTS: "on" }));
-const allowed = new ChannelSet([{ stream_id: 642232, name: "agent-sync", invite_only: false }]);
+const allowed = new ChannelSet([{ stream_id: 642232, name: "work-in-progress", invite_only: false }]);
 const channels = async () => allowed;
 const SPIKE_KEY = "a".repeat(64);
 const WAKE_KEY = "b".repeat(64);
@@ -61,8 +61,8 @@ const GOLDEN = Object.freeze({
   sub: '{"id":"sub_0127e860dc74c489dc41e43cda5a53e5","refreshBefore":"2026-10-15T17:46:40Z","cursor":null,"truncated":false}',
   second: "-32600 Agent-Sync already sends zulip.mention for this seat to another chat.  Stop monitoring there first, or wait until it lapses at 2026-10-15T17:46:40Z unless refreshed.",
   reply: '{"status":202,"body":{"ok":true,"subscribers":1,"delivered":1,"outcome":"delivered"}}',
-  body: '{"eventId":"evt_6f0bc10ec9c7eb441629f4808f96c7bc","name":"zulip.mention","timestamp":"2026-10-14T17:46:40Z","data":{"message_id":77,"dm":false,"channel":"agent-sync","topic":"t","sender_full_name":"Jay","sender_user_id":1211974,"sender_is_bot":false,"owner_hint":true,"excerpt":"<<<x>>>","zulip_link":"https://simplewithus.zulipchat.com/#narrow/near/77","reply_to":{"type":"stream","channel":"agent-sync","topic":"t"}},"cursor":null}',
-  signature: "v1,SJUAv0uDXgpua0hwJrswOUEKIeEdqKQLpKLD3mzMzqs=",
+  body: '{"eventId":"evt_6f0bc10ec9c7eb441629f4808f96c7bc","name":"zulip.mention","timestamp":"2026-10-14T17:46:40Z","data":{"message_id":77,"dm":false,"channel":"work-in-progress","topic":"t","sender_full_name":"Jay","sender_user_id":1211974,"sender_is_bot":false,"owner_hint":true,"excerpt":"<<<x>>>","zulip_link":"https://simplewithus.zulipchat.com/#narrow/near/77","reply_to":{"type":"stream","channel":"work-in-progress","topic":"t"}},"cursor":null}',
+  signature: "v1,nlGlzJ2O2/nfaV943+wFg3u8dgnYbRyTEVvkYINj8i8=",
   dup: '{"status":200,"body":{"ok":true,"duplicate":true}}',
 });
 
@@ -96,9 +96,9 @@ const SUB = (name = EVENT_NAME, url = CALLBACK, extra = {}) => ({ name, argument
 
 function goldenWake() {
   return {
-    contract: "agent-sync-wake/1", seat: "JET", wake_id: "w-golden", message_id: 77, dm: false, channel: "agent-sync", topic: "t", stream_id: 642232,
+    contract: "agent-sync-wake/1", seat: "JET", wake_id: "w-golden", message_id: 77, dm: false, channel: "work-in-progress", topic: "t", stream_id: 642232,
     sender_full_name: "Jay", sender_user_id: 1211974, is_bot: false, owner: true, excerpt: "<<<x>>>",
-    zulip_link: "https://simplewithus.zulipchat.com/#narrow/near/77", reply_to: { type: "stream", channel: "agent-sync", topic: "t" }, sent_at: 1792000000,
+    zulip_link: "https://simplewithus.zulipchat.com/#narrow/near/77", reply_to: { type: "stream", channel: "work-in-progress", topic: "t" }, sent_at: 1792000000,
   };
 }
 
@@ -185,7 +185,7 @@ test("flag on:  events/list offers zulip.mention then fleet.spike.ping, a conten
 
 test("flag on:  the spike takes no arguments", async () => {
   const ev = seatEvents(memoryGate(), configOn, { fetchFn: fakeCallback().fetchFn });
-  await assert.rejects(ev.subscribe(SUB(SPIKE_EVENT_NAME, CALLBACK, { arguments: { channel: "agent-sync" } })), (e) => e.code === INVALID_PARAMS && e.message === "fleet.spike.ping takes no arguments");
+  await assert.rejects(ev.subscribe(SUB(SPIKE_EVENT_NAME, CALLBACK, { arguments: { channel: "work-in-progress" } })), (e) => e.code === INVALID_PARAMS && e.message === "fleet.spike.ping takes no arguments");
   await assert.rejects(ev.subscribe(SUB(SPIKE_EVENT_NAME, CALLBACK, { arguments: { whsec_leak: 1 } })), (e) => !e.message.includes("whsec_leak"), "the refusal never echoes an argument name");
   await assert.rejects(ev.subscribe(SUB(SPIKE_EVENT_NAME, CALLBACK, { arguments: [] })), (e) => e.code === INVALID_PARAMS);
   assert.match((await ev.subscribe(SUB(SPIKE_EVENT_NAME, CALLBACK, { arguments: null }))).id, /^sub_/);
