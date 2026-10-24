@@ -15,7 +15,7 @@
 // FleetLink answer is parsed through the zod schemas below before use.
 
 import { z } from "zod";
-import { resolveSecret, infisicalMode } from "./infisical.js";
+import { resolveSecret } from "./infisical.js";
 import { clean, ToolError } from "./contract.js";
 
 export const FLEETLINK_HOST = "fleetlink.online";
@@ -296,21 +296,27 @@ export const FLEETLINK_SEATS_DISABLED = Object.freeze(["GB-ENGINEER"]);
  * the seat's own.  An absent name keeps today's designed primary path:  in
  * off/fallback the legacy bundle entry, else the agent secret + seat header.
  * A name DECLARED in INFISICAL_EXPECT that goes missing throws in required
- * mode instead of silently broadening. */
+ * mode instead of silently broadening.  The bundle entry is the read's legacy
+ * value (resolveSecret's `legacy`), so in fallback mode a token the bundle
+ * serves is logged under FLEETLINK_SEAT_TOKENS[<SEAT>] and counted, and a
+ * seat with no token anywhere (MA, JET-CHAT) is capability-off, not a
+ * fallback. */
 export async function resolveFleetlinkSeatTokens(env, seats) {
   const legacy = parseSeatTokens(env?.[FLEETLINK_SEAT_TOKENS]);
-  const useLegacy = infisicalMode(env) !== "required";
   const seatTokens = new Map();
   const deniedSeats = new Set();
   for (const seat of FLEETLINK_SEATS_DISABLED) deniedSeats.add(seat);
   await Promise.all((seats ?? []).map(async (seat) => {
     if (FLEETLINK_SEATS_DISABLED.includes(seat)) return;
     const name = `FLEETLINK_TOKEN_${seat.replace(/-/g, "_")}`;
-    const raw = (await resolveSecret(env, { name, path: "/fleetlink", envName: "__NO_ENV_BINDING__", optional: true })).trim();
-    if (!raw) {
-      if (useLegacy && Object.hasOwn(legacy, seat)) seatTokens.set(seat, legacy[seat]);
-      return;
-    }
+    const raw = (await resolveSecret(env, {
+      name,
+      path: "/fleetlink",
+      envName: `${FLEETLINK_SEAT_TOKENS}[${seat}]`,
+      legacy: Object.hasOwn(legacy, seat) ? legacy[seat] : "",
+      optional: true,
+    })).trim();
+    if (!raw) return;
     if (/^fla_[0-9a-f]{64}$/.test(raw)) { seatTokens.set(seat, raw); return; }
     deniedSeats.add(seat);
   }));

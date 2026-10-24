@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Mocked-API contract tests for populate-scoped-folders.py.
 
-No network: urllib.request.urlopen is stubbed with a fake Infisical.  Values are
+No network and no real fleet-secrets:  urllib.request.urlopen is stubbed with a
+fake Infisical (login, token metadata, the upsert write), and subprocess.run
+with a fake `fleet-secrets get` over the same values (every read).  Values are
 sentinel strings ("VALUE-<name>"); every test asserts they never appear in any
 printed output (names-only reporting, redacted errors)."""
 
@@ -11,6 +13,7 @@ import io
 import json
 import os
 import pathlib
+import subprocess
 import sys
 import unittest
 import urllib.error
@@ -26,7 +29,8 @@ DEST_PATHS = {(psf.ENV, p) for _, _, _, p, _ in psf.MAPPING}
 
 
 class FakeInfisical:
-    """Routes urlopen calls. values[(ws, path, name)] -> value; missing = 404."""
+    """Routes urlopen calls and `fleet-secrets get` runs over one store.
+    values[(ws, path, name)] -> value;  a missing key is fleet-secrets' exit 3."""
 
     def __init__(self, scopes=None, values=None, fail=None):
         self.scopes = (
@@ -35,15 +39,34 @@ class FakeInfisical:
             else [{"environment": psf.ENV, "secretPath": p} for _, p in sorted(DEST_PATHS)]
         )
         self.values = values or {}
-        self.fail = fail or {}  # ("read"|"upsert", name) -> HTTP code to raise
+        # ("read", (ws, path, name)) -> fleet-secrets exit code;  ("upsert", name) -> HTTP code
+        self.fail = fail or {}
         self.upserts = []
-        self.agents = []  # the User-Agent of every call
-        self.malformed = set()  # names whose GET answers a malformed body
+        self.agents = []  # the User-Agent of every API call
+        self.reads = []  # every fleet-secrets run:  (argv, child env)
 
     def _err(self, url, code, body="server message"):
         raise urllib.error.HTTPError(
             url, code, "err", {}, io.BytesIO(json.dumps({"message": body}).encode())
         )
+
+    def run(self, argv, env=None, **kwargs):
+        """A fake `fleet-secrets get NAME --path P --project SLUG`:  the project id
+        comes from the variable fleet-secrets reads for SLUG, as the real one does."""
+        self.reads.append((list(argv), dict(env or {})))
+        if argv[1:2] != ["get"] or argv[3] != "--path" or argv[5] != "--project":
+            raise AssertionError("unexpected fleet-secrets call: " + " ".join(argv[1:]))
+        name, path, slug = argv[2], argv[4], argv[6]
+        id_var = {
+            "ai-fleet-coordinator": "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID",
+            "fleet-ops": "INFISICAL_FLEET_OPS_PROJECT_ID",
+        }[slug]
+        key = (env[id_var], path, name)
+        if ("read", key) in self.fail:
+            return subprocess.CompletedProcess(argv, self.fail[("read", key)], b"", None)
+        if key not in self.values:
+            return subprocess.CompletedProcess(argv, 3, b"", None)
+        return subprocess.CompletedProcess(argv, 0, self.values[key].encode("utf-8"), None)
 
     def open(self, request, timeout=35):
         url, method = request.full_url, request.get_method()
@@ -54,18 +77,6 @@ class FakeInfisical:
             return io.BytesIO(json.dumps({"accessToken": "automation"}).encode())
         if "/api/v3/secrets/raw/" in url:
             name = urllib.parse.unquote(url.split("/api/v3/secrets/raw/")[1].split("?")[0])
-            if method == "GET":
-                if ("read", name) in self.fail:
-                    self._err(url, self.fail[("read", name)], "leak VALUE-x")
-                q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
-                key = (q["workspaceId"], q["secretPath"], name)
-                if name in self.malformed and q["workspaceId"] != psf.FLEETOPS:
-                    return io.BytesIO(json.dumps({"secret": {"secretValue": 7}}).encode())
-                if key not in self.values:
-                    self._err(url, 404)
-                return io.BytesIO(
-                    json.dumps({"secret": {"secretValue": self.values[key]}}).encode()
-                )
             if method == "POST":
                 if ("upsert", name) in self.fail:
                     self._err(url, self.fail[("upsert", name)], "leak VALUE-x")
@@ -81,6 +92,8 @@ class Base(unittest.TestCase):
         self.fake = FakeInfisical()
         self._orig = urllib.request.urlopen
         urllib.request.urlopen = self.fake.open
+        self._orig_run = subprocess.run
+        subprocess.run = self.fake.run
         self._env = dict(os.environ)
         # The automation login comes from the environment (the handoff's first
         # source), so no test ever reaches a real fleet-secrets.
@@ -90,6 +103,7 @@ class Base(unittest.TestCase):
 
     def tearDown(self):
         urllib.request.urlopen = self._orig
+        subprocess.run = self._orig_run
         os.environ.clear()
         os.environ.update(self._env)
 
@@ -195,28 +209,87 @@ class TestApply(Base):
         self.assertIn("COLLISION", out)
         self.assertNotIn("VALUE-", out)
 
-    def test_permission_error_visible_stop_redacted(self):
+    def test_read_failure_visible_stop_redacted(self):
+        # fleet-secrets exit 4 (fetch or auth failure, a scope denial among them).
         seeded(self.fake)
-        victim = psf.MAPPING[5][2]
-        self.fake.fail[("read", victim)] = 403
+        sws, spath, victim, _dpath, _dname = psf.MAPPING[5]
+        self.fake.fail[("read", (sws, spath, victim))] = 4
         code, out = self.run_main("--apply")
         self.assertEqual(code, 1)
-        self.assertIn("HTTP 403", out)
+        self.assertIn("STOP at 6/72", out)
+        self.assertIn("fleet-secrets get exit 4", out)
         self.assertIn(victim, out)  # the NAME is fine
-        self.assertNotIn("VALUE-", out)  # values and server body never printed
+        self.assertNotIn("VALUE-", out)  # values never printed
+        self.assertEqual(len(self.fake.upserts), 5)
 
-    def test_malformed_source_answer_stops_names_only(self):
-        # Kody issue comment 6378525910:  a mistyped secretValue never reaches upsert.
+    def test_unresolved_reference_stops_names_only(self):
+        # fleet-secrets exit 5:  a source still an unexpanded ${...} reference is
+        # never copied as if it were the value.
         seeded(self.fake)
-        victim = psf.MAPPING[3][2]
-        self.fake.malformed.add(victim)
+        sws, spath, victim, _dpath, _dname = psf.MAPPING[70]  # a Fleet-OPS root recall source
+        self.assertEqual((sws, spath), (psf.FLEETOPS, "/"))
+        self.fake.fail[("read", (sws, spath, victim))] = 5
         code, out = self.run_main("--apply")
         self.assertEqual(code, 1)
-        self.assertIn("STOP at 4/72", out)
-        self.assertIn("ValueError", out)
-        self.assertEqual(len(self.fake.upserts), 3)
+        self.assertIn("STOP at 71/72", out)
+        self.assertIn(f"exit 5 reading the source Fleet-OPS /{victim}.", out)
+        self.assertEqual(len(self.fake.upserts), 70)
         self.assertNotIn("VALUE-", out)
         self.assertTrue(all(a == psf.USER_AGENT for a in self.fake.agents))
+
+    def test_destination_read_failure_names_the_destination(self):
+        seeded(self.fake)
+        _sws, _spath, _sname, dpath, dname = psf.MAPPING[2]
+        self.fake.fail[("read", (psf.FLEETOPS, dpath, dname))] = 4
+        code, out = self.run_main("--apply")
+        self.assertEqual(code, 1)
+        self.assertIn(f"reading the destination Fleet-OPS {dpath}/{dname}", out)
+        self.assertNotIn((dpath, dname), self.fake.upserts)
+
+    def test_reads_go_through_fleet_secrets_with_project_and_path(self):
+        # kody 4365621961:  every value read is `fleet-secrets get NAME --path P
+        # --project SLUG`, pinned to the MAPPING's workspace, on the login's token.
+        seeded(self.fake)
+        code, _out = self.run_main("--apply")
+        self.assertIsNone(code)
+        self.assertEqual(len(self.fake.reads), 144)  # 72 sources + 72 destinations
+        expected = []
+        for sws, spath, sname, dpath, dname in psf.MAPPING:
+            expected.append((sname, spath, psf.FLEET_SECRETS_PROJECT[sws], sws))
+            expected.append((dname, dpath, "fleet-ops", psf.FLEETOPS))
+        seen = []
+        for argv, env in self.fake.reads:
+            slug = argv[6]
+            id_var = psf.FLEET_SECRETS_PROJECT_ID_ENV[
+                psf.AFC if slug == "ai-fleet-coordinator" else psf.FLEETOPS
+            ]
+            seen.append((argv[2], argv[4], slug, env[id_var]))
+            self.assertEqual(
+                env["INFISICAL_TOKEN"], "automation", "the login's own token, one identity"
+            )
+            for dropped in psf.CHILD_DROPPED_ENV:
+                self.assertNotIn(dropped, env, f"{dropped} never reaches the child")
+        self.assertEqual(seen, expected)
+        # The API carries the login, the scope gate and the 72 writes, and no read.
+        self.assertEqual(len(self.fake.upserts), 72)
+
+    def test_values_are_not_taken_from_the_environment(self):
+        # A same-named variable in the shell must never be copied in place of the source.
+        seeded(self.fake)
+        _sws, _spath, sname, dpath, dname = psf.MAPPING[4]
+        os.environ[sname] = "VALUE-shell-shadow"
+        code, out = self.run_main("--apply")
+        self.assertIsNone(code)
+        self.assertEqual(self.fake.values[(psf.FLEETOPS, dpath, dname)], "VALUE-" + sname)
+        self.assertNotIn("VALUE-", out)
+
+    def test_value_is_copied_byte_for_byte(self):
+        seeded(self.fake)
+        sws, spath, sname, dpath, dname = psf.MAPPING[7]
+        self.fake.values[(sws, spath, sname)] = "VALUE-padded é\n"
+        code, _out = self.run_main("--apply")
+        self.assertIsNone(code)
+        self.assertEqual(self.fake.values[(psf.FLEETOPS, dpath, dname)], "VALUE-padded é\n")
 
     def test_partial_write_stop_then_rerun_completes(self):
         seeded(self.fake)

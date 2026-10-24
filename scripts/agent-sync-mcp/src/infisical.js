@@ -8,9 +8,13 @@
 // Modes (env.INFISICAL_MODE):
 //   "off"      - never call Infisical; env bindings only (current behavior).
 //   "fallback" - Infisical first, env binding on miss/failure.  TRANSITIONAL
-//                only: every fallback is console.warn'ed and counted in
-//                fallbackCount, so verification can prove the service-token
-//                path serves before "required" is turned on.
+//                only: every read a binding serves is console.warn'ed and
+//                counted in stats.fallbacks, so verification can prove the
+//                service-token path serves before "required" is turned on.
+//                An optional, undeclared name that is in neither Infisical
+//                nor a binding is counted apart (stats.absent):  "required"
+//                answers it the same way (capability off), so it is not a
+//                fallback and never keeps the counter above zero.
 //   "required" - Infisical only.  A miss or fetch failure throws
 //                InfisicalError; nothing silently falls back.  Steady state.
 //
@@ -41,7 +45,7 @@ export class InfisicalError extends Error {
 
 const CACHE_TTL_MS = 60_000;
 const cache = new Map(); // "path\0name" -> { value, at }
-const stats = { fetched: 0, cacheHits: 0, fallbacks: 0 };
+const stats = { fetched: 0, cacheHits: 0, fallbacks: 0, absent: 0 };
 // Folder listings warm the same per-name cache; while a folder's listing is
 // fresh it is authoritative for absence too, so optional misses cost no
 // subrequest (sentry 4364275308: a cold per-name burst could pass the free
@@ -62,6 +66,7 @@ export function _resetInfisicalForTests() {
   stats.fetched = 0;
   stats.cacheHits = 0;
   stats.fallbacks = 0;
+  stats.absent = 0;
   folderWarm.clear();
   folderFailed.clear();
 }
@@ -165,10 +170,17 @@ export async function prefetchFolder(env, path) {
  * Resolve one secret.  `path` is the Fleet-OPS folder the read-tools token
  * may read ("/tools", "/wake", "/fleetlink", ...).  `envName` is the legacy
  * Worker binding used in "off" mode and as the bounded transitional fallback.
+ * `legacy`, when given, is that legacy value itself, for a secret whose
+ * legacy source is not one binding (a FleetLink seat token's entry in the
+ * FLEETLINK_SEAT_TOKENS bundle);  `envName` then only labels it in the log.
  */
-export async function resolveSecret(env, { name, path, envName, optional = false }) {
+export async function resolveSecret(env, { name, path, envName, optional = false, legacy }) {
   const m = mode(env);
-  if (m === "off") return typeof env[envName] === "string" ? env[envName].trim() : "";
+  const legacyValue = () => {
+    const raw = legacy !== undefined ? legacy : env[envName];
+    return typeof raw === "string" ? raw.trim() : "";
+  };
+  if (m === "off") return legacyValue();
   const cacheKey = `${path}${name}`;
   const hit = cache.get(cacheKey);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
@@ -191,13 +203,32 @@ export async function resolveSecret(env, { name, path, envName, optional = false
     // in required mode:  a seat with no wake key is offered no events, not a
     // 500.  Token/outage/scope failures still throw.  This is not a fallback:
     // the env binding is never read for it.
+    const capabilityOff = optional && error instanceof InfisicalError && error.code === "not_found" && !expectedSet(env).has(`${path}:${name}`);
     if (m === "required") {
-      if (optional && error instanceof InfisicalError && error.code === "not_found" && !expectedSet(env).has(`${path}:${name}`)) return "";
+      if (capabilityOff) return "";
       throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
     }
     // Transitional fallback: explicit in the mode, observable in logs + stats.
+    const value = legacyValue();
+    // Nothing serves it, and "required" would answer the same empty value:
+    // an intentionally-off capability, not a fallback.  Counted apart, so a
+    // zero fallback counter is reachable and means "required changes nothing".
+    if (capabilityOff && !value) {
+      stats.absent++;
+      return "";
+    }
     stats.fallbacks++;
-    console.warn(`infisical fallback to env binding ${envName}: ${error.code ?? error.message}`);
-    return typeof env[envName] === "string" ? env[envName].trim() : "";
+    console.warn(`infisical fallback for ${path}:${name} to env binding ${envName}${value ? "" : " (unset)"}: ${error.code ?? error.message}`);
+    return value;
   }
+}
+
+/** Every wake key Infisical serves for `names` (in "off" mode, every Worker
+ * binding), after one /wake listing.  A key-reuse guard compares against this
+ * set:  in "required" mode the wake keys need not be Worker bindings, so an
+ * env-only read would see none of them (sentry 4364275301). */
+export async function resolveWakeKeys(env, names) {
+  await prefetchFolder(env, "/wake");
+  const keys = await Promise.all(names.map((name) => resolveSecret(env, { name, path: "/wake", envName: name, optional: true })));
+  return keys.map((key) => key.trim()).filter(Boolean);
 }

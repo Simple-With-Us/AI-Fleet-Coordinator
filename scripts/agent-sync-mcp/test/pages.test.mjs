@@ -152,8 +152,8 @@ test("consent for a loopback callback says the tokens go to a program on this co
 });
 
 test("admin page shows the Infisical mode and counters it is passed, and nothing without them (kody 4365623014)", async () => {
-  const shown = await adminPage({ ...adminFacts, infisical: { mode: "required", fetched: 5, cacheHits: 40, fallbacks: 0 } }).text();
-  assert.ok(shown.includes(`Secrets mode:  required.${SENTENCE_GAP}Since this isolate started:  5 Infisical reads, 40 cache hits and 0 fallbacks to Worker bindings.`));
+  const shown = await adminPage({ ...adminFacts, infisical: { mode: "required", fetched: 5, cacheHits: 40, fallbacks: 0, absent: 2 } }).text();
+  assert.ok(shown.includes(`Secrets mode:  required.${SENTENCE_GAP}Since this isolate started:  5 Infisical reads, 40 cache hits and 0 fallbacks to Worker bindings.${SENTENCE_GAP}2 reads found an optional secret set nowhere, a capability that is off in every mode, and are not fallbacks.`));
   assert.doesNotMatch(shown, /<p class="warn">Secrets mode/, "zero fallbacks is not a warning");
   const warned = await adminPage({ ...adminFacts, infisical: { mode: "fallback", fetched: 1, cacheHits: 0, fallbacks: 3 } }).text();
   assert.match(warned, /<p class="warn">Secrets mode:  fallback\./);

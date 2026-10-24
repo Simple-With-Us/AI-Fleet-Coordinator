@@ -37,7 +37,7 @@ test("required mode serves from Infisical and caches within the TTL", async () =
   assert.equal(await resolveSecret(ENV, { name: "S", path: "/tools", envName: "LEGACY" }), "v1");
   assert.equal(await resolveSecret(ENV, { name: "S", path: "/tools", envName: "LEGACY" }), "v1");
   assert.equal(calls.length, 1, "second read is a cache hit");
-  assert.deepEqual(infisicalStats(), { fetched: 1, cacheHits: 1, fallbacks: 0 });
+  assert.deepEqual(infisicalStats(), { fetched: 1, cacheHits: 1, fallbacks: 0, absent: 0 });
 });
 
 test("required mode throws on a miss - no silent fallback", async () => {
@@ -156,12 +156,108 @@ test("optional read: required mode still throws on outage and on missing token",
   await assert.rejects(() => resolveSecret(noToken, { name: "S", path: "/wake", envName: "LEGACY", optional: true }), /not bound/);
 });
 
-test("optional read: fallback mode still counts a fallback on absence", async () => {
+/** console.warn lines written while `fn` runs. */
+async function warnings(fn) {
+  const lines = [];
+  const real = console.warn;
+  console.warn = (...args) => { lines.push(args.join(" ")); };
+  try {
+    await fn();
+  } finally {
+    console.warn = real;
+  }
+  return lines;
+}
+
+test("optional read: fallback mode counts a fallback when a binding serves the absent name, and the log names both", async () => {
   _resetInfisicalForTests();
   mockFetch([]);
   const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
-  assert.equal(await resolveSecret(env, { name: "S", path: "/wake", envName: "LEGACY", optional: true }), "v0");
+  const lines = await warnings(async () => {
+    assert.equal(await resolveSecret(env, { name: "S", path: "/wake", envName: "LEGACY", optional: true }), "v0");
+  });
   assert.equal(infisicalStats().fallbacks, 1);
+  assert.equal(infisicalStats().absent, 0);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /fallback for \/wake:S to env binding LEGACY:/);
+});
+
+test("optional read: an undeclared name set nowhere is capability-off in fallback mode too, counted apart and never as a fallback", async () => {
+  _resetInfisicalForTests();
+  mockFetch([]);
+  const env = { ...ENV, INFISICAL_MODE: "fallback" };
+  const lines = await warnings(async () => {
+    assert.equal(await resolveSecret(env, { name: "WAKE_HMAC_KEY_ECHO", path: "/wake", envName: "WAKE_HMAC_KEY_ECHO", optional: true }), "");
+  });
+  assert.deepEqual([infisicalStats().fallbacks, infisicalStats().absent], [0, 1], "the same answer required mode gives:  not a fallback");
+  assert.deepEqual(lines, [], "no fallback line for an intentionally-off capability");
+  // A DECLARED name set nowhere is drift, not a capability that is off:  still a fallback (required mode throws on it).
+  const declared = await warnings(async () => {
+    assert.equal(await resolveSecret(env, { name: "WAKE_HMAC_KEY_JET", path: "/wake", envName: "WAKE_HMAC_KEY_JET", optional: true }), "");
+  });
+  assert.equal(infisicalStats().fallbacks, 1);
+  assert.match(declared[0], /fallback for \/wake:WAKE_HMAC_KEY_JET to env binding WAKE_HMAC_KEY_JET \(unset\)/);
+  // An outage is a fallback too, binding or not.
+  _resetInfisicalForTests();
+  mockFetch([["/api/v3/secrets/raw/S", { body: {}, status: 500 }]]);
+  assert.equal(await resolveSecret(env, { name: "S", path: "/wake", envName: "NONE", optional: true }), "");
+  assert.deepEqual([infisicalStats().fallbacks, infisicalStats().absent], [1, 0]);
+});
+
+test("fallback mode reaches zero fallbacks when Infisical holds every declared name (the proof gate in DEPLOY.md)", async () => {
+  _resetInfisicalForTests();
+  const { INFISICAL_EXPECT_DEFAULT } = await import("../src/infisical-manifest.js");
+  const { SEAT_SECRETS, WAKE_SECRETS } = await import("../src/config.js");
+  const { GB_IDENTITIES } = await import("../src/delegated-identities.js");
+  const { prefetchFolder, resolveWakeKeys } = await import("../src/infisical.js");
+  const folders = {};
+  for (const entry of INFISICAL_EXPECT_DEFAULT) {
+    const [path, name] = entry.split(":");
+    (folders[path] ??= []).push({ secretKey: name, secretValue: name.startsWith("FLEETLINK_TOKEN_") ? `fla_${"c".repeat(64)}` : `v-${name}` });
+  }
+  globalThis.fetch = async (url) => {
+    const path = new URL(url).searchParams.get("secretPath");
+    return String(url).includes("/api/v3/secrets/raw?") ? Response.json({ secrets: folders[path] ?? [] }) : new Response("not found", { status: 404 });
+  };
+  const env = { ...ENV, INFISICAL_MODE: "fallback" };
+  const lines = await warnings(async () => {
+    await Promise.all(["/fleetlink", "/wake"].map((path) => prefetchFolder(env, path)));
+    const tokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
+    assert.equal(tokens.seatTokens.size, 17, "every declared seat token served by Infisical");
+    assert.deepEqual(await resolveWakeKeys(env, Object.values(WAKE_SECRETS)), ["v-WAKE_HMAC_KEY_JET"]);
+  });
+  assert.equal(infisicalStats().fallbacks, 0, "MA's and JET-CHAT's tokens and three seats' wake keys are set nowhere:  off, not fallbacks");
+  assert.equal(infisicalStats().absent, 5);
+  assert.deepEqual(lines, []);
+});
+
+test("resolveFleetlinkSeatTokens: in fallback mode a token the bundle serves is a counted fallback logged under its bundle entry", async () => {
+  _resetInfisicalForTests();
+  mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [] } }]]);
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const bundled = `fla_${"d".repeat(64)}`;
+  const env = { ...ENV, INFISICAL_MODE: "fallback", FLEETLINK_SEAT_TOKENS: JSON.stringify({ MA: bundled }) };
+  const lines = await warnings(async () => {
+    await prefetchFolder(env, "/fleetlink");
+    const r = await resolveFleetlinkSeatTokens(env, ["MA", "JET-CHAT"]);
+    assert.equal(r.seatTokens.get("MA"), bundled, "the bundle still serves in fallback mode");
+    assert.ok(!r.seatTokens.has("JET-CHAT"));
+  });
+  assert.deepEqual([infisicalStats().fallbacks, infisicalStats().absent], [1, 1]);
+  assert.equal(lines.length, 1);
+  assert.match(lines[0], /fallback for \/fleetlink:FLEETLINK_TOKEN_MA to env binding FLEETLINK_SEAT_TOKENS\[MA\]:/, "names the real legacy source, never a placeholder");
+});
+
+test("resolveWakeKeys: required mode returns the wake keys Infisical serves with no Worker binding, off mode the bindings (sentry 4364275301)", async () => {
+  _resetInfisicalForTests();
+  const { resolveWakeKeys } = await import("../src/infisical.js");
+  const { WAKE_SECRETS } = await import("../src/config.js");
+  const calls = mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "WAKE_HMAC_KEY_JET", secretValue: "wk-jet" }] } }]]);
+  assert.deepEqual(await resolveWakeKeys(ENV, Object.values(WAKE_SECRETS)), ["wk-jet"], "a guard built on this set sees an Infisical-only wake key");
+  assert.equal(calls.length, 1, "one /wake listing answers all four names");
+  _resetInfisicalForTests();
+  const off = { INFISICAL_MODE: "off", WAKE_HMAC_KEY_JET: " wk-bound ", WAKE_HMAC_KEY_ECHO: "" };
+  assert.deepEqual(await resolveWakeKeys(off, Object.values(WAKE_SECRETS)), ["wk-bound"]);
 });
 
 test("INFISICAL_EXPECT: a declared secret's 404 throws even on an optional read", async () => {

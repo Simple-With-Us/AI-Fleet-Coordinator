@@ -296,6 +296,7 @@ export function adminPage({ gbBearers = [], email, seats, clients, refusals, tok
     ? `<p${Number(infisical.fallbacks) > 0 ? ' class="warn"' : ""}>${sentences(
         `Secrets mode:  ${infisical.mode}.`,
         `Since this isolate started:  ${Number(infisical.fetched) || 0} Infisical reads, ${Number(infisical.cacheHits) || 0} cache hits and ${Number(infisical.fallbacks) || 0} fallbacks to Worker bindings.`,
+        `${Number(infisical.absent) || 0} reads found an optional secret set nowhere, a capability that is off in every mode, and are not fallbacks.`,
       )}</p>`
     : "";
   // Owner controls first, then everything long folded behind a summary that shows its count (AFC-347).

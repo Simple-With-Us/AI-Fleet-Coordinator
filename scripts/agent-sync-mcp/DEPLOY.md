@@ -14,11 +14,28 @@ bindings), instead of install-time copied Worker secrets.  `INFISICAL_MODE`:
 
 - `off` (default):  only the legacy Worker bindings are read.  Fully
   compatible with every install below;  nothing changes until the mode is set.
-- `fallback`:  Infisical first, the legacy binding on a read failure - every
-  fallback is logged and counted (`/admin` status shows the counters).
+- `fallback`:  Infisical first, the legacy binding on a miss or a read
+  failure.  Every read a binding serves is logged
+  (`infisical fallback for <path>:<name> to env binding <BINDING>`) and
+  counted as a fallback (`/admin` status shows the counters).  A FleetLink
+  seat token is logged under its bundle entry,
+  `FLEETLINK_SEAT_TOKENS[<SEAT>]`.  An optional secret that is undeclared and
+  set nowhere (not in Infisical, no binding) reads as empty and is counted
+  apart as absent, never as a fallback:  `required` gives the same answer.
 - `required`:  Infisical only, zero fallbacks.  A missing secret that is
   DECLARED configured throws visibly;  a secret absent from the declaration
   list is an intentionally-off capability and reads as empty.
+
+**The proof before `required`.**  Run `fallback` and exercise the Worker (an
+`/mcp` session per seat, `/admin`).  `required` is turned on only when
+`/admin` shows 0 fallbacks and the Worker log has no `infisical fallback`
+line:  then every read was served by Infisical or is a capability that is off
+in every mode, so `required` changes nothing that works.  A fallback line
+names the Infisical record that is missing and the binding that served it,
+and either the record is created or the binding was serving a capability
+that is meant to go.  Absent reads (for example the wake keys of GROK-WEB,
+ECHO and WISE, which no binding or Infisical record holds, and the FleetLink
+tokens of MA and JET-CHAT) do not hold the gate.
 
 The declaration list is `INFISICAL_EXPECT` (comma-separated `path:name`), and
 it defaults to `INFISICAL_EXPECT_DEFAULT` in `src/infisical-manifest.js` -
@@ -39,10 +56,10 @@ were checked:  a names-only listing of Fleet-OPS prod `/zulip` on Fri, Oct 23
 (PR #901 for CURSOR, CLAUDE, JET, GROK-WEB, ECHO and WISE;  #894 for
 `MA_ZULIP_KEY`).  That listing left no output in this repo, so treat the names
 as unproven until fallback mode proves them:  a seat key that misses Infisical
-is served from its Worker binding, logged and counted on `/admin`, and
-`required` is turned on only after the counters show zero fallbacks.  A seat
-key absent in `required` mode leaves only that seat's Zulip tools
-`not_configured`;  an outage or a scope denial fails the request visibly.
+is served from its Worker binding, logged and counted on `/admin`, and the
+proof above does not pass until that record exists.  A seat key absent in
+`required` mode leaves only that seat's Zulip tools `not_configured`;  an
+outage or a scope denial fails the request visibly.
 
 **The copies are point-in-time and are NOT a source-rotation sync.**  Rotating
 a source secret does NOT update its Fleet-OPS copy, and re-running the

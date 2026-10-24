@@ -16,9 +16,22 @@ first destination that holds a different value (see below) and never overwrites.
 
 The automation login comes from the environment first, then `fleet-secrets get`
 (INFISICAL_AUTOMATION_CLIENT_ID and INFISICAL_AUTOMATION_CLIENT_SECRET, the same
-handoff as install_seat_key.py);  no credential file is read.  The values
-themselves move through Infisical's API because the copy crosses projects and
-paths and writes, which `fleet-secrets get` cannot do.
+handoff as install_seat_key.py);  no credential file is read.
+
+Every value READ, source and destination alike, goes through
+`fleet-secrets get NAME --path PATH --project ai-fleet-coordinator|fleet-ops`
+(kody 4365621961).  The child gets that login's access token as INFISICAL_TOKEN
+(one identity for reads and writes, no login per read) and the project ids
+pinned to AFC and FLEETOPS below, so each read lands in exactly the workspace
+and folder MAPPING names.  fleet-secrets expands Infisical references (Fleet-OPS
+root holds its keys as references, INFISICAL.md) and refuses an unresolved one
+(exit 5), so a literal ${...} is never copied;  exit 3 means absent.  The values
+are deliberately NOT taken from the environment first:  the copy's source of
+truth is the named project and path, and a same-named variable in this shell
+(a seat's FLEETLINK_TOKEN_<SEAT>, say) would copy a different value.  Only the
+write uses Infisical's API, because `fleet-secrets set` writes nothing but its
+allowlisted names (core.WRITE_ALLOWLIST:  CACHE_* under /linear and the CLI
+logins under /cli-logins).
 
 Values transit this process's memory only: never printed, logged, or persisted.
 Step 0 fails safe: the read-tools token's own metadata (GET /api/v2/service-token,
@@ -132,17 +145,23 @@ def req(url, token, data=None, method=None):
     return json.load(urllib.request.urlopen(r, timeout=35))
 
 
+def fleet_secrets_binary():
+    return shutil.which("fleet-secrets") or str(
+        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
+    )
+
+
 def handoff(name):
     """One credential:  the environment first, then `fleet-secrets get` (the
     install_seat_key.py handoff, OPS-818).  Only the name is ever reported."""
     value = os.environ.get(name, "").strip()
     if value:
         return value
-    binary = shutil.which("fleet-secrets") or str(
-        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
-    )
+    binary = fleet_secrets_binary()
     try:
-        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(
+            [binary, "get", name], check=False, capture_output=True, text=True, timeout=60
+        )
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
     except (OSError, subprocess.SubprocessError):
@@ -173,32 +192,89 @@ def login():
     return token
 
 
-def secret_value(data):
-    """The secretValue of a /api/v3/secrets/raw/<name> answer, shape-checked
-    before use:  a malformed third-party answer raises ValueError (names only),
-    never a KeyError, and never sends a non-string value on to upsert."""
-    secret = data.get("secret") if isinstance(data, dict) else None
-    value = secret.get("secretValue") if isinstance(secret, dict) else None
-    if not isinstance(value, str):
-        raise ValueError("Infisical secret answer has no secretValue string")
-    return value
+# fleet-secrets' read-only project slugs, and the variables it resolves each
+# slug's id from first (scripts/fleet_secrets/core.py PROJECT_SOURCES).  The
+# child gets the ids below, so no ~/.agent-sync file can point a read elsewhere.
+FLEET_SECRETS_PROJECT = {AFC: "ai-fleet-coordinator", FLEETOPS: "fleet-ops"}
+FLEET_SECRETS_PROJECT_ID_ENV = {
+    AFC: "INFISICAL_AI_FLEET_COORDINATOR_PROJECT_ID",
+    FLEETOPS: "INFISICAL_FLEET_OPS_PROJECT_ID",
+}
+# Login material this script holds that the child never needs:  it reads with
+# the access token alone.
+CHILD_DROPPED_ENV = (
+    "INFISICAL_AUTOMATION_CLIENT_ID",
+    "INFISICAL_AUTOMATION_CLIENT_SECRET",
+    "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+    "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+    "READ_TOOLS_SERVICE_TOKEN",
+)
+FLEET_SECRETS_ABSENT = 3  # `fleet-secrets get`:  the key is not in Infisical at that path
+
+
+class ReadError(Exception):
+    """`fleet-secrets get` failed.  Carries its exit code (or a reason word)
+    only:  its output is never kept, so no value or server text can leak."""
+
+    def __init__(self, code):
+        super().__init__(f"fleet-secrets get failed ({code})")
+        self.code = code
+
+
+def fleet_secrets_get(token, ws, path, name):
+    """One value through `fleet-secrets get NAME --path PATH --project P`, or
+    None when it exits 3 (absent).  The value comes back byte for byte (stdout
+    as bytes, decoded as UTF-8, never stripped).  Any other exit raises
+    ReadError with the code only;  stderr is discarded unread."""
+    env = {k: v for k, v in os.environ.items() if k not in CHILD_DROPPED_ENV}
+    env["INFISICAL_TOKEN"] = token
+    env[FLEET_SECRETS_PROJECT_ID_ENV[ws]] = ws
+    argv = [
+        fleet_secrets_binary(),
+        "get",
+        name,
+        "--path",
+        path,
+        "--project",
+        FLEET_SECRETS_PROJECT[ws],
+    ]
+    try:
+        proc = subprocess.run(
+            argv,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=90,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise ReadError("timeout") from None
+    except OSError:
+        raise ReadError("unavailable") from None
+    finally:
+        env = {}
+    if proc.returncode == FLEET_SECRETS_ABSENT:
+        return None
+    if proc.returncode != 0:
+        raise ReadError(proc.returncode)
+    try:
+        return proc.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ReadError("bad-output") from None
 
 
 def read_secret(token, ws, path, name):
-    q = urllib.parse.urlencode({"workspaceId": ws, "environment": ENV, "secretPath": path})
-    return secret_value(req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}?{q}", token))
+    """A source value.  An absent source stops the run (exit 3 -> ReadError)."""
+    value = fleet_secrets_get(token, ws, path, name)
+    if value is None:
+        raise ReadError(FLEET_SECRETS_ABSENT)
+    return value
 
 
 def read_secret_opt(token, ws, path, name):
-    """Read or None on 404.  Error BODIES are never surfaced: an HTTP error carries
-    only its status code so a server message can never leak a value."""
-    q = urllib.parse.urlencode({"workspaceId": ws, "environment": ENV, "secretPath": path})
-    try:
-        return secret_value(req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}?{q}", token))
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            return None
-        raise
+    """A destination value, or None when it does not exist yet."""
+    return fleet_secrets_get(token, ws, path, name)
 
 
 def upsert(token, ws, path, name, value):
@@ -305,8 +381,10 @@ def main():
     token = login()
     done = skipped = 0
     for sws, spath, sname, dpath, dname in MAPPING:
+        reading = f"source {'AFC' if sws == AFC else 'Fleet-OPS'} {spath.rstrip('/')}/{sname}"
         try:
             value = read_secret(token, sws, spath, sname)  # in memory only
+            reading = f"destination Fleet-OPS {dpath}/{dname}"
             existing = read_secret_opt(token, FLEETOPS, dpath, dname)
             if existing is not None and existing != value:
                 value = existing = None
@@ -328,6 +406,14 @@ def main():
         except urllib.error.HTTPError as e:
             print(
                 f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): HTTP {e.code}. "
+                f"{done} copied, {skipped} already in sync. Re-run reconciles; equal values are skipped."
+            )
+            sys.exit(1)
+        except ReadError as e:
+            value = existing = None
+            print(
+                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): fleet-secrets get exit {e.code} "
+                f"reading the {reading}. "
                 f"{done} copied, {skipped} already in sync. Re-run reconciles; equal values are skipped."
             )
             sys.exit(1)

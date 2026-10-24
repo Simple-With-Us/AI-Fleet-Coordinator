@@ -7,8 +7,12 @@
 // - see FLEETLINK_SEATS_DISABLED).  Copies are point-in-time:  they do NOT
 // track source rotation, and the copy script never overwrites a destination
 // that differs (it stops for reconciliation), so a rotated source means the
-// Fleet-OPS copy is updated by hand.  Only JET has a wake key provisioned
-// (DEPLOY.md, eavesdropper section), so /wake declares JET's alone.
+// Fleet-OPS copy is updated by hand.  /wake declares JET's wake key alone:  a
+// names-only check on Sat, Oct 24 found WAKE_HMAC_KEY_JET and no other wake key
+// among the Worker's secrets (`wrangler secret list`) or at AI Fleet
+// Coordinator `/` (`fleet-secrets names`), so GROK-WEB's, ECHO's and WISE's
+// reads are capability-off in every mode (src/infisical.js counts them as
+// absent, not as fallbacks).  Adding one is a new key plus a copy-set change.
 
 // Leaf module:  imports ONLY the one persona list (never delegated-identities.js,
 // which itself imports infisical.js - that would be a cycle).  The name

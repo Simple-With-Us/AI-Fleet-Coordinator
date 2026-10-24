@@ -77,7 +77,7 @@ import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
 import { serveWa } from "./wa/index.js";
-import { resolveSecret, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
+import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 
 export { SeatGate };
@@ -565,7 +565,7 @@ async function serveSpike(request, env, ctx, config) {
   const key = spikeKey(env.SPIKE_HMAC_KEY);
   if (!wakeKey || !key) return notFound();
   // SPIKE_HMAC_KEY must never equal any seat's wake key, not only this seat's.
-  const wakeKeys = (await Promise.all(Object.values(WAKE_SECRETS).map((name) => resolveSecret(env, { name, path: "/wake", envName: name, optional: true })))).filter(Boolean);
+  const wakeKeys = await resolveWakeKeys(env, Object.values(WAKE_SECRETS));
   if (wakeKeys.includes(key)) {
     console.log(JSON.stringify({ event: "spike_refused", seat, reason: "key_reused" }));
     return notFound();
@@ -614,7 +614,10 @@ async function serveSpike(request, env, ctx, config) {
 async function serveLinearHealth(request, env, config) {
   const key = healthKey(env.HEALTH_HMAC_KEY);
   if (!key) return notFound();
-  const wakeKeys = Object.values(WAKE_SECRETS).map((name) => (typeof env[name] === "string" ? env[name].trim() : ""));
+  // Every wake key Infisical serves, as serveSpike reads them (sentry
+  // 4364275301):  in required mode the wake bindings may be gone, and an env
+  // read would miss a health key equal to a wake key.
+  const wakeKeys = await resolveWakeKeys(env, Object.values(WAKE_SECRETS));
   const spikeKeyRaw = typeof env.SPIKE_HMAC_KEY === "string" ? env.SPIKE_HMAC_KEY.trim() : "";
   if (wakeKeys.includes(key) || (spikeKeyRaw && spikeKeyRaw === key)) {
     console.log(JSON.stringify({ event: "health_refused", reason: "key_reused" }));
