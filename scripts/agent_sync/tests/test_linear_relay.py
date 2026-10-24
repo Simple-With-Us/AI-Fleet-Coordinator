@@ -36,7 +36,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_sync import linear_relay as lr
-from agent_sync.zulip import _NoRedirect, masked_credential
+from agent_sync.zulip import _NoRedirect
 
 
 class FakeLinear:
@@ -868,15 +868,21 @@ class RelayTests(unittest.TestCase):
         self.assertIn("LINEAR_RELAY_TOKEN", str(caught.exception))
         self.assertNotIn(token, str(caught.exception))
         self.assertNotIn("BODY-TEXT", str(caught.exception))
-        # A long key is named by the fleet's masked preview: the first eight and last four only.
-        long_key = "tokA" + "1" * 20 + "wxyz"
-        client = lr.LinearClient(long_key, opener=FakeOpener(lambda: http_error(401)))
-        with self.assertRaises(lr.LinearAuthError) as caught:
-            client.viewer()
-        self.assertIn(masked_credential(long_key), str(caught.exception))
-        self.assertIn("tokA1111", str(caught.exception))
-        self.assertNotIn(long_key, str(caught.exception))
-        self.assertNotIn("1" * 12, str(caught.exception))
+        # Synthetic only: neither a long-key prefix/suffix nor short-key fragment is output.
+        for key in ("tokA" + "1" * 20 + "wxyz", "qRS"):
+            for failure in (lambda: http_error(401), {"errors": [{"message": "not authenticated", "extensions": {"code": "AUTHENTICATION_ERROR"}}]}):
+                with self.subTest(key_length=len(key)):
+                    client = lr.LinearClient(key, opener=FakeOpener(failure))
+                    with self.assertRaises(lr.LinearAuthError) as caught:
+                        client.viewer()
+                    diagnostic = str(caught.exception)
+                    exit_text = str(lr._stop_on_auth(caught.exception))
+                    for output in (diagnostic, exit_text):
+                        self.assertIn("LINEAR_RELAY_TOKEN", output)
+                        self.assertNotIn(key, output)
+                        self.assertNotIn(key[:8], output)
+                        self.assertNotIn(key[-4:], output)
+                        self.assertNotIn("key ", output)
 
     def test_a_refused_lookup_is_logged_not_silent(self) -> None:
         def refused(ident):
