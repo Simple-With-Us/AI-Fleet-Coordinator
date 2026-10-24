@@ -353,6 +353,8 @@ test("a seat with its own bot token signs in with it;  the rest use the server c
 });
 
 test("GB-ENGINEER is visibly off: denied even with the agent secret bound, no silent substitution", async () => {
+  // Synthetic:  built at runtime from one repeated character to match the fls_ shape.  Never a
+  // credential, never read from the environment, and the stub fetch below refuses every call.
   const client = fleetlinkClientFromSecret(`fls_${"a".repeat(64)}`, {}, { fetch: async () => { throw new Error("must not be called"); } });
   assert.equal(client.credentialFor("GB-ENGINEER"), null, "no credential - never the agent secret");
   await assert.rejects(() => client.call("GB-ENGINEER", "fleet_search", {}), /disabled for GB-ENGINEER/, "visible, named failure");

@@ -52,6 +52,12 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# Pinned on purpose (kody 4365623903, 4366921599):  every copy must read from and
+# write to exactly these two projects, and an id taken from the environment (the
+# variables fleet-secrets and other tools share) could point all 72 copies at
+# another project.  Both are project identifiers, not credentials, and both are
+# already committed on main (install_seat_key.py, .github/workflows/worker-deploy.yml,
+# scripts/fleet_knobs/source.py).
 AFC = "9bf7417a-fbbb-42ca-870c-2b45207233f5"
 FLEETOPS = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
 ENV = "prod"
@@ -129,6 +135,26 @@ BASE = "https://app.infisical.com"
 # An explicit, project-identifying User-Agent on every Infisical call:  the
 # runtime default (Python-urllib/3.x) is what protected endpoints refuse.
 USER_AGENT = "AI-Fleet-Coordinator populate-scoped-folders"
+# Exit status when fleet-secrets itself is not installed (the shell's "command
+# not found"), apart from 1 for every other stop (kody 4366921905).
+MISSING_EXECUTABLE = 127
+
+
+class RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Every 3xx is an error (kody 4366921692):  urllib's default handler
+    re-sends the request headers, the bearer token among them, to wherever
+    the Location points."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, "redirect refused", headers, fp)
+
+
+_OPENER = urllib.request.build_opener(RefuseRedirects)
+
+
+def urlopen(request, timeout):
+    """Every Infisical call this script makes goes through here."""
+    return _OPENER.open(request, timeout=timeout)
 
 
 def req(url, token, data=None, method=None):
@@ -142,7 +168,7 @@ def req(url, token, data=None, method=None):
         },
         method=method,
     )
-    return json.load(urllib.request.urlopen(r, timeout=35))
+    return json.load(urlopen(r, timeout=35))
 
 
 def fleet_secrets_binary():
@@ -164,10 +190,17 @@ def handoff(name):
         )
         if proc.returncode == 0 and proc.stdout.strip():
             return proc.stdout.strip()
+    except FileNotFoundError:
+        print(
+            f"{name} is not in the environment, and fleet-secrets is not installed.  "
+            "Name only;  no value printed.",
+            file=sys.stderr,
+        )
+        raise SystemExit(MISSING_EXECUTABLE) from None
     except (OSError, subprocess.SubprocessError):
         pass
     raise SystemExit(
-        f"{name} is not in the environment or fleet-secrets (name only; no value printed)"
+        f"{name} is not in the environment or fleet-secrets.  Name only;  no value printed."
     )
 
 
@@ -177,7 +210,7 @@ def login():
         "clientSecret": handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
     }
     data = json.load(
-        urllib.request.urlopen(
+        urlopen(
             urllib.request.Request(
                 f"{BASE}/api/v1/auth/universal-auth/login",
                 data=json.dumps(body).encode(),
@@ -250,6 +283,8 @@ def fleet_secrets_get(token, ws, path, name):
         )
     except subprocess.TimeoutExpired:
         raise ReadError("timeout") from None
+    except FileNotFoundError:
+        raise ReadError(MISSING_EXECUTABLE) from None
     except OSError:
         raise ReadError("unavailable") from None
     finally:
@@ -300,7 +335,7 @@ def token_data(token):
     fail-safe.  One live response with the real read-tools token is still required
     at execution time; an unrecognized schema keeps this a blocker, never a pass."""
     return json.load(
-        urllib.request.urlopen(
+        urlopen(
             urllib.request.Request(
                 f"{BASE}/api/v2/service-token",
                 headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
@@ -334,31 +369,31 @@ def check_read_tools_scope():
     st = os.environ.get("READ_TOOLS_SERVICE_TOKEN", "").strip()
     if not st:
         print(
-            "GATE: READ_TOOLS_SERVICE_TOKEN not in env - cannot verify scope. Aborting (fail safe)."
+            "GATE: READ_TOOLS_SERVICE_TOKEN not in env - cannot verify scope.  Aborting (fail safe)."
         )
         return False
     try:
         data = token_data(st)
     except urllib.error.HTTPError as e:
-        print(f"GATE: token metadata endpoint returned HTTP {e.code}. Aborting (fail safe).")
+        print(f"GATE: token metadata endpoint returned HTTP {e.code}.  Aborting (fail safe).")
         return False
     except Exception as e:  # noqa: BLE001 - fail-safe gate: ANY metadata failure aborts
         print(
-            f"GATE: token metadata endpoint unsupported/error ({type(e).__name__}). Aborting (fail safe)."
+            f"GATE: token metadata endpoint unsupported/error ({type(e).__name__}).  Aborting (fail safe)."
         )
         return False
     granted = parse_scopes(data)
     if granted is None:
         print(
-            "GATE: token metadata schema not the expected scopes list of {environment, secretPath}. "
-            "Aborting (fail safe); confirm the live schema before any run."
+            "GATE: token metadata schema not the expected scopes list of {environment, secretPath}.  "
+            "Aborting (fail safe);  confirm the live schema before any run."
         )
         return False
     needed = {(ENV, p) for _, _, _, p, _ in MAPPING}
     missing = sorted(needed - granted)
     if missing:
         print(
-            f"GATE: read-tools token does NOT grant: {missing}. Aborting; broadening scope is the owner's call."
+            f"GATE: read-tools token does NOT grant: {missing}.  Aborting;  broadening scope is the owner's call."
         )
         return False
     print(f"GATE: read-tools token covers all {len(needed)} destination paths.")
@@ -372,8 +407,11 @@ def main():
         src = "AFC" if sws == AFC else "Fleet-OPS"
         print(f"  {src} {spath or '/'}/{sname}  ->  Fleet-OPS {dpath}/{dname}")
     if dry:
-        print("Dry run only. Step-0 scope gate:")
-        check_read_tools_scope()
+        print("Dry run only.  Step-0 scope gate:")
+        if not check_read_tools_scope():
+            # Fail closed in a dry run too (kody 4366921815):  a gate that cannot
+            # pass is a non-zero exit, never a clean-looking rehearsal.
+            sys.exit(1)
         print("Re-run with --apply only after the owner's approval is relayed.")
         return
     if not check_read_tools_scope():
@@ -392,7 +430,7 @@ def main():
                     f"COLLISION: Fleet-OPS {dpath}/{dname} already exists with a DIFFERENT value."
                 )
                 print(
-                    "Stopping for reconciliation - no overwrite is authorized by default. "
+                    "Stopping for reconciliation - no overwrite is authorized by default.  "
                     "Reconcile the destination by hand, then re-run."
                 )
                 sys.exit(2)
@@ -405,28 +443,29 @@ def main():
             value = existing = None
         except urllib.error.HTTPError as e:
             print(
-                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): HTTP {e.code}. "
-                f"{done} copied, {skipped} already in sync. Re-run reconciles; equal values are skipped."
+                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): HTTP {e.code}.  "
+                f"{done} copied, {skipped} already in sync.  Re-run reconciles;  equal values are skipped."
             )
             sys.exit(1)
         except ReadError as e:
             value = existing = None
+            missing_tool = e.code == MISSING_EXECUTABLE
             print(
-                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): fleet-secrets get exit {e.code} "
-                f"reading the {reading}. "
-                f"{done} copied, {skipped} already in sync. Re-run reconciles; equal values are skipped."
+                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): fleet-secrets get "
+                f"{'is not installed' if missing_tool else f'exit {e.code}'}, reading the {reading}.  "
+                f"{done} copied, {skipped} already in sync.  Re-run reconciles;  equal values are skipped."
             )
-            sys.exit(1)
+            sys.exit(MISSING_EXECUTABLE if missing_tool else 1)
         except Exception as e:  # noqa: BLE001 - any copy failure stops visibly, re-run reconciles
             print(
-                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): {type(e).__name__}. "
-                f"{done} copied, {skipped} already in sync. Re-run reconciles; equal values are skipped."
+                f"STOP at {done + skipped + 1}/72 ({dpath}/{dname}): {type(e).__name__}.  "
+                f"{done} copied, {skipped} already in sync.  Re-run reconciles;  equal values are skipped."
             )
             sys.exit(1)
         done += 1
         print(f"  copied {done}/72: {dpath}/{dname}")  # names only, never values
     print(
-        f"Done: {done} copies applied, {skipped} already in sync. Sources unmodified; nothing deleted."
+        f"Done: {done} copies applied, {skipped} already in sync.  Sources unmodified;  nothing deleted."
     )
 
 

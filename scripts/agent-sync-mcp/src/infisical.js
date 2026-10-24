@@ -24,6 +24,7 @@
 
 import { z } from "zod";
 import { INFISICAL_EXPECT_DEFAULT } from "./infisical-manifest.js";
+import { readBodyBytes } from "./wake.js";
 
 // Both Infisical answers are untrusted input:  parsed with these schemas
 // before anything reads them (kody 4365623474).  Unknown extra fields pass;
@@ -33,6 +34,51 @@ const FolderListing = z.object({
   secrets: z.array(z.object({ secretKey: z.string(), secretValue: z.string() }).passthrough()),
   totalCount: z.number().int().nonnegative().optional(),
 }).passthrough();
+
+// Explicit limits before the schemas see an answer (kody 4366922682):  the
+// body is read up to a byte cap (a longer one is refused unread), then the
+// parsed tree is walked without recursion against a depth and a node cap.
+// A listing of one scoped folder is a few KiB;  the caps leave wide room.
+export const INFISICAL_LIMITS = Object.freeze({ secretBytes: 256 * 1024, listingBytes: 2 * 1024 * 1024, depth: 32, nodes: 50_000 });
+
+function withinShape(value) {
+  const stack = [[value, 0]];
+  let nodes = 0;
+  while (stack.length) {
+    const [node, depth] = stack.pop();
+    nodes += 1;
+    if (nodes > INFISICAL_LIMITS.nodes || depth > INFISICAL_LIMITS.depth) return false;
+    if (node && typeof node === "object") for (const child of Object.values(node)) stack.push([child, depth + 1]);
+  }
+  return true;
+}
+
+/** The answer's JSON, or null when it is over the byte cap, not JSON, or
+ * past the depth or node cap;  the caller's schema then refuses the null. */
+async function boundedJson(res, maxBytes) {
+  const declared = Number(res.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => {});
+    return null;
+  }
+  const bytes = await readBodyBytes(res, maxBytes);
+  if (bytes === null) return null;
+  let value;
+  try {
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
+  return withinShape(value) ? value : null;
+}
+
+/** One structured, allow-listed log line (kody 4366922553):  names, the mode
+ * and a fixed code or status only, never a value and never an error message. */
+function logEvent(event, fields) {
+  console.warn(JSON.stringify({ event, ...fields }));
+}
+
+const errorCode = (error) => (error instanceof InfisicalError ? error.code : "fetch_failed");
 
 export class InfisicalError extends Error {
   constructor(message, extra = {}) {
@@ -111,9 +157,11 @@ async function fetchRaw(env, path, name) {
   });
   if (res.status === 404) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
   if (!res.ok) throw new InfisicalError(`Infisical answered ${res.status} for ${name} at ${path}`, { code: "infisical_unavailable", status: res.status });
-  const parsed = SecretResponse.safeParse(await res.json().catch(() => null));
+  const parsed = SecretResponse.safeParse(await boundedJson(res, INFISICAL_LIMITS.secretBytes));
   if (!parsed.success) throw new InfisicalError(`Infisical's answer for ${name} at ${path} failed schema validation`, { code: "invalid_response" });
-  const value = parsed.data.secret.secretValue;
+  // Trimmed like every legacy binding read (kody 4366922800):  a padded record
+  // never reaches Zulip as a wrong key, and whitespace alone is absence.
+  const value = parsed.data.secret.secretValue.trim();
   if (value === "") throw new InfisicalError(`Infisical returned no value for ${name} at ${path}`, { code: "not_found" });
   return value;
 }
@@ -144,7 +192,7 @@ export async function prefetchFolder(env, path) {
     // shape doubt (no array, non-string fields, pagination markers) refuses
     // to warm:  an empty-looking malformed listing must never deactivate
     // tools or masquerade as drift.
-    const parsed = FolderListing.safeParse(await res.json().catch(() => null));
+    const parsed = FolderListing.safeParse(await boundedJson(res, INFISICAL_LIMITS.listingBytes));
     if (!parsed.success) {
       throw new InfisicalError(`Infisical listing for ${path} failed schema validation`, { code: "invalid_listing" });
     }
@@ -154,7 +202,8 @@ export async function prefetchFolder(env, path) {
     }
     const now = Date.now();
     for (const item of items) {
-      if (item.secretValue !== "") cache.set(`${path}${item.secretKey}`, { value: item.secretValue, at: now });
+      const value = item.secretValue.trim();
+      if (value !== "") cache.set(`${path}${item.secretKey}`, { value, at: now });
     }
     folderWarm.set(path, now);
     folderFailed.delete(path);
@@ -162,7 +211,7 @@ export async function prefetchFolder(env, path) {
   } catch (error) {
     if (m === "required") throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
     folderFailed.set(path, Date.now());
-    console.warn(`infisical folder listing ${path} failed, env bindings serve its reads for ${CACHE_TTL_MS / 1000}s: ${error.code ?? error.message}`);
+    logEvent("infisical_listing_failed", { path, code: errorCode(error), status: error?.status ?? null, bindings_serve_s: CACHE_TTL_MS / 1000 });
   }
 }
 
@@ -218,7 +267,7 @@ export async function resolveSecret(env, { name, path, envName, optional = false
       return "";
     }
     stats.fallbacks++;
-    console.warn(`infisical fallback for ${path}:${name} to env binding ${envName}${value ? "" : " (unset)"}: ${error.code ?? error.message}`);
+    logEvent("infisical_fallback", { path, name, binding: envName, served: Boolean(value), code: errorCode(error), status: error?.status ?? null });
     return value;
   }
 }

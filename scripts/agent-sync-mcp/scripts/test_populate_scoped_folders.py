@@ -90,8 +90,8 @@ class FakeInfisical:
 class Base(unittest.TestCase):
     def setUp(self):
         self.fake = FakeInfisical()
-        self._orig = urllib.request.urlopen
-        urllib.request.urlopen = self.fake.open
+        self._orig = psf.urlopen
+        psf.urlopen = self.fake.open
         self._orig_run = subprocess.run
         subprocess.run = self.fake.run
         self._env = dict(os.environ)
@@ -102,7 +102,7 @@ class Base(unittest.TestCase):
         os.environ["READ_TOOLS_SERVICE_TOKEN"] = "read-tools-st"
 
     def tearDown(self):
-        urllib.request.urlopen = self._orig
+        psf.urlopen = self._orig
         subprocess.run = self._orig_run
         os.environ.clear()
         os.environ.update(self._env)
@@ -142,7 +142,7 @@ class TestGate(Base):
                 raise urllib.error.HTTPError(request.full_url, 404, "nf", {}, io.BytesIO(b"{}"))
             return self.fake.open(request, timeout)
 
-        urllib.request.urlopen = boom
+        psf.urlopen = boom
         self.assertFalse(psf.check_read_tools_scope())
 
     def test_unknown_schema_aborts(self):
@@ -164,6 +164,25 @@ class TestGate(Base):
         self.assertTrue(self.fake.agents)
         self.assertTrue(all(a == psf.USER_AGENT for a in self.fake.agents))
 
+    def test_every_infisical_call_refuses_redirects(self):
+        # kody 4366921692:  urllib's default handler would re-send the bearer
+        # token to the Location;  the script's one opener refuses every 3xx.
+        handlers = [
+            h for h in psf._OPENER.handlers if isinstance(h, urllib.request.HTTPRedirectHandler)
+        ]
+        self.assertTrue(handlers)
+        self.assertTrue(all(isinstance(h, psf.RefuseRedirects) for h in handlers))
+        request = urllib.request.Request(
+            "https://app.infisical.com/api/v2/service-token",
+            headers={"Authorization": "Bearer synthetic"},
+        )
+        for code in (301, 302, 303, 307, 308):
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                handlers[0].redirect_request(
+                    request, io.BytesIO(b""), code, "moved", {}, "https://elsewhere.example.test/"
+                )
+            self.assertEqual(caught.exception.code, code)
+
 
 class TestDryRun(Base):
     def test_dry_run_writes_nothing(self):
@@ -171,6 +190,15 @@ class TestDryRun(Base):
         self.assertIsNone(code)
         self.assertEqual(self.fake.upserts, [])
         self.assertIn("DRY RUN", out)
+
+    def test_dry_run_fails_closed_when_the_gate_fails(self):
+        # kody 4366921815:  a gate that cannot pass is a non-zero exit in a dry run too.
+        del os.environ["READ_TOOLS_SERVICE_TOKEN"]
+        code, out = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertIn("Aborting (fail safe)", out)
+        self.assertEqual(self.fake.upserts, [])
+        self.assertNotIn("Re-run with --apply", out)
 
 
 def seeded(fake):
@@ -232,7 +260,7 @@ class TestApply(Base):
         code, out = self.run_main("--apply")
         self.assertEqual(code, 1)
         self.assertIn("STOP at 71/72", out)
-        self.assertIn(f"exit 5 reading the source Fleet-OPS /{victim}.", out)
+        self.assertIn(f"exit 5, reading the source Fleet-OPS /{victim}.", out)
         self.assertEqual(len(self.fake.upserts), 70)
         self.assertNotIn("VALUE-", out)
         self.assertTrue(all(a == psf.USER_AGENT for a in self.fake.agents))
@@ -290,6 +318,30 @@ class TestApply(Base):
         code, _out = self.run_main("--apply")
         self.assertIsNone(code)
         self.assertEqual(self.fake.values[(psf.FLEETOPS, dpath, dname)], "VALUE-padded é\n")
+
+    def test_missing_fleet_secrets_exits_127(self):
+        # kody 4366921905:  a missing executable is the shell's 127, apart from 1.
+        seeded(self.fake)
+
+        def missing(argv, **kwargs):
+            raise FileNotFoundError(argv[0])
+
+        subprocess.run = missing
+        code, out = self.run_main("--apply")
+        self.assertEqual(code, psf.MISSING_EXECUTABLE)
+        self.assertEqual(code, 127)
+        self.assertIn("fleet-secrets get is not installed", out)
+        self.assertEqual(self.fake.upserts, [])
+
+    def test_terminal_messages_use_two_spaces_between_sentences(self):
+        # Kody issue comment 6383398733:  plain-text output takes two ASCII spaces.
+        seeded(self.fake)
+        sws, spath, victim, _dpath, _dname = psf.MAPPING[5]
+        self.fake.fail[("read", (sws, spath, victim))] = 4
+        _code, out = self.run_main("--apply")
+        self.assertIn("5 copied, 0 already in sync.  Re-run reconciles;  equal values", out)
+        self.assertNotRegex(out, r"[a-z)]\. [A-Z]")
+        self.assertNotIn(" ", out)
 
     def test_partial_write_stop_then_rerun_completes(self):
         seeded(self.fake)

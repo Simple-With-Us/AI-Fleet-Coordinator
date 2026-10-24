@@ -298,9 +298,11 @@ export const FLEETLINK_SEATS_DISABLED = Object.freeze(["GB-ENGINEER"]);
  * A name DECLARED in INFISICAL_EXPECT that goes missing throws in required
  * mode instead of silently broadening.  The bundle entry is the read's legacy
  * value (resolveSecret's `legacy`), so in fallback mode a token the bundle
- * serves is logged under FLEETLINK_SEAT_TOKENS[<SEAT>] and counted, and a
- * seat with no token anywhere (MA, JET-CHAT) is capability-off, not a
- * fallback. */
+ * serves is logged under FLEETLINK_SEAT_TOKENS[<SEAT>] and counted.  A seat
+ * with no token anywhere (MA, JET-CHAT) reads as absent, not as a fallback,
+ * and keeps the designed path every mode gives it, as on main:  the agent
+ * secret with X-Fleet-Seat.  Only FLEETLINK_SEATS_DISABLED is denied
+ * outright;  adding a seat there is the owner's call. */
 export async function resolveFleetlinkSeatTokens(env, seats) {
   const legacy = parseSeatTokens(env?.[FLEETLINK_SEAT_TOKENS]);
   const seatTokens = new Map();

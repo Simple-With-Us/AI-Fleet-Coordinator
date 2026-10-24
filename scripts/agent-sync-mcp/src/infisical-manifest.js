@@ -18,9 +18,15 @@
 // which itself imports infisical.js - that would be a cycle).  The name
 // derivation below must stay identical to delegatedNames() there;  a test
 // guards the drift.
+import { z } from "zod";
 import GB_TABLE from "../../agent_sync/mcp/gb-identities.json" with { type: "json" };
 
-const GB_IDENTITIES = Object.freeze([...GB_TABLE.enabled]);
+// The table's shape is checked before any name is derived from it (kody
+// 4366922209, 4366922334):  a missing `enabled` list or a malformed persona
+// fails at load with a precise error, never later as an odd secret name.
+// Other keys (the table's notes) pass through untouched.
+const GbTable = z.object({ enabled: z.array(z.string().regex(/^GB-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/)).min(1) }).passthrough();
+const GB_IDENTITIES = Object.freeze([...GbTable.parse(GB_TABLE).enabled]);
 const gbFieldNames = (identity) => {
   const role = identity.slice(3).replaceAll("-", "_");
   return { zulipKey: `ZULIP_GB_${role}_API_KEY`, zulipEmail: `ZULIP_GB_${role}_EMAIL`,

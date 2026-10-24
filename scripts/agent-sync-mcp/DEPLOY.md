@@ -15,27 +15,30 @@ bindings), instead of install-time copied Worker secrets.  `INFISICAL_MODE`:
 - `off` (default):  only the legacy Worker bindings are read.  Fully
   compatible with every install below;  nothing changes until the mode is set.
 - `fallback`:  Infisical first, the legacy binding on a miss or a read
-  failure.  Every read a binding serves is logged
-  (`infisical fallback for <path>:<name> to env binding <BINDING>`) and
-  counted as a fallback (`/admin` status shows the counters).  A FleetLink
-  seat token is logged under its bundle entry,
-  `FLEETLINK_SEAT_TOKENS[<SEAT>]`.  An optional secret that is undeclared and
-  set nowhere (not in Infisical, no binding) reads as empty and is counted
-  apart as absent, never as a fallback:  `required` gives the same answer.
+  failure.  Every read a binding serves is logged as one JSON event,
+  `{"event":"infisical_fallback","path":...,"name":...,"binding":...,"served":...,"code":...,"status":...}`
+  (names and a fixed code only, never a value), and counted as a fallback
+  (`/admin` status shows the counters).  A FleetLink seat token's binding is
+  its bundle entry, `FLEETLINK_SEAT_TOKENS[<SEAT>]`.  An optional secret that
+  is undeclared and set nowhere (not in Infisical, no binding) reads as empty
+  and is counted apart as absent, never as a fallback:  `required` gives the
+  same answer.
 - `required`:  Infisical only, zero fallbacks.  A missing secret that is
   DECLARED configured throws visibly;  a secret absent from the declaration
   list is an intentionally-off capability and reads as empty.
 
 **The proof before `required`.**  Run `fallback` and exercise the Worker (an
 `/mcp` session per seat, `/admin`).  `required` is turned on only when
-`/admin` shows 0 fallbacks and the Worker log has no `infisical fallback`
-line:  then every read was served by Infisical or is a capability that is off
-in every mode, so `required` changes nothing that works.  A fallback line
-names the Infisical record that is missing and the binding that served it,
-and either the record is created or the binding was serving a capability
-that is meant to go.  Absent reads (for example the wake keys of GROK-WEB,
-ECHO and WISE, which no binding or Infisical record holds, and the FleetLink
-tokens of MA and JET-CHAT) do not hold the gate.
+`/admin` shows 0 fallbacks and the Worker log has no `infisical_fallback`
+event:  then every read was served by Infisical or found a secret that is set
+nowhere, which every mode answers the same way, so `required` changes nothing
+that works.  A fallback event names the Infisical record that is missing and
+the binding that served it, and either the record is created or the binding
+was serving a capability that is meant to go.  Absent reads do not hold the
+gate:  the wake keys of GROK-WEB, ECHO and WISE, which no binding or Infisical
+record holds (so those seats get no events), and the FleetLink tokens of MA
+and JET-CHAT, which have none (so those seats keep the agent secret with
+`X-Fleet-Seat`, as on main).
 
 The declaration list is `INFISICAL_EXPECT` (comma-separated `path:name`), and
 it defaults to `INFISICAL_EXPECT_DEFAULT` in `src/infisical-manifest.js` -

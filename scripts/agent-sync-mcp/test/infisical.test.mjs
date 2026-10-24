@@ -5,6 +5,9 @@ import { resolveLinearPair, linearClientFromPair } from "../src/linear.js";
 import { resolveFleetlinkSeatTokens, fleetlinkClientFromSecret } from "../src/fleetlink.js";
 import { LinearClient } from "../src/linear.js";
 
+// Every credential-shaped value in this file (fla_ and fls_ tokens, keys, client ids and secrets) is
+// synthetic:  built at runtime from a repeated character or a short fixed word.  None is a credential,
+// none is read from the environment, and every Infisical answer comes from the mocked fetch below.
 const ENV = {
   INFISICAL_SERVICE_TOKEN: "st-test",
   INFISICAL_WORKSPACE_ID: "ws-test",
@@ -179,7 +182,9 @@ test("optional read: fallback mode counts a fallback when a binding serves the a
   assert.equal(infisicalStats().fallbacks, 1);
   assert.equal(infisicalStats().absent, 0);
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /fallback for \/wake:S to env binding LEGACY:/);
+  // One structured, allow-listed event (kody 4366922553):  names and a fixed code, never a value or a message.
+  assert.deepEqual(JSON.parse(lines[0]), { event: "infisical_fallback", path: "/wake", name: "S", binding: "LEGACY", served: true, code: "not_found", status: 404 });
+  assert.ok(!lines[0].includes("v0"), "the served value is never logged");
 });
 
 test("optional read: an undeclared name set nowhere is capability-off in fallback mode too, counted apart and never as a fallback", async () => {
@@ -196,7 +201,7 @@ test("optional read: an undeclared name set nowhere is capability-off in fallbac
     assert.equal(await resolveSecret(env, { name: "WAKE_HMAC_KEY_JET", path: "/wake", envName: "WAKE_HMAC_KEY_JET", optional: true }), "");
   });
   assert.equal(infisicalStats().fallbacks, 1);
-  assert.match(declared[0], /fallback for \/wake:WAKE_HMAC_KEY_JET to env binding WAKE_HMAC_KEY_JET \(unset\)/);
+  assert.deepEqual(JSON.parse(declared[0]), { event: "infisical_fallback", path: "/wake", name: "WAKE_HMAC_KEY_JET", binding: "WAKE_HMAC_KEY_JET", served: false, code: "not_found", status: 404 });
   // An outage is a fallback too, binding or not.
   _resetInfisicalForTests();
   mockFetch([["/api/v3/secrets/raw/S", { body: {}, status: 500 }]]);
@@ -245,7 +250,45 @@ test("resolveFleetlinkSeatTokens: in fallback mode a token the bundle serves is 
   });
   assert.deepEqual([infisicalStats().fallbacks, infisicalStats().absent], [1, 1]);
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /fallback for \/fleetlink:FLEETLINK_TOKEN_MA to env binding FLEETLINK_SEAT_TOKENS\[MA\]:/, "names the real legacy source, never a placeholder");
+  const event = JSON.parse(lines[0]);
+  assert.equal(event.binding, "FLEETLINK_SEAT_TOKENS[MA]", "names the real legacy source, never a placeholder");
+  assert.deepEqual([event.path, event.name, event.served], ["/fleetlink", "FLEETLINK_TOKEN_MA", true]);
+  assert.ok(!lines[0].includes(bundled), "the bundle's token is never logged");
+});
+
+test("values are trimmed on both Infisical paths, and whitespace alone is absence (kody 4366922800)", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: "  va\n" }, { secretKey: "B", secretValue: " \n" }] } }]]);
+  await prefetchFolder(ENV, "/tools");
+  assert.equal(await resolveSecret(ENV, { name: "A", path: "/tools", envName: "L" }), "va");
+  assert.equal(await resolveSecret(ENV, { name: "B", path: "/tools", envName: "L", optional: true }), "", "whitespace only reads as absent");
+  _resetInfisicalForTests();
+  mockFetch([["/api/v3/secrets/raw/S", { body: { secret: { secretValue: "\tvs \n" } } }]]);
+  assert.equal(await resolveSecret(ENV, { name: "S", path: "/tools", envName: "L" }), "vs");
+  _resetInfisicalForTests();
+  mockFetch([["/api/v3/secrets/raw/S", { body: { secret: { secretValue: "   " } } }]]);
+  assert.equal(await resolveSecret(ENV, { name: "S", path: "/tools", envName: "L", optional: true }), "");
+});
+
+test("an answer past the byte, depth or node cap is refused before its schema (kody 4366922682)", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder, INFISICAL_LIMITS } = await import("../src/infisical.js");
+  const big = "x".repeat(INFISICAL_LIMITS.listingBytes);
+  mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: big }] } }]]);
+  await assert.rejects(() => prefetchFolder(ENV, "/tools"), (e) => e.code === "invalid_listing", "over the listing byte cap");
+  _resetInfisicalForTests();
+  let deep = { secretValue: "v" };
+  for (let i = 0; i < INFISICAL_LIMITS.depth + 2; i++) deep = { next: deep };
+  mockFetch([["/api/v3/secrets/raw/S", { body: { secret: { secretValue: "v" }, extra: deep } }]]);
+  await assert.rejects(() => resolveSecret(ENV, { name: "S", path: "/tools", envName: "L" }), (e) => e.code === "invalid_response", "past the depth cap");
+  _resetInfisicalForTests();
+  const wide = Array.from({ length: INFISICAL_LIMITS.nodes }, () => 0);
+  mockFetch([["/api/v3/secrets/raw/S", { body: { secret: { secretValue: "v" }, extra: wide } }]]);
+  await assert.rejects(() => resolveSecret(ENV, { name: "S", path: "/tools", envName: "L" }), (e) => e.code === "invalid_response", "past the node cap");
+  _resetInfisicalForTests();
+  mockFetch([["/api/v3/secrets/raw/S", { body: { secret: { secretValue: "v" }, extra: [[1, 2], { a: 3 }] } }]]);
+  assert.equal(await resolveSecret(ENV, { name: "S", path: "/tools", envName: "L" }), "v", "an ordinary answer passes");
 });
 
 test("resolveWakeKeys: required mode returns the wake keys Infisical serves with no Worker binding, off mode the bindings (sentry 4364275301)", async () => {

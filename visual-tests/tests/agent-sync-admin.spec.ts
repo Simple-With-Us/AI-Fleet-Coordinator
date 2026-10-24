@@ -29,4 +29,20 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await expect(page.locator('body')).toHaveScreenshot(`agent-sync-status-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
+
+  // The runtime-secrets line under the Seats table (PR #901, kody 4366922942), in its warning
+  // state:  fallback mode with fallbacks above zero.  The element alone, so the full-page
+  // baselines above stay as they are.
+  test(`Agent Sync Admin Secrets Mode ${viewport.width}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const response = adminPage({ ...facts, infisical: { mode: 'fallback', fetched: 5, cacheHits: 40, fallbacks: 2, absent: 5 } });
+    const html = await response.text();
+    await page.route('https://visual-tests.invalid/admin', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));
+    await page.goto('/admin');
+    const line = page.locator('p.warn', { hasText: 'Secrets mode:' });
+    await expect(line).toBeVisible();
+    await expect(line).toContainText('2 fallbacks to Worker bindings');
+    await expect(line).toHaveScreenshot(`agent-sync-secrets-mode-${viewport.width}.png`, { animations: 'disabled' });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
 }
