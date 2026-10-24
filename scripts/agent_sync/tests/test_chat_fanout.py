@@ -250,6 +250,60 @@ class DaemonFanoutTests(DaemonHarness):
         self.assertEqual(result["error"], "catalog")
         self.assertNotIn("private external body", repr(logged.call_args_list))
 
+    def test_the_owners_all_fans_out_without_the_marker(self):
+        # The control for the marker test below:  the same owner `@all`, unmarked, does fan out.
+        # Without this, the marker test could pass for the wrong reason (a broken catalog, a
+        # peer sender, a harness that never routes) and prove nothing (AFC-468).
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog(
+            [dict(cloud(1, 0, ST_URL), seat="CLAUDE", updated_at=self.clock.time())]
+        )
+        message_id = self.fake.add_message(
+            "Jay Wedgeworth", "agent-sync", "misc", "@**all** for ST: hi"
+        )
+        self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
+        self.assertIn(message_id, daemon._fanout_seen, "the unmarked owner @all fans out")
+
+    def test_a_marker_message_does_not_start_a_fanout(self):
+        # The owner's `@all` is exactly the case where the fanout would wake every seat, so the
+        # marker has to stop it (AFC-468).  The sender is the owner:  a peer's `@all` never fans
+        # out at all, so a peer here would make the test vacuous.
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog(
+            [dict(cloud(1, 0, ST_URL), seat="CLAUDE", updated_at=self.clock.time())]
+        )
+        message_id = self.fake.add_message(
+            "Jay Wedgeworth", "agent-sync", "misc", ":eyes: @**all** for ST: hi"
+        )
+        # The daemon has to have seen the message:  the wait is on the routing ring, not on a
+        # delivery, because the delivery is exactly what must not happen.
+        self.pump_until(daemon, lambda: message_id in daemon.global_ring)
+        time.sleep(0.3)
+        self.assertNotIn(message_id, daemon._fanout_seen, "the marker stops the fanout")
+        self.assertEqual(daemon.chat_queue("CLAUDE").snapshot()["items"], [])
+        row = self.route_row(message_id)
+        self.assertIsNotNone(row, "the route was logged")
+        self.assertEqual(row["decision"]["drop"], "no_wake", "the log row carries the reason")
+        self.assertIn("no_wake", row["classes"], "the marker is in the class labels")
+
+    def route_row(self, message_id: int) -> dict | None:
+        """The listener's route log row for one message id, if it was routed."""
+        import json
+
+        log = self.state_dir / "logs" / "listener.log"
+        if not log.exists():
+            return None
+        for line in log.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("event") == "route" and row.get("id") == message_id:
+                return row
+        return None
+
     def test_a_peers_all_queues_nothing(self):
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog(

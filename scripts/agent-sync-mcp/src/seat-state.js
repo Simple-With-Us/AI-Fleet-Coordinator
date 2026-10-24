@@ -416,7 +416,7 @@ export async function roleStatus(store) {
 
 export async function roleSet(store, entry, now = Date.now()) {
   const prior = await store.get("role");
-  const row = { ok: entry.ok === true, user_id: entry.user_id ?? null, role: entry.role ?? null, reason: entry.reason ?? "", checked_at: now };
+  const row = { ok: entry.ok === true, user_id: entry.user_id ?? null, role: entry.role ?? null, reason: entry.reason ?? "", owner: entry.owner ?? null, checked_at: now };
   await store.put("role", row);
   if (!prior || prior.ok !== row.ok || prior.role !== row.role) {
     await audit(store, { event: row.ok ? "role_ok" : "role_refused", role: row.role, reason: row.reason }, now);

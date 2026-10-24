@@ -264,6 +264,7 @@ async function serveMcp(request, env, ctx) {
     zulip: key ? new ZulipClient({ email, key }) : null,
     key,
     gate: seatGate,
+    whatsappGate: gate(env, "JET"),
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     // Null when any recall secret is missing:  the recall tools then answer
     // not_configured and every other tool works as before (spec 1.1).
@@ -745,12 +746,18 @@ async function authorizeGet(request, env, config, oauth, email) {
   const grants = await listAllGrants(oauth, seat);
   return consentPage(
     {
+      eventsOnly: config.eventsOnlySeats.includes(seat),
       clientName: client.clientName ?? client.clientId,
       clientDomain: cimdHostname(client.clientId),
       clientId: client.clientId,
       redirectHost: new URL(authRequest.redirectUri).host,
       loopback: isLoopbackRedirect(authRequest.redirectUri),
-      scopes: [...config.scopes],
+      // A wake-only seat subscribes to events (zulip:read) and never posts:
+      // offering zulip:write would promise a capability the router refuses.
+      scopes: config.eventsOnlySeats.includes(seat) ? config.scopes.filter((s) => s !== "zulip:write") : [...config.scopes],
+      // Consent copy must disclose the WhatsApp inbox grant exactly when this
+      // seat would actually receive it (hosted-tools.js gates it the same way).
+      whatsapp: seat === "JET-CHAT" && config.whatsappEnabled,
       seat,
       handle: consent.handle,
       replacing: grants.map((g) => ({ client: g.metadata?.client_name ?? g.clientId, createdAt: toMs(g.createdAt) })),
@@ -809,7 +816,9 @@ async function authorizePost(request, env, config, oauth, email) {
     return new Response(null, { status: 302, headers });
   }
 
-  const scopes = [...new Set(parsed.data.scope ?? [])].filter((s) => config.scopes.includes(s));
+  // postedSeat is verified against the armed seat below before anything is minted.
+  const offered = config.eventsOnlySeats.includes(postedSeat) ? config.scopes.filter((s) => s !== "zulip:write") : config.scopes;
+  const scopes = [...new Set(parsed.data.scope ?? [])].filter((s) => offered.includes(s));
   if (scopes.length === 0) return errorPage("Pick A Scope", "Approve needs at least one scope.  Go back and tick one.", 400);
 
   let approved;

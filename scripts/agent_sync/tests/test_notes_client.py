@@ -228,24 +228,53 @@ class BaseUrlTests(unittest.TestCase):
             ("ops.example.test", None),
         ):
             with self.subTest(raw):
-                with mock.patch("fleet_knobs.knobs.resolve", side_effect=AssertionError("the knob is not read")):
+                with mock.patch("fleet_knobs.knobs.resolve", side_effect=AssertionError("the knob is not read")), mock.patch.object(NC, "fleet_secrets_get", side_effect=AssertionError("fleet-secrets is not asked")):
                     self.assertEqual(NC.base_url({"OPERATOR_API_URL": raw}), expected)
 
-    def test_without_the_variable_the_fleet_knob_is_read_and_a_failure_is_not_configured(self):
+    def test_without_the_variable_the_fleet_knob_is_read_first(self):
         from fleet_knobs import knobs
 
-        with mock.patch("fleet_knobs.knobs.resolve", return_value=knobs.Knob("OPERATOR_API_URL", "https://knob.example.test", "infisical")) as resolve:
+        with mock.patch("fleet_knobs.knobs.resolve", return_value=knobs.Knob("OPERATOR_API_URL", "https://knob.example.test", "infisical")) as resolve, mock.patch.object(NC, "fleet_secrets_get", side_effect=AssertionError("fleet-secrets is not asked")):
             self.assertEqual(NC.base_url({}), "https://knob.example.test")
         self.assertEqual(resolve.call_args.args, ("OPERATOR_API_URL", "", "str"))
-        with mock.patch("fleet_knobs.knobs.resolve", return_value=knobs.Knob("OPERATOR_API_URL", "", "default")):
-            self.assertIsNone(NC.base_url({}))
-        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")):
-            self.assertIsNone(NC.base_url({}))
-        with mock.patch.dict("sys.modules", {"fleet_knobs": None}):
-            self.assertIsNone(NC.base_url({}))
+
+    def test_with_no_knob_fleet_secrets_is_asked_and_a_failure_is_not_configured(self):
+        # The server's agent shells:  fleet_knobs has no Infisical login there, so the knob is empty once its
+        # last-known-good copy lapses, and fleet-secrets (which logs in for itself) is asked for the same key.
+        from fleet_knobs import knobs
+
+        env = {"PATH": "/nowhere"}
+        for knob in (
+            mock.patch("fleet_knobs.knobs.resolve", return_value=knobs.Knob("OPERATOR_API_URL", "", "default")),
+            mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")),
+            mock.patch.dict("sys.modules", {"fleet_knobs": None}),
+        ):
+            with self.subTest(knob=knob), knob:
+                with mock.patch.object(NC, "fleet_secrets_get", return_value="https://secrets.example.test") as get:
+                    self.assertEqual(NC.base_url(env), "https://secrets.example.test")
+                self.assertEqual(get.call_args.args[:3], ("OPERATOR_API_URL", "/", env))
+                with mock.patch.object(NC, "fleet_secrets_get", return_value=""):
+                    self.assertIsNone(NC.base_url(env))
+                with mock.patch.object(NC, "fleet_secrets_get", return_value="http://secrets.example.test"):
+                    self.assertIsNone(NC.base_url(env), "the same https-origin rule applies")
+
+    def test_the_url_is_read_from_the_project_root_with_fleet_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = Path(tmp) / "fleet-secrets"
+            binary.write_text("#!/bin/sh\nexit 99\n")  # never run:  the runner below stands in for it
+            binary.chmod(0o700)
+            runs: list[list[str]] = []
+
+            def runner(argv, **kwargs):
+                runs.append(list(argv))
+                return subprocess.CompletedProcess(argv, 0, '"https://secrets.example.test"\n', "")
+
+            with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")):
+                self.assertEqual(NC.base_url({"PATH": tmp}, runner), "https://secrets.example.test")
+        self.assertEqual(runs, [[str(binary), "get", "OPERATOR_API_URL", "--path", "/", "--project", "ai-fleet-coordinator"]])
 
     def test_operator_client_is_not_configured_without_an_origin(self):
-        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")):
+        with mock.patch("fleet_knobs.knobs.resolve", side_effect=RuntimeError("no Infisical")), mock.patch.object(NC, "fleet_secrets_get", return_value=""):
             with self.assertRaises(N.NotesError) as caught:
                 NC.operator_client({})
         self.assertEqual(caught.exception.code, "not_configured")
