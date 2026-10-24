@@ -71,7 +71,7 @@ from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 RUNTIME = HOME / ".local/share/fleet-cli"
-CODE_ROOTS = [Path("/root/Code"), HOME / "Code"]
+CODE_ROOTS = [Path("/root/Code"), Path("/home/jay/Code"), HOME / "Code"]
 REPOS = ("AI-Fleet-Coordinator", "FleetLink")
 # The tools both hosts carry (docs/protocols/fleet-tool-parity.md), then FleetLink's CLI.
 FLEET_TOOLS = ("simple-chat", "simple-notes", "simple-board", "recall", "lane", "fleet-mode")
@@ -328,6 +328,7 @@ TOOL_REGISTRY: tuple = (
 TOOL_PATH_DIRS = (
     "{home}/.local/bin",
     "/root/.local/bin",
+    "/home/jay/.local/bin",
     "/opt/homebrew/bin",
     "/opt/homebrew/sbin",
     "/usr/local/bin",
