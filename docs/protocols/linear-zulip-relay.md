@@ -71,9 +71,11 @@ a comment, never as a substring, so the marker of message 100 cannot match the c
 Copied Zulip text is untrusted.  Every field (the topic, the message, the sender's name, the stream
 name) is scanned for credential-shaped text before it is stored, logged or relayed: the fleet's own
 scanner (`scripts/agent_sync/secretscan.py`, which knows the Linear, Sentry, Infisical, Cloudflare
-and other service prefixes) and the relay's wider rows (long hex and base64 runs, and a keyword such
-as `password` or `token` followed by `:` or `=` and a value).  A keyword in plain prose, such as
-"token refresh", is not a hit.  A field with a hit is withheld whole: it shows as "(withheld: it
+and other service prefixes, and Zulip-shaped API keys of 32 mixed-case letters and digits) and the
+relay's wider rows (long hex and base64 runs, and a keyword such as `password` or `token` followed
+by `:` or `=` and a value).  The Zulip-shaped row also withholds an opaque 32-character id, a cost
+accepted because a Zulip key is the credential most likely to be pasted into Zulip.  A keyword in
+plain prose, such as "token refresh", is not a hit.  A field with a hit is withheld whole: it shows as "(withheld: it
 looked like it carried a credential)", and the log names only the message id and the field.  It is
 never partly redacted, because a pattern can find where a credential starts but not always where it
 ends.  The message itself is still mirrored as a link, which carries no Zulip text.  A clean field is
@@ -118,13 +120,18 @@ auth failure: those are different problems and the operator needs to know which 
 
 The client never follows a redirect, so the bearer token is never re-sent to another host, and it
 sends its own User-Agent.  Every call has one deadline that its retries share, and the marker scan
-has one deadline for all of its pages.  One tick spends at most two minutes on writes; the entries
-it does not reach stay dirty for the next cycle, so a slow Linear never stalls the Zulip poll loop.
+has one deadline for all of its pages.  Each poll cycle has a two-minute write budget, which the
+creates made while its messages are handled and the tick after them share: a write starts only
+inside the budget, and what it does not reach stays dirty for the next cycle.  A write already
+under way finishes within its own deadline, so one cycle's writes end within a few minutes and the
+Zulip poll loop keeps polling.
 
 Errors carry only allow-listed fields: an HTTP status, Linear's error codes, and a fixed
-description.  The response body never reaches an exception or the log, and neither does any part
-of the token: a refused token is reported as "linear refused LINEAR_RELAY_TOKEN", which names the
-one variable to check.
+description.  The response body never reaches an exception or the log, and neither does the token.
+A refused token is reported as "linear refused LINEAR_RELAY_TOKEN (http 401); key abcdefgh…wxyz":
+the variable to check and the fleet's masked preview of the key (`zulip.masked_credential`, the
+same one the agent-sync CLI uses: the first eight and last four characters of a key of 24 or more,
+one character of a shorter one), so the operator can tell which key was refused.
 
 Failures are sorted by what waiting can change:
 
@@ -133,7 +140,9 @@ Failures are sorted by what waiting can change:
   the token is fixed.  A 403 refuses that one request, not the token, so it does not stop the relay.
 - A missing issue, a forbidden entity, invalid input or a 403 is final for that write: the entry is
   not retried until a new message in the topic gives it new content.  An issue id Linear does not
-  have is looked up again after an hour, so an id named before its issue exists is not lost.
+  have is looked up again after an hour, so an id named before its issue exists is not lost.  The
+  log says which it was, a missing issue or a refused lookup, so a scope problem never looks like a
+  quiet relay.
 - A rate limit is a definite "not done": reads, edits and creates are all retried later.
 - A 5xx, a timeout or a network error is transient for a read or an edit, which retry with backoff
   inside the call's deadline before the worker backs the entry off.  For a create it is an unknown
@@ -216,7 +225,10 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
    fleet keeps every Zulip bot's credentials, and `LINEAR_RELAY_TOKEN` in a path of Jay's choice.
 4. **Coolify**: after the PR merges, a second process or service from the same image, with the
    environment above, a persistent volume for the ledger, and restart always.  First run with
-   `LINEAR_RELAY_DRY_RUN=1`, watch the log, then unset it.
+   `LINEAR_RELAY_DRY_RUN=1`, watch the log, then unset it.  The image's Infisical loader
+   (`scripts/agent_sync/server/infisical_env.py`) copies only the names on its allow-list, and the
+   relay's three are not on it, so the relay service gets them as its own runtime environment.
+   Adding them to the shared loader would hand the relay's keys to the daemon as well.
 
 The relay runs on the Coolify server instance, the same image as the simple-chat daemon.  No new
 Cloudflare Worker is involved.

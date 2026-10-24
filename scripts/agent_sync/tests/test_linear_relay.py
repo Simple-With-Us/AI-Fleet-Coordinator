@@ -36,7 +36,7 @@ from pathlib import Path
 from unittest import mock
 
 from agent_sync import linear_relay as lr
-from agent_sync.zulip import _NoRedirect
+from agent_sync.zulip import _NoRedirect, masked_credential
 
 
 class FakeLinear:
@@ -719,7 +719,10 @@ class RelayTests(unittest.TestCase):
         # A missing list is not "no public streams", and a stream without its privacy flag is
         # not public: the load fails, and the relay relays nothing.
         for answer in ({}, {"streams": None}, {"streams": [{"stream_id": 5, "name": "b"}]},
-                       {"streams": [{"stream_id": "5", "invite_only": False}]}):
+                       {"streams": [{"stream_id": "5", "name": "b", "invite_only": False}]},
+                       {"streams": [{"stream_id": 0, "name": "b", "invite_only": False}]},
+                       {"streams": [{"stream_id": 5, "name": " ", "invite_only": False}]},
+                       {"streams": [{"stream_id": 5, "invite_only": False}]}):
             class FakeZulip:
                 def get(self, path, params=None, answer=answer):
                     return answer
@@ -858,6 +861,39 @@ class RelayTests(unittest.TestCase):
         self.assertIn("LINEAR_RELAY_TOKEN", str(caught.exception))
         self.assertNotIn(token, str(caught.exception))
         self.assertNotIn("BODY-TEXT", str(caught.exception))
+        # A long key is named by the fleet's masked preview: the first eight and last four only.
+        long_key = "tokA" + "1" * 20 + "wxyz"
+        client = lr.LinearClient(long_key, opener=FakeOpener(lambda: http_error(401)))
+        with self.assertRaises(lr.LinearAuthError) as caught:
+            client.viewer()
+        self.assertIn(masked_credential(long_key), str(caught.exception))
+        self.assertIn("tokA1111", str(caught.exception))
+        self.assertNotIn(long_key, str(caught.exception))
+        self.assertNotIn("1" * 12, str(caught.exception))
+
+    def test_a_refused_lookup_is_logged_not_silent(self) -> None:
+        def refused(ident):
+            raise lr.LinearPermanentError("linear refused the request (http 403)")
+
+        self.lin.issue_id = refused
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.assertEqual(self.lin.created, [])
+        self.assertTrue(any("refused the lookup of AFC-1" in line for line in self.logs))
+
+    def test_a_create_made_while_handling_a_message_shares_the_cycle_budget(self) -> None:
+        with mock.patch.object(lr, "TICK_BUDGET", -1.0):
+            self.w.start_cycle()
+            self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+            self.assertEqual(self.lin.created, [])  # the budget is spent: it waits
+            self.w.tick()  # closes the spent cycle
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        self.assertTrue(entry["dirty"])
+        self.w.tick()  # the next cycle has its own budget
+        self.assertEqual(len(self.lin.created), 1)
+
+    def test_a_stream_event_routed_to_the_worker_is_logged(self) -> None:
+        self.w.handle_event({"type": "stream", "op": "update", "stream_id": 5})
+        self.assertTrue(any("set_public_streams" in line for line in self.logs))
 
     def test_the_marker_matches_a_whole_line_only(self) -> None:
         # The marker of root 100 is a prefix of the marker of root 1000.

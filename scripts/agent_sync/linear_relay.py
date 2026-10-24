@@ -40,15 +40,15 @@ Optional: LINEAR_RELAY_STATE (ledger path), LINEAR_RELAY_TEAMS (comma list),
 LINEAR_RELAY_DRY_RUN=1 (log what would be written, write nothing to Linear),
 LINEAR_RELAY_CHECK_ISSUE (an issue id for the check command).
 
-The module is also importable.  A daemon needs three entry points: RelayWorker.handle_event(event)
-for message and update_message events, RelayWorker.tick(now) once per poll cycle, and
-RelayWorker.set_public_streams(...) whenever a `stream` event arrives (set None first, then the
+The module is also importable.  A daemon needs these entry points: RelayWorker.handle_event(event)
+for message and update_message events; RelayWorker.start_cycle() before each poll batch and
+RelayWorker.tick(now) after it, so the batch's writes share one budget; and
+RelayWorker.set_public_streams(...) whenever a `stream` event arrives (None first, then the
 reloaded id -> name map, as run() does).  The worker holds no Zulip client, so it cannot reload the
 set itself, and until it is given one it relays and writes nothing.  Zulip text is untrusted data:
-a field that carries anything
-credential-shaped is withheld whole, never partly redacted, and is not logged; every other field
-is trimmed and escaped so it cannot break out of the comment.  It never decides what the relay
-does beyond which issue ID to name.
+a field that carries anything credential-shaped is withheld whole, never partly redacted, and is
+not logged; every other field is trimmed and escaped so it cannot break out of the comment.  It
+never decides what the relay does beyond which issue ID to name.
 """
 
 from __future__ import annotations
@@ -78,6 +78,7 @@ from .zulip import (
     QueueExpired,
     ZulipClient,
     _NoRedirect,
+    masked_credential,
     realm_url,
     verify_realm,
 )
@@ -636,6 +637,11 @@ class LinearClient:
                 last = self._answer(raw)
                 if not isinstance(last, LinearError):
                     return last
+            if isinstance(last, LinearAuthError):
+                # The fleet's preview of a refused key (zulip.masked_credential): the first eight
+                # and last four characters of a long key, one character of a short one, so the
+                # operator can tell which key was refused without it ever being written out.
+                raise LinearAuthError("%s; key %s" % (last, masked_credential(self._token)))
             if not _retryable(last):
                 raise last
             if not idempotent:
@@ -788,11 +794,10 @@ def render_comment(entry: Mapping[str, Any], realm: str) -> str:
     return "\n".join(lines)
 
 
-def _stop_on_auth() -> SystemExit:
-    return SystemExit(
-        "linear refused LINEAR_RELAY_TOKEN; the relay stops rather than retry a token that "
-        "cannot work"
-    )
+def _stop_on_auth(exc: LinearAuthError) -> SystemExit:
+    """The relay's exit on a refused token.  The message is the client's, which names the
+    variable and carries only the masked preview of the key."""
+    return SystemExit("%s; the relay stops rather than retry a token that cannot work" % exc)
 
 
 class RelayWorker:
@@ -821,6 +826,17 @@ class RelayWorker:
         self.set_public_streams(public_streams)
         self._uuid_cache: dict[str, str | None] = {}
         self._missing_issues: dict[str, float] = {}  # issue id -> when to look it up again
+        # The end of the current poll cycle's write budget (start_cycle), or None outside one.
+        self._cycle_deadline: float | None = None
+
+    def start_cycle(self) -> None:
+        """Open one poll cycle's write budget.  Every write that starts in the cycle, the creates
+        made while handling a message included, starts before this deadline or waits, dirty, for
+        the next cycle, so a slow Linear cannot keep the Zulip poll loop from polling."""
+        self._cycle_deadline = self.clock() + TICK_BUDGET
+
+    def _budget_spent(self) -> bool:
+        return self._cycle_deadline is not None and self.clock() > self._cycle_deadline
 
     def set_public_streams(self, streams: Mapping[int, str] | Iterable[int] | None) -> None:
         """Load the public-stream set (a stream id -> name map, or bare ids), or None to forget
@@ -883,6 +899,10 @@ class RelayWorker:
             self._handle_message(event.get("message") or {})
         elif kind == "update_message":
             self._handle_move(event)
+        elif kind == "stream":
+            # The worker holds no Zulip client, so it cannot reload the set itself.  run() never
+            # routes a stream event here; a daemon that does has missed set_public_streams.
+            self.log("a stream event reached handle_event: reload the set with set_public_streams")
 
     def _handle_message(self, msg: Mapping[str, Any]) -> None:
         if msg.get("type") != "stream":
@@ -1145,7 +1165,16 @@ class RelayWorker:
         if ident not in self._uuid_cache:
             try:
                 self._uuid_cache[ident] = self.linear.issue_id(ident)
-            except (LinearNotFound, LinearPermanentError):
+            except LinearNotFound as exc:
+                self.log("linear has no issue %s (%s); asked again in an hour" % (ident, exc))
+                self._mark_missing(ident)
+                return None
+            except LinearPermanentError as exc:
+                # A refused read (a 403, an issue the app may not see) is not a missing issue:
+                # say so, so a scope problem never looks like a quiet relay.
+                self.log(
+                    "linear refused the lookup of %s (%s); asked again in an hour" % (ident, exc)
+                )
                 self._mark_missing(ident)
                 return None
             except LinearAuthError:
@@ -1221,6 +1250,8 @@ class RelayWorker:
             return
         if now < float(entry.get("retry_after", 0.0)):
             return  # a failed write is backing off
+        if self._budget_spent():
+            return  # this cycle's write budget is spent: the entry stays dirty for the next one
         issue = entry["issue"]
         label = self._label(entry)
         try:
@@ -1247,8 +1278,8 @@ class RelayWorker:
             entry["dirty"] = False
             entry["failures"] = 0
             entry["retry_after"] = 0.0
-        except LinearAuthError:
-            raise _stop_on_auth() from None
+        except LinearAuthError as exc:
+            raise _stop_on_auth(exc) from None
         except LinearNotFound as exc:
             # The issue is gone: waiting does not bring it back.
             self._mark_missing(issue)
@@ -1267,30 +1298,36 @@ class RelayWorker:
         self.ledger.mark_dirty()
 
     def tick(self, now: float | None = None) -> None:
+        """Flush what is dirty, inside the cycle's write budget, then close the cycle."""
         now = self.clock() if now is None else now
-        if self.public_streams is None:
-            return  # nothing is known about any stream yet: write nothing, drop nothing
-        started = self.clock()
-        for key in list(self.ledger.entries):
-            entry = self.ledger.entries.get(key)
-            if entry is None:
-                continue
-            if self._drop_if_private(key, entry):
-                continue
-            if not entry["dirty"]:
-                continue
-            if self.clock() - started > TICK_BUDGET:
-                # A slow Linear must not stall the Zulip poll loop: the rest stay dirty and are
-                # written next cycle.
-                self.log("this cycle's write budget is spent; the rest wait for the next cycle")
-                break
-            try:
-                self._flush(key, now)
-            except Exception as exc:  # noqa: BLE001 - one bad entry must not stop the others
-                self.log(
-                    "the relay entry for %s failed: %s" % (self._label(entry), type(exc).__name__)
-                )
-        self._save_quietly()
+        if self._cycle_deadline is None:
+            self.start_cycle()  # a tick on its own is one cycle
+        try:
+            if self.public_streams is None:
+                return  # nothing is known about any stream yet: write nothing, drop nothing
+            for key in list(self.ledger.entries):
+                entry = self.ledger.entries.get(key)
+                if entry is None:
+                    continue
+                if self._drop_if_private(key, entry):
+                    continue
+                if not entry["dirty"]:
+                    continue
+                if self._budget_spent():
+                    # A slow Linear must not stall the Zulip poll loop: the rest stay dirty and
+                    # are written next cycle.
+                    self.log("this cycle's write budget is spent; the rest wait for the next cycle")
+                    break
+                try:
+                    self._flush(key, now)
+                except Exception as exc:  # noqa: BLE001 - one bad entry must not stop the others
+                    self.log(
+                        "the relay entry for %s failed: %s"
+                        % (self._label(entry), type(exc).__name__)
+                    )
+            self._save_quietly()
+        finally:
+            self._cycle_deadline = None
 
     def _save_quietly(self) -> None:
         """Write the ledger if anything changed.  A failed write (a full or broken volume) is
@@ -1321,8 +1358,8 @@ class RelayWorker:
                 if uuid is None:
                     continue
                 found = self.linear.find_comment(uuid, entry["marker"])
-            except LinearAuthError:
-                raise _stop_on_auth() from None
+            except LinearAuthError as exc:
+                raise _stop_on_auth(exc) from None
             except (LinearNotFound, LinearPermanentError) as exc:
                 # The issue is gone or refused for good: there is nothing to adopt and nothing
                 # to write, so the entry is released instead of being probed at every start.
@@ -1391,11 +1428,14 @@ def load_public_streams(client: ZulipClient) -> dict[int, str]:
         if (
             not isinstance(stream, Mapping)
             or not _is_int(stream.get("stream_id"))
+            or stream["stream_id"] <= 0
+            or not isinstance(stream.get("name"), str)
+            or not stream["name"].strip()
             or not isinstance(stream.get("invite_only"), bool)
         ):
             raise ValueError("the streams answer carries a malformed stream")
         if not stream["invite_only"]:
-            out[int(stream["stream_id"])] = str(stream.get("name") or "")
+            out[stream["stream_id"]] = stream["name"]
     return out
 
 
@@ -1511,7 +1551,9 @@ def run(env: Mapping[str, str], *, check_only: bool = False) -> int:
             worker.reconcile()
             worker.log("relay queue registered%s" % (" (dry run)" if dry else ""))
             while True:
-                for event in queue.poll_events(queue.longpoll_timeout or 90):
+                events = queue.poll_events(queue.longpoll_timeout or 90)
+                worker.start_cycle()  # this batch's creates and the tick share one budget
+                for event in events:
                     if event.get("type") == "stream":
                         if event.get("op") in ("create", "update", "delete"):
                             # A failed reload keeps the queue: the set is unknown, so nothing
