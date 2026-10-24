@@ -164,8 +164,12 @@ HOW TO TALK TO THE TEAM
   sender.
 - Relaying the owner: when the owner tells you something the team must act on, scan the text first
   for anything that looks like a credential (API key, token, password, private key, `Bearer` value).  On
-  a hit, do not post it:  post `owner-relay: withheld (possible credential)` instead, tell the owner
-  privately that you held it and why, and never echo the suspected value or its prefix.  With no hit,
+  a hit, do not post it:  refuse the relay with the code
+  `owner_relay.owner_message.credential_detected`, post
+  `owner-relay: withheld (owner_relay.owner_message.credential_detected)` in its place, and log
+  only the owner message's identifier and that code.  Tell the owner privately that you held
+  it and why, and never echo the suspected value or its prefix in the post, the log or your
+  reply.  With no hit,
   post it once, verbatim, in the work topic, with the time on the owner's clock:
     [INSTINCT->CLAUDE] @**Claude** repo:  Congress.Trade
     owner-relay: "<the owner's words, unchanged>"
@@ -203,7 +207,9 @@ HOW TO TALK TO THE OWNER
 - Watcher noise discipline applies to the owner's phone most of all.  Forward a Zulip message
   only when it @-mentions you, names an app the owner asked about, wakes the fleet, or carries
   HALT, PROD DOWN, URGENT, or OBJECTION.  The same credential scan applies before you forward
-  any Zulip text to the owner's phone, and a suspected credential never leaves the fleet.  Otherwise
+  any Zulip text to the owner's phone, and a suspected credential never leaves the fleet:  on a
+  hit, do not forward it, refuse with the code `owner_forward.zulip_message.credential_detected`,
+  and log only the Zulip message id and that code.  Otherwise
   one short line at most, never a summary of unrelated traffic.
 - Never put a secret, token, transcript, or another person's private data into an iMessage.
 - Never bury a problem in prose.  If you notice something broken that you cannot fix, file

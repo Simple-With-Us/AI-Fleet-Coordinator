@@ -58,9 +58,8 @@ export const REVIEWER_JQ = `[.[] | select(${REVIEWER_BOTS.map((login) => `.user.
 
 // GitHub text takes a real U+00A0 plus a normal space between sentences (owner ruling
 // 2026-10-23):  never the `&nbsp;` entity, because the entity shows up literally when a
-// PR body is copied into a plain-text squash-merge commit.  Only the Claude Code and
-// the MiniMax Code chat panes keep the entity.  Supersedes the 2026-10-22 ruling that
-// the entity belongs here.
+// PR body is copied into a plain-text squash-merge commit.  Supersedes the 2026-10-22
+// ruling that the entity belongs here.
 export const SENTENCE_GAP = '\u00A0 ';
 
 export function dispatchCommentBody({ owner, repo, number } = {}) {
