@@ -151,6 +151,16 @@ test("consent for a loopback callback says the tokens go to a program on this co
   assert.match(https, /<strong>chatgpt\.com<\/strong>/);
 });
 
+test("admin page shows the Infisical mode and counters it is passed, and nothing without them (kody 4365623014)", async () => {
+  const shown = await adminPage({ ...adminFacts, infisical: { mode: "required", fetched: 5, cacheHits: 40, fallbacks: 0 } }).text();
+  assert.ok(shown.includes(`Secrets mode:  required.${SENTENCE_GAP}Since this isolate started:  5 Infisical reads, 40 cache hits and 0 fallbacks to Worker bindings.`));
+  assert.doesNotMatch(shown, /<p class="warn">Secrets mode/, "zero fallbacks is not a warning");
+  const warned = await adminPage({ ...adminFacts, infisical: { mode: "fallback", fetched: 1, cacheHits: 0, fallbacks: 3 } }).text();
+  assert.match(warned, /<p class="warn">Secrets mode:  fallback\./);
+  const absent = await adminPage(adminFacts).text();
+  assert.doesNotMatch(absent, /Secrets mode/);
+});
+
 test("admin page offers a manual client per hosted seat and shows each client's seat", async () => {
   const html = await adminPage({
     ...adminFacts,

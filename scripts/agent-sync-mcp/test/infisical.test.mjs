@@ -254,6 +254,26 @@ test("resolveDelegatedCredentials: fallback with nothing resolved keeps the env 
   assert.equal(r.roles.size, GB_IDENTITIES.length);
 });
 
+test("resolveDelegatedCredentials: fallback with /zulip served but /linear unreadable keeps every bundle persona (kody 4365622415)", async () => {
+  _resetInfisicalForTests();
+  const { resolveDelegatedCredentials, GB_IDENTITIES } = await import("../src/delegated-identities.js");
+  const email = (i) => `${i.slice(3).toLowerCase()}-grok-bot@simplewithus.zulipchat.com`;
+  mockFetch(GB_IDENTITIES.flatMap((identity) => {
+    const role = identity.slice(3).replaceAll("-", "_");
+    return [
+      [`secrets/raw/ZULIP_GB_${role}_EMAIL`, { body: { secret: { secretValue: email(identity) } } }],
+      [`secrets/raw/ZULIP_GB_${role}_API_KEY`, { body: { secret: { secretValue: `zk-${role}` } } }],
+      [`secrets/raw/LINEAR_GB_${role}_`, { status: 403, body: {} }],
+    ];
+  }));
+  const bundle = JSON.stringify({ v: 1, r: Object.fromEntries(GB_IDENTITIES.map((i) => [i, [email(i), "zk-bundle", "li", "ls"]])) });
+  const env = { INFISICAL_MODE: "fallback", INFISICAL_WORKSPACE_ID: "ws-test", INFISICAL_SERVICE_TOKEN: "tok", GB_IDENTITY_CREDENTIALS: bundle };
+  const r = await resolveDelegatedCredentials(env);
+  assert.equal(r.roles.size, GB_IDENTITIES.length, "no persona is dropped by a partial outage");
+  assert.equal(r.roles.get("GB-FIXER").zulipKey, "zk-bundle", "the incomplete Infisical row is replaced by the bundle's whole row, never mixed");
+  assert.ok(infisicalStats().fallbacks >= GB_IDENTITIES.length * 2, "each unreadable field was counted");
+});
+
 test("resolveRecallSecrets: required mode resolves all three; absent everywhere means unconfigured", async () => {
   _resetInfisicalForTests();
   const { resolveRecallSecrets, recallClientFromResolved } = await import("../src/recall.js");
@@ -289,14 +309,47 @@ test("prefetchFolder: a required expected name absent from the listing still thr
   await assert.rejects(() => resolveSecret(ENV, { name: "WAKE_HMAC_KEY_JET", path: "/wake", envName: "LEGACY" }), InfisicalError, "declared-but-absent is visible drift, not a silent miss");
 });
 
-test("prefetchFolder: fallback mode keeps per-name env fallback when the listing fails", async () => {
+test("prefetchFolder: fallback mode serves the env binding when the listing fails, with no per-name burst", async () => {
   _resetInfisicalForTests();
   const { prefetchFolder } = await import("../src/infisical.js");
   const calls = mockFetch([]);
-  const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+  const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0", LEGACY2: "w0" };
   await prefetchFolder(env, "/tools");
   assert.equal(await resolveSecret(env, { name: "S", path: "/tools", envName: "LEGACY", optional: true }), "v0");
-  assert.equal(calls.length, 2, "listing 404 + one per-name attempt, then env");
+  assert.equal(await resolveSecret(env, { name: "T", path: "/tools", envName: "LEGACY2" }), "w0");
+  await prefetchFolder(env, "/tools");
+  assert.equal(calls.length, 1, "the failed listing only:  no per-name attempt, no re-list within the TTL (kody 4365623733)");
+  assert.equal(infisicalStats().fallbacks, 2, "every env-served read is still counted");
+});
+
+test("prefetchFolder: a fresh listing is not fetched again (kody 4365623583)", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const calls = mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: "va" }] } }]]);
+  await prefetchFolder(ENV, "/tools");
+  await prefetchFolder(ENV, "/tools");
+  assert.equal(calls.length, 1, "one listing per folder per TTL");
+  assert.equal(await resolveSecret(ENV, { name: "A", path: "/tools", envName: "L" }), "va");
+});
+
+test("authenticated reads never follow a redirect (kody 4365623359)", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const inits = [];
+  globalThis.fetch = async (url, init) => {
+    inits.push(init);
+    return new Response(null, { status: 302, headers: { Location: "https://elsewhere.example.test/" } });
+  };
+  await assert.rejects(() => prefetchFolder(ENV, "/tools"), (e) => e.code === "infisical_unavailable" && e.status === 302);
+  await assert.rejects(() => resolveSecret(ENV, { name: "S", path: "/tools", envName: "L" }), (e) => e.code === "infisical_unavailable" && e.status === 302);
+  assert.equal(inits.length, 2);
+  assert.ok(inits.every((init) => init.redirect === "manual"), "both the listing and the per-name read refuse redirects");
+});
+
+test("a mistyped per-name answer is refused by its schema, not read as a value (kody 4365623474)", async () => {
+  _resetInfisicalForTests();
+  mockFetch([["/api/v3/secrets/raw/S", { body: { secret: { secretValue: 42 } } }]]);
+  await assert.rejects(() => resolveSecret(ENV, { name: "S", path: "/tools", envName: "L", optional: true }), (e) => e.code === "invalid_response");
 });
 
 test("prefetchFolder: malformed listing never warms and required mode throws", async () => {

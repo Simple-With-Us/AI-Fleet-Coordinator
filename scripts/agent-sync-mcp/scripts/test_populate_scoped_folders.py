@@ -12,7 +12,6 @@ import json
 import os
 import pathlib
 import sys
-import tempfile
 import unittest
 import urllib.error
 import urllib.request
@@ -38,6 +37,8 @@ class FakeInfisical:
         self.values = values or {}
         self.fail = fail or {}  # ("read"|"upsert", name) -> HTTP code to raise
         self.upserts = []
+        self.agents = []  # the User-Agent of every call
+        self.malformed = set()  # names whose GET answers a malformed body
 
     def _err(self, url, code, body="server message"):
         raise urllib.error.HTTPError(
@@ -46,6 +47,7 @@ class FakeInfisical:
 
     def open(self, request, timeout=35):
         url, method = request.full_url, request.get_method()
+        self.agents.append(request.get_header("User-agent"))
         if url.endswith("/api/v2/service-token"):
             return io.BytesIO(json.dumps({"id": "st1", "scopes": self.scopes}).encode())
         if url.endswith("/auth/universal-auth/login"):
@@ -57,6 +59,8 @@ class FakeInfisical:
                     self._err(url, self.fail[("read", name)], "leak VALUE-x")
                 q = dict(urllib.parse.parse_qsl(urllib.parse.urlparse(url).query))
                 key = (q["workspaceId"], q["secretPath"], name)
+                if name in self.malformed and q["workspaceId"] != psf.FLEETOPS:
+                    return io.BytesIO(json.dumps({"secret": {"secretValue": 7}}).encode())
                 if key not in self.values:
                     self._err(url, 404)
                 return io.BytesIO(
@@ -77,19 +81,17 @@ class Base(unittest.TestCase):
         self.fake = FakeInfisical()
         self._orig = urllib.request.urlopen
         urllib.request.urlopen = self.fake.open
-        self.tmp = tempfile.TemporaryDirectory()
-        d = pathlib.Path(self.tmp.name)
-        (d / "username").write_text("u")
-        (d / "password").write_text("p")
         self._env = dict(os.environ)
-        os.environ["INFISICAL_AUTOMATION_DIR"] = self.tmp.name
+        # The automation login comes from the environment (the handoff's first
+        # source), so no test ever reaches a real fleet-secrets.
+        os.environ["INFISICAL_AUTOMATION_CLIENT_ID"] = "u"
+        os.environ["INFISICAL_AUTOMATION_CLIENT_SECRET"] = "p"
         os.environ["READ_TOOLS_SERVICE_TOKEN"] = "read-tools-st"
 
     def tearDown(self):
         urllib.request.urlopen = self._orig
         os.environ.clear()
         os.environ.update(self._env)
-        self.tmp.cleanup()
 
     def run_main(self, *argv):
         out = io.StringIO()
@@ -136,6 +138,17 @@ class TestGate(Base):
     def test_no_token_aborts(self):
         del os.environ["READ_TOOLS_SERVICE_TOKEN"]
         self.assertFalse(psf.check_read_tools_scope())
+
+    def test_non_object_metadata_aborts_without_attribute_error(self):
+        # kody 4365622066:  a top-level list is the parser's fail-safe None.
+        self.assertIsNone(psf.parse_scopes([{"environment": psf.ENV, "secretPath": "/wake"}]))
+        self.assertIsNone(psf.parse_scopes("scopes"))
+
+    def test_every_call_names_the_project(self):
+        # kody 4365622172:  never the runtime's default Python-urllib agent.
+        self.assertTrue(psf.check_read_tools_scope())
+        self.assertTrue(self.fake.agents)
+        self.assertTrue(all(a == psf.USER_AGENT for a in self.fake.agents))
 
 
 class TestDryRun(Base):
@@ -191,6 +204,19 @@ class TestApply(Base):
         self.assertIn("HTTP 403", out)
         self.assertIn(victim, out)  # the NAME is fine
         self.assertNotIn("VALUE-", out)  # values and server body never printed
+
+    def test_malformed_source_answer_stops_names_only(self):
+        # Kody issue comment 6378525910:  a mistyped secretValue never reaches upsert.
+        seeded(self.fake)
+        victim = psf.MAPPING[3][2]
+        self.fake.malformed.add(victim)
+        code, out = self.run_main("--apply")
+        self.assertEqual(code, 1)
+        self.assertIn("STOP at 4/72", out)
+        self.assertIn("ValueError", out)
+        self.assertEqual(len(self.fake.upserts), 3)
+        self.assertNotIn("VALUE-", out)
+        self.assertTrue(all(a == psf.USER_AGENT for a in self.fake.agents))
 
     def test_partial_write_stop_then_rerun_completes(self):
         seeded(self.fake)

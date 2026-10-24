@@ -5,8 +5,10 @@
 // Absence from this list marks a capability intentionally absent (the SPIKE
 // wake key is ephemeral; GB-ENGINEER's FleetLink token was never provisioned
 // - see FLEETLINK_SEATS_DISABLED).  Copies are point-in-time:  they do NOT
-// track source rotation;  re-running the copy script is a separate manual
-// operation that overwrites destination values in place.
+// track source rotation, and the copy script never overwrites a destination
+// that differs (it stops for reconciliation), so a rotated source means the
+// Fleet-OPS copy is updated by hand.  Only JET has a wake key provisioned
+// (DEPLOY.md, eavesdropper section), so /wake declares JET's alone.
 
 // Leaf module:  imports ONLY the one persona list (never delegated-identities.js,
 // which itself imports infisical.js - that would be a cycle).  The name

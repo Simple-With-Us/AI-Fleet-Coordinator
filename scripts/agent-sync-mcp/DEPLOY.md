@@ -30,15 +30,26 @@ outright (`FLEETLINK_SEATS_DISABLED`), never silently put on the shared agent
 secret.  The ephemeral SPIKE wake key is never declared or stored here.
 
 Seat zulip keys are NOT copied:  runtime reads use the canonical
-`<SEAT>_ZULIP_KEY` records already in Fleet-OPS `/zulip` (all six hosted
-seats, verified live 2026-10-23).  The stale `ZULIP_KEY_<SEAT>` code names
-matched no Infisical secret and were migrated in `SEAT_SECRETS`;  the legacy
-Worker binding names stay only as the off-mode/fallback bindings.
+`<SEAT>_ZULIP_KEY` records already in Fleet-OPS `/zulip`.  The stale
+`ZULIP_KEY_<SEAT>` code names matched no Infisical secret and were migrated in
+`SEAT_SECRETS`;  the legacy Worker binding names stay only as the
+off-mode/fallback bindings.  JET-CHAT reads Jet's record (one bot key), and
+its Linear pair reads Jet's `/linear` record (one Linear app).  How the names
+were checked:  a names-only listing of Fleet-OPS prod `/zulip` on Fri, Oct 23
+(PR #901 for CURSOR, CLAUDE, JET, GROK-WEB, ECHO and WISE;  #894 for
+`MA_ZULIP_KEY`).  That listing left no output in this repo, so treat the names
+as unproven until fallback mode proves them:  a seat key that misses Infisical
+is served from its Worker binding, logged and counted on `/admin`, and
+`required` is turned on only after the counters show zero fallbacks.  A seat
+key absent in `required` mode leaves only that seat's Zulip tools
+`not_configured`;  an outage or a scope denial fails the request visibly.
 
 **The copies are point-in-time and are NOT a source-rotation sync.**  Rotating
-a source secret does NOT update its Fleet-OPS copy.  After any source
-rotation, re-run the population copy script by hand:  it overwrites the
-destination value in place (no deletes) and the Worker's read cache picks the
+a source secret does NOT update its Fleet-OPS copy, and re-running the
+population copy script does not either:  it stops (exit 2) at the first
+destination that already holds a different value and never overwrites one.
+After any source rotation, update the Fleet-OPS copy by hand to the rotated
+value;  a re-run then reports it in sync, and the Worker's read cache picks the
 new value up within its TTL.  Secret references were rejected for this:
 cross-project references are unsupported, and same-project references would
 force the scoped token to read source paths outside its grant.

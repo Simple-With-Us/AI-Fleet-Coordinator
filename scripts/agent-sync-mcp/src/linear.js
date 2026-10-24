@@ -75,6 +75,9 @@ export function linearSecretNames(seat) {
  * Infisical names WISE_LINEAR_*).  Names verified against the live folder. */
 export const LINEAR_INFISICAL = Object.freeze({
   JET: Object.freeze({ clientId: "JET_LINEAR_CLIENT_ID", clientSecret: "JET_LINEAR_CLIENT_SECRET" }),
+  // JET-CHAT is Jet's second login on the same Linear app (LINEAR_SECRETS
+  // above):  its runtime read is Jet's record, never a copy.
+  "JET-CHAT": Object.freeze({ clientId: "JET_LINEAR_CLIENT_ID", clientSecret: "JET_LINEAR_CLIENT_SECRET" }),
   "GROK-WEB": Object.freeze({ clientId: "GROK_WEB_LINEAR_CLIENT_ID", clientSecret: "GROK_WEB_LINEAR_CLIENT_SECRET" }),
   ECHO: Object.freeze({ clientId: "ECHO_LINEAR_CLIENT_ID", clientSecret: "ECHO_LINEAR_CLIENT_SECRET" }),
   WISE: Object.freeze({ clientId: "WISE_LINEAR_CLIENT_ID", clientSecret: "WISE_LINEAR_CLIENT_SECRET" }),

@@ -63,12 +63,12 @@ import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sent
 import { gbBearerFromRequest, parseGbBearer, newGbBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
-import { IdentityRouter, loadDelegatedCredentials, resolveDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
+import { IdentityRouter, resolveDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
 import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
-import { recallClientFromEnv, recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
-import { fleetlinkClientFromEnv, fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
-import { LinearClient, linearClientFromEnv, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat, LINEAR_SECRETS } from "./linear.js";
+import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
+import { fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
+import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat, LINEAR_SECRETS } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { listenerClientFromEnv } from "./eavesdropper.js";
 import { operatorNotesClientFromEnv } from "./notes.js";
@@ -77,7 +77,7 @@ import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
 import { serveWa } from "./wa/index.js";
-import { resolveSecret, infisicalStats, prefetchFolder } from "./infisical.js";
+import { resolveSecret, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 
 export { SeatGate };
@@ -232,14 +232,18 @@ async function serveMcp(request, env, ctx) {
   const scopes = Array.isArray(auth.scope) ? auth.scope.map(String) : [];
   // The key comes from the seat in the verified props, through SEAT_SECRETS only.
   // Canonical Fleet-OPS /zulip record (<SEAT>_ZULIP_KEY, verified live); the
-  // legacy binding is the bounded transitional fallback only.
+  // legacy binding is the bounded transitional fallback only.  Optional (kody
+  // 4365622648):  a seat key absent from Infisical leaves that seat's Zulip
+  // tools not_configured, as a missing binding did before;  an outage or a
+  // scope denial still throws in required mode.
+  const seatKeyRead = (names) => resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key, optional: true });
   const secretNames = SEAT_SECRETS[seat];
-  const key = await resolveSecret(env, { name: secretNames.infisical.name, path: secretNames.infisical.path, envName: secretNames.key });
+  const key = await seatKeyRead(secretNames);
   const email = config.botEmails[seat];
   const grantId = typeof auth.token === "string" ? auth.token.split(":")[1] ?? "" : "";
   // Linear app pairs resolve through Infisical too (src/linear.js); prefetched
   // with the seat keys so the router's synchronous identityStatus keeps its
-  // contract.  In required mode a missing pair throws here, visibly.
+  // contract.  A pair absent from Infisical reads as Linear-off, never a throw.
   const linearPairs = new Map(await Promise.all(Object.keys(LINEAR_SECRETS).map(async (canonical) =>
     [canonical, await resolveLinearPair(env, canonical)])));
   // FleetLink's agent secret resolves through /fleetlink (read-tools scope);
@@ -281,6 +285,7 @@ async function serveMcp(request, env, ctx) {
     // tools then answer not_configured and every other tool works as before (AFC-330).
     listener: listenerClientFromEnv(env, seat, { wakeKey: listenerWakeKey }),
     // Null unless LISTENER_API_URL and OPERATOR_NOTES_KEY are set:  the notes_* tools then answer not_configured
+    // and every other tool works as before (AFC-486).  The seat a request names is always this HostedTools' seat.
     notes: operatorNotesClientFromEnv(env),
   });
   // AFC-331:  every grant is routed by identity.  A CURSOR or GROK-WEB grant may act as either seat and as
@@ -289,8 +294,9 @@ async function serveMcp(request, env, ctx) {
   const delegatedCredentials = sharedGroup ? await resolveDelegatedCredentials(env) : null;
   // Seat keys resolve through Infisical when INFISICAL_MODE allows (src/infisical.js);
   // prefetched so the router's synchronous identityStatus keeps its contract.
+  // Optional reads, so one seat's absent key degrades only that seat, never every seat's request.
   const seatKeys = new Map(await Promise.all(Object.entries(SEAT_SECRETS).map(async ([identity, names]) =>
-    [identity, await resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key })])));
+    [identity, await seatKeyRead(names)])));
   const seatKeyOf = (identity) => seatKeys.get(identity) ?? "";
   const routedTools = new IdentityRouter({
     callerTools: tools,
@@ -371,7 +377,9 @@ async function serveMcp(request, env, ctx) {
   // set):  any other seat would list an event that never fires.
   // Resolves through Infisical /wake when INFISICAL_MODE allows; the
   // legacy WAKE_HMAC_KEY_<SEAT> binding is the bounded transitional fallback.
-  const wakeSecret = await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true });
+  // A seat with no wake secret name (CURSOR, CLAUDE, MA, JET-CHAT) reads
+  // nothing:  no lookup of an undefined name, no counted fallback.
+  const wakeSecret = Object.hasOwn(WAKE_SECRETS, seat) ? listenerWakeKey : "";
   const events = typeof wakeSecret === "string" && wakeSecret.trim() ? new SeatEvents({
     seat,
     scopes,
@@ -415,6 +423,10 @@ async function serveGbBearerMcp(request, env, token) {
   const parsed = parseGbBearer(token);
   if (!parsed) return refuse();
   const { identity } = parsed;
+  // One listing per folder instead of a cold per-name burst (kody 4365622780):
+  // the persona rows read /zulip and /linear;  /fleetlink and /tools are
+  // listed only once the bearer has matched.
+  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
   const credentials = (await resolveDelegatedCredentials(env)).roles.get(identity);
   if (!credentials) return refuse();
   const identityGate = gate(env, identity);
@@ -431,6 +443,7 @@ async function serveGbBearerMcp(request, env, token) {
   if (state.paused) return invalidToken("This identity is paused.");
   const scopes = ["zulip:read", "zulip:write"];
   const grantRef = await sha256Ref(`gb-bearer:${identity}`);
+  await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
   const recallSecrets = await resolveRecallSecrets(env);
@@ -619,7 +632,8 @@ async function serveLinearHealth(request, env, config) {
   }
   const identities = [];
   const missing = [];
-  await prefetchFolder(env, "/linear");
+  // /zulip too:  the Grok Bot persona rows below read it (kody 4365622780).
+  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
   for (const seat of LINEAR_SEATS) {
     if (!linearSecretNames(seat) || !config.hostedSeats.includes(seat)) continue;
     // Resolved through Infisical (src/linear.js), not env:  in required mode
@@ -648,7 +662,9 @@ async function serveLinearHealth(request, env, config) {
  * refused;  a Zulip failure throws, which deliverWake answers with a retry.
  */
 async function wakeChannels(env, config, seat, seatGate) {
-  const key = await resolveSecret(env, { name: SEAT_SECRETS[seat].infisical.name, path: SEAT_SECRETS[seat].infisical.path, envName: SEAT_SECRETS[seat].key });
+  // Optional like every seat-key read (kody 4365622648):  an absent key is "no
+  // channels", which the caller already handles;  an outage still throws.
+  const key = await resolveSecret(env, { name: SEAT_SECRETS[seat].infisical.name, path: SEAT_SECRETS[seat].infisical.path, envName: SEAT_SECRETS[seat].key, optional: true });
   if (!key) return null;
   const tools = new HostedTools({ seat, scopes: [], config, zulip: new ZulipClient({ email: config.botEmails[seat], key }), key, gate: seatGate });
   try {
@@ -943,14 +959,11 @@ async function serveAdmin(request, env, config, oauth, email) {
     const audits = [];
     const calls = [];
     const statusErrors = [];
-    const configured = (name) => typeof env[name] === "string" && env[name].trim() !== "";
+    // Every folder this page reads, listed once before any per-name read.
+    await Promise.all(["/zulip", "/linear", "/tools"].map((path) => prefetchFolder(env, path)));
     const recallConfigured = recallClientFromResolved(await resolveRecallSecrets(env), env) !== null;
-    // Observability for the Infisical transition: the mode and the bounded
-    // fallback counters render on the admin status payload (src/infisical.js).
-    const infisical = { mode: String(env.INFISICAL_MODE ?? "off").trim().toLowerCase() || "off", ...infisicalStats() };
     // Collect seats independently so a diagnostic read failure is visible on
     // the page rather than hiding every other seat behind an admin 500.
-    await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
     await Promise.all(config.hostedSeats.map(async (seat) => {
       const g = gate(env, seat);
       const pair = linearSecretNames(seat);
@@ -1002,6 +1015,10 @@ async function serveAdmin(request, env, config, oauth, email) {
       try { status = await gate(env, identity).gbBearerStatus(); } catch { /* Shown as unknown. */ }
       return { identity, credentials: delegatedRoles.has(identity), status };
     }));
+    // Observability for the Infisical transition (kody 4365623014):  the mode
+    // the Worker actually runs in and this isolate's counters, read after
+    // this page's own reads so they are included;  rendered by adminPage.
+    const infisical = { mode: infisicalMode(env), ...infisicalStats() };
     return adminPage(
       {
         gbBearers,
@@ -1093,6 +1110,7 @@ async function serveAdmin(request, env, config, oauth, email) {
       }
       case "mint_gb_bearer": {
         const identity = parsed.data.identity ?? "";
+        if (GB_IDENTITIES.includes(identity)) await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
         if (!GB_IDENTITIES.includes(identity) || !(await resolveDelegatedCredentials(env)).roles.has(identity)) return errorPage("Request Refused", "Unknown Grok Bot, or its credentials are not loaded.", 400);
         const { token, hash } = await newGbBearer(identity);
         const expiresAt = Date.now() + GB_BEARER_TTL_MS;

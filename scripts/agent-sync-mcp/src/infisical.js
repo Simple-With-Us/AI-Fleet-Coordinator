@@ -18,6 +18,18 @@
 // Infisical-side rotation propagates within a minute with no redeploy.  The
 // token itself is never cached here beyond the env binding, never logged.
 
+import { z } from "zod";
+import { INFISICAL_EXPECT_DEFAULT } from "./infisical-manifest.js";
+
+// Both Infisical answers are untrusted input:  parsed with these schemas
+// before anything reads them (kody 4365623474).  Unknown extra fields pass;
+// a missing or mistyped field the Worker relies on does not.
+const SecretResponse = z.object({ secret: z.object({ secretValue: z.string() }).passthrough() }).passthrough();
+const FolderListing = z.object({
+  secrets: z.array(z.object({ secretKey: z.string(), secretValue: z.string() }).passthrough()),
+  totalCount: z.number().int().nonnegative().optional(),
+}).passthrough();
+
 export class InfisicalError extends Error {
   constructor(message, extra = {}) {
     super(message);
@@ -35,6 +47,11 @@ const stats = { fetched: 0, cacheHits: 0, fallbacks: 0 };
 // subrequest (sentry 4364275308: a cold per-name burst could pass the free
 // plan's subrequest budget on shared seats).
 const folderWarm = new Map();
+// Fallback mode only:  a folder whose listing just failed.  Until the entry
+// ages out, reads in it go straight to the env binding (counted) instead of
+// one doomed per-name subrequest each (kody 4365623733:  an outage would
+// otherwise cost ~90 subrequests per request).
+const folderFailed = new Map();
 
 export function infisicalStats() {
   return { ...stats };
@@ -46,9 +63,10 @@ export function _resetInfisicalForTests() {
   stats.cacheHits = 0;
   stats.fallbacks = 0;
   folderWarm.clear();
+  folderFailed.clear();
 }
 
-import { INFISICAL_EXPECT_DEFAULT } from "./infisical-manifest.js";
+const fresh = (at) => at !== undefined && Date.now() - at < CACHE_TTL_MS;
 
 /** Declared-configured secrets:  comma list of `path:name` (e.g.
  * "/wake:WAKE_HMAC_KEY_JET").  A genuine 404 for a DECLARED secret throws
@@ -80,25 +98,33 @@ async function fetchRaw(env, path, name) {
   const environment = String(env.INFISICAL_ENVIRONMENT ?? "prod").trim() || "prod";
   const base = String(env.INFISICAL_BASE_URL ?? "https://app.infisical.com").replace(/\/+$/, "");
   const qs = new URLSearchParams({ workspaceId: workspace, environment, secretPath: path, expandSecretReferences: "true" });
+  // redirect "manual" (kody 4365623359):  a 3xx is refused by the !res.ok
+  // check below, never followed, so the bearer token never reaches another origin.
   const res = await fetch(`${base}/api/v3/secrets/raw/${encodeURIComponent(name)}?${qs}`, {
     headers: { Authorization: `Bearer ${token}` },
+    redirect: "manual",
   });
   if (res.status === 404) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
   if (!res.ok) throw new InfisicalError(`Infisical answered ${res.status} for ${name} at ${path}`, { code: "infisical_unavailable", status: res.status });
-  const body = await res.json();
-  const value = body?.secret?.secretValue;
-  if (typeof value !== "string" || value === "") throw new InfisicalError(`Infisical returned no value for ${name} at ${path}`, { code: "not_found" });
+  const parsed = SecretResponse.safeParse(await res.json().catch(() => null));
+  if (!parsed.success) throw new InfisicalError(`Infisical's answer for ${name} at ${path} failed schema validation`, { code: "invalid_response" });
+  const value = parsed.data.secret.secretValue;
+  if (value === "") throw new InfisicalError(`Infisical returned no value for ${name} at ${path}`, { code: "not_found" });
   return value;
 }
 
 /** List one folder and warm the cache with every value in it.  While the
  * listing is fresh, resolveSecret treats an unlisted name as absent without
- * another subrequest.  "off" mode is a no-op; a listing failure throws in
- * required mode and only warns in fallback (per-name fallback still covers).
+ * another subrequest, and a second call is a no-op (kody 4365623583:  no
+ * re-list on every request).  "off" mode is a no-op; a listing failure throws
+ * in required mode, and in fallback it only warns and marks the folder failed
+ * for the TTL, so its reads use the env binding without a subrequest each.
  */
 export async function prefetchFolder(env, path) {
   const m = mode(env);
   if (m === "off") return;
+  if (fresh(folderWarm.get(path))) return;
+  if (m === "fallback" && fresh(folderFailed.get(path))) return;
   const token = typeof env.INFISICAL_SERVICE_TOKEN === "string" ? env.INFISICAL_SERVICE_TOKEN.trim() : "";
   const workspace = String(env.INFISICAL_WORKSPACE_ID ?? "").trim();
   const environment = String(env.INFISICAL_ENVIRONMENT ?? "prod").trim() || "prod";
@@ -107,29 +133,31 @@ export async function prefetchFolder(env, path) {
   let res;
   try {
     if (!token || !workspace) throw new InfisicalError("INFISICAL_SERVICE_TOKEN/WORKSPACE_ID not bound", { code: "not_configured" });
-    res = await fetch(`${base}/api/v3/secrets/raw?${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+    res = await fetch(`${base}/api/v3/secrets/raw?${qs}`, { headers: { Authorization: `Bearer ${token}` }, redirect: "manual" });
     if (!res.ok) throw new InfisicalError(`Infisical answered ${res.status} listing ${path}`, { code: "infisical_unavailable", status: res.status });
-    const body = await res.json();
     // Authoritative absence requires a COMPLETE, validated listing.  Any
     // shape doubt (no array, non-string fields, pagination markers) refuses
     // to warm:  an empty-looking malformed listing must never deactivate
     // tools or masquerade as drift.
-    const items = body?.secrets;
-    if (!Array.isArray(items) || items.some((item) => typeof item?.secretKey !== "string" || typeof item?.secretValue !== "string")) {
+    const parsed = FolderListing.safeParse(await res.json().catch(() => null));
+    if (!parsed.success) {
       throw new InfisicalError(`Infisical listing for ${path} failed schema validation`, { code: "invalid_listing" });
     }
-    if ("totalCount" in (body ?? {}) && body.totalCount !== items.length) {
-      throw new InfisicalError(`Infisical listing for ${path} is truncated (${items.length} of ${body.totalCount})`, { code: "truncated_listing" });
+    const { secrets: items, totalCount } = parsed.data;
+    if (totalCount !== undefined && totalCount !== items.length) {
+      throw new InfisicalError(`Infisical listing for ${path} is truncated (${items.length} of ${totalCount})`, { code: "truncated_listing" });
     }
     const now = Date.now();
     for (const item of items) {
       if (item.secretValue !== "") cache.set(`${path}${item.secretKey}`, { value: item.secretValue, at: now });
     }
     folderWarm.set(path, now);
+    folderFailed.delete(path);
     stats.fetched++;
   } catch (error) {
     if (m === "required") throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
-    console.warn(`infisical folder listing ${path} failed, per-name fallback covers: ${error.code ?? error.message}`);
+    folderFailed.set(path, Date.now());
+    console.warn(`infisical folder listing ${path} failed, env bindings serve its reads for ${CACHE_TTL_MS / 1000}s: ${error.code ?? error.message}`);
   }
 }
 
@@ -148,10 +176,12 @@ export async function resolveSecret(env, { name, path, envName, optional = false
     return hit.value;
   }
   // A fresh folder listing is authoritative for absence: no subrequest.
-  const warmAt = folderWarm.get(path);
-  const listed = warmAt !== undefined && Date.now() - warmAt < CACHE_TTL_MS;
+  const listed = fresh(folderWarm.get(path));
+  // Fallback mode, folder listing just failed:  no per-name subrequest either.
+  const unusable = m === "fallback" && !listed && fresh(folderFailed.get(path));
   try {
     if (listed) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
+    if (unusable) throw new InfisicalError(`Infisical listing for ${path} failed recently`, { code: "infisical_unavailable" });
     const value = await fetchRaw(env, path, name);
     cache.set(cacheKey, { value, at: Date.now() });
     stats.fetched++;

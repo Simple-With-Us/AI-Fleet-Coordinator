@@ -11,7 +11,14 @@ Copies 72 existing credentials (no new secrets, no deletions, no source edits):
   C  48 Grok-Bot fields  AFC /zulip + /linear -> Fleet-OPS /zulip + /linear
   D   3 recall           Fleet-OPS / -> Fleet-OPS /tools (2 renamed)
 Copies are POINT-IN-TIME: they do NOT track source rotation.  After a source
-rotation, re-run this script by hand; it overwrites destination values in place.
+rotation the Fleet-OPS copy must be reconciled by hand:  a re-run stops at the
+first destination that holds a different value (see below) and never overwrites.
+
+The automation login comes from the environment first, then `fleet-secrets get`
+(INFISICAL_AUTOMATION_CLIENT_ID and INFISICAL_AUTOMATION_CLIENT_SECRET, the same
+handoff as install_seat_key.py);  no credential file is read.  The values
+themselves move through Infisical's API because the copy crosses projects and
+paths and writes, which `fleet-secrets get` cannot do.
 
 Values transit this process's memory only: never printed, logged, or persisted.
 Step 0 fails safe: the read-tools token's own metadata (GET /api/v2/service-token,
@@ -25,6 +32,8 @@ value stops the run for reconciliation - no blind overwrite.
 import json
 import os
 import pathlib
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -104,41 +113,78 @@ MAPPING = (
 assert len(MAPPING) == 72 and len({(d, n) for _, _, _, d, n in MAPPING}) == 72
 
 BASE = "https://app.infisical.com"
+# An explicit, project-identifying User-Agent on every Infisical call:  the
+# runtime default (Python-urllib/3.x) is what protected endpoints refuse.
+USER_AGENT = "AI-Fleet-Coordinator populate-scoped-folders"
 
 
 def req(url, token, data=None, method=None):
     r = urllib.request.Request(
         url,
         data=json.dumps(data).encode() if data is not None else None,
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
         method=method,
     )
     return json.load(urllib.request.urlopen(r, timeout=35))
 
 
+def handoff(name):
+    """One credential:  the environment first, then `fleet-secrets get` (the
+    install_seat_key.py handoff, OPS-818).  Only the name is ever reported."""
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    binary = shutil.which("fleet-secrets") or str(
+        pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
+    )
+    try:
+        proc = subprocess.run([binary, "get", name], capture_output=True, text=True, timeout=60)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return proc.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    raise SystemExit(f"{name} is not in the environment or fleet-secrets (name only; no value printed)")
+
+
 def login():
-    d = pathlib.Path(os.environ["INFISICAL_AUTOMATION_DIR"])
     body = {
-        "clientId": (d / "username").read_text().strip(),
-        "clientSecret": (d / "password").read_text().strip(),
+        "clientId": handoff("INFISICAL_AUTOMATION_CLIENT_ID"),
+        "clientSecret": handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
     }
-    return json.load(
+    data = json.load(
         urllib.request.urlopen(
             urllib.request.Request(
                 f"{BASE}/api/v1/auth/universal-auth/login",
                 data=json.dumps(body).encode(),
-                headers={"Content-Type": "application/json"},
+                headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
             ),
             timeout=35,
         )
-    )["accessToken"]
+    )
+    token = data.get("accessToken") if isinstance(data, dict) else None
+    if not isinstance(token, str) or not token:
+        raise ValueError("Infisical login answer has no accessToken string")
+    return token
+
+
+def secret_value(data):
+    """The secretValue of a /api/v3/secrets/raw/<name> answer, shape-checked
+    before use:  a malformed third-party answer raises ValueError (names only),
+    never a KeyError, and never sends a non-string value on to upsert."""
+    secret = data.get("secret") if isinstance(data, dict) else None
+    value = secret.get("secretValue") if isinstance(secret, dict) else None
+    if not isinstance(value, str):
+        raise ValueError("Infisical secret answer has no secretValue string")
+    return value
 
 
 def read_secret(token, ws, path, name):
     q = urllib.parse.urlencode({"workspaceId": ws, "environment": ENV, "secretPath": path})
-    return req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}?{q}", token)["secret"][
-        "secretValue"
-    ]
+    return secret_value(req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}?{q}", token))
 
 
 def read_secret_opt(token, ws, path, name):
@@ -146,9 +192,9 @@ def read_secret_opt(token, ws, path, name):
     only its status code so a server message can never leak a value."""
     q = urllib.parse.urlencode({"workspaceId": ws, "environment": ENV, "secretPath": path})
     try:
-        return req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}?{q}", token)["secret"][
-            "secretValue"
-        ]
+        return secret_value(
+            req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}?{q}", token)
+        )
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
@@ -180,7 +226,8 @@ def token_data(token):
     return json.load(
         urllib.request.urlopen(
             urllib.request.Request(
-                f"{BASE}/api/v2/service-token", headers={"Authorization": f"Bearer {token}"}
+                f"{BASE}/api/v2/service-token",
+                headers={"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT},
             ),
             timeout=35,
         )
@@ -189,7 +236,9 @@ def token_data(token):
 
 def parse_scopes(data):
     """Return {(environment, secretPath)} or None when the schema is not exactly as expected."""
-    scopes = data.get("scopes")
+    # The top level is checked too:  a non-object answer is the same fail-safe
+    # None, never an AttributeError.
+    scopes = data.get("scopes") if isinstance(data, dict) else None
     if not isinstance(scopes, list):
         return None
     out = set()

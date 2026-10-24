@@ -118,11 +118,14 @@ export function loadDelegatedCredentials(env) {
  * configured persona.  In fallback each field's read falls back to its
  * legacy per-field env binding (observable in logs + stats);  when NO field
  * resolves at all the family falls back to the env bundle/legacy rows as a
- * whole, so a bundle-configured deployment is never silently emptied.
+ * whole, so a bundle-configured deployment is never silently emptied.  A
+ * partial resolution in fallback keeps the bundle row of every persona the
+ * Infisical path could not assemble completely (kody 4365622415).
  * completeRole validates every assembled row exactly as for the bundle.
  */
 export async function resolveDelegatedCredentials(env) {
-  if (infisicalMode(env) === "off") return loadDelegatedCredentials(env);
+  const mode = infisicalMode(env);
+  if (mode === "off") return loadDelegatedCredentials(env);
   const roles = new Map();
   let resolvedAny = false;
   await Promise.all(GB_IDENTITIES.map(async (identity) => {
@@ -138,6 +141,13 @@ export async function resolveDelegatedCredentials(env) {
     if (row) roles.set(identity, row);
   }));
   if (!resolvedAny) return loadDelegatedCredentials(env);
+  if (mode === "fallback" && roles.size < GB_IDENTITIES.length) {
+    // E.g. /zulip served while /linear was out of scope:  every row is
+    // incomplete although the bundle still holds them all.  Each missing
+    // field was already counted as a fallback by resolveSecret.
+    const legacy = loadDelegatedCredentials(env);
+    if (legacy.valid) for (const [identity, row] of legacy.roles) if (!roles.has(identity)) roles.set(identity, row);
+  }
   return { source: "infisical", valid: true, roles };
 }
 
