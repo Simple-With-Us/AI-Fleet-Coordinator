@@ -1646,11 +1646,16 @@ class SecurityTests(DaemonHarness):
         above lifts for that seat alone.  An owner key is still refused, and a non-OPERATOR seat
         holding an administrator key is still refused."""
         seat = lambda name, wake="inbox": SimpleNamespace(seat=name, wake=wake)  # noqa: E731
-        config = SimpleNamespace(notes_relay_enabled=False, notes_relay_seat="CLAUDE")
+        config = SimpleNamespace()
 
         # The rule itself:  OPERATOR is the one admin_ok seat.
         self.assertTrue(D.admin_allowed(config, seat("OPERATOR")))
         self.assertFalse(D.admin_allowed(config, seat("CLAUDE")))
+        # The retired #notes-relay seat's exception (AFC-331) is gone with the relay (AFC-486):  even a config that
+        # still carries the old attributes grants an inbox-only seat nothing.
+        relay_era = SimpleNamespace(notes_relay_enabled=True, notes_relay_seat="CLAUDE")
+        self.assertFalse(D.admin_allowed(relay_era, seat("CLAUDE")))
+        self.assertTrue(D.admin_allowed(relay_era, seat("OPERATOR")))
         self.assertFalse(D.admin_allowed(config, seat("OPERATOR-EXTRA")))
 
         # admin (200) is accepted for OPERATOR, refused for every other seat;  owner (100) refused always.

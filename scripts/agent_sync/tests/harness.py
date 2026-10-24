@@ -25,7 +25,6 @@ from typing import Any
 from unittest import mock
 
 from agent_sync import cli
-from agent_sync import notes as NOTES
 from agent_sync import zulip as Z
 from agent_sync.tests.fake_zulip import BOT_EMAIL, FakeZulip
 
@@ -58,20 +57,6 @@ class Harness(unittest.TestCase):
 
     def setUp(self) -> None:
         self.key = secrets.token_hex(16)
-        # The Notes relay consumer comes from the NOTES_RELAY_CONSUMER fleet knob (Infisical):  never reached from a test.
-        # A test sets self.notes_knob to change what the knob answers.
-        self.notes_knob = "CLAUDE"
-        resolver = mock.patch.object(
-            NOTES,
-            "KNOB_RESOLVER",
-            lambda local, refresh: (
-                self.notes_knob,
-                "test knob",
-                local is not None and local != self.notes_knob,
-            ),
-        )
-        resolver.start()
-        self.addCleanup(resolver.stop)
         # The Infisical credential fallback (OPS-818) is faked:  a test fills self.infisical_values (name -> value) or sets
         # self.infisical_error, and reads self.infisical_calls (the names each call asked for).  Never the real CLI.
         self.infisical_values: dict[str, str] = {}

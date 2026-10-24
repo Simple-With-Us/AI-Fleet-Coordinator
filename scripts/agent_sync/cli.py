@@ -865,6 +865,10 @@ def build_parser(
         sub = _FilteringSubparsers(sub, frozenset().union(*owned))
 
     def add(name: str, summary: str) -> argparse.ArgumentParser:
+        # The chat verbs narrow to their own set:  `read` is a verb of simple-notes too (AFC-486), and the
+        # filter above is the union of every source's verbs.
+        if verbs is not None and name not in verbs:
+            return _NullParser()
         return sub.add_parser(name, parents=[common], help=summary, description=summary)
 
     def channel_opt(p: argparse.ArgumentParser) -> None:
@@ -2750,16 +2754,19 @@ LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
     "guide": notes_cli.cmd_guide,
 }
 
-# `simple-notes` verbs.  They are top-level commands, so they land in LOCAL_COMMANDS beside the
-# listener verbs; MCP reaches the same handler through the `notes` group.
-NOTES_VERBS = ("create", "update", "pin", "unpin", "status")
+# `simple-notes` verbs (AFC-486:  one per notes_* tool, plus the Mac runner).  They are top-level commands, so they
+# land in LOCAL_COMMANDS beside the listener verbs, except `read`, which `simple-chat` owns too (a topic's history)
+# and which only the simple-notes override below sends here.
+NOTES_VERBS = ("create", "update", "pin", "unpin", "read", "list", "status", "log", "runner")
 for _action in NOTES_VERBS:
-    LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
+    if _action != "read":
+        LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
 
-# `status` is a verb of two commands:  the listener's on `simple-chat`, the notes relay's on
-# `simple-notes`.  A bare name cannot pick one, so each command overrides it for its own verbs.
+# `status` and `read` are verbs of two commands:  `simple-chat status` is the listener's and `simple-chat read` a
+# topic's history, `simple-notes status` and `simple-notes read` are the notes ones.  A bare name cannot pick one,
+# so each command overrides them for its own verbs.
 DISPATCH_OVERRIDES: dict[str, dict[str, Callable[[Runtime, argparse.Namespace], int]]] = {
-    "simple-notes": {"status": notes_cli.cmd_notes},
+    "simple-notes": {"status": notes_cli.cmd_notes, "read": notes_cli.cmd_notes},
     "simple-chat": {"status": listener_cli.cmd_status},
 }
 
