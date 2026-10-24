@@ -22,7 +22,8 @@
 # `agent-sync daemon reload` (or a restart) applies it.  Until then nothing is treated as the
 # owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
 # variable reaches the listener only when the container restarts.  A section changed here never reaches a live
-# volume by itself:  server/apply_live_config.py copies the JET and GB sections into /data/listener.toml and leaves
+# volume by itself:  server/apply_live_config.py copies the JET and GB sections into /data/listener.toml, adds
+# [listener_api] and [notes_queue] only where the live file has none (it never changes one that is there), and leaves
 # [daemon] (the pins) untouched.  Never mount this file as a single file, because `daemon init` replaces it
 # atomically.  Every seat here must be "server" in docs/protocols/agent-sync-partition.toml:  a seat is never
 # configured in both instances.
@@ -75,6 +76,22 @@ enabled = false
 enabled = false
 bind = "0.0.0.0"
 port = 8788
+
+# The Operator's Apple Notes queue (AFC-486, docs/protocols/operator-notes.md, scripts/agent_sync/notes_queue.py):
+# POST /notes/v1/requests, GET /notes/v1/requests/<SEAT>/<request_id>, GET /notes/v1/log and the Mac runner's
+# /notes/v1/runner/ routes, on the listener API's port above (so [listener_api] must be enabled too).  No Zulip
+# message is involved.  Each principal signs with its own key from Infisical (project AI Fleet Coordinator, prod,
+# folder /operator, loaded at start by server/infisical_env.py):  OPERATOR_NOTES_WORKER_KEY (the ST-MCP Worker),
+# OPERATOR_NOTES_SERVER_KEY (this server's CLIs and stdio MCP) and OPERATOR_NOTES_RUNNER_KEY (the Mac runner, which
+# claims requests and runs apple-notes-coding.sh).  A principal without a key of 32 characters or more is refused
+# (404), and the log shows notes-queue-started with the principals that have one, or notes-queue-off.
+# worker_seats and server_seats are the seats the WORKER and SERVER principals may act for;  a seat must also be a
+# live agent identity.  The server instance only.  Enable after the three keys are in Infisical and the reverse
+# proxy routes /notes/v1/ to port 8788, then restart the app (a reload re-reads this file, never the keys).
+[notes_queue]
+enabled = false
+worker_seats = ["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]
+server_seats = ["CLAUDE", "CODEX"]
 
 [seat.MA]
 instance = "server"

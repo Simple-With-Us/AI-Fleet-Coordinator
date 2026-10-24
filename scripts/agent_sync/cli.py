@@ -307,6 +307,7 @@ class Agent:
             return self._users
 
     def stream_id(self, channel: str) -> int:
+        channel = Z.resolve_channel(channel, self.rt.env)
         with self._lock:
             known = self._stream_ids.get(channel)
         if known is not None:
@@ -693,6 +694,25 @@ def _channel(value: str) -> str:
     return channel
 
 
+def _resolve_channel_args(
+    args: argparse.Namespace, env: Mapping[str, str] | None
+) -> argparse.Namespace:
+    """A channel name the caller typed resolves to the channel it means.
+
+    The realm renamed the fleet's coordination channel and left the old name behind as a
+    tombstone stream, so a caller that still names it has to land in the live channel.
+    The name is resolved once, here, so every command below works with the channel the
+    fleet reads.
+    """
+    for name in ("channel", "new_channel"):
+        value = getattr(args, name, None)
+        if isinstance(value, str):
+            setattr(args, name, Z.resolve_channel(value, env))
+        elif isinstance(value, list):
+            setattr(args, name, [Z.resolve_channel(v, env) for v in value])
+    return args
+
+
 def _positive_int(value: str) -> int:
     try:
         number = int(value)
@@ -845,6 +865,10 @@ def build_parser(
         sub = _FilteringSubparsers(sub, frozenset().union(*owned))
 
     def add(name: str, summary: str) -> argparse.ArgumentParser:
+        # The chat verbs narrow to their own set:  `read` is a verb of simple-notes too (AFC-486), and the
+        # filter above is the union of every source's verbs.
+        if verbs is not None and name not in verbs:
+            return _NullParser()
         return sub.add_parser(name, parents=[common], help=summary, description=summary)
 
     def channel_opt(p: argparse.ArgumentParser) -> None:
@@ -2730,16 +2754,19 @@ LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
     "guide": notes_cli.cmd_guide,
 }
 
-# `simple-notes` verbs.  They are top-level commands, so they land in LOCAL_COMMANDS beside the
-# listener verbs; MCP reaches the same handler through the `notes` group.
-NOTES_VERBS = ("create", "update", "pin", "unpin", "status")
+# `simple-notes` verbs (AFC-486:  one per notes_* tool, plus the Mac runner).  They are top-level commands, so they
+# land in LOCAL_COMMANDS beside the listener verbs, except `read`, which `simple-chat` owns too (a topic's history)
+# and which only the simple-notes override below sends here.
+NOTES_VERBS = ("create", "update", "pin", "unpin", "read", "list", "status", "log", "runner")
 for _action in NOTES_VERBS:
-    LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
+    if _action != "read":
+        LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
 
-# `status` is a verb of two commands:  the listener's on `simple-chat`, the notes relay's on
-# `simple-notes`.  A bare name cannot pick one, so each command overrides it for its own verbs.
+# `status` and `read` are verbs of two commands:  `simple-chat status` is the listener's and `simple-chat read` a
+# topic's history, `simple-notes status` and `simple-notes read` are the notes ones.  A bare name cannot pick one,
+# so each command overrides them for its own verbs.
 DISPATCH_OVERRIDES: dict[str, dict[str, Callable[[Runtime, argparse.Namespace], int]]] = {
-    "simple-notes": {"status": notes_cli.cmd_notes},
+    "simple-notes": {"status": notes_cli.cmd_notes, "read": notes_cli.cmd_notes},
     "simple-chat": {"status": listener_cli.cmd_status},
 }
 
@@ -2859,6 +2886,8 @@ def main(
             args = parser.parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 2)
+
+    args = _resolve_channel_args(args, rt.env)
 
     previous = None
     if threading.current_thread() is threading.main_thread():

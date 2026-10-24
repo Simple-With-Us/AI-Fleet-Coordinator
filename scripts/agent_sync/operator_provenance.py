@@ -1,4 +1,5 @@
-"""Notes-relay and token-broker audit events for the Operator registry (AFC-412 PR3).
+"""Notes-queue and token-broker audit events for the Operator registry (AFC-412 PR3;  the notes events follow the
+Operator notes queue, AFC-486).
 
 A typed allowlist:  only the event names below can be written through this path, each with its
 required detail keys, and any detail key or value that looks like a secret is refused outright.
@@ -19,8 +20,8 @@ from .operator_registry import SessionRegistry
 
 # event name -> required detail keys
 ALLOWED_EVENTS = {
-    "notes_relay_request": ("note_id",),
-    "notes_relay_result": ("note_id",),
+    "notes_request": ("note_id",),
+    "notes_result": ("note_id",),
     "token_mint": ("target_seat",),
     "token_revoke": ("target_seat",),
     "token_scope_check": ("target_seat",),
