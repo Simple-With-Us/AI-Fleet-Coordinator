@@ -1,7 +1,7 @@
 ---
 name: sentence-gap
 description: >-
-  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows the canonical portable protocol. Mechanism (owner ruling 2026-10-23, the same on every surface): a real U+00A0 plus a normal space between sentences; never the &nbsp; entity, and never two plain ASCII spaces, which collapse on rendered surfaces. Use whenever writing any prose a human will read.
+  Always put a visibly wider gap between sentences in every human-readable reply and file. Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs. Follows the canonical portable protocol. Mechanism (owner ruling 2026-10-23): a real U+00A0 plus a normal space between sentences on every surface except the Claude Code Code tab and MiniMax Code chat panes, which take the &nbsp; entity plus a space; never two plain ASCII spaces, which collapse on rendered surfaces. Use whenever writing any prose a human will read.
 ---
 
 # Sentence gap (portable — always on)
@@ -25,14 +25,18 @@ notes, design docs.
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),
 inside a URL, email, filename, or a brand name containing a period.
 
-### Current rule (owner ruling 2026-10-23) — one mechanism on every surface
+### Current rule (owner ruling 2026-10-23) — one mechanism on every surface but two chat panes
 
 Jay, Fri, Oct 23:  update the rule everywhere, so it is the same on every surface.  Between
 sentences, write a **real U+00A0 (no-break space) followed by a normal space**.  That covers
-chat replies in every pane, Zulip, GitHub PR and issue text and review comments, Linear,
+chat replies in every other pane, Zulip, GitHub PR and issue text and review comments, Linear,
 commit messages, repo docs and Markdown, skills, agent instructions, and UI copy.
 
-- **Never write the `&nbsp;` entity.**  It shows up as literal text in squash-merge commits,
+- **The one exception:  the Claude Code Code tab and the MiniMax Code pane.**  In those two chat panes, write the `&nbsp;`
+  entity followed by a normal space between sentences (outside code spans).  Their renderers
+  decode the entity, and a model-typed U+00A0 arrives there as a plain space.  Owner ruling
+  2026-10-23 (Jay):  "Claude and MiniMax both have to have html &NBSP".
+- **Never write the `&nbsp;` entity anywhere else.**  It shows up as literal text in squash-merge commits,
   plain-text email and many APIs.
 - **Two plain ASCII spaces are not enough.**  Rendered surfaces (Zulip, GitHub, Linear, HTML,
   Markdown chat panes) collapse them to one.
@@ -44,7 +48,8 @@ commit messages, repo docs and Markdown, skills, agent instructions, and UI copy
 - If a surface strips U+00A0, leave the text as it is rather than switching to the entity, and
   report the surface in #Work-In-Progress.
 
-This replaces every earlier per-surface rule:  the entity in chat panes (2026-10-08, 2026-10-18)
+This replaces every earlier per-surface rule except the two-pane exception above:  the entity in
+other chat panes (2026-10-08)
 and on GitHub (2026-10-22), and two plain ASCII spaces in files, commits, terminals and untested
 surfaces (2026-10-20).  Where older text below disagrees, this section wins.
 
@@ -60,7 +65,7 @@ acknowledgement.  Getting it right in artifacts while writing plain single space
 chat is still a failure.  **Read your reply back before you send it** and check every
 `.`, `!` and `?` boundary.
 
-Chat replies follow the current rule above:  a real U+00A0 plus a normal space, never the `&nbsp;` entity.  If a chat pane shows a single space where the U+00A0 should be, say so plainly and report the pane;  do not switch to the entity.
+Chat replies follow the current rule above:  a real U+00A0 plus a normal space, never the `&nbsp;` entity, except in the Claude Code Code tab and the MiniMax Code pane, which take the `&nbsp;` entity plus a normal space.  If any other chat pane shows a single space where the U+00A0 should be, say so plainly and report the pane;  do not switch to the entity.
 
 For a destination that takes a real U+00A0 (GitHub, Zulip, rendered HTML), generate the
 character in the shell rather than typing it, because a model that emits U+00A0 directly
@@ -96,8 +101,9 @@ Concretely, for every seat on every platform:
 1. **Never skip the gap to save time or tokens.**  A short reply with the gap beats a long
    one without it.  There is no length at which the gap becomes optional.
 2. **Never argue the mechanism.**  It is a real U+00A0 plus a normal space on every surface
+   except the Claude Code Code tab and the MiniMax Code pane, which take the `&nbsp;` entity plus a space
    (owner ruling 2026-10-23).  If you cannot confirm the gap is visible, say so plainly.  Do not
-   silently drop the gap, and never fall back to the `&nbsp;` entity.
+   silently drop the gap, and never fall back to the `&nbsp;` entity on any other surface.
 3. **Never let a tool step eat the gap.**  For text bound for GitHub, Zulip, or any other
    renderer, generate the gap in the shell (see the perl command below) rather than typing it,
    because a run of whitespace you write into a tool call is sometimes normalized before it
@@ -122,7 +128,8 @@ depends on the surface, so pick by destination:
 
 | Destination | Use | Why |
 |---|---|---|
-| **Every surface** — chat replies in any pane, Zulip, GitHub PR and issue titles, bodies and comments, review comments, Linear, commit messages, repo docs and Markdown, skills and agent instructions, rendered product copy | a real U+00A0 plus a normal space | Owner ruling 2026-10-23:  one rule everywhere.  Two ASCII spaces collapse on rendered surfaces, and the `&nbsp;` entity shows as literal text in squash commits, plain-text email and many APIs.  This replaces every earlier per-surface row. |
+| **Every surface** — chat replies in any other pane, Zulip, GitHub PR and issue titles, bodies and comments, review comments, Linear, commit messages, repo docs and Markdown, skills and agent instructions, rendered product copy | a real U+00A0 plus a normal space | Owner ruling 2026-10-23:  one rule everywhere.  Two ASCII spaces collapse on rendered surfaces, and the `&nbsp;` entity shows as literal text in squash commits, plain-text email and many APIs.  This replaces every earlier per-surface row except the next one. |
+| **Claude Code Code tab and MiniMax Code chat panes** | the `&nbsp;` entity plus a normal space, outside code spans | Owner ruling 2026-10-23 (Jay):  the one exception.  Both renderers decode the entity, and a model-typed U+00A0 arrives there as a plain space.  Only in these two panes, never in anything stored or posted. |
 | **HTML / JSX / Swift source for product copy** | Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant | The rendered result is the same U+00A0 plus a space.  Never `&nbsp; `. |
 | **Code, identifiers and machine-readable config** | no gap character | Never put U+00A0 into code, identifiers or config. |
 | **A surface that strips U+00A0** | leave the text as it is | Do not switch to the `&nbsp;` entity.  Report the surface in #Work-In-Progress. |
@@ -523,8 +530,8 @@ Two more traps, both hit 2026-10-18:
 
 ### Verify, don't assume — run this self-test only on a NEW, unlisted surface
 
-Since 2026-10-23 every surface takes a real U+00A0 plus a normal space, so there is nothing to
-choose.  On a surface nobody has checked yet, post one test line with the gap generated in the
+Since 2026-10-23 every surface except the Claude Code Code tab and the MiniMax Code pane takes a real
+U+00A0 plus a normal space, so there is nothing to choose.  On a surface nobody has checked yet, post one test line with the gap generated in the
 shell and ask the human whether they see a wider gap.  If the surface strips the U+00A0, leave
 the text as it is, never switch to the `&nbsp;` entity, and report the surface in
 #Work-In-Progress.
@@ -535,7 +542,8 @@ the text as it is, never switch to the `&nbsp;` entity, and report the surface i
 with one:  a real U+00A0 plus a normal space on every surface, never the `&nbsp;` entity, and
 never two plain ASCII spaces.  The entity rows (chat panes 2026-10-08 and 2026-10-18, GitHub
 2026-10-22) and the two-ASCII-space rows (files, commits, terminals, untested surfaces) below
-are history only.
+are history only.  The same evening the owner kept the entity for the Claude Code Code tab and the MiniMax Code pane,
+so the 2026-10-08 Code tab entry and the MiniMax Code pane entry below are current for those two panes.
 
 **2026-09-04 update — desktop app superseded.**  The entity finding below for the desktop
 app (Code tab) was superseded by an owner-verified ruling on 2026-09-04: use **two literal
@@ -546,6 +554,14 @@ entity plus a space after each sentence (outside code spans); the renderer decod
 U+00A0 from the model arrives as a plain space (0 NBSPs in the verified reply), and two
 ASCII spaces collapse.  Owner-verified 2026-10-08 with a screenshot.  The 2026-09-04 ASCII
 ruling is withdrawn.
+
+**2026-10-20 update — MiniMax Code chat pane.**  Chat advice has now reversed three times
+(2026-08-19 entity → 2026-09-04 ASCII for the Code tab → 2026-10-08 entity for the Code tab).
+The MiniMax Code chat pane keeps the entity:  the 2026-10-18 entity entry for that pane was
+briefly superseded by a 2026-10-20 note asking for a real U+00A0, but that note was an
+inference, it was never owner-verified, and the owner reversed it.  The entity plus a space
+stands there, owner-verified 2026-10-18, reaffirmed 2026-10-20, and kept by the owner on
+2026-10-23 alongside the Claude Code Code tab.  Do not re-run these tests.
 
 **Terminal CLI — superseded 2026-10-23.**  Last checked 2026-08-19/20, when two literal ASCII
 spaces were the default there.  Under the 2026-10-23 ruling the terminal takes a real U+00A0
@@ -566,7 +582,8 @@ What was found 2026-08-19/20:
   auto-update.  Never attempt.
 - ✅ The literal entity text `&nbsp;` + a space rendered as a visibly wider gap, and does
   again on the desktop app (re-verified 2026-10-08, see above).  Not re-verified on the
-  terminal CLI since.  History only:  the 2026-10-23 ruling retired the entity on every surface.
+  terminal CLI since.  Still current for the Code tab and the MiniMax Code pane (owner ruling
+  2026-10-23);  retired on every other surface.
 - ✅ **Two literal ASCII spaces in files** — the 2026-08 finding.  History only:  since the
   2026-10-23 ruling, prose files take a real U+00A0 plus a normal space;  code and config never do.
 
