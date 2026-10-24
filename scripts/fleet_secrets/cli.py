@@ -3,8 +3,10 @@
   run [--path /] [--only NAME,NAME] -- CMD [ARG...]
         exec CMD with the secrets as environment variables.  Existing variables of the same
         name are replaced.  A few names (PATH, HOME, LD_*, DYLD_* ...) are never injected.
-  get NAME [--path /] [--project fleet-ops|ai-fleet-coordinator]
-        print one value, exactly, with no trailing newline.  Exit 3 when NAME is absent.
+  get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]
+        print one value, exactly, with no trailing newline.  With several names, print a JSON
+        object of name to value instead (one folder export for the whole batch).  Exit 3 when
+        any NAME is absent;  nothing is printed then.
   names [--path /] [--project fleet-ops|ai-fleet-coordinator]
         key names only, one per line.  --project picks the Infisical project (read-only;  default fleet-ops).
   set NAME [--path /]
@@ -33,7 +35,7 @@ from .core import SecretsError, UsageError
 
 USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
-    "       fleet-secrets get NAME [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
+    "       fleet-secrets get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets set NAME --path /linear   (value on standard input;  CACHE_* names only)\n"
     "       fleet-secrets doctor [--json]\n"
@@ -76,7 +78,10 @@ def _parse(args: Sequence[str], allow_only: bool, positional: int) -> dict[str, 
         else:
             opts["args"].append(a)  # type: ignore[union-attr]
             i += 1
-    if len(opts["args"]) != positional:  # type: ignore[arg-type]
+    if positional < 0:  # at least -positional arguments
+        if len(opts["args"]) < -positional:  # type: ignore[arg-type]
+            raise UsageError("wrong number of arguments")
+    elif len(opts["args"]) != positional:  # type: ignore[arg-type]
         raise UsageError("wrong number of arguments")
     return opts
 
@@ -112,13 +117,22 @@ def _take_project(args: Sequence[str]) -> tuple[str, list[str]]:
 
 def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
     project, rest = _take_project(args)
-    opts = _parse(rest, False, 1)
-    name = core.check_name(str(opts["args"][0]))  # type: ignore[index]
+    opts = _parse(rest, False, -1)
+    names = [core.check_name(str(a)) for a in opts["args"]]  # type: ignore[union-attr]
     secrets = core.fetch_all(core.check_path(str(opts["path"])), env, project)
-    if name not in secrets:
-        raise SecretsError("key {} is not in Infisical at {}".format(name, opts["path"]), 3)
-    core.reject_unresolved(secrets, [name])
-    out.write(secrets[name])
+    # One export serves the whole batch:  a caller that needs an App's id and
+    # private key pays one round trip, and the other folder values never cross
+    # into its process.  Nothing is printed unless every name resolves.
+    missing = [n for n in names if n not in secrets]
+    if missing:
+        raise SecretsError(
+            "key {} is not in Infisical at {}".format(", ".join(missing), opts["path"]), 3
+        )
+    core.reject_unresolved(secrets, names)
+    if len(names) == 1:
+        out.write(secrets[names[0]])
+    else:
+        out.write(json.dumps({n: secrets[n] for n in names}))
     out.flush()
     return 0
 

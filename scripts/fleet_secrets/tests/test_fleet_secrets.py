@@ -148,6 +148,21 @@ class GetTests(Base):
         code, out, err = self.call("get", "ALPHA")
         self.assertEqual((code, out, err), (0, VAL_A, ""))
 
+    def test_get_several_names_prints_one_json_object(self):
+        w = self.use(World())
+        code, out, err = self.call("get", "ALPHA", "BETA")
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(out), {"ALPHA": VAL_A, "BETA": VAL_B})
+        # One folder export serves the whole batch.
+        self.assertEqual(len(w.exports()), 1)
+
+    def test_get_several_names_with_one_absent_exits_3_and_prints_nothing(self):
+        self.use(World())
+        code, out, err = self.call("get", "ALPHA", "NOPE")
+        self.assertEqual((code, out), (3, ""))
+        self.assertIn("NOPE", err)
+        self.assertNoSentinel(out, err)
+
     def test_missing_key_exits_3_and_names_only_the_key(self):
         self.use(World())
         code, out, err = self.call("get", "NOPE")
