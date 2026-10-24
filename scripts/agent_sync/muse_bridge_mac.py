@@ -31,13 +31,20 @@ STATE_NAME = "muse-bridge-mac.json"
 PIN_NAME = "muse-bridge-pin.json"
 CANDIDATE_NAME = "muse-bridge-pin-candidate.json"
 MAX_REMOTE_OUTPUT = 2_000_000
-REMOTE_APP = "l40rxd4rbj1pnogmbtetzmsf"
 REMOTE_ALIAS = "coolify"
-_REMOTE_COMMAND = (
-    "set -eu; c=$(docker ps --filter name=" + REMOTE_APP + " --format '{{.Names}}'); "
-    'test -n "$c"; test "$(printf \'%s\\n\' "$c" | wc -l)" -eq 1; '
-    'docker exec -i -w /app/scripts "$c" python3 -m agent_sync.muse_bridge '
-)
+
+
+def _remote_command(remote_app: str) -> str:
+    """The fixed server-local command, with the operator's own application id.
+
+    The production application is private deployment inventory, so it comes
+    from the operator's config and never from this source.
+    """
+    return (
+        "set -eu; c=$(docker ps --filter name=" + remote_app + " --format '{{.Names}}'); "
+        'test -n "$c"; test "$(printf \'%s\\n\' "$c" | wc -l)" -eq 1; '
+        'docker exec -i -w /app/scripts "$c" python3 -m agent_sync.muse_bridge '
+    )
 
 
 class DeliveryRefused(ValueError):
@@ -100,7 +107,7 @@ def probe_pin(root: str, env: Mapping[str, str], home: str, wake_path: str) -> d
         "source_seat": "GB-FIXER",
         "id": 1,
         "type": "stream",
-        "channel": "agent-sync",
+        "channel": "work-in-progress",
         "topic": "synthetic bridge canary",
         "content": "Choose the listed routine for this benign canary.",
         "sender": "synthetic peer",
@@ -190,10 +197,17 @@ def pin_candidate(root: str, env: Mapping[str, str], home: str, wake_path: str) 
 class SSHExchange:
     """Two fixed remote commands; no inbox data or model value is interpolated into a shell."""
 
-    @staticmethod
-    def request(command: str, body: Mapping[str, Any]) -> dict[str, Any]:
+    def __init__(self, remote_app: str = "") -> None:
+        self.remote_app = remote_app.strip()
+
+    def request(self, command: str, body: Mapping[str, Any]) -> dict[str, Any]:
         if command not in ("export", "submit"):
             raise ValueError("invalid bridge command")
+        if not self.remote_app:
+            raise RuntimeError(
+                "the production application is not configured: set muse_bridge.remote_app "
+                "in the operator's own listener config"
+            )
         data = json.dumps(body, separators=(",", ":")).encode()
         if len(data) > MB.MAX_INPUT_BYTES:
             raise ValueError("bridge request too large")
@@ -206,7 +220,7 @@ class SSHExchange:
                 "-o",
                 "ConnectTimeout=5",
                 REMOTE_ALIAS,
-                _REMOTE_COMMAND + command,
+                _remote_command(self.remote_app) + command,
             ],
             input=data,
             capture_output=True,
@@ -226,7 +240,9 @@ class MacBridge:
 
     def __init__(self, daemon: Any, exchange: SSHExchange | None = None) -> None:
         self.daemon = daemon
-        self.exchange = exchange or SSHExchange()
+        self.exchange = exchange or SSHExchange(
+            getattr(getattr(daemon, "config", None), "muse_bridge_remote_app", "")
+        )
         self.path = os.path.join(L.listener_dir(daemon.root), STATE_NAME)
         self.catalog = CC.ChatCatalog(home=daemon.home, scrub=daemon.scrub, max_records=120)
 

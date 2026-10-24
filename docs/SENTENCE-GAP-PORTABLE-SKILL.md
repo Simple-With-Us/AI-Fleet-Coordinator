@@ -461,6 +461,44 @@ Two more costs it carries, and both are deliberate:
     converted.  Close the fence.
 
 A `0` from the first check means the run changed nothing.  Fix it before posting, never after.
+
+A body holds user-supplied text, so it needs the approved credential scan before it is persisted
+and before it leaves the machine.  The scan comes **first**, ahead of every `body*.txt` file: the
+unsaved body reaches the scanner on stdin, so no body file exists while the scan runs and a
+refusal never leaves the text on disk.  The approved scanner is `scripts/agent_sync/secretscan.py`:
+`scan(text, known)` returns the *kind* of secret it found (for example `GitHub token` or `assigned
+secret`) or `None`, and it never returns the matched text, so it is safe to use as the guard.
+`known` is the list of exact values the process has already loaded, if any.
+
+Hold the body in a shell variable and pipe it to the scanner.  A here-document is not a
+pre-persistence scan: on the system shell (`/bin/bash`, 3.2) the shell writes the here-document to
+a temporary file before the scanner ever reads it, so the body reaches disk before the refusal
+runs.  A pipe keeps the body in memory until the scanner has cleared it, which is also what the
+runtime does on its own path, where the scanner reads the in-memory text before anything is
+written.
+
+```sh
+umask 077
+printf '%s' "$BODY" | python3 -c 'import sys; sys.path.insert(0, "scripts"); from agent_sync.secretscan import scan; text = sys.stdin.read(); hit = scan(text); print("body:" + ("secret:" + str(hit) if hit else "clean"), file=sys.stderr); raise SystemExit(2 if hit else 0)'
+```
+
+The scan exits nonzero on a hit, so the write step and the relay step never run on a body that
+carries a secret.  Only after it exits zero do you write `body.txt` and convert it.
+
+`scripts/check-routine-prompts.py` carries a local fallback list of the main secret kinds for when
+it runs outside the repo and cannot load `secretscan.py`;  inside the repo `secretscan.py` is the
+one that runs, and it flags everything the fallback flags.
+
+On a hit, refuse the **body** field:  report the field identifier and the kind (the refusal code),
+and never the value, a prefix of it, or the matched text, because a refusal can reach a log.  A
+refusal is not something to work around:  do not split the secret, do not edit it, and do not relay
+it in a different surface.
+
+The `simple-chat` / `agent-sync` CLI is already covered:  `_scan_refusal` in
+`scripts/agent_sync/cli.py` refuses a secret-shaped body, topic or channel before the post goes
+out.  A `gh pr create --body-file` or `gh pr comment --body-file` relay bypasses that CLI, so the
+scan still has to run *before* the `gh` relay.
+
 Then pass the file to `gh pr create --body-file`, `gh pr comment --body-file`, or
 `simple-chat post --body-file` — which refuses any file whose mode is not `0600` or `0400`, so
 run `chmod 600` on it first.  There is no override flag.
@@ -509,17 +547,20 @@ ruling is withdrawn.
 
 **2026-10-20 update — MiniMax Code chat pane.**  Chat advice has now reversed three times
 (2026-08-19 entity → 2026-09-04 ASCII for the Code tab → 2026-10-08 entity for the Code tab).
-The MiniMax Code chat pane keeps the entity:  the 2026-10-18 entity entry for that pane was
+The MiniMax Code chat pane kept the entity:  the 2026-10-18 entity entry for that pane was
 briefly superseded by a 2026-10-20 note asking for a real U+00A0, but that note was an
 inference, it was never owner-verified, and the owner reversed it.  The entity plus a space
-stands there, owner-verified 2026-10-18 and reaffirmed 2026-10-20.  Do not re-run these tests.
+stood there, owner-verified 2026-10-18 and reaffirmed 2026-10-20, until the 2026-10-23 ruling
+replaced it:  the MiniMax Code pane now takes a real U+00A0 plus a normal space, never the entity.
+Do not re-run these tests.
 Owner ruling 2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or
 HTML renderer), use its working mechanism without asking; confirmation is no longer needed per
 surface.
 
-**Terminal CLI — no newer ruling.**  Last checked 2026-08-19/20; not re-verified since.
-Default to two literal ASCII spaces there, and do not use the `&nbsp;` entity on a terminal
-TUI, which would print it literally.
+**Terminal CLI — superseded 2026-10-23.**  Last checked 2026-08-19/20, when two literal ASCII
+spaces were the default there.  Under the 2026-10-23 ruling the terminal takes a real U+00A0
+plus a normal space like every other surface, and never the `&nbsp;` entity, which a terminal
+TUI would print literally.
 
 What was found 2026-08-19/20:
 
@@ -535,8 +576,9 @@ What was found 2026-08-19/20:
   auto-update.  Never attempt.
 - ✅ The literal entity text `&nbsp;` + a space rendered as a visibly wider gap, and does
   again on the desktop app (re-verified 2026-10-08, see above).  Not re-verified on the
-  terminal CLI since, so use two ASCII spaces there.
-- ✅ **Two literal ASCII spaces in files** — correct and simplest; leave file content alone.
+  terminal CLI since.  History only:  the 2026-10-23 ruling retired the entity on every surface.
+- ✅ **Two literal ASCII spaces in files** — the 2026-08 finding.  History only:  since the
+  2026-10-23 ruling, prose files take a real U+00A0 plus a normal space;  code and config never do.
 
 ### The transferable lesson
 

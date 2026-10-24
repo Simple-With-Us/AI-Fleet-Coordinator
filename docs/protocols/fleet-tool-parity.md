@@ -1,8 +1,6 @@
 # Fleet Tool Parity
 
-Every fleet capability exists on three surfaces:  the hosted ST-MCP server (`https://agents.simplewithus.com/mcp`, for cloud seats), the local tools (the stdio `simple-chat mcp` server and the `simple-chat`, `simple-board` and `fleetlink` commands), and the Hetzner server, where Codex and Claude run the same local tools.  Five commands are the tool set on both hosts:  `simple-chat`, `simple-board`, `recall`, `lane` and `fleet-mode` (`fleetlink` and `fleet-tools-doctor` come with the FleetLink checkout and this repo).  `apple-notes-coding.sh` is Mac-only by design.  This page is the rule for keeping them equal:  one contract per service, a CI test that fails when a surface drifts from it, and a doctor that checks each host.
-
-GitHub work is not one of these surfaces.  It runs through `git-relay` and its MCP wrapper GR-MCP, with its own bearer-token arrangement, and the tools guide is where that path is described.
+Every fleet capability exists on three surfaces:  the hosted Agent-Sync MCP server (`https://agents.simplewithus.com/mcp`, for cloud seats), the local tools (the stdio `simple-chat mcp` server and the `agent-sync`, `simple-board` and `fleetlink` commands), and the Hetzner server, where Codex and Claude run the same local tools.  Five commands are the tool set on both hosts:  `agent-sync`, `simple-board`, `recall`, `lane` and `fleet-mode` (`fleetlink` and `fleet-tools-doctor` come with the FleetLink checkout and this repo).  `apple-notes-coding.sh` is Mac-only by design, but `simple-notes` is on both hosts and behaves the same:  on the server it reaches the script through the Operator's notes queue and the Mac runner (AFC-486).  This page is the rule for keeping them equal:  one contract per service, a CI test that fails when a surface drifts from it, and a doctor that checks each host.
 
 ## Contracts
 
@@ -12,6 +10,7 @@ GitHub work is not one of these surfaces.  It runs through `git-relay` and its 
 | Linear | The hosted catalogs in `scripts/agent-sync-mcp/src` (named commands, official Linear MCP tools, public inputs), exported to `scripts/linear-board/catalog/*.json` | hosted MCP (the JS), `simple-board` (the JSON) | `linear-catalog-parity.test.mjs` (the committed JSON equals a fresh export) and `linear-parity.test.mjs` (constants) (AFC-329) |
 | FleetLink | FleetLink's served MCP tool list, `docs/mcp-tools.json` in the FleetLink repo | FleetLink MCP, `fleetlink` (`MCP_TO_CLI`), hosted Agent-Sync (`scripts/agent-sync-mcp/fleetlink-tools.json`, a copy, mirrored in `src/fleetlink.js`), and stdio Agent-Sync, which mirrors hosted through `scripts/agent_sync/mcp/fleetlink-tools.json` (generated from `src/fleetlink.js`) and runs each tool as `fleetlink tool NAME` with the seat's own FleetLink token | FleetLink `test/cli-mcp-parity.test.mjs`;  here `test/fleetlink.test.mjs` (the hosted specs equal the copy, and the generated stdio JSON equals the hosted specs) and `test_mcp_fleetlink.py` (stdio serves that JSON) |
 | Listener records | `scripts/agent_sync/live.py` (the layout) and the listener read API | `agent-sync listener …`, the stdio and hosted `listener_*` tools | the listener tests (AFC-330) |
+| Apple Notes | `scripts/agent_sync/mcp/notes-tools.json` (eight tools:  create, update, pin, unpin, read, list, status, log) and the Operator notes API (`docs/protocols/operator-notes.md`) | stdio MCP (`tools.py` through `notes_client.py`), hosted MCP (`src/notes.js` imports the JSON), `simple-notes` (one verb per tool, one option per argument) | `test_notes_parity.py` (every tool has its verb and every argument its option, and stdio serves the file) and `notes.test.mjs` (hosted serves the same specs, and every pattern compiles under the u flag) (AFC-486) |
 
 `fleetlink tool NAME` and `simple-board run NAME` reach any MCP tool or named command directly, so a capability is never missing from a CLI while its friendlier command is being written.
 
@@ -51,7 +50,7 @@ One line per check, OK, WARN or FAIL, and exit 1 on a FAIL on this host.  It cov
 - each named seat's credentials (key names in Infisical, through `fleet-secrets`);
 - each client's MCP registrations.
 
-On the server, `fleet-tools-doctor.timer` runs it every hour as CLAUDE with `--post`.  It posts to #Work-In-Progress, topic `fleet tools doctor`, only when the set of failing checks changes, including the all-clear.  Since AFC-461 that set also holds a required registry tool the server lacks (`gitleaks` today) and a fleet tool that is behind past its grace window.
+On the server, `fleet-tools-doctor.timer` runs it every hour as CLAUDE with `--post`.  It posts to #Work-In-Progress, topic `fleet tools doctor`, only when the set of failing checks changes, including the all-clear.  Since AFC-461 that set also holds a required registry tool the server lacks (`gitleaks` today) and a fleet tool that is behind past its grace window.
 
 ### States
 
@@ -99,7 +98,7 @@ The server half is read over a key that can do one thing:  run this doctor with 
 **What is installed**
 
 1. On the Mac, a dedicated key with no passphrase (launchd has no agent):  `~/.ssh/fleet-tools-ro`.
-2. On the Mac, a `Host fleet-tools-ro` block in `~/.ssh/config` naming the server's **public** address `167.233.254.55`, `User root`, `IdentityFile ~/.ssh/fleet-tools-ro`, `IdentitiesOnly yes`, `BatchMode yes`, `StrictHostKeyChecking yes` and `UserKnownHostsFile ~/.ssh/known_hosts_hetzner`.
+2. On the Mac, a `Host fleet-tools-ro` block in `~/.ssh/config` naming the server's **public** address (the address itself is private deployment inventory, so it lives in the operator's own inventory on that Mac), `User root`, `IdentityFile ~/.ssh/fleet-tools-ro`, `IdentitiesOnly yes`, `BatchMode yes`, `StrictHostKeyChecking yes` and `UserKnownHostsFile ~/.ssh/known_hosts_hetzner`.
 3. On the server, one line in `/root/.ssh/authorized_keys`:
    ```
    restrict,command="/usr/bin/python3 -I /root/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --json" ssh-ed25519 AAAA... fleet-tools-ro@jay-macbook

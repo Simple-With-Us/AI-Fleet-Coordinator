@@ -13,7 +13,7 @@ description: Sweep the open PRs across the fleet repos and land them — invento
 ## 0. Before you start
 
 - Run it from a fresh checkout of `origin/main`, never from `~/Code`:  `d=$(~/apps/lane new AI-Fleet-Coordinator pr-sweep-run) && cd "$d"`, then `PS="$PWD/scripts/pr-sweep"`.
-- Coordination follows `/Users/jay/apps/AGENT-SYNC.md`: claim the sweep in Linear (`board claim`) and post in its Zulip work topic before you start, and close out there.  The workers never post; the seat that runs the sweep does.
+- Coordination follows `/Users/jay/apps/AGENT-SYNC.md`: claim the sweep in Linear (`simple-board claim`) and post in its Zulip work topic before you start, and close out there.  The workers never post; the seat that runs the sweep does.
 - Your seat comes from `AGENT_SEAT` (see `session-start`).  Every worker the sweep launches inherits it.  `pr-sweep` refuses to run without it.
 - The owner rulings the rules carry: merge by default; a hold only for the owner-needed reasons in rule 10; the do-not-automerge and needs-human-merge labels and the CODEOWNERS gate stop only auto-merge; stale Kody reviews may be dismissed under rule 7 (never a human review); a real reply on every thread before it is resolved; no Codex fix requests; merged PRs get a deploy check.  Read them in full with `$PS prompt --common` and `$PS prompt <owner/repo#n> --offline`.
 
@@ -62,6 +62,7 @@ $PS lanes                                           # your lanes (lane prune); a
 - `scripts/branch-landed.sh`: the squash-safe "did this branch land?" check; `lane retire` uses the same PR-state evidence.
 - `scripts/kody-deferred-sweep.mjs`: ranks deferred Kody issues, not PRs.
 - `fleet_facts.github_prs`: the read-only census behind the digest and open loops.  The sweep has its own, because it needs base, head and stack data.
+- The GitHub tools: `git-relay` with the MCP wrapper **GR-MCP** (`git-relay mcp`) is the credential-safe path for the PR writes a sweep makes — `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread` — and `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the sweep's `gh` and shell path is still the one that works, until the owner decides the cutover.
 
 ## Canon
 

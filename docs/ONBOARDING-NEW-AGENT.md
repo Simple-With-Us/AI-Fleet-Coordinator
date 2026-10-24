@@ -128,7 +128,7 @@ with the top-level `apps` (the acronyms) and `--app`.
    Small = mechanical, mid = default implementation, frontier = design /
    money-path / critical verify only.  Canonical: `AGENT-SYNC.md` § Delegation
    & model economics.
-11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (`@**all**` in #Work-In-Progress, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
+11. **Skim Zulip** for your tag or any `repo:` you are working.  Grok Bot seats also full-read fleet wakes (`@**all**` in #Work-In-Progress, topic `fleet`).  The coordinator is CLAUDE (`@**Claude**`); `AFC` is the app acronym and topic prefix, never a signing tag.
     Full-read on match.  Prefer a live listener (`simple-chat listen`); `simple-chat inbox` and `read --new` if you cannot hold one.
 
 ---
@@ -234,7 +234,8 @@ Your bot's credential lives in Infisical Fleet-OPS `/zulip` (`<BOT>_ZULIP_EMAIL`
 creates bot users, so ask him for yours (`docs/protocols/zulip-fleet-guide.md` § Bot Setup).
 Never echo the key.
 
-Cloud / no Mac FS: set `ZULIP_EMAIL`, `ZULIP_API_KEY`, and `ZULIP_SITE` as **runtime** env
+Cloud / no Mac FS: the seat's bot credential comes from Infisical Fleet-OPS `/zulip`
+(`<BOT>_ZULIP_EMAIL` / `_KEY` / `_SITE`), read by the CLI through `fleet-secrets`
 vars (not setup-only) and run `python3 scripts/agent-sync` from any clone of this repo, or
 follow `docs/protocols/zulip-fleet-guide.md` § Core Actions over plain HTTP.  State that
 cadence in the intro. Apple Notes is Mac-only — put a handoff body in the
@@ -298,16 +299,16 @@ Then, by hand and with the owner's approval of each live install (read the `plan
    decide first whether it has a fixed default seat (AGENT-SYNC § Identity Rules, Platform Defaults) or none, because that
    decides its rules text and whether it may get `simple-chat mcp`.
 
-   | Tool | Seat | Rules (`install_rules`) | Skills (`install-fleet-skills.py`) | MCP (`install_mcp`) | Deny hook (`install_tools`) |
+   | Tool | Seat | Rules (`install_rules`) | Skills (`install-fleet-skills.py`) | MCP server (`install_mcp`) | Deny hook (`install_tools`) |
    |---|---|---|---|---|---|
-   | Clutch | CLUTCH, a launcher's seat wins | `clutch`, `~/.clutch/dsh/AGENTS.md` | `~/.clutch/dsh/skills` | `simple-chat` only (`fleet-recall` is a native preset) | `clutch`, a bridge plugin in the cordis patch |
-   | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `simple-chat` | `muse`, a plugin the owner installs |
+   | Clutch | CLUTCH, a launcher's seat wins | `clutch`, `~/.clutch/dsh/AGENTS.md` | `~/.clutch/dsh/skills` | `agent-sync` only, the Zulip server (`simple-chat` is the CLI, not a server name; `fleet-recall` is a native preset) | `clutch`, a bridge plugin in the cordis patch |
+   | Muse Code | MC | covered by `claude` (its fallback) | `~/.config/muse/skills` | `muse`: `fleet-recall`, `agent-sync` (the Zulip server) | `muse`, a plugin the owner installs |
    | Kimi Code | none | `kimi`, `~/.kimi-code/AGENTS.md` | none (reads the shared `~/.agents/skills`) | `kimi`: `fleet-recall` | `kimi`, a `[[hooks]]` block |
    | Copilot CLI | none | `copilot`, `~/.copilot/copilot-instructions.md` (UNVERIFIED) | none | `copilot`: `fleet-recall` | `copilot`, a file this tool owns under `~/.copilot/hooks/` |
    | OpenCode | none | `opencode`, `~/.config/opencode/AGENTS.md` (the owner's row, #438; it may also read `~/AGENTS.md`) | none | `opencode`: `fleet-recall` | `opencode`, a local plugin in the stable dir |
    | Conductor | none | none: its Claude Code and Codex read theirs | none | none: each harness inside reads its own | none: the Claude and Codex guards fire inside it |
-   | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `simple-chat` | `minimax` (alias `mm`, in `all`), a local plugin directory `~/.minimax/plugins/fleet-guard/` with the lane and secret guard |
-   | fx | FX | `fx` | `~/.fx/skills` | `fx`: `fleet-recall`, `simple-chat` | none |
+   | MiniMax Code | MM | `minimax` (`memory/user.md`) | `~/.minimax/skills` | `minimax`: `fleet-recall`, `agent-sync` (the Zulip server) | `minimax` (alias `mm`, in `all`), a local plugin directory `~/.minimax/plugins/fleet-guard/` with the lane and secret guard |
+   | fx | FX | `fx` | `~/.fx/skills` | `fx`: `fleet-recall`, `agent-sync` (the Zulip server) | none |
 
    Not tools to wire: Muse Assist (a cloud assistant, the card in `docs/MUSE-ONBOARDING.md`), BotFleet and Grok Bot (launchers: they
    pass their own seat, so nothing user-level may pin one), `~/.dsh` (BotFleet owns it), Cherry Studio, OpenClaw (not configured), and
@@ -350,7 +351,7 @@ Only when the seat's product needs them. Do not block first code on these.
 |-------|-------|
 | Digest agent logo | `agent-logos/<seat>.svg` + legend in `build-fleet-daily-digest.py` |
 | MCP servers | Per-platform config. Secrets from Infisical (`fleet-secrets`). Never commit tokens. |
-| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app; `ZULIP_EMAIL` + `ZULIP_API_KEY` + `ZULIP_SITE` + `GH_TOKEN` must be **runtime** vars |
+| Codex Cloud | `.codex/setup.sh` + `maintenance.sh` in each app;  the Zulip credential comes from Infisical Fleet-OPS `/zulip` through `fleet-secrets`, and `GH_TOKEN` must be a **runtime** var |
 | iOS copy | Title Case nav / ASC listing copy: `FLEET-UI-COPY.md`.  TestFlight notes never include agent names.  Compiler / `GB-COMPILER` owns iOS ship on GitHub-hosted `macos-latest` only.  DealDex's hosted Actions ship stays — do not disable it.  Do not run `xcodebuild` / TestFlight / `ios-ship-now` / `--force-ship` from a fleet seat. |
 | Sentry | Fleet-infra DSN is a repo secret, not a chat paste |
 

@@ -28,7 +28,7 @@ A two-dot `git diff origin/main HEAD` on a stale lane is actively misleading.  A
 ## 2. Linear
 
 ```bash
-board status <id> completed --resolution "Landed in #<PR>.  <one line>."
+simple-board status <id> completed --resolution "Landed in #<PR>.  <one line>."
 # or: deployed — only after health verify
 ```
 
@@ -36,7 +36,7 @@ The PR body carried `Fixes <ID>` when the PR finished the issue.  Once Linear's 
 
 - **Completed** = merged to main.
 - **Deployed** = released and verified (say how).
-- Correct a wrong status or resolution with a new `board comment` or `board status`, never by editing another seat's comment.
+- Correct a wrong status or resolution with a new `simple-board comment` or `simple-board status`, never by editing another seat's comment.
 
 Every imported GitHub issue has a Linear twin;  work and close the Linear issue, not the GitHub one.  A new GitHub issue filed after the cutover is copied into Linear one way, by Linear's GitHub sync, as an issue with its own id;  close that Linear issue, not the GitHub one.  Cross-app work gets an issue on each affected team, linked in the descriptions.
 
@@ -46,17 +46,19 @@ There is no effort log to update and nothing for writeback to copy.  The effort 
 
 The PR body names the issue (`Fixes <ID>` or `Refs <ID>`), and the branch is `<seat>/<id>-<slug>`.  Say in the closeout post which of the two you used.
 
+Opening, editing, replying to, resolving and merging a PR all have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the interim `gh` and shell path is still the one that works, until the owner decides the cutover.
+
 ## 4. Zulip
 
 Linear first, then the work topic — the same one you claimed in.
 
 ```bash
-agent-sync post --topic "<ID> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nissue: <ID>\ngates: <what ran>\nwork: <what landed>'
+simple-chat post --topic "<ID> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\nissue: <ID>\ngates: <what ran>\nwork: <what landed>'
 ```
 
-Then resolve the topic when the issue reaches Deployed or Parked:  `agent-sync resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
+Then resolve the topic when the issue reaches Deployed or Parked:  `simple-chat resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
 
-Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`slack-sync.sh`, `agent-sync-websocket.py`, `agent-sync-poll.py`) are retired; `agent-sync` replaces them.
+Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`slack-sync.sh`, `agent-sync-websocket.py`, `agent-sync-poll.py`) are retired; `simple-chat` replaces them.
 
 ## 5. Apple Notes
 
@@ -85,7 +87,7 @@ If you shipped a flag that is off, reserve a Planned enablement row (ST: also `d
 
 ## Parked, not done
 
-If you stop without merge: the issue stays accurate (`board status <id> open` to release it, or `parked`, plus a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
+If you stop without merge: the issue stays accurate (`simple-board status <id> open` to release it, or `parked`, plus a comment "parked because …"), the work topic says `BLOCKED`/`PARKED` with a `reason:` line, worktree is not dirty with uncommitted finished code.  In Progress after you left is how three agents redo the same slice.
 
 ## Fleet recall (every closeout)
 

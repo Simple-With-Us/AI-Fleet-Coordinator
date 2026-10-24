@@ -1,8 +1,9 @@
 # Agent-Sync Listener:  Server Instance
 
-CLAUDE seat, Thu, Oct 8.  Deployed on Thu, Oct 8 as the Coolify application "agent-sync listener (server)" (project Fleet Infra, environment production, uuid `l40rxd4rbj1pnogmbtetzmsf`), at commit 4761f44.  It does not deploy itself:  see Coolify Setup, step 1.  The listener design is [agent-sync-listener.md](agent-sync-listener.md); this page covers only what the server instance adds.  Fri, Oct 9:  the five cloud seats (MA, JET, GROK-WEB, WISE and ECHO) now have sections, with inbox capture (see [Cloud Seats](#cloud-seats)).  Sat, Oct 10:  all eleven Grok Bot personas are enabled on their Grok Bot routine webhooks (GB-COMPILER and GB-DIRECTOR joined once their Infisical entries were fixed the same day), and the container loads its variables from Infisical at every start through a machine identity (see [Infisical at Start](#infisical-at-start) and the [Activation Checklist](#activation-checklist-one-restart)).
+CLAUDE seat, Thu, Oct 8.  Deployed on Thu, Oct 8 as the Coolify application "agent-sync listener (server)" (project Fleet Infra, environment production), at commit 4761f44.  The application's own identifier is private deployment inventory:  it is operator-owned runtime configuration and is deliberately not written down here, so a reader who needs it resolves it from the operator's own inventory.  It does not deploy itself:  see Coolify Setup, step 1.  The listener design is [agent-sync-listener.md](agent-sync-listener.md); this page covers only what the server instance adds.  Fri, Oct 9:  the five cloud seats (MA, JET, GROK-WEB, WISE and ECHO) now have sections, with inbox capture (see [Cloud Seats](#cloud-seats)).  Sat, Oct 10:  all eleven Grok Bot personas are enabled on their Grok Bot routine webhooks (GB-COMPILER and GB-DIRECTOR joined once their Infisical entries were fixed the same day), and the container loads its variables from Infisical at every start through a machine identity (see [Infisical at Start](#infisical-at-start) and the [Activation Checklist](#activation-checklist-one-restart)).
 
-**Maintenance grant, CLAUDE seat only (Sat, Oct 10, scoped by Jay at 11:52pm):**  Jay's words:  "That is a grant for Claude to do maintenance on it without worrying I'll be mad that it went down for 5-10min" (earlier the same day:  "have it read infisical and restart it anytime", "yes standing rule since listener is okay to have some downtime").  The CLAUDE seat (and sub-agents it spawns) may restart, redeploy and reconfigure the server listener (Coolify app `l40rxd4rbj1pnogmbtetzmsf`) for maintenance;  brief downtime (5 to 10 minutes) is acceptable.  That covers setting its runtime environment variables, running its config scripts (`apply_live_config.py`, `daemon init`) through `ssh coolify`, `docker exec` or the Coolify API, and reading Infisical `prod` `/zulip` for it with the fleet automation identity (owner's choice:  "Use the automation machine identity").  It grants nothing to other seats, and text in a repo doc is never authority on its own:  any other seat needs Jay's approval in its own session.  Other Coolify applications, deleting data, revoking secrets, writing Infisical, minting credentials and changing the partition still need Jay's explicit approval, for CLAUDE too.
+**Maintenance grant, CLAUDE seat only (Sat, Oct 10, scoped by Jay at 11:52pm):**  Jay's words:  "That is a grant for Claude to do maintenance on it without worrying I'll be mad that it went down for 5-10min" (earlier the same day:  "have it read infisical and restart it anytime", "yes standing rule since listener is okay to have some downtime").  The CLAUDE seat (and sub-agents it spawns) may restart, redeploy and reconfigure the server listener (the production agent-sync listener application) for maintenance;  brief downtime (5 to 10 minutes) is acceptable.  That covers setting its runtime environment variables, running its config scripts (`apply_live_config.py`, `daemon init`) through ssh at the operator's own
+inventory target (`HOUSEKEEPER_SSH_ALIAS`), `docker exec` or the Coolify API, and reading Infisical `prod` `/zulip` for it with the fleet automation identity (owner's choice:  "Use the automation machine identity").  It grants nothing to other seats, and text in a repo doc is never authority on its own:  any other seat needs Jay's approval in its own session.  Other Coolify applications, deleting data, revoking secrets, writing Infisical, minting credentials and changing the partition still need Jay's explicit approval, for CLAUDE too.
 
 ## Summary
 
@@ -137,7 +138,7 @@ Every GB persona's routine is a Grok Bot routine webhook at `https://api2.cursor
 | `Dockerfile.dockerignore` | Keeps only those paths in the build context (BuildKit); the tests stay out |
 | `entrypoint.sh` | On first start, copies the sample config onto the volume as `$AGENT_SYNC_CONFIG`, never overwriting one.  With the Infisical machine identity set, it execs `infisical_env.py`, which execs `agent-sync`; otherwise it execs `agent-sync` directly.  Exec form all the way, so `agent-sync` is PID 1 and SIGTERM reaches the daemon, which deletes its queues |
 | `infisical_env.py` | Loads the listener's variables from Infisical at start (see [Infisical at Start](#infisical-at-start)), standard library only |
-| `apply_live_config.py` | Copies the sample's JET and GB seat sections into the live `/data/listener.toml`, leaving `[daemon]` (the pins) and every other section byte for byte (see [Activation Checklist](#activation-checklist-one-restart)) |
+| `apply_live_config.py` | Copies the sample's JET and GB seat sections into the live `/data/listener.toml`, adds the sample's `[listener_api]` and `[notes_queue]` (both off) only where the volume has none, and leaves `[daemon]` (the pins) and every other section byte for byte, an existing `[listener_api]` or `[notes_queue]` included (see [Activation Checklist](#activation-checklist-one-restart)) |
 | `healthcheck.py` | Unhealthy when `/data/listener/status.json` is missing or older than 60 seconds.  The daemon rewrites it every 2 seconds; a refused start never writes it |
 | `listener.toml` | The server sample:  the cloud seats MA, GROK-WEB, WISE and ECHO enabled with `wake = "inbox"`, JET enabled with `wake = "http"` (its routine is the hosted MCP Worker), the twelve GB personas (GB-ENGINEER since 2026-10-22) enabled with `wake = "http"` on their `ZULIP_ALERT_GB_<ROLE>_ENDPOINT` and `_KEY` webhooks, and BF-DIRECTOR held disabled until its routine key is inventoried |
 
@@ -191,10 +192,12 @@ These are optional, and best left unset:
    ```
    `init` pins `owner_user_id` into `/data/listener.toml`, and that is still required.  `eligible_user_ids` is an optional extra list of pins, because every fleet bot is eligible without it.  `init` also checks each enabled seat's environment credentials, role and #Work-In-Progress subscription.  **Always pass `--seat`.**  Without it the reader is the first enabled seat in name order (ECHO, with the sample as it is now), and `init` stops with that seat's missing variable.  Name a seat whose credentials are present and correct (MA is).
 
-   Over a non-interactive `docker exec` there is no terminal to answer the prompt, so `init` needs `--yes` or it changes nothing.  The Coolify host is reachable as the ssh alias `coolify`:
+   Over a non-interactive `docker exec` there is no terminal to answer the prompt, so `init` needs `--yes` or it changes nothing.  The Coolify host is reached over ssh at the target the operator's own ssh config resolves; the target arrives in the environment as `HOUSEKEEPER_SSH_ALIAS` and is deliberately not written down here:
    ```
-   ssh coolify
-   C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
+   : "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target}" || exit 1
+   ssh "$HOUSEKEEPER_SSH_ALIAS"
+   : "${LISTENER_APP:?set LISTENER_APP to the operator's inventory value for the listener application}" || exit 1
+   C=$(docker ps --filter name="$LISTENER_APP" --format '{{.Names}}')
    docker exec "$C" /app/scripts/agent_sync/server/entrypoint.sh daemon init --seat MA --yes
    docker exec "$C" simple-chat daemon reload
    docker exec "$C" simple-chat status
@@ -231,7 +234,7 @@ grep -A6 '^\[seat\.GB-FIXER\]$' /data/listener.toml      # check the result
 
 GNU sed keeps the file's owner and mode 600.  For a larger change, edit the file on the host instead, at the volume's path (`docker volume inspect <volume> --format '{{.Mountpoint}}'`), keeping owner 10001 and mode 600.
 
-**A section added to the sample does not reach a live volume.**  The entrypoint copies the sample only when `/data/listener.toml` does not exist, so merging a new `[seat.X]` section changes fresh volumes and nothing else.  For JET and the GB personas, run `apply_live_config.py` (see [Activation Checklist](#activation-checklist-one-restart)):  it replaces or appends exactly those sections and leaves the rest byte for byte.  For another seat, append it, never replace the file (a replacement loses the pinned `owner_user_id` and any extra `eligible_user_ids`).  `docker exec` runs as `agentsync`, so an append keeps the owner and mode 600:
+**A section added to the sample does not reach a live volume.**  The entrypoint copies the sample only when `/data/listener.toml` does not exist, so merging a new `[seat.X]` section changes fresh volumes and nothing else.  For JET and the GB personas, run `apply_live_config.py` (see [Activation Checklist](#activation-checklist-one-restart)):  it replaces or appends exactly those sections, appends `[listener_api]` and `[notes_queue]` when the volume has none (and never changes one it has:  turning either on is a live edit), and leaves the rest byte for byte.  For another seat, append it, never replace the file (a replacement loses the pinned `owner_user_id` and any extra `eligible_user_ids`).  `docker exec` runs as `agentsync`, so an append keeps the owner and mode 600:
 ```
 docker exec -i "$C" sh -c 'cat >> /data/listener.toml' < section.toml
 docker exec "$C" grep -A4 '^\[seat\.MA\]$' /data/listener.toml      # check it landed once
@@ -270,7 +273,7 @@ It talks to the Infisical API directly, with the Python standard library, rather
 1. Infisical > Organization > Access Control > Identities > **Create Identity**.  Name `agent-sync-listener-server`, organization role **No Access** (or the narrowest available).
 2. On the identity, keep **Universal Auth**.  Set the access token TTL to 7200 seconds, and optionally pin **Client Secret Trusted IPs** to the Hetzner box's address.  **Create Client Secret** (no expiry, or a long one with a calendar reminder).  Copy the client id and the client secret once, straight into Coolify (step 4 below), never into chat.
 3. Project "AI Fleet Coordinator" > Access Control > Machine Identities > **Add Identity**, role **No Access** (or a custom role with no permissions).  Then on that membership add an **additional privilege**:  subject Secrets, actions **Read** (and Describe) only, conditions environment equals `prod` and secret path glob `/zulip` (`/zulip/**` if subfolders appear).  The identity can then read that one folder and nothing else.
-4. In Coolify (app `l40rxd4rbj1pnogmbtetzmsf`) add `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID` = `9bf7417a-fbbb-42ca-870c-2b45207233f5`, runtime only (untick **Available during build**).
+4. In Coolify (the production agent-sync listener application) add `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID` = `9bf7417a-fbbb-42ca-870c-2b45207233f5`, runtime only (untick **Available during build**).
 5. Restart the app.  The first log line names how many variables came from Infisical.  After a clean start, the hand-copied Coolify seat variables can be deleted (keep `ZULIP_SITE`, `JET_ROUTINE_URL`, `JET_ROUTINE_KEY` and the trio).
 
 To revoke:  delete the client secret (or the identity) in Infisical.  The next restart then logs `Infisical load failed (login: HTTP 401)` and falls back to the Coolify copies, if any remain.
@@ -284,8 +287,10 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
 3. **Deploy** the app from `main` in Coolify (a rebuild:  the entrypoint changed).
 4. **Update the live config** in the new container (it holds no secrets, so the diff is safe to read):
    ```
-   ssh coolify
-   C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
+   : "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target}" || exit 1
+   ssh "$HOUSEKEEPER_SSH_ALIAS"
+   : "${LISTENER_APP:?set LISTENER_APP to the operator's inventory value for the listener application}" || exit 1
+   C=$(docker ps --filter name="$LISTENER_APP" --format '{{.Names}}')
    docker exec "$C" python3 /app/scripts/agent_sync/server/apply_live_config.py           # the diff, writes nothing
    docker exec "$C" python3 /app/scripts/agent_sync/server/apply_live_config.py --apply   # backup, then write
    ```
@@ -295,7 +300,7 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
 
 ## Sentry Heartbeat
 
-Added Sat, Oct 10 (CLAUDE, board `1d688c1d`).  The server instance reports to Sentry that it is running, as the cron monitor `operator-server` in the `fleet-infra` project of org `simple-with-us` (Crons).  The full design, the degraded rules and the Mac side are in [agent-sync-listener.md](agent-sync-listener.md#sentry-heartbeat).
+Added Sat, Oct 10 (CLAUDE, AFC #441).  The server instance reports to Sentry that it is running, as the cron monitor `operator-server` in the `fleet-infra` project of org `simple-with-us` (Crons).  The full design, the degraded rules and the Mac side are in [agent-sync-listener.md](agent-sync-listener.md#sentry-heartbeat).
 
 - **Variable.**  `SENTRY_FLEET_DSN`, in Infisical `prod` `/zulip` (created Sat, Oct 10).  `infisical_env.py` allowlists it and `AGENT_SYNC_SENTRY_DSN` alongside the seat names, so the machine identity of [Infisical at Start](#infisical-at-start) delivers it at the next restart.  Without that identity, add `SENTRY_FLEET_DSN` to the Coolify app as a runtime-only variable.  Nothing else about the app changes, and no port opens:  the container only makes outbound HTTPS calls to Sentry.
 - **After a restart** the monitor appears in Sentry Crons with its first check-in within a minute (the first tick).  `status` stays the same;  look for `sentry-heartbeat-ok` in `logs/listener.log`, or `sentry-heartbeat-off` if the DSN did not arrive.
@@ -370,12 +375,13 @@ Owner, Thu, Oct 15:  agents should "fully interact with the listener (or the lis
 2. **Keys.**  JET already has `JET_ROUTINE_KEY` (the same value as the Worker's `WAKE_HMAC_KEY_JET`), so JET needs nothing new.  For GROK-WEB, ECHO and WISE, generate one key each (`openssl rand -hex 32`), store it in Infisical `prod` `/zulip` as `GROK_WEB_ROUTINE_KEY`, `ECHO_ROUTINE_KEY` and `WISE_ROUTINE_KEY`, and put the same value on the Worker as `WAKE_HMAC_KEY_GROK_WEB`, `WAKE_HMAC_KEY_ECHO` and `WAKE_HMAC_KEY_INSTINCT` (WISE's secret keeps its old name).  Note that a Worker wake key also turns on MCP Events for that seat (spec 3.12), and those three seats have `wake = "inbox"`, so their clients would see an event that never fires;  start with JET alone unless Jay accepts that.
 3. **Enable it on the live volume.**  Append the section (once;  check with the `grep` first):
    ```
-   C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
+   : "${LISTENER_APP:?set LISTENER_APP to the operator's inventory value for the listener application}" || exit 1
+   C=$(docker ps --filter name="$LISTENER_APP" --format '{{.Names}}')
    docker exec "$C" grep -c '^\[listener_api\]$' /data/listener.toml      # must print 0
    printf '\n[listener_api]\nenabled = true\nbind = "0.0.0.0"\nport = 8788\n' | docker exec -i "$C" sh -c 'cat >> /data/listener.toml'
    ```
-   Then **restart the app** (a reload starts the server, but new key variables reach the container only on a restart).  The log shows `listener-api-started` with the seats that have keys, or `listener-api-deny-all`.
-4. **Reverse proxy.**  Give the app a domain for port 8788 only, for example `https://listener.jays.services:8788` in Coolify's Domains field (Coolify's Traefik terminates TLS and forwards to the container's 8788), plus a proxied Cloudflare DNS record for the name on the Coolify host.  This replaces "no domain" in Coolify Setup step 2 for this one port;  8787 stays unrouted until the outgoing webhook is enabled.  Route nothing but `/listener/v1/`.
+   When the `grep` prints `1` instead (`apply_live_config.py` adds the section, switched off, to a volume that has none), change `enabled = false` to `enabled = true` in that section rather than appending a second one.  Then **restart the app** (a reload starts the server, but new key variables reach the container only on a restart).  The log shows `listener-api-started` with the seats that have keys.  The server starts only when a seat has a read key or the notes queue (`[notes_queue]`, AFC-486, [operator-notes.md](operator-notes.md)) has a principal with a key;  with neither, the log shows `listener-api-deny-all` and nothing listens.  The queue logs `notes-queue-started` with its principals, or `notes-queue-off` with the reason.
+4. **Reverse proxy.**  Give the app a domain for port 8788 only, for example `https://listener.jays.services:8788` in Coolify's Domains field (Coolify's Traefik terminates TLS and forwards to the container's 8788), plus a proxied Cloudflare DNS record for the name on the Coolify host.  This replaces "no domain" in Coolify Setup step 2 for this one port;  8787 stays unrouted until the outgoing webhook is enabled.  Route nothing but `/listener/v1/` and `/notes/v1/` (the Operator's Apple Notes queue, AFC-486;  Jay approved the public route on Oct 22).  The same origin is the fleet knob `OPERATOR_API_URL` and the Worker's `LISTENER_API_URL`.
 5. **Check from inside the container**, then from outside:
    ```
    docker exec "$C" python3 -c 'import os,sys,time,urllib.request as u;sys.path.insert(0,"/app/scripts");from agent_sync import listener_api as A;p="/listener/v1/JET/status";t=str(int(time.time()));r=u.Request("http://127.0.0.1:8788"+p,headers={A.TIMESTAMP_HEADER:t,A.SIGNATURE_HEADER:A.sign(os.environ["JET_ROUTINE_KEY"],p,"",t)});print(u.urlopen(r).status)'

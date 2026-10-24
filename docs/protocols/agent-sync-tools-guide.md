@@ -2,9 +2,7 @@
 
 The one guide to the simple-tools on every transport:  the stdio server (`simple-chat mcp`), ST-MCP, the hosted server (`https://agents.simplewithus.com/mcp`), and the `simple-chat` CLI.
 
-Names, old and current:  the collection was "agent-sync" and is now **simple-tools**;  the hosted server is **ST-MCP** (its admin is ST-MCP Admin);  the CLIs are `simple-chat` (Zulip), `simple-board` (Linear), `simple-notes` (Apple Notes) and the FleetLink CLI;  the fleet channel is **#Work-In-Progress**.  An `agent-sync` command still exists on managed hosts as a compatibility launcher for `simple-chat`;  new work should call `simple-chat`.  What did NOT change:  wire spellings such as the `_meta["agent-sync/error"]` key, the `agent-sync-wake/1` contract and the `X-Agent-Sync-Signature` header, state paths under `~/.agent-sync/`, and the Worker and directory names (`agent-sync-mcp`, `scripts/agent-sync-mcp/`).  Those are identifiers, not product names.  It is served four ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, `https://fleetlink.online/agent-sync-tools-guide/`, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a published copy.
-
-At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 270 tools and the hosted server 269 by default - JET alone sees one more, `whatsapp_read`, while the WhatsApp bridge is enabled (it is default-off).  The difference is explained under Tools by Family.
+At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 273 tools and the hosted server 272 (the difference is explained under Tools by Family).
 
 ## How to Pass Identity
 
@@ -57,7 +55,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Where:
 | (none) `whoami`, `identities`, `guide` | 3 | both | Identity and this guide (above) |
 | `zulip_*` | 42 | both | Read and post on the fleet's Zulip as a bot |
 | `eavesdropper_*` | 6 stdio, 5 hosted | both | This seat's listener records |
-| `notes_*` | 5 | both | Apple Notes in the owner's Coding folder |
+| `notes_*` | 8 | both | Apple Notes in the owner's Coding folder |
 | `recall_*` | 3 | both | The fleet's shared knowledge corpus |
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
 | `fleetlink_*` | 15 | both | FleetLink shares and links |
@@ -127,14 +125,17 @@ The local listener's records for the identity.  Stdio reads them from this host'
 
 ### notes
 
-`notes_create`, `notes_update`, `notes_pin` and `notes_unpin` are writes;  `notes_status` is a read.  How a request reaches the Mac is under The Notes Relay.
+`notes_create`, `notes_update`, `notes_pin` and `notes_unpin` are writes;  `notes_read`, `notes_list`, `notes_status` and `notes_log` are reads.  They match `simple-notes` verb for verb.  How a request reaches the Mac is under Apple Notes.  Note text comes back between `BEGIN_UNTRUSTED_NOTES` and `END_UNTRUSTED_NOTES`.
 
 | Tool | R/W | Purpose |
 |---|---|---|
-| `notes_create` | W | New note, pinned unless `pin` is false |
-| `notes_update` | W | Replace the body of the note with this exact title (creates it if missing) |
-| `notes_pin`, `notes_unpin` | W | Pin or unpin a note by exact title |
-| `notes_status` | R | Where a relayed request stands:  `queued`, `done` or `refused` |
+| `notes_create` | W | New note, pinned unless `pin` is false.  The title carries your own agent name |
+| `notes_update` | W | Replace the body of any Coding note with this exact title.  A note not titled with your name is never created |
+| `notes_pin`, `notes_unpin` | W | Pin or unpin any Coding note by exact title |
+| `notes_read` | R | One note's content:  `html` (ready for `notes_update` with `html` true), `text` or `raw` |
+| `notes_list` | R | The Coding folder's notes, newest change first;  `query` filters titles |
+| `notes_status` | R | Where a request sent through the Operator stands:  `queued`, `running`, `done`, `refused`, `unknown` or `expired` |
+| `notes_log` | R | The script's action log:  who did what to which note, and what it reformatted (never note text) |
 
 ### recall
 
@@ -279,30 +280,30 @@ Removed names are not aliased.  Calling one returns `unknown_tool` with the repl
 
 A name that was never served is a protocol error (`Unknown tool`), not a tool error.
 
-## The Notes Relay
+## Apple Notes
 
-Apple Notes live in the Mac's iCloud `Coding` folder and only a Mac can write them, so `notes_*` has two routes:
+Apple Notes live in the Mac's iCloud `Coding` folder and only the Mac can touch them, through `apple-notes-coding.sh`.  The `notes_*` tools and `simple-notes` are one tool set that works the same everywhere (`docs/protocols/operator-notes.md`).  No Notes request goes through Zulip.
 
-- **Direct.**  Stdio or the CLI on a Mac runs `apple-notes-coding.sh` itself and returns `status: done`.  Pass `transport: "relay"` (CLI `--relay`) to force the relay instead.
-- **Relay.**  Everywhere else, and always on the hosted server, the tool posts a JSON envelope (`action`, `title`, `markdown`, flags `pin`, `notify`, `needs_owner`, `summary`, `pr`, `html`, plus `request_id` and `identity`) to the public channel `#notes-relay` as the claimed identity, topic = the title.  A body that makes the envelope too long goes up as an attached `note-<request_id>.md`.  The call returns `status: queued` and a `request_id`.
-- **Listener.**  The Mac listener (opt in with `[notes_relay]` in `~/.agent-sync/listener.toml`) accepts requests only from fleet agent bots, runs the script, and reacts with a check mark (done) or a cross mark plus a reply `notes-relay refused <request_id>: <reason>`.  It runs each `request_id` once.
-- **Check on it.**  `notes_status` with the `request_id` returns `queued` (no answer yet), `done` or `refused` with the reason.
-- **Rotating the consumer.**  `notes_status` trusts only the marks and replies of the current relay consumer (the fleet knob `NOTES_RELAY_CONSUMER`), on purpose, so a former consumer cannot forge a result.  The owner rotates it only with an empty spool, and a request sent before a rotation reads as `queued` afterwards, whatever the old consumer did with it.
+- **On the Mac.**  Stdio or the CLI runs `apple-notes-coding.sh` itself and answers `status: done`.
+- **Everywhere else** (the server, hosted ST-MCP for cloud seats).  The request goes to the Operator's notes queue over signed HTTPS, and a seatless runner on the Mac claims it, runs the same script and reports back.  The call waits for that result:  up to 300 seconds for `simple-notes` (`--wait`, `--no-wait`), 25 by default for the stdio server (`wait_seconds` may raise it to 90) and up to 25 for ST-MCP.  It answers `done` like the Mac does.  Only a request still waiting when the wait runs out answers `queued` or `running` with its `request_id`;  then call `notes_status`.
+- **Who may do what.**  A create's title must read `[TEAM_KEY, Agent] Topic` with your own agent name.  Update, pin, unpin, read and list work on any note in the Coding folder (owner:  agents fix formatting across every agent's notes and keep static notes such as `⭐️ Background Jobs Master List` current).  An update of a note whose title does not carry your name never creates it:  a missing one answers `not_found`.
+- **Read, edit, write back.**  `notes_read` with `format: "html"` returns the note's content without the title, date and Session rows, which the script writes on every save.  Edit that and send it back with `notes_update` and `html: true`.  A line that looks like a credential reads as `[withheld: secret-shaped]` (`note.withheld` counts them), and `notes_update` refuses a body that holds the marker:  edit that note on the Mac.
+- **Formatting.**  The script enforces the date row, the Session row, sentence gaps and fleet dates on every write, wherever it came from.
+- **The log.**  The script logs every run (time, seat, session, caller, mode, title, note id, outcome, sizes and what it reformatted;  never note text).  `notes_log` and `simple-notes log` read it:  the Mac's file on the Mac, the Operator's copy elsewhere.
+- **Retries.**  A `request_id` writes a note once.  `outcome_unknown` means the script may have written:  check the note before sending it again under a new `request_id`.  The one exception is an `outcome_unknown` whose message says the request may or may not be queued:  the answer to the send was lost, so check it with `notes_status`, or send it again with the same `request_id`, never a new one.
 
-Title rule:  `[TEAM_KEY, Agent] Topic`, such as `[AFC, Codex] Topic`.  Use uppercase team keys and the verified calling seat’s canonical Title Case `notesName`; its exact uppercase seat tag remains accepted for compatibility.  The title holds no double quote, backslash or control character and is at most 200 characters.  The listener and direct runner refuse another seat’s name and arbitrary case variants.
-
-Owner setup (once):  create the public channel `#notes-relay`, make sure the relaying bots are subscribed to it, add `[notes_relay] enabled = true` and `seat = "CLAUDE"` to the Mac's `listener.toml`, then `simple-chat daemon reload`.  A missing channel is a logged warning, never created.
+Title rule for a create:  `[TEAM_KEY, Agent] Topic`, such as `[AFC, Codex] Topic`.  Use uppercase team keys and the verified calling seat’s canonical Title Case `notesName`;  its exact uppercase seat tag remains accepted for compatibility.  Every title holds no double quote, backslash or control character, does not start with `-` and is at most 200 characters.
 
 ## CLI Equivalents
 
-Every MCP tool has a command.  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3);  the `notes` commands also take `--identity`.  Add `--json` for machine output.
+Every MCP tool has a command.  Identity for the CLI comes from `--as NAME`, `AGENT_SEAT` or `--default-seat` (under a launcher, `AGENT_LAUNCH_SEAT` wins and a different `--as` exits 3);  the `notes` commands also take `--identity`, except `simple-notes log`, which acts as no one (filter it with `--by-seat`).  Add `--json` for machine output.
 
 | Group | Commands |
 |---|---|
 | Zulip (flat verbs, shown in the zulip table above) | `simple-chat post`, `reply`, `read`, `inbox`, `dm`, `dm-read`, `search`, `channels`, `users`, `scheduled …`, `drafts …` and so on.  There is no `simple-chat zulip` group:  the Zulip commands are the top-level verbs.  `simple-chat api` is an allowlisted escape hatch for one non-admin Zulip endpoint |
 | Identity | `simple-chat whoami`, `simple-chat identities` (this host's allowed set and default, no network) |
 | Listener | `simple-chat listener status|inbox|ack|owner-queue|surface|wakes|held-back|clear-held` for this seat's records;  `simple-chat daemon …` runs the listener itself |
-| Notes | `simple-notes create|update TITLE [BODY|-] [--body-file P] [--html P] [--no-pin] [--notify] [--needs-owner] [--summary T] [--pr N] [--relay]`, `simple-notes pin|unpin TITLE`, `simple-notes status REQUEST_ID` |
+| Notes | `simple-notes create|update TITLE [BODY|-] [--body-file P] [--html P] [--no-pin] [--notify] [--needs-owner] [--summary T] [--pr N]`, `simple-notes pin|unpin TITLE`, `simple-notes read TITLE [--format html|text|raw]`, `simple-notes list [--query T] [--limit N]`, `simple-notes status REQUEST_ID`, `simple-notes log [--since-hours H] [--by-seat S] [--action A] [--title T]`.  Every one takes `--request-id`, `--wait SECONDS` and `--no-wait` where it reaches the Operator.  `simple-notes runner` is the Mac runner itself |
 | Guide | `simple-chat guide [SECTION]` |
 | Recall | `recall search|stats|contribute` (its own CLI, not part of `simple-chat`) |
 | Linear | `simple-board list|show|file|claim|comment|status|whoami`, `simple-board commands`, `simple-board run NAME`, `simple-board api schema|query|mutation`, `simple-board mcp list|call` |
@@ -328,7 +329,8 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `rate_limited` | Retry after `retry_after_s` (`retryable: true`) |
 | `outcome_unknown` | The write may or may not have landed.  Check (read the topic) before retrying;  never replay blindly |
 | `refused_secret` | The text looks like a credential.  Remove it |
-| `not_found` | An unknown guide section or notes `request_id` |
+| `not_found` | An unknown guide section, a notes `request_id`, or no Coding note with that title |
+| `forbidden` | The Operator does not let this host act for that seat (its `[notes_queue]` seat lists) |
 | `claim_held` | Linear:  another seat holds the claim |
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
 | `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above:  a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |

@@ -42,8 +42,8 @@ def lease(lease_id="L1", *, topics=(), platform="claude-code", mentions=True, ca
 
 
 DIRECT = ("@**Claude** please look", ["mentioned"])
-# The fleet-wide wake (owner 2026-10-09):  @**all** in #agent-sync > fleet.  Zulip sets the stream wildcard flag.
-FLEET_KW = dict(topic="fleet", flags=["wildcard_mentioned", "stream_wildcard_mentioned"])
+# The fleet-wide wake (owner 2026-10-09):  @**all** in #work-in-progress > fleet.  Zulip sets the stream wildcard flag.
+FLEET_KW = dict(channel="work-in-progress", topic="fleet", flags=["wildcard_mentioned", "stream_wildcard_mentioned"])
 
 
 class ClassifyTests(unittest.TestCase):
@@ -84,10 +84,13 @@ class ClassifyTests(unittest.TestCase):
     def test_at_all_in_agent_sync_fleet_is_the_fleet_wake(self) -> None:
         for name, kw in {
             "flags and literal": dict(content="@**all** HALT", **FLEET_KW),
-            "stream flag only": dict(content="HALT", topic="fleet", flags=["stream_wildcard_mentioned"]),
-            "legacy flag only": dict(content="HALT", topic="fleet", flags=["wildcard_mentioned"]),
-            "literal only (no flags on the event)": dict(content="[CODEX·ab] @**all** HALT", topic="fleet"),
-            "topic and channel without case": dict(content="@**all** HALT", topic="Fleet", channel="Agent-Sync"),
+            "stream flag only": dict(content="HALT", topic="fleet", channel="work-in-progress",
+                                          flags=["stream_wildcard_mentioned"]),
+            "legacy flag only": dict(content="HALT", topic="fleet", channel="work-in-progress",
+                                      flags=["wildcard_mentioned"]),
+            "literal only (no flags on the event)": dict(content="[CODEX·ab] @**all** HALT", topic="fleet",
+                                                         channel="work-in-progress"),
+            "topic and channel without case": dict(content="@**all** HALT", topic="Fleet", channel="Work-In-Progress"),
             "@**everyone** is the same stream wildcard": dict(content="@**everyone** HALT", **FLEET_KW),
         }.items():
             with self.subTest(name):
@@ -415,7 +418,7 @@ class LeaseRoutingTests(unittest.TestCase):
     def test_muted_topics_drop_unless_direct_or_dm(self) -> None:
         muted = ctx(muted=[topic_key("agent-sync", "t")])
         self.assertEqual(R.route(msg(content="@**all** x", **FLEET_KW), ME,
-                                 ctx(muted=[topic_key("agent-sync", "fleet")]), [])[1].drop_reason, "muted")
+                                 ctx(muted=[topic_key("work-in-progress", "fleet")]), [])[1].drop_reason, "muted")
         self.assertEqual(R.route(msg(content="@**all** x", flags=["stream_wildcard_mentioned"]), ME, muted, [])[1].drop_reason,
                          "muted")
         self.assertTrue(R.route(msg(content=DIRECT[0], flags=DIRECT[1]), ME, muted, [])[1].seat_inbox)
