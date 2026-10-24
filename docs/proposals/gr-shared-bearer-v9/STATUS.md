@@ -10,3 +10,7 @@ Independent review and current-main behavioral qualification remain open. No sec
 ## v9.1 delta
 
 Original v9 archive above remains unchanged. Scoped delta SHA256: b018b472e6372ece4daf696947fb9636360f08265d431efddd4d5f1b6febef53. Applied cleanly to durable v9 commit590fd06b07d12aba28e58e58aea77fb2040bf4dc. Delta changes only future-skew tombstone retention and its regression test. Author-reported full tests are not independent test results. Whole review and current-main composition remain open; no operational permission changes.
+
+## v9.2 narrow disclosure delta
+
+Archive SHA256 a7ab29d7010575fb714aabc9e2a5672d66e624fdba7a613a1ef2fd1a40a486a1. Applies only a narrow-media-query warning/checkbox-label wrapping override and matching CSP STYLE hash. Author-rendered actual390px scrolled Actions and desktop pixels inspected independently: full warning, checkbox label and buttons readable; desktop unchanged. Horizontal table scroll still separates identity from Actions at390px, an existing pattern, not a claim of universal mobile safety. Original v9/v9.1 archives unchanged. Operational holds remain.
