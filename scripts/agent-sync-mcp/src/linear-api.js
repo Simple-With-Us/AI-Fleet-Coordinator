@@ -91,6 +91,9 @@ async function protectLabels(tools, prepared) {
       if (/^(?:creatorId|authorId|actorId|createdById|createAsUser)$/i.test(key)) {
         throw new ToolError("invalid_argument", "Linear author identity is fixed by this seat's app credential.");
       }
+      if (issueMutation && /^delegateId$/i.test(key)) {
+        throw new ToolError("invalid_argument", "The delegate is a fleet claim marker.  Claim with linear_claim; release with linear_status.");
+      }
       if (issueMutation && /^(?:added|removed)?labelIds?$/i.test(key)) {
         if (key === "labelIds") replacesLabels = true;
         for (const id of Array.isArray(child) ? child : [child]) {

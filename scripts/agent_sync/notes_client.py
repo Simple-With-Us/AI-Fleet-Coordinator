@@ -30,6 +30,9 @@ from . import notes as N
 from . import notes_wire as W
 
 KNOB = "OPERATOR_API_URL"
+KNOB_PATH = (
+    "/"  # fleet knobs live at the AI Fleet Coordinator project's root (fleet_knobs/source.py)
+)
 CALL_TIMEOUT_S = 20.0
 POLL_FIRST_S, POLL_LATER_S = 1.0, 2.0
 KEY_CACHE_S = 600.0
@@ -54,9 +57,52 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-def base_url(env: Mapping[str, str]) -> str | None:
+def fleet_secrets_get(
+    name: str,
+    path: str,
+    env: Mapping[str, str],
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str:
+    """One value from Infisical (AI Fleet Coordinator, prod) through `fleet-secrets get`, quotes dropped;  "" when
+    fleet-secrets is missing, refuses or fails.  A lookup that hangs is NotesError not_configured, never a missing value."""
+    binary = shutil.which("fleet-secrets", path=env.get("PATH")) or os.path.expanduser(
+        "~/.local/bin/fleet-secrets"
+    )
+    if not os.access(binary, os.X_OK):
+        return ""
+    try:
+        done = runner(
+            [binary, "get", name, "--path", path, "--project", W.KEY_PROJECT],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=dict(env),
+        )
+    except subprocess.TimeoutExpired:
+        # A hung lookup is not a missing value:  say so, so the caller does not go looking for a key that is there.
+        # Nothing has been sent yet, so this is never an unknown outcome.
+        raise N.NotesError(
+            "not_configured",
+            "fleet-secrets did not answer within 30 seconds reading %s, so nothing was sent;  try again"
+            % name,
+        ) from None
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if done.returncode != 0:
+        return ""
+    return (done.stdout or "").strip().strip('"').strip("'")
+
+
+def base_url(
+    env: Mapping[str, str],
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str | None:
     """The Operator API's https origin:  OPERATOR_API_URL in the environment (tests, a one-off override), else the fleet
-    knob of that name.  None when neither names an https origin with no path."""
+    knob of that name, else the same key read with `fleet-secrets get`.  The last step is for a host where fleet_knobs
+    has no Infisical login of its own:  the server's agent shells carry no automation pair, so there the knob is only
+    its last-known-good copy, which lapses after 48 hours (fleet_knobs/lkg.py), while fleet-secrets logs in for itself
+    the way it does for the principal's key.  None when none of them names an https origin with no path."""
     raw = (env.get(KNOB) or "").strip()
     if not raw:
         try:
@@ -67,6 +113,8 @@ def base_url(env: Mapping[str, str]) -> str | None:
             raw = str(knobs.resolve(KNOB, "", "str").value or "").strip()
         except Exception:  # noqa: BLE001 - an unreadable knob reads as not configured, never as a crash
             raw = ""
+    if not raw:
+        raw = fleet_secrets_get(KNOB, KNOB_PATH, env, runner).strip()
     if not raw:
         return None
     parts = urllib.parse.urlsplit(raw)
@@ -119,33 +167,7 @@ class KeySource:
             self._value = None
 
     def _fetch(self) -> str:
-        binary = shutil.which("fleet-secrets", path=self.env.get("PATH")) or os.path.expanduser(
-            "~/.local/bin/fleet-secrets"
-        )
-        if not os.access(binary, os.X_OK):
-            return ""
-        try:
-            done = self.runner(
-                [binary, "get", self.name, "--path", W.KEY_PATH, "--project", W.KEY_PROJECT],
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-                env=dict(self.env),
-            )
-        except subprocess.TimeoutExpired:
-            # A hung lookup is not a missing key:  say so, so the caller does not go looking for a key that is there.
-            # Nothing has been sent yet, so this is never an unknown outcome.
-            raise N.NotesError(
-                "not_configured",
-                "fleet-secrets did not answer within 30 seconds reading %s, so nothing was sent;  try again"
-                % self.name,
-            ) from None
-        except (OSError, subprocess.SubprocessError):
-            return ""
-        if done.returncode != 0:
-            return ""
-        return (done.stdout or "").strip().strip('"').strip("'")
+        return fleet_secrets_get(self.name, W.KEY_PATH, self.env, self.runner)
 
 
 class OperatorClient:
