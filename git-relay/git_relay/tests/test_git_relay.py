@@ -805,6 +805,35 @@ class TestFleetSecretsSource(unittest.TestCase):
             source.secret("GH_APP_X_ID_OLD")
         self.assertEqual(len(calls), 2)
 
+    def test_the_absent_line_is_found_after_other_stderr_lines(self):
+        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+
+        # A warning ahead of the exit-3 line must not send the parse to the
+        # first-name fallback, which would blame the live GH_APP_X_ID.
+        calls = []
+
+        def runner(argv, capture_output, timeout):
+            calls.append(argv)
+            if "GH_APP_X_PRIVATE_KEY" in argv:
+                return subprocess.CompletedProcess(
+                    argv,
+                    3,
+                    stdout=b"",
+                    stderr=(
+                        b"warning: a newer release is available\n"
+                        b"fleet-secrets: key GH_APP_X_PRIVATE_KEY"
+                        b" is not in Infisical at /github-apps\n"
+                    ),
+                )
+            return subprocess.CompletedProcess(argv, 0, stdout=b"7", stderr=b"")
+
+        source = FleetSecretsSource(runner=runner)
+        with self.assertRaises(AppTokenError) as ctx:
+            source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
+        self.assertIn("GH_APP_X_PRIVATE_KEY", str(ctx.exception))
+        self.assertEqual(source.secret("GH_APP_X_ID"), "7")
+        self.assertEqual(len(calls), 2)
+
     def test_every_listed_absent_name_is_remembered(self):
         from git_relay.app_tokens import AppTokenError, FleetSecretsSource
 

@@ -85,8 +85,9 @@ _ABSENT_RE = re.compile(r"\bkey (?P<names>[A-Za-z0-9_, ]+?) is not in Infisical 
 
 def _absent_names(detail: str, wanted: list) -> list:
     """The requested names the CLI's exit-3 line lists;  the first name when
-    the line does not parse (exit 3 always means one is absent:  fail closed)."""
-    match = _ABSENT_RE.search(detail.splitlines()[0] if detail else "")
+    no line parses (exit 3 always means one is absent:  fail closed).  Every
+    stderr line is searched, so a warning printed before it changes nothing."""
+    match = next(filter(None, map(_ABSENT_RE.search, detail.splitlines())), None)
     listed = {n.strip() for n in match.group("names").split(",")} if match else set()
     return [n for n in wanted if n in listed] or wanted[:1]
 
