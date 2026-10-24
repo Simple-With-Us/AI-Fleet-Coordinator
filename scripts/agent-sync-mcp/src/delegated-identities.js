@@ -15,8 +15,11 @@
 // scope, pause and budget still govern every call.
 //
 // GB_IDENTITIES is read from scripts/agent_sync/mcp/gb-identities.json, the one list the stdio
-// server reads too.  No other list of personas exists, here or anywhere.
-import GB_TABLE from "../../agent_sync/mcp/gb-identities.json" with { type: "json" };
+// server reads too.  No other list of personas exists, here or anywhere.  It comes through
+// infisical-manifest.js, which checks the table's shape once:  a malformed table enables no
+// persona (an empty list and one logged event) instead of failing this module's load, which
+// would stop the whole Worker (kody 4367022121).
+import { GB_ENABLED_IDENTITIES } from "./infisical-manifest.js";
 import RENAMED from "../../agent_sync/mcp/renamed-tools.json" with { type: "json" };
 import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS, UnknownTool } from "./hosted-tools.js";
 import { resolveSecret, infisicalMode } from "./infisical.js";
@@ -31,7 +34,7 @@ import { GUIDE_TEXT } from "./guide-text.js";
 
 const GuideCall = GuideArgs.extend({ identity: z.unknown().optional() });
 
-export const GB_IDENTITIES = Object.freeze([...GB_TABLE.enabled]);
+export const GB_IDENTITIES = GB_ENABLED_IDENTITIES;
 const GB_SET = new Set(GB_IDENTITIES);
 export const GB_CREDENTIAL_BUNDLE = "GB_IDENTITY_CREDENTIALS";
 export const GB_CREDENTIAL_BUNDLE_MAX_BYTES = 5 * 1024;

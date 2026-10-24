@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { resolveSecret, infisicalStats, _resetInfisicalForTests, InfisicalError } from "../src/infisical.js";
 import { resolveLinearPair, linearClientFromPair } from "../src/linear.js";
 import { resolveFleetlinkSeatTokens, fleetlinkClientFromSecret } from "../src/fleetlink.js";
@@ -369,6 +370,82 @@ test("personas table:  the committed table passes, and a malformed one fails sof
     const r = gbIdentitiesFrom(table);
     assert.equal(r.valid, false, JSON.stringify(table));
     assert.deepEqual([...r.identities], [], "no persona field is declared from a malformed table");
+  }
+});
+
+// Loads the Worker's persona consumers in a fresh node process whose personas table is `table`:  a load
+// hook serves the fixture in place of scripts/agent_sync/mcp/gb-identities.json, so nothing on disk changes.
+// The child prints one JSON line describing what each consumer saw.
+function loadWithPersonasTable(table) {
+  const src = (name) => new URL(`../src/${name}`, import.meta.url).href;
+  const script = `
+    import { registerHooks } from "node:module";
+    registerHooks({
+      load(url, context, nextLoad) {
+        if (url.endsWith("/agent_sync/mcp/gb-identities.json")) return { format: "json", source: process.env.GB_TABLE_FIXTURE, shortCircuit: true };
+        return nextLoad(url, context);
+      },
+    });
+    const out = { loaded: false };
+    try {
+      const manifest = await import(${JSON.stringify(src("infisical-manifest.js"))});
+      const delegated = await import(${JSON.stringify(src("delegated-identities.js"))});
+      const { gate } = await import(${JSON.stringify(src("gate.js"))});
+      const { parseGbBearer } = await import(${JSON.stringify(src("gb-bearer.js"))});
+      const { resolveFleetlinkSeatTokens } = await import(${JSON.stringify(src("fleetlink.js"))});
+      const { SEAT_SECRETS } = await import(${JSON.stringify(src("config.js"))});
+      out.loaded = true;
+      out.valid = manifest.GB_TABLE_VALID;
+      out.identities = [...delegated.GB_IDENTITIES];
+      out.sameList = delegated.GB_IDENTITIES === manifest.GB_ENABLED_IDENTITIES;
+      out.cursorAllowed = [...delegated.allowedIdentities("CURSOR")];
+      out.gbDeclared = manifest.INFISICAL_EXPECT_DEFAULT.filter((e) => /^\\/(zulip|linear):[A-Z]+_GB_/.test(e)).length;
+      const env = { SEAT_GATE: { idFromName: (n) => n, get: (id) => ({ id }) } };
+      try { gate(env, "GB-FIXER"); out.gbGate = "opened"; } catch (error) { out.gbGate = error.message; }
+      out.gbBearer = parseGbBearer("gbb_fixer_" + "A".repeat(43));
+      // The seat list src/index.js passes on every /mcp request.
+      const tokens = await resolveFleetlinkSeatTokens({ INFISICAL_MODE: "off" }, [...Object.keys(SEAT_SECRETS), ...delegated.GB_IDENTITIES]);
+      out.fleetlink = { seatTokens: tokens.seatTokens.size, denied: [...tokens.deniedSeats] };
+      out.bundleValid = delegated.loadDelegatedCredentials({}).valid;
+    } catch (error) {
+      out.error = String(error?.message ?? error);
+    }
+    console.log(JSON.stringify(out));
+  `;
+  const { NODE_TEST_CONTEXT: _runner, ...parentEnv } = process.env;
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
+    env: { ...parentEnv, GB_TABLE_FIXTURE: JSON.stringify(table) }, encoding: "utf8", timeout: 30_000,
+  });
+  assert.equal(run.status, 0, run.stderr);
+  return { out: JSON.parse(run.stdout.trim().split("\n").at(-1)), stderr: run.stderr };
+}
+
+test("personas table:  a malformed table still loads every module that uses it, and enables no persona (kody 4367022121)", () => {
+  // The control proves the hook takes effect:  a one-persona table gives exactly that persona everywhere.
+  const control = loadWithPersonasTable({ enabled: ["GB-FIXER"] });
+  assert.equal(control.out.error, undefined, control.out.error);
+  assert.deepEqual(control.out.identities, ["GB-FIXER"]);
+  assert.equal(control.out.sameList, true, "delegated-identities.js exports the manifest's validated list");
+  assert.ok(control.out.cursorAllowed.includes("GB-FIXER"));
+  assert.equal(control.out.gbDeclared, 4);
+  assert.equal(control.out.gbGate, "opened");
+  assert.equal(control.out.gbBearer?.identity, "GB-FIXER");
+  assert.ok(!control.stderr.includes("gb_identity_table_invalid"));
+  for (const table of [{}, null, [], { enabled: [] }, { enabled: ["gb-fixer"] }, { enabled: ["GB-FIXER", 7] }, { enabled: "GB-FIXER" }]) {
+    const label = JSON.stringify(table);
+    const { out, stderr } = loadWithPersonasTable(table);
+    assert.equal(out.error, undefined, `${label}: ${out.error}`);
+    assert.equal(out.loaded, true, `${label}: every module loads`);
+    assert.equal(out.valid, false, label);
+    assert.deepEqual(out.identities, [], `${label}: GB_IDENTITIES is empty`);
+    assert.equal(out.sameList, true, label);
+    assert.ok(!out.cursorAllowed.some((name) => name.startsWith("GB-")), `${label}: no grant may act as a persona`);
+    assert.equal(out.gbDeclared, 0, `${label}: no persona field is declared`);
+    assert.equal(out.gbGate, "not a seat", `${label}: no persona gate opens`);
+    assert.equal(out.gbBearer, null, `${label}: no persona bearer parses`);
+    assert.deepEqual(out.fleetlink, { seatTokens: 0, denied: ["GB-ENGINEER"] }, `${label}: the /mcp FleetLink seat list resolves`);
+    assert.equal(out.bundleValid, true, `${label}: the legacy credential path still loads`);
+    assert.ok(stderr.includes('"event":"gb_identity_table_invalid"'), `${label}: one structured event`);
   }
 });
 

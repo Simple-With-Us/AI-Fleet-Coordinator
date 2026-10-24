@@ -15,22 +15,25 @@
 // absent, not as fallbacks).  Adding one is a new key plus a copy-set change.
 
 // Leaf module:  imports ONLY the one persona list (never delegated-identities.js,
-// which itself imports infisical.js - that would be a cycle).  The name
-// derivation below must stay identical to delegatedNames() there;  a test
-// guards the drift.
+// which itself imports infisical.js - that would be a cycle).  It is also the
+// one place that table is read:  delegated-identities.js imports
+// GB_ENABLED_IDENTITIES from here and exports it as GB_IDENTITIES, so the
+// allowed sets, the SeatGates, the GB bearers and FleetLink's seat list all
+// see the validated list, never the raw JSON.  The name derivation below must
+// stay identical to delegatedNames() there;  a test guards the drift.
 import { z } from "zod";
 import GB_TABLE from "../../agent_sync/mcp/gb-identities.json" with { type: "json" };
 
 // The table's shape is checked before any name is derived from it (kody
 // 4366922209, 4366922334):  a missing `enabled` list or a malformed persona
-// never becomes an odd secret name.  Other keys (the table's notes) pass
-// through untouched.  The check fails soft (kody 4367022121):  this module
+// never becomes an odd secret name or identity.  Other keys (the table's notes)
+// pass through untouched.  The check fails soft (kody 4367022121):  this module
 // loads with the Worker, so a throw here would take every seat, /health and
-// /admin down.  A malformed table logs one structured event and declares no
-// Grok Bot field, which only makes a missing persona field read as
-// capability-off (every one is an optional read) instead of failing loudly.
-// The unit suite asserts the committed table passes, so a malformed table
-// still fails CI before it can ship.
+// /admin down.  A malformed table logs one structured event and enables no
+// persona anywhere:  no Grok Bot field is declared, and GB_IDENTITIES is empty,
+// so no grant may act as a persona until the table is fixed.  The unit suite
+// asserts the committed table passes and loads the Worker's modules against
+// malformed tables, so a malformed table still fails CI before it can ship.
 const GbTable = z.object({ enabled: z.array(z.string().regex(/^GB-[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*$/)).min(1) }).passthrough();
 
 /** The validated persona list of a personas table:  { valid, identities }.
@@ -46,7 +49,10 @@ const GB_PARSED = gbIdentitiesFrom(GB_TABLE);
 if (!GB_PARSED.valid) console.error(JSON.stringify({ event: "gb_identity_table_invalid", declared_gb_fields: 0 }));
 /** Whether the committed personas table passed the schema (a test pins it). */
 export const GB_TABLE_VALID = GB_PARSED.valid;
-const GB_IDENTITIES = GB_PARSED.identities;
+/** The enabled personas, validated (frozen;  empty when the table is malformed).
+ * delegated-identities.js exports this list as GB_IDENTITIES. */
+export const GB_ENABLED_IDENTITIES = GB_PARSED.identities;
+const GB_IDENTITIES = GB_ENABLED_IDENTITIES;
 const gbFieldNames = (identity) => {
   const role = identity.slice(3).replaceAll("-", "_");
   return { zulipKey: `ZULIP_GB_${role}_API_KEY`, zulipEmail: `ZULIP_GB_${role}_EMAIL`,
