@@ -363,6 +363,7 @@ class Config:
         self.operator_dm_allow: frozenset[int] = frozenset()
         self.owner_clients: set[str] = set(DEFAULT_OWNER_CLIENTS)
         self.stale_after = float(L.STALE_AFTER_DEFAULT)
+        self.wake_loop_prevention = True
         self.coalesce_seconds = 20.0
         self.coalesce_max_seconds = 90.0
         self.owner_coalesce_seconds = 5.0
@@ -662,6 +663,11 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.route_enabled must be true or false")
     else:
         cfg.route_enabled = route_on
+    loop_prevention = daemon.get("wake_loop_prevention", True)
+    if not isinstance(loop_prevention, bool):
+        errors.append("daemon.wake_loop_prevention must be true or false")
+    else:
+        cfg.wake_loop_prevention = loop_prevention
     catch_up = daemon.get("held_back_catch_up", True)
     if not isinstance(catch_up, bool):
         errors.append("daemon.held_back_catch_up must be true or false")

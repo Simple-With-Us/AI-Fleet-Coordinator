@@ -562,6 +562,17 @@ class LedgerAndGuardTests(unittest.TestCase):
         restored = W.Pending.from_view(ledger.wakes()["w3"])
         self.assertEqual((restored.skip_leases, restored.trigger_ts), (["L1", "L2"], 500.0))
 
+    def test_loop_guard_can_be_disabled_without_erasing_history(self) -> None:
+        guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"), enabled=False)
+        for n in range(4):
+            guard.note("channel\x00topic", wake_reply=True, owner=False, now=1000.0 + n)
+        self.assertEqual(guard.count("channel\x00topic"), 4)
+        self.assertFalse(guard.blocked("channel\x00topic"))
+        self.assertEqual(guard.holding(), [])
+        guard.enabled = True
+        self.assertTrue(guard.blocked("channel\x00topic"))
+        self.assertEqual(len(guard.holding()), 1)
+
     def test_loop_guard_resets_only_on_an_owner_post(self) -> None:
         guard = W.LoopGuard(os.path.join(self.dir, "loopguard.json"))
         for _ in range(3):
