@@ -129,3 +129,21 @@ test("the wake-only refusal never carries a secret-shaped tool name (kody 436358
     assert.ok(!JSON.stringify(error).includes(secretish) && !String(error.stack).includes(secretish));
   }
 });
+
+test("JET-CHAT carries Jet's Linear app under its own env names (kody 4363263223)", async () => {
+  const { LINEAR_SECRETS, LINEAR_SEATS, SEAT_APP_NAMES, SEAT_APP_ALIASES, seatAppNames, appNameOk, linearSecretNames } = await import("../src/linear.js");
+  assert.ok(LINEAR_SEATS.includes("JET-CHAT"), "the full Jet login is Linear-enabled");
+  assert.deepEqual(linearSecretNames("JET-CHAT"), { clientId: "LINEAR_JET_CHAT_CLIENT_ID", clientSecret: "LINEAR_JET_CHAT_CLIENT_SECRET" }, "own env names, never shared with JET");
+  assert.notDeepEqual(linearSecretNames("JET-CHAT"), linearSecretNames("JET"));
+  assert.equal(SEAT_APP_NAMES["JET-CHAT"], "Jet", "two logins, one Linear app");
+  assert.deepEqual([...SEAT_APP_ALIASES["JET-CHAT"]], ["Jet (OpenAI dot)"]);
+  assert.deepEqual([...seatAppNames("JET-CHAT")], [...seatAppNames("JET")], "JET-CHAT accepts exactly JET's app names");
+  assert.ok(appNameOk("Jet", "JET-CHAT") && appNameOk("jet (openai dot)", "JET-CHAT"), "the viewer check passes for the shared app");
+});
+
+test("JET-CHAT is session-id exempt like the JET it replaces (kody 4363263820)", async () => {
+  const { EXEMPT_SEATS } = await import("../src/session-ids.js");
+  assert.ok(EXEMPT_SEATS.includes("JET-CHAT"));
+  const registry = JSON.parse(readFileSync(path.join(ROOT, "../../fleet-apps.json"), "utf8"));
+  assert.deepEqual([...EXEMPT_SEATS].sort(), [...registry.sessionIds.exemptSeats].sort(), "code and registry stay aligned");
+});

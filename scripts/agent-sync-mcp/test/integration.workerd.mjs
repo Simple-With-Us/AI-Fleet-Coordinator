@@ -331,10 +331,12 @@ function authorizeQuery(challenge, state = "st-1", { clientId = CHATGPT_CLIENT, 
   }).toString();
 }
 
+let lastConsentHtml = "";
 async function openConsent(challenge, state, who) {
   const res = await browser(`/authorize?${authorizeQuery(challenge, state, who)}`);
   const html = await res.text();
   assert.equal(res.status, 200, html.slice(0, 300));
+  lastConsentHtml = html;
   return html.match(/name="handle" value="([^"]+)"/)[1];
 }
 
@@ -545,6 +547,12 @@ try {
     // The consent page must not be no-referrer, or a browser's Approve would carry Origin: null.
     assert.equal(pagePolicy, "same-origin");
     assert.equal(browserPostOrigin({ policy: pagePolicy }), HOST);
+    // Wake-only consent offers zulip:read only - never a write scope the router would refuse.
+    assert.ok(lastConsentHtml.includes('value="zulip:read"'));
+    assert.ok(!lastConsentHtml.includes('value="zulip:write"'), "a wake-only consent must not offer zulip:write");
+    // A crafted form cannot mint a write grant for the wake-only seat either (the failed POST leaves the handle usable).
+    const crafted = await browser("/authorize", { method: "POST", form: { handle, seat: "JET", decision: "approve", scope: "zulip:write" } });
+    assert.equal(crafted.status, 400, await crafted.clone().text());
     const res = await browser("/authorize", { method: "POST", form: { handle, seat: "JET", decision: "approve", scope: "zulip:read" } });
     assert.equal(res.status, 302, await res.clone().text());
     assert.equal(res.headers.get("referrer-policy"), "same-origin", "the redirect to the client sends no Referer");
@@ -583,6 +591,7 @@ try {
     assert.equal((await adminAction("arm", { seat: "JET-CHAT" })).status, 303);
     const c = pkce();
     const handle = await openConsent(c.challenge, "st-chat", { clientId: JETCHAT_CLIENT, redirect: JETCHAT_REDIRECT });
+    assert.ok(lastConsentHtml.includes('value="zulip:write"'), "the full Jet login still offers zulip:write");
     const res = await browser("/authorize", { method: "POST", form: { handle, seat: "JET-CHAT", decision: "approve", scope: "zulip:read" } });
     assert.equal(res.status, 302, await res.clone().text());
     const loc = new URL(res.headers.get("location"));
@@ -931,9 +940,10 @@ try {
     const b = pkce();
     const h1 = await openConsent(a.challenge, "st-a");
     const h2 = await openConsent(b.challenge, "st-b");
+    // JET is wake-only:  zulip:read is the only scope its consent offers now.
     const [r1, r2] = await Promise.all([
-      browser("/authorize", { method: "POST", form: { handle: h1, seat: "JET", decision: "approve", scope: "zulip:write" } }),
-      browser("/authorize", { method: "POST", form: { handle: h2, seat: "JET", decision: "approve", scope: "zulip:write" } }),
+      browser("/authorize", { method: "POST", form: { handle: h1, seat: "JET", decision: "approve", scope: "zulip:read" } }),
+      browser("/authorize", { method: "POST", form: { handle: h2, seat: "JET", decision: "approve", scope: "zulip:read" } }),
     ]);
     const statuses = [r1.status, r2.status].sort();
     assert.deepEqual(statuses, [302, 409]);
