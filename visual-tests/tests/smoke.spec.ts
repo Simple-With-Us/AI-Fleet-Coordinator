@@ -21,7 +21,7 @@ test.describe('digest page (site/index.html)', () => {
 
 test.describe('operator start redirect page (scripts/safari-start/public/index.html)', () => {
   test('links to the protected home and carries the refresh redirect', async ({ page }) => {
-    await serveRepo(page);
+    await serveRepo(page, { deferMetaRefresh: true });
     await page.goto('/scripts/safari-start/public/index.html');
     const link = page.getByRole('link', { name: 'Continue to home' });
     await expect(link).toHaveAttribute('href', 'https://home.jays.services/');
