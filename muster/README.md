@@ -4,14 +4,22 @@ Muster is a native SwiftUI macOS 14+ scaffold.  Its initial window explicitly re
 
 ## Scope
 
-- `Muster/` contains the app entry point, the fleet overview view, the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`) and the Fleet Hosts panel (what the fleet tools doctor's own report says about each host, from `~/.local/state/fleet-tools/report.json`).
+- `Muster/` contains the app entry point, the fleet overview view, the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`), the Fleet Hosts panel (what the fleet tools doctor's own report says about each host, from `~/.local/state/fleet-tools/report.json`) and the Seat Activity panel (AFC-395:  open sessions, listener state, Zulip presence and the last Zulip post, per seat).
 - `project.yml` is the XcodeGen source of truth.  The generated Xcode project is ignored.
 - `script/build_and_run.sh` owns local project generation, signing, installation, and launch.
 - The repository's `.codex/environments/environment.toml` exposes the same script through the Codex **Run** action.
 
-The app makes no network calls and reads no credentials.  It has no sample fleet records or inferred health state.  The only CLI it runs is `fleet-config` (see Apply Preview below), and only when asked;  collector and grid integration remain separate work.
+The app reads no credentials of its own.  It has no sample fleet records or inferred health state.  The CLIs it runs are `fleet-config` (see Apply Preview below), only when asked, and `simple-chat`, only from the Seat Activity panel.  Collector and grid integration remain separate work.
 
 The Fleet Hosts panel reads one local file and runs nothing:  the doctor's own report, which `com.jay.fleet-tools-doctor` writes every fifteen minutes and which covers the Mac and the server together.  A report that is missing, malformed, of another version, or older than 45 minutes reads as unknown, and a host the doctor could not reach reads as unknown rather than as a failure.
+
+## Seat Activity
+
+The Seat Activity panel (AFC-395) shows one row per seat from the app's own roster:  the open sessions the listener holds for it, the listener's own state for it, its Zulip presence, its last Zulip post, and whether that post reports the seat at quota.  Every column names its source on screen.
+
+Two sources, and no third:  the listener's own published state at `~/.agent-sync/listener/status.json`, and the fleet chat CLI (`simple-chat`).  The panel reads the CLI's `users`, `presence` and `search` verbs and nothing else;  `ChatCLI` refuses any other verb before a process exists,  so the panel cannot write to Zulip.  It never posts as Jay:  the CLI resolves the credential of the bot seat named by `MUSTER_ZULIP_SEAT` (default `CLAUDE`),  and the app never sees a key.
+
+A refresh makes at most one `users` call, one `presence` call per seat and one `search` call per seat,  so the ceiling is `1 + 2 * seats`;  the panel shows the count it made beside the ceiling.  A source that fails leaves its column UNKNOWN with the reason under the row:  a missing binary, a refused call, an unreadable file and a presence record that does not exist all read as unknown,  never as "no sessions" and never as "offline".
 
 ## Prerequisites
 
