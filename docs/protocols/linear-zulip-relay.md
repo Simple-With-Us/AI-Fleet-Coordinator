@@ -26,12 +26,14 @@ dropped from the ledger before it can be written, on every path that writes, tic
 The public-stream set fails closed.  Until it has loaded, the relay relays nothing, writes nothing
 to Linear and drops nothing from the ledger: an unloaded set proves nothing about any stream, so
 every entry keeps its state until the set is known.  A failed load is logged by name ("could not
-load the public-stream set") and retried every 30 seconds, and the event queue is not registered
-until it succeeds.  A reload after a stream event forgets the old set first, so a reload that fails
-leaves the relay knowing nothing rather than trusting a set that may be stale.  The relay keeps
-running through a Zulip outage instead of exiting, because it does nothing while the set is
-unknown.  A message that arrives while the set is unknown is not held for later: like a message
-sent while the queue is down, it is not mirrored.  Archived public streams count as public: only `invite_only` makes a stream private.
+load the public-stream set") and retried, and an answer without a well-formed streams list is a
+failed load, never an empty set.  At start the event queue is not registered until the set loads.
+A reload after a stream event forgets the old set first, so a reload that fails leaves the relay
+knowing nothing rather than trusting a set that may be stale; the queue is kept, and the reload is
+tried again after every poll.  The relay keeps running through a Zulip outage instead of exiting,
+because it does nothing while the set is unknown.  A message that arrives while the set is unknown
+is not held for later: like a message sent while the queue is down, it is not mirrored.  Archived
+public streams count as public: only `invite_only` makes a stream private.
 
 Nothing is ever posted from Linear to Zulip, and there is no #issues stream.
 
@@ -67,13 +69,18 @@ a comment, never as a substring, so the marker of message 100 cannot match the c
 1000.  Then a heading, one bullet per message, and a footer that says the mirror runs one way.
 
 Copied Zulip text is untrusted.  Every field (the topic, the message, the sender's name, the stream
-name) is scanned for credential-shaped text before it is stored, logged or relayed.  A field with a
-hit is withheld whole: it shows as "(withheld: it looked like it carried a credential)", and the
-log names only the message id and the field.  It is never partly redacted, because a pattern can
-find where a credential starts but not always where it ends.  A clean field is trimmed and escaped
-so it cannot open a link, start a code span or close the quoted string.  An @ is kept but followed
-by a zero-width space, so a mention never becomes a live mention.  The relay's log names an entry by
-its issue and its first message id, never by its topic.
+name) is scanned for credential-shaped text before it is stored, logged or relayed: the fleet's own
+scanner (`scripts/agent_sync/secretscan.py`, which knows the Linear, Sentry, Infisical, Cloudflare
+and other service prefixes) and the relay's wider rows (long hex and base64 runs, and a keyword such
+as `password` or `token` followed by `:` or `=` and a value).  A keyword in plain prose, such as
+"token refresh", is not a hit.  A field with a hit is withheld whole: it shows as "(withheld: it
+looked like it carried a credential)", and the log names only the message id and the field.  It is
+never partly redacted, because a pattern can find where a credential starts but not always where it
+ends.  The message itself is still mirrored as a link, which carries no Zulip text.  A clean field is
+trimmed and escaped so it cannot open a link, start a code span or close the quoted string.  An @ is
+kept but followed by a zero-width space, so a mention never becomes a live mention.  The relay's log
+names an entry by its issue and its first message id, never by its topic.  A message that came in
+by a topic rename was never read by the relay, so its bullet carries no quote.
 
 The link on each bullet names the message id and nothing else: `https://<realm>/#narrow/near/<id>`.
 The topic never goes into a URL, because a percent-encoded topic is still the topic, and a reader of
@@ -104,14 +111,15 @@ Commands:
     python3 -m agent_sync.linear_relay check      # credentials and Linear auth, no writes
 
 `check` proves the Zulip bot is a member and not an admin, and that the Linear token works.  A
-missing issue is reported as a missing issue, not as an auth failure: those are different
-problems and the operator needs to know which one it is.
+missing issue, or an id Linear refuses as malformed, is reported as an issue problem, not as an
+auth failure: those are different problems and the operator needs to know which one it is.
 
 ## Talking to Linear
 
 The client never follows a redirect, so the bearer token is never re-sent to another host, and it
 sends its own User-Agent.  Every call has one deadline that its retries share, and the marker scan
-has one deadline for all of its pages.
+has one deadline for all of its pages.  One tick spends at most two minutes on writes; the entries
+it does not reach stay dirty for the next cycle, so a slow Linear never stalls the Zulip poll loop.
 
 Errors carry only allow-listed fields: an HTTP status, Linear's error codes, and a fixed
 description.  The response body never reaches an exception or the log, and neither does any part
@@ -120,16 +128,22 @@ one variable to check.
 
 Failures are sorted by what waiting can change:
 
-- A refused token (HTTP 401 or a bare 403, or an authentication error) stops the relay with a
-  message, because no retry can fix it.  The container's restart policy brings it back, and it stops again until the
-  token is fixed.
-- A missing issue, a forbidden entity or invalid input is final: the entry is not retried until a
-  new message in the topic gives it new content.
-- A rate limit, a 5xx, a timeout or a network error is transient: reads and edits retry with
-  backoff inside the call's deadline, and the worker backs off the entry after that.
-- A refused edit is not read as "the comment is gone".  The relay scans the issue for its marker:
-  a comment that is still there is kept and the edit is retried later; only a comment that is
-  really gone is created again.
+- A refused token (HTTP 401, or an authentication error) stops the relay with a message, because
+  no retry can fix it.  The container's restart policy brings it back, and it stops again until
+  the token is fixed.  A 403 refuses that one request, not the token, so it does not stop the relay.
+- A missing issue, a forbidden entity, invalid input or a 403 is final for that write: the entry is
+  not retried until a new message in the topic gives it new content.  An issue id Linear does not
+  have is looked up again after an hour, so an id named before its issue exists is not lost.
+- A rate limit is a definite "not done": reads, edits and creates are all retried later.
+- A 5xx, a timeout or a network error is transient for a read or an edit, which retry with backoff
+  inside the call's deadline before the worker backs the entry off.  For a create it is an unknown
+  outcome, and a create is never retried as it is: see "What this does NOT promise" below.
+- A refused edit is not read as "the comment is gone".  The relay scans the issue for its marker: a
+  comment that is still there is kept, and only a comment that is really gone is created again.  A
+  definite refusal of the edit is not retried until new content arrives; an edit whose stored id
+  missed goes to the id the scan found.
+- A ledger write that fails (a full or broken volume) is logged and tried again next cycle.  A create
+  still needs its own write-ahead save, so nothing is created while the volume fails.
 
 ## The ledger
 
@@ -160,20 +174,27 @@ comment for one topic:
 2. a second relay process on another host, which the file lock cannot prevent across hosts;
 3. an uncertain write outcome, where a create landed and its answer was lost.
 
+A fourth leaves an old comment behind without adding one: when a topic is renamed onto a topic that
+already has its own comment, the two conversations merge into the surviving comment, and the moved
+topic's older comment is left as it was, because the app cannot delete comments.
+
 The relay narrows the third one, and it tracks the outcome of every create explicitly in the
 file-backed ledger:
 
 - Before a create, the entry is marked `pending` and the ledger is written.  `pending` is the
   unknown state: the create may or may not land.
-- A create is sent once.  The client never re-sends it on a timeout, a network error, a 5xx, a rate
-  limit or an unreadable answer; it reports the outcome as unknown, and the entry stays `pending`.
+- A create is sent once.  The client never re-sends it on a timeout, a network error, a 5xx, an
+  unreadable answer or an unmapped GraphQL error; it reports the outcome as unknown, and the entry
+  stays `pending`.
 - A `pending` entry is never created again blind.  The next attempt, and the reconciliation when the
   queue registers, first reads the issue's comments for the marker and adopts the comment it finds.
   Only when the whole scan finishes without finding it is a create sent again.  A scan that cannot
   finish (a malformed page, a bad cursor, the page cap or its deadline) is a failure, not "not
   found", so it never leads to a create.
-- A definite refusal (a forbidden entity, invalid input, `success: false`) releases the entry: it is
-  no longer `pending`, because nothing landed.
+- A definite answer releases the entry: a refusal (a forbidden entity, invalid input,
+  `success: false`) or a rate limit means nothing landed, so the entry is no longer `pending`.
+- The entry's fields carry the three outcomes: `comment_id` set is done, `pending` with no
+  `comment_id` is unknown, and neither is refused or not yet tried.
 
 That reconciliation is bounded by the pages it reads and is not verified against live Linear
 pagination, consistency or markup persistence (whether Linear keeps the HTML comment of the marker
@@ -191,8 +212,8 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
 1. **Linear**: a new OAuth application named "Zulip Relay", actor application, scopes `read` and
    `comments:create` only.  The id, secret and token stay out of chat, code and logs.
 2. **Zulip**: a new bot, role Member, not admin and not owner.
-3. **Infisical**: `ZULIP_RELAY_EMAIL`, `ZULIP_RELAY_API_KEY` and `LINEAR_RELAY_TOKEN` for the
-   server instance.  The path is Jay's choice.
+3. **Infisical**: `ZULIP_RELAY_EMAIL` and `ZULIP_RELAY_API_KEY` in prod `/zulip`, where the
+   fleet keeps every Zulip bot's credentials, and `LINEAR_RELAY_TOKEN` in a path of Jay's choice.
 4. **Coolify**: after the PR merges, a second process or service from the same image, with the
    environment above, a persistent volume for the ledger, and restart always.  First run with
    `LINEAR_RELAY_DRY_RUN=1`, watch the log, then unset it.

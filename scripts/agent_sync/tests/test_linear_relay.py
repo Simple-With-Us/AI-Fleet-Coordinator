@@ -33,6 +33,7 @@ import unittest
 import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 from agent_sync import linear_relay as lr
 from agent_sync.zulip import _NoRedirect
@@ -377,8 +378,87 @@ class RelayTests(unittest.TestCase):
         entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
         self.assertEqual(len(self.lin.created), 1)  # no second comment
         self.assertEqual(entry["comment_id"], "c1")
-        self.assertTrue(entry["dirty"])  # retried later
-        self.assertGreater(entry["retry_after"], self.t[0])
+        # success false is a definite answer: not retried until a new message arrives
+        self.assertFalse(entry["dirty"])
+        self.assertEqual(entry["retry_after"], 0.0)
+
+    def test_an_edit_whose_stored_id_missed_goes_to_the_comment_the_scan_found(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        self.lin.by_marker[entry["marker"]] = "c-found"  # the comment answers to another id
+        self.lin.update_error = lr.LinearNotFound("linear: not found")
+        self.w.handle_event(message(2, "AFC-1 relay", "again"))
+        self.t[0] += 600
+        self.w.tick()
+        self.assertEqual(entry["comment_id"], "c-found")
+        self.assertEqual(len(self.lin.created), 1)
+        self.assertTrue(entry["dirty"])  # retried, against the id the scan found
+        self.lin.update_error = None
+        self.t[0] = entry["retry_after"] + 600
+        self.w.tick()
+        self.assertEqual(self.lin.updated[-1][0], "c-found")
+
+    def test_a_403_on_an_edit_keeps_the_relay_running(self) -> None:
+        # A bare 403 refuses that one request, not the token: the relay does not stop.
+        self.assertIsInstance(
+            lr.LinearClient("tok", opener=FakeOpener(lambda: http_error(403)))._http_error(
+                http_error(403)
+            ),
+            lr.LinearPermanentError,
+        )
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        self.lin.update_error = lr.LinearPermanentError("linear refused the request (http 403)")
+        self.w.handle_event(message(2, "AFC-1 relay", "again"))
+        self.t[0] += 600
+        self.w.tick()  # must not raise SystemExit
+        self.assertEqual(len(self.lin.created), 1)
+
+    def test_an_issue_named_before_it_exists_is_looked_up_again_later(self) -> None:
+        self.w.handle_event(message(1, "AFC-7 early", "hello"))
+        self.assertEqual(self.lin.created, [])
+        self.lin.known.add("AFC-7")
+        self.w.handle_event(message(2, "AFC-7 early", "again"))
+        self.assertEqual(self.lin.created, [])  # still inside the wait
+        self.t[0] += lr.MISSING_TTL + 1
+        self.w.handle_event(message(3, "AFC-7 early", "now it exists"))
+        self.assertEqual(len(self.lin.created), 1)
+
+    def test_a_tick_stops_when_its_budget_is_spent(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        entry["dirty"] = True
+        self.t[0] += 600
+        with mock.patch.object(lr, "TICK_BUDGET", -1.0):
+            self.w.tick()
+        self.assertEqual(self.lin.updated, [])
+        self.assertTrue(entry["dirty"])  # waits for the next cycle
+        self.w.tick()
+        self.assertEqual(len(self.lin.updated), 1)
+
+    def test_a_failed_ledger_write_does_not_stop_the_tick(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+
+        def broken() -> None:
+            raise OSError("disk full")
+
+        self.led.save = broken
+        self.led.mark_dirty()
+        self.w.tick()  # must not raise
+        self.assertTrue(any("could not write the relay ledger" in line for line in self.logs))
+
+    def test_merging_two_topics_adds_their_counts(self) -> None:
+        self.w.handle_event(message(1, "AFC-1 a", "one"))
+        self.w.handle_event(message(2, "AFC-1 a", "two"))
+        self.w.handle_event(message(3, "AFC-1 b", "three"))
+        self.w.handle_event(move(5, "AFC-1 a", subject="AFC-1 b", ids=[1, 2]))
+        self.assertNotIn(self.key("AFC-1", 5, "AFC-1 a"), self.led.entries)
+        self.assertEqual(self.led.entries[self.key("AFC-1", 5, "AFC-1 b")]["count"], 3)
+
+    def test_a_message_that_came_in_by_a_rename_has_no_empty_quote(self) -> None:
+        self.w.handle_event(move(5, "plain", subject="OPS-9 plain", ids=[7]))
+        body = self.lin.created[0][1]
+        self.assertIn("topic rename", body)
+        self.assertNotIn('""', body)
 
     def test_a_permanently_refused_edit_is_not_retried(self) -> None:
         # An edit the app may not make: the comment is kept, and waiting changes nothing.
@@ -635,6 +715,28 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(lr.load_public_streams(FakeZulip()), {5: "builds", 6: "old"})
         self.assertEqual(asked, [("streams", {"exclude_archived": False})])
 
+    def test_a_malformed_streams_answer_fails_the_load(self) -> None:
+        # A missing list is not "no public streams", and a stream without its privacy flag is
+        # not public: the load fails, and the relay relays nothing.
+        for answer in ({}, {"streams": None}, {"streams": [{"stream_id": 5, "name": "b"}]},
+                       {"streams": [{"stream_id": "5", "invite_only": False}]}):
+            class FakeZulip:
+                def get(self, path, params=None, answer=answer):
+                    return answer
+
+            with self.assertRaises(ValueError):
+                lr.load_public_streams(FakeZulip())
+
+    def test_the_scanner_knows_service_prefixes_and_leaves_prose_alone(self) -> None:
+        # Built at run time, so no credential-shaped literal sits in the source.
+        linear_key = "lin_" + "api_" + "a1B2" * 10
+        self.assertTrue(lr.has_secret("pasted %s by mistake" % linear_key))
+        self.assertTrue(lr.has_secret("Authorization: Bearer " + "x1" * 12))
+        self.assertTrue(lr.has_secret("password: correct horse battery staple"))
+        for prose in ("AFC-12 token refresh fails", "password reset flow",
+                      "credential rotation plan", "secret santa"):
+            self.assertFalse(lr.has_secret(prose), prose)
+
     # -- the Linear client ---------------------------------------------------------------
     def test_a_missing_issue_is_not_an_auth_failure(self) -> None:
         class CheckLinear:
@@ -674,8 +776,8 @@ class RelayTests(unittest.TestCase):
                      "FORBIDDEN", "INPUT_ERROR", "BAD_USER_INPUT"):
             self.assertIsInstance(classify(code), lr.LinearPermanentError, code)
         self.assertIsInstance(classify("AUTHENTICATION_ERROR"), lr.LinearAuthError)
-        for code in ("RATELIMITED", "INTERNAL_ERROR"):
-            self.assertIs(type(classify(code)), lr.LinearError, code)
+        self.assertIs(type(classify("RATELIMITED")), lr.LinearRateLimited)
+        self.assertIs(type(classify("INTERNAL_ERROR")), lr.LinearError)
         typed = lr.classify_errors([{"message": "x", "extensions": {"type": "invalid input"}}])
         self.assertIsInstance(typed, lr.LinearPermanentError)
 
@@ -701,12 +803,29 @@ class RelayTests(unittest.TestCase):
     def test_a_create_is_never_sent_twice_by_the_client(self) -> None:
         unmapped = {"errors": [{"message": "internal", "extensions": {"code": "INTERNAL_ERROR"}}]}
         for failure in (lambda: http_error(500), lambda: TimeoutError("slow"),
-                        lambda: http_error(429), b"<html>gateway</html>", unmapped):
+                        b"<html>gateway</html>", unmapped):
             opener = FakeOpener(failure)
             client = lr.LinearClient("tok", sleep=lambda s: None, opener=opener)
             with self.assertRaises(lr.LinearUncertain):
                 client.create_comment("uuid", "body")
             self.assertEqual(len(opener.requests), 1)
+        # A rate limit is a definite "not done": sent once, and not read as unknown.
+        opener = FakeOpener(lambda: http_error(429))
+        client = lr.LinearClient("tok", sleep=lambda s: None, opener=opener)
+        with self.assertRaises(lr.LinearRateLimited):
+            client.create_comment("uuid", "body")
+        self.assertEqual(len(opener.requests), 1)
+
+    def test_a_rate_limited_create_releases_the_pending_entry(self) -> None:
+        self.lin.create_error = lr.LinearRateLimited("linear rate limited the request (http 429)")
+        self.w.handle_event(message(1, "AFC-1 relay", "hello"))
+        entry = self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")]
+        self.assertFalse(entry["pending"])  # nothing landed
+        self.assertTrue(entry["dirty"])  # retried later
+        self.lin.create_error = None
+        self.t[0] = entry["retry_after"] + 1
+        self.w.tick()
+        self.assertEqual(len(self.lin.created), 1)
 
     def test_a_malformed_answer_is_a_linear_error(self) -> None:
         for payload in ([], {"no": "data"}, {"data": []}, {"data": {"viewer": "x"}}):

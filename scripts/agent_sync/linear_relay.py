@@ -40,8 +40,12 @@ Optional: LINEAR_RELAY_STATE (ledger path), LINEAR_RELAY_TEAMS (comma list),
 LINEAR_RELAY_DRY_RUN=1 (log what would be written, write nothing to Linear),
 LINEAR_RELAY_CHECK_ISSUE (an issue id for the check command).
 
-The module is also importable: RelayWorker.handle_event(event) and RelayWorker.tick(now) are the
-two entry points a daemon needs.  Zulip text is untrusted data: a field that carries anything
+The module is also importable.  A daemon needs three entry points: RelayWorker.handle_event(event)
+for message and update_message events, RelayWorker.tick(now) once per poll cycle, and
+RelayWorker.set_public_streams(...) whenever a `stream` event arrives (set None first, then the
+reloaded id -> name map, as run() does).  The worker holds no Zulip client, so it cannot reload the
+set itself, and until it is given one it relays and writes nothing.  Zulip text is untrusted data:
+a field that carries anything
 credential-shaped is withheld whole, never partly redacted, and is not logged; every other field
 is trimmed and escaped so it cannot break out of the comment.  It never decides what the relay
 does beyond which issue ID to name.
@@ -64,6 +68,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from . import secretscan
 from .zulip import (
     ApiError,
     CredentialError,
@@ -116,6 +121,8 @@ REQUEST_TIMEOUT = 30.0  # one HTTP request
 CALL_BUDGET = 60.0  # one Linear call, every retry included
 SCAN_BUDGET = 90.0  # one marker scan, every page and every retry included
 MAX_COMMENT_PAGES = 40  # 100 comments a page, so 4000 comments an issue
+MISSING_TTL = 3600.0  # an issue id Linear does not have is looked up again after an hour
+TICK_BUDGET = 120.0  # one tick's writes; the rest wait for the next cycle so Zulip keeps polling
 # What a field that looked like it carried a credential shows instead.  It names no secret
 # keyword, so it never matches the patterns below itself.
 WITHHELD = "(withheld: it looked like it carried a credential)"
@@ -164,9 +171,12 @@ _SECRET_PATTERNS = (
     re.compile(r"\b[0-9a-fA-F]{32,}\b"),
     re.compile(r"\b(?=[A-Za-z0-9+/]*[0-9])(?=[A-Za-z0-9+/]*[A-Za-z])[A-Za-z0-9+/]{40,}={0,2}\b"),
 )
+# A keyword counts only as an assignment (`password: x`, `token=x`), so prose such as "token
+# refresh" or "password reset" is not withheld; a bare `Bearer` needs a token-shaped value.
 _KEYED_SECRET = re.compile(
-    r"(?i)\b(api[_-]?key|apikey|access[_-]?token|token|secret|password|passwd|pwd"
-    r"|authorization|bearer|credential)\b(\s*[:=]\s*|\s+)(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+    r"(?i)\b(?:api[_-]?key|apikey|access[_-]?token|token|secret|password|passwd|pwd"
+    r"|authorization|credential)\b\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)"
+    r"|\bbearer\s+[A-Za-z0-9._~+/=-]{16,}"
 )
 # The markdown that can change the shape of the comment: emphasis, code spans, links, html,
 # tables, strikethrough and the quote delimiter.
@@ -174,9 +184,15 @@ _MD_SPECIALS = set('\\`*_[]<>|~!"')
 
 
 def has_secret(text: str) -> bool:
-    """True when the text carries anything credential-shaped."""
+    """True when the text carries anything credential-shaped: the fleet's canonical scanner
+    (`secretscan`, which knows Linear, Sentry, Infisical, Cloudflare and the other service
+    prefixes) plus the relay's own wider rows (long hex and base64 runs, keyed assignments)."""
     text = text or ""
-    return any(p.search(text) for p in _SECRET_PATTERNS) or bool(_KEYED_SECRET.search(text))
+    return (
+        secretscan.scan(text) is not None
+        or any(p.search(text) for p in _SECRET_PATTERNS)
+        or bool(_KEYED_SECRET.search(text))
+    )
 
 
 def safe_text(text: str) -> str:
@@ -469,6 +485,11 @@ class LinearUncertain(LinearError):
     next attempt reads the issue's comments for the marker first."""
 
 
+class LinearRateLimited(LinearError):
+    """Linear rate limited the request (HTTP 429 or RATELIMITED).  The request was not carried
+    out, so it is a definite answer even for a create: retried later, never read as unknown."""
+
+
 # Matched against Linear's codes and types after underscores become spaces, so INVALID_INPUT and
 # "invalid input" are the same hint.
 _PERMANENT_HINTS = (
@@ -515,7 +536,7 @@ def classify_errors(errors: list[Any]) -> LinearError:
     ):
         return LinearPermanentError("linear refused the request (%s)" % label)
     if "ratelimited" in low or "rate limited" in low:
-        return LinearError("linear rate limited the request (%s)" % label)
+        return LinearRateLimited("linear rate limited the request (%s)" % label)
     return LinearError("linear graphql error (%s)" % label)
 
 
@@ -555,11 +576,18 @@ class LinearClient:
         errors = payload.get("errors") if isinstance(payload, dict) else None
         if isinstance(errors, list) and errors:
             return classify_errors(errors)
-        if status in (401, 403):
-            return LinearAuthError("linear refused LINEAR_RELAY_TOKEN (http %d)" % status)
+        if status == 401:
+            return LinearAuthError("linear refused LINEAR_RELAY_TOKEN (http 401)")
+        if status == 403:
+            # A valid token can still be refused one write (an edit the app may not make), so a
+            # 403 refuses this request, not the token: only a 401 or an authentication error
+            # stops the relay.
+            return LinearPermanentError("linear refused the request (http 403)")
         if status == 404:
             return LinearNotFound("linear: not found (http 404)")
-        if status == 429 or status >= 500:
+        if status == 429:
+            return LinearRateLimited("linear rate limited the request (http 429)")
+        if status >= 500:
             return LinearError("linear http %d" % status)
         return LinearPermanentError("linear http %d" % status)
 
@@ -572,9 +600,11 @@ class LinearClient:
         deadline: float | None = None,
     ) -> dict[str, Any]:
         """One GraphQL call.  Reads and edits retry a transient failure with backoff, all inside
-        one deadline.  A create (idempotent=False) is sent once: a timeout, a network error, a 5xx
-        or an unreadable answer may mean it landed, so it raises LinearUncertain and the worker
-        reads the issue for its marker before it ever creates again."""
+        one deadline.  A create (idempotent=False) is sent once: a timeout, a network error, a 5xx,
+        an unreadable answer or an unmapped GraphQL error may mean it landed, so it raises
+        LinearUncertain and the worker reads the issue for its marker before it ever creates
+        again.  A rate limit is the one transient answer that is definite, so it is raised as it
+        is."""
         if deadline is None:
             deadline = self.monotonic() + CALL_BUDGET
         body = json.dumps({"query": query, "variables": variables}).encode()
@@ -609,6 +639,8 @@ class LinearClient:
             if not _retryable(last):
                 raise last
             if not idempotent:
+                if isinstance(last, LinearRateLimited):
+                    raise last  # a rate limit is a definite "not done", even for a create
                 raise LinearUncertain("linear create outcome unknown (%s)" % last) from None
             if attempt < attempts - 1:
                 pause = RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)]
@@ -743,15 +775,14 @@ def render_comment(entry: Mapping[str, Any], realm: str) -> str:
     for item in links:
         # The URL is built here, from the message id, so no text that came out of Zulip can
         # reach it.  The quote was neutralised when it was stored, so it is not escaped twice.
-        lines.append(
-            '- [%s](%s), %s: "%s"'
-            % (
-                item["when"],
-                permalink(realm, int(item["mid"])),
-                neutralise(item["sender"]),
-                item["quote"],
-            )
+        # A message the relay never read (one that came in by a topic rename) has no quote, and
+        # its bullet shows none rather than an empty pair of quotation marks.
+        head = "- [%s](%s), %s" % (
+            item["when"],
+            permalink(realm, int(item["mid"])),
+            neutralise(item["sender"]),
         )
+        lines.append('%s: "%s"' % (head, item["quote"]) if item["quote"] else head)
     # Rendered copy: the sentence gap is a no-break space plus a space.
     lines += ["", "_Mirrored one way from Zulip by the relay.\u00a0 Edit in Zulip, not here._"]
     return "\n".join(lines)
@@ -789,7 +820,7 @@ class RelayWorker:
         self.stream_names: dict[int, str] = {}
         self.set_public_streams(public_streams)
         self._uuid_cache: dict[str, str | None] = {}
-        self._missing_issues: set[str] = set()
+        self._missing_issues: dict[str, float] = {}  # issue id -> when to look it up again
 
     def set_public_streams(self, streams: Mapping[int, str] | Iterable[int] | None) -> None:
         """Load the public-stream set (a stream id -> name map, or bare ids), or None to forget
@@ -1041,10 +1072,18 @@ class RelayWorker:
             else:
                 target["seen"] = sorted(set(target["seen"]) | set(entry["seen"]))[-MAX_SEEN:]
                 target["links"] = (target["links"] + entry["links"])[-MAX_LINKS_SHOWN:]
-                target["count"] = max(int(target["count"]), int(entry["count"]))
+                # Two conversations become one: a message belongs to one topic, so the counts add.
+                target["count"] = int(target["count"]) + int(entry["count"])
                 target["dirty"] = True
                 target["last_touch"] = now
                 del self.ledger.entries[key]
+                if entry.get("comment_id"):
+                    # The app holds no delete scope, so the moved topic's own comment stays as
+                    # it was; the surviving comment now lists both topics' messages.
+                    self.log(
+                        "merged %s into %s; its older comment is left as it was"
+                        % (self._label(entry), self._label(target))
+                    )
             moved += 1
         if moved:
             self.ledger.mark_dirty()
@@ -1090,13 +1129,25 @@ class RelayWorker:
         self.ledger.mark_dirty()
 
     # -- writes ----------------------------------------------------------------------------
+    def _mark_missing(self, ident: str) -> None:
+        """Remember that an issue id is not one the relay can write, for MISSING_TTL seconds
+        only: an id named before its issue exists is looked up again later, not dropped for
+        good."""
+        self._uuid_cache.pop(ident, None)
+        self._missing_issues[ident] = self.clock() + MISSING_TTL
+
     def _issue_uuid(self, ident: str) -> str | None:
+        until = self._missing_issues.get(ident)
+        if until is not None:
+            if self.clock() < until:
+                return None  # known missing, recently: not asked again yet
+            del self._missing_issues[ident]
         if ident not in self._uuid_cache:
             try:
                 self._uuid_cache[ident] = self.linear.issue_id(ident)
             except (LinearNotFound, LinearPermanentError):
-                self._uuid_cache[ident] = None  # not an issue the relay can write: remembered
-                self._missing_issues.add(ident)
+                self._mark_missing(ident)
+                return None
             except LinearAuthError:
                 raise
             except LinearError as exc:
@@ -1144,15 +1195,19 @@ class RelayWorker:
         found = self.linear.find_comment(uuid, entry["marker"])
         if found:
             entry["comment_id"] = found
-            if isinstance(refusal, LinearPermanentError):
-                # Waiting does not change this refusal (an edit the app may not make), so it is
-                # not retried until a new message gives the entry new content.
-                raise LinearPermanentError(
-                    "linear refused the edit (%s); the comment is kept, and the edit is not "
-                    "retried" % refused
+            if isinstance(refusal, LinearNotFound):
+                # The stored id missed but the scan found the comment: the next edit goes to the
+                # id the scan found, so this one is worth retrying.
+                raise LinearError(
+                    "linear did not find the comment by its stored id; the scan found it, so the "
+                    "edit is retried"
                 )
-            raise LinearError(
-                "linear refused the edit (%s); the comment is still there, so it is kept" % refused
+            # A refused edit (success false, forbidden, invalid input) is a definite answer:
+            # the comment is kept, and the edit is not retried until a new message gives the
+            # entry new content.
+            raise LinearPermanentError(
+                "linear refused the edit (%s); the comment is kept, and the edit is not retried"
+                % refused
             )
         entry["comment_id"] = None
         self._create(uuid, entry)
@@ -1196,8 +1251,7 @@ class RelayWorker:
             raise _stop_on_auth() from None
         except LinearNotFound as exc:
             # The issue is gone: waiting does not bring it back.
-            self._uuid_cache[issue] = None
-            self._missing_issues.add(issue)
+            self._mark_missing(issue)
             entry["dirty"] = False
             self.log("linear write for %s not retried: %s" % (label, exc))
         except LinearPermanentError as exc:
@@ -1216,6 +1270,7 @@ class RelayWorker:
         now = self.clock() if now is None else now
         if self.public_streams is None:
             return  # nothing is known about any stream yet: write nothing, drop nothing
+        started = self.clock()
         for key in list(self.ledger.entries):
             entry = self.ledger.entries.get(key)
             if entry is None:
@@ -1224,14 +1279,32 @@ class RelayWorker:
                 continue
             if not entry["dirty"]:
                 continue
+            if self.clock() - started > TICK_BUDGET:
+                # A slow Linear must not stall the Zulip poll loop: the rest stay dirty and are
+                # written next cycle.
+                self.log("this cycle's write budget is spent; the rest wait for the next cycle")
+                break
             try:
                 self._flush(key, now)
             except Exception as exc:  # noqa: BLE001 - one bad entry must not stop the others
                 self.log(
                     "the relay entry for %s failed: %s" % (self._label(entry), type(exc).__name__)
                 )
-        if self.ledger.dirty:
+        self._save_quietly()
+
+    def _save_quietly(self) -> None:
+        """Write the ledger if anything changed.  A failed write (a full or broken volume) is
+        logged and tried again next cycle instead of stopping the relay; a create still needs
+        its own write-ahead save to succeed, so nothing is created while the volume fails."""
+        if not self.ledger.dirty:
+            return
+        try:
             self.ledger.save()
+        except OSError as exc:
+            self.log(
+                "could not write the relay ledger (%s); trying again next cycle"
+                % type(exc).__name__
+            )
 
     def reconcile(self) -> None:
         """Adopt the comments of creates whose answer was lost.  Only entries that were written
@@ -1253,8 +1326,7 @@ class RelayWorker:
             except (LinearNotFound, LinearPermanentError) as exc:
                 # The issue is gone or refused for good: there is nothing to adopt and nothing
                 # to write, so the entry is released instead of being probed at every start.
-                self._uuid_cache[entry["issue"]] = None
-                self._missing_issues.add(entry["issue"])
+                self._mark_missing(entry["issue"])
                 entry["pending"] = False
                 entry["dirty"] = False
                 self.ledger.mark_dirty()
@@ -1273,8 +1345,7 @@ class RelayWorker:
                     "reconciled a relay comment for %s after an uncertain write"
                     % self._label(entry)
                 )
-        if self.ledger.dirty:
-            self.ledger.save()
+        self._save_quietly()
 
 
 # ------------------------------------------------------------------------------------------
@@ -1310,9 +1381,20 @@ def load_public_streams(client: ZulipClient) -> dict[int, str]:
 
     Archived streams are included: an archived stream is still public, and only `invite_only`
     makes a stream private.  Leaving it out would read it as private and drop its entries."""
+    response = client.get("streams", {"exclude_archived": False})
+    streams = response.get("streams") if isinstance(response, Mapping) else None
+    if not isinstance(streams, list):
+        # A missing list is not "no public streams": the load fails, and nothing is relayed.
+        raise ValueError("the streams answer carries no streams list")
     out: dict[int, str] = {}
-    for stream in client.get("streams", {"exclude_archived": False}).get("streams", []):
-        if not stream.get("invite_only"):
+    for stream in streams:
+        if (
+            not isinstance(stream, Mapping)
+            or not _is_int(stream.get("stream_id"))
+            or not isinstance(stream.get("invite_only"), bool)
+        ):
+            raise ValueError("the streams answer carries a malformed stream")
+        if not stream["invite_only"]:
             out[int(stream["stream_id"])] = str(stream.get("name") or "")
     return out
 
@@ -1401,25 +1483,29 @@ def run(env: Mapping[str, str], *, check_only: bool = False) -> int:
     ledger.open()
     worker = RelayWorker(realm, creds.email, linear, ledger, regex)
 
-    def load_streams() -> None:
-        # Forget the old set first: if the reload fails, the worker knows nothing and writes
-        # nothing until a reload succeeds, instead of trusting a set that may be stale.
+    def load_streams() -> bool:
+        """Reload the public-stream set.  The old set is forgotten first, so a reload that fails
+        leaves the worker knowing nothing (it relays, writes and drops nothing) instead of
+        trusting a set that may be stale.  True when the set loaded."""
         worker.set_public_streams(None)
         try:
             streams = load_public_streams(client)
-        except (ApiError, NetworkError) as exc:
+        except (ApiError, NetworkError, ValueError) as exc:
             worker.log(
                 "could not load the public-stream set (%s); relaying nothing until it loads"
                 % type(exc).__name__
             )
-            raise
+            return False
         worker.set_public_streams(streams)
+        return True
 
     types = ["message", "update_message", "stream"]
     while True:
         try:
             subscribe_public(client, worker.log)
-            load_streams()
+            if not load_streams():
+                time.sleep(30)  # no queue is registered until the set loads
+                continue
             queue = EventQueue(client, None, types)
             queue.register()
             worker.reconcile()
@@ -1428,6 +1514,8 @@ def run(env: Mapping[str, str], *, check_only: bool = False) -> int:
                 for event in queue.poll_events(queue.longpoll_timeout or 90):
                     if event.get("type") == "stream":
                         if event.get("op") in ("create", "update", "delete"):
+                            # A failed reload keeps the queue: the set is unknown, so nothing
+                            # is written, and the reload is tried again after this batch.
                             subscribe_public(client, worker.log)
                             load_streams()
                         continue
@@ -1435,6 +1523,8 @@ def run(env: Mapping[str, str], *, check_only: bool = False) -> int:
                         worker.handle_event(event)
                     except Exception as exc:  # noqa: BLE001 - one bad event must not stop the relay
                         worker.log("a relay event failed: %s" % type(exc).__name__)
+                if worker.public_streams is None:
+                    load_streams()
                 worker.tick()
         except QueueExpired:
             worker.log("queue expired, re-registering (messages sent in the gap are not replayed)")
