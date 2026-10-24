@@ -28,6 +28,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
+from agent_sync.zulip import DEFAULT_CHANNEL
+
 BOT_EMAIL = "claude-bot@zulip.test"
 EPOCH = 1_790_000_000  # a fixed base for message timestamps
 LISTENER_EVENT_TYPES = {"message", "update_message", "user_topic", "realm_user", "stream", "subscription"}
@@ -68,6 +70,12 @@ FAKE_OWNER_ID = 12  # the realm owner (Jay); every fake bot is his, like the rea
 # the fake realm's channel:  these suites pin AGENT_SYNC_CHANNEL to it, so they keep
 # exercising their own name instead of the runtime default (which follows the realm).
 FAKE_CHANNEL = "agent-sync"
+# The realm's live name for the same channel, so a fixture that names it resolves to a stream
+# the bot is in.  The hosted fake teaches the realm both names for one stream id (STREAMS in
+# scripts/agent-sync-mcp/test/fake-zulip.mjs);  the golden fixtures are shared by both servers,
+# so this one has to know the runtime default too.  The live name comes first in the stream map
+# for the same reason the hosted fake lists it first:  a stream id resolves to one name, and the
+# live name is the one the fleet reads.
 
 
 def user(user_id: int, email: str, full_name: str, is_bot: bool, role: int | None = None) -> dict[str, Any]:
@@ -106,8 +114,8 @@ class FakeZulip:
             user(15, "minimax-bot@zulip.test", "MiniMax", True),
         ]
         self.keys: dict[str, dict[str, Any]] = {key: self.me}  # API key -> the bot it belongs to
-        self.streams = {FAKE_CHANNEL: 7, "other": 8, "sandbox": 9}
-        self.subscribed = {FAKE_CHANNEL, "other"}
+        self.streams = {DEFAULT_CHANNEL: 7, FAKE_CHANNEL: 7, "other": 8, "sandbox": 9}
+        self.subscribed = {FAKE_CHANNEL, DEFAULT_CHANNEL, "other"}
         self.subscription_properties: list[dict[str, Any]] = []
         self.user_groups: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
@@ -201,6 +209,19 @@ class FakeZulip:
             self._push(lambda q: "realm_user" in q.event_types,
                        lambda q: {"type": "realm_user", "op": "update", "person": {"user_id": user_id, "role": role}})
 
+    def _canonical_channel(self, channel: str) -> str:
+        """The name the realm knows a stream by.
+
+        Two names can point at one stream (the fake realm's own name and the realm's live
+        name for the same channel), and a realm lists a channel once, under one name, so the
+        first name that maps to the id wins everywhere the realm is asked.
+        """
+        stream_id = self.streams.get(channel)
+        for name, ident in sorted(self.streams.items()):
+            if ident == stream_id:
+                return name
+        return channel
+
     def add_message(self, sender: str | dict[str, Any], channel: str, topic: str, content: str, *,
                     timestamp: int | None = None, deliver: bool = True, client: str | None = None) -> int:
         """Store a message and (unless deliver is False) push it into the matching event queues."""
@@ -208,9 +229,11 @@ class FakeZulip:
             who = sender if isinstance(sender, dict) else self.user_named(sender)
             message_id = self.next_id
             self.next_id += 1
+            stream_id = self.streams.setdefault(channel, 100 + len(self.streams))
             message = {
-                "id": message_id, "type": "stream", "display_recipient": channel, "subject": topic,
-                "stream_id": self.streams.setdefault(channel, 100 + len(self.streams)),
+                "id": message_id, "type": "stream", "display_recipient": channel,
+                "subject": topic,
+                "stream_id": stream_id,
                 "content": content, "sender_id": who["user_id"], "sender_email": who["email"],
                 "sender_full_name": who["full_name"], "timestamp": timestamp if timestamp is not None else EPOCH + message_id,
                 "client": client or (BOT_CLIENT if who.get("is_bot") else HUMAN_CLIENT),
@@ -245,7 +268,8 @@ class FakeZulip:
     def rename_topic(self, channel: str, old: str, new: str) -> list[int]:
         """Rename a whole topic (propagate_mode change_all) and push update_message events."""
         with self.cond:
-            moved = [m for m in self.messages if m["type"] == "stream" and m["display_recipient"] == channel
+            stream_id = self.streams.get(channel)
+            moved = [m for m in self.messages if m["type"] == "stream" and m["stream_id"] == stream_id
                      and m["subject"].casefold() == old.casefold()]
             for message in moved:
                 message["subject"] = new
@@ -527,8 +551,15 @@ class FakeZulip:
         if key == ("GET", "users"):
             return 200, {**ok, "members": copy.deepcopy(self.users)}
         if key == ("GET", "users/me/subscriptions"):
-            return 200, {**ok, "subscriptions": [
-                {"name": n, "stream_id": self.streams[n], "description": "the %s channel" % n} for n in sorted(self.subscribed)]}
+            subs, seen = [], set()
+            for n in sorted(self.subscribed):
+                stream_id = self.streams[n]
+                if stream_id in seen:
+                    continue
+                seen.add(stream_id)
+                subs.append({"name": self._canonical_channel(n), "stream_id": stream_id,
+                             "description": "the %s channel" % self._canonical_channel(n)})
+            return 200, {**ok, "subscriptions": subs}
         if key == ("POST", "users/me/subscriptions"):
             wanted = [item["name"] for item in json.loads(params["subscriptions"])]
             new = [n for n in wanted if n not in self.subscribed]
@@ -539,8 +570,14 @@ class FakeZulip:
             return 200, {**ok, "subscribed": {caller["email"]: new} if new else {},
                          "already_subscribed": {caller["email"]: old} if old else {}}
         if key == ("GET", "streams"):
-            return 200, {**ok, "streams": [{"name": n, "stream_id": i, "invite_only": n.startswith("private"),
-                                            "is_archived": False} for n, i in sorted(self.streams.items())]}
+            streams, seen = [], set()
+            for n, i in sorted(self.streams.items()):
+                if i in seen:
+                    continue
+                seen.add(i)
+                streams.append({"name": n, "stream_id": i, "invite_only": n.startswith("private"),
+                                "is_archived": False})
+            return 200, {**ok, "streams": streams}
         if key == ("POST", "users/me/subscriptions/properties"):
             self.subscription_properties.extend(json.loads(params["subscription_data"]))
             return 200, ok
@@ -552,10 +589,9 @@ class FakeZulip:
         match = re.fullmatch(r"users/me/(\d+)/topics", path)
         if method == "GET" and match:
             stream_id = int(match.group(1))
-            channel = next((n for n, i in self.streams.items() if i == stream_id), None)
             latest: dict[str, int] = {}
             for message in self.messages:
-                if message["display_recipient"] == channel:
+                if message["type"] == "stream" and message["stream_id"] == stream_id:
                     latest[message["subject"]] = max(latest.get(message["subject"], 0), message["id"])
             return 200, {**ok, "topics": [{"name": t, "max_id": i} for t, i in sorted(latest.items(), key=lambda x: -x[1])]}
         if key == ("POST", "messages"):
