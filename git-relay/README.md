@@ -70,9 +70,10 @@ is only a policy entry.
 | resolve_thread | seat's App (pull_requests write) | implemented |
 | create_release, rerun_workflow, cancel_workflow, set_labels, create_issue_comment, request_reviewers, set_branch_protection, create_repo | seat's App | registered, refused until implemented |
 
-App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read one named key at a time
-through the `fleet-secrets` CLI only (owner decision 2026-10-21:  no process-environment
-secrets, no direct Infisical HTTP in the relay), JWT signed with the local openssl binary
+App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read together - one
+`fleet-secrets` call per App - from the /github-apps folder (GIT_RELAY_SECRETS_PATH
+overrides) through the `fleet-secrets` CLI only (owner decision 2026-10-21:  no
+process-environment secrets, no direct Infisical HTTP in the relay), JWT signed with the local openssl binary
 (the key reaches openssl through an inherited pipe fd, never a file), installation tokens
 cached in memory under per-(app, repo, permissions) locks (one slow mint never blocks another
 seat's) and refreshed 5 minutes early.  Values are cached in memory
@@ -185,6 +186,7 @@ credential (never cached in the store) and a re-mint is safe under the minter's 
 | GIT_RELAY_PORT | 8471 | Bind port |
 | GIT_RELAY_RATE_PER_HOUR | 120 | Per-seat hourly call cap |
 | GIT_RELAY_APP_MINT | 1 | Set to 0 to disable App actions and all App minting |
+| GIT_RELAY_SECRETS_PATH | /github-apps | Fleet-OPS prod folder the GH_APP_<SLUG>_* pairs are read from;  a set-but-empty value is a startup config error |
 
 ```
 git-relay serve                 # the CLI; also the default command
