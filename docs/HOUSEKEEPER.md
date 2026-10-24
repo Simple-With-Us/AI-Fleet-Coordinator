@@ -29,7 +29,7 @@ Safe under disk pressure (scripts already encode cooldowns):
 
 Do **not** authorize deleting worktrees solely for age ≥3d.  Sentry HIGH: match janitor’s 7-day default + merged + `.janitor-keep` checks.
 
-Datadog Alert 22024796 is a 3-day forecast ≥99%, not live >90%.  Data disk3s5 ~84% improved — still reclaim regenerable waste under pressure.
+The Datadog disk alert is a three-day forecast (≥99%), not a live reading over 90%.  The data volume improved to about 84%;  still reclaim regenerable waste under pressure.
 
 ## Canonical bot prompt
 

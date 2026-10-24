@@ -1,6 +1,6 @@
 # Fleet Skills Catalog (Universal Multi-Platform Pack)
 
-Updated **2026-10-08**: the installer **specializes identity per seat** (Zulip bot, credential file, `[SEAT·session8]` tag, Notes name, branch prefix) and **omits** skills that are not appropriate for that harness.  `docs/fleet-skills/` stays the canonical source pack (Monet-voiced, which the installer rewrites per seat) and the Claude.app zip pack.  Do not copy canonical `SKILL.md` files into another seat's folder unchanged.  `ios-ship` is not installed anywhere — Compiler / `GB-COMPILE` owns GitHub-hosted `macos-latest` iOS ship.  DealDex's hosted Actions ship stays — do not disable it.
+Updated **2026-10-08**: the installer **specializes identity per seat** (Zulip bot, credential file, `[SEAT·session8]` tag, Notes name, branch prefix) and **omits** skills that are not appropriate for that harness.  `docs/fleet-skills/` stays the canonical source pack (written with the retired MONET seat's tag and paths as template placeholders, which the installer rewrites for each seat; MONET itself takes no work) and the Claude.app zip pack.  Do not copy canonical `SKILL.md` files into another seat's folder unchanged.  `ios-ship` is not installed anywhere — Compiler / `GB-COMPILE` owns GitHub-hosted `macos-latest` iOS ship.  DealDex's hosted Actions ship stays — do not disable it.
 
 | Seat | Chat tag | Home / upload dir | Branches | Notes |
 | :--- | :--- | :--- | :--- | :--- |
