@@ -101,7 +101,7 @@ rendered, from the message id, so no text that came out of Zulip can reach it.
 | `LINEAR_RELAY_TOKEN` | the OAuth app token of the dedicated Linear relay app |
 | `LINEAR_RELAY_STATE` | ledger path (default `~/.agent-sync/linear-relay.json`) |
 | `LINEAR_RELAY_TEAMS` | override for the team keys |
-| `LINEAR_RELAY_DRY_RUN` | `1` logs what it would write and writes nothing to Linear |
+| `LINEAR_RELAY_DRY_RUN` | `1` logs what it would write, writes nothing to Linear, and keeps its own `.dry-run.json` ledger |
 | `LINEAR_RELAY_CHECK_ISSUE` | an issue id for `check` to look up |
 
 A `ZULIP_SITE` whose host is not the realm's stops the relay at start with a message that names
@@ -229,16 +229,19 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
    environment above, a persistent volume for the ledger with `LINEAR_RELAY_STATE` pointing at a
    file on it, and restart always.  Without that variable the ledger sits in the container's home
    directory, which a redeploy empties, and the relay would then start a second comment for every
-   topic.  First run with `LINEAR_RELAY_DRY_RUN=1`, watch the log, then unset it.
+   topic.  First run with `LINEAR_RELAY_DRY_RUN=1`, watch the log, then unset it.  A dry run keeps
+   its own ledger next to the configured one (`linear-relay.dry-run.json` beside
+   `linear-relay.json`), so it never marks a topic written in the file the live run will use.
 
    The image is built for the daemon, so the relay service changes three things.  The image's
    Infisical loader (`scripts/agent_sync/server/infisical_env.py`) copies only the names on its
    allow-list, and the relay's three are not on it, so the service gets them as its own runtime
    environment; adding them to the shared loader would hand the relay's keys to the daemon as well.
-   The entrypoint always runs `simple-chat`, so the service overrides it to run
-   `python3 -m agent_sync.linear_relay run` with `PYTHONPATH` set to the image's `scripts` folder.
-   And the image's healthcheck watches the daemon's status file, which the relay never writes, so
-   the service turns that healthcheck off; restart always still brings the relay back if it exits.
+   The image's entrypoint always runs `simple-chat` and its command is `daemon run --wait-lock`, so
+   the service replaces both: the entrypoint becomes `python3` and the command
+   `-m agent_sync.linear_relay run`, with `PYTHONPATH` set to the image's `scripts` folder.  And the
+   image's healthcheck watches the daemon's status file, which the relay never writes, so the service
+   turns that healthcheck off; restart always still brings the relay back if it exits.
 
 The relay runs on the Coolify server instance, the same image as the simple-chat daemon.  No new
 Cloudflare Worker is involved.

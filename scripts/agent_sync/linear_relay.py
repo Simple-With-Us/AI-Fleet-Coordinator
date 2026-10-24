@@ -1414,19 +1414,14 @@ def load_zulip_creds(env: Mapping[str, str]) -> Credentials:
 
 
 def state_path(env: Mapping[str, str], dry_run: bool) -> Path:
-    """Where the ledger lives.  A dry run never touches the live ledger: the two would fight
-    over the same comment ids."""
+    """Where the ledger lives.  A dry run never touches the live ledger: it writes a sibling of
+    the configured file (`<name>.dry-run.json`), whatever LINEAR_RELAY_STATE names, because a
+    dry run marks topics written that the live relay would then never create a comment for."""
     raw = (env.get("LINEAR_RELAY_STATE") or "").strip()
-    live = Path(LIVE_STATE).expanduser()
+    live = Path(raw).expanduser() if raw else Path(LIVE_STATE).expanduser()
     if dry_run:
-        chosen = Path(raw).expanduser() if raw else Path(DRY_STATE).expanduser()
-        if chosen == live:
-            raise SystemExit(
-                "LINEAR_RELAY_DRY_RUN=1 refuses to use the live ledger %s; point LINEAR_RELAY_STATE "
-                "at a dry-run file" % live
-            )
-        return chosen
-    return Path(raw).expanduser() if raw else live
+        return live.with_name(live.stem + ".dry-run" + (live.suffix or ".json"))
+    return live
 
 
 def load_public_streams(client: ZulipClient) -> dict[int, str]:

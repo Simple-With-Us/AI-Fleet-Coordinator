@@ -502,11 +502,14 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(self.lin.updated, [])
 
     def test_a_dry_run_never_uses_the_live_ledger(self) -> None:
-        live = str(Path(lr.LIVE_STATE).expanduser())
-        with self.assertRaises(SystemExit):
-            lr.state_path({"LINEAR_RELAY_STATE": live}, True)
-        self.assertNotEqual(lr.state_path({}, True), Path(lr.LIVE_STATE).expanduser())
-        self.assertEqual(lr.state_path({}, False), Path(lr.LIVE_STATE).expanduser())
+        default = Path(lr.LIVE_STATE).expanduser()
+        self.assertEqual(lr.state_path({}, False), default)
+        self.assertEqual(lr.state_path({}, True), Path(lr.DRY_STATE).expanduser())
+        # A configured live ledger on a volume: the dry run writes a sibling, never the file the
+        # live run will use, so it cannot mark topics written that were never created.
+        env = {"LINEAR_RELAY_STATE": "/data/linear-relay.json"}
+        self.assertEqual(lr.state_path(env, False), Path("/data/linear-relay.json"))
+        self.assertEqual(lr.state_path(env, True), Path("/data/linear-relay.dry-run.json"))
 
     def test_one_failing_entry_does_not_stop_the_tick(self) -> None:
         self.w.handle_event(message(1, "AFC-1 a", "hello"))
