@@ -49,7 +49,16 @@ Every seat's key comes from Infisical;  `--zuliprc` is gone (AFC-347).  WISE's W
 
 The old JET login must not lose its tools before the new JET-CHAT login works.  The events-only set is therefore a Worker var (`EVENTS_ONLY_SEATS`), not a source edit:
 
-1. Deploy this change as committed.  The seats.js staging default is empty, so nothing is restricted and the old login is untouched.  Configure JET-CHAT at deploy time only (HOSTED_SEATS plus its captured pair and `ZULIP_EMAIL_JET_CHAT`; never committed - the pinning tests depend on that absence).
+1. Deploy this change with JET-CHAT configured as deploy-time var overrides, never committed (the pinning tests depend on that absence):  `HOSTED_SEATS` gains JET-CHAT, `ZULIP_EMAIL_JET_CHAT` is set to the shared bot's address, and `SEATS` is the committed registry **plus** a JET-CHAT entry carrying its own captured connector pair (`redirect_uris` and `cimd_client_ids`).  The SEATS override is required, not optional:  a redirect URI binds to exactly one seat (`config.test.mjs` pins the committed ChatGPT redirect to JET), so without a JET-CHAT entry no consent can ever bind to the seat and step 2 cannot succeed.  `--var` replaces a whole var, so pass the full SEATS JSON, not a fragment:
+
+   ```bash
+   WRANGLER_SEND_METRICS=false npx --no-install wrangler deploy \
+     --var 'HOSTED_SEATS:JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE' \
+     --var 'ZULIP_EMAIL_JET_CHAT:<shared bot address>' \
+     --var "SEATS:$(python3 -c 'import json,sys; c=json.load(open("wrangler.jsonc")); c["vars"]["SEATS"]["JET-CHAT"]={"redirect_uris":["<captured JET-CHAT redirect>"],"cimd_client_ids":["<captured JET-CHAT CIMD client id>"]}; print(json.dumps(c["vars"]["SEATS"]))')"
+   ```
+
+   The seats.js staging default is empty, so this deploy restricts nothing and the old login is untouched.
 2. Arm JET-CHAT, connect the new login, approve its consent and verify it end to end.
 3. Only then flip the old login: add `"EVENTS_ONLY_SEATS": "JET"` to `vars` in its own reviewed commit and redeploy.  The suites pin both states, so the flip commit is exactly two lines:  the var, and the production-default assertion in `test/jet-wake-split.test.mjs` changing its expected `eventsOnlySeats` from `[]` to `["JET"]` (the `testEnv({ EVENTS_ONLY_SEATS: "JET" })` pin already covers the flipped behavior).  A var-only flip fails CI by design.
 

@@ -27,7 +27,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
   // config.whatsappEnabled).
   test(`Jet full consent with WhatsApp disclosure ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
-    const response = consentPage({ clientName: 'ChatGPT', clientDomain: 'chatgpt.com', clientId: 'https://chatgpt.com/connector/mcp.json', redirectHost: 'chatgpt.com', seat: 'JET-CHAT', scopes: ['zulip:read', 'zulip:write'], handle: 'h'.repeat(48), replacing: [], whatsapp: true }, {});
+    const response = consentPage({ clientName: 'ChatGPT', clientDomain: 'chatgpt.com', clientId: 'https://chatgpt.com/connector/mcp.json', redirectHost: 'chatgpt.com', seat: 'JET-CHAT', scopes: ['zulip:read', 'zulip:write'], handle: 'h'.repeat(48), replacing: [], whatsapp: true, eventsOnly: false }, {});
     const html = await response.text();
     await page.route('https://visual-tests.invalid/authorize', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));
     await page.goto('/authorize');
@@ -41,7 +41,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
   // Regression: with the bridge off the same full seat never mentions WhatsApp.
   test(`Jet full consent without WhatsApp ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
-    const response = consentPage({ clientName: 'ChatGPT', clientDomain: 'chatgpt.com', clientId: 'https://chatgpt.com/connector/mcp.json', redirectHost: 'chatgpt.com', seat: 'JET-CHAT', scopes: ['zulip:read', 'zulip:write'], handle: 'h'.repeat(48), replacing: [] }, {});
+    const response = consentPage({ clientName: 'ChatGPT', clientDomain: 'chatgpt.com', clientId: 'https://chatgpt.com/connector/mcp.json', redirectHost: 'chatgpt.com', seat: 'JET-CHAT', scopes: ['zulip:read', 'zulip:write'], handle: 'h'.repeat(48), replacing: [], eventsOnly: false }, {});
     const html = await response.text();
     await page.route('https://visual-tests.invalid/authorize', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));
     await page.goto('/authorize');

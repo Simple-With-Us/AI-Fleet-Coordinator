@@ -780,3 +780,29 @@ test("CURSOR refuses a missing key and credentials for Jet", async () => {
   assert.match(seatProblem(jet, { seat: "CURSOR", email: cursorConfig.botEmails.CURSOR }), /another bot/);
   assert.match(seatProblem(jet, { seat: "CURSOR", email: jet.email }), /another seat/);
 });
+
+test("a pre-pin cached role row is never served:  the owner verdict is re-checked (kody 4366019380)", async () => {
+  const { fake, tools, gate } = harness();
+  // A row written by a deployment that predates the borrowed-bot owner pin:
+  // ok:true, no owner field at all.  It must miss, never be served.
+  await gate.store.put("role", { ok: true, user_id: 1, role: 400, reason: "", checked_at: Date.parse("2026-10-09T10:00:00Z") });
+  await tools.call("whoami", {});
+  assert.equal(fake.requestsTo("GET", "users/me").length, 1, "a row without an owner verdict is re-checked, not served");
+});
+
+test("a role row carrying the current owner verdict is served from cache", async () => {
+  const { fake, tools } = harness();
+  await tools.call("whoami", {});
+  await tools.call("whoami", {});
+  assert.equal(fake.requestsTo("GET", "users/me").length, 1, "the verdict row is cached for the TTL");
+});
+
+test("an audited unknown-tool name never carries a lone surrogate and stays under 192 encoded bytes (kody 4366019481/4366019266)", async () => {
+  const { tools } = harness();
+  const surrogateCapped = "a".repeat(63) + "\uD83D" + "tail-that-is-cut";
+  const err = await tools.call(surrogateCapped, {}).then(() => null, (e) => e);
+  assert.ok(err instanceof UnknownTool);
+  const codes = [...err.toolName].map((ch) => ch.codePointAt(0));
+  assert.ok(codes.every((c) => !(c >= 0xd800 && c <= 0xdfff)), "no lone surrogate anywhere in the audited name");
+  assert.ok(new TextEncoder().encode(err.toolName).length <= 192, "64 code units cap the encoded size at 192 bytes");
+});

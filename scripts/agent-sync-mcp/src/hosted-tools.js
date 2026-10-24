@@ -352,7 +352,12 @@ export class HostedTools {
       // Bound the client-controlled name BEFORE the secret scan (kody 4365544427):
       // scanning an unbounded string costs unbounded CPU/memory.  A plain
       // string slice keeps the cap O(64) (kody 4365848075).
-      const cappedUnknown = String(name).slice(0, 64);
+      // 64 code units is also the raw-byte cap:  UTF-8 encodes a code unit in at
+      // most 3 bytes, so the audited name never exceeds 192 bytes (kody
+      // 4366019266).  A trailing lone high surrogate is trimmed so the audit row
+      // and the UnknownTool error never carry a replacement character (kody
+      // 4366019481).
+      const cappedUnknown = String(name).slice(0, 64).replace(/[\uD800-\uDBFF]$/, "");
       const auditedUnknown = scanSecret(cappedUnknown) ? "<omitted after secret scan>" : cappedUnknown;
       throw new UnknownTool(auditedUnknown);
     }
@@ -498,7 +503,15 @@ export class HostedTools {
       throw new ToolError("not_authorized", `No Zulip key is installed for ${this.seat}.  The owner installs it (scripts/agent-sync-mcp/install_seat_key.py).`);
     }
     const cached = await this.gate.roleGet();
-    if (cached) {
+    // A cached verdict only stands when it was checked against the CURRENT owner
+    // pin:  a row written before the borrowed-bot pin existed (or under a changed
+    // OWNER_USER_ID) carries no owner verdict and must be re-checked, never
+    // served (kody 4366019380 - the pin must not be a cache-miss-only check).
+    const ownerPin = this.config?.ownerUserId ?? null;
+    // Object.hasOwn, not a null comparison:  a pre-pin row carries no owner
+    // field at all, and an absent pin must not grandfather it for a borrowed
+    // seat (seatProblem itself fails closed when the pin is missing there).
+    if (cached && Object.hasOwn(cached, "owner") && cached.owner === ownerPin) {
       if (!cached.ok) throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${cached.reason}`);
       this.me = { user_id: cached.user_id, role: cached.role };
       return;
@@ -511,13 +524,13 @@ export class HostedTools {
       // record it so the admin card names the cause instead of "not checked yet" (AFC-347).
       if (err?.status === 401 || err?.status === 403) {
         const reason = `Zulip refused the installed key (HTTP ${err.status});  reinstall it with install_seat_key.py ${this.seat} --apply`;
-        await this.gate.roleSet({ ok: false, user_id: null, role: null, reason });
+        await this.gate.roleSet({ ok: false, user_id: null, role: null, reason, owner: this.config?.ownerUserId ?? null });
         throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${reason}`);
       }
       throw err;
     }
-    const problem = seatProblem(me, { seat: this.seat, email: this.email, ownerUserId: this.config?.ownerUserId ?? null });
-    await this.gate.roleSet({ ok: !problem, user_id: isInt(me.user_id) ? me.user_id : null, role: isInt(me.role) ? me.role : null, reason: problem ?? "" });
+    const problem = seatProblem(me, { seat: this.seat, email: this.email, ownerUserId: ownerPin });
+    await this.gate.roleSet({ ok: !problem, user_id: isInt(me.user_id) ? me.user_id : null, role: isInt(me.role) ? me.role : null, reason: problem ?? "", owner: ownerPin });
     if (problem) throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${problem}`);
     this.me = { user_id: me.user_id, role: me.role };
   }

@@ -217,7 +217,10 @@ export class IdentityRouter {
       // must not reach scanSecret.  The cap is a plain string slice
       // (kody 4365848075):  spreading first would materialize one array
       // element per code point of the unbounded input.
-      const requested = (typeof name === "string" ? name : "").slice(0, 64);
+      // Same bound as the seat-state path:  64 code units caps the encoded
+      // size at 192 UTF-8 bytes (kody 4366019266), and a trailing lone high
+      // surrogate is trimmed (kody 4366019481).
+      const requested = (typeof name === "string" ? name : "").slice(0, 64).replace(/[\uD800-\uDBFF]$/, "");
       const audited = scanSecret(requested) ? "<omitted after secret scan>" : requested;
       await this.audit({ acting_identity: "none", tool: audited, error_code: "unknown_tool", error_message: "This connection delivers event notifications only;  it has no tools." });
       // The thrown error carries the AUDITED name too:  a secret-shaped tool
