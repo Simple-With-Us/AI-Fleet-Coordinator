@@ -3,7 +3,9 @@
 // 4363582706 + 4363583143).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { wakeOnlyInstructions } from "../src/mcp.js";
+// wakeOnlyInstructions lives in node-safe hosted-tools.js (kody 4365668882), so this
+// suite never pulls the Workers-only agents/mcp/server import into plain node.
+import { wakeOnlyInstructions } from "../src/hosted-tools.js";
 
 test("wake-only with events:  advertises the events methods and keeps the fencing", () => {
   const text = wakeOnlyInstructions("JET", true);

@@ -105,6 +105,9 @@ test("the key installer provisions JET-CHAT from Jet's Infisical entry with the 
   const installer = readFileSync(path.join(ROOT, "install_seat_key.py"), "utf8");
   assert.match(installer, /"JET-CHAT": \("ZULIP_JET", "ZULIP_KEY_JET_CHAT", "ZULIP_EMAIL_JET_CHAT"\)/);
   assert.match(installer, /EXPECTED_TAGS = \{"JET-CHAT": "JET"\}/);
+  // The tag alone never grants the seat:  the installer pins the bot owner
+  // (kody 4365430953), failing closed when the pin cannot be resolved.
+  assert.match(installer, /str\(me\.get\("bot_owner_id"\)\) == handoff\("ZULIP_OWNER_USER_ID"\)/);
 });
 
 test("JET-CHAT is absent by default, and only hosting it unprovisioned fails closed", () => {
