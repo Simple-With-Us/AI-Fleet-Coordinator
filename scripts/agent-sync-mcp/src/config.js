@@ -42,7 +42,10 @@ export const KNOWN_SEATS = Object.freeze(["JET", "JET-CHAT", "GROK-WEB", "ECHO",
 // Seats whose connection serves event notifications only.  tools/list is
 // empty and tools/call refuses every name (src/delegated-identities.js);
 // events stay (src/index.js).  Turning a seat back on is a deploy step.
-export const EVENTS_ONLY_SEATS = Object.freeze(["JET"]);
+// The constant lives in ./seats.js so src/pages.js can classify seats without
+// importing this module (which would drag in the zod chain the visual tests
+// cannot resolve); re-exported here for the existing consumers.
+export { EVENTS_ONLY_SEATS } from "./seats.js";
 
 // AFC-331 (docs/protocols/per-call-identity.md section 3):  a grant for one of these seats may act as
 // either of them and as every enabled Grok Bot persona (GB_IDENTITIES);  every other grant acts only

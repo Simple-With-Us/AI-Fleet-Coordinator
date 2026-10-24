@@ -1,6 +1,6 @@
 // HTML for the consent page, the arming notice and /admin.
 import { callSeatLabel, renderStatusOverview } from "./status.js";
-import { EVENTS_ONLY_SEATS } from "./config.js";
+import { EVENTS_ONLY_SEATS } from "./seats.js";
 //
 // Pure module.  Every page is static HTML with no script.  Every string that
 // could come from a client (a CIMD document, a registration, a query string)
