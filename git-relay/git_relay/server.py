@@ -689,14 +689,28 @@ def from_env() -> Relay:
         # must be installed on this host or App actions stay unavailable.
         if not shutil.which("fleet-secrets"):
             raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
-        from .app_tokens import AppTokenMinter, FleetSecretsSource
+        from .app_tokens import AppTokenError, AppTokenMinter, FleetSecretsSource
 
-        app_minter = AppTokenMinter(
-            FleetSecretsSource(),
-            lambda method, path, bearer, payload=None: client._call(
-                method, path, payload, bearer=bearer
-            ),
-        )
+        # The Fleet-OPS prod folder the App keys are read from.  Defaults to
+        # /github-apps (their verified live location);  GIT_RELAY_SECRETS_PATH
+        # overrides it for a future folder move without a code change.  A
+        # set-but-empty override is a config error like any other, not a
+        # silently different default.
+        raw_secrets_path = os.environ.get("GIT_RELAY_SECRETS_PATH")
+        if raw_secrets_path is not None and not raw_secrets_path.strip():
+            raise SystemExit(
+                "git-relay config: GIT_RELAY_SECRETS_PATH is set but empty; "
+                "unset it to use /github-apps"
+            )
+        try:
+            app_minter = AppTokenMinter(
+                FleetSecretsSource(path=(raw_secrets_path or "/github-apps").strip()),
+                lambda method, path, bearer, payload=None: client._call(
+                    method, path, payload, bearer=bearer
+                ),
+            )
+        except AppTokenError as exc:
+            raise SystemExit(f"git-relay config: {exc}") from exc
     return Relay(policy, client, audit, app_minter=app_minter, outcomes=outcomes)
 
 
