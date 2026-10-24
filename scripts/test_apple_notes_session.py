@@ -596,12 +596,16 @@ class TitleSecretScanTests(unittest.TestCase):
 class SentenceGapMarkupTests(unittest.TestCase):
     """AFC-496:  a sentence that ends INSIDE inline markup keeps the sentence gap.
 
-    Notes.app is an HTML renderer, so the gap has to survive as the `&nbsp; ` entity:  two raw
-    ASCII spaces collapse to one.  The helper converts the gap twice, an inline pass over the
-    Markdown source and a whole-HTML pass over the finished HTML, and a sentence that ends inside
-    `**bold**`, `*italic*` or a `[link](url)` puts the closing tag between the punctuation and the
-    run of spaces.  Neither pass matched that, so the note carried two raw spaces after the bold,
-    italic and link sentence ends and Notes rendered them as one.
+    Notes.app is an HTML renderer, so the gap has to survive as the numeric character reference
+    `&#160; `:  two raw ASCII spaces collapse to one.  Owner ruling 2026-10-23:  the named
+    `&nbsp;` entity is never emitted, because Notes parses the numeric reference into a real
+    U+00A0 and the numeric reference adds no raw non-ASCII byte to the note HTML.
+
+    The helper converts the gap twice, an inline pass over the Markdown source and a whole-HTML
+    pass over the finished HTML, and a sentence that ends inside `**bold**`, `*italic*` or a
+    `[link](url)` puts the closing tag between the punctuation and the run of spaces.  Neither
+    pass matched that, so the note carried two raw spaces after the bold, italic and link sentence
+    ends and Notes rendered them as one.
 
     The whole-HTML pass now carries the closing tag through, and the inline pass holds code spans
     aside, because a code span is content the author wants verbatim and the entity used to land
@@ -621,6 +625,10 @@ class SentenceGapMarkupTests(unittest.TestCase):
         "The literal `code span with a sentence end.  inside it` stays verbatim.\n"
     )
     CODE_SPAN = "code span with a sentence end.  inside it"
+    PLAIN_BODY = (
+        "Plain sentence one.  Plain sentence two.  Plain sentence three.\n\n"
+        "A second paragraph here.  And its end.\n"
+    )
     #  A code, pre, style or script region is content the author wants verbatim, so the gap
     #  conversion leaves it alone.
     REGION = re.compile(r"<(pre|code|style|script)\b[\s\S]*?</\1>", re.IGNORECASE)
@@ -651,13 +659,13 @@ class SentenceGapMarkupTests(unittest.TestCase):
         p = self.run_script(self.PROBE)
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         for fragment in (
-            "<b>Bold sentence end.</b>&nbsp; Plain sentence after the bold one.",
-            "<i>Italic sentence end.</i>&nbsp; Plain sentence after the italic one.",
+            "<b>Bold sentence end.</b>&#160; Plain sentence after the bold one.",
+            "<i>Italic sentence end.</i>&#160; Plain sentence after the italic one.",
             (
-                '<a href="https://example.test/probe">Link sentence end.</a>&nbsp; '
+                '<a href="https://example.test/probe">Link sentence end.</a>&#160; '
                 "Plain sentence after the link one."
             ),
-            "Plain sentence end.&nbsp; Second plain sentence.",
+            "Plain sentence end.&#160; Second plain sentence.",
         ):
             self.assertIn(fragment, p.stdout)
 
@@ -668,10 +676,10 @@ class SentenceGapMarkupTests(unittest.TestCase):
         #  A sentence end inside markup puts the closing tag between the punctuation and the
         #  run of spaces, so the run is checked with the tag in front of it too.
         self.assertEqual(re.findall(r"[.!?](</[a-zA-Z][^>]*>)?[ \t]{2,}", outside), [], outside)
-        #  Every sentence end that is followed by a space carries the entity and a space.
+        #  Every sentence end that is followed by a space carries the numeric reference and a space.
         for m in re.finditer(r"[.!?](</[a-zA-Z][^>]*>)?", outside):
             after = outside[m.end() :]
-            if after.startswith("&nbsp; "):
+            if after.startswith("&#160; "):
                 continue
             self.assertFalse(
                 after[:1].isspace(),
@@ -685,19 +693,30 @@ class SentenceGapMarkupTests(unittest.TestCase):
         self.assertEqual(chips, [self.CODE_SPAN])
 
     def test_a_plain_body_renders_exactly_as_it_did_before(self):
-        body = (
-            "Plain sentence one.  Plain sentence two.  Plain sentence three.\n\n"
-            "A second paragraph here.  And its end.\n"
-        )
-        p = self.run_script(body)
+        p = self.run_script(self.PLAIN_BODY)
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         self.assertEqual(
             self.body_html(p.stdout),
-            "<p>Plain sentence one.&nbsp; Plain sentence two.&nbsp; Plain sentence three.</p>"
+            "<p>Plain sentence one.&#160; Plain sentence two.&#160; Plain sentence three.</p>"
             "<div><br></div>"
-            "<p>A second paragraph here.&nbsp; And its end.</p>"
+            "<p>A second paragraph here.&#160; And its end.</p>"
             "<div><br></div></div>\n",
         )
+
+    def test_the_named_nbsp_entity_is_never_emitted(self):
+        """The named entity is banned;  the gap is written as the numeric reference.
+
+        Owner ruling 2026-10-23:  Notes parses `&#160;` into a real U+00A0, so the helper writes
+        the numeric reference and never the named `&nbsp;` entity.  The markup probe and the plain
+        body are both checked, so a pass that only fixes one path still fails here.
+        """
+        p = self.run_script(self.PROBE)
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        plain = self.run_script(self.PLAIN_BODY)
+        self.assertEqual(plain.returncode, 0, plain.stderr[-400:])
+        for out in (p.stdout, plain.stdout):
+            outside = self.REGION.sub("", out)
+            self.assertNotIn("&nbsp;", outside, out)
 
 
 if __name__ == "__main__":
