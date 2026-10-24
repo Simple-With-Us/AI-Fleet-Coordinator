@@ -177,12 +177,20 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(ids(nobody), ["s1"], "no chat on the issue:  its repo instead")
 
     def test_router_flags_typed_and_autocompleted_mentions(self):
-        for text in ("@**all** x", "@**everyone** x", "@ALL x", "ST @everyone"):
-            self.assertTrue(R.fleet_wake_mention(text, []) or R._PLAIN_ALL_RE.search(text), text)
-        self.assertIsNone(R._PLAIN_ALL_RE.search("mail@allstate.com and @alloy"))
-        c = R.Classes()
-        c.everyone = True
-        self.assertIn("everyone", c.labels())
+        for text in ("@**all** x", "@ALL x"):
+            self.assertTrue(R.fleet_wake_mention(text, []), text)
+        for text in ("@**everyone** x", "ST @everyone"):
+            self.assertFalse(R.fleet_wake_mention(text, []), text)
+            self.assertIn("everyone", R.broadcast_tokens(text))
+        self.assertEqual(R.broadcast_tokens("mail@allstate.com and @alloy"), frozenset())
+        c = R.classify(
+            {"id": 1, "sender_id": 12, "content": "@everyone x", "flags": [], "timestamp": NOW,
+             "client": "website", "type": "stream", "display_recipient": "misc", "subject": "t"},
+            R.SeatIdentity("CLAUDE", 10, "Claude", "c@z"),
+            R.Context(owner_user_id=12, owner_clients=["website"], eligible_user_ids=[], is_bot={},
+                      now=NOW, stale_after=7200, presence=[]),
+        )
+        self.assertIn("everyone_inert", c.labels())
 
 
 class FakeCatalog:

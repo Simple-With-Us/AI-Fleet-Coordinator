@@ -1674,8 +1674,16 @@ class Daemon:
         )
         # A marker message wakes nobody, and the owner typing `@**all**` is exactly the case
         # where the fanout would wake every seat, so the fanout checks the marker too (AFC-468).
-        if c.owner and c.everyone and not c.dm and not c.stale and not c.no_wake:
+        if c.owner and c.broadcast_all and not c.dm and not c.stale and not c.no_wake:
             self.start_fanout(message, c)
+        if first_seen and c.owner and c.broadcast_all and not c.no_wake:
+            unsupported = self._broadcast_wake_unsupported()
+            if unsupported:
+                self.log.write(
+                    "broadcast-wake-unsupported",
+                    id=message["id"],
+                    seats=unsupported,
+                )
         if (
             c.owner
             and c.dm
@@ -3046,6 +3054,17 @@ class Daemon:
                 )
             return
         self._surface(runner, pending, listed, lost, finished)
+
+    def _broadcast_wake_unsupported(self) -> dict[str, str]:
+        """Seats this listener holds that cannot take a routine/headless wake (for owner `@all`)."""
+        blocked: dict[str, str] = {}
+        for seat in sorted(self.config.seats):
+            mode, why = self.route_mode(seat)
+            if why:
+                blocked[seat] = why
+            elif mode == "inbox only":
+                blocked[seat] = "inbox_only"
+        return blocked
 
     def start_fanout(self, message: Mapping[str, Any], c: R.Classes) -> None:
         """The owner's channel-wide mention reaches the recently active chats (chat_fanout), once per message
