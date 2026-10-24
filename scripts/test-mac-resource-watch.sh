@@ -796,4 +796,29 @@ finally:
     shutil.rmtree(scratch, ignore_errors=True)
 print("housekeeper lock behaviour ok")
 PY
+
+# AFC-504: the cleanup script exits 75 when the local cleanup ran and only the
+# remote maintenance hop failed.  The watcher has to read that as "cleaned", so
+# a failed hop never sends the Mac round a second time on an already pruned
+# disk.
+python3 - "$ROOT/mac-resource-watch.py" <<'PY' || fail "cleanup exit code behaviour"
+import importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location("watch", sys.argv[1])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+assert 0 in mod.CLEANUP_EXIT_CLEANED, (
+    "a clean cleanup run must still count as cleaned")
+assert 75 in mod.CLEANUP_EXIT_CLEANED, (
+    "the cleanup script's hop-failed code 75 must count as cleaned: the local "
+    "cleanup ran, so the watcher must not run it a second time")
+assert 1 not in mod.CLEANUP_EXIT_CLEANED, (
+    "a cleanup that did not run must not count as cleaned")
+
+source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+assert "cleaned = rc in CLEANUP_EXIT_CLEANED" in source, (
+    "the watcher must read the cleanup exit code through CLEANUP_EXIT_CLEANED, "
+    "so the rule lives in one place")
+print("cleanup exit code behaviour ok")
+PY
 echo OK

@@ -11,7 +11,10 @@ integration tree.
 The knobs differ per tool, because the tools differ.  Codex and the desktop apps
 have a location setting; the CLI tools have none, so their working directory
 comes from the launcher that starts them.  This script owns those launchers and
-settings on a server host.
+settings on a server host.  The Claude desktop app reads `worktree.location` from
+this host's `~/.claude/settings.json` for the worktrees of its SSH sessions, and
+without it files them inside the project (`<repo>/.claude/worktrees`), so that key
+points at the lanes root too.
 
 It is idempotent.  `--apply` writes only what differs, leaves a timestamped
 backup next to every file it touches, and returns nonzero when a knob is still
@@ -456,6 +459,28 @@ def knob_bashrc(root: Path) -> tuple[bool, str]:
     return False, f"interactive shells start in {target.group(1) if target else 'nowhere'}, not {root}"
 
 
+def claude_settings(path: Path) -> dict | None:
+    """The host's Claude user settings as a dict, or None when they cannot be read as one."""
+    try:
+        data = json.loads(read(path) or "{}")
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def knob_claude_worktrees(path: Path, root: Path) -> tuple[bool, str]:
+    if not path.exists():
+        return True, f"not installed (no {path.name})"
+    data = claude_settings(path)
+    if data is None:
+        return False, f"{path} is not a JSON object"
+    section = data.get("worktree")
+    location = section.get("location") if isinstance(section, dict) else None
+    if isinstance(location, str) and location and same_dir(_resolve(location), root):
+        return True, f"desktop worktrees go to {location}"
+    return False, f"desktop worktrees go to {location or '<repo>/.claude/worktrees'}, not {root}"
+
+
 def knob_unit(path: Path, root: Path, flags: str = "") -> tuple[bool, str]:
     if not path.exists():
         return True, f"not installed ({path.name})"
@@ -478,6 +503,7 @@ def knobs(root: Path) -> list[tuple[str, Path, str]]:
         ("minimax acp runtime", apps / "muse-acp-runtime" / "minimax-shellular-acp.py", "acp"),
         ("muse acp runtime", apps / "muse-acp-runtime" / "muse-shellular-acp.py", "acp"),
         ("bashrc", HOME / ".bashrc", "bashrc"),
+        ("claude desktop worktrees", HOME / ".claude" / "settings.json", "claude-settings"),
         ("opencode-server.service", SYSTEMD_DIR / "opencode-server.service", "unit"),
         ("claude-remote-control.service", SYSTEMD_DIR / "claude-remote-control.service", "unit"),
     ]
@@ -494,6 +520,8 @@ def check(root: Path) -> list[tuple[str, bool, str]]:
             ok, note = knob_acp_runtime(path, root)
         elif kind == "bashrc":
             ok, note = knob_bashrc(root)
+        elif kind == "claude-settings":
+            ok, note = knob_claude_worktrees(path, root)
         else:
             flags = ""
             if label.startswith("opencode"):
@@ -588,6 +616,30 @@ def apply_bashrc(root: Path) -> bool:
     return True
 
 
+def apply_claude_settings(path: Path, root: Path) -> bool:
+    """Point `worktree.location` at the lanes root, keeping every other setting.
+
+    The value is the resolved root, so on a host whose `~/apps` is a symlink into
+    a volume the setting names the volume path that git and the desktop app record.
+    A file that is not a JSON object is left alone and the knob stays off.
+    """
+    if knob_claude_worktrees(path, root)[0]:
+        return False
+    data = claude_settings(path)
+    if data is None:
+        return False
+    section = data.get("worktree")
+    if section is None:
+        section = {}
+    if not isinstance(section, dict):
+        return False
+    section["location"] = str(root.resolve())
+    data["worktree"] = section
+    backup(path)
+    write(path, json.dumps(data, indent=2) + "\n")
+    return True
+
+
 def carried_directives(text: str, body: str) -> list[str]:
     """The unit directives this script does not own, taken from the unit it replaces.
 
@@ -631,6 +683,8 @@ def apply(root: Path) -> int:
             touched = path.exists() and apply_acp(path, root)
         elif kind == "bashrc":
             touched = apply_bashrc(root)
+        elif kind == "claude-settings":
+            touched = path.exists() and apply_claude_settings(path, root)
         elif not path.parent.is_dir():
             print(f"  skipped  {label:26} ({path.parent} does not exist on this host)")
             continue
@@ -655,6 +709,7 @@ def apply(root: Path) -> int:
         if restart:
             print(f"    systemctl restart {' '.join(restart)}")
         print("    (the Codex tmux session picks the new cwd up when it is next created)")
+        print("    (the Claude desktop app reads worktree.location when it makes its next worktree)")
     # A knob that could not be applied is still off, so the apply reports it the
     # way --verify does instead of printing `ok` and exiting zero.
     return verify(root)

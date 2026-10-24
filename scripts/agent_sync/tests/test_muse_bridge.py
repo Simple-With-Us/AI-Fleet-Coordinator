@@ -10,6 +10,8 @@ from __future__ import annotations
 import io
 import json
 import os
+import pathlib
+import re
 import tempfile
 import time
 import types
@@ -69,6 +71,82 @@ def _row(seq: int, message_id: int, **extra) -> dict:
     }
     row.update(extra)
     return row
+
+
+class BridgeTargetConfigurationTest(unittest.TestCase):
+    """AFC-504: the production application is operator-owned runtime configuration.
+
+    The identifier is private deployment inventory, so it lives in the operator's
+    own config and never in this source.  The bridge fails closed without it
+    rather than reaching for a target it cannot name.
+    """
+
+    def test_the_source_carries_no_application_identifier(self) -> None:
+        source = pathlib.Path(MBM.__file__).read_text(encoding="utf-8")
+        # A deploy platform application identifier is twenty four characters of
+        # lower case letters and digits, so the shape is wider than a hex
+        # digest: a pattern that only matched hex would have passed on the
+        # real value it is here to catch.
+        found = re.search(r"(?<![a-z0-9])[a-z0-9]{24}(?![a-z0-9])", source)
+        self.assertIsNone(found, "the bridge source must not carry an application identifier")
+
+    def test_the_published_protocol_carries_no_application_identifier(self) -> None:
+        root = pathlib.Path(MBM.__file__).resolve().parents[2]
+        for name in (
+            "docs/protocols/agent-sync-server.md",
+            "docs/protocols/muse-inbox-bridge.md",
+        ):
+            path = root / name
+            if not path.is_file():
+                continue
+            found = re.search(r"(?<![a-z0-9])[a-z0-9]{24}(?![a-z0-9])", path.read_text(encoding="utf-8"))
+            self.assertIsNone(found, f"{name} must not carry an application identifier")
+
+    def test_the_config_carries_the_operator_value(self) -> None:
+        cfg = C.from_dict(
+            {
+                "daemon": {"instance": "mac"},
+                "muse_bridge": {"enabled": False, "remote_app": "example-application"},
+            }
+        )
+        self.assertFalse(cfg.errors, cfg.errors)
+        self.assertEqual(cfg.muse_bridge_remote_app, "example-application")
+
+    def test_a_bridge_without_the_value_is_still_a_valid_config(self) -> None:
+        cfg = C.from_dict({"daemon": {"instance": "mac"}, "muse_bridge": {"enabled": False}})
+        self.assertFalse(cfg.errors, cfg.errors)
+        self.assertEqual(cfg.muse_bridge_remote_app, "")
+
+    def test_the_exchange_refuses_without_the_operator_value(self) -> None:
+        exchange = MBM.SSHExchange("")
+        with self.assertRaises(RuntimeError) as caught:
+            exchange.request("export", {})
+        self.assertIn("remote_app", str(caught.exception))
+
+    def test_the_exchange_uses_the_operator_value(self) -> None:
+        exchange = MBM.SSHExchange("example-application")
+        with mock.patch.object(MBM.subprocess, "run") as run:
+            run.return_value = types.SimpleNamespace(returncode=0, stdout=b"{}")
+            exchange.request("export", {})
+        command = run.call_args[0][0][-1]
+        self.assertIn("example-application", command)
+
+    def test_the_bridge_takes_the_value_from_the_operator_config(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            cfg = C.from_dict(
+                {
+                    "daemon": {"instance": "mac"},
+                    "muse_bridge": {"enabled": True, "remote_app": "example-application"},
+                }
+            )
+            daemon = types.SimpleNamespace(
+                config=cfg,
+                root=root,
+                home=root,
+                scrub=lambda text: text,
+            )
+            bridge = MBM.MacBridge(daemon)
+            self.assertEqual(bridge.exchange.remote_app, "example-application")
 
 
 class BridgeExchangeTest(unittest.TestCase):

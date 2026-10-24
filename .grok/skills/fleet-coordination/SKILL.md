@@ -91,6 +91,8 @@ Every agent session must start with systematic orientation before touching code:
 
 Never clone a fleet repo, or add a worktree of one, in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.
 
+On the server, the integration trees are in `/mnt/fleet-extra/Code` (`~/Code`) and every lane is in `/mnt/fleet-extra/apps/lanes` (`~/apps/lanes`).  A fleet checkout anywhere else on the server (a scratchpad, `~/.local/state`, `<repo>/.claude/worktrees`) is out of place.
+
 Always work in your own lane.  Make it with `lane new` (owner 2026-10-07, `docs/protocols/lane-map.md`; `AGENT_SEAT` must be set to your seat tag):
 ```bash
 ~/apps/lane new <app> <feature-slug>   # ~/apps/lanes/<Repo>/<seat>-<feature-slug>, branch <your prefix>/<feature-slug>
