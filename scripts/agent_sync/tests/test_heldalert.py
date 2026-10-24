@@ -45,7 +45,7 @@ class HeldAlertTests(HeldBackRoutineTests):
     def hold_for(self, seat: str, message_id: int, reason: str = "wakes_per_day", **kw) -> None:
         """One held-back record for `seat`, as the budget refusals write it."""
         HELD.hold(L.SeatPaths(self.root, seat), [{"message_id": message_id, "reason": reason,
-                                                  "at": self.clock.time(), "channel": "agent-sync", "topic": "t",
+                                                  "at": self.clock.time(), "channel": "work-in-progress", "topic": "t",
                                                   "stream_id": 642232, "sender_full_name": "Codex"}],
                   cap=kw.pop("cap", 200), overflow_cap=kw.pop("overflow_cap", 1000), now=self.clock.time())
 
@@ -115,7 +115,7 @@ class HeldAlertTests(HeldBackRoutineTests):
     # ---- what the post says ----------------------------------------------------------------------
     def test_every_hold_reason_is_named_with_its_count(self) -> None:
         daemon = self.alert_daemon()
-        records = [{"message_id": 700 + n, "reason": reason, "at": self.clock.time(), "channel": "agent-sync",
+        records = [{"message_id": 700 + n, "reason": reason, "at": self.clock.time(), "channel": "work-in-progress",
                     "topic": "t", "stream_id": 642232, "sender_full_name": "Codex"}
                    for n, reason in enumerate(["wakes_per_day", "wakes_per_day", "usd_per_day", "overflow"])]
         HELD.hold(self.seat_paths(SEAT), records, cap=200, now=self.clock.time())
@@ -278,7 +278,7 @@ class HeldAlertMultiSeatTests(HeldMixin, CloudSeatHarness):
 
     def hold_for(self, seat: str, message_id: int, reason: str = "wakes_per_day", **kw) -> None:
         HELD.hold(L.SeatPaths(self.root, seat), [{"message_id": message_id, "reason": reason,
-                                                  "at": self.clock.time(), "channel": "agent-sync", "topic": "t",
+                                                  "at": self.clock.time(), "channel": "work-in-progress", "topic": "t",
                                                   "stream_id": 642232, "sender_full_name": "Codex"}],
                   cap=kw.pop("cap", 200), overflow_cap=kw.pop("overflow_cap", 1000), now=self.clock.time())
 

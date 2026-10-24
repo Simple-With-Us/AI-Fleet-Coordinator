@@ -257,5 +257,63 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(cells[1], "A")
 
 
+class RegistrationsForNativeIdTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db = os.path.join(self.tmp.name, "registry.sqlite3")
+        self.reg = R.SessionRegistry(self.db)
+
+    def tearDown(self):
+        self.reg.close_db()
+        self.tmp.cleanup()
+
+    def test_unlettered_session_is_an_empty_answer(self):
+        self.assertEqual(R.registrations_for_native_id(self.db, "zulip", "native-9"), [])
+
+    def test_an_unreadable_registry_names_its_path(self):
+        bad = os.path.join(self.tmp.name, "not-a-registry.sqlite3")
+        with open(bad, "w") as handle:
+            handle.write("this is not sqlite")
+        with self.assertRaises(R.RegistryUnavailable) as raised:
+            R.registrations_for_native_id(bad, "zulip", "native-9")
+        self.assertIn(bad, str(raised.exception))
+
+    def test_finds_the_session_at_each_of_its_locations(self):
+        self.reg.resolve_or_register(ident(host="mac-1", native="native-7"))
+        self.reg.resolve_or_register(ident(host="server-1", native="native-7"))
+        rows = R.registrations_for_native_id(self.db, "zulip", "native-7")
+        self.assertEqual([row["verified_host"] for row in rows], ["mac-1", "server-1"])
+        self.assertEqual([row["label"] for row in rows], ["A", "B"])
+
+    def test_other_platforms_and_sessions_are_not_returned(self):
+        self.reg.resolve_or_register(ident(platform="zulip", native="native-7"))
+        self.reg.resolve_or_register(ident(platform="cursor", native="native-7"))
+        self.reg.resolve_or_register(ident(platform="zulip", native="native-8"))
+        rows = R.registrations_for_native_id(self.db, "zulip", "native-7")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["verified_host"], "mac-1")
+
+    def test_adapter_names_fold_to_the_platform(self):
+        self.reg.resolve_or_register(ident(platform="cursor", native="native-7"))
+        rows = R.registrations_for_native_id(self.db, "cursor-cloud", "native-7")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["label"], "A")
+
+    def test_a_missing_registry_raises_not_empty(self):
+        with self.assertRaises(R.RegistryUnavailable):
+            R.registrations_for_native_id(
+                os.path.join(self.tmp.name, "nope.sqlite3"), "zulip", "native-7"
+            )
+
+    def test_a_bad_session_id_is_refused(self):
+        with self.assertRaises(ValueError):
+            R.registrations_for_native_id(self.db, "zulip", "no way")
+
+    def test_a_retired_letter_reads_as_unlettered(self):
+        made = self.reg.resolve_or_register(ident(native="native-7"))
+        self.assertTrue(self.reg.close(made["record_id"], actor="MM", source="test"))
+        self.assertEqual(R.registrations_for_native_id(self.db, "zulip", "native-7"), [])
+
+
 if __name__ == "__main__":
     unittest.main()

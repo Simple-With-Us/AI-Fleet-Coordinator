@@ -15,7 +15,7 @@ import { canonicalSeatName } from "./identity-aliases.js";
 // ---- copies of fleet-apps.json `sessionIds` (keep them equal) ----------------------------------------------------
 export const ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$";
 export const GENERIC_ENV = "AGENT_SESSION";
-export const EXEMPT_SEATS = Object.freeze(["ECHO", "GROK-BOT", "JET", "MA", "WISE"]);
+export const EXEMPT_SEATS = Object.freeze(["ECHO", "GROK-BOT", "JET", "JET-CHAT", "MA", "WISE"]);
 export const EXEMPT_PATTERNS = Object.freeze(["GB-*"]);
 export const ENV_BY_SEAT = Object.freeze({
   CLAUDE: Object.freeze(["CLAUDE_CODE_SESSION_ID"]),
