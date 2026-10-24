@@ -14,3 +14,7 @@ Original v9 archive above remains unchanged. Scoped delta SHA256: b018b472e6372e
 ## v9.2 narrow disclosure delta
 
 Archive SHA256 a7ab29d7010575fb714aabc9e2a5672d66e624fdba7a613a1ef2fd1a40a486a1. Applies only a narrow-media-query warning/checkbox-label wrapping override and matching CSP STYLE hash. Author-rendered actual390px scrolled Actions and desktop pixels inspected independently: full warning, checkbox label and buttons readable; desktop unchanged. Horizontal table scroll still separates identity from Actions at390px, an existing pattern, not a claim of universal mobile safety. Original v9/v9.1 archives unchanged. Operational holds remain.
+
+## v9.3 current-main rebase evidence, held
+
+Append-only v9.3-delta/source.tar.gz SHA256 c0263187e4823c13f02117495770c7f48c134674f98bc55419c4f7e8b18a52fc and extracted source deltas preserve reconstruction on a0a91169. This branch source tree remains its earlier reviewed-base composition, NOT rebased. See v9.3-delta/REVIEW.md for independent apply/hash/pixel checks and remaining mobile/visual gaps. Worker-executed630/622pass8skip,61workerd,136Python are not independently rerun evidence. Four synthetic fixture screenshots preserved. Original archives unchanged. No snapshot approval, operational readiness, provisioning, Worker secret mirroring, deployment or cutover clearance.
