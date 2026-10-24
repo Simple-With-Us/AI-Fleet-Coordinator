@@ -83,7 +83,7 @@ Before every commit/push to the GitHub repo, you MUST update the following:
    handoff, commit, PR, merge, and deploy boundaries: move each effort between **Todo → In Progress (with a one-line status) →
    Done (merged to `main`) → Deployed to production** as its state changes, and file new
    efforts as they are conceived (`simple-board file`, `simple-board claim`, `simple-board status`; writes need
-   `AGENT_SEAT`). This is the owner's at-a-glance board; never delete another agent's comment —
+   `AGENT_SEAT` and `LINEAR_BOARD_WRITES=1`, which the `board` wrapper on PATH sets for you).  This is the owner's at-a-glance board; never delete another agent's comment —
    correct it with a new one. "Completed" means merged to `main`. **As of 2026-07-10, merging to `main` AUTO-DEPLOYS to production**
    (owner-directed): Coolify auto-deploys `socratic-trade-prod` on every push to `main`, so
    "Completed (merged)" and "Deployed to production" now collapse — there is no separate manual deploy
@@ -532,6 +532,8 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
   Safe: `[ -n "$VAR" ]`, `${#VAR}`, `[[ $VAR == *'"'* ]]`.  Hook:
   `~/.claude/hooks/secret-guard-pretooluse.py`.
 
+- **GitHub App credentials are the relay's, never yours.**  The fleet's GitHub relay (`git-relay`) is the only path that mints per-bot GitHub App tokens, and it keeps them server-side; a seat never handles an App id, a private key, or a token expiry, and never reads App keys out of Infisical itself.  A seat reaches the relay's tools with its own bearer token — never print it, and never ask the owner for an App key.  See "The fleet's GitHub tools" above.
+
 Canonical: `~/apps/AGENT-SYNC.md` § Secret handoff / Infisical / Coolify tokens.
 
 Chat engine: the `simple-chat` CLI (`~/.local/bin/simple-chat`, AFC `scripts/agent_sync`) is the
@@ -720,6 +722,17 @@ address:
     tests were a recurring offender — fixed 2026-06-21 with a 20s per-test timeout.
   - Because `verify` runs `npm run build`, a PR that breaks the build cannot merge —
     always run the full tsc/test/build trio locally before pushing.
+
+### The fleet's GitHub tools: git-relay and GR-MCP (relay path — NOT LIVE YET)
+
+`git-relay` is the fleet's GitHub relay, and `GR-MCP` (`git-relay mcp`) is its MCP wrapper.  Together they expose seven tools: `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`.
+
+- **The relay is the ONLY path in the fleet that mints per-bot GitHub App tokens.**  A seat never handles an App id, a private key, or the 1-hour token expiry; the relay mints and refreshes the seat's own token server-side.
+- **PR-write authoring runs under the owner's scoped PR-only token** (`open_pr`, `edit_pr`, `reply_thread`, `comment_pr`), so a PR is authored as the owner and the review bots work normally.  Everything else (`merge_pr`, `workflow_dispatch`, `resolve_thread`) runs under the seat's own GitHub App token.  A seat can never push.
+- **Per-seat policy is an allowlist layer that can only NARROW the underlying credential, never exceed it** (allowed actions, allowed repos, mint ceilings, an hourly call cap).  Every call, allowed or denied, lands in an audit log.
+- `mint_token` is deliberately NOT exposed over MCP, because it returns a raw credential.
+- **How a seat reaches them:** with its own bearer token.  ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server.  The tool names are the same either way.
+- **STATUS (verified Oct 23 2026): implemented, policy-checked and tested, but NOT DEPLOYED.**  No daemon, no launchd job, no seat pointed at it, and no service host chosen yet.  Until the owner decides the cutover, keep using the interim `gh` and shell path below.
 
 ## Product philosophy — real trading, owner's risk (READ FIRST; do not re-paternalize)
 

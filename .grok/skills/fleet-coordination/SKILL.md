@@ -5,7 +5,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
@@ -82,6 +82,9 @@ Every agent session must start with systematic orientation before touching code:
    `simple-board` reads Linear (issue ids like `BF-123`, one team per app).  Reads need no seat; every write needs `AGENT_SEAT` set in the same command.  Do not read the archived `*-EFFORT-LOG.md` files for current state.
 
 4. **Fleet recall:** `recall "<task>" --limit 5` (or MCP `recall_search`) before re-deriving a lesson.  At closeout, `recall_contribute` every reusable lesson (owner 2026-09-02).  Cloud: `https://agents.jays.services/mcp`.  Do not dump chat transcripts into the corpus.
+5. **Know your tools.**  The CLIs are `simple-chat` (chat; also the local stdio MCP server, `simple-chat mcp`), `simple-board` (Linear), `simple-notes` (Apple Notes), `recall` (the fleet knowledge corpus: search, stats, contribute), `lane` (worktrees), `fleet-mode`, `fleet-share`, and `fleet-secrets` (the Infisical reader:  the process environment comes first when it already holds the secret, and `fleet-secrets` is the approved fallback).  FleetLink shares are the `fleetlink_*` tools, and a FleetLink link inside Zulip is lowercase `fl/<path>`.  The `agent-sync` name is a retired product name: on PATH it survives only as a compatibility launcher that runs `simple-chat`, so never write a command under the retired name — write `simple-chat …` instead.
+   The two MCP servers are **ST-MCP** (Simple-Tools MCP) and **GR-MCP**.  ST-MCP is the hosted server at `https://agents.simplewithus.com/mcp` with OAuth, and the owner arms the seat in the admin page first; the local stdio server for it is `simple-chat mcp`.  GR-MCP is the MCP wrapper for `git-relay` (`git-relay mcp`): a stdio server that holds only the seat's own bearer token and forwards over HTTP, so policy, caps and audit stay server-side.  Its seven tools are `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`, and `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the GitHub tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server.  ST-MCP does not carry them today, so a call made there answers `Unknown tool` — the tool names are the same on every path that serves them.  **git-relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so seats keep using the interim `gh` and shell path until the owner decides the cutover.
+   The Operator, the fleet's chat listener service, records what arrived while no session held a lease, and those records are read with the `eavesdropper_*` tools: `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes`, `eavesdropper_held_back` and `eavesdropper_ack` (`eavesdropper_ack` is stdio only).
 
 ---
 
@@ -121,7 +124,7 @@ Before starting substantial work, reserve your lane on two durable surfaces:
 
 **Pass your session id.**  Every `simple-board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `simple-notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
 
-*(Reserve `@**all**` in #Work-In-Progress topic `fleet` strictly for urgent wakes that every seat must spend time on.  The coordinator posts as CLAUDE and nothing signs `[AFC]` or `[FLEET]`.)*
+*(Reserve `@**all**` in #Work-In-Progress topic `fleet` strictly for urgent wakes that every seat must spend time on.  The coordinator posts as CLAUDE and nothing signs `[AFC]` or `[FLEET]`.)  *
 
 ---
 
@@ -198,8 +201,9 @@ Follow the "Always Commit + Land Finished Work" discipline:
    git push -u origin HEAD
    gh pr create --fill
    ```
+   The relay tools `open_pr` and `edit_pr` cover this once git-relay is live (section 1, item 5); until the owner decides the cutover, `gh` is the path that works.
 3. **Review Before Auto-Merge:**
-   - Request Codex review for the current PR head.  Triage every review thread against that head, fixing real findings or replying with a specific reason before resolving threads.
+   - Request Codex review for the current PR head.  Triage every review thread against that head, fixing real findings or replying with a specific reason before resolving threads.  A reply on a thread is `reply_thread` and a resolved thread is `resolve_thread` on the relay; today they are the `gh` GraphQL calls in `codex-triage`.
    - Never ask Codex to fix a PR or push code unless Jay approves that specific request.
    - Only after Codex has reviewed the current head and review threads are triaged, arm auto-merge:
    ```bash

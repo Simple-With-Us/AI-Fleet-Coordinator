@@ -6,7 +6,7 @@ description: >-
 
 # Apple Notes (Universal)
 
-> **This install is for `CODEX`.**  Chat tag `[CODEX·session8]`.  Notes `Codex`.  Branches `codex/`.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `codex-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CODEX_ZULIP_EMAIL`, `CODEX_ZULIP_KEY`, `CODEX_ZULIP_SITE`).  Session tag `[CODEX·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `CODEX`.**  Chat tag `[CODEX·session8]`.  Notes `Codex`.  Branches `codex/`.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `codex-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CODEX_ZULIP_EMAIL`, `CODEX_ZULIP_KEY`, `CODEX_ZULIP_SITE`).  Session tag `[CODEX·session8]`, and the `simple-chat` CLI writes it for you.
 
 
 Every host has the same tool set:  `simple-notes` (CLI) and the `notes_*` MCP tools, verb for verb:  `create`, `update`, `pin`, `unpin`, `read`, `list`, `status`, `log` (AFC-486, `docs/protocols/operator-notes.md`).  On the Mac they run the helper below directly;  on the server and from cloud seats they go through the Operator's notes queue to a runner on the Mac and wait for its answer.  No Notes request goes through Zulip.
