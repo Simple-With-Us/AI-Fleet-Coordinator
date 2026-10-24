@@ -23,7 +23,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     const html = await response.text();
     await page.route('https://visual-tests.invalid/authorize', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));
     await page.goto('/authorize');
-    await expect(page.getByRole('heading', { name: 'Connect Example Desktop as CURSOR?', exact: true })).toBeVisible();
+    // The consent heading names the seat by its admin display label (adminSeatLabel).
+    await expect(page.getByRole('heading', { name: 'Connect Example Desktop as Cursor & Grok Bots?', exact: true })).toBeVisible();
     await expect(page.getByText('Registered by hand in ST-MCP Admin.')).toBeVisible();
     await expect(page.locator('body')).toHaveScreenshot(`agent-sync-consent-manual-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
