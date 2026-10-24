@@ -463,6 +463,35 @@ test("an issue held by another app delegate is refused with claim_held, and no m
   assert.equal(fake.mutations().length, 0);
 });
 
+test("a human delegate is no claim hold:  claiming delegates to the seat's app user", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-314", identifier: "AFC-314", team: "AFC", delegate: { id: "user-jay", name: "Jay", app: false } });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-314" }), "linear_claim");
+  assert.equal(claimed.label, "claimed:GROK-WEB");
+  assert.equal(claimed.delegate, "Grok Web");
+  const update = fake.mutations()[0].body.variables;
+  assert.equal(update.input.delegateId, fake.viewer.id);
+  assert.deepEqual(update.input.addedLabelIds, [fake.labelId("claimed:GROK-WEB"), fake.labelId("seat:GROK-WEB")]);
+  assert.equal(fake.findIssue("issue-314").delegate?.id, fake.viewer.id);
+});
+
+test("a claim label past the first label page is still found", async () => {
+  const { tools, fake } = harness();
+  for (let n = 0; n < 250; n += 1) fake.addLabel(`filler-${n}`);
+  // Linear's page order is its own:  move the fleet markers past the cap.
+  for (const name of ["claimed:GROK-WEB", "seat:GROK-WEB"]) {
+    const at = fake.labels.findIndex((l) => l.name === name);
+    fake.labels.push(...fake.labels.splice(at, 1));
+  }
+  fake.addIssue({ id: "issue-315", identifier: "AFC-315", team: "AFC" });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-315" }), "linear_claim");
+  assert.equal(claimed.label, "claimed:GROK-WEB");
+  const update = fake.mutations()[0].body.variables;
+  assert.deepEqual(update.input.addedLabelIds, [fake.labelId("claimed:GROK-WEB"), fake.labelId("seat:GROK-WEB")]);
+  const labelCalls = fake.calls().filter((r) => opOf(r.body.query)?.name === "BoardLabels");
+  assert.ok(labelCalls.length >= 2, `expected paged label reads, got ${labelCalls.length}`);
+});
+
 test("re-claiming your own delegated issue stays idempotent", async () => {
   const { tools, fake } = harness();
   fake.addIssue({ id: "issue-309", identifier: "AFC-309", team: "AFC", labels: ["claimed:GROK-WEB", "seat:GROK-WEB"], delegate: { id: fake.viewer.id, name: fake.viewer.name } });

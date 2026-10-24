@@ -1392,9 +1392,20 @@ export class HostedTools {
       const data = await client.call(Q_TEAMS, { first: 100 });
       return data?.teams?.nodes ?? [];
     });
+    // Board follows every label page (board:1635), and so does this:  the first
+    // 250 alone could miss a claim label that exists, and the claim would
+    // then run without the fleet's marker.
     const labels = await this.linearCall(async () => {
-      const data = await client.call(Q_LABELS, { first: 250 });
-      return data?.issueLabels?.nodes ?? [];
+      const nodes = [];
+      let after = null;
+      for (;;) {
+        const data = await client.call(Q_LABELS, { first: 250, after });
+        const conn = data?.issueLabels;
+        for (const node of conn?.nodes ?? []) nodes.push(node);
+        if (conn?.pageInfo?.hasNextPage !== true || !conn.pageInfo.endCursor) break;
+        after = conn.pageInfo.endCursor;
+      }
+      return nodes;
     });
     const value = {
       teams: teams.map((t) => ({ id: t.id, key: t.key, name: t.name, states: (t.states?.nodes ?? []).map((s) => ({ id: s.id, name: s.name, type: s.type })) })),
@@ -1628,7 +1639,10 @@ export class HostedTools {
       throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
     }
     const delegate = issue?.delegate ?? null;
-    if (delegate?.id && delegate.id !== viewerId) {
+    // Only an app delegate is a fleet claim marker, exactly as on the release
+    // path:  a human delegation (Jay's triage, a colleague's) never holds a
+    // claim, and claiming the issue delegates it to this seat's app user.
+    if (delegate?.id && delegate.app === true && delegate.id !== viewerId) {
       const heldBy = delegate.name || "another seat";
       throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${heldBy}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: heldBy } });
     }
