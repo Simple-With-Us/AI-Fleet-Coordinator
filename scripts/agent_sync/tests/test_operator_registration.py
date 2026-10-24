@@ -137,6 +137,17 @@ class OperatorRegistrationTest(unittest.TestCase):
         registrations, _ = OREG._registry_functions(os.path.join(self.tmp.name, "no-such.db"))
         self.assertEqual(registrations("minimax", _session_id()), [])
 
+    def test_mark_refused_drops_a_live_asked_entry_terminally(self):
+        entry = self.begin()["entry"]
+        self.assertTrue(OREG.mark_refused(self.db, entry["entry_id"], "the question was withheld: it matched the secret scan", now=3000.0))
+        stored = OREG.load(self.db)["entries"][entry["entry_id"]]
+        self.assertEqual(stored["state"], OREG.STATE_DROPPED)
+        self.assertEqual(stored["reason"], "the question was withheld: it matched the secret scan")
+        self.assertEqual(stored["dropped_at"], 3000.0)
+        # Terminal stays terminal:  a second refusal finds nothing live, and the
+        # answerable set no longer holds the entry.
+        self.assertFalse(OREG.mark_refused(self.db, entry["entry_id"], "again", now=3001.0))
+
     def test_mark_reconciled_stamps_only_a_live_asked_entry(self):
         entry = self.begin()["entry"]
         self.assertTrue(OREG.mark_reconciled(self.db, entry["entry_id"], now=3000.0))

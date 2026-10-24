@@ -695,6 +695,35 @@ def mark_notified(registry_db: str, entry_id: str, *, now: float | None = None) 
         return True
 
 
+REASON_TERMINAL_REFUSAL = "terminal_refusal"
+
+# Refusal codes that can never clear by retrying the same question:  the
+# withheld content will match the scan again, and a rejected credential is
+# refused again until the owner reinstalls it (kody 4366047123).
+TERMINAL_REFUSAL_CODES = frozenset({"secret", "credential_rejected"})
+
+
+def mark_refused(registry_db: str, entry_id: str, reason: str, *, now: float | None = None) -> bool:
+    """Drop a live asked entry after a terminal refusal;  returns False when nothing was live.
+
+    A terminal refusal must stay terminal:  the entry leaves the answerable set here,
+    the caller logs one refusal line naming the reason, and no later pass can requeue
+    the same doomed question.  Retryable refusals (missing credential, unpinned owner,
+    unreadable client) never reach this - they stay stamped-free and retried.
+    """
+    now = time.time() if now is None else float(now)
+    with L.locked(queue_path(registry_db)):
+        data = load(registry_db)
+        entry = data["entries"].get(str(entry_id or ""))
+        if not isinstance(entry, dict) or entry.get("state") != STATE_ASKED:
+            return False
+        entry["state"] = STATE_DROPPED
+        entry["dropped_at"] = round(now, 3)
+        entry["reason"] = str(reason or REASON_TERMINAL_REFUSAL)[:80]
+        save(registry_db, data)
+        return True
+
+
 def mark_reconciled(registry_db: str, entry_id: str, *, now: float | None = None) -> bool:
     """Stamp the last delivery-reconciliation attempt on a live asked entry.
 

@@ -3814,6 +3814,11 @@ class Daemon:
                         OREG.mark_notified(db, entry["entry_id"])
                     elif sent.get("delivery_status") == OC.DELIVERY_UNKNOWN:
                         OREG.mark_reconciled(db, entry["entry_id"])
+                    elif str(sent.get("code") or "") in OREG.TERMINAL_REFUSAL_CODES:
+                        # Terminal refusals stay terminal (kody 4366047123):  the
+                        # entry is dropped with its reason and never requeued;
+                        # retryable refusals stay unstamped for the next pass.
+                        OREG.mark_refused(db, entry["entry_id"], str(sent.get("reason") or "terminal_refusal"))
                     sent_status = sent.get("status")
                     sent_reason = str(sent.get("reason") or "")[:80]
                     # The log line stays inside the row's guard:  the complete begin,
