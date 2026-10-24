@@ -885,6 +885,74 @@ class TestFleetSecretsSource(unittest.TestCase):
             self.fail("expected AppTokenError")
 
 
+class TestFleetSecretsSourceAgainstTheRealCli(unittest.TestCase):
+    """The relay parses the fleet-secrets CLI's stdout and stderr, so these
+    tests run the real CLI (scripts/fleet_secrets/cli.py, in this repository)
+    in-process with a fake folder in place of the Infisical export:  a
+    wording change in the CLI fails here instead of silently sending every
+    exit 3 through the first-name fallback."""
+
+    FOLDER = {"GH_APP_X_ID": "7", "GH_APP_X_PRIVATE_KEY": "pem"}
+
+    def _source(self, calls):
+        from git_relay.app_tokens import FleetSecretsSource
+
+        scripts = str(pathlib.Path(__file__).resolve().parents[3] / "scripts")
+        sys.path.insert(0, scripts)
+        try:
+            from fleet_secrets import cli, core
+        finally:
+            sys.path.remove(scripts)
+
+        def fake_export(path, env, project_name=None, token=None):
+            return dict(self.FOLDER)
+
+        def runner(argv, capture_output, timeout):
+            calls.append(argv)
+            out, err = io.StringIO(), io.StringIO()
+            with unittest.mock.patch.object(core, "fetch_all", fake_export):
+                code = cli.main(argv[1:], env={}, out=out, err=err)
+            return subprocess.CompletedProcess(
+                argv, code, stdout=out.getvalue().encode(), stderr=err.getvalue().encode()
+            )
+
+        return FleetSecretsSource(runner=runner)
+
+    def test_a_pair_reads_through_the_real_cli(self):
+        calls = []
+        source = self._source(calls)
+        self.assertEqual(
+            source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"]),
+            {"GH_APP_X_ID": "7", "GH_APP_X_PRIVATE_KEY": "pem"},
+        )
+        self.assertEqual(len(calls), 1)
+
+    def test_only_the_names_the_real_cli_lists_are_remembered_absent(self):
+        from git_relay.app_tokens import AppTokenError
+
+        calls = []
+        source = self._source(calls)
+        with self.assertRaises(AppTokenError) as ctx:
+            source.secrets(["GH_APP_X_ID", "GH_APP_X_ID_OLD"])
+        # The fallback would blame GH_APP_X_ID, the first name:  this only
+        # passes when the CLI's own exit-3 line was parsed.
+        self.assertIn("GH_APP_X_ID_OLD", str(ctx.exception))
+        self.assertEqual(source.secret("GH_APP_X_ID"), "7")
+        with self.assertRaises(AppTokenError):
+            source.secret("GH_APP_X_ID_OLD")
+        self.assertEqual(len(calls), 2)
+
+    def test_a_real_usage_error_surfaces_one_line(self):
+        from git_relay.app_tokens import AppTokenError
+
+        source = self._source([])
+        with self.assertRaises(AppTokenError) as ctx:
+            source.secret("GH-APP-X-ID")  # not a valid key name:  the CLI exits 2
+        self.assertIn("bad key name", str(ctx.exception))
+        self.assertNotIn("usage:", str(ctx.exception))
+        self.assertNotIn("\n", str(ctx.exception))
+
+
 class TestGithubErrorSplit(unittest.TestCase):
     class ErrClient(StubClient):
         def __init__(self, status, code=None, retry_after=None):
