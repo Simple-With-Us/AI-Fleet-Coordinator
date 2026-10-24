@@ -410,7 +410,7 @@ class OperatorRegistrationTest(unittest.TestCase):
         self.assertEqual(out["status"], "uncorroborated")
         self.assertEqual(self.registry.writes, [])
         # The question stays open and answerable for the owner.
-        reloaded = OREG.load(self.db)["entries"][0]
+        reloaded = OREG.pending_entries(self.db)[0]
         self.assertEqual(reloaded["state"], OREG.STATE_ASKED)
         again = self.answer(entry["entry_id"], "mac", answerer="owner")
         self.assertEqual(again["status"], "registered")
