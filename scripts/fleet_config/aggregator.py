@@ -59,6 +59,7 @@ from .types import (
     Collector,
     ConfigKind,
     Manifest,
+    NotImplementedRule,
     ObservedState,
     ProofLevel,
     ReasonCode,
@@ -122,6 +123,7 @@ CHECK_MODULE_BY_KIND: dict[ConfigKind, str] = {
     ConfigKind.SKILLS: "checks_skills",
     ConfigKind.SUBAGENTS: "checks_subagents",
     ConfigKind.PERMISSIONS: "checks_permissions",
+    ConfigKind.COMPLIANCE: "checks_compliance",
 }
 
 
@@ -576,6 +578,12 @@ def run_status(
     report's summary comes from ``contract.summarize``, so the aggregator and the
     envelope share one definition of failing.
 
+    The fleet-wide compliance family runs after the seat rules, and only when the run is
+    not narrowed to one seat:  a rule about the fleet is not about one seat's config
+    surface.  A compliance rule that is not implemented produces no result and is named
+    in the report's ``not_implemented`` list,  so the gap stays visible without making
+    the run's verdict unknown forever.
+
     The run has an OVERALL budget, ``deadline_seconds``,  and not only the per-check
     timeout:  a manifest with seven L1 hook rules would otherwise wait on seven
     sequential hook processes.  When the budget is spent,  the rules that have not run
@@ -597,6 +605,7 @@ def run_status(
         notes.append("the check module %s.py is not available in this build" % name)
     deadline = clock() + max(0, int(deadline_seconds))
     results: list[CheckResult] = []
+    not_implemented: list[NotImplementedRule] = []
     for seat_manifest in manifest.seats:
         if seat is not None and seat_manifest.seat != seat:
             continue
@@ -616,6 +625,29 @@ def run_status(
                 result = _run_check(rule, rule_platform, ctx, registry, missing)
                 result = _apply_proof(result, rule, rule_platform, ctx, prove, proof_runner)
                 results.append(result)
+    # The fleet-wide compliance family.  It is a list of its own,  and it runs once per
+    # scope rather than once per seat:  a rule about the fleet is not about one seat.
+    if seat is None and (kind is None or kind is ConfigKind.COMPLIANCE):
+        if manifest.source_path:
+            ctx.cache["repoRoot"] = os.path.dirname(os.path.abspath(manifest.source_path))
+        for rule in manifest.compliance_rules:
+            if not rule.implemented:
+                not_implemented.append(
+                    NotImplementedRule(
+                        rule_id=rule.id,
+                        owner_seat=rule.owner_seat,
+                        reason=rule.implementation_reason,
+                    )
+                )
+                continue
+            if platform is not None and platform not in rule.scope:
+                continue
+            for scope in rule.scope:
+                if clock() >= deadline:
+                    results.append(_deadline_result(rule, scope, ctx, deadline_seconds))
+                    continue
+                result = _run_check(rule, scope, ctx, registry, missing)
+                results.append(result)
     if include_doctors:
         notes.extend(run_doctors(ctx))
     frozen = tuple(results)
@@ -627,6 +659,7 @@ def run_status(
         manifest_source=manifest.source_path,
         notes=tuple(notes),
         uncovered=tuple(uncovered),
+        not_implemented=tuple(not_implemented),
     )
 
 
@@ -703,4 +736,5 @@ def mark_stale_results(
         manifest_source=report.manifest_source,
         notes=report.notes,
         uncovered=report.uncovered,
+        not_implemented=report.not_implemented,
     )
