@@ -123,6 +123,7 @@ class MockLinear:
         self.violations: list[str] = []
         self.mints = 0
         self.mint_down = False
+        self.request_id = ""  # a request id the token endpoint's answer carries, if any
         self.scopes: list[str] = []
         self.tokens: set[str] = set()
         self.ratelimit400 = 0
@@ -177,6 +178,27 @@ class MockLinear:
             "app:agent-bar",
         ):
             self._label(name, None)
+        # Workspace users, mirroring the fleet's Linear bot seats.  Names differ
+        # in case from the claim labels on purpose:  a seat resolves to its user
+        # by name, and the deactivated one must never be assigned to anything.
+        self.users: dict = {}
+        for n in ("Codex", "Claude", "Cursor", "GB-Plumber", "GB-Deployer"):
+            self.users[n] = {"id": f"user-{n.lower()}", "name": n, "displayName": n, "active": True}
+        self.users["GB-Retired"] = {
+            "id": "user-gb-retired",
+            "name": "GB-Retired",
+            "displayName": "GB-Retired",
+            "active": False,
+        }
+        # When True the BoardUsers listing is refused, so ownership must degrade
+        # instead of aborting the verb.
+        self.fail_users = False
+        # When True, updates without an assignee are refused, so a test can
+        # fail the claim retry after its assignee was refused.
+        self.fail_ownerless_updates = False
+        # When True, assignee clears (assigneeId None) are refused, so a test
+        # can fail a steal's ownership write while the retry drops the field.
+        self.fail_assignee_clear = False
         self.issues: dict = {}
         self.comments: dict = {}
         self.relations: list = []
@@ -522,6 +544,19 @@ class MockLinear:
                 for lb in self.labels.values()
             ]
             return {"issueLabels": self.page(nodes, v.get("first"), v.get("after"))}, None
+        if op == "BoardUsers":
+            if self.fail_users:
+                return None, [{"message": "users listing refused"}]
+            nodes = [
+                {
+                    "id": u.get("id"),
+                    "name": u.get("name"),
+                    "displayName": u.get("displayName"),
+                    "active": u.get("active"),
+                }
+                for u in self.users.values()
+            ]
+            return {"users": self.page(nodes, v.get("first"), v.get("after"))}, None
         if op == "BoardIssue":
             iss = self.find(v["id"])
             if not iss:
@@ -599,6 +634,24 @@ class MockLinear:
             self.updates.append((iss["identifier"], json.loads(json.dumps(inp))))
             if "labelIds" in inp:
                 self.violations.append("issueUpdate with labelIds (replaces every label)")
+            if "assigneeId" in inp:
+                uid = inp["assigneeId"]
+                if uid is None:
+                    if self.fail_assignee_clear:
+                        return {"issueUpdate": None}, [{"message": "assignee clear refused"}]
+                else:
+                    # Linear only accepts an existing, active user here, and a
+                    # refused update applies nothing: validate before writing.
+                    m = next((u for u in self.users.values() if u["id"] == uid), None)
+                    if not m or not m["active"]:
+                        return {"issueUpdate": None}, [
+                            {"message": f"assignee {uid} not found or deactivated"}
+                        ]
+            if self.fail_ownerless_updates and "assigneeId" not in inp:
+                return {"issueUpdate": None}, [{"message": "update refused"}]
+            for lid in inp.get("addedLabelIds") or []:
+                if lid not in self.labels:
+                    return {"issueUpdate": None}, [{"message": f"label {lid} not found"}]
             if "stateId" in inp:
                 st = next(
                     s
@@ -615,10 +668,10 @@ class MockLinear:
                 if lid in iss["labels"]:
                     iss["labels"].remove(lid)
             for lid in inp.get("addedLabelIds") or []:
-                if lid not in self.labels:
-                    return {"issueUpdate": None}, [{"message": f"label {lid} not found"}]
                 if lid not in iss["labels"]:
                     iss["labels"].append(lid)
+            if "assigneeId" in inp:
+                iss["assignee"] = inp["assigneeId"]
             groups = [self.labels[x]["parent"] for x in iss["labels"] if self.labels[x]["parent"]]
             if len(groups) != len(set(groups)):
                 self.violations.append("two labels from one exclusive group")
@@ -710,7 +763,9 @@ def make_handler(mock: MockLinear):
                     )
                     if want is None or form.get("client_secret") != want:
                         return self._send(
-                            401, {"error": "invalid_client", "error_description": "bad client"}
+                            401,
+                            {"error": "invalid_client", "error_description": "bad client"},
+                            {"x-request-id": mock.request_id} if mock.request_id else None,
                         )
                     mock.mints += 1
                     mock.mints_by[cid] = mock.mints_by.get(cid, 0) + 1
@@ -2648,6 +2703,10 @@ class SeatAppTests(BoardTest):
             self.assertIn("belong to the 'Codex' app, not 'Claude'", p.stderr)
             self.assertIn("look swapped", p.stderr)
             self.assertIn("Reads still work", p.stderr)
+            # Every exit-4 line names the variable the operator has to fix, so a caller
+            # downstream never has to fall back to a nameless "no credentials".
+            self.assertIn("LINEAR_CLIENT_ID", p.stderr)
+            self.assertIn("LINEAR_CLIENT_SECRET", p.stderr)
         self.assertEqual([o for o in self.mock.ops if o in WRITE_OPS], [])
         self.assertEqual(self.mock.ops[n_ops:], ["BoardWhoami"])  # asked once, kept with the token
         p = self.as_seat("CLAUDE", "whoami", code=6)
@@ -2829,7 +2888,8 @@ class SeatAppTests(BoardTest):
         claude, sec = self.seat_app("CLAUDE", "Claude")
         self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
         p = self.as_seat("CLAUDE", "whoami", code=6)
-        self.assertIn("minting the Claude seat app token failed: HTTP 401", p.stderr)
+        self.assertIn("minting the Claude seat app token failed", p.stderr)
+        self.assertIn("http=401", p.stderr)
         for needle in (sec, claude, "rotated-in-linear-not-in-the-file"):
             self.assertNotIn(needle, p.stdout + p.stderr)
         self.mock.clients[claude]["secret"] = sec
@@ -3549,6 +3609,671 @@ class TokenBlobTests(BoardTest):
         self.board("list", extra=pair)
         self.assertEqual(self.mock.mints, 2)
         self.assertEqual(self.sets(), [])
+
+
+class CredentialPreviewTests(unittest.TestCase):
+    """A credential preview:  enough to tell two credentials apart, never enough to use one.
+
+    The board owns the credential, so the board is the layer that hands back a preview of it
+    to a caller that has to name the credential without printing it."""
+
+    def test_a_long_credential_shows_its_first_eight_and_last_four(self):
+        cli = load_cli()
+        secret = "abcdefgh" + "x" * 20 + "wxyz"
+        self.assertEqual(cli.credential_preview(secret), "abcdefgh…wxyz")
+
+    def test_a_short_credential_shows_one_character_only(self):
+        # Twelve of thirteen characters is the whole credential.  A value under twenty-four
+        # characters is not a preview at all, so it shows its single leading character.
+        cli = load_cli()
+        self.assertEqual(cli.credential_preview("lin_api_123456"), "l…")
+        self.assertEqual(cli.credential_preview("a" * 23), "a…")
+        self.assertEqual(cli.credential_preview("a" * 24), "a" * 8 + "…" + "a" * 4)
+
+    def test_an_empty_credential_has_no_preview(self):
+        self.assertEqual(load_cli().credential_preview(""), "")
+        self.assertEqual(load_cli().credential_preview(None), "")
+
+
+class CredentialFailureTests(BoardTest):
+    """A credential the board could not use:  what it says about it, and what it never says.
+
+    The board owns the credential, so the board is the layer that can hand back a safe preview
+    of it, and every exit-4 line names the variable the operator has to fix.  A caller
+    downstream reads those fields and never the sentence around them, because the sentence is
+    third-party text that can carry anything."""
+
+    seat_app = SeatAppTests.seat_app
+    as_seat = SeatAppTests.as_seat
+
+    def test_a_rejected_credential_names_its_masked_preview(self):
+        self.board("whoami")
+        tokens = set(self.mock.tokens)
+        self.mock.tokens.clear()
+        p = self.board("list", code=6)
+        self.assertIn("credential=", p.stderr)
+        preview = p.stderr.rsplit("credential=", 1)[1].split()[0]
+        self.assertIn("…", preview, "a masked preview, not the credential")
+        for token in tokens:
+            self.assertNotIn(token, preview, "the token itself is never the preview")
+
+    def test_a_swapped_seat_credential_names_the_variable_to_fix(self):
+        # Every exit-4 line names the variable, so a caller downstream never has to fall back
+        # to a nameless "no credentials".
+        codex, sec = self.seat_app("CODEX", "Codex", file=False)
+        self.seat_app("CLAUDE", "Claude", cid=codex, secret=sec, register=False)
+        p = self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "x", code=4)
+        self.assertIn("refusing to write as CLAUDE", p.stderr)
+        self.assertIn("LINEAR_CLIENT_ID", p.stderr)
+        self.assertIn("LINEAR_CLIENT_SECRET", p.stderr)
+
+    def test_a_missing_credential_names_the_variable_to_fix(self):
+        self.creds.unlink()
+        p = self.board("list", code=4)
+        self.assertIn("FLEET_LINEAR_CLIENT_ID", p.stderr)
+        self.assertIn("FLEET_LINEAR_CLIENT_SECRET", p.stderr)
+
+    # ---- the structured fields a caller downstream reads ---------------------------------------
+    def test_a_missing_credential_hands_back_the_variable_as_a_field(self):
+        # The board owns the credential, so it is the board that says which variable an
+        # operator has to set, and it says it as a field:  a caller never has to parse
+        # the sentence around it.
+        self.creds.unlink()
+        p = self.board("list", code=4)
+        self.assertIn("credential_field=", p.stderr)
+        field = p.stderr.rsplit("credential_field=", 1)[1].split()[0]
+        self.assertIn("FLEET_LINEAR_CLIENT_ID", field)
+        self.assertIn("FLEET_LINEAR_CLIENT_SECRET", field)
+        self.assertIn("LINEAR_CLIENT_ID", field)
+        self.assertIn("LINEAR_CLIENT_SECRET", field)
+
+    def test_a_swapped_credential_hands_back_the_variable_as_a_field(self):
+        codex, sec = self.seat_app("CODEX", "Codex", file=False)
+        self.seat_app("CLAUDE", "Claude", cid=codex, secret=sec, register=False)
+        p = self.as_seat("CLAUDE", "comment", B_A[:8], "--by", "CLAUDE", "--text", "x", code=4)
+        self.assertIn("credential_field=LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET", p.stderr)
+
+    def test_a_rejected_credential_hands_back_the_variable_as_a_field(self):
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertIn(
+            "credential_field=CLAUDE_LINEAR_CLIENT_ID,CLAUDE_LINEAR_CLIENT_SECRET", p.stderr
+        )
+
+    def test_a_failed_mint_says_what_failed_and_nothing_of_the_providers_own_text(self):
+        # The token endpoint's error body is Linear's text and can carry anything, so
+        # the sentence says what failed and the machine-readable parts come back as
+        # fields of their own.
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertIn("minting the Claude seat app token failed", p.stderr)
+        self.assertIn("error_type=HTTPError", p.stderr)
+        self.assertIn("http=401", p.stderr)
+        self.assertNotIn(
+            "invalid_client", p.stderr, "the provider's own text is not in the message"
+        )
+        self.assertNotIn("bad client", p.stderr)
+
+    def test_a_request_id_is_quoted_back_when_the_response_carries_one(self):
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.request_id = "req-abc12345"
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertIn("request_id=req-abc12345", p.stderr)
+
+    def test_no_request_id_is_invented_when_the_response_carries_none(self):
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.mock.clients[claude]["secret"] = "rotated-in-linear-not-in-the-file"
+        p = self.as_seat("CLAUDE", "whoami", code=6)
+        self.assertNotIn("request_id=", p.stderr)
+
+
+class ErrorFieldTests(unittest.TestCase):
+    """The allow-listed fields of a failure:  what a caller downstream may read."""
+
+    def test_the_fields_of_an_error_are_the_allow_listed_ones(self):
+        cli = load_cli()
+        err = cli.GqlError(
+            [
+                {
+                    "message": "Authentication required",
+                    "extensions": {"code": "AUTHENTICATION_ERROR"},
+                }
+            ],
+            None,
+            401,
+            {"x-request-id": "req-abc12345"},
+        )
+        fields = cli.error_fields(
+            err, "lin_api_…wxyz", "environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"
+        )
+        self.assertEqual(fields["error_type"], "GqlError")
+        self.assertEqual(fields["http"], "401")
+        self.assertEqual(fields["request_id"], "req-abc12345")
+        self.assertEqual(fields["credential"], "lin_api_…wxyz")
+        self.assertEqual(fields["credential_field"], "LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET")
+
+    def test_a_failure_with_no_status_and_no_request_id_carries_neither(self):
+        cli = load_cli()
+        fields = cli.error_fields(cli.GqlError([{"message": "boom"}]))
+        self.assertEqual(fields, {"error_type": "GqlError"})
+
+    def test_the_variable_names_come_from_the_places_the_credentials_came_from(self):
+        cli = load_cli()
+        self.assertEqual(
+            cli.credential_vars(
+                "Infisical Example-Project staging /example-path (CLAUDE_LINEAR_CLIENT_ID, CLAUDE_LINEAR_CLIENT_SECRET)"
+            ),
+            "CLAUDE_LINEAR_CLIENT_ID,CLAUDE_LINEAR_CLIENT_SECRET",
+        )
+        self.assertEqual(
+            cli.credential_vars("environment (LINEAR_CLIENT_ID, LINEAR_CLIENT_SECRET)"),
+            "LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET",
+        )
+        self.assertEqual(cli.credential_vars(""), "")
+
+
+class OwnershipTests(BoardTest):
+    """Smart ownership:  with LINEAR_BOARD_OWNER=1 a claim also mirrors onto the seat's own
+    Linear user, so the board's assignee column agrees with the claim label, and releasing or
+    closing clears it again.  The label stays the record of who holds an issue, and a seat with
+    no Linear user of its own still claims:  it simply owns nothing."""
+
+    OWNED = {"LINEAR_BOARD_OWNER": "1"}
+
+    def todo_issue(self, title="Ownership probe"):
+        return self.mock.add_issue(
+            str(uuid.uuid4()), "AFC", "Todo", title, 3, ["Kind/agent-report"]
+        )
+
+    def test_by_default_a_claim_stays_a_label_and_writes_no_assignee(self):
+        """The frozen contract:  the seat rides in the label and the tag line, not a Linear field."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE")
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+
+    def test_claim_mirrors_ownership_onto_the_seats_linear_user(self):
+        iss = self.todo_issue()
+        self.board(
+            "claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED
+        )  # AGENT_SEAT=CLAUDE
+        inp = self.mock.updates[-1][1]
+        self.assertEqual(inp.get("assigneeId"), "user-claude")  # seat CLAUDE -> user Claude
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))  # the label is still the record
+
+    def test_a_seat_with_no_linear_user_still_claims_and_assigns_nobody(self):
+        iss = self.todo_issue()
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "SENTRY",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:SENTRY", self.label_names(iss))
+
+    def test_a_deactivated_seat_is_never_assigned(self):
+        """A seat Linear has deactivated owns nothing:  the label is kept, the assignee is not."""
+        iss = self.todo_issue()
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "GB-RETIRED",
+            extra=dict(self.OWNED, AGENT_SEAT="GB-RETIRED"),
+        )
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:GB-RETIRED", self.label_names(iss))
+
+    def test_a_steal_moves_the_owner_with_the_claim(self):
+        iss = self.mock.add_issue(
+            str(uuid.uuid4()),
+            "AFC",
+            "In Progress",
+            "Held",
+            3,
+            ["Kind/agent-report", "seat:CODEX", "claimed:CODEX"],
+        )
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "CLAUDE",
+            "--steal",
+            "--reason",
+            "CODEX is capped out",
+            extra=self.OWNED,
+        )
+        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude")
+        self.assertEqual(iss.get("assignee"), "user-claude")
+
+    def test_closing_clears_the_owner(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.board("status", iss["identifier"], "completed", extra=self.OWNED)
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+
+    def test_releasing_the_claim_clears_the_owner(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.board("status", iss["identifier"], "open", extra=self.OWNED)
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+
+    def test_duplicate_clears_the_owner(self):
+        """The duplicate relation path skips the CLOSING_STATUSES branch, so it
+        clears the assignee in its own cleanup update instead."""
+        iss = self.todo_issue()
+        canon = self.todo_issue(title="Canonical")
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.board(
+            "status", iss["identifier"], "duplicate", "--of", canon["identifier"], extra=self.OWNED
+        )
+        self.assertIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+
+    def test_steal_by_a_userless_seat_clears_the_stale_owner(self):
+        """A steal moves the claim even when the taker has no Linear user;  the
+        old owner's assignee goes with it instead of lingering stale."""
+        iss = self.todo_issue()
+        self.board(
+            "claim", iss["identifier"], "--by", "CODEX", extra=dict(self.OWNED, AGENT_SEAT="CODEX")
+        )
+        self.assertEqual(iss.get("assignee"), "user-codex")
+        self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "SENTRY",
+            "--steal",
+            "--reason",
+            "CODEX is gone",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
+        self.assertIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIsNone(self.mock.updates[-1][1].get("assigneeId"))
+        self.assertIsNone(iss.get("assignee"))
+        self.assertIn("claimed:SENTRY", self.label_names(iss))
+
+    def test_release_without_a_claim_keeps_a_human_assignee(self):
+        """open/backlog clear the assignee only when a claim marker was actually
+        released;  an unclaimed issue keeps whoever owns it."""
+        iss = self.todo_issue()
+        iss["assignee"] = "user-claude"
+        self.board("status", iss["identifier"], "open", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertEqual(iss.get("assignee"), "user-claude")
+
+    def test_closing_by_default_writes_no_assignee_at_all(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE")
+        self.board("status", iss["identifier"], "completed")
+        self.assertEqual(sorted(self.mock.updates[-1][1]), ["stateId"])
+
+    def test_the_users_listing_is_gated_on_the_flag(self):
+        """With the flag off no board command touches the users listing, so a
+        refused listing cannot abort anything."""
+        self.mock.fail_users = True
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE")
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+        self.board("status", iss["identifier"], "completed")
+
+    def test_a_refused_users_listing_degrades_to_a_label_only_claim(self):
+        self.mock.fail_users = True
+        iss = self.todo_issue()
+        p = self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+        self.assertIn("ownership stays off", p.stderr)
+        # The warning carries only allow-listed fields, never the response body.
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("users listing refused", p.stderr)
+
+    def test_case_variants_of_one_seat_assign_nobody(self):
+        """Two names differing only in case match the seat ambiguously, so the
+        claim lands on the label rather than risking the wrong user."""
+        self.mock.users["claude"] = {
+            "id": "user-claude-lower",
+            "name": "claude",
+            "displayName": "claude",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+
+    def test_an_exact_name_wins_over_case_variants(self):
+        self.mock.users["CLAUDE"] = {
+            "id": "user-claude-upper",
+            "name": "CLAUDE",
+            "displayName": "CLAUDE",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude-upper")
+
+    def test_two_users_sharing_one_name_assign_nobody(self):
+        """Two active users under one name (either could be paginated first)
+        own nothing, so the claim cannot assign the wrong one by order."""
+        self.mock.users["dup-a"] = {
+            "id": "user-dup-a",
+            "name": "Dup",
+            "displayName": "Dup",
+            "active": True,
+        }
+        self.mock.users["dup-b"] = {
+            "id": "user-dup-b",
+            "name": "Dup",
+            "displayName": "Dup",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        self.board(
+            "claim", iss["identifier"], "--by", "DUP", extra=dict(self.OWNED, AGENT_SEAT="DUP")
+        )
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:DUP", self.label_names(iss))
+
+    def test_malformed_user_records_degrade_to_a_label_only_claim(self):
+        """One malformed record (empty id, blank name, non-boolean active)
+        degrades ownership to nothing instead of aborting the verb or serving
+        a partial identity set:  the claim lands on the label, like the
+        refused-listing path."""
+        self.mock.users["bad-id"] = {
+            "id": "",
+            "name": "BadId",
+            "displayName": "BadId",
+            "active": True,
+        }
+        self.mock.users["bad-name"] = {
+            "id": "user-bad-name",
+            "name": "   ",
+            "displayName": "bad",
+            "active": True,
+        }
+        self.mock.users["bad-active"] = {
+            "id": "user-bad-active",
+            "name": "BadActive",
+            "displayName": "BadActive",
+            "active": "yes",
+        }
+        self.mock.users["none-id"] = {
+            "id": None,
+            "name": "NoneId",
+            "displayName": "NoneId",
+            "active": True,
+        }
+        iss = self.todo_issue()
+        p = self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:CLAUDE", self.label_names(iss))
+        self.assertIn("unexpected shape", p.stderr)
+        self.assertIn("ownership stays off", p.stderr)
+        self.assertIn("Linear user response has an invalid", p.stderr)
+
+    def test_parse_linear_users_rejects_malformed_records(self):
+        """The boundary validator raises a precise ValueError on the first
+        malformed record;  deactivated users skip silently and shared names
+        collapse to nobody."""
+        mod = load_cli()
+        with self.assertRaisesRegex(ValueError, "must contain user objects"):
+            mod.parse_linear_users([None])
+        with self.assertRaisesRegex(ValueError, "invalid id"):
+            mod.parse_linear_users([{"id": "  ", "name": "X", "active": True}])
+        with self.assertRaisesRegex(ValueError, "invalid name"):
+            mod.parse_linear_users([{"id": "u", "name": "", "active": True}])
+        with self.assertRaisesRegex(ValueError, "invalid active flag"):
+            mod.parse_linear_users([{"id": "u", "name": "X", "active": "yes"}])
+        users = mod.parse_linear_users(
+            [
+                {"id": "user-a", "name": "A", "active": True},
+                {"id": "user-old", "name": "Old", "active": False},
+            ]
+        )
+        self.assertEqual(users, {"A": "user-a"})
+        users = mod.parse_linear_users(
+            [
+                {"id": "u1", "name": "Dup", "active": True},
+                {"id": "u2", "name": "Dup", "active": True},
+            ]
+        )
+        self.assertIsNone(users["Dup"])
+
+    def test_gql_summary_logs_only_allow_listed_fields(self):
+        """An external error is logged as error name, status, code, and
+        request id:  never the response body."""
+        mod = load_cli()
+        err = mod.GqlError(
+            [{"message": "secret body", "extensions": {"code": "BAD"}}],
+            status=400,
+            request_id="req-1",
+        )
+        summary = mod.gql_summary(err)
+        self.assertIn("error=GqlError", summary)
+        self.assertIn("status=400", summary)
+        self.assertIn("code=BAD", summary)
+        self.assertIn("request_id=req-1", summary)
+        self.assertNotIn("secret body", summary)
+
+    def test_a_cached_answer_is_used_without_a_refresh(self):
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        # Linear gains a case variant after the snapshot:  a refresh would see
+        # two matches and assign nobody, so a mirrored owner proves the cache
+        # answered without one.
+        self.mock.users["claude"] = {
+            "id": "user-claude-lower",
+            "name": "claude",
+            "displayName": "claude",
+            "active": True,
+        }
+        iss2 = self.todo_issue(title="Second probe")
+        self.board("claim", iss2["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertEqual(self.mock.updates[-1][1].get("assigneeId"), "user-claude")
+
+    def test_a_refused_assignee_still_lands_the_claim(self):
+        """A user deactivated after the snapshot is refused by Linear;  the
+        claim retries without the owner instead of losing state and labels.
+        The refused update applies nothing, so the retry carries the state
+        and the labels itself."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.mock.users["Claude"]["active"] = False
+        iss2 = self.todo_issue(title="Second probe")
+        p = self.board("claim", iss2["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertEqual(first[1].get("assigneeId"), "user-claude")
+        self.assertNotIn("assigneeId", second[1])
+        self.assertIn("stateId", second[1])
+        self.assertIn("addedLabelIds", second[1])
+        self.assertEqual(iss2["state"], "In Progress")
+        self.assertIn("claimed:CLAUDE", self.label_names(iss2))
+        self.assertTrue(any("CLAIMED" in c for c in self.comments_of(iss2)))
+        self.assertIsNone(iss2.get("assignee"))
+        self.assertIn("refused the assignee", p.stderr)
+        self.assertIn("retrying the claim without", p.stderr)
+        self.assertNotIn("landed without an owner", p.stderr)
+        # The warning carries only allow-listed fields, never the response body.
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("not found or deactivated", p.stderr)
+        self.assertIn("(Linear refused the assignee; the label holds the claim)", p.stdout)
+
+    def test_a_failed_retry_reports_no_landing(self):
+        """When the retry after a refused assignee also fails, the log must
+        not claim the landing it never made, and the issue stays untouched."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.mock.users["Claude"]["active"] = False
+        self.mock.fail_ownerless_updates = True
+        iss2 = self.todo_issue(title="Second probe")
+        p = self.board("claim", iss2["identifier"], "--by", "CLAUDE", extra=self.OWNED, code=1)
+        self.assertIn("refused the assignee", p.stderr)
+        self.assertIn("retrying the claim without", p.stderr)
+        self.assertNotIn("landed", p.stderr)
+        self.assertEqual(iss2["state"], "Todo")
+        self.assertNotIn("claimed:CLAUDE", self.label_names(iss2))
+        self.assertEqual(self.comments_of(iss2), [])
+
+    def test_a_refused_assignee_clear_still_lands_the_steal(self):
+        """A steal by a seat with no Linear user clears the stale owner;  when
+        Linear refuses the clear, the steal retries without the owner field
+        instead of losing the claim.  The stale assignee lingers visibly:  the
+        claim matters more than the mirror."""
+        iss = self.todo_issue()
+        self.board(
+            "claim", iss["identifier"], "--by", "CODEX", extra=dict(self.OWNED, AGENT_SEAT="CODEX")
+        )
+        self.assertEqual(iss.get("assignee"), "user-codex")
+        self.mock.fail_assignee_clear = True
+        p = self.board(
+            "claim",
+            iss["identifier"],
+            "--by",
+            "SENTRY",
+            "--steal",
+            "--reason",
+            "CODEX is gone",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertIn("assigneeId", first[1])
+        self.assertIsNone(first[1].get("assigneeId"))
+        self.assertNotIn("assigneeId", second[1])
+        self.assertEqual(iss["state"], "In Progress")
+        self.assertIn("claimed:SENTRY", self.label_names(iss))
+        self.assertTrue(any("CLAIMED" in c for c in self.comments_of(iss)))
+        self.assertEqual(iss.get("assignee"), "user-codex")
+        self.assertIn("refused the assignee clear", p.stderr)
+        self.assertIn("retrying the claim without it", p.stderr)
+
+    def test_a_userless_seat_does_not_repay_teams_and_labels(self):
+        """A user miss re-reads only the users listing, so a seat with no
+        Linear user never repays teams and labels on a warm cache."""
+        self.mock._label("claimed:SENTRY", None)
+        self.mock._label("seat:SENTRY", None)
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        teams = self.mock.ops.count("BoardTeams")
+        labels = self.mock.ops.count("BoardLabels")
+        iss2 = self.todo_issue(title="Second probe")
+        self.board(
+            "claim",
+            iss2["identifier"],
+            "--by",
+            "SENTRY",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
+        self.assertEqual(self.mock.ops.count("BoardTeams"), teams)
+        self.assertEqual(self.mock.ops.count("BoardLabels"), labels)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("claimed:SENTRY", self.label_names(iss2))
+
+    def test_closing_an_unclaimed_issue_keeps_a_human_assignee(self):
+        """Close clears the assignee only on a claimed issue, like release;
+        closing what no seat claimed keeps whoever owns it."""
+        iss = self.todo_issue()
+        iss["assignee"] = "user-claude"
+        self.board("status", iss["identifier"], "completed", extra=self.OWNED)
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertEqual(iss.get("assignee"), "user-claude")
+
+    def test_duplicate_of_an_unclaimed_issue_keeps_a_human_assignee(self):
+        """The duplicate cleanup path carries the same claimed-only guard as
+        every other close:  open-loop labels go, the human assignee stays."""
+        iss = self.todo_issue()
+        canon = self.todo_issue(title="Canonical")
+        iss["labels"].append(self.mock._label("needs-owner", None))
+        iss["assignee"] = "user-claude"
+        self.board(
+            "status", iss["identifier"], "duplicate", "--of", canon["identifier"], extra=self.OWNED
+        )
+        self.assertNotIn("assigneeId", self.mock.updates[-1][1])
+        self.assertIn("removedLabelIds", self.mock.updates[-1][1])
+        self.assertEqual(iss.get("assignee"), "user-claude")
+
+    def test_the_claimed_line_names_the_ownership_outcome(self):
+        """With the flag on, the printed claimed line says whether the owner
+        mirrored;  without the flag the line carries no ownership note."""
+        iss = self.todo_issue()
+        p = self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        self.assertIn("(assignee CLAUDE)", p.stdout)
+        iss2 = self.todo_issue(title="Second probe")
+        p = self.board(
+            "claim",
+            iss2["identifier"],
+            "--by",
+            "SENTRY",
+            extra=dict(self.OWNED, AGENT_SEAT="SENTRY"),
+        )
+        self.assertIn("(no Linear user for the seat)", p.stdout)
+        iss3 = self.todo_issue(title="Third probe")
+        p = self.board("claim", iss3["identifier"], "--by", "CLAUDE")
+        self.assertNotIn("(assignee", p.stdout)
+        self.assertNotIn("(no Linear user", p.stdout)
+
+    def test_a_refused_assignee_clear_still_lands_the_status_change(self):
+        """Closing folds the clear into the mandatory state update;  when Linear
+        refuses it, the status retries without the owner instead of losing the
+        state change, the label removal, or the comment."""
+        iss = self.todo_issue()
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        iss["labels"].append(self.mock._label("needs-owner", None))
+        self.mock.fail_assignee_clear = True
+        p = self.board("status", iss["identifier"], "completed", extra=self.OWNED)
+        self.assertEqual(p.returncode, 0)
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertIn("assigneeId", first[1])
+        self.assertIsNone(first[1].get("assigneeId"))
+        self.assertNotIn("assigneeId", second[1])
+        self.assertIn("stateId", second[1])
+        self.assertIn("removedLabelIds", second[1])
+        self.assertEqual(iss["state"], "Done")
+        self.assertNotIn("needs-owner", self.label_names(iss))
+        self.assertTrue(any("Status: completed" in c for c in self.comments_of(iss)))
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.assertIn("refused the assignee clear", p.stderr)
+        self.assertIn("retrying the status change without it", p.stderr)
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("assignee clear refused", p.stderr)
+
+    def test_a_refused_assignee_clear_still_lands_the_duplicate_cleanup(self):
+        """The duplicate cleanup runs after the relation landed;  a refused clear
+        there must not fail the verb and skip the comment.  Labels still go, the
+        comment still posts, and only a label-removal failure aborts."""
+        iss = self.todo_issue()
+        canon = self.todo_issue(title="Canonical")
+        self.board("claim", iss["identifier"], "--by", "CLAUDE", extra=self.OWNED)
+        iss["labels"].append(self.mock._label("needs-owner", None))
+        self.mock.fail_assignee_clear = True
+        p = self.board(
+            "status", iss["identifier"], "duplicate", "--of", canon["identifier"], extra=self.OWNED
+        )
+        self.assertEqual(p.returncode, 0)
+        first, second = self.mock.updates[-2], self.mock.updates[-1]
+        self.assertIn("assigneeId", first[1])
+        self.assertIsNone(first[1].get("assigneeId"))
+        self.assertNotIn("assigneeId", second[1])
+        self.assertIn("removedLabelIds", second[1])
+        self.assertEqual(iss["state"], "Duplicate")
+        self.assertNotIn("needs-owner", self.label_names(iss))
+        self.assertTrue(any("Duplicate of" in c for c in self.comments_of(iss)))
+        self.assertEqual(iss.get("assignee"), "user-claude")
+        self.assertIn("refused the assignee clear", p.stderr)
+        self.assertIn("retrying the duplicate cleanup without it", p.stderr)
+        self.assertIn("error=GqlError", p.stderr)
+        self.assertNotIn("assignee clear refused", p.stderr)
 
 
 if __name__ == "__main__":

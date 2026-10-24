@@ -68,8 +68,8 @@ test('dispatchCommentBody carries the tag, the owner cc and where the findings a
   }
   // No other @mention: a reviewer bot mention in this comment would start that bot.
   assert.deepEqual(body.match(/@[A-Za-z][\w-]*/g), ['@pr-autofix', '@jaywedgeworth22']);
-  // GitHub text takes U+00A0 plus a space between sentences:  two ASCII spaces collapse.
-  assert.equal(SENTENCE_GAP, '\u00a0 ');
+  // GitHub text takes the `&nbsp;` entity plus a space between sentences (owner ruling 2026-10-22).
+  assert.equal(SENTENCE_GAP, '&nbsp; ');
   assert.doesNotMatch(body, /[.!?] {2}/);
   assert.equal(body.split(`.${SENTENCE_GAP}`).length - 1, 4);
   assert.throws(() => dispatchCommentBody(), TypeError);

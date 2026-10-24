@@ -29,7 +29,7 @@ if str(SCRIPTS) not in sys.path:
 
 from needs_owner import cli  # noqa: E402
 
-REALM_LINK = "https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/%s/near/%d"
+REALM_LINK = "https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/%s/near/%d"
 OWNER_ID = 7  # Jay, the pinned owner in the fake realm (fake_agent_sync.OWNER_ID)
 KEYCAP = {n: "003%d-20e3" % n for n in range(1, 6)}  # Zulip's emoji_code for 1️⃣ to 5️⃣
 
@@ -150,7 +150,7 @@ class World:
         world.update(changes)
         (self.state / "zulip.json").write_text(json.dumps(world), encoding="utf-8")
 
-    def add_message(self, topic: str, content: str, *, seat: str | None = None, channel: str = "agent-sync",
+    def add_message(self, topic: str, content: str, *, seat: str | None = None, channel: str = "work-in-progress",
                     sender_id: int | None = None, client: str | None = None, email: str | None = None,
                     reactions: list | None = None) -> int:
         """A message someone else put in a topic, after the fact.  `seat` is a bot's seat tag;  with none it
@@ -218,7 +218,7 @@ class World:
             nodes.append({"id": "lbl-" + key, "name": name, "parent": {"name": parent} if parent else None})
         world["issues"][ident] = {
             "id": str(uuid.uuid5(uuid.NAMESPACE_URL, "seed/" + ident)), "identifier": ident,
-            "url": "https://linear.app/simple-with-us/issue/" + ident, "title": title, "description": text,
+            "url": "https://linear.app/test-fleet/issue/" + ident, "title": title, "description": text,
             "priority": priority, "createdAt": "2026-10-11T07:%02d:00.000Z" % (world["tick"] % 60),
             "updatedAt": "2026-10-11T07:00:00.000Z", "state": {"name": state}, "team": {"key": team},
             "labels": {"nodes": nodes}, "attachments": {"nodes": []}, "comments": []}

@@ -29,7 +29,7 @@ coalesce_seconds = 20
 coalesce_max_seconds = 90
 owner_coalesce_seconds = 5
 notify_banners = false            # no display here:  notify-owner writes only <seat>/owner-queue.jsonl
-presence_topics = [["agent-sync", "roll call"], ["agent-sync", "fleet"], ["builds", "gates"], ["alerts", "*"]]
+presence_topics = [["work-in-progress", "roll call"], ["work-in-progress", "fleet"], ["builds", "gates"], ["alerts", "*"]]
 
 # GB-Compiler:  enabled, woken through its Grok Bot routine.  The request format is pending from
 # GB-Compiler; change method, auth, header or signature_prefix here when it lands.  auth is

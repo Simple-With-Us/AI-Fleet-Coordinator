@@ -138,8 +138,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(seen - {"__init__"}, set(release.RECALL_MODULES) - {"__init__"})
 
     def test_ships_the_knob_reader_and_not_its_tests_cli_or_readme(self):
-        # AFC-331:  agent-sync reads the NOTES_RELAY_CONSUMER knob through fleet_knobs.  If the server release lacked it,
-        # the import would fail and the host would silently trust the default consumer after the knob rotated.
+        # AFC-486:  simple-notes reads the OPERATOR_API_URL knob through fleet_knobs.  If the server release lacked it,
+        # the import would fail and the server could never reach the Operator's notes queue.
         for name in release.KNOB_MODULES:
             path = "scripts/fleet_knobs/%s.py" % name
             self.assertTrue(release.allowed_path(path), path)
@@ -188,7 +188,7 @@ class ReleaseTests(unittest.TestCase):
             # Only the shipped files, a clean environment and no infisical CLI:  the lookup must answer with a labelled default.
             code = (
                 "import sys; sys.path.insert(0, %r); from fleet_knobs import knobs; "
-                "k = knobs.resolve('NOTES_RELAY_CONSUMER', 'CLAUDE', 'str'); print(k.value, k.source)"
+                "k = knobs.resolve('OPERATOR_API_URL', '', 'str'); print(repr(k.value), k.source)"
                 % tmp
             )
             result = subprocess.run(
@@ -200,7 +200,7 @@ class ReleaseTests(unittest.TestCase):
                 env={"PATH": "/nonexistent", "HOME": tmp},
             )
             self.assertEqual(result.returncode, 0, result.stderr[-400:])
-            self.assertEqual(result.stdout.split()[0], "CLAUDE")
+            self.assertEqual(result.stdout.split(), ["''", "default"])
 
     def test_install_writes_wrappers_for_all_five_tools(self):
         self.receive()

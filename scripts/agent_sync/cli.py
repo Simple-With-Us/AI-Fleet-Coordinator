@@ -307,6 +307,7 @@ class Agent:
             return self._users
 
     def stream_id(self, channel: str) -> int:
+        channel = Z.resolve_channel(channel, self.rt.env)
         with self._lock:
             known = self._stream_ids.get(channel)
         if known is not None:
@@ -693,6 +694,25 @@ def _channel(value: str) -> str:
     return channel
 
 
+def _resolve_channel_args(
+    args: argparse.Namespace, env: Mapping[str, str] | None
+) -> argparse.Namespace:
+    """A channel name the caller typed resolves to the channel it means.
+
+    The realm renamed the fleet's coordination channel and left the old name behind as a
+    tombstone stream, so a caller that still names it has to land in the live channel.
+    The name is resolved once, here, so every command below works with the channel the
+    fleet reads.
+    """
+    for name in ("channel", "new_channel"):
+        value = getattr(args, name, None)
+        if isinstance(value, str):
+            setattr(args, name, Z.resolve_channel(value, env))
+        elif isinstance(value, list):
+            setattr(args, name, [Z.resolve_channel(v, env) for v in value])
+    return args
+
+
 def _positive_int(value: str) -> int:
     try:
         number = int(value)
@@ -824,6 +844,7 @@ def build_parser(
     *,
     listener_verbs: frozenset[str] | None = None,
     notes_verbs: frozenset[str] | None = None,
+    channel_default: str = Z.DEFAULT_CHANNEL,
 ) -> argparse.ArgumentParser:
     common = _common_parent()
     parser = argparse.ArgumentParser(
@@ -831,7 +852,7 @@ def build_parser(
         parents=[common],
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Coordinate with the fleet on Zulip.  Every post goes to a channel and a topic, "
-        "and the default channel is %s." % Z.DEFAULT_CHANNEL,
+        "and the default channel is %s." % channel_default,
         epilog="Exit codes: 0 ok, 2 usage, 3 credentials or realm, 4 wait timeout, 5 Zulip API error, "
         "6 network error, 7 verify-owner-msg did not verify.  See scripts/agent_sync/README.md.",
     )
@@ -844,13 +865,17 @@ def build_parser(
         sub = _FilteringSubparsers(sub, frozenset().union(*owned))
 
     def add(name: str, summary: str) -> argparse.ArgumentParser:
+        # The chat verbs narrow to their own set:  `read` is a verb of simple-notes too (AFC-486), and the
+        # filter above is the union of every source's verbs.
+        if verbs is not None and name not in verbs:
+            return _NullParser()
         return sub.add_parser(name, parents=[common], help=summary, description=summary)
 
     def channel_opt(p: argparse.ArgumentParser) -> None:
         p.add_argument(
             "--channel",
             type=_channel,
-            default=Z.DEFAULT_CHANNEL,
+            default=channel_default,
             metavar="C",
             help="channel name (default: %(default)s)",
         )
@@ -926,7 +951,7 @@ def build_parser(
     p.add_argument(
         "--fleet",
         action="store_true",
-        help="fleet-wide wake:  also add @**all**.  Only in #agent-sync, topic 'fleet'.  It notifies every "
+        help="fleet-wide wake:  also add @**all**.  Only in #Work-In-Progress, topic 'fleet'.  It notifies every "
         "seat and the owner, so use it only when every seat must act.  Zulip refuses it from a bot the "
         "realm's can_mention_many_users_group does not include;  then use --to for each bot that "
         "must act",
@@ -1068,7 +1093,7 @@ def build_parser(
     p.add_argument(
         "--channel",
         type=_channel,
-        default=Z.DEFAULT_CHANNEL,
+        default=channel_default,
         metavar="C",
         help="channel the topic is in (default: %(default)s)",
     )
@@ -1194,7 +1219,7 @@ def build_parser(
         help="CODEX-only: attribute calls from native MCP _meta.threadId; no automatic nosession fallback",
     )
 
-    zulip_cli.add_parsers(sub, common)
+    zulip_cli.add_parsers(sub, common, channel_default)
     listener_cli.add_parsers(sub, common, verbs=listener_verbs)
     notes_cli.add_parsers(sub, common, verbs=notes_verbs)
     return parser
@@ -1251,6 +1276,36 @@ def pinned_owner_id(agent: Agent) -> int | None:
     except Exception:  # noqa: BLE001 - a missing or damaged config is "not pinned" here, never a crash of whoami
         return None
     return owner if owner > 0 else None
+
+
+def pinned_operator_id(agent: Agent) -> int | None:
+    """`daemon.operator_user_id` of the installed listener.toml, or None when it is not pinned.
+
+    The Operator service bot's own Zulip user id, pinned in the host's own config the same way the
+    owner's id is:  a production user id is private inventory, so none is committed and the host
+    decides.  It is the only proof that the Operator opened a direct message, so a host that pins
+    it lets a seat answer inside one (Kody review on AFC-473).
+
+    **A damaged setting is not an unpinned one.**  A listener.toml that cannot be read, or whose
+    `operator_user_id` is not a user id, used to come back as None, so the refusal named an
+    environment variable that is not the one at fault and the recoverable setup error stayed
+    hidden.  It fails closed here instead, with a UsageError that names the setting the operator
+    has to repair and no id value in the message (Kody review on AFC-473)."""
+    try:
+        cfg = listener_cli._load(agent.rt)
+    except Exception as exc:  # noqa: BLE001 - a damaged config is a named failure, never a guess
+        raise UsageError(
+            "%s is unavailable:  the listener config could not be read (%s)"
+            % (OPERATOR_ID_SETTING, type(exc).__name__)
+        ) from None
+    for problem in cfg.errors:
+        # The two ways the setting itself is unusable:  a value that is not a user id, and a
+        # listener.toml that could not be read or parsed.  A host that simply has not pinned the
+        # id (0, or no listener.toml at all) is not a failure and comes back as None.
+        if "operator_user_id" in problem or problem.startswith("cannot read "):
+            raise UsageError("%s is unavailable:  %s" % (OPERATOR_ID_SETTING, problem)) from None
+    operator = cfg.operator_user_id
+    return operator if operator > 0 else None
 
 
 def cmd_whoami(agent: Agent, args: argparse.Namespace) -> int:
@@ -1423,6 +1478,20 @@ def _check_text_args(args: argparse.Namespace) -> None:
         raise UsageError("no message text:  give TEXT, '-' to read stdin, or --body-file PATH")
 
 
+def _scan_refusal(agent: Agent, **fields: str) -> None:
+    """Refuse caller text that looks like a secret, naming the field and the kind, never the value.
+
+    The MCP side scans every field it posts;  the CLI scans the message body, and the topic and the
+    channel are caller text as well, so they are scanned here too (Kody review on AFC-473).  The
+    message names the kind, never a prefix of the value and never the value itself, because the
+    refusal can reach a log."""
+    known = secretscan.basic_forms(agent.creds.email, agent.creds.key)
+    for field, value in fields.items():
+        kind = secretscan.scan(value or "", known)
+        if kind:
+            raise UsageError("refusing to post:  the %s looks like it contains %s" % (field, kind))
+
+
 def _read_text(agent: Agent, parts: Sequence[str], body_file: str | None = None) -> str:
     _check_text_args(argparse.Namespace(text=list(parts), body_file=body_file))
     if body_file is not None:
@@ -1432,9 +1501,7 @@ def _read_text(agent: Agent, parts: Sequence[str], body_file: str | None = None)
     text = text.strip()
     if not text:
         raise UsageError("the message text is empty")
-    found = secretscan.scan(text, secretscan.basic_forms(agent.creds.email, agent.creds.key))
-    if found:
-        raise UsageError("refusing to post: the text looks like it contains %s" % found)
+    _scan_refusal(agent, text=text)
     return text
 
 
@@ -1663,6 +1730,7 @@ def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
             args.channel, args.topic
         )  # before any request, including the --to lookup
     text = _read_text(agent, args.text, getattr(args, "body_file", None))
+    _scan_refusal(agent, topic=args.topic, channel=args.channel)
     mentions, labels = _resolve_targets(agent, args.to, bool(getattr(args, "to_owner", False)))
     if args.fleet:
         mentions.append(FLEET_WAKE_MENTION)
@@ -1751,6 +1819,9 @@ DM_MAX_RECIPIENTS = (
     8  # other people in one conversation, this bot not counted (the hosted dm_send's cap too)
 )
 DM_CURSOR_CHANNEL = "@dm"  # reserved cursor name for `dm-read --new`
+# The setting a host pins the Operator's Zulip user id in, named when it cannot be read:  a
+# refusal that omits it sends the operator to the wrong place (Kody review on AFC-473).
+OPERATOR_ID_SETTING = "listener.toml.operator_user_id"
 GENERIC_BOT = ROUTER.GENERIC_BOT
 
 
@@ -1873,8 +1944,26 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
 
     A reply inside a conversation Operator already opened is still allowed, so the existing messages
     are read first.  A refusal is audited (ids and the reason only) and then raised as the policy's own
-    DmRefused, which exits 3 (a refusal) rather than 2 (a malformed command)."""
+    DmRefused, which exits 3 (a refusal) rather than 2 (a malformed command).
+
+    A host that cannot say who the Operator is fails closed by name:  a damaged listener config
+    raises a UsageError that says which setting to repair, instead of a refusal that points at an
+    environment variable that is not the one at fault (Kody review on AFC-473)."""
     env = getattr(getattr(agent, "rt", None), "env", None) or os.environ
+    # The rule's own switch is read first, exactly as the MCP reads it, because with the block off
+    # there is nothing to decide:  the Operator's id is only needed to tell a conversation Operator
+    # opened from one a seat opened, and with the rule off that judgement is never made, so a host
+    # without the id is not broken by it.  Reading the conversation first would also cost a network
+    # round-trip per direct-message write for a result that is then thrown away, and would turn an
+    # outage into a retryable failure for a send the rule does not govern.
+    if not DMP.rule_enabled(env):
+        return
+    clarifying = bool(getattr(args, "clarifying_question", None))
+    if DMP.clarifying_exempt(agent.seat, clarifying=clarifying):
+        # Operator's own clarifying question is the one message the rule permits without knowing
+        # who the Operator is, so the id is never resolved and the conversation is never read:  a
+        # host whose listener config is damaged can still send it (Kody review on AFC-473).
+        return
     bots = {int(u["user_id"]): bool(u.get("is_bot")) for u in agent.users()}
     recipients = [
         {"user_id": u["user_id"], "is_bot": bots.get(int(u["user_id"]), False)} for u in to.users
@@ -1903,7 +1992,12 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
                 "Zulip answered HTTP %s for the direct message narrow" % status
             ) from exc
         if status in (401, 403):
-            raise
+            raise Z.ApiError(
+                "Zulip refused the bot credential (%s);  verify the configured API key"
+                % Z.masked_credential(getattr(getattr(agent, "creds", None), "key", "")),
+                code=exc.code,
+                status=status,
+            ) from exc
         existing = []
     try:
         DMP.check_new_dm(
@@ -1913,10 +2007,13 @@ def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
             operator_opened=DMP.operator_opened_dm(
                 recipients,
                 existing,
-                operator_user_id=DMP.operator_user_id(env),
+                # The pinned lookup is a callable, so the host's listener config is read only
+                # when the environment has no id:  a host that exports the id is never broken by
+                # a config file it does not consult (Kody review on AFC-473).
+                operator_user_id=DMP.operator_user_id(env, lambda: pinned_operator_id(agent)),
                 self_id=_int_or_none(agent.me().get("user_id")),
             ),
-            clarifying=bool(getattr(args, "clarifying_question", None)),
+            clarifying=clarifying,
             owner_user_id=_owner_id_pinned(agent) or None,
         )
     except DMP.DmRefused as refused:
@@ -2178,6 +2275,7 @@ def cmd_reply(agent: Agent, args: argparse.Namespace) -> int:
     if original.get("type") != "stream":
         raise UsageError("message %d is a direct message; reply is channel-only in v1" % args.id)
     channel, topic = message_channel(original), message_topic(original)
+    _scan_refusal(agent, topic=topic, channel=channel)
     mentions, labels = _resolve_targets(agent, args.to, to_owner)
     body = _compose(agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag)
     return _send(agent, channel, topic, body)
@@ -2656,16 +2754,19 @@ LOCAL_COMMANDS: dict[str, Callable[[Runtime, argparse.Namespace], int]] = {
     "guide": notes_cli.cmd_guide,
 }
 
-# `simple-notes` verbs.  They are top-level commands, so they land in LOCAL_COMMANDS beside the
-# listener verbs; MCP reaches the same handler through the `notes` group.
-NOTES_VERBS = ("create", "update", "pin", "unpin", "status")
+# `simple-notes` verbs (AFC-486:  one per notes_* tool, plus the Mac runner).  They are top-level commands, so they
+# land in LOCAL_COMMANDS beside the listener verbs, except `read`, which `simple-chat` owns too (a topic's history)
+# and which only the simple-notes override below sends here.
+NOTES_VERBS = ("create", "update", "pin", "unpin", "read", "list", "status", "log", "runner")
 for _action in NOTES_VERBS:
-    LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
+    if _action != "read":
+        LOCAL_COMMANDS[_action] = notes_cli.cmd_notes
 
-# `status` is a verb of two commands:  the listener's on `simple-chat`, the notes relay's on
-# `simple-notes`.  A bare name cannot pick one, so each command overrides it for its own verbs.
+# `status` and `read` are verbs of two commands:  `simple-chat status` is the listener's and `simple-chat read` a
+# topic's history, `simple-notes status` and `simple-notes read` are the notes ones.  A bare name cannot pick one,
+# so each command overrides them for its own verbs.
 DISPATCH_OVERRIDES: dict[str, dict[str, Callable[[Runtime, argparse.Namespace], int]]] = {
-    "simple-notes": {"status": notes_cli.cmd_notes},
+    "simple-notes": {"status": notes_cli.cmd_notes, "read": notes_cli.cmd_notes},
     "simple-chat": {"status": listener_cli.cmd_status},
 }
 
@@ -2722,16 +2823,19 @@ COMMAND_SPECS: dict[str, dict[str, frozenset[str]]] = {
 }
 
 
-def build_parser_for(prog: str) -> argparse.ArgumentParser:
+def build_parser_for(
+    prog: str, channel_default: str = Z.DEFAULT_CHANNEL
+) -> argparse.ArgumentParser:
     """The parser for one entry point: only that command's verbs, under its own name."""
     spec = COMMAND_SPECS.get(prog)
     if spec is None:
-        return build_parser(prog)
+        return build_parser(prog, channel_default=channel_default)
     return build_parser(
         prog,
         spec["chat"],
         listener_verbs=spec["listener"],
         notes_verbs=spec["notes"],
+        channel_default=channel_default,
     )
 
 
@@ -2776,12 +2880,14 @@ def main(
             stdout=rt.stdout,
             stderr=rt.stderr,
         )
-    parser = build_parser_for(prog)
+    parser = build_parser_for(prog, Z.default_channel(rt.env))
     try:
         with contextlib.redirect_stdout(rt.stdout), contextlib.redirect_stderr(rt.stderr):
             args = parser.parse_args(argv)
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 2)
+
+    args = _resolve_channel_args(args, rt.env)
 
     previous = None
     if threading.current_thread() is threading.main_thread():

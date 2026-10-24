@@ -60,14 +60,18 @@ counters and pacing (100ms writes, 50ms reads).  Zulip posts/replies are
 50/hour and 200/day.  Zulip spacing stays 3 seconds for writes and 500ms for reads.
 Other seats retain their existing limits.  Upstream rate limits still apply.
 
-## Notes relay consumer (AFC-331)
+## Apple Notes through the Operator (AFC-486)
 
-`NOTES_RELAY_CONSUMER` is one fleet knob (registered in `scripts/fleet_knobs/registry.py`, listed under "Fleet knobs" below):  the seat whose bot is the Apple Notes relay consumer.  **Owner action:  create the key `NOTES_RELAY_CONSUMER` with the value `CLAUDE` in this project, `prod`, root path `/`.**  Nothing in the repo writes it.
+Apple Notes requests from the server and cloud seats go to the Operator's notes queue (`docs/protocols/operator-notes.md`), never through Zulip.  Four names, all in this project, `prod`:
 
-| Reader | How it gets the value |
-|---|---|
-| Mac listener, stdio MCP, CLI | `fleet_knobs` (one fetch per process, last-known-good copy).  A `[notes_relay] seat` in `listener.toml` that differs is ignored and the listener then does not consume.  With Infisical unreachable and no usable copy the answer is the default `CLAUDE`, labelled `default CLAUDE (unreachable:...)` in the log line `notes relay consumer ...`.  The stdio MCP reads the knob on the first Notes tool call that needs the consumer, not at start, so a slow fetch never delays an MCP process start. |
-| Hosted Worker | An encrypted Worker binding of the same name, copied at deploy by `scripts/agent-sync-mcp/sync_notes_consumer.py` (DEPLOY.md, "Notes, recall and the guide").  Never in `wrangler.jsonc`.  Unset means `notes_status` answers `not_configured`. |
+| Name | Where | Who reads it |
+|---|---|---|
+| `OPERATOR_API_URL` (its row in "Fleet knobs" below is the generated one) | root `/`, a fleet knob (`scripts/fleet_knobs/registry.py`) | `simple-notes`, the stdio MCP and the Mac runner, through `fleet_knobs`:  the Operator API's https origin.  Empty means not configured.  The Worker has the same origin as its committed `LISTENER_API_URL` var. |
+| `OPERATOR_NOTES_WORKER_KEY` | `/operator`, a secret | the Operator (container start, `server/infisical_env.py`) and the Worker, as its secret `OPERATOR_NOTES_KEY` (DEPLOY.md, "Notes, recall and the guide") |
+| `OPERATOR_NOTES_SERVER_KEY` | `/operator`, a secret | the Operator, and the server's CLIs and stdio MCP (`fleet-secrets get OPERATOR_NOTES_SERVER_KEY --path /operator --project ai-fleet-coordinator`, held in memory) |
+| `OPERATOR_NOTES_RUNNER_KEY` | `/operator`, a secret | the Operator, and the Mac runner (`com.jay.operator-notes-runner`, the same `fleet-secrets get`) |
+
+Each key is at least 32 random characters and is never printed, logged or written to a file.  The retired relay's knob `NOTES_RELAY_CONSUMER` (AFC-331) is no longer read by anything.
 
 ## Zulip Outgoing Wake Tokens
 
@@ -94,7 +98,7 @@ Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`
 
 | Key | Kind | Used by |
 |---|---|---|
-| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #alerts, #trading, #agent-sync |
+| `ZULIP_SENTRY_EMAIL` / `ZULIP_SENTRY_API_KEY` | env config / secret | Sentry internal integrations for #alerts, #trading, #Work-In-Progress |
 | `ZULIP_PAGERDUTY_EMAIL` / `ZULIP_PAGERDUTY_API_KEY` | env config / secret | PagerDuty v3 webhook to #incident-response |
 | `ZULIP_LINEAR_EMAIL` / `ZULIP_LINEAR_API_KEY` | env config / secret | Linear webhook to #issues |
 | `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #alerts (`slack_incoming`) |
@@ -119,7 +123,7 @@ This service has no per-user settings: seat identity is passed per-request by th
 
 - `scripts/mac-collab/mac-collab-server.py` (THE BOARD, retired on 2026-10-19, AFC-363): Mac-local; reads `~/.secrets/mac-collab.env` (canonical) or the environment.  Operator-managed on the Mac, not a hosted service surface.
 - The `/mac-collab` Fleet-OPS folder is gone (owner Jay, 2026-10-19, AFC-363):  its 15 `MAC_COLLAB_TOKEN*` secrets (root and per-seat), the 26 root `MAC_COLLAB_*` reference entries that pointed at them, and the `admin-jays-services` Worker secret `MAC_COLLAB_TOKEN` were deleted.  The stale `/global-api-keys` copy `MAC_COLLAB_TOKEN` and its root reference `GLOBAL_API_KEYS_MAC_COLLAB_TOKEN` were deleted the same day (owner Jay, AFC-363);  no `MAC_COLLAB` name is left in Fleet-OPS.
-- Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `simple-board` CLI reads them from there first, through the `INFISICAL_AUTOMATION` identity, falling back to `~/.secrets/Linear/<SEAT>.env` only on a host without it (AFC-348).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `simple-board` writes after every mint and reads instead of minting again.  Never print one.
+- Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `simple-board` CLI reads them from there through the `INFISICAL_AUTOMATION` identity, after the `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET` environment pair, and it reads no credential file at all (AFC-348, AFC-359).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `simple-board` writes after every mint and reads instead of minting again.  Never print one.
 - `fleet-sentry-monitor/monitor.py`: operator cron script; env-configured on the box that runs it.
 - `fleet_rag` CLI tools and MCP scripts: per-invocation env; no long-lived process to host a cache.
 - `workers/pr-conflict-watch`: Cloudflare Worker.
@@ -164,7 +168,7 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `LANE_SWEEP_MODE` | C5 | enum: report < act < retire | `report` | no | only move toward `report` | act arms merges and retires merged-PR lanes;  retire adds the Phase 3 deletions |
 | `LANE_SWEEP_CAPS` | C5 | caps | `lane_retires_per_run=10,report_posts_per_run=12` | no | only lower a number | sweep action caps |
 | `LANE_SWEEP_OPTIN_REPOS` | C5 | list | empty | no | only remove entries | money-path repos the sweep may act on;  empty means none |
-| `NOTES_RELAY_CONSUMER` | N1 | str | `CLAUDE` | no | nothing | seat whose bot is the Apple Notes relay consumer (the Mac listener's [notes_relay] seat);  notes_status trusts a mark or a refusal reply only from it;  a local [notes_relay] seat that differs is ignored and the listener does not consume;  the Worker gets the same value as a binding at deploy |
+| `OPERATOR_API_URL` | N1 | str | unset | no | nothing | the Operator API's https origin (no path):  where simple-notes, the stdio MCP and the Mac runner send Apple Notes requests off a Mac (docs/protocols/operator-notes.md);  empty means not configured;  the Worker has the same origin as its LISTENER_API_URL var |
 | `APPLE_NOTES_PIN_RETRY` | N1 | bool | `true` | no | only set it to `false` | true lets apple-notes-coding.sh run the pin or unpin Shortcut a second time when the first run misses the note index;  false keeps the single attempt;  the APPLE_NOTES_PIN_RETRY environment variable is only a local narrowing override and can turn the retry off, never on |
 | `CONSULT_ENABLED` | C7 | bool | `false` | no | only set it to `false` | false refuses every consult verb |
 | `FLEET_SHEET_INGEST_ENABLED` | S1 | bool | `true` | no | only set it to `false` | false writes the registry mirror and skips the `recall ingest --source doc` that carries it;  the sheet itself is still written |
@@ -366,3 +370,22 @@ The Agent-Sync MCP Worker sends it, with the acting seat in `X-Fleet-Seat`, to
 FleetLink's `/mcp`, which maps each seat to its own FleetLink agent account.
 Rotate both Workers from this one value, FleetLink first.  See
 [the FleetLink runbook](scripts/agent-sync-mcp/DEPLOY.md#fleetlink-afc-328).
+
+
+## WhatsApp Wake Bridge (AFC-477, Not Provisioned)
+
+The owner selected dedicated read-only service tokens in AFC.  This supersedes the earlier machine-identity/Fleet-OPS proposal; no credentials have been provisioned.  Bridge and binder use exact AFC `prod` `/jet`.  Operator uses the separate sibling AFC `prod` `/operator-jet-wake`, containing only its distinct signing key and literal Worker URL.  No machine identity, project-wide grant, Operator read/write token or plan purchase is involved.
+
+| Name | Source | Consumer |
+|---|---|---|
+| Existing `WHATSAPP_API_KEY`, unchanged | AFC prod `/jet` | Sole poller and supervised binder only |
+| `WA_BRIDGE_HMAC_KEY_JET` | AFC prod `/jet` | Poller/binder and existing Worker |
+| `WA_OWNER_BINDING_JET` | Verified private binding | Worker only |
+| `WA_AGENT_HASH_JET`, `WA_SENDER_HASH_JET`, `WA_STATE_DIRECTORY` | AFC prod `/jet` | Sole poller |
+| `WHATSAPP_BRIDGE_ENABLED`, `WHATSAPP_BRIDGE_WAKE_ENABLED` | Approved exact `on` settings | Bridge/Worker as applicable; default off |
+| `WA_OPERATOR_HMAC_KEY_JET` | AFC prod `/operator-jet-wake` | Operator client and existing Worker |
+| `WA_WORKER_URL` | Literal origin in both folders | Respective client |
+
+Approved bootstrap tokens expire 90 days after provisioning and are server-scoped to `read` on one literal prod folder each, without wildcards, children or write grants.  Root-only systemd credentials deliver only the mode-specific token.  `launch.py` rejects ambient/shared auth; the reviewed `fleet_secrets run` strips bootstrap authentication before executing its exact child-key allowlist.  Operator receives no Meta key, owner-ingestion key, private owner binding or AFC `/jet` read grant.  Scope receipts and negative reads remain required before activation; mock tests are not proof of live provider permissions.  Expiry stops future loads, not keys already held by a running process.
+
+No daily wake quota is introduced.  The [bridge runbook](scripts/whatsapp_bridge/README.md) gives exact token names, expiry, protected storage, recipients and action-time approval steps.  The parent relayed owner approval for the bounded 90-day token setup; provisioning and activation still await required CI/review readiness and coordination.  Neither client receives renewal or credential-management permission.

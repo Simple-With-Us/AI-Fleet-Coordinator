@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -70,41 +71,103 @@ def sign_jwt(app_id: int, pem: str, now: int) -> str:
         os.close(read_fd)
 
 
+# The CLI's own folder-path rules (scripts/fleet_secrets/core.py check_path):
+# anything weaker here would pass a bad path down and surface as a misleading
+# missing-key error.
+_PATH_RE = re.compile(r"/[A-Za-z0-9._/-]*")
+
+
 class FleetSecretsSource:
-    """Reads one named secret at a time through the `fleet-secrets` CLI.
+    """Reads named secrets through the `fleet-secrets` CLI.
 
     The only approved credential path for the relay:  no environment reads,
     no direct Infisical calls.  The CLI's own identity and backend are its
     concern;  this class runs it with a timeout, caches values in memory, and
     never logs or includes what it returns.
+
+    `secrets()` reads several names in ONE CLI invocation:  `fleet-secrets
+    get` exports the whole folder per call, so an App's id and private key
+    must be fetched together - per-name calls would re-export the folder for
+    every name.  A name the CLI reports absent (exit 3) is remembered for the
+    process lifetime, so an incomplete App pair does not drive a full folder
+    export per request;  add the secret and restart the relay to pick it up.
+
+    `path` is the Fleet-OPS prod folder the names are read from.  It
+    defaults to /github-apps, where the GH_APP_<SLUG>_ID and
+    GH_APP_<SLUG>_PRIVATE_KEY pairs actually live (verified live
+    2026-10-23):  without it `fleet-secrets get` reads the project root
+    and every App-key lookup misses.
     """
 
-    def __init__(self, executable: str = "fleet-secrets", runner=subprocess.run):
+    def __init__(
+        self,
+        executable: str = "fleet-secrets",
+        runner=subprocess.run,
+        path: str = "/github-apps",
+    ):
+        if not _PATH_RE.fullmatch(path or "") or ".." in path.split("/"):
+            raise AppTokenError(f"fleet-secrets path is not a usable folder path: {path!r}")
         self._exe = executable
         self._run = runner
+        self._path = path
         self._cache: dict[str, str] = {}
+        self._missing: set[str] = set()
 
     def secret(self, name: str) -> str:
-        if name in self._cache:
-            return self._cache[name]
+        return self.secrets([name])[name]
+
+    def secrets(self, names) -> dict:
+        """Read several names in one CLI invocation (one folder export)."""
+        names = list(names)
+        known_missing = [n for n in names if n in self._missing]
+        if known_missing:
+            raise AppTokenError(f"fleet-secrets has no value for {known_missing[0]}")
+        wanted = [n for n in names if n not in self._cache]
+        if wanted:
+            self._fetch(wanted)
+        return {n: self._cache[n] for n in names}
+
+    def _fetch(self, wanted) -> None:
         try:
-            result = self._run([self._exe, "get", name], capture_output=True, timeout=30)
+            result = self._run(
+                [self._exe, "get", *wanted, "--path", self._path],
+                capture_output=True,
+                timeout=30,
+            )
         except subprocess.TimeoutExpired:
-            raise AppTokenError(f"fleet-secrets lookup timed out for {name}") from None
+            raise AppTokenError(f"fleet-secrets lookup timed out for {wanted[0]}") from None
         except FileNotFoundError:
             raise AppTokenError("fleet-secrets executable not found") from None
         except OSError as exc:
             raise AppTokenError(
-                f"fleet-secrets lookup failed for {name}: {type(exc).__name__}"
+                f"fleet-secrets lookup failed for {wanted[0]}: {type(exc).__name__}"
             ) from None
         if result.returncode:
-            # stderr can carry backend detail;  report only the variable name.
-            raise AppTokenError(f"fleet-secrets has no value for {name}")
-        value = result.stdout.decode("utf-8", "replace").strip()
-        if not value:
-            raise AppTokenError(f"fleet-secrets returned an empty value for {name}")
-        self._cache[name] = value
-        return value
+            # Exit 3 is a clean export that lacked the key:  remember the
+            # absence so an incomplete App pair cannot drive one folder
+            # export per request.  Only names the CLI actually blames are
+            # cached.  Exit 2 (usage) names keys and reason tokens, never
+            # values, so its text is safe to surface - it is what tells an
+            # operator a bad --path apart from a missing key.  Any other
+            # failure can carry backend detail on stderr:  report only the
+            # variable name and the exit code.
+            detail = result.stderr.decode("utf-8", "replace").strip()
+            if result.returncode == 3:
+                absent = [n for n in wanted if n in detail] or wanted[:1]
+                self._missing.update(absent)
+                raise AppTokenError(f"fleet-secrets has no value for {absent[0]}")
+            if result.returncode == 2 and detail:
+                raise AppTokenError(f"fleet-secrets lookup failed for {wanted[0]}: {detail}")
+            raise AppTokenError(
+                f"fleet-secrets lookup failed for {wanted[0]} (exit {result.returncode})"
+            )
+        raw = result.stdout.decode("utf-8", "replace").strip()
+        values = {wanted[0]: raw} if len(wanted) == 1 else json.loads(raw)
+        for name in wanted:
+            value = str(values.get(name) or "").strip()
+            if not value:
+                raise AppTokenError(f"fleet-secrets returned an empty value for {name}")
+            self._cache[name] = value
 
 
 class AppTokenMinter:
@@ -124,11 +187,14 @@ class AppTokenMinter:
 
     def _app_credentials(self, slug: str) -> tuple[int, str]:
         prefix = "GH_APP_" + slug.upper().replace("-", "_")
+        # One CLI invocation per App, not per name:  `fleet-secrets get`
+        # exports the whole folder on every call.
+        pair = self._source.secrets([prefix + "_ID", prefix + "_PRIVATE_KEY"])
         try:
-            app_id = int(self._source.secret(prefix + "_ID").strip())
+            app_id = int(pair[prefix + "_ID"].strip())
         except ValueError:
             raise AppTokenError(f"app id for {slug} is not an integer") from None
-        return app_id, self._source.secret(prefix + "_PRIVATE_KEY")
+        return app_id, pair[prefix + "_PRIVATE_KEY"]
 
     def token_for(self, slug: str, repo: str, permissions: dict) -> tuple[str, float]:
         """Mint (or serve from cache) an installation token;  returns (token, expiry epoch)."""
