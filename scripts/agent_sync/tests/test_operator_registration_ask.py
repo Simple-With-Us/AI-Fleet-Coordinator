@@ -359,16 +359,34 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
 
     def test_a_rate_limit_is_retryable_and_the_key_is_released(self) -> None:
         limited = _StubClient(
-            post_error=Z.ApiError("rate limited", code="RATE_LIMIT_HIT", status=429)
+            post_error=Z.ApiError(
+                "rate limited", code="RATE_LIMIT_HIT", status=429, data={"retry-after": "7"}
+            )
         )
         first = self.send(client=limited)
         self.assertEqual(first["status"], "refused")
         self.assertEqual(first["delivery_status"], OC.DELIVERY_RETRYABLE)
+        # kody 4366048576:  the mapped metadata survives the release - normalized
+        # status/code and the scalar backoff, never the exception or the headers.
+        self.assertEqual(first["http_status"], 429)
+        self.assertEqual(first["error_code"], "RATE_LIMIT_HIT")
+        self.assertEqual(first["retry_after_seconds"], 7.0)
+        for value in first.values():
+            self.assertIsInstance(value, (str, int, float, type(None)))
         # The refusal was definite (no post happened), so the very next pass may post.
         working = _StubClient(messages=[])
         again = self.send(client=working, now=1001.0)
         self.assertEqual(again["status"], "sent", again["reason"])
         self.assertEqual(len(working.posts), 1)
+
+    def test_a_rate_limit_without_a_retry_after_reports_none(self) -> None:
+        limited = _StubClient(
+            post_error=Z.ApiError("rate limited", code="RATE_LIMIT_HIT", status=429)
+        )
+        first = self.send(client=limited)
+        self.assertEqual(first["delivery_status"], OC.DELIVERY_RETRYABLE)
+        self.assertEqual(first["http_status"], 429)
+        self.assertIsNone(first["retry_after_seconds"])
 
     def test_a_server_error_leaves_delivery_unknown_and_keeps_the_key(self) -> None:
         failing = _StubClient(

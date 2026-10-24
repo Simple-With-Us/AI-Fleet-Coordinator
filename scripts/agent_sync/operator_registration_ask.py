@@ -48,6 +48,22 @@ def _outcome(status: str, reason: str, **extra: Any) -> dict[str, Any]:
     return out
 
 
+def _retry_after_seconds(exc: BaseException) -> float | None:
+    """The scalar Retry-After a 429 carried, clamped like the client's own backoff.
+
+    The client raises ApiError with the parsed body in ``data`` (headers are not
+    retained), so the body key is the only source;  anything unparseable is absent,
+    never guessed.
+    """
+    data = getattr(exc, "data", None)
+    value = data.get("retry-after") if isinstance(data, Mapping) else None
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(seconds, Z.RETRY_AFTER_CAP))
+
+
 def _fingerprint(channel: str, topic: str, body: str) -> str:
     return OC._fingerprint(0, "%s\n%s\n%s" % (channel.casefold(), topic.casefold(), body))
 
@@ -380,6 +396,12 @@ def send_location_question(
                 "the location question was rate-limited and may be retried: %s"
                 % type(exc).__name__,
                 delivery_status=OC.DELIVERY_RETRYABLE,
+                # kody 4366048576:  the mapped metadata survives the release, so the
+                # caller can honor the server's backoff.  Scalars only - never the
+                # exception object, its text, or the raw headers.
+                http_status=429,
+                error_code=str(getattr(exc, "code", "") or ""),
+                retry_after_seconds=_retry_after_seconds(exc),
             )
         if isinstance(status, int) and (status == 408 or 500 <= status < 600):
             OC._record(path, key, at, window, 0, None, OC.DELIVERY_UNKNOWN)
