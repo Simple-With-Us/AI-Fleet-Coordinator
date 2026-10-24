@@ -1,7 +1,7 @@
 ---
 name: apple-notes
 description: >-
-  Write owner-facing Apple Notes in the `Coding` folder (local on this Mac) — plans, designs, reviews, handoffs, rollouts, living Completion notes. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Title [TEAM_KEY, Agent] Topic (Title Case) with a refreshed timestamp.
+  Write, read and fix owner-facing Apple Notes in the `Coding` folder — plans, designs, reviews, handoffs, rollouts, living Completion notes, and static notes such as the Background Jobs Master List. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Works the same on the Mac, the server and cloud seats (simple-notes or the notes_* tools). Title [TEAM_KEY, Agent] Topic (Title Case) with a refreshed timestamp.
 ---
 
 # Apple Notes (Universal)
@@ -9,11 +9,23 @@ description: >-
 > **Retired seat.**  Owner directive 2026-10-07: the seat never opened, and the Renoir Claude account and app are no longer used.  `CLAUDE` is the only Claude seat.  Do not install to `~/.renoir/skills`.  Do not take fleet work as RENOIR.  This catalog copy is inactive.
 
 
-Mac only.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
+Every host has the same tool set:  `simple-notes` (CLI) and the `notes_*` MCP tools, verb for verb:  `create`, `update`, `pin`, `unpin`, `read`, `list`, `status`, `log` (AFC-486, `docs/protocols/operator-notes.md`).  On the Mac they run the helper below directly;  on the server and from cloud seats they go through the Operator's notes queue to a runner on the Mac and wait for its answer.  No Notes request goes through Zulip.
+
+```bash
+simple-notes create "[AFC, Claude] Topic" --body-file body.md
+simple-notes read "⭐️ Background Jobs Master List" --format html > list.html   # edit list.html, then:
+simple-notes update "⭐️ Background Jobs Master List" --html list.html
+simple-notes list --query "AFC"
+simple-notes log --since-hours 24
+```
+
+- **Who may change what.**  A create's title carries your own agent name.  Update, pin, unpin, read and list work on any Coding note:  fixing formatting across other agents' notes is expected.  An update never creates a note whose title is not yours (a missing one answers `not_found`).
+- **Read before you rewrite.**  `read --format html` returns the content without the title, date and Session rows (the helper writes those on every save), ready to send back with `update --html`.
+- **The helper formats and logs every write**, wherever it came from (date row, Session row, sentence gaps, fleet dates).  `simple-notes log` shows who changed which note and what was reformatted.
 
 Notes.app does not render raw Markdown.  The helper converts MD → HTML.  Pass `--html` only when you already have Notes-safe HTML.
 
-## Helper
+## Helper (the Mac)
 
 ```bash
 /Users/jay/apps/apple-notes-coding.sh "Title" "plain body"

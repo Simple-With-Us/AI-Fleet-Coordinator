@@ -26,7 +26,7 @@
 version = 1
 
 [seats]
-# Deterministic Notes relay service, not an agent roster entry.
+# The Operator:  a deterministic service, not an agent roster entry.
 OPERATOR = "mac"
 
 # Mac seats
