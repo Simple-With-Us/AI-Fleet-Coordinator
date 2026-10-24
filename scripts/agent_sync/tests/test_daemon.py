@@ -12,6 +12,7 @@ import sys
 import textwrap
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -2006,3 +2007,701 @@ class HostWakeTests(DaemonHarness):
             self.assertEqual(daemon._wake_block(runner, first, now), "host_busy")
             self.clock.advance(5 * 60)
             self.assertIsNone(daemon._wake_block(runner, retry, self.clock.time()))
+
+
+class OperatorRegistrationWiringTests(DaemonHarness):
+    """The daemon's ask-before-letter wiring:  the registering chat is asked in its own
+    channel/topic and answers there before its letter is issued (owner direction, Oct 23
+    2026).  The send is mocked at the module seam (the send itself is covered end to end in
+    test_operator_registration_ask against the fake realm);  everything in front of it - the
+    queue, the registry, the lease route, the gates - is real.
+    """
+
+    def _rows(self, **overrides):
+        row = {
+            "id": "row-1",
+            "platform": "claude",
+            "profile_scope": "default",
+            "session_id": "sess-aaaaaaaa",
+            "seat": "CLAUDE",
+            "status": "available",
+        }
+        row.update(overrides)
+        return [row]
+
+    def _registry(self, daemon):
+        """Bring the empty registry into being, the way the first registration would."""
+        db = daemon._registration_db()
+        if not os.path.exists(db):
+            registry = D.OR.SessionRegistry(db)
+            registry.close_db()
+        return db
+
+    def _ask_once(self, daemon, send_return=None):
+        with mock.patch.object(
+            D.ORASK, "send_location_question", return_value=send_return or {"status": "sent"}
+        ) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+        return send
+
+    def test_unlettered_active_chat_is_asked_once_in_its_own_topic(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+            daemon.maybe_ask_registrations(self._rows(), {})
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["channel"], "agent-sync")
+        self.assertEqual(send.call_args.kwargs["topic"], "AFC Work")
+        # The ledger row outlives every state that can resend:  the window is the
+        # entry's own 24h deadline, not the 15-minute dedupe default.
+        self.assertGreater(send.call_args.kwargs["window"], 23 * 3600)
+        pending = D.OREG.pending_entries(db)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].get("route"), {"channel": "agent-sync", "topic": "AFC Work"})
+        self.assertTrue(pending[0].get("notified_at"))
+
+    def test_a_dead_chat_lease_gives_no_route(self):
+        # A lease whose pid is gone must not route the question (review finding:
+        # cached leases need liveness checks).
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        paths = self.seat_paths("CLAUDE")
+        lease = D.L.load_lease(paths, "L1")
+        lease["pid"] = 999999937  # no such process
+        D.L.write_json(paths.lease("L1"), lease)
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 0)
+        self.assertNotIn("route", D.OREG.pending_entries(db)[0])
+
+    def test_a_chat_with_no_known_route_stays_pending_and_recovers(self):
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        # No lease names a topic for the chat:  no send, no owner DM - the entry waits.
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 0)
+        pending = D.OREG.pending_entries(db)
+        self.assertEqual(len(pending), 1)
+        self.assertNotIn("route", pending[0])
+        # The route arriving later (the chat attaches to a topic) makes the ask go out.
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(D.OREG.pending_entries(db)[0].get("route", {}).get("topic"), "AFC Work")
+
+    def test_lettered_and_stale_rows_are_not_asked(self):
+        daemon = self.daemon()
+        self._registry(daemon)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(self._rows(), {"row-1": ("A", "CLAUDE A")})
+            daemon.maybe_ask_registrations(self._rows(status="stale"), {})
+        self.assertEqual(send.call_count, 0)
+        self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
+
+    def test_a_first_run_with_no_registry_file_is_still_asked(self):
+        # A fresh host has no registry file at all:  a missing file reads as "no letters
+        # yet", not as an unavailable registry - and the wake path still never creates one.
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = daemon._registration_db()
+        self.assertFalse(os.path.exists(db))
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 1)
+        self.assertFalse(os.path.exists(db))
+        self.assertEqual(len(D.OREG.pending_entries(db)), 1)
+
+    def test_one_rows_send_failure_does_not_stop_the_batch(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        self.write_lease("L2", session_id="sess-bbbbbbbb", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        rows = [
+            {"id": "row-1", "platform": "claude", "profile_scope": "default",
+             "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available"},
+            {"id": "row-2", "platform": "claude", "profile_scope": "default",
+             "session_id": "sess-bbbbbbbb", "seat": "CLAUDE", "status": "available"},
+        ]
+        with mock.patch.object(
+            D.ORASK, "send_location_question",
+            side_effect=[RuntimeError("boom"), {"status": "sent"}],
+        ) as send:
+            daemon.maybe_ask_registrations(rows, {})
+        self.assertEqual(send.call_count, 2)
+        pending = D.OREG.pending_entries(db)
+        self.assertEqual(len(pending), 2)
+        stamped = [e for e in pending if e.get("notified_at")]
+        self.assertEqual(len(stamped), 1)
+
+    def test_evidence_comes_from_the_validated_instance_not_the_environment(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        daemon.env["AGENT_SYNC_INSTANCE"] = "server"  # contradicts the validated config
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(D.OREG.pending_entries(db)[0].get("evidence_location"), "mac")
+
+    def test_a_broken_registry_fails_closed_and_names_the_path(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        db = daemon._registration_db()
+        with open(db, "wb") as handle:
+            handle.write(b"this is not a sqlite database")
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertFalse(consumed)
+        self.assertEqual(send.call_count, 0)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("operator-registration-registry-unavailable", log)
+        self.assertIn(db, log)
+        self.assertEqual(len(D.OREG.pending_entries(db)), 1)
+
+    def test_an_unknown_delivery_reconciles_at_most_once_per_interval(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        unknown = {
+            "status": "refused",
+            "reason": "the location question delivery is unknown",
+            "delivery_status": D.OC.DELIVERY_UNKNOWN,
+        }
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=unknown) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+            # The reconciliation ran once and stamped the attempt:  a pass inside the
+            # interval skips instead of re-running the whole topic read-back.
+            daemon.maybe_ask_registrations(self._rows(), {})
+            self.assertEqual(send.call_count, 1)
+            entry = D.OREG.pending_entries(db)[0]
+            self.assertTrue(entry.get("reconciled_at"))
+            self.assertFalse(entry.get("notified_at"))
+            # Past the interval the question reconciles again.
+            data = D.OREG.load(db)
+            data["entries"][entry["entry_id"]]["reconciled_at"] = (
+                entry["reconciled_at"] - D.REGISTRATION_RECONCILE_INTERVAL - 1
+            )
+            D.OREG.save(db, data)
+            daemon.maybe_ask_registrations(self._rows(), {})
+            self.assertEqual(send.call_count, 2)
+
+    def test_lease_topics_are_read_once_per_seat_per_pass(self):
+        """A batch of unlettered rows on one seat costs one lease-directory scan."""
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        rows = self._rows()
+        second = dict(rows[0], **{"id": "row-2", "session_id": "sess-bbbbbbbb"})
+        with mock.patch.object(
+            D.ORASK, "send_location_question", return_value={"status": "sent"}
+        ), mock.patch.object(D.L, "list_lease_ids", wraps=D.L.list_lease_ids) as listed:
+            daemon.maybe_ask_registrations(rows + [second], {})
+        self.assertEqual(listed.call_count, 1)
+
+    def test_a_failed_send_is_retried_on_the_next_pass(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        with mock.patch.object(
+            D.ORASK,
+            "send_location_question",
+            # A provably-unsent failure:  retryable, never a terminal refusal.
+            return_value={
+                "status": "refused",
+                "reason": "offline",
+                "delivery_status": D.OC.DELIVERY_RETRYABLE,
+            },
+        ) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+            daemon.maybe_ask_registrations(self._rows(), {})
+        self.assertEqual(send.call_count, 2)
+        self.assertFalse(D.OREG.pending_entries(db)[0].get("notified_at"))
+
+    def _pending_entry(self, daemon):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        db = self._registry(daemon)
+        self._ask_once(daemon)
+        return D.OREG.pending_entries(db)[0]
+
+    def test_an_answer_in_the_chats_topic_registers_and_confirms_there(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertTrue(consumed)
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["channel"], "agent-sync")
+        self.assertEqual(send.call_args.kwargs["topic"], "AFC Work")
+        self.assertIn("letter A", send.call_args.kwargs["question"])
+        self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
+
+    def test_a_failed_confirmation_retries_without_a_second_registration(self):
+        """The route done set carries the mutation across a retry:  the registry write
+        never repeats and the failed confirmation is the only step retried."""
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        done = set()
+        message = {
+            "id": 42,
+            "content": "mac %s" % entry["entry_id"],
+            "sender_id": 12,
+            "client": "website",
+        }
+        with mock.patch.object(
+            D.ORASK, "send_location_question", side_effect=RuntimeError("zulip down")
+        ):
+            with self.assertRaises(RuntimeError):
+                daemon._maybe_registration_answer(
+                    message, 2000.0, channel="agent-sync", topic="AFC Work", done=done
+                )
+        # The mutation landed and is recorded with its reply;  the confirmation is not stamped.
+        self.assertTrue(
+            any(
+                isinstance(item, tuple)
+                and len(item) == 3
+                and item[0] == 42
+                and item[1] == "register-location"
+                for item in done
+            )
+        )
+        self.assertNotIn((42, "send-confirmation"), done)
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+        # kody 4366047501:  the escaping confirmation failure still leaves its outcome
+        # row - "letter minted, confirmation outstanding" is diagnosable from the log.
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("operator-registration-answer", log)
+        self.assertIn('"delivery": "raised:RuntimeError"', log)
+        # The retry:  no second answer() (the settled entry would read "ignored" and post
+        # a wrong reply) - the recorded reply goes out once and the step is stamped.
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                message, 2001.0, channel="agent-sync", topic="AFC Work", done=done
+            )
+        self.assertTrue(consumed)
+        self.assertIn((42, "send-confirmation"), done)
+        self.assertEqual(send.call_count, 1)
+        self.assertIn("letter A", send.call_args.kwargs["question"])
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual(len(rows), 1)
+
+    def test_an_answer_in_any_other_topic_is_not_consumed(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2000.0,
+                channel="agent-sync",
+                topic="Elsewhere",
+            )
+        self.assertFalse(consumed)
+        self.assertEqual(send.call_count, 0)
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+
+    def test_local_discovery_stamps_the_daemons_location_remote_discovery_does_not(self):
+        daemon = self.daemon()
+        daemon.env["AGENT_SYNC_INSTANCE"] = "mac"
+        entry = self._pending_entry(daemon)
+        self.assertEqual(entry.get("evidence_location"), "mac")
+        # The answer contradicting the local-discovery evidence is a conflict:  nothing registers.
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            consumed = daemon._maybe_registration_answer(
+                {"content": "server %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertTrue(consumed)
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+        # cursor-cloud is discovered through Cursor's authenticated Cloud Agents API,
+        # an endpoint that lists only Cursor-hosted cloud agents:  endpoint membership
+        # pins "cloud" as the entry's evidence (kody 4366047282).
+        self.write_lease(
+            "L2", seat="CURSOR", platform="cursor-cloud", session_id="sess-bbbbbbbb",
+            topics=[("agent-sync", "Cursor Cloud")],
+        )
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            daemon.maybe_ask_registrations(
+                self._rows(id="row-2", platform="cursor-cloud", session_id="sess-bbbbbbbb", seat="CURSOR"),
+                {},
+            )
+            remote_entry = [
+                e for e in D.OREG.pending_entries(daemon._registration_db())
+                if e["session_id"] == "sess-bbbbbbbb"
+            ][0]
+            self.assertEqual(remote_entry.get("evidence_location"), "cloud")
+            # The owner's answer contradicting the pinned cloud evidence is a conflict.
+            consumed = daemon._maybe_registration_answer(
+                {"content": "server %s" % remote_entry["entry_id"], "sender_id": 12, "client": "website"},
+                2000.0,
+                channel="agent-sync",
+                topic="Cursor Cloud",
+            )
+            self.assertTrue(consumed)
+            self.assertEqual(
+                D.OR.registrations_for_native_id(daemon._registration_db(), "cursor-cloud", "sess-bbbbbbbb"),
+                [],
+            )
+            # A corroborated answer mints.
+            consumed = daemon._maybe_registration_answer(
+                {"content": "cloud %s" % remote_entry["entry_id"], "sender_id": 12, "client": "website"},
+                2001.0,
+                channel="agent-sync",
+                topic="Cursor Cloud",
+            )
+        self.assertTrue(consumed)
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "cursor-cloud", "sess-bbbbbbbb")
+        self.assertEqual([row["verified_host"] for row in rows], ["cloud"])
+
+    def test_a_dm_that_is_not_an_answer_is_not_consumed(self):
+        daemon = self.daemon()
+        self.assertFalse(
+            daemon._maybe_registration_answer(
+                {"content": "thanks, no ref here"}, 2000.0, channel="agent-sync", topic="AFC Work"
+            )
+        )
+
+
+class OperatorRegistrationRouteTests(DaemonHarness):
+    """The route is the chat's ACTIVE topic, not the oldest one (review finding)."""
+
+    def _rows(self):
+        return [{
+            "id": "row-1", "platform": "claude", "profile_scope": "default",
+            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
+        }]
+
+    def test_the_route_is_the_active_topic_not_the_oldest(self):
+        daemon = self.daemon()
+        now = self.clock.time()
+        self.write_lease(
+            "L1", session_id="sess-aaaaaaaa",
+            topics=[("agent-sync", "Old Lane"), ("agent-sync", "Active Lane")],
+        )
+        paths = self.seat_paths("CLAUDE")
+        lease = D.L.load_lease(paths, "L1")
+        lease["topics"][0]["expires"] = now + 50
+        lease["topics"][1]["expires"] = now + 5000
+        D.L.write_json(paths.lease("L1"), lease)
+        self.assertEqual(
+            daemon._registration_route(self._rows()[0]),
+            {"channel": "agent-sync", "topic": "Active Lane"},
+        )
+        # A permanently attached lane is the chat's home even beside a fresher expiring one.
+        lease["topics"][1]["expires"] = None
+        D.L.write_json(paths.lease("L1"), lease)
+        self.assertEqual(
+            daemon._registration_route(self._rows()[0]),
+            {"channel": "agent-sync", "topic": "Active Lane"},
+        )
+        lease["topics"][0]["expires"] = None
+        lease["topics"][1]["expires"] = now + 5000
+        D.L.write_json(paths.lease("L1"), lease)
+        self.assertEqual(
+            daemon._registration_route(self._rows()[0]),
+            {"channel": "agent-sync", "topic": "Old Lane"},
+        )
+
+
+class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
+    """The bound topic says WHERE an answer counts;  the sender says WHO may answer
+    (the owner, or the bot of the seat the registration belongs to).  Another chat's bot,
+    or any other poster in the same topic, cannot claim this registration's location."""
+
+    def _pending_entry(self, daemon):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        db = daemon._registration_db()
+        if not os.path.exists(db):
+            registry = D.OR.SessionRegistry(db)
+            registry.close_db()
+        rows = [{
+            "id": "row-1", "platform": "claude", "profile_scope": "default",
+            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
+        }]
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            daemon.maybe_ask_registrations(rows, {})
+        return D.OREG.pending_entries(db)[0]
+
+    def _answer(self, daemon, entry, sender_id):
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            return daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": sender_id},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+
+    def test_the_chats_own_seat_bot_may_answer(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
+        self.assertTrue(self._answer(daemon, entry, 4242))
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+
+    def test_the_answerer_class_reaches_answer(self):
+        # kody 4366047282:  the registry must know WHO answered.  The owner leg maps
+        # to "owner", the seat-bot leg to "seat_bot";  mock at the module seam and
+        # assert the mapping both ways.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
+        with mock.patch.object(D.OREG, "answer", return_value={"status": "registered"}) as ans:
+            self.assertTrue(self._answer(daemon, entry, 4242))
+            self.assertEqual(ans.call_args.kwargs["answerer"], "seat_bot")
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2001.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+            self.assertTrue(consumed)
+            self.assertEqual(ans.call_args.kwargs["answerer"], "owner")
+
+    def test_a_seat_bot_answer_without_evidence_is_refused_for_the_owner(self):
+        # kody 4366047282 end to end:  no channel-authenticated evidence (mocked at
+        # the evidence seam), the seat bot's word mints nothing;  the owner's does.
+        daemon = self.daemon()
+        with mock.patch.object(D.Daemon, "_registration_evidence", return_value=""):
+            entry = self._pending_entry(daemon)
+        self.assertEqual(entry.get("evidence_location"), "")
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 4242},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertTrue(consumed)
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+        # The question stays open:  the owner's own answer still mints.
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2001.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertTrue(consumed)
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+
+    def test_another_seats_bot_may_not_answer(self):
+        # The bound bot is the ENTRY's seat bot:  a different seat's bot in the same
+        # topic is as much a stranger as any other poster (cross-seat refusal).
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
+        daemon.seats["CURSOR"] = types.SimpleNamespace(
+            me=types.SimpleNamespace(user_id=5555, bot_owner_id=12)
+        )
+        # A stub seat is not a runner:  drop it again before the harness shuts the
+        # daemon down (cleanups run last-in-first-out, so this beats the shutdown).
+        self.addCleanup(daemon.seats.pop, "CURSOR", None)
+        self.assertFalse(self._answer(daemon, entry, 5555))
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
+
+    def test_a_bot_owned_by_another_owner_may_not_answer(self):
+        # The seat-bot leg is pinned-owner-only:  a bot whose users/me names a different
+        # owner never speaks for this fleet's registrations, even with the right user id.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=999)
+        self.assertFalse(self._answer(daemon, entry, 4242))
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
+
+    def test_the_operators_own_confirmation_is_consumed_quietly(self):
+        # The confirmation names the ref and the settled location, so it parses as an
+        # answer;  the Operator's own post must be consumed without a refusal or a wake.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["OPERATOR"] = types.SimpleNamespace(
+            me=types.SimpleNamespace(user_id=7777)
+        )
+        self.addCleanup(daemon.seats.pop, "OPERATOR", None)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                {
+                    "content": "Registered:  the chat is on mac, letter A (ref %s)."
+                    % entry["entry_id"],
+                    "sender_id": 7777,
+                },
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertTrue(consumed)
+        self.assertEqual(send.call_count, 0)
+        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertNotIn("operator-registration-answer", log)
+
+    def test_another_bot_in_the_same_topic_may_not_answer(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242)
+        self.assertFalse(self._answer(daemon, entry, 9999))
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
+
+    def test_the_owner_through_an_unpinned_client_may_not_answer(self):
+        # An owner API key driving a script carries the owner's sender id but not a
+        # pinned owner client - the fleet-wide owner_of check must gate the answer.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "ZulipPython"},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertFalse(consumed)
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+
+    def test_no_pinned_owner_denies_even_the_chats_own_seat_bot(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242)
+        daemon.config.owner_user_id = 0
+        self.assertFalse(self._answer(daemon, entry, 4242))
+        self.assertFalse(self._answer(daemon, entry, 12))
+        self.assertEqual(len(D.OREG.pending_entries(daemon._registration_db())), 1)
+
+    def test_an_answer_with_no_sender_is_not_consumed(self):
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        self.assertFalse(self._answer(daemon, entry, None))
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+
+
+class OperatorRegistrationRouteFollowTests(DaemonHarness):
+    """A pending question is re-pointed by a whole-topic rename EVENT (handle_update's
+    own provenance), kept beside unrelated new attachments, and never posted to a dead
+    topic name when the topic vanishes with no rename event."""
+
+    def _rows(self):
+        return [{
+            "id": "row-1", "platform": "claude", "profile_scope": "default",
+            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
+        }]
+
+    def _registry(self, daemon):
+        db = daemon._registration_db()
+        if not os.path.exists(db):
+            registry = D.OR.SessionRegistry(db)
+            registry.close_db()
+        return db
+
+    def _ask_once(self, daemon):
+        with mock.patch.object(
+            D.ORASK, "send_location_question", return_value={"status": "sent"}
+        ) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+        return send
+
+    def _rewrite_topics(self, lease_id, topics):
+        paths = self.seat_paths("CLAUDE")
+        lease = D.L.load_lease(paths, lease_id)
+        lease["topics"] = topics
+        D.L.write_json(paths.lease(lease_id), lease)
+
+    def test_a_rename_event_repoints_the_question_and_the_answer_works(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        self._ask_once(daemon)
+        entry_id = D.OREG.pending_entries(db)[0]["entry_id"]
+        runner = daemon.seats["CLAUDE"]
+        runner.streams = {1: "agent-sync"}
+        daemon.handle_update(
+            runner,
+            {
+                "propagate_mode": "change_all",
+                "stream_id": 1,
+                "orig_subject": "AFC Work",
+                "subject": "AFC Work Renamed",
+            },
+        )
+        route = D.OREG.pending_entries(db)[0]["route"]
+        self.assertEqual(route, {"channel": "agent-sync", "topic": "AFC Work Renamed"})
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 0)  # already notified; the question moved with the topic
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry_id, "sender_id": 12, "client": "website"},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work Renamed",
+            )
+        self.assertTrue(consumed)
+        rows = D.OR.registrations_for_native_id(db, "claude", "sess-aaaaaaaa")
+        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+
+    def test_an_unrelated_new_topic_does_not_steal_the_question(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        self._ask_once(daemon)
+        now = self.clock.time()
+        self._rewrite_topics("L1", [
+            {"channel": "agent-sync", "topic": "AFC Work", "expires": None},
+            {"channel": "agent-sync", "topic": "Shiny New", "expires": now + 5000},
+        ])
+        self._ask_once(daemon)
+        route = D.OREG.pending_entries(db)[0]["route"]
+        self.assertEqual(route, {"channel": "agent-sync", "topic": "AFC Work"})
+
+    def test_a_topic_gone_without_a_rename_event_is_never_posted_to(self):
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        self._ask_once(daemon)
+        # The topic expired out of the lease and an unrelated permanent topic appeared -
+        # even one carrying the SAME expiry is not a continuation (expiry equality is
+        # not provenance);  the entry fails closed and nothing posts to the dead name.
+        self._rewrite_topics("L1", [{"channel": "agent-sync", "topic": "Elsewhere", "expires": None}])
+        send = self._ask_once(daemon)
+        self.assertEqual(send.call_count, 0)
+        entry = D.OREG.pending_entries(db)[0]
+        self.assertTrue(entry.get("route_lost"))
+        self.assertEqual(entry["route"], {"channel": "agent-sync", "topic": "AFC Work"})

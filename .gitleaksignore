@@ -49,3 +49,7 @@ a0df50e5843d698782688de322e01948d0710292:scripts/agent_sync/tests/test_mcp_extra
 # Cloudflare Access application audience tag (the public JWT aud claim, not a credential) for the
 # agents.simplewithus.com Access app, added by Echo in #844; main already carries the old host's tag.
 ef42f132ad746c13dbe89c058d9e895ef64790a8:scripts/agent-sync-mcp/wrangler.jsonc:generic-api-key:155
+# Secret-shaped test fixtures in the AFC-412 registration-question tests (#885):  made-up
+# strings that prove the send seam withholds secret-looking bodies;  never real credentials.
+7b9d9bd387538decfe9a79eebd3190d8fb096b4e:scripts/agent_sync/tests/test_operator_registration_dm.py:generic-api-key:141
+01b5657a917497809d0c83c1a9148587f2b0363f:scripts/agent_sync/tests/test_operator_registration.py:generic-api-key:195

@@ -57,6 +57,8 @@ from . import muse_bridge_mac as MBM
 from . import notes_queue as NQ
 from . import notes_wire as NW
 from . import operator_candidates as OC
+from . import operator_registration as OREG
+from . import operator_registration_ask as ORASK
 from . import operator_registry as OR
 from . import outgoing_webhook as OW
 from . import router as R
@@ -69,6 +71,8 @@ from .cli import format_time, seat_tag_for
 
 # "stream" and "subscription" keep the bot on every public channel and `streams` current (owner 2026-10-10).
 EVENT_TYPES = ["message", "update_message", "user_topic", "realm_user", "stream", "subscription"]
+# How often an unknown-delivery registration question re-runs its topic read-back.
+REGISTRATION_RECONCILE_INTERVAL = 900.0
 FLEET_ROLES = (
     300,
     400,
@@ -343,8 +347,15 @@ class SeatRunner:
                     "the credential for seat %s belongs to the bot of seat %s (users/me); a seat "
                     "holds only its own bot, so it is refused" % (self.seat, tag)
                 )
+        bot_owner = me.get("bot_owner_id")
         self.me = R.SeatIdentity(
-            self.seat, int(me["user_id"]), str(me.get("full_name") or ""), self.creds.email
+            self.seat,
+            int(me["user_id"]),
+            str(me.get("full_name") or ""),
+            self.creds.email,
+            bot_owner_id=int(bot_owner)
+            if isinstance(bot_owner, int) and not isinstance(bot_owner, bool)
+            else None,
         )
         self.daemon.join_public(self, "connect")
         self.streams.clear()
@@ -526,6 +537,12 @@ def _is_fallbackable(reason: str | None) -> bool:
 # promise, while this is the choke point every wake passes through.  A fallback runtime that cannot
 # be reached by this dispatch can never become a primary, however the config was written or edited.
 PRIMARY_RUNTIMES = ("claude", "muse")
+
+
+# Chat-catalog statuses that must NOT be asked for a location (mirror of
+# chat_catalog._row's readability rule;  "available" and future readable
+# statuses are asked).
+_REGISTRATION_SKIP_STATUSES = frozenset({"unavailable", "stale", "metadata-only"})
 
 
 class Daemon:
@@ -1662,6 +1679,12 @@ class Daemon:
         ):
             self.pause(seat=None, wakes_only=False, by="owner-dm", message_id=message["id"])
             return
+        if not c.dm and self._maybe_registration_answer(
+            message, now, channel=c.channel, topic=c.topic, done=done
+        ):
+            # A location answer is carried out here, deterministically:  it never becomes a
+            # wake for the Operator's responder to interpret.
+            return
         item = self.make_item(runner, message, c, d)
         for lease_id, klass, kind in d.lease_items:
             if ("live", lease_id) in done:
@@ -1811,6 +1834,25 @@ class Daemon:
         if runner.seat in ("GROK", "CURSOR", "CODEX"):
             self.chat_queue(runner.seat).rename(
                 old_channel, old_topic, new_channel, new_topic, self.clock.time()
+            )
+        try:
+            for moved in OREG.retarget_routes(
+                self._registration_db(),
+                seat=runner.seat,
+                old_channel=old_channel,
+                old_topic=old_topic,
+                new_channel=new_channel,
+                new_topic=new_topic,
+            ):
+                self.log.write(
+                    "operator-registration-route-follow",
+                    entry_id=moved.get("entry_id"),
+                    channel=new_channel,
+                    topic=new_topic,
+                )
+        except Exception as exc:
+            self.log.write(
+                "operator-registration-route-follow", status="error", error=type(exc).__name__
             )
         self.log.write("rename", seat=runner.seat, leases=renamed)
 
@@ -3512,6 +3554,7 @@ class Daemon:
             else:
                 rows = sorted(rows, key=relevance, reverse=True)[:24]
             labels = self.session_labels(rows)
+            self.maybe_ask_registrations(rows, labels)
             context = []
             remaining = 24000
             for row in rows:
@@ -3554,6 +3597,523 @@ class Daemon:
         except Exception as exc:
             self.log.write("chat-catalog-unavailable", error=type(exc).__name__)
             return []
+
+    def _registration_evidence(self, platform: str) -> str:
+        """The daemon's own fleet location as evidence - only for locally discovered chats.
+
+        A chat this daemon discovered from local files runs on this machine, so the
+        instance name is real evidence when it is itself a fleet location.  Genuinely
+        remote adapters (cursor-cloud discovers through Cursor's API, not local files)
+        carry no such evidence:  the chat does not run here.
+
+        cursor-cloud DOES pin "cloud" (kody 4366047282):  the adapter reads Cursor's
+        authenticated Cloud Agents API (/v1/agents), an endpoint that lists only
+        Cursor-hosted cloud agents - endpoint membership is the corroboration, since
+        a Mac- or server-local session cannot appear in it.  The listing carries no
+        per-agent runtime field;  the pin rests on that API's product semantics, and
+        a session whose real runtime ever differed surfaces through dual discovery
+        (the local adapter's own evidence) and the owner-settled conflict path.
+        """
+        if platform == "cursor-cloud":
+            return "cloud"
+        # The daemon's own instance from validated config, not the raw environment:
+        # config load already refused anything outside INSTANCES, so this cannot be
+        # empty-or-foreign while the daemon runs.
+        instance = str(getattr(self.config, "instance", "") or "").strip().lower()
+        return instance if instance in ("mac", "server") else ""
+
+    def _registration_seat_lease_map(self, seat: str) -> dict[str, list[dict[str, Any]]]:
+        """One scan of the seat's lease directory:  session id -> live topics.
+
+        maybe_ask_registrations walks every catalog row, so loading each lease once for
+        the seat replaces one directory scan plus one lease read per row with one scan
+        per seat per pass.  The first live lease naming a session wins, matching the
+        per-row scan's order.
+        """
+        found: dict[str, list[dict[str, Any]]] = {}
+        try:
+            paths = L.SeatPaths(self.root, seat)
+            now = self.clock.time()
+            for lease_id in L.list_lease_ids(paths):
+                lease = L.load_lease(paths, lease_id)
+                session_id = str(lease.get("session_id") or "")
+                if not session_id or session_id in found:
+                    continue
+                alive, _why = self.lease_alive(paths, lease)
+                if not alive:
+                    # A stale or recycled lease must not route a question to a dead or
+                    # unrelated session (same liveness discipline as the wake path).
+                    continue
+                live = []
+                for entry in lease.get("topics") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    expires = entry.get("expires")
+                    if isinstance(expires, (int, float)) and expires <= now:
+                        continue
+                    if expires is not None and not isinstance(expires, (int, float)):
+                        continue
+                    channel = str(entry.get("channel") or "").strip()
+                    topic = str(entry.get("topic") or "").strip()
+                    if channel and topic:
+                        live.append({"channel": channel, "topic": topic, "expires": expires})
+                if live:
+                    found[session_id] = live
+        except Exception:
+            pass
+        return found
+
+    def _registration_lease_topics(
+        self,
+        row: Mapping[str, Any],
+        lease_map: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """The chat's live lease topics as {channel, topic, expires};  [] when unknown.
+
+        The lease is written by the chat's own attach hook, so the topics are grounded in
+        the chat's registration of itself - never in a guess from the catalog row.  The
+        whole list (not only the picked route) feeds the queue's rename-follow logic:  a
+        whole-topic rename rewrites the lease entry in place keeping its expiry, which is
+        how a pending question tells a rename from an unrelated new attachment.
+        """
+        session_id = str(row.get("session_id") or "")
+        seat = str(row.get("seat") or "")
+        if not session_id or not seat:
+            return []
+        if lease_map is None:
+            lease_map = self._registration_seat_lease_map(seat)
+        return list(lease_map.get(session_id) or [])
+
+    def _registration_route(
+        self, row: Mapping[str, Any], topics: list[dict[str, Any]] | None = None
+    ) -> dict[str, str] | None:
+        """The chat's own Zulip channel/topic, picked from its live lease topics."""
+        if topics is None:
+            topics = self._registration_lease_topics(row)
+        if not topics:
+            return None
+        # The active topic, not the oldest:  a permanently attached lane (no expiry) is
+        # the chat's home;  among expiring attachments the one renewed most recently wins.
+        picked = sorted(
+            topics, key=lambda item: (item["expires"] is not None, -(item["expires"] or 0.0))
+        )[0]
+        return {"channel": picked["channel"], "topic": picked["topic"]}
+
+    def _seat_bot_user_id(self, seat: str) -> int | None:
+        """The Zulip user id of a seat's own bot, when that seat is connected."""
+        runner = self.seats.get(str(seat or ""))
+        me = getattr(runner, "me", None) if runner is not None else None
+        user_id = getattr(me, "user_id", None) if me is not None else None
+        if isinstance(user_id, int) and not isinstance(user_id, bool):
+            return int(user_id)
+        return None
+
+    def _seat_bot_owned_by(self, seat: str, owner: int) -> bool:
+        """A seat bot speaks for the fleet's registrations only when the pinned owner owns it."""
+        runner = self.seats.get(str(seat or ""))
+        me = getattr(runner, "me", None) if runner is not None else None
+        bot_owner = getattr(me, "bot_owner_id", None) if me is not None else None
+        return isinstance(bot_owner, int) and not isinstance(bot_owner, bool) and bot_owner == owner
+
+    def _registration_db(self) -> str:
+        db = getattr(self, "_oreg_db", None)
+        if db is None:
+            db = OR.registry_db_path(self.root, self.env)
+            self._oreg_db = db
+        return db
+
+    @staticmethod
+    def _registrations(db: str, platform: str, session_id: str) -> list[dict[str, Any]]:
+        """The registry scan for the ask/answer flow;  a MISSING file reads as empty.
+
+        First run:  nothing has ever registered, so the file does not exist yet, and the
+        registry layer fails closed on that (its wake-path rule:  never let a lookup
+        bring a registry into being).  At this boundary a missing file is the truthful
+        "no letters yet" - asking is harmless, and the answer path's register creates
+        the file.  A file that exists but cannot be read still raises
+        RegistryUnavailable:  that is a broken identity source, not an empty one.
+        """
+        if not os.path.isfile(str(db)):
+            return []
+        return OR.registrations_for_native_id(db, platform, session_id)
+
+    def maybe_ask_registrations(
+        self, rows: list[dict[str, Any]], labels: dict[str, tuple[str, str]]
+    ) -> None:
+        """Ask each unlettered active chat for its location in its own topic.
+
+        Owner direction, Oct 23 2026:  when the Operator receives a session/chat id, it asks
+        the location (mac, server, cloud) before the session letter is assigned.  This is
+        the receipt point:  the catalog surfaced the session id, the registry has no letter
+        for it, so the Operator asks.  One question per session (the queue dedupes), one topic post
+        per question (the notified stamp), and a failure here never breaks the wake that
+        found the chats - the worst case is a chat that stays unlettered, which is today.
+        """
+        try:
+            owner = int(getattr(self.config, "owner_user_id", 0) or 0)
+            # The question posts in the chat's own topic, never a DM:  owner DM permission
+            # must not gate this flow.  The owner id is still required - it is one of the
+            # two senders allowed to answer.
+            if not owner:
+                return
+            db = self._registration_db()
+            for entry in OREG.sweep(db):
+                self.log.write(
+                    "operator-registration-drop",
+                    entry_id=entry.get("entry_id"),
+                    platform=entry.get("platform"),
+                    reason=entry.get("reason"),
+                )
+            lease_maps: dict[str, dict[str, list[dict[str, Any]]]] = {}
+            for row in rows:
+                if labels.get(str(row.get("id") or ""), ("", ""))[0]:
+                    continue
+                # Ask the rows the catalog calls readable:  its vocabulary is
+                # available/stale/metadata-only/unavailable (chat_catalog._row),
+                # so skip exactly its unreadable set instead of matching one
+                # literal value - a literal "active" matched nothing the catalog
+                # produces and silently killed the flow (kody 4366047801).
+                if str(row.get("status") or "") in _REGISTRATION_SKIP_STATUSES:
+                    continue
+                platform = str(row.get("platform") or "")
+                scope = str(row.get("profile_scope") or "")
+                session_id = str(row.get("session_id") or "")
+                seat = str(row.get("seat") or "")
+                if not (platform and scope and session_id and seat):
+                    continue
+                if seat not in lease_maps:
+                    lease_maps[seat] = self._registration_seat_lease_map(seat)
+                topics = self._registration_lease_topics(row, lease_maps[seat])
+                try:
+                    out = OREG.begin(
+                        db,
+                        platform=platform,
+                        profile_scope=scope,
+                        session_id=session_id,
+                        seat=seat,
+                        requester="catalog",
+                        evidence_location=self._registration_evidence(platform),
+                        route=self._registration_route(row, topics),
+                        route_topics=topics,
+                        registrations=lambda pf, sid: self._registrations(db, pf, sid),
+                    )
+                except Exception as exc:
+                    self.log.write(
+                        "operator-registration-ask",
+                        platform=platform,
+                        status="error",
+                        error=type(exc).__name__,
+                    )
+                    continue
+                if out.get("status") not in ("ask", "pending"):
+                    continue
+                entry = out["entry"]
+                if out.get("route_change") == "lost":
+                    self.log.write(
+                        "operator-registration-route-lost",
+                        entry_id=entry.get("entry_id"),
+                        platform=platform,
+                        session_id=session_id,
+                    )
+                if entry.get("notified_at"):
+                    continue
+                if entry.get("route_lost"):
+                    # The asked topic is gone and no rename continuation matched:  do not
+                    # post into a dead topic name.  Drop the entry NOW (kody 4366047591):
+                    # the next pass asks a fresh question on the chat's current route
+                    # instead of the chat staying unasked until the 24h deadline.
+                    OREG.mark_dropped(db, entry["entry_id"], "route_lost")
+                    continue
+                route = entry.get("route")
+                if not isinstance(route, dict):
+                    # No known channel/topic for the chat:  the registration stays pending
+                    # (recoverable - a later pass fills the route once the chat's lease
+                    # names one) and the gap is logged, never routed to the owner by DM.
+                    self.log.write(
+                        "operator-registration-missing-route",
+                        entry_id=entry.get("entry_id"),
+                        platform=platform,
+                        session_id=session_id,
+                    )
+                    continue
+                reconciled = entry.get("reconciled_at")
+                if (
+                    isinstance(reconciled, (int, float))
+                    and not isinstance(reconciled, bool)
+                    and time.time() - float(reconciled) < REGISTRATION_RECONCILE_INTERVAL
+                ):
+                    # The last pass could not prove this question's delivery and already
+                    # spent its topic read-back:  reconcile at most once per interval, so
+                    # a stuck-unknown entry cannot stall the wake with a 10-page walk
+                    # every pass.
+                    continue
+                try:
+                    sent = ORASK.send_location_question(
+                        question=out["question"],
+                        entry_id=entry["entry_id"],
+                        channel=str(route["channel"]),
+                        topic=str(route["topic"]),
+                        env=self.env,
+                        home=self.home,
+                        owner_user_id=owner,
+                        # The ledger row must outlive every state that can resend:  keep
+                        # it at least until the entry's own deadline (past it the sweep
+                        # drops the entry, so no pass can post for it again) - never let
+                        # a pruned row make a landed question look never-sent.
+                        window=max(
+                            OC.DEDUPE_WINDOW,
+                            float(entry.get("deadline") or 0) - time.time() + 60,
+                        ),
+                    )
+                    if sent.get("status") == "sent":
+                        OREG.mark_notified(db, entry["entry_id"])
+                    elif sent.get("delivery_status") == OC.DELIVERY_UNKNOWN:
+                        OREG.mark_reconciled(db, entry["entry_id"])
+                    elif str(sent.get("code") or "") in OREG.TERMINAL_REFUSAL_CODES:
+                        # Terminal refusals stay terminal (kody 4366047123):  the
+                        # entry is dropped with its reason and never requeued;
+                        # retryable refusals stay unstamped for the next pass.
+                        OREG.mark_refused(
+                            db, entry["entry_id"], str(sent.get("reason") or "terminal_refusal")
+                        )
+                    sent_status = sent.get("status")
+                    sent_reason = str(sent.get("reason") or "")[:80]
+                    # The log line stays inside the row's guard:  the complete begin,
+                    # send, stamp and log sequence is isolated per row, so one row's
+                    # failure can never abort the rest of the batch.
+                    self.log.write(
+                        "operator-registration-ask",
+                        entry_id=entry.get("entry_id"),
+                        platform=platform,
+                        status=sent_status,
+                        reason=sent_reason,
+                    )
+                except Exception as exc:
+                    # One row's failure never aborts the rest of the batch:  each
+                    # question is independent, and the un-stamped entry is retried on
+                    # the next pass.
+                    self.log.write(
+                        "operator-registration-ask",
+                        entry_id=entry.get("entry_id"),
+                        platform=platform,
+                        status="error",
+                        error=type(exc).__name__,
+                    )
+                    continue
+        except Exception as exc:
+            self.log.write("operator-registration-ask", status="error", error=type(exc).__name__)
+
+    def _maybe_registration_answer(
+        self,
+        message: Mapping[str, Any],
+        now: float,
+        *,
+        channel: str,
+        topic: str,
+        done: set[Any] | None = None,
+    ) -> bool:
+        """Carry out a location answer posted in the asked chat's own topic;  True when consumed.
+
+        The question goes to the registering chat's channel/topic (the return route its own
+        lease names), so only an answer in that same topic counts:  it registers the session
+        at the answered location (operator_registration validates it and cross-checks the
+        registry) and the confirmation goes back in the same topic.  The sender must be the
+        owner or the bot of the seat the registration belongs to - the topic alone never
+        authorizes an answer.  A message that is not a parseable answer, an answer for an
+        entry with no known route, or an answer posted in any other place returns False and
+        follows its normal wake path.
+
+        The guarantee is seat-level, not exact-chat:  chats sharing a seat bot share one
+        Zulip identity, so the sender check cannot tell two chats of one seat apart.  What
+        binds the answer to the exact registration is the entry ref (one pending question
+        per session identity), and for locally discovered chats the evidence cross-check
+        rejects an answer that contradicts where discovery actually ran - so a wrong-seat
+        or same-seat sibling chat can at worst confirm the true location early, never
+        register a false one where evidence exists.
+
+        ``done`` is the route's retry ledger:  the registration mutation is recorded
+        after it runs and the confirmation send after it lands, so a route retry repeats
+        only the step that failed - never a second registry mutation, never a skipped
+        confirmation.  An exception once the mutation is recorded propagates so the
+        route's retry (not the ordinary wake path) finishes the confirmation.
+        """
+        reply_ready = False
+        out: dict[str, Any] | None = None
+        try:
+            # The cheap pure check comes first:  almost every routed message is not an
+            # answer, so the queue file is only opened for text that parses as one.
+            parsed = OREG.parse_answer(message.get("content"))
+            if parsed is None:
+                return False
+            # The Operator's own confirmation names the ref and the settled location,
+            # so it parses as an answer.  It is not one:  consume it quietly instead
+            # of refusing it and waking the seat on the daemon's own post.
+            sender_id_raw = message.get("sender_id")
+            operator_id = self._seat_bot_user_id("OPERATOR")
+            if (
+                operator_id is not None
+                and isinstance(sender_id_raw, int)
+                and not isinstance(sender_id_raw, bool)
+                and sender_id_raw == operator_id
+            ):
+                return True
+            message_id = message.get("id")
+            recorded = None
+            if done is not None and message_id is not None:
+                recorded = next(
+                    (
+                        item
+                        for item in done
+                        if isinstance(item, tuple)
+                        and len(item) == 3
+                        and item[0] == message_id
+                        and item[1] == "register-location"
+                    ),
+                    None,
+                )
+            if recorded is not None:
+                # The route retried after the mutation already landed:  never register
+                # twice (answer() would read its own settled entry as "ignored" and
+                # post a wrong reply);  complete only the confirmation, with the reply
+                # text recorded next to the mutation.  The send ledger dedupes a copy
+                # that already landed, so this posts at most one confirmation.
+                reply_ready = True
+                sent = ORASK.send_location_question(
+                    question=recorded[2],
+                    entry_id=parsed["entry_id"],
+                    channel=str(channel or ""),
+                    topic=str(topic or ""),
+                    env=self.env,
+                    home=self.home,
+                    owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
+                )
+                done.add((message_id, "send-confirmation"))
+                self.log.write(
+                    "operator-registration-answer",
+                    entry_id=parsed["entry_id"],
+                    status="confirm-retried",
+                    delivery=sent.get("status"),
+                )
+                return True
+            db = self._registration_db()
+            # Asked entries answer directly;  conflicted ones settle through the same
+            # path (operator_registration.answer re-runs every cross-check).
+            pending = OREG.answerable_entries(db)
+            if not pending:
+                return False
+            entry = next(
+                (item for item in pending if item.get("entry_id") == parsed["entry_id"]), None
+            )
+            if entry is None:
+                return False
+            route = entry.get("route")
+            if not isinstance(route, dict):
+                return False
+            if str(route.get("channel") or "").casefold() != str(channel or "").casefold():
+                return False
+            if str(route.get("topic") or "").casefold() != str(topic or "").casefold():
+                return False
+            # The topic binds WHERE an answer counts;  it does not make every poster there
+            # the chat.  Only the owner or the bot of the seat the registration belongs to
+            # may speak for the chat's location.
+            sender = message.get("sender_id")
+            owner = int(getattr(self.config, "owner_user_id", 0) or 0)
+            # No pinned owner, no answer authority at all:  the seat-bot leg exists to
+            # speak for the owner's fleet, which is meaningless until an owner is pinned.
+            allowed: set[int] = set()
+            if owner:
+                # The owner leg keeps the fleet-wide client check:  an owner API key
+                # used by a script (sender id matches, client is not a pinned owner
+                # client) must not mint a durable session letter.
+                if self.owner_of(message):
+                    allowed.add(owner)
+                # The seat-bot leg is pinned-owner-only:  the bot's own users/me says who
+                # owns it, and a bot owned by anyone else never speaks for this fleet's
+                # registrations (fail closed when the owner is unknown).
+                bot_user_id = self._seat_bot_user_id(str(entry.get("seat") or ""))
+                if bot_user_id is not None and self._seat_bot_owned_by(
+                    str(entry.get("seat") or ""), owner
+                ):
+                    allowed.add(bot_user_id)
+            if not isinstance(sender, int) or isinstance(sender, bool) or sender not in allowed:
+                self.log.write(
+                    "operator-registration-answer",
+                    entry_id=parsed["entry_id"],
+                    status="refused",
+                    reason="the sender is not the owner or the chat's own seat bot",
+                )
+                return False
+            out = OREG.answer(
+                db,
+                entry_id=parsed["entry_id"],
+                location=parsed["location"],
+                registrations=lambda pf, sid: self._registrations(db, pf, sid),
+                register=lambda **identity: OR.register_session(
+                    db, source="chat-topic-answer", issuer=OR.ISSUER_OPERATOR, **identity
+                ),
+                # Only the pinned owner's own answer attests an uncorroborated location;
+                # the seat bot's word needs discovery evidence (kody 4366047282).
+                answerer="owner" if sender == owner else "seat_bot",
+                now=now,
+            )
+            reply = OREG.answer_reply(out)
+            # Completion means the letter actually landed (kody 4366220094):  a
+            # refused or uncorroborated answer still gets its reply sent, but it must
+            # NOT close the register-location step, or the ledger would record a
+            # registration the owner never got and the open question would be lost.
+            if out.get("status") == "registered" and done is not None and message_id is not None:
+                done.add((message_id, "register-location", reply))
+            reply_ready = True
+            sent = ORASK.send_location_question(
+                question=reply,
+                entry_id=parsed["entry_id"],
+                channel=str(route["channel"]),
+                topic=str(route["topic"]),
+                env=self.env,
+                home=self.home,
+                owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
+            )
+            # Only a landed confirmation is done (kody 4366047395):  a failed or
+            # unknown delivery keeps the route step open so the pass retries the
+            # confirmation instead of recording a completion the owner never saw.
+            if sent.get("status") == "sent" and done is not None and message_id is not None:
+                done.add((message_id, "send-confirmation"))
+            self.log.write(
+                "operator-registration-answer",
+                entry_id=parsed["entry_id"],
+                status=out.get("status"),
+                delivery=sent.get("status"),
+            )
+            return True
+        except OR.RegistryUnavailable as exc:
+            # Fail closed and say so loudly:  no answer is registered while the identity
+            # source cannot be read (answer() checks before it registers, so nothing was
+            # written), and the named path makes the gap diagnosable.  Not SystemExit:
+            # a transiently locked SQLite must not kill the daemon for every seat.
+            self.log.write(
+                "operator-registration-registry-unavailable",
+                db=self._registration_db(),
+                error=str(exc)[:120],
+            )
+            return False
+        except Exception as exc:
+            if reply_ready:
+                # Audit BEFORE the raise (kody 4366047501):  an escaping confirmation
+                # failure still leaves exactly one outcome row - the fresh-answer path
+                # names the registration status, the confirm-retry path names the
+                # retry - so "letter minted, confirmation outstanding" is diagnosable.
+                self.log.write(
+                    "operator-registration-answer",
+                    entry_id=parsed["entry_id"],
+                    status=(out or {}).get("status") or "confirm-retried",
+                    delivery="raised:" + type(exc).__name__,
+                )
+                # The mutation is recorded in the route's done set:  let the route
+                # retry finish the confirmation rather than dropping the answer into
+                # the ordinary wake path with its letter already minted.
+                raise
+            self.log.write("operator-registration-answer", status="error", error=type(exc).__name__)
+            return False
 
     @staticmethod
     def may_inspect_chat(pending: W.Pending) -> bool:
