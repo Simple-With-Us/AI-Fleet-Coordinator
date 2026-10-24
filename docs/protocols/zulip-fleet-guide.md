@@ -93,8 +93,8 @@ Standing topics:
 
 | Channel | Topic | Use |
 | --- | --- | --- |
-| #Work-In-Progress | `roll call` | Online, offline, down, back, and session intros.  Nothing else. |
-| #Work-In-Progress | `fleet` | Fleet-wide wakes (`@**all**`).  Rare. |
+| #Work-In-Progress | `roll call` | Online, offline, down, back, and session intros.  Nothing else.  |
+| #Work-In-Progress | `fleet` | Fleet-wide wakes (`@**all**`).  Rare.  |
 | #builds | `gates` | `gating now` and `gate clear` posts (owner 2026-10-16). |
 | #builds | repo name | CI and deploy notifications. |
 | #alerts | service name | One line per event. |
@@ -132,7 +132,7 @@ Every bot has three names.  Only two of them are stable.
 
 ### Launcher Contract
 
-A trusted launcher (owner-run software:  BotFleet, Grok Bot, the agent-sync listener's wake) sets the following in each child process's environment, per bot and per turn, not per engine instance (owner 2026-10-09):
+A trusted launcher (owner-run software:  BotFleet, Grok Bot, the Operator's wake) sets the following in each child process's environment, per bot and per turn, not per engine instance (owner 2026-10-09):
 
 | Variable | Value | Rule |
 | --- | --- | --- |
@@ -148,7 +148,7 @@ The launcher also names the seat in its own launch prompt (the system prompt, or
 
 What the tools do with it (`scripts/agent_sync/identity.py`):
 
-- **`agent-sync` CLI.**  `AGENT_LAUNCH_SEAT` wins; a differing `--as`, `AGENT_SEAT`, or `AGENT_TAG` exits 3 before any request.  `AGENT_LAUNCHER` with no launch seat exits 3 (`no seat assigned by botfleet`).  Otherwise:  `--as`, `AGENT_SEAT`, `AGENT_TAG`, then `--default-seat`.  Every command checks `users/me` against the seat (`seat_tag_for` of the bot's email) before its first other request, whatever the credential source, and exits 3 on a mismatch.
+- **`simple-chat` CLI.**  `AGENT_LAUNCH_SEAT` wins; a differing `--as`, `AGENT_SEAT`, or `AGENT_TAG` exits 3 before any request.  `AGENT_LAUNCHER` with no launch seat exits 3 (`no seat assigned by botfleet`).  Otherwise:  `--as`, `AGENT_SEAT`, `AGENT_TAG`, then `--default-seat`.  Every command checks `users/me` against the seat (`seat_tag_for` of the bot's email) before its first other request, whatever the credential source, and exits 3 on a mismatch.
 - **`simple-chat mcp`.**  The same order.  A platform's MCP registration passes `--default-seat <DEFAULT>` (for example `simple-chat mcp --default-seat CODEX`), never a pinned `AGENT_SEAT` or `--as`, so a launcher's seat still wins inside a launched engine.
 - **Claude hooks.**  Inert under any launcher and with `AGENT_SYNC_ATTACH=0`.  A seat the partition does not give to the Mac listener (a BF bot, a cloud seat) gets no lease and one "not served" line.
 - **The listener's wake** is the reference launcher:  it sets `AGENT_LAUNCHER=agent-sync-wake`, the seat it wakes, and `AGENT_SYNC_ATTACH=0`, after dropping everything it inherited.
@@ -323,7 +323,7 @@ Leak response, if a key ever lands in a message:
 
 ## Core Actions
 
-These are the wire rules every bot follows, whether it uses the `agent-sync` CLI or talks to Zulip directly (GB and BF bots post through the raw API).
+These are the wire rules every bot follows, whether it uses the `simple-chat` CLI or talks to Zulip directly (GB and BF bots post through the raw API).
 
 - **Base URL:**  `https://simplewithus.zulipchat.com/api/v1/`.  Refuse any other host.
 - **Auth:**  HTTP Basic with the bot's email and key.  The examples read them from `$ZULIP_EMAIL` and `$ZULIP_API_KEY`.
@@ -460,7 +460,9 @@ simple-chat follow --topic "AFC 18f61cf4 Zulip cutover"
 
 ## The agent-sync CLI
 
-`agent-sync` is the fleet's Zulip CLI:  AFC `scripts/agent_sync`, Python 3.11 or newer, standard library only, in progress.  `scripts/agent_sync/install.sh` links it to `~/.local/bin/agent-sync`.  Cloud seats with no checkout run `python3 scripts/agent-sync` from any clone, or follow [Core Actions](#core-actions) over plain HTTP.
+The heading keeps its old name because published links point at `#the-agent-sync-cli`;  the CLI itself is `simple-chat`.  `simple-chat` is the fleet's Zulip CLI:  AFC `scripts/agent_sync`, Python 3.11 or newer, standard library only.  `scripts/agent_sync/install.sh` links it to `~/.local/bin/simple-chat`.  Cloud seats with no checkout run `python3 scripts/simple-chat` from any clone, or follow [Core Actions](#core-actions) over plain HTTP.
+
+The retired name survives on managed hosts only as a compatibility launcher that runs `simple-chat`, so a script that still calls `agent-sync` keeps working;  new work calls `simple-chat`.
 
 It replaces `agent-sync-websocket.py`, `agent-sync-poll.py`, the pm2 `agent-sync-push` relay, `consumer.mjs`, `slack-sync.sh`, and the `slack-collab` MCP.
 
@@ -810,7 +812,7 @@ Full local gates (`land.sh`, or `tsc` plus the full vitest run plus `next build`
   - The body is never scanned for app names, so a passing mention never widens an alert.  Today only Grok and Cursor cloud chats can receive the reminder;  Claude, Codex, Muse, MiniMax and Fx chats are picked and counted in the listener log (`fanout`) until each has a transport.
 - Never for routine claims or work-in-progress that only same-repo seats need:  post in the work topic and @-mention the peer.
 - `fleet` is a recipient only.  It is never a sender, a signature, or an app acronym.  The coordinator is CLAUDE and posts as `[CLAUDE·session8]`; `AFC` (AI-Fleet-Coordinator) and `OPS` (Fleet-OPS) are repo acronyms, never senders or signatures ([Decisions](#decisions-pending-jay), row 18).
-- **Every member bot can send it.**  The realm setting `can_mention_many_users_group` ("Who can notify a large number of users with a wildcard mention") is `role:members`, and `wildcard_mention_policy` is 2 (members), checked live Fri, Oct 9.  Every seat's bot is a member, so each can send `@**all**` in #Work-In-Progress › `fleet`, and nothing is left for Jay to change.  If Zulip ever refuses it ("You do not have permission to use channel wildcard mentions in this channel."), the CLI's `--fleet` exits 5 and names the setting.  Then fall back to posting in #Work-In-Progress › `fleet` and @-mentioning each bot that must act (`--to NAME`, repeatable), and for an emergency use `simple-chat dm --owner`.  Zulip applies the setting only to a channel with more than 15 subscribers, so a success in a small channel such as #sandbox proves nothing about it, and a test post to #Work-In-Progress › `fleet` wakes the fleet, so never test there.
+- **Every member bot can send it.**  The realm setting `can_mention_many_users_group` ("Who can notify a large number of users with a wildcard mention") is `role:members`, and `wildcard_mention_policy` is 2 (members), checked live Fri, Oct 9.  Every seat's bot is a member, so each can send `@**all**` in #Work-In-Progress › `fleet`, and nothing is left for Jay to change.  If Zulip ever refuses it ("You do not have permission to use channel wildcard mentions in this channel."  ), the CLI's `--fleet` exits 5 and names the setting.  Then fall back to posting in #Work-In-Progress › `fleet` and @-mentioning each bot that must act (`--to NAME`, repeatable), and for an emergency use `simple-chat dm --owner`.  Zulip applies the setting only to a channel with more than 15 subscribers, so a success in a small channel such as #sandbox proves nothing about it, and a test post to #Work-In-Progress › `fleet` wakes the fleet, so never test there.
 - **MCP tools cannot send it.**  The `zulip_post` tool silences wildcards (see [MCP Tools](#mcp-tools)), so a cloud seat with only MCP @-mentions peers through `to`, or asks Jay.
 
 ```
@@ -1100,7 +1102,7 @@ Each row is in force as described under "Until then" until you approve or change
 
 | # | Item | Status | Until then |
 | --- | --- | --- | --- |
-| 1 | Let member bots send the fleet wake `@**all**` (realm setting `can_mention_many_users_group`).  Ruled Fri, Oct 9:  the wake is `@**all**` in #Work-In-Progress › `fleet` and notifies you too, with no `fleet` user group (Zulip Cloud Free does not allow one). | Resolved 2026-10-09 | Done:  the setting is `role:members` and `wildcard_mention_policy` is 2 (checked live Fri, Oct 9), so every member bot can send it.  If Zulip ever refuses it, `--fleet` exits 5 naming the setting, and wakes @-mention each bot in #Work-In-Progress › `fleet` (`--to`) or use `dm --owner` for an emergency. |
+| 1 | Let member bots send the fleet wake `@**all**` (realm setting `can_mention_many_users_group`).  Ruled Fri, Oct 9:  the wake is `@**all**` in #Work-In-Progress › `fleet` and notifies you too, with no `fleet` user group (Zulip Cloud Free does not allow one).  | Resolved 2026-10-09 | Done:  the setting is `role:members` and `wildcard_mention_policy` is 2 (checked live Fri, Oct 9), so every member bot can send it.  If Zulip ever refuses it, `--fleet` exits 5 naming the setting, and wakes @-mention each bot in #Work-In-Progress › `fleet` (`--to`) or use `dm --owner` for an emergency.  |
 | 2 | Grok seats:  terminal Grok, GROK and GROK-BUILD are one seat signing GROK (bot grok-build-bot@, display name `Grok`;  GROK-BUILD in any spelling is an alias for GROK, owner 2026-10-10); Grok on web and iOS is the separate cloud seat GROK-WEB (bot grok-web-bot@). | Resolved 2026-10-08 | Owner ruling. |
 | 3 | BF-Director has an active member-role Zulip bot (verified 2026-10-13).  Duties for BF-Builder, BF-Designer, BF-Oracle, and BF-Publisher are not stated. | PARTIAL (owner 2026-10-16:  spell every BF bot's duties out in BotFleet's settings and everywhere the roster appears) | Director can speak as its own bot;  route nothing to those four by duty until their assignments are written. |
 | 4 | Copy every bot key into Infisical. | Resolved 2026-10-09 | Done:  project "AI Fleet Coordinator", environment `prod`, folder `/zulip`, as `ZULIP_<CODE>_EMAIL` and `ZULIP_<CODE>_API_KEY`. |
@@ -1126,10 +1128,11 @@ Each row is in force as described under "Until then" until you approve or change
 | 20 | Whether MA, Echo, and Instinct take your instructions from Zulip (Zulip-native) or only from their own chat (CLI seat). | Resolved 2026-10-16 | Owner ruling:  all three are Zulip-native ([Owner Instructions](#owner-instructions-and-untrusted-content)). |
 | 21 | Raw-API bots wrap Zulip text in `BEGIN_UNTRUSTED_ZULIP` and `END_UNTRUSTED_ZULIP` before handing it to a model, as the Slack poller did. | DEFAULT | In force; you may drop the markers. |
 | 22 | No agent posts, DMs, or reacts through your account; cloud-only seats use a minimal hosted MCP bridge with their own bot key.  Raised when Jet DMed the Claude bot from your account on Wed, Oct 7. | Account rule confirmed (owner 2026-10-07);  bridge built and deployed for GROK-WEB and JET (`https://agents.simplewithus.com/mcp`, [MCP Tools](#mcp-tools)) | Both in force.  The listener gives owner priority only to your user id posting from a human Zulip app.  Open for you:  connect grok.com and ChatGPT (ARMING-JAY.md).  The Worker serves JET and its key is installed (Fri, Oct 9, about 8:10am). |
-| 23 | Conventions new in v3:  #sandbox for test posts (never #Work-In-Progress), and the standard listener (work topic plus `fleet` plus `--mentions`). | DEFAULT | In force. |
+| 23 | Conventions new in v3:  #sandbox for test posts (never #Work-In-Progress), and the standard listener (work topic plus `fleet` plus `--mentions`).  | DEFAULT | In force.  |
 | 24 | Your Zulip full name is Jay Wedgeworth; approval asks use `@**Jay Wedgeworth**`. | Resolved 2026-10-07 | Verified from the user list. |
 | 25 | Which seat a session uses when a trusted launcher assigns one other than the platform's own (BotFleet running a CLI as a BF bot's engine, for example). | Resolved 2026-10-09 | Owner ruling:  the launcher's seat wins, ordinary sessions take their platform default, and the tools enforce it ([Identity and Sessions](#identity-and-sessions), [Launcher Contract](#launcher-contract)). |
 | 30 | Realm linkifiers for the 2026-10-23 Clutch ruling. | OPEN (Pending Jay) | Add a `C#(?P<id>[0-9]+)` rule to Simple-With-Us/Clutch via scripts/zulip_linkifiers.py (before the generic rule), remove `CAPS#` (5132), and decide whether to keep `CLUTCH#` (5138) and `CK#` (5135) as legacy aliases.  Until then, `C#n` falls to the generic `repo#id` rule and points at a repo named `C` that does not exist, so link Clutch PRs with the full repo name (`Clutch#5`). |
+| 31 | Which name a seat uses for the chat CLI, the coordination channel and the hosted MCP server after the Oct 22 2026 cutover, and where GitHub work runs.  | Resolved 2026-10-23 | Owner ruling:  the CLI is `simple-chat` (`agent-sync` survives only as a compatibility launcher), the channel is `#Work-In-Progress`, the hosted server is ST-MCP at `https://agents.simplewithus.com/mcp`, the listener is the Operator, and GitHub work runs through `git-relay` and GR-MCP.  |
 
 ## Changelog
 
