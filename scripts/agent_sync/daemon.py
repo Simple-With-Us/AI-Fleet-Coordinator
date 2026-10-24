@@ -2630,9 +2630,7 @@ class Daemon:
             and str(message.get("client") or "") in self.config.owner_clients
         )
 
-    def _typing_signal(
-        self, runner: SeatRunner, pending: W.Pending
-    ) -> TYPING.TypingSignal | None:
+    def _typing_signal(self, runner: SeatRunner, pending: W.Pending) -> TYPING.TypingSignal | None:
         """The seat's typing indicator for this wake, or None when the seat has it off, the
         seat is not connected, or the wake has no single conversation to type in."""
         if not runner.cfg.typing_indicator:
