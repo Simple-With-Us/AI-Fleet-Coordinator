@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import * as nodeModule from "node:module";
 import { resolveSecret, infisicalStats, _resetInfisicalForTests, InfisicalError } from "../src/infisical.js";
 import { resolveLinearPair, linearClientFromPair } from "../src/linear.js";
 import { resolveFleetlinkSeatTokens, fleetlinkClientFromSecret } from "../src/fleetlink.js";
@@ -375,7 +376,10 @@ test("personas table:  the committed table passes, and a malformed one fails sof
 
 // Loads the Worker's persona consumers in a fresh node process whose personas table is `table`:  a load
 // hook serves the fixture in place of scripts/agent_sync/mcp/gb-identities.json, so nothing on disk changes.
-// The child prints one JSON line describing what each consumer saw.
+// The child prints one JSON line describing what each consumer saw.  The hook needs node:module's
+// registerHooks, which Node has from 22.15 (and 23.5);  package.json allows Node 22.0, so on an older 22 the
+// test is skipped with that reason instead of failing (kody 4368416312).  CI runs Node 24, where it runs.
+const LOAD_HOOKS = typeof nodeModule.registerHooks === "function";
 function loadWithPersonasTable(table) {
   const src = (name) => new URL(`../src/${name}`, import.meta.url).href;
   const script = `
@@ -420,7 +424,9 @@ function loadWithPersonasTable(table) {
   return { out: JSON.parse(run.stdout.trim().split("\n").at(-1)), stderr: run.stderr };
 }
 
-test("personas table:  a malformed table still loads every module that uses it, and enables no persona (kody 4367022121)", () => {
+test("personas table:  a malformed table still loads every module that uses it, and enables no persona (kody 4367022121)", {
+  skip: LOAD_HOOKS ? false : "needs node:module registerHooks (Node 22.15 or later)",
+}, () => {
   // The control proves the hook takes effect:  a one-persona table gives exactly that persona everywhere.
   const control = loadWithPersonasTable({ enabled: ["GB-FIXER"] });
   assert.equal(control.out.error, undefined, control.out.error);

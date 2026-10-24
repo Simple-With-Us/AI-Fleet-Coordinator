@@ -388,6 +388,54 @@ class TestApply(Base):
         self.assertIn("INFISICAL_AUTOMATION_CLIENT_ID", err.getvalue())
         self.assertIn("timed out", err.getvalue())
 
+    def test_fleet_secrets_own_exit_124_is_a_timeout(self):
+        # kody 4368415894:  fleet-secrets' own 124 (its Linux entry point's login
+        # timeout) exits 124 too, not as a generic "exit 124" failure.
+        seeded(self.fake)
+        sws, spath, sname, _dpath, _dname = psf.MAPPING[0]
+        self.fake.fail[("read", (sws, spath, sname))] = 124
+        code, out = self.run_main("--apply")
+        self.assertEqual(code, psf.TIMED_OUT)
+        self.assertIn("fleet-secrets get timed out, reading the source", out)
+        self.assertNotIn("exit 124", out)
+        self.assertEqual(self.fake.upserts, [])
+        self.assertNotIn("VALUE-", out)
+
+    def test_login_failure_stops_names_only_before_any_copy(self):
+        # kody 4368415797:  a refused, oversized, malformed or unreachable login
+        # stops with a names-only STOP line and exit 1, never a traceback.
+        seeded(self.fake)
+
+        def refused(url):
+            self.fake._err(url, 401, "leak VALUE-x")
+
+        def unreachable(url):
+            raise urllib.error.URLError("unreachable")
+
+        answers = [
+            ("was refused (HTTP 401)", refused),
+            ("failed (ResponseLimitError)", lambda url: io.BytesIO(b"x" * (psf.MAX_RESPONSE_BYTES + 1))),
+            ("failed (ValueError)", lambda url: io.BytesIO(b"{}")),
+            ("failed (URLError)", unreachable),
+        ]
+        for expected, answer in answers:
+            with self.subTest(expected):
+
+                def login_fails(request, timeout=35, answer=answer):
+                    if request.full_url.endswith("/auth/universal-auth/login"):
+                        return answer(request.full_url)
+                    return self.fake.open(request, timeout)
+
+                psf.urlopen = login_fails
+                code, out = self.run_main("--apply")
+                self.assertEqual(code, 1)
+                self.assertIn(f"STOP before the first copy: the Infisical login {expected}.  Nothing was copied.", out)
+                self.assertNotIn("Traceback", out)
+                self.assertNotIn("VALUE-", out)
+                self.assertNotIn("leak", out)
+                self.assertEqual(self.fake.upserts, [])
+                self.assertEqual(self.fake.reads, [], "no value is read before the login succeeds")
+
     def test_terminal_messages_use_two_spaces_between_sentences(self):
         # Kody issue comment 6383398733:  plain-text output takes two ASCII spaces.
         seeded(self.fake)

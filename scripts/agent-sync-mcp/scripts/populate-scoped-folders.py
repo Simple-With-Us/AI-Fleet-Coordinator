@@ -467,7 +467,23 @@ def main():
         return
     if not check_read_tools_scope():
         sys.exit(1)
-    token = login()
+    # A failed login stops visibly, names only, before any copy (kody 4368415797):
+    # never a traceback.  The handoff's own exits (124, 127) are SystemExit and
+    # pass through unchanged.
+    try:
+        token = login()
+    except urllib.error.HTTPError as e:
+        print(
+            f"STOP before the first copy: the Infisical login was refused (HTTP {e.code}).  "
+            "Nothing was copied."
+        )
+        sys.exit(1)
+    except Exception as e:  # noqa: BLE001 - any login failure stops visibly before any copy
+        print(
+            f"STOP before the first copy: the Infisical login failed ({type(e).__name__}).  "
+            "Nothing was copied."
+        )
+        sys.exit(1)
     done = skipped = 0
     for sws, spath, sname, dpath, dname in MAPPING:
         reading = f"source {'AFC' if sws == AFC else 'Fleet-OPS'} {spath.rstrip('/')}/{sname}"
@@ -501,7 +517,9 @@ def main():
         except ReadError as e:
             value = existing = None
             missing_tool = e.code == MISSING_EXECUTABLE
-            timed_out = e.code == "timeout"
+            # Our own 90-second limit, or fleet-secrets' own 124 (its Linux entry
+            # point's login timeout):  every timeout exits 124 (kody 4368415894).
+            timed_out = e.code in ("timeout", TIMED_OUT)
             if missing_tool:
                 what, status = "is not installed", MISSING_EXECUTABLE
             elif timed_out:
