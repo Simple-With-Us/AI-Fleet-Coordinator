@@ -141,16 +141,18 @@ def fleet_ops_project() -> str:
     return value
 
 
-def seat_entry(seat: str) -> tuple[str, str, str, str, str]:
+def seat_entry(seat: str, *, resolve_project: bool = True) -> tuple[str | None, str, str, str, str]:
     """(project, email name, key name, Worker secret name, email var) for a seat.
     Legacy seats carry a 3-tuple prefix and derive the AFC project + names; the
     Fleet-OPS seats (CODEX, MA) carry the explicit 5-tuple, and their None
-    project is resolved at call time by fleet_ops_project()."""
+    project is resolved at call time by fleet_ops_project().  With
+    resolve_project=False that project stays None, for a caller that never
+    reads Infisical (the --delete kill switch)."""
     entry = SEATS[seat]
     if len(entry) == 5:
         project, email_name, key_name, secret_name, email_var = entry
         return (
-            fleet_ops_project() if project is None else project,
+            fleet_ops_project() if project is None and resolve_project else project,
             email_name,
             key_name,
             secret_name,
@@ -323,7 +325,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    project, email_name, key_name, secret_name, email_var = seat_entry(args.seat)
+    # The kill switch needs only the Worker secret name and never reads
+    # Infisical, so the Fleet-OPS project id is resolved after it:  a malformed
+    # INFISICAL_FLEET_OPS_PROJECT_ID or id file never blocks removing a key.
+    _, email_name, key_name, secret_name, email_var = seat_entry(args.seat, resolve_project=False)
     vars_ = wrangler_vars()
     hosted = [s.strip() for s in str(vars_.get("HOSTED_SEATS", "")).split(",") if s.strip()]
 
@@ -332,6 +337,8 @@ def main() -> int:
         if not args.apply:
             return 0
         return wrangler(["secret", "delete", secret_name], "y\n", "")
+
+    project = seat_entry(args.seat)[0]
 
     if args.seat not in hosted:
         fail(

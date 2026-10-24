@@ -108,6 +108,26 @@ test("install_seat_key seat_entry: CODEX and MA resolve the Fleet-OPS project at
   }
 });
 
+test("install_seat_key --delete (the kill switch) never resolves the Fleet-OPS project id, so a malformed one cannot block it (kody 4368792106)", () => {
+  const home = mkdtempSync(path.join(tmpdir(), "codex-seat-home-"));
+  const run = (args) =>
+    execFileSync("python3", ["-I", path.join(ROOT, "install_seat_key.py"), ...args], {
+      env: { ...process.env, HOME: home, INFISICAL_FLEET_OPS_PROJECT_ID: "zz-typo-zz" },
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  try {
+    // A dry run (no --apply) writes nothing and calls no wrangler.
+    assert.match(run(["CODEX", "--delete"]), /Would remove Worker secret ZULIP_KEY_CODEX\./);
+    assert.match(run(["MA", "--delete"]), /Would remove Worker secret ZULIP_KEY_MA\./);
+    // The install path, which reads Infisical, still refuses the malformed id
+    // before any other check, and never echoes it.
+    assert.throws(() => run(["CODEX"]), (err) => /is not a UUID/.test(err.stderr) && !err.stderr.includes("zz-typo-zz"));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("install_seat_key refuses malformed Infisical responses instead of reading partial data (kody 4363264042)", () => {
   // Each case is (login response, secrets response).  Every secrets list also
   // holds both requested secrets (E and K), so a case is refused only by the
