@@ -4003,7 +4003,10 @@ class Daemon:
                 home=self.home,
                 owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
             )
-            if done is not None and message_id is not None:
+            # Only a landed confirmation is done (kody 4366047395):  a failed or
+            # unknown delivery keeps the route step open so the pass retries the
+            # confirmation instead of recording a completion the owner never saw.
+            if sent.get("status") == "sent" and done is not None and message_id is not None:
                 done.add((message_id, "send-confirmation"))
             self.log.write(
                 "operator-registration-answer",
