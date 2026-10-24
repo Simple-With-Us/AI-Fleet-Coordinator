@@ -727,6 +727,29 @@ def mark_refused(registry_db: str, entry_id: str, reason: str, *, now: float | N
         return True
 
 
+def mark_dropped(registry_db: str, entry_id: str, reason: str, *, now: float | None = None) -> bool:
+    """Drop a live asked entry whose route is lost;  returns False when nothing was live.
+
+    Distinct from mark_refused:  a lost route is not a refusal - the chat's topic went
+    away, so the question in it can never be answered there.  Dropping now (kody
+    4366047591) lets the next pass begin a fresh question on the chat's current route
+    instead of staying silent until the 24h deadline;  a rename that later proves the
+    continuation is unnecessary because the fresh question already lands on the renamed
+    topic.
+    """
+    now = time.time() if now is None else float(now)
+    with L.locked(queue_path(registry_db)):
+        data = load(registry_db)
+        entry = data["entries"].get(str(entry_id or ""))
+        if not isinstance(entry, dict) or entry.get("state") != STATE_ASKED:
+            return False
+        entry["state"] = STATE_DROPPED
+        entry["dropped_at"] = round(now, 3)
+        entry["reason"] = str(reason or REASON_NO_REPLY)[:80]
+        save(registry_db, data)
+        return True
+
+
 def mark_reconciled(registry_db: str, entry_id: str, *, now: float | None = None) -> bool:
     """Stamp the last delivery-reconciliation attempt on a live asked entry.
 

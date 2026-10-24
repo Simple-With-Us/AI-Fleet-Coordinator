@@ -624,5 +624,25 @@ class QueueValidationAndPruningTests(unittest.TestCase):
         self.assertIn("reg-cccccccccccc", kept)
 
 
+    def test_a_route_lost_entry_drops_now_and_is_not_answerable(self):
+        # kody 4366047591:  a lost route must not sit silently until the 24h deadline -
+        # the dropped entry leaves the answerable set so the next pass asks fresh.
+        now = time.time()
+        entries = {
+            "reg-0123456789ab": self._entry(
+                state=OREG.STATE_ASKED, asked_at=now - 100, deadline=now + 80000, route_lost=True
+            ),
+        }
+        self._write_queue(entries)
+        self.assertTrue(OREG.mark_dropped(self.db, "reg-0123456789ab", "route_lost", now=now))
+        kept = OREG.load(self.db)["entries"]["reg-0123456789ab"]
+        self.assertEqual(kept["state"], OREG.STATE_DROPPED)
+        self.assertEqual(kept["reason"], "route_lost")
+        self.assertEqual(kept["dropped_at"], round(now, 3))
+        self.assertEqual(OREG.answerable_entries(self.db), [])
+        # Not live twice:  a second drop is a no-op.
+        self.assertFalse(OREG.mark_dropped(self.db, "reg-0123456789ab", "route_lost", now=now + 1))
+
+
 if __name__ == "__main__":
     unittest.main()

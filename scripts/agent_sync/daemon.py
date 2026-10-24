@@ -3766,8 +3766,10 @@ class Daemon:
                     continue
                 if entry.get("route_lost"):
                     # The asked topic is gone and no rename continuation matched:  do not
-                    # post into a dead topic name.  The sweep drops the entry and a fresh
-                    # question is asked on the then-current route.
+                    # post into a dead topic name.  Drop the entry NOW (kody 4366047591):
+                    # the next pass asks a fresh question on the chat's current route
+                    # instead of the chat staying unasked until the 24h deadline.
+                    OREG.mark_dropped(db, entry["entry_id"], "route_lost")
                     continue
                 route = entry.get("route")
                 if not isinstance(route, dict):
