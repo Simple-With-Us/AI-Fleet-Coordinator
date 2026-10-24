@@ -658,6 +658,31 @@ class OpenCodeTests(World):
         again, action = T.opencode_merge(new, self.paths)
         self.assertEqual((action, again), ("unchanged", new))
 
+    def test_a_plugin_path_from_an_older_stable_root_is_replaced_not_appended(self) -> None:
+        stale = [
+            "/tmp/seat-a/apps/lane-tools/opencode-plugin",
+            "/tmp/seat-b/apps/lane-tools/opencode-plugin/index.ts",
+            "/opt/fleet/apps/lane-tools/opencode-plugin/fleet-lane-guard.ts",
+        ]
+        for entry in stale:
+            with self.subTest(entry=entry):
+                doc = {"plugins": [entry, "opencode-mobile@latest"]}
+                new, action = T.opencode_merge(doc, self.paths)
+                self.assertEqual(action, "updated")
+                self.assertEqual(
+                    new["plugins"], [self.paths.opencode_plugin_dir, "opencode-mobile@latest"]
+                )
+                self.assertEqual(T.opencode_merge(new, self.paths)[1], "unchanged")
+
+    def test_a_custom_stable_dir_keeps_its_own_legacy_plugin_files(self) -> None:
+        paths = T.make_paths(str(self.home), stable_dir=str(self.home / "apps" / "my-tools"))
+        for name in ("index.ts", "fleet-lane-guard.ts"):
+            with self.subTest(name=name):
+                legacy = os.path.join(paths.stable, "opencode-plugin", name)
+                new, action = T.opencode_merge({"plugins": [legacy, "opencode-mobile@latest"]}, paths)
+                self.assertEqual(action, "updated")
+                self.assertEqual(new["plugins"], [paths.opencode_plugin_dir, "opencode-mobile@latest"])
+
     def test_another_tools_opencode_plugin_directory_is_not_hijacked(self) -> None:
         doc = {"plugins": ["/opt/their-tool/opencode-plugin", "opencode-mobile@latest"]}
         new, action = T.opencode_merge(doc, self.paths)

@@ -9,11 +9,11 @@ description: >-
 > **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER, GB-ENGINEER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
 
-The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hosted server) lives in `docs/protocols/agent-sync-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
+The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hosted server) lives in `docs/protocols/agent-sync-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
 
 ## Where to Read It
 
-- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
+- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `GitHub Tools: git-relay and GR-MCP`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
 - **CLI.**  `simple-chat guide [SECTION]`  (`agent-sync guide` still works through the compatibility launcher).
 - **Web.**  https://fleetlink.online/agent-sync-tools-guide/ for an agent with no MCP connection yet.
 - **Repo.**  `docs/protocols/agent-sync-tools-guide.md`, with the design in `docs/protocols/per-call-identity.md`.

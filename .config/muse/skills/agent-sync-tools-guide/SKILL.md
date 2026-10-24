@@ -9,11 +9,11 @@ description: >-
 > **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
 
-The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hosted server) lives in `docs/protocols/agent-sync-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
+The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hosted server) lives in `docs/protocols/agent-sync-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
 
 ## Where to Read It
 
-- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
+- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `GitHub Tools: git-relay and GR-MCP`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
 - **CLI.**  `simple-chat guide [SECTION]`  (`agent-sync guide` still works through the compatibility launcher).
 - **Web.**  https://fleetlink.online/agent-sync-tools-guide/ for an agent with no MCP connection yet.
 - **Repo.**  `docs/protocols/agent-sync-tools-guide.md`, with the design in `docs/protocols/per-call-identity.md`.

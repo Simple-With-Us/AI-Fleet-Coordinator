@@ -9,11 +9,11 @@ description: >-
 > **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
 
-The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hosted server) lives in `docs/protocols/agent-sync-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
+The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hosted server) lives in `docs/protocols/agent-sync-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
 
 ## Where to Read It
 
-- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
+- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `GitHub Tools: git-relay and GR-MCP`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
 - **CLI.**  `simple-chat guide [SECTION]`  (`agent-sync guide` still works through the compatibility launcher).
 - **Web.**  https://fleetlink.online/agent-sync-tools-guide/ for an agent with no MCP connection yet.
 - **Repo.**  `docs/protocols/agent-sync-tools-guide.md`, with the design in `docs/protocols/per-call-identity.md`.

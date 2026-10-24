@@ -243,6 +243,7 @@ class SeatConfig:
         fallback: str | None = None,
         fallback_uncontained_ok: bool = False,
         muse_bridge: bool = False,
+        typing_indicator: bool = False,
         config_problems: list[str] | None = None,
     ) -> None:
         self.seat = seat
@@ -282,6 +283,11 @@ class SeatConfig:
         # anyway;  its wake was downgraded to inbox, and status shows the seat red until they are fixed.
         self.config_problems: list[str] = list(config_problems or [])
         self.route_enabled = route_enabled  # the per-seat kill switch for wake route suggestions
+        # The per-seat switch for the typing indicator (AFC-515).  Off by default:  a seat that
+        # shows "is typing" while it thinks changes what every other seat and the owner sees in
+        # the conversation, so each seat turns it on for itself.  The indicator is cosmetic and
+        # never changes whether the seat answers.
+        self.typing_indicator = typing_indicator
         self.held_back: dict[str, Any] = (
             held_back if held_back is not None else held_back_defaults(wake)
         )
@@ -889,6 +895,10 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(muse_bridge, bool):
             wake_problems.append("seat.%s.muse_bridge must be true or false" % seat_name)
             muse_bridge = False
+        typing_indicator = section.get("typing_indicator", False)
+        if not isinstance(typing_indicator, bool):
+            wake_problems.append("seat.%s.typing_indicator must be true or false" % seat_name)
+            typing_indicator = False
         creds = section.get("creds", "file")
         if creds not in ("file", "infisical", "env"):
             problems.append(
@@ -1102,6 +1112,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             fallback=fallback,
             fallback_uncontained_ok=uncontained,
             muse_bridge=muse_bridge,
+            typing_indicator=typing_indicator,
             config_problems=wake_problems,
         )
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg

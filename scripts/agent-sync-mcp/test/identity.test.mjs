@@ -11,8 +11,8 @@ import path from "node:path";
 import {
   IdentityRouter, allowedIdentities, toolListFor, GB_IDENTITIES, RENAMED_TOOLS, SHARED_IDENTITY_SEATS, canonicalIdentity,
 } from "../src/delegated-identities.js";
-import { HOSTED_TOOL_LIST, HOSTED_READ_TOOLS, HOSTED_WRITE_TOOLS } from "../src/hosted-tools.js";
-import { KNOWN_SEATS, GATE_LOG_NAME } from "../src/config.js";
+import { HOSTED_TOOL_LIST, HOSTED_READ_TOOLS, HOSTED_WRITE_TOOLS, UnknownTool } from "../src/hosted-tools.js";
+import { EVENTS_ONLY_SEATS, KNOWN_SEATS, GATE_LOG_NAME } from "../src/config.js";
 import { gate } from "../src/gate.js";
 import { okResult, ERROR_META_KEY } from "../src/contract.js";
 import { ROOT } from "./helpers.mjs";
@@ -94,6 +94,12 @@ test("row 3:  every other grant acts as exactly its own seat;  a persona or a pe
   for (const seat of OTHER_SEATS) {
     assert.deepEqual([...allowedIdentities(seat)], [seat], seat);
     const { r, caller, created } = router(seat);
+    if (EVENTS_ONLY_SEATS.includes(seat)) {
+      await assert.rejects(r.call("zulip_post", { topic: "t", text: "x", identity: seat.toLowerCase() }), UnknownTool);
+      assert.deepEqual(created, [], "no other identity was ever built");
+      assert.deepEqual(caller.calls, []);
+      continue;
+    }
     for (const claimed of [GB_IDENTITIES[0], ...SHARED_IDENTITY_SEATS]) {
       const error = errorOf(await r.call("zulip_post", { topic: "t", text: "x", identity: claimed }));
       assert.equal(error.code, "identity_not_allowed", `${seat} as ${claimed}`);
@@ -122,6 +128,13 @@ test("row 4:  a persona that GB_IDENTITIES leaves out is in no set", () => {
 test("row 5:  a write without identity is refused with identity_required;  a read without it uses the default", async () => {
   for (const seat of KNOWN_SEATS) {
     const { r, caller } = router(seat);
+    if (EVENTS_ONLY_SEATS.includes(seat)) {
+      for (const name of [...HOSTED_WRITE_TOOLS, "whoami"]) {
+        await assert.rejects(r.call(name, {}), UnknownTool, `${seat} ${name}`);
+      }
+      assert.deepEqual(caller.calls, []);
+      continue;
+    }
     for (const name of HOSTED_WRITE_TOOLS) {
       const error = errorOf(await r.call(name, {}));
       assert.equal(error.code, "identity_required", `${seat} ${name}`);
@@ -178,8 +191,14 @@ test("the grant's scope and pause govern a call made as another identity", async
 test("row 6:  each grant's tools/list offers exactly its own set, required on writes, and identities after whoami", () => {
   for (const seat of KNOWN_SEATS) {
     const { list } = toolListFor(seat, { whatsappEnabled: true });
+    if (EVENTS_ONLY_SEATS.includes(seat)) {
+      assert.deepEqual(list, [], `${seat} is wake-only:  it advertises no tools`);
+      continue;
+    }
     assert.deepEqual(list.slice(0, 3).map((t) => t.name), ["whoami", "identities", "guide"]);
-    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET" ? 0 : 1));
+    // The whatsapp tools ride with the full Jet login (JET-CHAT);  every other seat
+    // has them withheld, so only JET-CHAT advertises the complete catalog.
+    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET-CHAT" ? 0 : 1));
     for (const tool of list) {
       const properties = tool.inputSchema.properties ?? {};
       if (tool.name === "identities") {
@@ -193,9 +212,11 @@ test("row 6:  each grant's tools/list offers exactly its own set, required on wr
 });
 
 test("every hosted tool is classified as exactly one of read or write", () => {
-  const names = toolListFor("JET", { whatsappEnabled: true }).list.map((t) => t.name);
+  // JET is wake-only;  JET-CHAT serves the full set (including the whatsapp
+  // tools on the full Jet login) and the classification covers the whole catalog.
+  const names = toolListFor("JET-CHAT", { whatsappEnabled: true }).list.map((t) => t.name);
   for (const name of names) assert.notEqual(HOSTED_READ_TOOLS.has(name), HOSTED_WRITE_TOOLS.has(name), name);
-  assert.deepEqual(sorted([...HOSTED_READ_TOOLS, ...HOSTED_WRITE_TOOLS]), sorted(names));
+  assert.deepEqual(sorted([...HOSTED_READ_TOOLS, ...HOSTED_WRITE_TOOLS]), sorted([...HOSTED_TOOL_LIST.map((t) => t.name), "identities", "guide"]));
 });
 
 // ---------------------------------------------------------------- audit (row 7)
@@ -203,6 +224,11 @@ test("every hosted tool is classified as exactly one of read or write", () => {
 test("row 7:  refusal rows carry the grant's own seat and the claimed identity, never a hard-coded CURSOR", async () => {
   for (const seat of KNOWN_SEATS) {
     const { r, caller } = router(seat);
+    if (EVENTS_ONLY_SEATS.includes(seat)) {
+      await assert.rejects(r.call("zulip_post", { topic: "t", text: "x" }), UnknownTool);
+      assert.deepEqual(caller.audits.map((row) => [row.seat, row.authenticated_seat, row.error_code]), [[seat, seat, "unknown_tool"]]);
+      continue;
+    }
     await r.call("zulip_post", { topic: "t", text: "x" });
     await r.call("zulip_post", { topic: "t", text: "x", identity: "SENTRY" });
     await r.call("post", {});
@@ -219,8 +245,8 @@ test("row 7:  refusal rows carry the grant's own seat and the claimed identity, 
 // ---------------------------------------------------------------- old names
 
 test("a removed name is refused with unknown_tool naming its replacement;  an unknown name stays a protocol error", async () => {
-  const { r, caller } = router("JET");
-  const names = new Set(toolListFor("JET", { whatsappEnabled: true }).list.map((t) => t.name));
+  const { r, caller } = router("JET-CHAT");
+  const names = new Set(toolListFor("JET-CHAT", { whatsappEnabled: true }).list.map((t) => t.name));
   // The replacement must name a real tool.  The hosted server serves only the read-only
   // eavesdropper_* tools, so eavesdropper_ack (stdio-only, like eavesdropper_ack before the rename)
   // is a real name that this transport never served;  the old name is still refused here.
@@ -244,7 +270,7 @@ test("shared fixtures:  renamed and identity cases", async () => {
   const cases = FIXTURES.filter((c) => ["renamed", "identity"].includes(c.kind));
   assert.ok(cases.length >= 4);
   for (const c of cases) {
-    const { r } = router("JET");
+    const { r } = router("JET-CHAT");
     const result = await r.call(c.tool, c.arguments ?? {});
     if (c.expect === "ok") {
       assert.ok(!result.isError, c.case);

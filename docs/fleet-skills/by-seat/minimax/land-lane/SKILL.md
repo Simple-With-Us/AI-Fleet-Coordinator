@@ -5,7 +5,7 @@ description: Land a MiniMax feature branch to main across the fleet — seat wor
 
 # Land a feature branch (MM)
 
-> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mm-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MM_ZULIP_EMAIL`, `MM_ZULIP_KEY`, `MM_ZULIP_SITE`).  Session tag `[MM·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mm-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MM_ZULIP_EMAIL`, `MM_ZULIP_KEY`, `MM_ZULIP_SITE`).  Session tag `[MM·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (MiniMax).** MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
@@ -77,7 +77,7 @@ gh pr create --fill
 | Personal-Site | CI `verify` is file-existence + About-copy grep.  `site/` is the TanStack Start source (README).  `AGENTS.md` may still say "static snapshot" — believe README + the tree.  Preserve `Earlier work included` and the Doximity `/profiles/…/view` URL or the daily mirror reverts them. |
 | AFC | No app test gate.  `python3 scripts/check-fleet-registry.py` if you touched registries. |
 
-CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Progress` then tag.  Consumers pin the exact tag.
+CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Progress` then tag.  Consumers pin the exact tag.
 
 `STATUS.md` / `PLAN.md` (and the archived `docs/EFFORT-LOG.md`) often carry `merge=union` in `.gitattributes`.  Additive edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
 

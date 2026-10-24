@@ -5,7 +5,7 @@ description: Finish a Fx work unit — the Linear issue, the PR link, Zulip, App
 
 # Closeout (FX)
 
-> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Lanes `~/apps/lanes/<Repo>/fx-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`FX_ZULIP_EMAIL`, `FX_ZULIP_KEY`, `FX_ZULIP_SITE`).  Session tag `[FX·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `FX`.**  Chat tag `[FX·session8]`.  Notes `Fx`.  Branches `fx/`.  Lanes `~/apps/lanes/<Repo>/fx-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `fx-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`FX_ZULIP_EMAIL`, `FX_ZULIP_KEY`, `FX_ZULIP_SITE`).  Session tag `[FX·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (fx).** Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
 
@@ -47,6 +47,8 @@ There is no effort log to update and nothing for writeback to copy.  The effort 
 ## 3. The PR
 
 The PR body names the issue (`Fixes <ID>` or `Refs <ID>`), and the branch is `<seat>/<id>-<slug>`.  Say in the closeout post which of the two you used.
+
+Opening, editing, replying to, resolving and merging a PR all have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the interim `gh` and shell path is still the one that works, until the owner decides the cutover.
 
 ## 4. Zulip
 

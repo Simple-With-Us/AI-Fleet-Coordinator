@@ -9,11 +9,11 @@ description: >-
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
 
-The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hosted server) lives in `docs/protocols/agent-sync-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
+The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hosted server) lives in `docs/protocols/agent-sync-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
 
 ## Where to Read It
 
-- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
+- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `GitHub Tools: git-relay and GR-MCP`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
 - **CLI.**  `simple-chat guide [SECTION]`  (`agent-sync guide` still works through the compatibility launcher).
 - **Web.**  https://fleetlink.online/agent-sync-tools-guide/ for an agent with no MCP connection yet.
 - **Repo.**  `docs/protocols/agent-sync-tools-guide.md`, with the design in `docs/protocols/per-call-identity.md`.
