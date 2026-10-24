@@ -39,7 +39,9 @@ class LoopProjectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "listener.toml"
             path.write_text("[daemon]\nowner_user_id = 12\n")
+            before = path.stat()
             with mock.patch.object(P.sys, "argv", ["projection", "--config", str(path), "--project-id", "p", "--apply"]), mock.patch.object(P.sys, "stdin", io.StringIO(json.dumps(row))), mock.patch.object(P.os, "fsync", wraps=P.os.fsync) as sync, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(P.main(), 0)
             self.assertEqual(sync.call_count, 2)
+            self.assertEqual((path.stat().st_uid, path.stat().st_gid), (before.st_uid, before.st_gid))
             self.assertIn("wake_loop_prevention = false", path.read_text())

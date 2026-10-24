@@ -91,10 +91,17 @@ def main() -> int:
     if args.apply and old != new:
         # Same-directory atomic rename, preserving the original permissions and config verbatim
         # except this single typed setting. No secret value is written to the config or audit.
+        original = path.stat()
         fd, tmp = tempfile.mkstemp(prefix=".loop-projection-", dir=path.parent)
         try:
-            os.fchmod(fd, stat.S_IMODE(path.stat().st_mode))
             with os.fdopen(fd, "w") as f:
+                os.fchmod(f.fileno(), stat.S_IMODE(original.st_mode))
+                current = os.fstat(f.fileno())
+                if (current.st_uid, current.st_gid) != (original.st_uid, original.st_gid):
+                    os.fchown(f.fileno(), original.st_uid, original.st_gid)
+                current = os.fstat(f.fileno())
+                if (current.st_uid, current.st_gid) != (original.st_uid, original.st_gid):
+                    raise ValueError("config ownership could not be preserved")
                 f.write(new)
                 f.flush()
                 os.fsync(f.fileno())
@@ -131,7 +138,12 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (ValueError, OSError, json.JSONDecodeError) as exc:
-        # Do not print input, full config or provider errors.
-        print("projection refused: " + type(exc).__name__, file=sys.stderr)
+    except json.JSONDecodeError:
+        print("projection refused: invalid Infisical source JSON", file=sys.stderr)
+        raise SystemExit(2)
+    except OSError:
+        print("projection refused: config file read/write unavailable", file=sys.stderr)
+        raise SystemExit(2)
+    except ValueError:
+        print("projection refused: config or Infisical source invalid", file=sys.stderr)
         raise SystemExit(2)
