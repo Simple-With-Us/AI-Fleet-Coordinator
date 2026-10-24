@@ -226,14 +226,19 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
 3. **Infisical**: `ZULIP_RELAY_EMAIL` and `ZULIP_RELAY_API_KEY` in prod `/zulip`, where the
    fleet keeps every Zulip bot's credentials, and `LINEAR_RELAY_TOKEN` in a path of Jay's choice.
 4. **Coolify**: after the PR merges, a second process or service from the same image, with the
-   environment above, a persistent volume for the ledger, and restart always.  First run with
-   `LINEAR_RELAY_DRY_RUN=1`, watch the log, then unset it.  The image's Infisical loader
-   (`scripts/agent_sync/server/infisical_env.py`) copies only the names on its allow-list, and the
-   relay's three are not on it, so the relay service gets them as its own runtime environment.
-   Adding them to the shared loader would hand the relay's keys to the daemon as well.  The image's
-   entrypoint always runs `simple-chat`, and the package sits in `/app/scripts`, so the relay
-   service overrides the entrypoint with `PYTHONPATH=/app/scripts python3 -m agent_sync.linear_relay
-   run`.
+   environment above, a persistent volume for the ledger with `LINEAR_RELAY_STATE` pointing at a
+   file on it, and restart always.  Without that variable the ledger sits in the container's home
+   directory, which a redeploy empties, and the relay would then start a second comment for every
+   topic.  First run with `LINEAR_RELAY_DRY_RUN=1`, watch the log, then unset it.
+
+   The image is built for the daemon, so the relay service changes three things.  The image's
+   Infisical loader (`scripts/agent_sync/server/infisical_env.py`) copies only the names on its
+   allow-list, and the relay's three are not on it, so the service gets them as its own runtime
+   environment; adding them to the shared loader would hand the relay's keys to the daemon as well.
+   The entrypoint always runs `simple-chat`, so the service overrides it to run
+   `python3 -m agent_sync.linear_relay run` with `PYTHONPATH` set to the image's `scripts` folder.
+   And the image's healthcheck watches the daemon's status file, which the relay never writes, so
+   the service turns that healthcheck off; restart always still brings the relay back if it exits.
 
 The relay runs on the Coolify server instance, the same image as the simple-chat daemon.  No new
 Cloudflare Worker is involved.
