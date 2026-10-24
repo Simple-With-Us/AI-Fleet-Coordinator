@@ -907,6 +907,21 @@ class RelayTests(unittest.TestCase):
         self.assertEqual(entry["comment_id"], "c-lost")
         self.assertEqual(self.lin.created, [])
 
+    def test_the_cycle_budget_ignores_a_wall_clock_step(self) -> None:
+        # The budget runs on a monotonic clock: a wall clock stepped back an hour (NTP, a host
+        # resume) cannot push the deadline out of reach.
+        mono = [100.0]
+        w = lr.RelayWorker(
+            "https://z.example", "relay@x", self.lin, self.led,
+            lr.build_regex(lr.DEFAULT_TEAMS), clock=lambda: self.t[0],
+            monotonic=lambda: mono[0], log=self.logs.append, public_streams={5: "builds"},
+        )
+        w.start_cycle()
+        self.t[0] -= 3600  # the wall clock steps back
+        self.assertFalse(w._budget_spent())
+        mono[0] += lr.TICK_BUDGET + 1
+        self.assertTrue(w._budget_spent())
+
     def test_a_stream_event_routed_to_the_worker_is_logged(self) -> None:
         self.w.handle_event({"type": "stream", "op": "update", "stream_id": 5})
         self.assertTrue(any("set_public_streams" in line for line in self.logs))

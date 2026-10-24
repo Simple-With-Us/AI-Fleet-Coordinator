@@ -810,6 +810,7 @@ class RelayWorker:
         regex: re.Pattern[str],
         *,
         clock: Callable[[], float] = time.time,
+        monotonic: Callable[[], float] = time.monotonic,
         log: Callable[[str], None] | None = None,
         public_streams: Mapping[int, str] | Iterable[int] | None = None,
     ) -> None:
@@ -818,7 +819,8 @@ class RelayWorker:
         self.linear = linear
         self.ledger = ledger
         self.regex = regex
-        self.clock = clock
+        self.clock = clock  # wall time, for the timestamps the ledger keeps
+        self.monotonic = monotonic  # for the cycle budget, which a clock step must not move
         self.log = log or (lambda m: print(m, file=sys.stderr, flush=True))
         # None until the public-stream set has loaded: nothing is known about any stream yet.
         self.public_streams: set[int] | None = None
@@ -833,10 +835,10 @@ class RelayWorker:
         """Open one poll cycle's write budget.  Every write that starts in the cycle, the creates
         made while handling a message included, starts before this deadline or waits, dirty, for
         the next cycle, so a slow Linear cannot keep the Zulip poll loop from polling."""
-        self._cycle_deadline = self.clock() + TICK_BUDGET
+        self._cycle_deadline = self.monotonic() + TICK_BUDGET
 
     def _budget_spent(self) -> bool:
-        return self._cycle_deadline is not None and self.clock() > self._cycle_deadline
+        return self._cycle_deadline is not None and self.monotonic() > self._cycle_deadline
 
     def set_public_streams(self, streams: Mapping[int, str] | Iterable[int] | None) -> None:
         """Load the public-stream set (a stream id -> name map, or bare ids), or None to forget
