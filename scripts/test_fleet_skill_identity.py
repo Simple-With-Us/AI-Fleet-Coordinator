@@ -1739,7 +1739,7 @@ class PrivateInventoryTests(unittest.TestCase):
     # The names and the addresses reserved for documentation.  They carry no
     # inventory, and the house convention in a fixture is one of them.
     RESERVED_HOST = re.compile(
-        r"^(?:localhost|local|invalid|example|example\.(?:com|net|org|test))$", re.I
+        r"^(?:localhost|local|invalid|example|example\.(?:com|net|org|test))$", re.IGNORECASE
     )
     DOC_ADDRESS = re.compile(r"^(?:192\.0\.2\.\d{1,3}|198\.51\.100\.\d{1,3}|203\.0\.113\.\d{1,3})$")
     LOOPBACK = re.compile(r"^(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0|::1)$")
