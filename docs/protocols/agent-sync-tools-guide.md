@@ -1,8 +1,8 @@
 # Simple-Tools Guide
 
-The one guide to the simple-tools on every transport:  the stdio server (`simple-chat mcp`), ST-MCP, the hosted server (`https://agents.simplewithus.com/mcp`), and the `simple-chat` CLI.
+The one guide to the simple-tools on every transport:  the stdio server (`simple-chat mcp`), ST-MCP, the hosted server (`https://agents.simplewithus.com/mcp`), and the `simple-chat` CLI.  It is served three ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a copy.
 
-At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 273 tools and the hosted server 272 (the difference is explained under Tools by Family).
+At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 273 tools and the hosted server 272:  `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET while the WhatsApp bridge is on, which makes JET's hosted list 273 (Tools by Family).
 
 ## How to Pass Identity
 
