@@ -9,6 +9,7 @@ touches the real home, the real lanes, or /etc.
 from __future__ import annotations
 
 import ast
+import json
 import os
 import tempfile
 import unittest
@@ -107,9 +108,12 @@ class ServerWorkingDirsTest(unittest.TestCase):
             self.home / ".local" / "bin",
             self.apps / "muse-acp-runtime",
             self.home / ".config" / "opencode",
+            self.home / ".claude",
             self.systemd,
         ):
             path.mkdir(parents=True, exist_ok=True)
+        self.settings = self.home / ".claude" / "settings.json"
+        self.settings.write_text('{\n  "env": {"AGENT_SEAT": "CLAUDE"},\n  "theme": "dark"\n}\n')
         (self.home / ".local" / "bin" / "codex-tmux-boot").write_text(TMUX_BOOT)
         (self.home / ".local" / "bin" / "codex-tmux-autostart").write_text(TMUX_AUTOSTART)
         (self.apps / "muse-acp-runtime" / "minimax-shellular-acp.py").write_text(MINIMAX_ACP)
@@ -170,6 +174,7 @@ class ServerWorkingDirsTest(unittest.TestCase):
         self.assertIn("--port 62306", unit)
         claude = (self.systemd / "claude-remote-control.service").read_text()
         self.assertIn(f"WorkingDirectory={self.lanes}", claude)
+        self.assertEqual(json.loads(self.settings.read_text())["worktree"]["location"], str(self.lanes.resolve()))
         self.assertEqual(self.verify(), 0)
 
     def test_apply_is_idempotent(self) -> None:
@@ -378,6 +383,42 @@ class ServerWorkingDirsTest(unittest.TestCase):
 
     def test_apply_exits_zero_when_every_knob_takes(self) -> None:
         self.assertEqual(self.apply(), 0)
+
+    # -- the Claude desktop app's SSH worktrees ---------------------------- #
+
+    def test_the_desktop_worktree_location_keeps_the_other_settings(self) -> None:
+        self.apply()
+        data = json.loads(self.settings.read_text())
+        self.assertEqual(data["env"], {"AGENT_SEAT": "CLAUDE"})
+        self.assertEqual(data["theme"], "dark")
+        self.assertTrue(list(self.settings.parent.glob("settings.json.bak-*")), "the apply leaves a backup")
+
+    def test_a_location_spelled_with_a_tilde_already_passes(self) -> None:
+        self.settings.write_text('{"worktree": {"location": "~/apps/lanes"}}\n')
+        before = self.settings.read_text()
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            ok, note = swd.knob_claude_worktrees(self.settings, self.lanes)
+            self.assertTrue(ok, note)
+            self.apply()
+        self.assertEqual(self.settings.read_text(), before, "a location that is already right is not rewritten")
+
+    def test_a_location_elsewhere_fails_and_is_moved_to_the_lanes_root(self) -> None:
+        self.settings.write_text('{"worktree": {"location": "/srv/elsewhere", "bgIsolation": "none"}}\n')
+        ok, _ = swd.knob_claude_worktrees(self.settings, self.lanes)
+        self.assertFalse(ok)
+        self.apply()
+        section = json.loads(self.settings.read_text())["worktree"]
+        self.assertEqual(section, {"location": str(self.lanes.resolve()), "bgIsolation": "none"})
+
+    def test_settings_that_are_not_a_json_object_are_left_alone(self) -> None:
+        self.settings.write_text("not json\n")
+        self.assertEqual(self.apply(), 1)
+        self.assertEqual(self.settings.read_text(), "not json\n")
+
+    def test_a_host_without_claude_settings_gets_none_written(self) -> None:
+        self.settings.unlink()
+        self.assertEqual(self.apply(), 0)
+        self.assertFalse(self.settings.exists())
 
 
 if __name__ == "__main__":
