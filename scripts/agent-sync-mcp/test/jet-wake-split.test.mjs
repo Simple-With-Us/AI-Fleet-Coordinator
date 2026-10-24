@@ -136,10 +136,13 @@ test("JET-CHAT is absent by default, and only hosting it unprovisioned fails clo
 });
 
 test("JET-CHAT loads with Jet's bot email under its own var name", () => {
-  // No pasted address literal (kody 4365545858):  the value comes from the
-  // same wrangler.jsonc var production serves for JET.
-  const jetEmail = wranglerConfig().vars.ZULIP_EMAIL_JET;
-  const cfg = loadConfig(testEnv({ HOSTED_SEATS: "JET,JET-CHAT", ZULIP_EMAIL_JET_CHAT: jetEmail }));
+  // Synthetic fixture identity (kody 4365848837):  no production address is
+  // read out of wrangler.jsonc, and no production literal is pasted (kody
+  // 4365545858).  Both bindings get the same obviously-fixture address (the
+  // realm domain is required by config validation;  the local part names
+  // itself a fixture), so the test still proves one bot serves both seats.
+  const jetEmail = "jet-split-fixture-bot@simplewithus.zulipchat.com";
+  const cfg = loadConfig(testEnv({ HOSTED_SEATS: "JET,JET-CHAT", ZULIP_EMAIL_JET: jetEmail, ZULIP_EMAIL_JET_CHAT: jetEmail }));
   assert.equal(cfg.botEmails["JET-CHAT"], jetEmail);
   assert.equal(cfg.botEmails.JET, cfg.botEmails["JET-CHAT"], "one bot, two seats");
 });
@@ -179,8 +182,20 @@ test("JET-CHAT is session-id exempt like the JET it replaces (kody 4363263820)",
   // Boundary check before the registry is read (kody 4365432623/4365432771):  the
   // consumed section is validated with zod, every element typed.  The full-file
   // contract stays with scripts/test_session_ids_parity.py.
+  // The consumed section is fully enumerated and strict (kody 4365849243):
+  // an unknown field inside sessionIds aborts the test.  The top level stays
+  // loose - other registry sections evolve independently, and the full-file
+  // contract stays with scripts/test_session_ids_parity.py.
   const registrySchema = z.object({
-    sessionIds: z.object({ exemptSeats: z.array(z.string().min(1)).min(1) }).loose(),
+    sessionIds: z.object({
+      notes: z.string(),
+      idPattern: z.string().min(1),
+      genericEnv: z.string().min(1),
+      exemptSeats: z.array(z.string().min(1)).min(1),
+      exemptPatterns: z.array(z.string()),
+      envBySeat: z.record(z.array(z.string().min(1))),
+      fallbackEnv: z.array(z.string().min(1)),
+    }).strict(),
   }).loose();
   const registry = registrySchema.parse(JSON.parse(readFileSync(path.join(ROOT, "../../fleet-apps.json"), "utf8")));
   assert.deepEqual([...EXEMPT_SEATS].sort(), [...registry.sessionIds.exemptSeats].sort(), "code and registry stay aligned");

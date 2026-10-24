@@ -350,8 +350,9 @@ export class HostedTools {
       // length-capped):  a secret-shaped tool name never rides along for any
       // consumer of UnknownTool.toolName (kody 4363581984, sibling path).
       // Bound the client-controlled name BEFORE the secret scan (kody 4365544427):
-      // scanning an unbounded string costs unbounded CPU/memory.
-      const cappedUnknown = [...String(name)].slice(0, 64).join("");
+      // scanning an unbounded string costs unbounded CPU/memory.  A plain
+      // string slice keeps the cap O(64) (kody 4365848075).
+      const cappedUnknown = String(name).slice(0, 64);
       const auditedUnknown = scanSecret(cappedUnknown) ? "<omitted after secret scan>" : cappedUnknown;
       throw new UnknownTool(auditedUnknown);
     }
@@ -515,7 +516,7 @@ export class HostedTools {
       }
       throw err;
     }
-    const problem = seatProblem(me, { seat: this.seat, email: this.email });
+    const problem = seatProblem(me, { seat: this.seat, email: this.email, ownerUserId: this.config?.ownerUserId ?? null });
     await this.gate.roleSet({ ok: !problem, user_id: isInt(me.user_id) ? me.user_id : null, role: isInt(me.role) ? me.role : null, reason: problem ?? "" });
     if (problem) throw new ToolError("not_authorized", `The ${this.seat} bot is refused:  ${problem}`);
     this.me = { user_id: me.user_id, role: me.role };
@@ -1753,13 +1754,20 @@ export class HostedTools {
 Object.assign(HostedTools.prototype, ZULIP_FULL_METHODS, EAVESDROPPER_METHODS, NOTES_METHODS);
 
 /** Why `me` cannot serve `seat`, or null (spec 3.6). */
-export function seatProblem(me, { seat, email }) {
+export function seatProblem(me, { seat, email, ownerUserId = null }) {
   if (!me || typeof me !== "object") return "users/me answered nothing";
   if (me.is_bot !== true) return "the key is not a bot's";
   if (String(me.email ?? "").toLowerCase() !== email) return "the key belongs to another bot";
-  if (seatTagFor(me) !== (SEAT_TAG_EXPECTATIONS[seat] ?? seat)) return "the key signs as another seat";
+  const expectedTag = SEAT_TAG_EXPECTATIONS[seat] ?? seat;
+  if (seatTagFor(me) !== expectedTag) return "the key signs as another seat";
   if (me.is_admin === true || me.is_owner === true || me.role !== MEMBER_ROLE) {
     return `its live Zulip role is ${isInt(me.role) ? me.role : "unknown"}; hosted seats accept member (400) only`;
+  }
+  // A borrowed-bot seat rides a peer's bot:  the grant requires the pinned
+  // owner, and the peer is ineligible while the owner pin is unavailable
+  // (kody 4365848649).
+  if (expectedTag !== seat && (!isInt(ownerUserId) || me.bot_owner_id !== ownerUserId)) {
+    return "the borrowed bot's owner is not the pinned owner";
   }
   return null;
 }

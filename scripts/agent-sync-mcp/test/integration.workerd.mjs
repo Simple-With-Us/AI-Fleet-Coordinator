@@ -53,7 +53,9 @@ const CURSOR_CIMD = {
 const CLAUDE_KEY = zulipShapedKey(29);
 const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 const zulip = new FakeZulip({ bots: [
-  { email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY },
+  // The borrowed-bot grant (JET-CHAT) needs the pinned owner (kody 4365848649):
+  // the fake users/me carries the same owner id the committed var pins.
+  { email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY, bot_owner_id: Number(wranglerConfig().vars.OWNER_USER_ID) },
   { email: "cursor-bot@simplewithus.zulipchat.com", full_name: "Cursor", key: CURSOR_KEY },
   { email: PERSONA_EMAIL, full_name: PERSONA.slice(3), key: PERSONA_KEY },
   { email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", key: CLAUDE_KEY },
@@ -1809,7 +1811,7 @@ try {
     // the new full-tool Jet login (JET-CHAT) - Jay, WhatsApp Oct 23 2026
     // 5:03 PM CT - which is exercised below.
     const denied = await call(access, "whatsapp_read", {});
-    assert.ok(denied.json.error, JSON.stringify(denied.json));
+    assert.ok(denied.json.error, summarize(denied.json));
     assert.equal((await adminAction("arm", { seat: "JET-CHAT" })).status, 303);
     const cc = pkce();
     const chatHandle = await openConsent(cc.challenge, "wa-chat", { clientId: JETCHAT_CLIENT, redirect: JETCHAT_REDIRECT });

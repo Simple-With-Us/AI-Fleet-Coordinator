@@ -449,7 +449,11 @@ test("seat binding:  only a member bot whose users/me is this seat's email and t
   // JET-CHAT runs on Jet's bot (SEAT_TAG_EXPECTATIONS):  the openai-dot key,
   // signing JET, is its expected signer;  any other tag fails closed.
   const jetMe = { is_bot: true, email: "openai-dot-bot@example.test", role: 400, is_admin: false, is_owner: false };
-  assert.equal(seatProblem(jetMe, { seat: "JET-CHAT", email: "openai-dot-bot@example.test" }), null);
+  // A borrowed bot also needs the pinned owner (kody 4365848649):  no pin or
+  // a wrong owner fails closed;  only the matching owner grants.
+  assert.match(seatProblem(jetMe, { seat: "JET-CHAT", email: "openai-dot-bot@example.test" }), /owner is not the pinned owner/);
+  assert.match(seatProblem({ ...jetMe, bot_owner_id: 42 }, { seat: "JET-CHAT", email: "openai-dot-bot@example.test", ownerUserId: 900001 }), /owner is not the pinned owner/);
+  assert.equal(seatProblem({ ...jetMe, bot_owner_id: 900001 }, { seat: "JET-CHAT", email: "openai-dot-bot@example.test", ownerUserId: 900001 }), null);
   assert.match(seatProblem(good, { seat: "JET-CHAT", email: BOT_EMAIL }), /another seat/);
   assert.match(seatProblem(good, { seat: "JET", email: BOT_EMAIL }), /another seat/);
 });
