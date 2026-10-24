@@ -668,7 +668,7 @@ class LessonBoostTests(RecallBase):
         self.assertEqual(lf["must"][2], flt)                    # caller's filter still applies
         self.assertEqual(core.lesson_filter(None)["must"][2:], [])
         q = core.Qdrant({"QDRANT_URL": "http://q", "QDRANT_FLEET_COLLECTION": "c", "QDRANT_API_KEY": "k"})
-        pf = q._prefetch([0.1], ["coolify"], flt, 20, True)
+        pf = q._prefetch([0.1], ["example-host"], flt, 20, True)
         self.assertEqual(len(pf), 3)
         self.assertEqual(pf[0]["filter"], flt)
         self.assertEqual(pf[1]["filter"]["must"][0], flt)

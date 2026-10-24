@@ -28,10 +28,11 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin inf
 ## What Lives in `fleet-ops:ATTACK-MAP.md`
 
 1. **Host Topology & IP Addresses:**
-   - Production Hetzner Linux host public IP, Tailscale MagicDNS (`server.boa-roygbiv.ts.net`), and mesh IP (`100.69.77.26`).
-   - Mac workstation local relay Tailscale IP (`100.113.106.39`).
-   - iPhone operator client Tailscale IP (`100.100.72.76`).
+   - The production Hetzner Linux host public IP, its Tailscale MagicDNS name, and its mesh IP.
+   - The Mac workstation local relay Tailscale IP.
+   - The iPhone operator client Tailscale IP.
    - Retired Oracle server references and transition logs.
+   - The values themselves are private deployment inventory: they live in `fleet-ops:ATTACK-MAP.md` and in the operator's own host table on that Mac, and this pack names where they live rather than carrying them.
 
 2. **Coolify Container & Server UUIDs:**
    - Server UUIDs for Hetzner (`fleet-hetzner-nbg1`).

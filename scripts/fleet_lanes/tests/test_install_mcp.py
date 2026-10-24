@@ -148,14 +148,14 @@ class NotInstalledTests(HomeCase):
 
 class ExistingConfigTests(HomeCase):
     def test_other_servers_and_settings_survive_with_a_backup(self) -> None:
-        original = json.dumps({"model": "x", "mcpServers": {"coolify": {"type": "stdio", "command": "sh"}},
+        original = json.dumps({"model": "x", "mcpServers": {"other-mcp": {"type": "stdio", "command": "sh"}},
                                "zeta": [1, 2]}, indent=2) + "\n"
         self.write(".config/muse/settings.json", original, mode=0o640)
         code, out, _ = self.run_cli("apply", "muse")
         self.assertEqual(code, M.EXIT_OK, out)
         doc = self.load(".config/muse/settings.json")
         self.assertEqual(list(doc), ["model", "mcpServers", "zeta"], "key order is kept")
-        self.assertEqual(list(doc["mcpServers"]), ["coolify", "fleet-recall"])
+        self.assertEqual(list(doc["mcpServers"]), ["other-mcp", "fleet-recall"])
         self.assertEqual(doc["zeta"], [1, 2])
         names = self.backups(".config/muse")
         self.assertEqual(len(names), 1)
