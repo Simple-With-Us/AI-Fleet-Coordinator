@@ -23,8 +23,10 @@ any of these holds, cheapest check first:
      launchctl list` shows UIKitApplication:<bundle> with a pid).  A failed check counts as running.
 Otherwise it runs `xcrun simctl shutdown <udid>`:  never `shutdown all`, never erase or delete.
 A load guard runs before the idle pass:  when the 1-minute load average reaches 800
-(the box is heading toward the 926 seen 2026-10-14), every booted simulator is shut down
-unconditionally and each shutdown is reported to Zulip #Alerts as the MA bot.
+(the box is heading toward the 926 seen 2026-10-14), every considered simulator
+(`--udid` filter respected) is shut down unconditionally and one alert is posted to
+Zulip #Alerts as the MA bot via the simple-chat CLI (house format
+`SEVERITY • service • what • link`), rate-limited to one post per hour.
 TestFlight ships (com.jay.ios-ship-now, ship-testflight.sh) archive for generic/platform=iOS and
 boot no simulator;  their xcodebuild still trips skip 1 while it runs.
 
@@ -46,6 +48,8 @@ import argparse
 import fcntl
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import time
@@ -64,8 +68,16 @@ PRE_MAX_AGE_SEC = 3600
 BUSY_EXACT = ("xcodebuild", "xctest", "simctl", "bitrig")
 BUSY_PATTERN = "xctestrun"
 LOG_STREAM_PATTERN = r"simctl spawn [^ ]+ log stream"  # passive streamer, not use
-LOAD_GUARD_TRIP = 800.0  # 1-min loadavg: emergency-shutdown all booted sims before load nears 900
-ZULIP_RC = os.path.join(HOME, ".secrets", "Zulip", "MA-zuliprc")  # chat-report credential
+LOAD_GUARD_TRIP = 800.0  # 1-min loadavg: emergency-shutdown considered sims before load nears 900
+GUARD_ALERT_COOLDOWN_SEC = 3600  # at most one #Alerts post per hour while the guard keeps tripping
+SIMPLE_CHAT = os.environ.get("SIM_REAPER_SIMPLE_CHAT") or os.path.join(
+    HOME, ".local", "bin", "simple-chat"
+)  # fleet chat CLI; resolves the MA bot credential itself, never a file default
+UDID_RE = re.compile(
+    r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+)
+REAPER_LOG = os.path.join(HOME, "Library", "Logs", "sim-idle-reaper.log")
 
 
 def stamp() -> str:
@@ -305,35 +317,42 @@ def load_guard_tripped() -> float | None:
     return load1 if load1 >= LOAD_GUARD_TRIP else None
 
 
-def zulip_alert(content: str) -> bool:
-    """Post one message to Zulip #Alerts as the MA bot. Never raises; returns success."""
-    try:
-        import base64
-        import configparser
-        import urllib.parse
-        import urllib.request
+def fleet_alert(content: str) -> bool:
+    """Post one message to Zulip #Alerts as the MA bot via the simple-chat CLI.
 
-        cp = configparser.ConfigParser()
-        if not cp.read(ZULIP_RC):
-            out("load-guard: no Zulip credential found, skipping chat report")
-            return False
-        email = cp.get("api", "email")
-        key = cp.get("api", "key")
-        site = cp.get("api", "site", fallback="https://simplewithus.zulipchat.com").rstrip("/")
-        data = urllib.parse.urlencode(
-            {"type": "stream", "to": "Alerts", "topic": "sim-load-guard", "content": content}
-        ).encode()
-        req = urllib.request.Request(site + "/api/v1/messages", data=data, method="POST")
-        req.add_header(
-            "Authorization", "Basic " + base64.b64encode(f"{email}:{key}".encode()).decode()
+    simple-chat resolves the seat credential itself (no credential file default in
+    this script) and owns HTTPS/redirect/User-Agent handling. Never raises.
+    """
+    try:
+        chat = shutil.which("simple-chat") or SIMPLE_CHAT
+        rc, _ = run(
+            [chat, "--as", "MA", "post", "--channel", "Alerts",
+             "--topic", "sim-load-guard", content],
+            timeout=60,
         )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            ok = 200 <= resp.status < 300
-        out(f"load-guard: Zulip report {'posted' if ok else 'failed'}")
+        ok = rc == 0
+        out(f"load-guard: fleet alert {'posted' if ok else 'failed'}")
         return ok
-    except Exception as exc:  # network/auth failure must never break the guard itself
-        out(f"load-guard: Zulip post failed ({type(exc).__name__})")
+    except Exception as exc:  # alerting must never break the guard itself
+        out(f"load-guard: fleet alert failed ({type(exc).__name__})")
         return False
+
+
+def _guard_alert_marker(state_path: str) -> str:
+    return os.path.join(os.path.dirname(state_path), "guard-alert.json")
+
+
+def guard_alert_due(state_path: str) -> bool:
+    """True when no guard alert was posted within the cooldown window."""
+    try:
+        last = float(load_json(_guard_alert_marker(state_path), {}).get("last_alert", 0))
+    except (TypeError, ValueError):
+        return True
+    return (time.time() - last) >= GUARD_ALERT_COOLDOWN_SEC
+
+
+def guard_alert_recorded(state_path: str) -> None:
+    write_json(_guard_alert_marker(state_path), {"last_alert": time.time()})
 
 
 def decide(
@@ -386,6 +405,9 @@ def main(argv: list | None = None) -> int:
     )
     args = ap.parse_args(argv)
     mode = "dry-run" if args.dry_run else "live"
+    for u in args.udid:
+        if not UDID_RE.match(u):
+            ap.error(f"--udid {u!r} is not a simulator UDID")
 
     os.makedirs(STATE_DIR, exist_ok=True)
     lock = open(os.path.join(STATE_DIR, "reaper.lock"), "a")
@@ -411,18 +433,19 @@ def main(argv: list | None = None) -> int:
         write_json(args.state, seen)  # drops devices that are no longer booted
 
     trip = load_guard_tripped()
+    targets = [d for d in booted if not args.udid or d["udid"] in args.udid]
     if trip is not None:
-        if not booted:
-            out(f"load-guard TRIP load1={trip:.0f}: no simulators booted, nothing to shut down")
+        if not targets:
+            out(f"load-guard TRIP load1={trip:.0f}: no simulators considered, nothing to shut down")
         elif args.dry_run:
             out(
-                "load-guard WOULD-TRIP load1=%.0f: would shut down %d booted sim(s): %s"
-                % (trip, len(booted), ", ".join(f'{d["udid"]} "{d["name"]}"' for d in booted))
+                "load-guard WOULD-TRIP load1=%.0f: would shut down %d considered sim(s): %s"
+                % (trip, len(targets), ", ".join(f'{d["udid"]} "{d["name"]}"' for d in targets))
             )
         else:
-            out(f"load-guard TRIP load1={trip:.0f}: shutting down {len(booted)} booted sim(s)")
+            out(f"load-guard TRIP load1={trip:.0f}: shutting down {len(targets)} considered sim(s)")
             shut = []
-            for d in booted:
+            for d in targets:
                 rc, _ = run([XCRUN, "simctl", "shutdown", d["udid"]], timeout=120)
                 label = f'{d["udid"]} "{d["name"]}"'
                 out(f"load-guard SHUTDOWN {label}: rc={rc}")
@@ -430,13 +453,17 @@ def main(argv: list | None = None) -> int:
                 if rc == 0:
                     seen.pop(d["udid"], None)
             write_json(args.state, seen)
-            zulip_alert(
-                "Sim load guard tripped (1-min load %.0f >= %.0f): shut down %d booted "
-                "simulator(s): %s" % (trip, LOAD_GUARD_TRIP, len(booted), "; ".join(shut))
-            )
+            if guard_alert_due(args.state):
+                what = (
+                    "load guard tripped: 1-min load %.0f >= %.0f, shut down %d "
+                    "simulator(s): %s" % (trip, LOAD_GUARD_TRIP, len(targets), "; ".join(shut))
+                )
+                if fleet_alert(f"CRITICAL • sim-idle-reaper • {what} • {REAPER_LOG}"):
+                    guard_alert_recorded(args.state)
+            else:
+                out("load-guard: alert cooldown active, skipping chat report")
             return 0  # emergency handled; skip the normal idle pass this run
 
-    targets = [d for d in booted if not args.udid or d["udid"] in args.udid]
     if args.verbose:
         out(f"reaper {mode}: {len(booted)} booted, {len(targets)} considered")
     if targets:

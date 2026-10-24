@@ -351,6 +351,12 @@ LAUNCHCTL = """PID\tStatus\tLabel
 class Reaper(Base):
     DEV = {"udid": A, "name": "iPhone 17", "runtime": "iOS-27-0"}
 
+    def setUp(self):
+        super().setUp()
+        p = patch("os.getloadavg", return_value=(100.0, 100.0, 100.0))
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_desktop_log_stream_simctl_is_not_busy(self):
         def fake(args):
             table = {("-x", "simctl"): {"100", "200"}, ("-f", reaper.LOG_STREAM_PATTERN): {"100"}}
@@ -410,7 +416,7 @@ class Reaper(Base):
             patch.object(reaper, "list_booted", lambda: devs),
             patch.object(reaper.os, "getloadavg", lambda: (850.0, 0.0, 0.0)),
             patch.object(reaper, "run", fake_run),
-            patch.object(reaper, "zulip_alert", lambda c: alerts.append(c) or True),
+            patch.object(reaper, "fleet_alert", lambda c: alerts.append(c) or True),
         ):
             self.assertEqual(reaper.main(["--state", state_path]), 0)
         self.assertEqual(sorted(shut), sorted([A, B]))
@@ -431,7 +437,7 @@ class Reaper(Base):
             patch.object(reaper, "list_booted", lambda: [dict(self.DEV)]),
             patch.object(reaper.os, "getloadavg", lambda: (950.0, 0.0, 0.0)),
             patch.object(reaper, "run", fake_run),
-            patch.object(reaper, "zulip_alert", lambda c: self.fail("no alert in dry-run")),
+            patch.object(reaper, "fleet_alert", lambda c: self.fail("no alert in dry-run")),
         ):
             self.assertEqual(reaper.main(["--dry-run", "--state", state_path]), 0)
         self.assertEqual(shut, [])
@@ -573,6 +579,42 @@ class Reaper(Base):
         self.assertEqual(set(session_doc()["udids"]), {B})
         reaper.tidy_hook_state(set(), time.time(), False, False)
         self.assertFalse(os.path.exists(hook.session_path(SID)))
+
+    def run_guard(self, args, booted, alerts):
+        with (
+            patch.object(reaper, "load_guard_tripped", lambda: 900.0),
+            patch.object(reaper, "fleet_alert", lambda c: alerts.append(c) or True),
+        ):
+            return self.run_reaper(args, booted)
+
+    def test_load_guard_respects_udid_filter(self):
+        other = {"udid": B, "name": "iPad", "runtime": "iOS-27-0"}
+        alerts = []
+        log, shut = self.run_guard(["--udid", B], [self.DEV, other], alerts)
+        self.assertEqual(shut, [B])
+        self.assertNotIn(A, " ".join(shut))
+        self.assertEqual(len(alerts), 1)
+
+    def test_load_guard_alert_cooldown(self):
+        alerts = []
+        self.run_guard([], [self.DEV], alerts)
+        self.assertEqual(len(alerts), 1)
+        log, shut = self.run_guard([], [self.DEV], alerts)
+        self.assertEqual(len(alerts), 1)  # second trip inside the hour: no second post
+        self.assertIn("alert cooldown active", log)
+
+    def test_load_guard_alert_house_format(self):
+        alerts = []
+        self.run_guard([], [self.DEV], alerts)
+        content = alerts[0]
+        self.assertTrue(content.startswith("CRITICAL • sim-idle-reaper • "), content)
+        self.assertIn("1-min load 900 >= 800", content)
+        self.assertTrue(content.endswith(" • " + reaper.REAPER_LOG), content)
+
+    def test_bad_udid_rejected(self):
+        with self.assertRaises(SystemExit) as cm:
+            reaper.main(["--udid", "not-a-udid"])
+        self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":
