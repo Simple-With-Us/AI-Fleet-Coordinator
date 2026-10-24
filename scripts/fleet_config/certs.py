@@ -187,17 +187,25 @@ def profile_expiry(data: bytes) -> datetime:
     return moment.astimezone(timezone.utc)
 
 
-def keychain_expiries(pem: str, label: str) -> list[CertificateExpiry]:
+def keychain_expiries(
+    pem: str, label: str, unreadable: list[str] | None = None
+) -> list[CertificateExpiry]:
     """Every certificate in a PEM bundle,  with its expiry.
 
     A bundle with no certificate gives an empty list,  which is how the caller knows the
-    keychain holds no certificate with that name.
+    keychain holds no certificate with that name.  A block that cannot be decoded,  or
+    whose body carries no readable expiry,  never escapes as an exception:  it is
+    skipped,  and when the caller hands in ``unreadable`` one short reason per skipped
+    block is added to it,  so the caller can say a certificate went unchecked.
     """
     out: list[CertificateExpiry] = []
     for block in _PEM_BLOCK.finditer(pem):
         try:
             der = base64.b64decode(re.sub(r"\s+", "", block.group(1)), validate=True)
-        except (binascii.Error, ValueError):
+            expires_at = not_after_from_der(der)
+        except (binascii.Error, ValueError, ExpiryUnknown):
+            if unreadable is not None:
+                unreadable.append("a keychain certificate carries no readable expiry")
             continue
-        out.append(CertificateExpiry(label=label, expires_at=not_after_from_der(der)))
+        out.append(CertificateExpiry(label=label, expires_at=expires_at))
     return out

@@ -30,6 +30,7 @@ import os
 import re
 import shlex
 import sys
+import time
 from dataclasses import dataclass
 
 from .certs import CertificateExpiry, ExpiryUnknown, keychain_expiries, profile_expiry
@@ -86,6 +87,27 @@ MAX_PUBLISHED_BYTES = 1024 * 1024
 # The most file names one result carries.  A machine can hold hundreds of flat key
 # files,  and the report names a few of them and counts the rest.
 MAX_REPORTED_NAMES = 10
+
+# How deep a published directory is walked.  The template trees keep their workflow
+# files one directory down (``github-workflows-template/workflows/``),  so two levels
+# below the surface cover them while a surface still stays a small,  known set.
+MAX_PUBLISHED_DEPTH = 3
+
+# The most provisioning profiles one certificate rule decodes,  and the time all of them
+# together may take.  Each one is a child process,  so without a cap a machine with many
+# profiles could hold one rule far past the run's own deadline.  The profiles past the cap
+# are reported as unread,  so the rule reads UNKNOWN rather than a clean bill of health.
+MAX_PROFILES = 25
+PROFILE_BUDGET_SECONDS = 60
+
+# The subcommands a ``command`` rule may run,  per allowlisted program.  The allowlist in
+# checks.py pins the program's NAME;  this pins what it is asked to do,  so a manifest
+# edit cannot turn a read into a write.  ``security`` has none:  the keychain is read
+# only by the certificate check,  with its own fixed,  read-only arguments.
+COMMAND_SUBCOMMANDS: dict[str, frozenset[str]] = {
+    "fleet-secrets": frozenset({"doctor", "names", "status", "get"}),
+    "security": frozenset(),
+}
 
 
 @dataclass(frozen=True)
@@ -219,16 +241,17 @@ def read_threshold(
 ) -> tuple[ThresholdReading | None, str]:
     """The rule's threshold number,  and the reason there is none.
 
-    A rule with no threshold has none by design:  the caller decides without one.  A rule
-    whose knob is unset,  or whose value is outside the range the rule accepts,  has no
-    threshold either,  and the reason says which of the two it was.
+    Every compliance check that reads a threshold needs one to decide,  so a rule that
+    declares none reads UNKNOWN,  and the reason says so.  A rule whose knob is unset,  or
+    whose value is outside the range the rule accepts,  has no threshold either,  and the
+    reason says which of the two it was.  The reason is never empty.
 
     ``unset`` is the fleet's own word for it:  a knob that still holds only its registry
     default has not been set by anybody,  and a threshold nobody set is not a threshold.
     The rule reads UNKNOWN rather than deciding on the default.
     """
     if rule.threshold is None:
-        return None, ""
+        return None, "the rule declares no threshold,  so it cannot decide"
     answer = read_knob(rule.threshold.knob, ctx)
     if answer.value is None:
         return None, (
@@ -284,10 +307,39 @@ def check_command(rule: Rule, platform: str, ctx: CheckContext) -> CheckResult:
             ReasonCode.MISSING,
             ctx,
         )
+    # The program is a bare name,  found on the child's own PATH:  a path would pin the
+    # file name the allowlist checks but run whatever binary sits at that path.
+    if "/" in program or os.sep in program:
+        return _unknown(
+            rule,
+            platform,
+            "the command %s is a path,  and a command rule names a program,  never a file"
+            % program,
+            ReasonCode.ERROR,
+            ctx,
+        )
     try:
         arguments = shlex.split(rule.check.detail)
     except ValueError:
-        arguments = []
+        # Running the program bare would answer a different question than the rule asks.
+        return _unknown(
+            rule,
+            platform,
+            "the arguments the rule declares for %s cannot be read,  so the command is not run"
+            % program,
+            ReasonCode.UNPARSEABLE,
+            ctx,
+        )
+    allowed = COMMAND_SUBCOMMANDS.get(program)
+    if allowed is not None and (not arguments or arguments[0] not in allowed):
+        return _unknown(
+            rule,
+            platform,
+            "the command %s is not allowed to run %s from a command rule"
+            % (program, arguments[0] if arguments else "with no subcommand"),
+            ReasonCode.ERROR,
+            ctx,
+        )
     timeout = rule.expected.timeout_seconds or COMMAND_TIMEOUT_SECONDS
     try:
         result = run_cli(
@@ -397,21 +449,25 @@ LEAK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-def _published_files(path: str) -> list[str]:
+def _published_files(path: str, depth: int = MAX_PUBLISHED_DEPTH) -> list[str]:
     """The files a declared published surface holds,  sorted.
 
-    A surface is a file or a directory.  A directory is walked one level deep,  so a
-    published surface stays a small,  known set of files rather than a whole checkout.
+    A surface is a file or a directory.  A directory is walked ``MAX_PUBLISHED_DEPTH``
+    levels deep,  so the workflow files a template keeps in a subdirectory are scanned
+    while a surface still stays a small,  known set rather than a whole checkout.  A
+    symlinked directory is not followed.
     """
     if os.path.isfile(path):
         return [path]
-    if not os.path.isdir(path):
+    if not os.path.isdir(path) or depth <= 0:
         return []
     out: list[str] = []
     for name in sorted(os.listdir(path)):
         child = os.path.join(path, name)
         if os.path.isfile(child):
             out.append(child)
+        elif os.path.isdir(child) and not os.path.islink(child):
+            out.extend(_published_files(child, depth - 1))
     return out
 
 
@@ -438,6 +494,9 @@ def _scan_published(
                 absent.append(os.path.relpath(file_path, repo_root))
                 continue
             if len(raw) > MAX_PUBLISHED_BYTES:
+                # A file too large to read whole is a file the rule never inspected,  so it
+                # is unreadable,  and the rule reads UNKNOWN rather than PASS.
+                absent.append(os.path.relpath(file_path, repo_root))
                 continue
             text = raw.decode("utf-8", "replace")
             for label, pattern in LEAK_PATTERNS:
@@ -470,6 +529,11 @@ def _flat_key_files(directory: str) -> list[str]:
     return out
 
 
+def _leak_files(leaks: list[tuple[str, str]]) -> int:
+    """How many distinct files the findings name.  One file can match several shapes."""
+    return len({path for path, _shape in leaks})
+
+
 def _finding_summary(
     directory_present: bool, file_count: int, leaks: list[tuple[str, str]]
 ) -> str:
@@ -485,12 +549,13 @@ def _finding_summary(
         for _path, shape in leaks:
             if shape not in shapes:
                 shapes.append(shape)
+        files = _leak_files(leaks)
         parts.append(
             "%d published file%s name%s %s"
             % (
-                len(leaks),
-                "" if len(leaks) == 1 else "s",
-                "s" if len(leaks) == 1 else "",
+                files,
+                "" if files == 1 else "s",
+                "s" if files == 1 else "",
                 ",  ".join(shapes),
             )
         )
@@ -561,7 +626,9 @@ def check_secrets_hygiene(rule: Rule, platform: str, ctx: CheckContext) -> Check
             ReasonCode.MISSING,
             ctx,
         )
-    findings = len(leaks) + (1 if directory_present else 0)
+    # A finding is a FILE that names an internal asset (or the retired directory),  not a
+    # shape match:  one file naming two shapes is one finding against the threshold.
+    findings = _leak_files(leaks) + (1 if directory_present else 0)
     names = tuple(
         "%s names %s" % (path, shape) for path, shape in leaks[:MAX_REPORTED_NAMES]
     )
@@ -615,10 +682,11 @@ def _keychain_expiries(name: str, ctx: CheckContext) -> tuple[list[CertificateEx
     if result.returncode != 0:
         return [], ["the keychain answered with code %d" % (result.returncode or 0)]
     text = result.stdout.decode("utf-8", "replace")
-    found = keychain_expiries(text, "keychain:%s" % name)
-    if not found:
-        return [], []
-    return found, []
+    unreadable: list[str] = []
+    found = keychain_expiries(text, "keychain:%s" % name, unreadable)
+    # One certificate that cannot be read is one the rule cannot check:  it is named,  so
+    # the rule reads UNKNOWN with that reason instead of failing as a whole.
+    return found, unreadable[:1]
 
 
 def _profile_expiries(
@@ -632,13 +700,25 @@ def _profile_expiries(
     expanded = expand_target(pattern, ctx.home)
     out: list[CertificateExpiry] = []
     problems: list[str] = []
-    for path in sorted(glob.glob(expanded)):
-        if not os.path.isfile(path):
-            continue
+    paths = [path for path in sorted(glob.glob(expanded)) if os.path.isfile(path)]
+    if len(paths) > MAX_PROFILES:
+        # The profiles past the cap are not read,  and the rule says so instead of
+        # reporting only the ones it reached.
+        problems.append(
+            "%d provisioning profiles match,  and the rule reads at most %d"
+            % (len(paths), MAX_PROFILES)
+        )
+        paths = paths[:MAX_PROFILES]
+    deadline = time.monotonic() + PROFILE_BUDGET_SECONDS
+    for path in paths:
+        remaining = int(deadline - time.monotonic())
+        if remaining <= 0:
+            problems.append("the provisioning profiles could not all be read in time")
+            break
         try:
             result = run_cli(
                 ["security", "cms", "-D", "-i", path],
-                timeout=CERTIFICATE_TIMEOUT_SECONDS,
+                timeout=min(CERTIFICATE_TIMEOUT_SECONDS, remaining),
                 env=ctx.child_env(),
                 cwd=None,
             )

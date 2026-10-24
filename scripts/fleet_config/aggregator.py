@@ -643,6 +643,10 @@ def run_status(
             if platform is not None and platform not in rule.scope:
                 continue
             for scope in rule.scope:
+                # A platform-filtered run checks that platform only,  the same as the
+                # per-seat rules above.
+                if platform is not None and scope != platform:
+                    continue
                 if clock() >= deadline:
                     results.append(_deadline_result(rule, scope, ctx, deadline_seconds))
                     continue

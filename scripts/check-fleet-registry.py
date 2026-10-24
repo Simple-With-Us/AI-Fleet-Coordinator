@@ -327,6 +327,7 @@ def manifest_errors(
         load_manifest,
         validate_coverage,
         validate_platforms,
+        validate_compliance_rules,
         validate_rules,
     )
 
@@ -342,6 +343,7 @@ def manifest_errors(
     for check, name in (
         (validate_coverage, "coverage"),
         (validate_rules, "rules"),
+        (validate_compliance_rules, "compliance rules"),
     ):
         try:
             check(manifest)

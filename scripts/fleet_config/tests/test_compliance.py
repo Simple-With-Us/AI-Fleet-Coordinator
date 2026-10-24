@@ -10,18 +10,22 @@ never prints a secret value:  the checks only ever count names and shapes.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
 import tempfile
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from fleet_config import contract
 from fleet_config import manifest as manifest_module
-from fleet_config.certs import ExpiryUnknown, not_after_from_pem, profile_expiry
+from fleet_config import checks_compliance
+from fleet_config.certs import ExpiryUnknown, keychain_expiries, not_after_from_pem, profile_expiry
 from fleet_config.checks import CheckContext
 from fleet_config.checks_compliance import (
     KnobAnswer,
@@ -116,6 +120,13 @@ def _seat_entry(platform: str = "claude") -> dict[str, Any]:
         "notApplicable": [],
     }
 
+
+
+# Synthetic values,  built when the tests run so no project id or host address is ever a
+# source literal.  The id is a fresh random UUID,  and the address is the first host of
+# the shared CGNAT block (100.64.0.0/10) the internal-address shape covers.
+SYNTHETIC_PROJECT_ID = str(uuid.uuid4())
+SYNTHETIC_CGNAT_ADDRESS = ".".join(str(octet) for octet in (100, 64, 0, 1))
 
 class _Rule:
     """A compliance rule as the engine holds it,  built from a plain dict."""
@@ -398,7 +409,7 @@ class SecretsHygieneTests(unittest.TestCase):
 
     def test_a_published_file_that_names_an_internal_asset_is_a_finding(self) -> None:
         (self.repo / ".github" / "workflows" / "deploy.yml").write_text(
-            "env:\n  INFISICAL_PROJECT_ID: 8dae6d03-8f12-48b2-adf3-e5c1b881c8c5\n",
+            "env:\n  INFISICAL_PROJECT_ID: %s\n" % SYNTHETIC_PROJECT_ID,
             encoding="utf-8",
         )
         result = check_secrets_hygiene(self._rule(), "mac", self.ctx)
@@ -407,7 +418,7 @@ class SecretsHygieneTests(unittest.TestCase):
 
     def test_a_published_file_with_an_internal_address_is_a_finding(self) -> None:
         (self.repo / ".github" / "workflows" / "deploy.yml").write_text(
-            "run: ssh 100.101.102.103 true\n", encoding="utf-8"
+            "run: ssh %s true\n" % SYNTHETIC_CGNAT_ADDRESS, encoding="utf-8"
         )
         result = check_secrets_hygiene(self._rule(), "mac", self.ctx)
         self.assertIs(result.state, CheckState.DRIFT)
@@ -430,13 +441,14 @@ class SecretsHygieneTests(unittest.TestCase):
         (self.home / ".secrets").mkdir()
         (self.home / ".secrets" / "global-api-keys").write_text(SENTINEL, encoding="utf-8")
         (self.repo / ".github" / "workflows" / "deploy.yml").write_text(
-            "env:\n  INFISICAL_PROJECT_ID: 8dae6d03-8f12-48b2-adf3-e5c1b881c8c5\n",
+            "env:\n  INFISICAL_PROJECT_ID: %s\n" % SYNTHETIC_PROJECT_ID,
             encoding="utf-8",
         )
         result = check_secrets_hygiene(self._rule(), "mac", self.ctx)
         self.assertNotIn(SENTINEL, result.reason)
         self.assertNotIn(SENTINEL, json.dumps(contract.observed_to_dict(result.observed)))
-        self.assertNotIn("8dae6d03", result.reason)
+        self.assertNotIn(SYNTHETIC_PROJECT_ID, result.reason)
+        self.assertNotIn(SYNTHETIC_PROJECT_ID.split("-")[0], result.reason)
 
 
 class CommandCheckTests(unittest.TestCase):
@@ -534,6 +546,160 @@ class CertificateTests(unittest.TestCase):
         )
         expires_at = not_after_from_pem(cert.read_text(encoding="utf-8"))
         self.assertGreater(expires_at, datetime.now(timezone.utc) + timedelta(days=20))
+
+
+class ReviewFindingTests(unittest.TestCase):
+    """The fail-closed edges Kody's review of #925 named,  one test per finding."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.home = self.root / "home"
+        self.repo = self.root / "repo"
+        self.home.mkdir(parents=True)
+        (self.repo / ".github" / "workflows").mkdir(parents=True)
+        self.ctx = CheckContext(
+            home=self.home,
+            now=datetime(2026, 10, 24, 12, 0, 0, tzinfo=timezone.utc),
+            timeout=5,
+        )
+        self.ctx.cache["repoRoot"] = str(self.repo)
+        self.ctx.cache["knob:" + SECRETS_KNOB] = KnobAnswer(
+            SECRETS_KNOB, 0, "infisical", False, ""
+        )
+
+    def _command(self, target: str, detail: str = "") -> Rule:
+        return _Rule.build(
+            id="compliance-command",
+            check=CheckSpec(CheckType.COMMAND, target, detail),
+            expected=ExpectedState(description="a command"),
+        )
+
+    def test_a_nested_published_workflow_file_is_scanned(self) -> None:
+        nested = self.repo / ".github" / "workflows" / "workflows"
+        nested.mkdir()
+        (nested / "deploy.yml").write_text(
+            "run: ssh %s true\n" % SYNTHETIC_CGNAT_ADDRESS, encoding="utf-8"
+        )
+        result = check_secrets_hygiene(_Rule.build(), "mac", self.ctx)
+        self.assertIs(result.state, CheckState.DRIFT)
+        self.assertIn("internal host address", result.reason)
+
+    def test_an_oversized_published_file_leaves_the_rule_undecided(self) -> None:
+        big = self.repo / ".github" / "workflows" / "big.yml"
+        big.write_bytes(b"#" * (checks_compliance.MAX_PUBLISHED_BYTES + 1))
+        result = check_secrets_hygiene(_Rule.build(), "mac", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertIn("big.yml", result.reason)
+
+    def test_one_file_naming_two_shapes_is_one_finding(self) -> None:
+        self.ctx.cache["knob:" + SECRETS_KNOB] = KnobAnswer(
+            SECRETS_KNOB, 1, "infisical", False, ""
+        )
+        (self.repo / ".github" / "workflows" / "deploy.yml").write_text(
+            "env:\n  INFISICAL_PROJECT_ID: %s\nrun: ssh %s true\n"
+            % (SYNTHETIC_PROJECT_ID, SYNTHETIC_CGNAT_ADDRESS),
+            encoding="utf-8",
+        )
+        # One file is one finding,  and the rule tolerates one.
+        result = check_secrets_hygiene(_Rule.build(), "mac", self.ctx)
+        self.assertIs(result.state, CheckState.PASS)
+        self.ctx.cache["knob:" + SECRETS_KNOB] = KnobAnswer(
+            SECRETS_KNOB, 0, "infisical", False, ""
+        )
+        result = check_secrets_hygiene(_Rule.build(), "mac", self.ctx)
+        self.assertIs(result.state, CheckState.DRIFT)
+        self.assertIn("1 secrets-hygiene finding,", result.reason)
+        self.assertIn("1 published file names", result.reason)
+
+    def test_a_command_given_as_a_path_is_not_run(self) -> None:
+        result = check_command(self._command(str(self.root / "security")), "mac", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertEqual(result.reason_code, ReasonCode.ERROR)
+        self.assertIn("is a path", result.reason)
+
+    def test_a_command_rule_cannot_ask_the_keychain_tool_to_write(self) -> None:
+        for detail in ("add-generic-password -s x", "unlock-keychain", ""):
+            result = check_command(self._command("security", detail), "mac", self.ctx)
+            self.assertIs(result.state, CheckState.UNKNOWN)
+            self.assertIn("not allowed to run", result.reason)
+        result = check_command(self._command("fleet-secrets", "set NAME"), "mac", self.ctx)
+        self.assertIn("not allowed to run set", result.reason)
+
+    def test_a_malformed_command_detail_is_not_run_bare(self) -> None:
+        result = check_command(self._command("fleet-secrets", 'doctor "unbalanced'), "mac", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertEqual(result.reason_code, ReasonCode.UNPARSEABLE)
+        self.assertIn("cannot be read", result.reason)
+
+    def test_a_rule_with_no_threshold_says_why_it_is_undecided(self) -> None:
+        reading, reason = checks_compliance.read_threshold(_Rule.build(threshold=None), self.ctx)
+        self.assertIsNone(reading)
+        self.assertIn("declares no threshold", reason)
+        result = check_secrets_hygiene(_Rule.build(threshold=None), "mac", self.ctx)
+        self.assertIs(result.state, CheckState.UNKNOWN)
+        self.assertTrue(result.reason.strip())
+
+    def test_an_unreadable_keychain_certificate_is_reported_not_raised(self) -> None:
+        junk = base64.b64encode(b"not a certificate").decode("ascii")
+        pem = "-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n" % junk
+        unreadable: list[str] = []
+        self.assertEqual(keychain_expiries(pem, "keychain:x", unreadable), [])
+        self.assertEqual(len(unreadable), 1)
+
+    def test_profiles_past_the_cap_are_reported_as_unread(self) -> None:
+        folder = self.home / "profiles"
+        folder.mkdir()
+        for index in range(checks_compliance.MAX_PROFILES + 2):
+            (folder / ("p%03d.mobileprovision" % index)).write_bytes(b"x")
+        calls: list[list[str]] = []
+
+        def fake_run(argv: list[str], **_kwargs: Any) -> Any:
+            calls.append(list(argv))
+            raise checks_compliance.CheckError("refused in the test")
+
+        with mock.patch.object(checks_compliance, "run_cli", fake_run):
+            _found, problems = checks_compliance._profile_expiries(str(folder / "*"), self.ctx)
+        self.assertEqual(len(calls), checks_compliance.MAX_PROFILES)
+        self.assertIn("at most %d" % checks_compliance.MAX_PROFILES, problems[0])
+
+    def test_a_damaged_not_implemented_cache_entry_is_rejected(self) -> None:
+        from fleet_config import cache
+
+        good = {"ruleId": "compliance-x", "ownerSeat": "CLAUDE", "reason": "later"}
+        self.assertEqual(cache._not_implemented_from_dict(good).rule_id, "compliance-x")
+        for key in ("ruleId", "ownerSeat", "reason"):
+            for bad in (None, 7):
+                damaged = dict(good)
+                damaged[key] = bad
+                with self.assertRaisesRegex(ValueError, key):
+                    cache._not_implemented_from_dict(damaged)
+
+    def test_a_platform_filtered_run_checks_only_that_platform(self) -> None:
+        from fleet_config import aggregator
+
+        rule = _Rule.build(scope=("mac", "server"))
+        seen: list[str] = []
+
+        def fake_check(rule: Rule, scope: str, *_args: Any, **_kwargs: Any) -> Any:
+            seen.append(scope)
+            return aggregator._deadline_result(rule, scope, self.ctx, 1)
+
+        fake_manifest = mock.Mock(rules=(), compliance_rules=(rule,), source_path="")
+        fake_manifest.seats = ()
+        with mock.patch.object(aggregator, "_run_check", fake_check):
+            try:
+                aggregator.run_status(
+                    fake_manifest, platform="server", ctx=self.ctx, registry=mock.Mock()
+                )
+            except Exception:  # noqa: BLE001 - only the scopes the loop reached matter
+                pass
+        self.assertEqual(seen, ["server"])
+
+    def test_the_registry_gate_runs_the_compliance_validator(self) -> None:
+        gate = (REPO / "scripts" / "check-fleet-registry.py").read_text(encoding="utf-8")
+        self.assertIn('(validate_compliance_rules, "compliance rules")', gate)
 
 
 class LiveMachineTests(unittest.TestCase):

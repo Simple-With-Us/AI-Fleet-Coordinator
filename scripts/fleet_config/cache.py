@@ -217,10 +217,15 @@ def _not_implemented_from_dict(raw: Any) -> NotImplementedRule:
     """Read one stored not-implemented rule back."""
     if not isinstance(raw, dict):
         raise ValueError("the stored not-implemented rule is not an object")
+    # Every field is checked rather than coerced:  a cache entry with a missing or
+    # wrong-typed field is a damaged cache,  and it is rejected like any other.
+    for key in ("ruleId", "ownerSeat", "reason"):
+        if not isinstance(raw.get(key), str):
+            raise ValueError("the stored not-implemented rule has no text %s" % key)
     return NotImplementedRule(
-        rule_id=str(raw.get("ruleId") or ""),
-        owner_seat=str(raw.get("ownerSeat") or ""),
-        reason=str(raw.get("reason") or ""),
+        rule_id=raw["ruleId"],
+        owner_seat=raw["ownerSeat"],
+        reason=raw["reason"],
     )
 
 
