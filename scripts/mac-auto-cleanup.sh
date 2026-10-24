@@ -15,7 +15,11 @@ HOUSEKEEPER_ENV_FILE="${HOUSEKEEPER_ENV_FILE:-$HOME/.config/fleet/housekeeper.en
 HOUSEKEEPER_INVENTORY=0
 if [ -r "$HOUSEKEEPER_ENV_FILE" ]; then
   # shellcheck disable=SC1090
+  # An unbound variable inside the operator's file must not abort the run, so
+  # `set -u` is suspended for the source and restored right after it.
+  set +u
   . "$HOUSEKEEPER_ENV_FILE"
+  set -u
   HOUSEKEEPER_INVENTORY=1
   export HOUSEKEEPER_SSH_ALIAS
 fi
@@ -993,27 +997,36 @@ fi
 # /etc/cron.daily/coolify-auto-maintenance, so skipping it costs no maintenance:
 # the host still self-maintains on its own schedule.
 #
-# Two things are a fault and not a skip.  A connectivity check that fails is a
-# real fault the operator has to see, and an inventory file that names no target
-# is a misconfiguration, so both fail the run with the variable named.
-if [ -n "${HOUSEKEEPER_SSH_ALIAS:-}" ]; then
-    if ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOUSEKEEPER_SSH_ALIAS" "exit 0" 2>/dev/null; then
-        echo "Triggering remote Hetzner Coolify maintenance..."
-        ssh -o ConnectTimeout=5 "$HOUSEKEEPER_SSH_ALIAS" "/etc/cron.daily/coolify-auto-maintenance" >> /dev/null 2>&1 || {
-            maintenance_status=$?
-            echo "Remote Hetzner maintenance trigger failed: the maintenance command exited $maintenance_status." >&2
-            exit "$maintenance_status"
-        }
+# The remote hop is not optional once the script reaches it.  The target comes
+# from the operator's own inventory, and a target that does not resolve is a
+# configuration fault the operator has to see, so the hop fails closed and says
+# which variable is missing.  It is never skipped in silence.
+#
+# Exit code 75 means the local cleanup ran and only the remote hop failed.
+# The watcher reads that code as "cleaned", so a failed hop never sends it
+# round a second time on an already pruned Mac.
+HOUSEKEEPER_HOP_EXIT=75
+if [ -z "${HOUSEKEEPER_SSH_ALIAS:-}" ]; then
+    if [ "$HOUSEKEEPER_INVENTORY" = "1" ]; then
+        echo "HOUSEKEEPER_SSH_ALIAS is required: the operator's inventory file is present but names no ssh target for the remote Hetzner maintenance trigger." >&2
     else
-        status=$?
-        echo "Remote Hetzner maintenance trigger failed: the ssh connectivity check to the operator's inventory target exited $status." >&2
-        exit "$status"
+        echo "HOUSEKEEPER_SSH_ALIAS is required: no operator inventory file names an ssh target for the remote Hetzner maintenance trigger." >&2
     fi
-elif [ "$HOUSEKEEPER_INVENTORY" = "1" ]; then
-    echo "HOUSEKEEPER_SSH_ALIAS is required: the operator's inventory file is present but names no ssh target." >&2
-    exit 1
+    exit "$HOUSEKEEPER_HOP_EXIT"
+fi
+if ssh_err=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOUSEKEEPER_SSH_ALIAS" "exit 0" 2>&1); then
+    echo "Triggering remote Hetzner Coolify maintenance..."
+    if ssh_err=$(ssh -o ConnectTimeout=5 "$HOUSEKEEPER_SSH_ALIAS" "/etc/cron.daily/coolify-auto-maintenance" 2>&1); then
+        :
+    else
+        maintenance_status=$?
+        echo "Remote Hetzner maintenance trigger failed: the maintenance command exited $maintenance_status: $ssh_err" >&2
+        exit "$HOUSEKEEPER_HOP_EXIT"
+    fi
 else
-    echo "Skipping the remote Hetzner maintenance trigger: no operator inventory file and HOUSEKEEPER_SSH_ALIAS is unset.  The host self-maintains through its own /etc/cron.daily/coolify-auto-maintenance, so no maintenance is lost."
+    status=$?
+    echo "Remote Hetzner maintenance trigger failed: the ssh connectivity check to the operator's inventory target exited $status: $ssh_err" >&2
+    exit "$HOUSEKEEPER_HOP_EXIT"
 fi
 # end remote Hetzner maintenance trigger
 

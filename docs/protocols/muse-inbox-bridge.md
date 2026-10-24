@@ -14,7 +14,9 @@ explicitly cut over.  Deploying this code alone does not change CLAUDE's Muse pi
 2. The Mac bridge reads Mac inboxes directly.  For server seats it uses the existing ssh path to
    the target its own module resolves, which is private deployment inventory tracked under
    AFC-505 and not the `HOUSEKEEPER_SSH_ALIAS` knob the other tools use, and the one fixed Coolify
-   application ID to call `agent_sync.muse_bridge export` inside the listener container.  Export
+   application ID to call `agent_sync.muse_bridge export` inside the listener container.  That ID is
+   operator-owned runtime configuration:  the operator's own listener config carries it as
+   `muse_bridge.remote_app`, and the bridge refuses to run without it.  Export
    sends at most eight classified rows per seat, with content capped at
    6,000 characters.  It reports rotation gaps instead of advancing over unseen rows.  The Mac
    persists a cursor and a decision under `(source seat, Zulip message ID)` before delivery.
@@ -45,7 +47,8 @@ to two bots from collapsing into one decision or chat nudge.
 ## Activation Gate
 
 Configuration is local and remains off in the shipped sample.  On the Mac, set
-`[muse_bridge] enabled = true` with `remote_seats = ["ECHO"]` for the first scope.  On the server,
+`[muse_bridge] enabled = true` with `remote_seats = ["ECHO"]` for the first scope, and `remote_app`
+set to the operator's own value for the production application.  On the server,
 set `[muse_bridge] enabled = true` and `[seat.ECHO] muse_bridge = true` only after the Mac pull,
 decision receipt, and recovery behavior have been checked.  Keep all other per-seat bridge switches
 false.  A seat's old `wake` value remains configured; bridge mode suppresses its direct wake only

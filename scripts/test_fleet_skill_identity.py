@@ -1696,6 +1696,11 @@ class PrivateInventoryTests(unittest.TestCase):
     internal addressing uses, so a copy that grows one is caught whatever host it
     names, and this test source never carries an address itself.
 
+    The alias of the origin box is found the same way.  The guard used to hold
+    its value in a pattern, which put the value in the indexed test source; it
+    now holds the shapes a private host travels in, so the source carries none
+    and the guard still catches the value in whatever file it reaches.
+
     The guard reads every tracked text file, not only the published copies: a guard
     that cannot see a file gives false assurance.  The files that still carry the
     inventory on purpose are listed with the reason and the board item that owns the
@@ -1707,9 +1712,37 @@ class PrivateInventoryTests(unittest.TestCase):
     MESH_IP = re.compile(r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b")
     # MagicDNS names end in the tailnet domain.
     MAGICDNS = re.compile(r"\b[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.ts\.net\b")
-    # The ssh alias of the origin box, as a quoted value or after a user@.  The
-    # product name on its own is not the alias and stays allowed.
-    ALIAS_LITERAL = re.compile(r"""["']coolify["']|root@coolify""")
+    # The private host of the origin box, found by shape and never by value.
+    # An ssh target is written as a user and a host, and a file that keeps a
+    # host in a variable says so in the name of the variable.  These patterns
+    # carry no host of their own, so the guard source never carries the
+    # inventory it looks for.
+    ALIAS_ROOT_AT = re.compile(r"\broot@(?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)")
+    ALIAS_NAMED = re.compile(
+        r"""(?i:\b(?:ssh[_ -]?alias|host[_ -]?alias)\b[ \t]*(?:=|:=|:|\bis\b)[ \t]*"""
+        r"""["'](?P<host>[A-Za-z0-9][A-Za-z0-9.-]*)["'])"""
+    )
+    # A variable whose name says it holds a host or an alias.  The name is
+    # upper case because a default lives in a constant, and the value is a
+    # single label because an ssh alias is one.
+    HOST_NAME = re.compile(r"^(?:[A-Z0-9]+_)*(?:SSH_)?(?:HOST|HOSTNAME|ALIAS|SSH_ALIAS)$")
+    HOST_ASSIGNMENT = re.compile(
+        r"""^[ \t]*(?:export[ \t]+|declare[ \t]+-\w+[ \t]+|local[ \t]+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)"""
+        r"""[ \t]*=[ \t]*(?P<value>"[^"]*"|'[^']*'|[^\s#]+)"""
+    )
+    HOST_ENV_DEFAULT = re.compile(
+        r"""os\.environ\.get\(\s*["'](?P<name>[A-Za-z_][A-Za-z0-9_]*)["']\s*,\s*"""
+        r"""(?P<value>"[^"]*"|'[^']*')"""
+    )
+    # A single label, which is the shape of an ssh alias.
+    SINGLE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+    # The names and the addresses reserved for documentation.  They carry no
+    # inventory, and the house convention in a fixture is one of them.
+    RESERVED_HOST = re.compile(
+        r"^(?:localhost|local|invalid|example|example\.(?:com|net|org|test))$", re.I
+    )
+    DOC_ADDRESS = re.compile(r"^(?:192\.0\.2\.\d{1,3}|198\.51\.100\.\d{1,3}|203\.0\.113\.\d{1,3})$")
+    LOOPBACK = re.compile(r"^(?:127\.\d{1,3}\.\d{1,3}\.\d{1,3}|0\.0\.0\.0|::1)$")
     # The ssh command forms a shell line can take.  A prose file only counts a
     # command that starts its line, because a paragraph that mentions ssh is
     # not a command.  A code file also counts a command after a shell keyword
@@ -1776,17 +1809,16 @@ class PrivateInventoryTests(unittest.TestCase):
         "scripts/recall-tunnel": "AFC-505: a live tunnel that reaches the box by address",
     }
 
-    # The files that still carry the ssh alias on purpose, for the same reason.
+    # The files that still carry a private host on purpose, for the same
+    # reason.  The guard finds each of them by shape, so an entry earns its
+    # place while the file still trips one of those shapes.
     ALIAS_ALLOWLIST = {
         "docs/MAC-LOCAL-PROCESSES.md": "AFC-505: the live inventory of Mac local processes",
         "docs/protocols/coolify-fleet-cli-sync.md": "AFC-505: the protocol for the sync that reaches the box",
         "fleet-sentry-monitor/monitor.py": "AFC-505: a live monitor that defaults to the alias",
         "scripts/agent_sync/muse_bridge_mac.py": "AFC-505: the live bridge that defaults to the alias",
-        "scripts/agent_sync/tests/test_chat_nudges.py": "AFC-505: a fixture that binds the host it fakes",
         "scripts/fleet-cli-sync.py": "AFC-505: a live sync that names the receiver it ships to",
-        "scripts/fleet_lanes/tests/test_install_mcp.py": "AFC-505: a fixture that uses the name as an MCP server label",
         "scripts/fleet_rag/doctor.py": "AFC-505: a live doctor that defaults to the alias",
-        "scripts/fleet_rag/tests/test_recall.py": "AFC-505: a fixture that names the host it filters on",
         "scripts/recall-tunnel": "AFC-505: a live tunnel that reaches the box by alias and address",
         "scripts/test_fleet_cli_sync.py": "AFC-505: a fixture that asserts the receiver the sync names",
     }
@@ -1957,12 +1989,55 @@ class PrivateInventoryTests(unittest.TestCase):
                 hits.append(f"{rel}:{line}")
         return hits
 
+    def _reserved_host(self, value: str) -> bool:
+        """Whether a value is a name or an address reserved for documentation."""
+        return bool(
+            self.RESERVED_HOST.match(value)
+            or self.DOC_ADDRESS.match(value)
+            or self.LOOPBACK.match(value)
+        )
+
+    def _host_literals(self, text: str) -> list[tuple[int, str, str]]:
+        """The variables whose name says they hold a host, with the value.
+
+        The value is a literal, because a variable that carries a variable or
+        a placeholder is resolved at runtime and is not inventory.
+        """
+        out: list[tuple[int, str, str]] = []
+        for number, line in enumerate(text.split("\n"), 1):
+            for pattern in (self.HOST_ASSIGNMENT, self.HOST_ENV_DEFAULT):
+                for match in pattern.finditer(line):
+                    name = match.group("name")
+                    if not self.HOST_NAME.match(name):
+                        continue
+                    value = match.group("value").strip("\"'")
+                    if "$" in value or "<" in value:
+                        continue
+                    if not self.SINGLE_LABEL.match(value):
+                        continue
+                    out.append((number, name, value))
+        return out
+
     def _alias_hits(self, rel: str, text: str) -> list[str]:
-        """The places a file carries the ssh alias."""
+        """The places a file carries a host in the shape of private inventory.
+
+        The shapes are the ones in which a private host reaches a file: an ssh
+        target written as a user and a host, and a variable whose name says it
+        holds a host given a literal value.  Neither shape names a host, so
+        this source carries no inventory of its own, and a copy of the guard
+        in a published pack is as safe as the tree.
+        """
         hits: list[str] = []
-        for match in self.ALIAS_LITERAL.finditer(text):
-            line = text.count("\n", 0, match.start()) + 1
-            hits.append(f"{rel}:{line} (the ssh alias)")
+        for pattern in (self.ALIAS_ROOT_AT, self.ALIAS_NAMED):
+            for match in pattern.finditer(text):
+                if self._reserved_host(match.group("host")):
+                    continue
+                line = text.count("\n", 0, match.start()) + 1
+                hits.append(f"{rel}:{line} (an ssh target written as a host)")
+        for number, name, value in self._host_literals(text):
+            if self._reserved_host(value):
+                continue
+            hits.append(f"{rel}:{number} ({name} holds a literal host)")
         return hits
 
     def _ssh_hits(self, rel: str, text: str) -> list[str]:
