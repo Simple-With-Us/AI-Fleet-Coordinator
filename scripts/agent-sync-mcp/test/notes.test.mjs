@@ -223,8 +223,9 @@ test("the relay is gone:  no NOTES_RELAY_CONSUMER or Operator Zulip identity in 
   const vars = wranglerConfig().vars;
   assert.equal(vars.NOTES_RELAY_CONSUMER, undefined);
   assert.equal(vars.OPERATOR_NOTES_KEY, undefined, "a Worker secret, never committed in wrangler.jsonc");
-  assert.equal(vars.LISTENER_API_URL, "");
-  assert.equal(operatorNotesClientFromEnv({ ...vars, OPERATOR_NOTES_KEY: KEY }, { fetch: async () => null }), null, "the committed config has no Operator URL yet");
+  assert.equal(vars.LISTENER_API_URL, "https://operator.jays.services", "the owner-approved Operator route");
+  assert.notEqual(operatorNotesClientFromEnv({ ...vars, OPERATOR_NOTES_KEY: KEY }, { fetch: async () => null }), null, "the committed origin and a key make a client");
+  assert.equal(operatorNotesClientFromEnv(vars, { fetch: async () => null }), null, "no key, no client:  the notes tools answer not_configured");
 });
 
 // ---------------------------------------------------------------- signing and the request

@@ -6,8 +6,9 @@ environment), and every other GitHub task runs under the seat's own GitHub App t
 git-relay mints and refreshes from App keys in Infisical.  Every call is checked against per-seat
 policy and written to the audit log, allowed or denied.
 
-The MCP wrapper is **GR-MCP**:  `git-relay mcp`.  It is the only MCP server for GitHub work and
-it is not reachable through ST-MCP.
+The MCP wrapper is **GR-MCP**:  `git-relay mcp`.  It is the GitHub work's own MCP server.  The
+bearer-token arrangement is shared with ST-MCP, so a seat may find these tools on its ST-MCP
+connection as well;  GR-MCP is the other route, and the tool names are the same either way.
 
 ## git-relay owns per-bot GitHub token minting (owner decision 2026-10-22, Q5)
 

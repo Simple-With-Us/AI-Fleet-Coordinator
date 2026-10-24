@@ -67,6 +67,18 @@ SEATS = {
         "ZULIP_KEY_CODEX",
         "ZULIP_EMAIL_CODEX",
     ),
+    # MA (Muse Assist, the seat Jay calls Rob):  its bot key already lives in
+    # Fleet-OPS prod /zulip as MA_ZULIP_* (names verified live 2026-10-23), so
+    # read it there instead of duplicating it into the AI Fleet Coordinator
+    # project (secret consolidation).  The 5-tuple is (project, email name,
+    # key name, Worker secret name, email var).
+    "MA": (
+        FLEET_OPS_PROJECT,
+        "MA_ZULIP_EMAIL",
+        "MA_ZULIP_KEY",
+        "ZULIP_KEY_MA",
+        "ZULIP_EMAIL_MA",
+    ),
     "JET": ("ZULIP_JET", "ZULIP_KEY_JET", "ZULIP_EMAIL_JET"),
     "GROK-WEB": ("ZULIP_GROK_WEB", "ZULIP_KEY_GROK_WEB", "ZULIP_EMAIL_GROK_WEB"),
     "ECHO": ("ZULIP_ECHO", "ZULIP_KEY_ECHO", "ZULIP_EMAIL_ECHO"),
@@ -74,7 +86,12 @@ SEATS = {
 }
 # Bot email local parts whose seat tag is not the upper-cased local part
 # (cli.py EMAIL_TAG_OVERRIDES, src/contract.js EMAIL_TAG_OVERRIDES).
-TAG_OVERRIDES = {"openai-dot": "JET", "instinct-bat": "ECHO", "instinct-owl": "WISE"}
+TAG_OVERRIDES = {
+    "muse-assist": "MA",
+    "openai-dot": "JET",
+    "instinct-bat": "ECHO",
+    "instinct-owl": "WISE",
+}
 
 
 def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
@@ -102,8 +119,9 @@ def fleet_ops_project() -> str:
 
 def seat_entry(seat: str) -> tuple[str, str, str, str, str]:
     """(project, email name, key name, Worker secret name, email var) for a seat.
-    Legacy seats carry a 3-tuple prefix and derive the AFC project + names; CODEX
-    carries the explicit 5-tuple with the Fleet-OPS project resolved at call time."""
+    Legacy seats carry a 3-tuple prefix and derive the AFC project + names; the
+    Fleet-OPS seats (CODEX, MA) carry the explicit 5-tuple, and a None project
+    (CODEX) is resolved at call time."""
     entry = SEATS[seat]
     if len(entry) == 5:
         project, email_name, key_name, secret_name, email_var = entry
