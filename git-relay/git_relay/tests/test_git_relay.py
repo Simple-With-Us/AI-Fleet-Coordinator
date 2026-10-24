@@ -504,8 +504,9 @@ class TestMinter(unittest.TestCase):
         from git_relay.app_tokens import AppTokenMinter
 
         class Source:
-            def secret(self, name):
-                return {"GH_APP_SWU_ECHO_ID": "100", "GH_APP_SWU_ECHO_PRIVATE_KEY": "PEM"}[name]
+            def secrets(self, names):
+                values = {"GH_APP_SWU_ECHO_ID": "100", "GH_APP_SWU_ECHO_PRIVATE_KEY": "PEM"}
+                return {n: values[n] for n in names}
 
         api_calls = []
 
@@ -736,6 +737,68 @@ class TestFleetSecretsSource(unittest.TestCase):
         with self.assertRaises(AppTokenError) as ctx:
             FleetSecretsSource(runner=missing).secret("GH_APP_X_ID")
         self.assertIn("not found", str(ctx.exception))
+
+    def test_secrets_reads_a_pair_in_one_cli_call(self):
+        calls = []
+        source = self._source(
+            stdout=b'{"GH_APP_SWU_ECHO_ID": "42", "GH_APP_SWU_ECHO_PRIVATE_KEY": "pem"}',
+            calls=calls,
+        )
+        pair = source.secrets(["GH_APP_SWU_ECHO_ID", "GH_APP_SWU_ECHO_PRIVATE_KEY"])
+        self.assertEqual(
+            pair, {"GH_APP_SWU_ECHO_ID": "42", "GH_APP_SWU_ECHO_PRIVATE_KEY": "pem"}
+        )
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0],
+            [
+                "fleet-secrets",
+                "get",
+                "GH_APP_SWU_ECHO_ID",
+                "GH_APP_SWU_ECHO_PRIVATE_KEY",
+                "--path",
+                "/github-apps",
+            ],
+        )
+        # Cached:  reading the pair (or one name of it) again runs no CLI call.
+        self.assertEqual(
+            source.secrets(["GH_APP_SWU_ECHO_ID", "GH_APP_SWU_ECHO_PRIVATE_KEY"]), pair
+        )
+        self.assertEqual(source.secret("GH_APP_SWU_ECHO_ID"), "42")
+        self.assertEqual(len(calls), 1)
+
+    def test_absent_name_is_not_refetched_per_request(self):
+        from git_relay.app_tokens import AppTokenError
+
+        calls = []
+        source = self._source(returncode=3, calls=calls)
+        with self.assertRaises(AppTokenError):
+            source.secret("GH_APP_NOPE_ID")
+        with self.assertRaises(AppTokenError):
+            source.secret("GH_APP_NOPE_ID")
+        self.assertEqual(len(calls), 1)
+
+    def test_usage_failure_surfaces_the_cli_reason(self):
+        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+
+        def runner(argv, capture_output, timeout):
+            return subprocess.CompletedProcess(
+                argv, 2, stdout=b"", stderr=b"fleet-secrets: ../x is not a folder path\n"
+            )
+
+        source = FleetSecretsSource(runner=runner)
+        with self.assertRaises(AppTokenError) as ctx:
+            source.secret("GH_APP_SWU_ECHO_ID")
+        self.assertIn("GH_APP_SWU_ECHO_ID", str(ctx.exception))
+        self.assertIn("not a folder path", str(ctx.exception))
+
+    def test_path_guard_matches_the_cli_rules(self):
+        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+
+        for bad in ("github-apps", "", "/github apps", "/github-apps/../linear", "/github-apps/.."):
+            with self.assertRaises(AppTokenError, msg=bad):
+                FleetSecretsSource(path=bad)
+        FleetSecretsSource(path="/github-apps")  # the real folder stays accepted
 
     def test_empty_value_is_refused(self):
         from git_relay.app_tokens import AppTokenError
@@ -1796,3 +1859,60 @@ class LegacyStateAdoption(unittest.TestCase):
                 os.chdir(origin)
         self.assertTrue((directory / "pr-relay-outcomes.json").exists())
         self.assertFalse(explicit.exists())
+
+    def _app_mint_env(self, **overrides):
+        policy = json.dumps(
+            {
+                "swu-echo": {
+                    "token": "e" * 32,
+                    "actions": ["open_pr"],
+                    "repos": ["acme-org/acme-repo"],
+                }
+            }
+        )
+        env = dict(os.environ)
+        env["GIT_RELAY_SEATS_JSON"] = policy
+        env["GITHUB_TOKEN"] = "t" * 40
+        env.pop("GIT_RELAY_APP_MINT", None)
+        env.update(overrides)
+        return unittest.mock.patch.dict(os.environ, env, clear=True)
+
+    def test_from_env_honors_the_configured_secrets_path(self):
+        from git_relay import app_tokens, server
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        captured = {}
+        real_source = app_tokens.FleetSecretsSource
+
+        def fake_source(**kwargs):
+            captured.update(kwargs)
+            return real_source(runner=lambda *a, **k: None, **kwargs)
+
+        origin = pathlib.Path.cwd()
+        with self._app_mint_env(GIT_RELAY_SECRETS_PATH="/other-apps"), unittest.mock.patch.object(
+            server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
+        ), unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source):
+            os.chdir(directory)
+            try:
+                server.from_env()
+            finally:
+                os.chdir(origin)
+        self.assertEqual(captured.get("path"), "/other-apps")
+
+    def test_from_env_rejects_an_empty_secrets_path(self):
+        from git_relay import server
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        origin = pathlib.Path.cwd()
+        with self._app_mint_env(GIT_RELAY_SECRETS_PATH=""), unittest.mock.patch.object(
+            server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
+        ):
+            os.chdir(directory)
+            try:
+                with self.assertRaises(SystemExit) as ctx:
+                    server.from_env()
+            finally:
+                os.chdir(origin)
+        self.assertIn("GIT_RELAY_SECRETS_PATH", str(ctx.exception))
