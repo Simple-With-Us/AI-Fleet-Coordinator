@@ -221,10 +221,16 @@ export class FakeLinear {
         return { teams: connection(this.teams.map((t) => ({ id: t.id, key: t.key, name: t.name, states: connection(t.states) }))) };
       case "BoardLabels": {
         // Linear pages this connection like every other one;  the cursor is
-        // the offset into the label list.
+        // the offset into the label list.  Only no cursor (the first page) or
+        // a cursor this fake handed out is accepted:  an empty, non-string or
+        // made-up cursor throws, so a caller that sends one fails its test
+        // instead of quietly getting the first page again.
         const first = Number.isInteger(variables.first) ? variables.first : 250;
-        const raw = variables.after === null || variables.after === undefined || variables.after === "" ? 0 : Number(variables.after);
-        const start = Number.isInteger(raw) && raw >= 0 ? raw : 0;
+        const after = variables.after;
+        if (after !== null && after !== undefined && (typeof after !== "string" || !/^(0|[1-9][0-9]*)$/.test(after))) {
+          throw new TypeError(`fake linear: BoardLabels takes no cursor or a canonical offset string, not ${JSON.stringify(after)}`);
+        }
+        const start = after === null || after === undefined ? 0 : Number(after);
         const nodes = this.labels.slice(start, start + Math.max(first, 1));
         const end = start + nodes.length;
         const hasNextPage = end < this.labels.length;

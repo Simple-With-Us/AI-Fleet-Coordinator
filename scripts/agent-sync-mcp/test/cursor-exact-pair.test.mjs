@@ -97,7 +97,7 @@ test('static HTTPS, JET, 127.0.0.1 and exact-pair native consent wording remain 
 test('Cursor Cloud consent displays its HTTPS callback without a localhost warning', async () => {
   const response = consentPage({ clientName: 'Cursor', clientDomain: 'cursor.com', clientId: CLIENT,
     redirectHost: 'www.cursor.com', loopback: false, scopes: ['zulip:read'], seat: 'CURSOR',
-    handle: 'synthetic-unused-consent', replacing: [] }, new Headers());
+    handle: 'synthetic-unused-consent', replacing: [], eventsOnly: false }, new Headers());
   const html = await response.text();
   assert.match(html, /www\.cursor\.com/);
   assert.doesNotMatch(html, /localhost must resolve/);

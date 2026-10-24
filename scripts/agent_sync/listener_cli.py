@@ -341,6 +341,13 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------------------------
 
 
+def _wake_loop_status_line(status: dict[str, Any]) -> str | None:
+    enabled = status.get("wake_loop_prevention")
+    if type(enabled) is not bool:
+        return None
+    return "wake loop prevention: " + ("ON" if enabled else "OFF (topic loop guard bypassed)")
+
+
 def cmd_status(rt: Any, args: argparse.Namespace) -> int:
     root = _root(rt)
     home = _home(rt)
@@ -497,6 +504,9 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
                         lease.get("pending"),
                     )
                 )
+        loop_status = _wake_loop_status_line(status)
+        if loop_status:
+            lines.append(loop_status)
         for held_key in status.get("loop_guard") or []:
             # A bot DM has no owner to post, so its count rolls and clears itself;  a topic counts
             # until the owner posts.  Saying the wrong one would send someone to wait for a reset

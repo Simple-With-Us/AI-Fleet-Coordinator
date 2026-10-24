@@ -464,6 +464,7 @@
     },
     "extraSeats": {
       "JET": "chatgpt",
+      "JET-CHAT": "chatgpt",
       "OPERATOR": "operator"
     },
     "patterns": [
@@ -483,7 +484,7 @@
     "notes": "AFC-361 (owner, Oct 19):  board writes, notes_create and notes_update, and apple-notes-coding.sh carry a session id, so resume-wake (docs/protocols/resume-wake-safety-design.md section 4) can find a seat's session for a topic.  A writer takes the id from its explicit flag or argument, then AGENT_SESSION, then its platform's variable in envBySeat (a seat with no entry there tries every variable in fallbackEnv, in order), and refuses when it finds none, unless the writer's resolved seat is exempt.  Exempt seats have one thread with the owner, so there is no session id or thread name to pass:  Grok bots (GROK-BOT and GB-*), MA (Rob), JET (Jet, OpenAI dot), WISE and ECHO (Instinct).  The exemption is decided from the resolved seat (AGENT_SEAT, a launcher's AGENT_LAUNCH_SEAT, the per-call identity, or a relay sender), never from a flag the caller sets.  scripts/linear-board/board, scripts/apple-notes-coding.sh, scripts/agent_sync/session_ids.py and scripts/agent-sync-mcp/src/session-ids.js carry copies of this block, and scripts/test_session_ids_parity.py keeps them equal.  Platforms with no variable of their own (FX, Clutch, AG, MC, GROK-WEB) pass --session or set AGENT_SESSION.",
     "idPattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$",
     "genericEnv": "AGENT_SESSION",
-    "exemptSeats": ["ECHO", "GROK-BOT", "JET", "MA", "WISE"],
+    "exemptSeats": ["ECHO", "GROK-BOT", "JET", "JET-CHAT", "MA", "WISE"],
     "exemptPatterns": ["GB-*"],
     "envBySeat": {
       "CLAUDE": ["CLAUDE_CODE_SESSION_ID"],
