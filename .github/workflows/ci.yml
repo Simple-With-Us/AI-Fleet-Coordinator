@@ -111,6 +111,10 @@ jobs:
     # stay green, exactly the way the cleanup lock contract stayed untested
     # until the Mac scripts job was added.  A step is what makes the test real.
     - name: Lark bridge tests
+      # The suite raises SIGTERM into its own process to break a blocking
+      # read, so a test that hangs would hold the job open with nothing to
+      # report.  The step ends on its own after five minutes instead.
+      timeout-minutes: 5
       run: cd scripts && python3 test-lark-mm-bridge.py
     # Keeps the docs/PR-AUTOFIX.md caller template's permissions and secrets
     # block in step with what the pr-autofix reusable declares and consumes.

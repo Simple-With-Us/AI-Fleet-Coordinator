@@ -7,6 +7,7 @@ Run: python3 scripts/test-lark-mm-bridge.py
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import io
 import json
@@ -14,6 +15,7 @@ import os
 import re
 import signal
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -31,6 +33,41 @@ spec.loader.exec_module(bridge_mod)
 # A private root for the seat inbox, so a test that runs a turn never writes
 # into the real seat's queue on this Mac.
 _TEST_ROOT = tempfile.mkdtemp(prefix="lark-mm-bridge-test-")
+
+
+@contextlib.contextmanager
+def guarded_sigterm(delay=0.2):
+    """Raise SIGTERM into this process after a delay, without ever killing it.
+
+    The signal has to break the blocking read in the bridge, and it can only
+    be raised from another thread, because a handler that returns leaves the
+    main thread parked in readline() (PEP 475).  The catch is the delay:  the
+    signal can land after the body has already failed, and with the default
+    action for SIGTERM that kill takes the whole test process down, so the
+    real failure never reaches the log and CI shows a step that died on a
+    signal instead of the assertion that failed.  So a handler that does
+    nothing is installed first, and the timer is cancelled and joined before
+    the previous handlers come back.
+    """
+
+    def absorb(_signum, _frame):
+        return None
+
+    previous_term = signal.signal(signal.SIGTERM, absorb)
+    previous_int = signal.signal(signal.SIGINT, absorb)
+    timer = threading.Timer(delay, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    # A daemon timer cannot hold the interpreter open if the test dies early.
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+    finally:
+        timer.cancel()
+        # The join is what makes the cancel safe:  the timer thread is gone,
+        # so no signal can still be on its way to a restored handler.
+        timer.join(timeout=5.0)
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
 
 
 def update(kind, text):
@@ -630,18 +667,61 @@ class BridgeTests(unittest.TestCase):
         bridge_mod.LarkEventReader = lambda *a, **kw: BlockingReader()
         # signal.signal() only works on the main thread, and unittest runs the
         # test there, so run() stays on this thread and the signal is raised
-        # from another one, the way launchd would.
-        threading.Timer(0.2, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+        # from another one, the way launchd would.  The guard keeps the
+        # process alive if the signal lands after a failure here.
         try:
-            bridge.run()
+            with guarded_sigterm(0.2):
+                bridge.run()
         finally:
             bridge_mod.LarkEventReader = real_reader
-            signal.signal(signal.SIGTERM, signal.SIG_DFL)
-            signal.signal(signal.SIGINT, signal.default_int_handler)
 
         self.assertTrue(released.is_set(), "the event reader was never stopped")
         self.assertTrue(bridge.stopping.is_set())
         self.assertTrue(bridge.state_file.exists(), "state was not saved on shutdown")
+
+    def test_a_failure_under_the_guarded_signal_is_reported_and_not_a_dead_process(self):
+        """A failed signal test must report the failure, not die on the signal.
+
+        The signal that breaks the blocking read arrives from another thread
+        and it can land after the body has already failed.  With the default
+        action for SIGTERM that kill takes the whole process down, so the
+        step ends on a signal and the assertion that failed never reaches
+        the log.  Both patterns run in a child process here:  the old one,
+        which dies on the signal, and the guarded one, which reports the
+        failure and exits on its own code.
+        """
+        child = (
+            "import importlib.util, os, signal, sys, threading, time\n"
+            "spec = importlib.util.spec_from_file_location('lark_bridge_tests', %r)\n"
+            "mod = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(mod)\n"
+            "try:\n"
+            "    if sys.argv[1] == 'guarded':\n"
+            "        with mod.guarded_sigterm(0.2):\n"
+            "            raise RuntimeError('boom')\n"
+            "    threading.Timer(0.2, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()\n"
+            "    raise RuntimeError('boom')\n"
+            "except RuntimeError:\n"
+            "    if sys.argv[1] != 'guarded':\n"
+            "        signal.signal(signal.SIGTERM, signal.SIG_DFL)\n"
+            "print('failed as expected', flush=True)\n"
+            "time.sleep(1.0)\n"
+            "sys.exit(3)\n"
+        ) % (str(Path(__file__).resolve()),)
+
+        old = subprocess.run(
+            [sys.executable, "-c", child, "old"], capture_output=True, text=True, timeout=30
+        )
+        # The old pattern:  the pending signal kills the process, so the
+        # failure never reaches the log.
+        self.assertEqual(old.returncode, -signal.SIGTERM, old.stderr)
+        guarded = subprocess.run(
+            [sys.executable, "-c", child, "guarded"], capture_output=True, text=True, timeout=30
+        )
+        # The guarded pattern:  the failure is reported and the process ends
+        # on its own code, with the signal absorbed.
+        self.assertEqual(guarded.returncode, 3, guarded.stderr)
+        self.assertIn("failed as expected", guarded.stdout)
 
     def test_acp_handshake_and_prompt_against_fake_process(self):
         script = FakeSessionScript(answer="BRIDGE_OK")
@@ -2109,6 +2189,20 @@ class LarkSurfaceTests(unittest.TestCase):
         again.active_ids = set()
         again._load_state()
         self.assertEqual(again.last_chat_id, "oc_home")
+
+    def test_the_owner_chat_is_saved_with_the_turn(self):
+        """The chat the owner wrote in has to be in the file, not only in memory.
+
+        The turn's own save happens inside the queue, and the pointer to the
+        owner's chat moved after it, so the file kept the previous chat
+        until some later save.  A crash in between sent the next signal that
+        named no chat of its own to the previous chat.
+        """
+        bridge = self.make_bridge()
+        bridge._handle(self.owner_message("om_1", "hello", chat_id="oc_home"))
+        bridge.turns.get_nowait()
+        state = json.loads(bridge.state_file.read_text(encoding="utf-8"))
+        self.assertEqual(state["last_chat_id"], "oc_home")
 
     def test_a_signal_job_is_requeued_on_a_restart(self):
         bridge = self.make_bridge()

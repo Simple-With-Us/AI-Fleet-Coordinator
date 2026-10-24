@@ -1524,6 +1524,12 @@ class Bridge:
         # next signal into the wrong chat.
         if self._queue_turn(message_id, chat_id, content, sender_id):
             self.last_chat_id = chat_id
+            # The pointer is saved with the turn, not after it.  The turn's
+            # own save happens inside the queue, so a crash between the two
+            # left the previous chat in the file and the next signal that
+            # named no chat of its own was sent to that previous chat.
+            if not self._save_state():
+                log("could not persist the owner's chat pointer")
 
     def _queue_turn(self, message_id, chat_id, content, sender_id):
         """Put one message on the turn queue and persist the job.
