@@ -277,6 +277,7 @@ export const Q_ISSUE = `query BoardIssue($id: String!) {
   issue(id: $id) {
     ...BoardIssue
     description
+    delegate { id name }
     relations(first: 50) { nodes { type relatedIssue { id identifier } } }
     inverseRelations(first: 50) { nodes { type issue { id identifier } } }
   }
@@ -544,7 +545,7 @@ export const LINEAR_TOOLS = Object.freeze([
   {
     name: "linear_claim",
     title: "Linear Claim",
-    description: "Claim an issue for your seat:  sets the claimed:<seat> label and posts a CLAIMED comment.  An issue another seat holds is refused.  Writes need the server's write switch on.",
+    description: "Claim an issue for your seat:  sets the claimed:<seat> label where it exists and delegates the issue to the seat's Linear app user, and posts a CLAIMED comment.  An issue another seat holds is refused.  Writes need the server's write switch on.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -554,7 +555,7 @@ export const LINEAR_TOOLS = Object.freeze([
     outputSchema: {
       type: "object",
       required: ["id", "identifier", "label"],
-      properties: { id: { type: "string" }, identifier: { type: "string" }, label: { type: "string" }, held_by: { type: ["string", "null"] }, duplicate: { type: "boolean" } },
+      properties: { id: { type: "string" }, identifier: { type: "string" }, label: { type: ["string", "null"] }, delegate: { type: ["string", "null"] }, held_by: { type: ["string", "null"] }, duplicate: { type: "boolean" } },
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
   },

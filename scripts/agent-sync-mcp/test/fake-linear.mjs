@@ -73,7 +73,7 @@ export class FakeLinear {
   }
 
   /** An issue, with the parts every query in this module selects. */
-  addIssue({ id = null, identifier = "AFC-1", title = "An issue", team = "AFC", state = "Todo", labels = [], description = "", priority = 0, url = null } = {}) {
+  addIssue({ id = null, identifier = "AFC-1", title = "An issue", team = "AFC", state = "Todo", labels = [], description = "", priority = 0, url = null, delegate = null } = {}) {
     const row = {
       id: id ?? uniq(identifier),
       identifier,
@@ -87,6 +87,7 @@ export class FakeLinear {
       team: this.teamNode(team),
       labels: labels.map((name) => ({ id: this.labelNode(name).id, name: String(name), parent: null })),
       comments: [],
+      delegate: delegate ? { id: delegate.id, name: delegate.name ?? delegate.id } : null,
     };
     this.issues.push(row);
     return row;
@@ -290,6 +291,9 @@ export class FakeLinear {
     const nameOf = (labelId) => this.labels.find((l) => l.id === labelId)?.name ?? labelId;
     for (const labelId of input.addedLabelIds ?? []) if (!row.labels.some((l) => l.id === labelId)) row.labels.push({ id: labelId, name: nameOf(labelId), parent: null });
     for (const labelId of input.removedLabelIds ?? []) row.labels = row.labels.filter((l) => l.id !== labelId);
+    if (Object.hasOwn(input, "delegateId")) {
+      row.delegate = input.delegateId === null ? null : { id: input.delegateId, name: input.delegateId === this.viewer.id ? this.viewer.name : input.delegateId };
+    }
     return { success: true, issue: this.issueNode(row) };
   }
 
