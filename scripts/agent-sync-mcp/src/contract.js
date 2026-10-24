@@ -409,6 +409,11 @@ export function seatTagFor(user) {
   return local.toUpperCase() || String(user.full_name ?? "").toUpperCase().split(/\s+/).filter(Boolean).join("-");
 }
 
+/** The tag a seat expects its key to sign as when it is not the seat name:
+ * JET-CHAT runs on Jet's bot (one bot, two seats).  Every other seat expects
+ * its own name (src/hosted-tools.js seatProblem). */
+export const SEAT_TAG_EXPECTATIONS = Object.freeze({ "JET-CHAT": "JET" });
+
 /** First 8 characters of the id with hyphens removed, lowercase, [a-z0-9] only. */
 export function sessionTag(sessionId) {
   if (!sessionId) return null;

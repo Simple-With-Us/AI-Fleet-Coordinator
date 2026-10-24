@@ -31,6 +31,18 @@ enum CellState: String {
         }
     }
 
+    /// Whether the grid paints this state red.
+    ///
+    /// It is the same two states the badge paints red:  a missing artifact and a
+    /// cell the app could not read.  The tint lives in the view and this lives in
+    /// the model,  so the badge count and the grid cannot mean two different things:
+    /// the count is the number of red cells on the screen.
+    var isRed: Bool {
+        switch self {
+        case .missing, .unknown: return true
+        case .passed, .drift, .unproven, .unsupported, .covered: return false
+        }
+    }
 }
 
 /// One cell of the grid:  one seat against one config kind.
