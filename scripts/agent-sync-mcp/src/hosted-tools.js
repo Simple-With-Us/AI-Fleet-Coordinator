@@ -178,6 +178,30 @@ export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // a seat inside Linear's request budget, short enough that a team rename or a
 // new state lands without a deploy.
 export const LINEAR_WORKSPACE_TTL_MS = 60 * 60 * 1000;
+// The label snapshot reads 250 labels a page and gives up after this many
+// pages (10,000 labels), so a server that keeps answering hasNextPage cannot
+// hold a claim in a loop.  Giving up is an error, never a short list:  a
+// short list could miss a claim label the workspace has.
+export const LINEAR_LABEL_PAGE_SIZE = 250;
+export const LINEAR_LABEL_MAX_PAGES = 40;
+// One issue-label page, checked before anything reads it.  A page that does
+// not match (no connection, a node with no id or name, a next page with no
+// cursor) is refused rather than read as fewer labels, for the same reason.
+const LinearLabelPage = z.looseObject({
+  issueLabels: z.looseObject({
+    nodes: z.array(z.looseObject({
+      id: z.string().min(1),
+      name: z.string(),
+      isGroup: z.boolean().nullish(),
+      parent: z.looseObject({ name: z.string() }).nullish(),
+      team: z.looseObject({}).nullish(),
+    })),
+    pageInfo: z.looseObject({
+      hasNextPage: z.boolean(),
+      endCursor: z.string().min(1).nullish(),
+    }),
+  }),
+});
 
 /** The server instructions:  the stdio ones plus one sentence on fleet recall. */
 export function hostedInstructions(seat) {
@@ -1394,18 +1418,27 @@ export class HostedTools {
     });
     // Board follows every label page (board:1635), and so does this:  the first
     // 250 alone could miss a claim label that exists, and the claim would
-    // then run without the fleet's marker.
+    // then run without the fleet's marker.  Each page is checked before it is
+    // read, and the walk is bounded:  a bad page, a next page with no cursor,
+    // a cursor seen before or more than LINEAR_LABEL_MAX_PAGES pages all fail
+    // the call instead of returning a partial list.
     const labels = await this.linearCall(async () => {
       const nodes = [];
+      const seen = new Set();
       let after = null;
-      for (;;) {
-        const data = await client.call(Q_LABELS, { first: 250, after });
-        const conn = data?.issueLabels;
-        for (const node of conn?.nodes ?? []) nodes.push(node);
-        if (conn?.pageInfo?.hasNextPage !== true || !conn.pageInfo.endCursor) break;
-        after = conn.pageInfo.endCursor;
+      for (let page = 0; page < LINEAR_LABEL_MAX_PAGES; page += 1) {
+        const parsed = LinearLabelPage.safeParse(await client.call(Q_LABELS, { first: LINEAR_LABEL_PAGE_SIZE, after }));
+        if (!parsed.success) throw new ToolError("upstream_error", "Linear answered an issue-label page this server could not read");
+        const { nodes: pageNodes, pageInfo } = parsed.data.issueLabels;
+        nodes.push(...pageNodes);
+        if (!pageInfo.hasNextPage) return nodes;
+        const cursor = pageInfo.endCursor;
+        if (!cursor) throw new ToolError("upstream_error", "Linear said more issue labels follow but gave no cursor for them");
+        if (seen.has(cursor)) throw new ToolError("upstream_error", "Linear repeated an issue-label cursor");
+        seen.add(cursor);
+        after = cursor;
       }
-      return nodes;
+      throw new ToolError("upstream_error", `Linear has more than ${LINEAR_LABEL_MAX_PAGES} pages of issue labels;  this server reads at most ${LINEAR_LABEL_MAX_PAGES * LINEAR_LABEL_PAGE_SIZE}.`);
     });
     const value = {
       teams: teams.map((t) => ({ id: t.id, key: t.key, name: t.name, states: (t.states?.nodes ?? []).map((s) => ({ id: s.id, name: s.name, type: s.type })) })),
@@ -1413,7 +1446,7 @@ export class HostedTools {
       // (`Severity/P0` and friends carry `Severity`; a claim or flat label
       // carries "").  Flat lookups take only the ungrouped ones, which is what
       // stops a seat reaching a grouped label through a flat path.
-      labels: labels.filter((l) => l && !l.isGroup && !l.team).map((l) => ({ id: l.id, name: l.name, group: l.parent?.name ?? "" })),
+      labels: labels.filter((l) => !l.isGroup && !l.team).map((l) => ({ id: l.id, name: l.name, group: l.parent?.name ?? "" })),
     };
     this.linearWorkspaceCache?.set(this.seat, { at: this.now(), value });
     return value;
