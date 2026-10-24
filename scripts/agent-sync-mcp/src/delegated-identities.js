@@ -19,6 +19,7 @@
 import GB_TABLE from "../../agent_sync/mcp/gb-identities.json" with { type: "json" };
 import RENAMED from "../../agent_sync/mcp/renamed-tools.json" with { type: "json" };
 import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS, UnknownTool } from "./hosted-tools.js";
+import { resolveSecret, infisicalMode } from "./infisical.js";
 import { ToolError, errorResult, okResult, scanSecret, schemaProblem } from "./contract.js";
 import { EVENTS_ONLY_SEATS, SHARED_IDENTITY_SEATS } from "./config.js";
 import { IDENTITIES_SPEC, GUIDE_SPEC } from "./zulip-tool-specs.js";
@@ -107,6 +108,47 @@ export function loadDelegatedCredentials(env) {
     if (row) roles.set(identity, row);
   }
   return { source: "legacy", valid: true, roles };
+}
+
+/**
+ * The GB credential set with Infisical resolution (paths /zulip + /linear).
+ * Off mode is exactly loadDelegatedCredentials(env).  Every field of every
+ * enabled persona is declared in INFISICAL_EXPECT:  in required mode a
+ * missing declared field throws visibly instead of silently dropping a
+ * configured persona.  In fallback each field's read falls back to its
+ * legacy per-field env binding (observable in logs + stats);  when NO field
+ * resolves at all the family falls back to the env bundle/legacy rows as a
+ * whole, so a bundle-configured deployment is never silently emptied.  A
+ * partial resolution in fallback keeps the bundle row of every persona the
+ * Infisical path could not assemble completely (kody 4365622415).
+ * completeRole validates every assembled row exactly as for the bundle.
+ */
+export async function resolveDelegatedCredentials(env) {
+  const mode = infisicalMode(env);
+  if (mode === "off") return loadDelegatedCredentials(env);
+  const roles = new Map();
+  let resolvedAny = false;
+  await Promise.all(GB_IDENTITIES.map(async (identity) => {
+    const names = delegatedNames(identity);
+    const [zulipEmail, zulipKey, linearClientId, linearClientSecret] = await Promise.all([
+      resolveSecret(env, { name: names.zulipEmail, path: "/zulip", envName: names.zulipEmail, optional: true }),
+      resolveSecret(env, { name: names.zulipKey, path: "/zulip", envName: names.zulipKey, optional: true }),
+      resolveSecret(env, { name: names.linearClientId, path: "/linear", envName: names.linearClientId, optional: true }),
+      resolveSecret(env, { name: names.linearClientSecret, path: "/linear", envName: names.linearClientSecret, optional: true }),
+    ]);
+    if (zulipEmail || zulipKey || linearClientId || linearClientSecret) resolvedAny = true;
+    const row = completeRole(identity, [zulipEmail, zulipKey, linearClientId, linearClientSecret]);
+    if (row) roles.set(identity, row);
+  }));
+  if (!resolvedAny) return loadDelegatedCredentials(env);
+  if (mode === "fallback" && roles.size < GB_IDENTITIES.length) {
+    // E.g. /zulip served while /linear was out of scope:  every row is
+    // incomplete although the bundle still holds them all.  Each missing
+    // field was already counted as a fallback by resolveSecret.
+    const legacy = loadDelegatedCredentials(env);
+    if (legacy.valid) for (const [identity, row] of legacy.roles) if (!roles.has(identity)) roles.set(identity, row);
+  }
+  return { source: "infisical", valid: true, roles };
 }
 
 export function delegatedStatus(credentials, identity) {

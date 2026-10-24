@@ -11,6 +11,7 @@
 // `node --test` loads it.  The Worker hands in `fetch`;  tests hand in a fake.
 
 import { clean, ToolError, scanSecret } from "./contract.js";
+import { resolveSecret } from "./infisical.js";
 
 export const RECALL_HOST = "recall.jays.services";
 export const RECALL_TIMEOUT_MS = 10_000;
@@ -141,12 +142,27 @@ export const RECALL_WRITE_TOOLS = Object.freeze(new Set(["recall_contribute"]));
  */
 export function recallClientFromEnv(env, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis) } = {}) {
   const read = (name) => (typeof env?.[name] === "string" ? env[name].trim() : "");
-  const token = read(RECALL_SECRETS.token);
-  const accessId = read(RECALL_SECRETS.accessId);
-  const accessSecret = read(RECALL_SECRETS.accessSecret);
+  return recallClientFromResolved(
+    { token: read(RECALL_SECRETS.token), accessId: read(RECALL_SECRETS.accessId), accessSecret: read(RECALL_SECRETS.accessSecret) },
+    env, { fetch: fetchImpl });
+}
+
+/** A RecallClient from already-resolved secret values (src/infisical.js). */
+export function recallClientFromResolved({ token = "", accessId = "", accessSecret = "" } = {}, env, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis) } = {}) {
   const baseUrl = recallBaseUrl(env?.RECALL_BASE_URL);
   if (!token || !accessId || !accessSecret || !baseUrl || typeof fetchImpl !== "function") return null;
   return new RecallClient({ baseUrl, token, accessId, accessSecret, fetch: fetchImpl });
+}
+
+/** Resolve the three recall secrets through Infisical (path /tools).  All
+ * three are declared in INFISICAL_EXPECT:  in required mode a missing one
+ * throws visibly;  in fallback the legacy env bindings are the bounded
+ * transitional fallback;  absent everywhere means recall is not configured
+ * (the Zulip tools keep working). */
+export async function resolveRecallSecrets(env) {
+  const read = async (name) => (await resolveSecret(env, { name, path: "/tools", envName: name, optional: true })).trim();
+  const [token, accessId, accessSecret] = await Promise.all([read(RECALL_SECRETS.token), read(RECALL_SECRETS.accessId), read(RECALL_SECRETS.accessSecret)]);
+  return { token, accessId, accessSecret };
 }
 
 /** The base URL when it is exactly https://recall.jays.services (a trailing slash allowed), else null. */

@@ -15,6 +15,7 @@
 // FleetLink answer is parsed through the zod schemas below before use.
 
 import { z } from "zod";
+import { resolveSecret } from "./infisical.js";
 import { clean, ToolError } from "./contract.js";
 
 export const FLEETLINK_HOST = "fleetlink.online";
@@ -266,10 +267,62 @@ function parseBody(text) {
 /** A FleetLinkClient from the Worker's env, or null when FLEETLINK_AGENT_SECRET is missing or malformed. */
 export function fleetlinkClientFromEnv(env, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis) } = {}) {
   const raw = typeof env?.[FLEETLINK_SECRET] === "string" ? env[FLEETLINK_SECRET].trim() : "";
-  const secret = /^fls_[0-9a-f]{64}$/.test(raw) ? raw : "";
-  const seatTokens = parseSeatTokens(env?.[FLEETLINK_SEAT_TOKENS]);
+  return fleetlinkClientFromSecret(raw, env, { fetch: fetchImpl });
+}
+
+/** A FleetLinkClient from an already-resolved agent secret (src/infisical.js).
+ * Pass resolvedTokens from resolveFleetlinkSeatTokens;  without it the legacy
+ * FLEETLINK_SEAT_TOKENS bundle binding is used (off mode). */
+export function fleetlinkClientFromSecret(rawSecret, env, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis), resolvedTokens = null } = {}) {
+  const secret = /^fls_[0-9a-f]{64}$/.test((rawSecret ?? "").trim()) ? rawSecret.trim() : "";
+  const seatTokens = resolvedTokens ? Object.fromEntries(resolvedTokens.seatTokens) : parseSeatTokens(env?.[FLEETLINK_SEAT_TOKENS]);
+  const deniedSeats = resolvedTokens ? [...resolvedTokens.deniedSeats] : [];
   if ((!secret && !Object.keys(seatTokens).length) || typeof fetchImpl !== "function") return null;
-  return new FleetLinkClient({ secret, seatTokens, fetch: fetchImpl });
+  return new FleetLinkClient({ secret, seatTokens, deniedSeats, fetch: fetchImpl });
+}
+
+/** Seats with NO FleetLink token provisioned anywhere (verified live in
+ * Infisical 2026-10-23) whose enablement is the owner's explicit call.
+ * They are denied outright - never the agent secret + seat header, which
+ * would silently act with the manager's limits for a seat that was never
+ * given FleetLink access.  Removal from this list is a code change with
+ * evidence the token now exists. */
+export const FLEETLINK_SEATS_DISABLED = Object.freeze(["GB-ENGINEER"]);
+
+/** Resolve every seat's FLEETLINK_TOKEN_<SEAT> through Infisical (path
+ * /fleetlink, hyphens as underscores).  A present-but-malformed value FAILS
+ * CLOSED for that seat (deniedSeats):  never substituted with the shared
+ * agent secret, because that would act with the manager's limits instead of
+ * the seat's own.  An absent name keeps today's designed primary path:  in
+ * off/fallback the legacy bundle entry, else the agent secret + seat header.
+ * A name DECLARED in INFISICAL_EXPECT that goes missing throws in required
+ * mode instead of silently broadening.  The bundle entry is the read's legacy
+ * value (resolveSecret's `legacy`), so in fallback mode a token the bundle
+ * serves is logged under FLEETLINK_SEAT_TOKENS[<SEAT>] and counted.  A seat
+ * with no token anywhere (MA, JET-CHAT) reads as absent, not as a fallback,
+ * and keeps the designed path every mode gives it, as on main:  the agent
+ * secret with X-Fleet-Seat.  Only FLEETLINK_SEATS_DISABLED is denied
+ * outright;  adding a seat there is the owner's call. */
+export async function resolveFleetlinkSeatTokens(env, seats) {
+  const legacy = parseSeatTokens(env?.[FLEETLINK_SEAT_TOKENS]);
+  const seatTokens = new Map();
+  const deniedSeats = new Set();
+  for (const seat of FLEETLINK_SEATS_DISABLED) deniedSeats.add(seat);
+  await Promise.all((seats ?? []).map(async (seat) => {
+    if (FLEETLINK_SEATS_DISABLED.includes(seat)) return;
+    const name = `FLEETLINK_TOKEN_${seat.replace(/-/g, "_")}`;
+    const raw = (await resolveSecret(env, {
+      name,
+      path: "/fleetlink",
+      envName: `${FLEETLINK_SEAT_TOKENS}[${seat}]`,
+      legacy: Object.hasOwn(legacy, seat) ? legacy[seat] : "",
+      optional: true,
+    })).trim();
+    if (!raw) return;
+    if (/^fla_[0-9a-f]{64}$/.test(raw)) { seatTokens.set(seat, raw); return; }
+    deniedSeats.add(seat);
+  }));
+  return { seatTokens, deniedSeats };
 }
 
 /** The seat token bundle, or {} when it is missing or malformed (a malformed bundle is never half used). */
@@ -284,15 +337,17 @@ export function parseSeatTokens(raw) {
 }
 
 export class FleetLinkClient {
-  constructor({ secret = "", seatTokens = {}, fetch: fetchImpl, timeoutMs = FLEETLINK_TIMEOUT_MS }) {
+  constructor({ secret = "", seatTokens = {}, deniedSeats = [], fetch: fetchImpl, timeoutMs = FLEETLINK_TIMEOUT_MS }) {
     this.fetch = fetchImpl;
     this.timeoutMs = timeoutMs;
     this.#secret = secret;
     this.#seatTokens = { ...seatTokens };
+    this.#deniedSeats = new Set([...deniedSeats, ...FLEETLINK_SEATS_DISABLED]);
   }
 
   #secret;
   #seatTokens;
+  #deniedSeats;
 
   secrets() {
     return [this.#secret, ...Object.values(this.#seatTokens)].filter(Boolean);
@@ -300,6 +355,10 @@ export class FleetLinkClient {
 
   /** How `seat` signs in:  its own bot token, else the server credential, else null. */
   credentialFor(seat) {
+    // Denied outright:  a seat whose own token was present but malformed,
+    // or one never provisioned a token (FLEETLINK_SEATS_DISABLED).  The
+    // shared agent secret would act with broader (manager) limits.
+    if (this.#deniedSeats.has(seat)) return null;
     if (Object.hasOwn(this.#seatTokens, seat)) return { kind: "token", headers: { Authorization: `Bearer ${this.#seatTokens[seat]}` } };
     if (this.#secret) return { kind: "agent", headers: { Authorization: `Bearer ${this.#secret}`, "X-Fleet-Seat": seat } };
     return null;
@@ -313,7 +372,10 @@ export class FleetLinkClient {
    */
   async call(seat, name, args) {
     const credential = this.credentialFor(seat);
-    if (!credential) throw new ToolError("not_configured", `FleetLink has no credential for ${seat} on this server:  no ${FLEETLINK_SEAT_TOKENS} entry and no ${FLEETLINK_SECRET}.`);
+    if (!credential) {
+      if (this.#deniedSeats.has(seat)) throw new ToolError("fleetlink_seat_disabled", `FleetLink is disabled for ${seat}:  no usable seat token (malformed or never provisioned) and the shared agent secret is never substituted.`);
+      throw new ToolError("not_configured", `FleetLink has no credential for ${seat} on this server:  no ${FLEETLINK_SEAT_TOKENS} entry and no ${FLEETLINK_SECRET}.`);
+    }
     const init = {
       method: "POST",
       redirect: "manual",

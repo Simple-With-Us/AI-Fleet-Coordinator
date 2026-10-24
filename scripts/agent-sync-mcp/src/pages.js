@@ -216,7 +216,7 @@ export function gbBearerRevealPage({ identity, token, expiresAt }) {
 }
 
 /** /admin (spec 3.9):  seat state, keys, grants, clients, refusals, tool calls, audit. */
-export function adminPage({ gbBearers = [], email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [] }, headers) {
+export function adminPage({ gbBearers = [], email, seats, clients, refusals, tokenRefusals = [], audits, calls = [], statusCalls = calls, statusErrors = [], statusAudits = audits, runtimeErrors = [], generatedAt, diagnosticsUnavailable = false, csrf, notice, manualSeats = [], infisical = null }, headers) {
   const seatRows = seats
     .map((s) => {
       const unavailable = new Set(s.unavailableFields ?? []);
@@ -290,6 +290,15 @@ export function adminPage({ gbBearers = [], email, seats, clients, refusals, tok
     gap: SENTENCE_GAP,
     seatLabel: adminSeatLabel,
   });
+  // The runtime-secret mode and this isolate's counters (src/infisical.js, DEPLOY.md), so "required mode, zero
+  // fallbacks" is checkable here.  Rendered only when the Worker passes them.
+  const infisicalLine = infisical
+    ? `<p${Number(infisical.fallbacks) > 0 ? ' class="warn"' : ""}>${sentences(
+        `Secrets mode:  ${infisical.mode}.`,
+        `Since this isolate started:  ${Number(infisical.fetched) || 0} Infisical reads, ${Number(infisical.cacheHits) || 0} cache hits and ${Number(infisical.fallbacks) || 0} fallbacks to Worker bindings.`,
+        `${Number(infisical.absent) || 0} reads found an optional secret set nowhere, which every mode answers the same way, and are not fallbacks.`,
+      )}</p>`
+    : "";
   // Owner controls first, then everything long folded behind a summary that shows its count (AFC-347).
   const fold = (title, count, inner) =>
     `<details class="fold"><summary><h2>${escapeHtml(title)}</h2> <span class="count">${escapeHtml(count)}</span></summary>${inner}</details>`;
@@ -297,7 +306,7 @@ export function adminPage({ gbBearers = [], email, seats, clients, refusals, tok
 <p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}A seat serves tools only with its key installed and a live member role.</p>
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Seats</h2>
-<table><tr><th>Seat</th><th>Arming</th><th>State</th><th>Epoch</th><th>Zulip Key</th><th>Grants</th><th>Actions</th></tr>${seatRows}</table>
+<table><tr><th>Seat</th><th>Arming</th><th>State</th><th>Epoch</th><th>Zulip Key</th><th>Grants</th><th>Actions</th></tr>${seatRows}</table>${infisicalLine}
 ${gbBearerSection(gbBearers, csrf)}
 <h2>Hand-Registered Clients (Manual Forms)</h2>
 <p>${sentences(

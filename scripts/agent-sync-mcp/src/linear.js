@@ -1,6 +1,7 @@
 import { SEAT_NAME_ALIASES } from "./identity-aliases.js";
 import { LINEAR_MCP_TOOLS, LINEAR_MCP_READ_TOOLS, LINEAR_MCP_WRITE_TOOLS } from "./linear-mcp-specs.js";
 import { LINEAR_NAMED_TOOLS, LINEAR_NAMED_COMMANDS } from "./linear-named-specs.js";
+import { resolveSecret } from "./infisical.js";
 // Linear tools for hosted seats, so a seat with no shell (GROK-WEB first, then
 // ECHO and WISE) works the board as its own bot app and never as Jay.
 // Every rule here is ported from scripts/linear-board/board, which stays the
@@ -67,6 +68,44 @@ export const LINEAR_SECRETS = Object.freeze({
 export function linearSecretNames(seat) {
   const canonical = seatTagForSeat(seat);
   return Object.hasOwn(LINEAR_SECRETS, canonical) ? LINEAR_SECRETS[canonical] : null;
+}
+
+/** The Fleet-OPS /linear Infisical names for each seat pair (Oct 22 fleet
+ * decision:  the WISE seat's Worker names are LINEAR_INSTINCT_*, its
+ * Infisical names WISE_LINEAR_*).  Names verified against the live folder. */
+export const LINEAR_INFISICAL = Object.freeze({
+  JET: Object.freeze({ clientId: "JET_LINEAR_CLIENT_ID", clientSecret: "JET_LINEAR_CLIENT_SECRET" }),
+  // JET-CHAT is Jet's second login on the same Linear app (LINEAR_SECRETS
+  // above):  its runtime read is Jet's record, never a copy.
+  "JET-CHAT": Object.freeze({ clientId: "JET_LINEAR_CLIENT_ID", clientSecret: "JET_LINEAR_CLIENT_SECRET" }),
+  "GROK-WEB": Object.freeze({ clientId: "GROK_WEB_LINEAR_CLIENT_ID", clientSecret: "GROK_WEB_LINEAR_CLIENT_SECRET" }),
+  ECHO: Object.freeze({ clientId: "ECHO_LINEAR_CLIENT_ID", clientSecret: "ECHO_LINEAR_CLIENT_SECRET" }),
+  WISE: Object.freeze({ clientId: "WISE_LINEAR_CLIENT_ID", clientSecret: "WISE_LINEAR_CLIENT_SECRET" }),
+  CURSOR: Object.freeze({ clientId: "CURSOR_LINEAR_CLIENT_ID", clientSecret: "CURSOR_LINEAR_CLIENT_SECRET" }),
+  CLAUDE: Object.freeze({ clientId: "CLAUDE_LINEAR_CLIENT_ID", clientSecret: "CLAUDE_LINEAR_CLIENT_SECRET" }),
+});
+
+/** Async: the seat's Linear pair resolved through Infisical when INFISICAL_MODE
+ * allows (src/infisical.js), else the legacy Worker bindings.  Null when the
+ * seat has no Linear app.  Prefetch at request entry so the synchronous
+ * configured()/identityStatus contracts keep working. */
+export async function resolveLinearPair(env, seat) {
+  const canonical = seatTagForSeat(seat);
+  const names = Object.hasOwn(LINEAR_SECRETS, canonical) ? LINEAR_SECRETS[canonical] : null;
+  const inf = Object.hasOwn(LINEAR_INFISICAL, canonical) ? LINEAR_INFISICAL[canonical] : null;
+  if (!names || !inf) return null;
+  const [clientId, clientSecret] = await Promise.all([
+    resolveSecret(env, { name: inf.clientId, path: "/linear", envName: names.clientId, optional: true }),
+    resolveSecret(env, { name: inf.clientSecret, path: "/linear", envName: names.clientSecret, optional: true }),
+  ]);
+  return { clientId: clientId.trim(), clientSecret: clientSecret.trim() };
+}
+
+/** Sync: build a client from an already-resolved pair (same null contract as
+ * linearClientFromEnv). */
+export function linearClientFromPair(pair, seat, { gate, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
+  if (!pair || !pair.clientId || !pair.clientSecret || typeof fetchImpl !== "function" || !gate) return null;
+  return new LinearClient({ seat, clientId: pair.clientId, clientSecret: pair.clientSecret, gate, fetch: fetchImpl, now });
 }
 
 // Seats whose Linear tools are live.  GROK-WEB first (owner 2026-10-11):  it is

@@ -502,3 +502,27 @@ test("a consumed claim token cannot settle twice or change owner rejection histo
   await s.gate.waSettle({ ...next, delivered: false, permanent: true });
   assert.equal((await s.store.get("wa:owner_gate")).permanent_failures, 2);
 });
+
+test("required mode:  the WA keys come from Infisical /wake, and the reuse guard sees Infisical's wake keys (kody 4365623241)", async () => {
+  const { _resetInfisicalForTests } = await import("../src/infisical.js");
+  const realFetch = globalThis.fetch;
+  const listing = (secrets) => async (url) => (String(url).includes("/api/v3/secrets/raw?")
+    ? Response.json({ secrets: Object.entries(secrets).map(([secretKey, secretValue]) => ({ secretKey, secretValue })) })
+    : new Response("not found", { status: 404 }));
+  const infisicalEnv = { INFISICAL_MODE: "required", INFISICAL_SERVICE_TOKEN: "st-test", INFISICAL_WORKSPACE_ID: "ws-test", WA_BRIDGE_HMAC_KEY_JET: undefined, WA_OPERATOR_HMAC_KEY_JET: undefined };
+  try {
+    _resetInfisicalForTests();
+    globalThis.fetch = listing({ WA_BRIDGE_HMAC_KEY_JET: KEY, WA_OPERATOR_HMAC_KEY_JET: OPKEY, WAKE_HMAC_KEY_JET: "e".repeat(64) });
+    const s = setup(); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+    const ok =await request(s.gate, s.fetchFn, batch([msg(41)]), "ingest", infisicalEnv);
+    assert.equal(ok.status, 200, "no Worker binding needed:  the bridge key is Infisical's");
+    _resetInfisicalForTests();
+    globalThis.fetch = listing({ WA_BRIDGE_HMAC_KEY_JET: KEY, WA_OPERATOR_HMAC_KEY_JET: OPKEY, WAKE_HMAC_KEY_JET: KEY });
+    const reused = await request(s.gate, s.fetchFn, batch([msg(42)]), "ingest", infisicalEnv);
+    assert.equal(reused.status, 404);
+    assert.equal((await reused.json()).reason, "key_reused", "a wake key served only by Infisical still counts as reuse");
+  } finally {
+    globalThis.fetch = realFetch;
+    _resetInfisicalForTests();
+  }
+});
