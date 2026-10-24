@@ -325,9 +325,9 @@ def manifest_errors(
     from fleet_config.manifest import (
         known_platforms,
         load_manifest,
+        validate_compliance_rules,
         validate_coverage,
         validate_platforms,
-        validate_compliance_rules,
         validate_rules,
     )
 

@@ -22,9 +22,8 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from fleet_config import contract
+from fleet_config import checks_compliance, contract
 from fleet_config import manifest as manifest_module
-from fleet_config import checks_compliance
 from fleet_config.certs import ExpiryUnknown, keychain_expiries, not_after_from_pem, profile_expiry
 from fleet_config.checks import CheckContext
 from fleet_config.checks_compliance import (
