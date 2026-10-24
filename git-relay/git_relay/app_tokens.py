@@ -76,6 +76,20 @@ def sign_jwt(app_id: int, pem: str, now: int) -> str:
 # missing-key error.
 _PATH_RE = re.compile(r"/[A-Za-z0-9._/-]*")
 
+# The CLI's exit-3 line (scripts/fleet_secrets/cli.py cmd_get):
+#   fleet-secrets: key NAME[, NAME ...] is not in Infisical at PATH
+# Absent names are read from that list as exact tokens, never by substring,
+# so a requested name that is a prefix of an absent one is not blamed too.
+_ABSENT_RE = re.compile(r"\bkey (?P<names>[A-Za-z0-9_, ]+?) is not in Infisical at ")
+
+
+def _absent_names(detail: str, wanted: list) -> list:
+    """The requested names the CLI's exit-3 line lists;  the first name when
+    the line does not parse (exit 3 always means one is absent:  fail closed)."""
+    match = _ABSENT_RE.search(detail.splitlines()[0] if detail else "")
+    listed = {n.strip() for n in match.group("names").split(",")} if match else set()
+    return [n for n in wanted if n in listed] or wanted[:1]
+
 
 class FleetSecretsSource:
     """Reads named secrets through the `fleet-secrets` CLI.
@@ -145,19 +159,21 @@ class FleetSecretsSource:
         if result.returncode:
             # Exit 3 is a clean export that lacked the key:  remember the
             # absence so an incomplete App pair cannot drive one folder
-            # export per request.  Only names the CLI actually blames are
+            # export per request.  Only names the CLI actually lists are
             # cached.  Exit 2 (usage) names keys and reason tokens, never
-            # values, so its text is safe to surface - it is what tells an
-            # operator a bad --path apart from a missing key.  Any other
-            # failure can carry backend detail on stderr:  report only the
-            # variable name and the exit code.
+            # values, so its first line is safe to surface - it is what tells
+            # an operator a bad --path apart from a missing key;  the usage
+            # block the CLI prints after it is dropped.  Any other failure can
+            # carry backend detail on stderr:  report only the variable name
+            # and the exit code.
             detail = result.stderr.decode("utf-8", "replace").strip()
             if result.returncode == 3:
-                absent = [n for n in wanted if n in detail] or wanted[:1]
+                absent = _absent_names(detail, wanted)
                 self._missing.update(absent)
                 raise AppTokenError(f"fleet-secrets has no value for {absent[0]}")
             if result.returncode == 2 and detail:
-                raise AppTokenError(f"fleet-secrets lookup failed for {wanted[0]}: {detail}")
+                reason = detail.splitlines()[0]
+                raise AppTokenError(f"fleet-secrets lookup failed for {wanted[0]}: {reason}")
             raise AppTokenError(
                 f"fleet-secrets lookup failed for {wanted[0]} (exit {result.returncode})"
             )
