@@ -1872,7 +1872,7 @@ def signal_out(args):
         print("refusing a symlinked signal directory: %s" % signal_dir, file=sys.stderr)
         return 2
     signal_dir.mkdir(mode=0o700, exist_ok=True)
-    signal_id ="sig-%d-%s" % (int(time.time()), os.urandom(4).hex())
+    signal_id = "sig-%d-%s" % (int(time.time()), os.urandom(4).hex())
     payload = {"signal_id": signal_id, "text": text}
     if args.signal_chat_id:
         payload["chat_id"] = args.signal_chat_id
