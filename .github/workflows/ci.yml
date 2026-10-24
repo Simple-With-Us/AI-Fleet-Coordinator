@@ -202,6 +202,13 @@ jobs:
     - name: Sentence gap program tests
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_program -v
+    # The FINAL owner sentence-gap policy (AFC-521):  every file that states the
+    # rule names the one exception (the Claude Code Code tab and the MiniMax Code
+    # chat pane take the entity), no live line prescribes the superseded 2026-10-22
+    # GitHub-entity split, and the published note takes a real U+00A0 on GitHub too.
+    - name: Sentence gap final policy tests
+      run: |
+        cd scripts && python3 -m unittest test_sentence_gap_final_policy -v
     # AFC-478 follow-up:  the Muster reader of the Worker's Linear token health
     # (signature scheme, document shape, atomic 0600 write).
     - name: Worker health reader tests
