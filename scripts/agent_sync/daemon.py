@@ -1668,7 +1668,7 @@ class Daemon:
             self.pause(seat=None, wakes_only=False, by="owner-dm", message_id=message["id"])
             return
         if not c.dm and self._maybe_registration_answer(
-            message, now, channel=c.channel, topic=c.topic
+            message, now, channel=c.channel, topic=c.topic, done=done
         ):
             # A location answer is carried out here, deterministically:  it never becomes a
             # wake for the Operator's responder to interpret.
@@ -3564,25 +3564,22 @@ class Daemon:
         instance = str(getattr(self.config, "instance", "") or "").strip().lower()
         return instance if instance in ("mac", "server") else ""
 
-    def _registration_lease_topics(self, row: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """The chat's live lease topics as {channel, topic, expires};  [] when unknown.
+    def _registration_seat_lease_map(self, seat: str) -> dict[str, list[dict[str, Any]]]:
+        """One scan of the seat's lease directory:  session id -> live topics.
 
-        The lease is written by the chat's own attach hook, so the topics are grounded in
-        the chat's registration of itself - never in a guess from the catalog row.  The
-        whole list (not only the picked route) feeds the queue's rename-follow logic:  a
-        whole-topic rename rewrites the lease entry in place keeping its expiry, which is
-        how a pending question tells a rename from an unrelated new attachment.
+        maybe_ask_registrations walks every catalog row, so loading each lease once for
+        the seat replaces one directory scan plus one lease read per row with one scan
+        per seat per pass.  The first live lease naming a session wins, matching the
+        per-row scan's order.
         """
+        found: dict[str, list[dict[str, Any]]] = {}
         try:
-            session_id = str(row.get("session_id") or "")
-            seat = str(row.get("seat") or "")
-            if not session_id or not seat:
-                return []
             paths = L.SeatPaths(self.root, seat)
             now = self.clock.time()
             for lease_id in L.list_lease_ids(paths):
                 lease = L.load_lease(paths, lease_id)
-                if str(lease.get("session_id") or "") != session_id:
+                session_id = str(lease.get("session_id") or "")
+                if not session_id or session_id in found:
                     continue
                 alive, _why = self.lease_alive(paths, lease)
                 if not alive:
@@ -3603,10 +3600,31 @@ class Daemon:
                     if channel and topic:
                         live.append({"channel": channel, "topic": topic, "expires": expires})
                 if live:
-                    return live
+                    found[session_id] = live
         except Exception:
             pass
-        return []
+        return found
+
+    def _registration_lease_topics(
+        self,
+        row: Mapping[str, Any],
+        lease_map: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """The chat's live lease topics as {channel, topic, expires};  [] when unknown.
+
+        The lease is written by the chat's own attach hook, so the topics are grounded in
+        the chat's registration of itself - never in a guess from the catalog row.  The
+        whole list (not only the picked route) feeds the queue's rename-follow logic:  a
+        whole-topic rename rewrites the lease entry in place keeping its expiry, which is
+        how a pending question tells a rename from an unrelated new attachment.
+        """
+        session_id = str(row.get("session_id") or "")
+        seat = str(row.get("seat") or "")
+        if not session_id or not seat:
+            return []
+        if lease_map is None:
+            lease_map = self._registration_seat_lease_map(seat)
+        return list(lease_map.get(session_id) or [])
 
     def _registration_route(
         self, row: Mapping[str, Any], topics: list[dict[str, Any]] | None = None
@@ -3688,6 +3706,7 @@ class Daemon:
                     platform=entry.get("platform"),
                     reason=entry.get("reason"),
                 )
+            lease_maps: dict[str, dict[str, list[dict[str, Any]]]] = {}
             for row in rows:
                 if labels.get(str(row.get("id") or ""), ("", ""))[0]:
                     continue
@@ -3699,7 +3718,9 @@ class Daemon:
                 seat = str(row.get("seat") or "")
                 if not (platform and scope and session_id and seat):
                     continue
-                topics = self._registration_lease_topics(row)
+                if seat not in lease_maps:
+                    lease_maps[seat] = self._registration_seat_lease_map(seat)
+                topics = self._registration_lease_topics(row, lease_maps[seat])
                 try:
                     out = OREG.begin(
                         db,
@@ -3811,7 +3832,13 @@ class Daemon:
             self.log.write("operator-registration-ask", status="error", error=type(exc).__name__)
 
     def _maybe_registration_answer(
-        self, message: Mapping[str, Any], now: float, *, channel: str, topic: str
+        self,
+        message: Mapping[str, Any],
+        now: float,
+        *,
+        channel: str,
+        topic: str,
+        done: set[Any] | None = None,
     ) -> bool:
         """Carry out a location answer posted in the asked chat's own topic;  True when consumed.
 
@@ -3831,7 +3858,14 @@ class Daemon:
         rejects an answer that contradicts where discovery actually ran - so a wrong-seat
         or same-seat sibling chat can at worst confirm the true location early, never
         register a false one where evidence exists.
+
+        ``done`` is the route's retry ledger:  the registration mutation is recorded
+        after it runs and the confirmation send after it lands, so a route retry repeats
+        only the step that failed - never a second registry mutation, never a skipped
+        confirmation.  An exception once the mutation is recorded propagates so the
+        route's retry (not the ordinary wake path) finishes the confirmation.
         """
+        reply_ready = False
         try:
             # The cheap pure check comes first:  almost every routed message is not an
             # answer, so the queue file is only opened for text that parses as one.
@@ -3849,6 +3883,44 @@ class Daemon:
                 and not isinstance(sender_id_raw, bool)
                 and sender_id_raw == operator_id
             ):
+                return True
+            message_id = message.get("id")
+            recorded = None
+            if done is not None and message_id is not None:
+                recorded = next(
+                    (
+                        item
+                        for item in done
+                        if isinstance(item, tuple)
+                        and len(item) == 3
+                        and item[0] == message_id
+                        and item[1] == "register-location"
+                    ),
+                    None,
+                )
+            if recorded is not None:
+                # The route retried after the mutation already landed:  never register
+                # twice (answer() would read its own settled entry as "ignored" and
+                # post a wrong reply);  complete only the confirmation, with the reply
+                # text recorded next to the mutation.  The send ledger dedupes a copy
+                # that already landed, so this posts at most one confirmation.
+                reply_ready = True
+                sent = ORASK.send_location_question(
+                    question=recorded[2],
+                    entry_id=parsed["entry_id"],
+                    channel=str(channel or ""),
+                    topic=str(topic or ""),
+                    env=self.env,
+                    home=self.home,
+                    owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
+                )
+                done.add((message_id, "send-confirmation"))
+                self.log.write(
+                    "operator-registration-answer",
+                    entry_id=parsed["entry_id"],
+                    status="confirm-retried",
+                    delivery=sent.get("status"),
+                )
                 return True
             db = self._registration_db()
             # Asked entries answer directly;  conflicted ones settle through the same
@@ -3908,8 +3980,12 @@ class Daemon:
                 ),
                 now=now,
             )
+            reply = OREG.answer_reply(out)
+            if done is not None and message_id is not None:
+                done.add((message_id, "register-location", reply))
+            reply_ready = True
             sent = ORASK.send_location_question(
-                question=OREG.answer_reply(out),
+                question=reply,
                 entry_id=parsed["entry_id"],
                 channel=str(route["channel"]),
                 topic=str(route["topic"]),
@@ -3917,6 +3993,8 @@ class Daemon:
                 home=self.home,
                 owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
             )
+            if done is not None and message_id is not None:
+                done.add((message_id, "send-confirmation"))
             self.log.write(
                 "operator-registration-answer",
                 entry_id=parsed["entry_id"],
@@ -3936,6 +4014,11 @@ class Daemon:
             )
             return False
         except Exception as exc:
+            if reply_ready:
+                # The mutation is recorded in the route's done set:  let the route
+                # retry finish the confirmation rather than dropping the answer into
+                # the ordinary wake path with its letter already minted.
+                raise
             self.log.write("operator-registration-answer", status="error", error=type(exc).__name__)
             return False
 

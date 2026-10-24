@@ -52,6 +52,19 @@ from . import session_ids as SI
 # register command already takes --location with exactly these values.
 LOCATION_VALUES = ("mac", "server", "cloud")
 
+
+def _location_of(host: Any) -> str:
+    """The fleet location word a registry ``verified_host`` belongs to.
+
+    The registry column holds host ids ("mac-1", "server-2") as well as bare location
+    words ("mac"):  both belong to one location, and comparing them raw makes one
+    machine disagree with itself.  The word is the id's first dash-segment;  a value
+    with no location-word prefix stays as-is, so an unknown host still conflicts
+    rather than silently matching.
+    """
+    return str(host or "").strip().lower().split("-", 1)[0]
+
+
 STATE_ASKED = "asked"
 STATE_REGISTERED = "registered"
 STATE_CONFLICT = "conflict"
@@ -401,10 +414,12 @@ def begin(
     clean_route = _route(route)
 
     known = registrations(platform, native)
-    if len(known) == 1 and (not evidence or known[0].get("verified_host") == evidence):
+    if len(known) == 1 and (
+        not evidence or _location_of(known[0].get("verified_host")) == evidence
+    ):
         return {
             "status": "already_registered",
-            "location": known[0].get("verified_host"),
+            "location": _location_of(known[0].get("verified_host")),
             "label": known[0].get("label"),
             "generation": known[0].get("generation"),
         }
@@ -508,7 +523,7 @@ def answer(
             }
 
         known = registrations(entry["platform"], entry["session_id"])
-        other = [row for row in known if row.get("verified_host") != word]
+        other = [row for row in known if _location_of(row.get("verified_host")) != word]
         conflict_reason = ""
         if other:
             conflict_reason = REASON_OTHER_LOCATION
@@ -525,7 +540,7 @@ def answer(
                 "reason": conflict_reason,
                 "claimed": word,
                 "evidence": entry.get("evidence_location") or "",
-                "known": [row.get("verified_host") for row in known],
+                "known": [_location_of(row.get("verified_host")) for row in known],
                 "entry_id": entry["entry_id"],
             }
 

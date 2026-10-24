@@ -2174,6 +2174,18 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             daemon.maybe_ask_registrations(self._rows(), {})
             self.assertEqual(send.call_count, 2)
 
+    def test_lease_topics_are_read_once_per_seat_per_pass(self):
+        """A batch of unlettered rows on one seat costs one lease-directory scan."""
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        rows = self._rows()
+        second = dict(rows[0], **{"id": "row-2", "session_id": "sess-bbbbbbbb"})
+        with mock.patch.object(
+            D.ORASK, "send_location_question", return_value={"status": "sent"}
+        ), mock.patch.object(D.L, "list_lease_ids", wraps=D.L.list_lease_ids) as listed:
+            daemon.maybe_ask_registrations(rows + [second], {})
+        self.assertEqual(listed.call_count, 1)
+
     def test_a_failed_send_is_retried_on_the_next_pass(self):
         self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
         daemon = self.daemon()
@@ -2217,6 +2229,51 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertEqual(send.call_args.kwargs["topic"], "AFC Work")
         self.assertIn("letter A", send.call_args.kwargs["question"])
         self.assertEqual(D.OREG.pending_entries(daemon._registration_db()), [])
+
+    def test_a_failed_confirmation_retries_without_a_second_registration(self):
+        """The route done set carries the mutation across a retry:  the registry write
+        never repeats and the failed confirmation is the only step retried."""
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        done = set()
+        message = {
+            "id": 42,
+            "content": "mac %s" % entry["entry_id"],
+            "sender_id": 12,
+            "client": "website",
+        }
+        with mock.patch.object(
+            D.ORASK, "send_location_question", side_effect=RuntimeError("zulip down")
+        ):
+            with self.assertRaises(RuntimeError):
+                daemon._maybe_registration_answer(
+                    message, 2000.0, channel="agent-sync", topic="AFC Work", done=done
+                )
+        # The mutation landed and is recorded with its reply;  the confirmation is not stamped.
+        self.assertTrue(
+            any(
+                isinstance(item, tuple)
+                and len(item) == 3
+                and item[0] == 42
+                and item[1] == "register-location"
+                for item in done
+            )
+        )
+        self.assertNotIn((42, "send-confirmation"), done)
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+        # The retry:  no second answer() (the settled entry would read "ignored" and post
+        # a wrong reply) - the recorded reply goes out once and the step is stamped.
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                message, 2001.0, channel="agent-sync", topic="AFC Work", done=done
+            )
+        self.assertTrue(consumed)
+        self.assertIn((42, "send-confirmation"), done)
+        self.assertEqual(send.call_count, 1)
+        self.assertIn("letter A", send.call_args.kwargs["question"])
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual(len(rows), 1)
 
     def test_an_answer_in_any_other_topic_is_not_consumed(self):
         daemon = self.daemon()

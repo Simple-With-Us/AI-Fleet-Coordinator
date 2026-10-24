@@ -282,6 +282,58 @@ class OperatorRegistrationTest(unittest.TestCase):
         self.assertEqual(out["reason"], OREG.REASON_OTHER_LOCATION)
         self.assertEqual(self.registry.writes, [])
 
+    def test_a_host_id_short_circuits_its_location_word(self):
+        # The registry column holds host ids ("mac-1") as well as bare location words:
+        # one machine must not disagree with itself, so an already-lettered session is
+        # answered from the registry rather than asked again.
+        self.registry.rows.append(
+            {
+                "platform": "minimax",
+                "native_session_id": _session_id(),
+                "verified_host": "mac-1",
+                "label": "C",
+                "generation": 1,
+            }
+        )
+        out = self.begin(evidence_location="mac")
+        self.assertEqual(out["status"], "already_registered")
+        self.assertEqual(out["location"], "mac")
+        self.assertEqual(OREG.pending_entries(self.db), [])
+
+    def test_an_answer_matching_the_lettered_hosts_location_registers(self):
+        entry = self.begin()["entry"]
+        # Lettered at host id "mac-1" between ask and answer;  the answer "mac" is the
+        # same location, not a conflict.
+        self.registry.rows.append(
+            {
+                "platform": "minimax",
+                "native_session_id": _session_id(),
+                "verified_host": "mac-1",
+                "label": "C",
+                "generation": 1,
+            }
+        )
+        out = self.answer(entry["entry_id"], "mac")
+        self.assertEqual(out["status"], "registered")
+        self.assertEqual(len(self.registry.writes), 1)
+
+    def test_an_answer_against_a_different_locations_host_id_conflicts(self):
+        entry = self.begin()["entry"]
+        self.registry.rows.append(
+            {
+                "platform": "minimax",
+                "native_session_id": _session_id(),
+                "verified_host": "server-2",
+                "label": "B",
+                "generation": 1,
+            }
+        )
+        out = self.answer(entry["entry_id"], "mac")
+        self.assertEqual(out["status"], "conflict")
+        self.assertEqual(out["reason"], OREG.REASON_OTHER_LOCATION)
+        self.assertEqual(out["known"], ["server"])
+        self.assertEqual(self.registry.writes, [])
+
     def test_unknown_and_late_answers_are_ignored(self):
         self.assertEqual(self.answer("reg-ffffffffffff", "mac")["status"], "ignored")
         entry = self.begin()["entry"]
