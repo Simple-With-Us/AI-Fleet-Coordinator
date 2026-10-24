@@ -535,3 +535,112 @@ class OwnerTopicTests(unittest.TestCase):
         mine = lease("F", topics=[("agent-sync", OWNER_TOPIC)])
         answer = msg(sender=OWNER, content="option 1", topic=OWNER_TOPIC)
         self.assertEqual(self.route(answer, leases=[mine])[1].lease_items, [("F", "interrupt", "message")])
+
+
+# --------------------------------------------------------------------------------------------
+# The no-wake signal (AFC-468):  a leading eyes emoji on a message means "never wake anyone".
+# The message stays readable in Zulip;  native human notifications are a separate system.
+# --------------------------------------------------------------------------------------------
+
+MARKER = R.NO_WAKE_MARKER
+SEAT_TAG = "[CLAUDE\u00b7session8] "
+
+
+class NoWakeTests(unittest.TestCase):
+    def route(self, message, *, me=ME, leases=(), **kw):
+        return R.route(message, me, ctx(**kw), list(leases))
+
+    def test_a_leading_marker_stops_a_direct_mention(self) -> None:
+        c, d = self.route(msg(content="%s @**Claude** please look" % MARKER, flags=["mentioned"]))
+        self.assertTrue(c.no_wake)
+        self.assertIn("no_wake", c.labels())
+        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertEqual((d.seat_inbox, d.wake, d.lease_items), (False, None, []),
+                         "a marker message reaches no seat at all")
+
+    def test_the_same_mention_without_the_marker_still_wakes(self) -> None:
+        c, d = self.route(msg(content="@**Claude** please look", flags=["mentioned"]))
+        self.assertFalse(c.no_wake)
+        self.assertNotEqual(d.drop_reason, "no_wake")
+        self.assertTrue(d.seat_inbox, "the control still lands in the seat's inbox")
+
+    def test_the_marker_suppresses_the_fleet_wake(self) -> None:
+        c, d = self.route(msg(content="%s @**all**" % MARKER, **FLEET_KW))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertFalse(d.seat_inbox)
+
+    def test_a_typed_at_all_does_not_start_a_fanout(self) -> None:
+        # The typed `@all` has no wildcard flag, so the owner route is the one that would fan out.
+        c, d = self.route(msg(content="%s @all please look" % MARKER, channel="work-in-progress", topic="fleet",
+                               client="website", sender=OWNER))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+
+    def test_a_dm_from_an_eligible_bot_is_suppressed(self) -> None:
+        c, d = self.route(msg(content="%s Claude, are you there?" % MARKER, dm=True))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+        self.assertFalse(d.seat_inbox)
+
+    def test_an_owner_dm_is_suppressed(self) -> None:
+        c, d = self.route(msg(content="%s Claude, are you there?" % MARKER, dm=True, sender=OWNER, client="website"))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+
+    def test_an_owner_at_all_is_suppressed(self) -> None:
+        c, d = self.route(msg(content="%s @**all**" % MARKER, channel="work-in-progress", topic="fleet",
+                               client="website", sender=OWNER))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+
+    def test_routing_twice_stays_suppressed(self) -> None:
+        # The retry path calls the same route, so a message the daemon saw twice is still one
+        # message that wakes nobody.
+        message = msg(content="%s @**Claude** please look" % MARKER, flags=["mentioned"])
+        first = self.route(message)
+        second = self.route(message)
+        self.assertEqual(first[1].drop_reason, "no_wake")
+        self.assertEqual(second[1].drop_reason, "no_wake")
+
+    def test_a_quoted_code_or_mid_sentence_marker_still_wakes(self) -> None:
+        # Each of these carries a real mention, so the only thing under test is whether the
+        # marker is read as a signal.  A marker that is not the first thing in the message is
+        # not a signal, whatever else the message says.
+        for content in ("> %s\n@**Claude** please look" % MARKER,
+                        "`%s`\n@**Claude** please look" % MARKER,
+                        "@**Claude** please look, %s" % MARKER,
+                        "```\n%s\n```\n@**Claude** please look" % MARKER):
+            with self.subTest(content=content):
+                c, d = self.route(msg(content=content, flags=["mentioned"]))
+                self.assertFalse(c.no_wake, "only a leading marker is the signal")
+                self.assertTrue(d.seat_inbox, "the mention still reaches the seat")
+
+    def test_a_marker_after_the_seat_tag_suppresses(self) -> None:
+        # `agent-sync post` prepends the seat tag to whatever the agent wrote, so the marker lands
+        # after it.
+        c, d = self.route(msg(content="%s%s@**Claude** please look" % (SEAT_TAG, MARKER), flags=["mentioned"]))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+
+    def test_a_marker_before_the_seat_tag_suppresses(self) -> None:
+        c, d = self.route(msg(content="%s%s@**Claude** please look" % (MARKER, SEAT_TAG), flags=["mentioned"]))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+
+    def test_the_wake_tag_still_counts_with_a_marker(self) -> None:
+        # The loop guard counts wake replies, so a marker must not hide a wake tag from it.
+        c, _ = self.route(msg(content="%s[CLAUDE\u00b7wake] hello" % MARKER))
+        self.assertTrue(c.no_wake)
+        self.assertTrue(c.wake_tag, "the wake tag is still read off the text without the marker")
+
+    def test_the_marker_comes_off_the_content_the_tags_read(self) -> None:
+        stripped, suppressed = R.strip_no_wake("%s [CLAUDE\u00b7wake] hello" % MARKER)
+        self.assertTrue(suppressed)
+        self.assertEqual(stripped, " [CLAUDE\u00b7wake] hello")
+        self.assertIsNotNone(R._WAKE_TAG_RE.match(stripped), "the wake tag still matches")
+
+    def test_the_pasted_character_works_too(self) -> None:
+        c, d = self.route(msg(content="\U0001f440 @**Claude** please look", flags=["mentioned"]))
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")

@@ -967,6 +967,11 @@ def build_parser(
     p.add_argument(
         "--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session] tag"
     )
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="prefix the eyes marker, so the message stays readable in Zulip and wakes nobody (AFC-468)",
+    )
     body_file_opt(p)
     p.add_argument(
         "text",
@@ -993,6 +998,12 @@ def build_parser(
         help="address the owner pinned in listener.toml (daemon.owner_user_id);  exits 2 when none is pinned",
     )
     p.add_argument("--no-tag", action="store_true", help="do not prepend the tag")
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="prefix the eyes marker, so the message stays readable in Zulip and wakes nobody (AFC-468)",
+    )
+
     body_file_opt(p)
     p.add_argument(
         "text",
@@ -1031,6 +1042,11 @@ def build_parser(
     )
     p.add_argument(
         "--no-tag", action="store_true", help="do not prepend the [SEAT\u00b7session\u2192TO] tag"
+    )
+    p.add_argument(
+        "--quiet",
+        action="store_true",
+        help="prefix the eyes marker, so the message stays readable in Zulip and wakes nobody (AFC-468)",
     )
     body_file_opt(p)
     p.add_argument(
@@ -1580,9 +1596,20 @@ def _resolve_peers(agent: Agent, names: Sequence[str]) -> tuple[list[str], list[
 
 
 def _compose(
-    agent: Agent, text: str, *, labels: Sequence[str], mentions: Sequence[str], no_tag: bool
+    agent: Agent,
+    text: str,
+    *,
+    labels: Sequence[str],
+    mentions: Sequence[str],
+    no_tag: bool,
+    quiet: bool = False,
 ) -> str:
     parts: list[str] = []
+    if quiet:
+        # The owner's per-message no-wake signal:  the message stays readable in Zulip and wakes
+        # nobody.  It goes before the seat tag, because the tag is what the runtime prepends and
+        # the marker has to be the first thing the reader sees (AFC-468).
+        parts.append(ROUTER.NO_WAKE_MARKER)
     if not no_tag:
         parts.append(
             agent.tag_prefix + ("\u2192" + ",".join(labels) if labels else "") + "]"
@@ -1734,7 +1761,10 @@ def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
     mentions, labels = _resolve_targets(agent, args.to, bool(getattr(args, "to_owner", False)))
     if args.fleet:
         mentions.append(FLEET_WAKE_MENTION)
-    body = _compose(agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag)
+    body = _compose(
+        agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag,
+        quiet=bool(getattr(args, "quiet", False)),
+    )
     try:
         return _send(agent, args.channel, args.topic, body)
     except ApiError as exc:
@@ -2038,7 +2068,10 @@ def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
     text = _read_text(agent, args.text, getattr(args, "body_file", None))
     to = _dm_recipients(agent, args)
     _dm_rule(agent, args, to)
-    body = _compose(agent, text, labels=to.labels, mentions=[], no_tag=args.no_tag)
+    body = _compose(
+        agent, text, labels=to.labels, mentions=[], no_tag=args.no_tag,
+        quiet=bool(getattr(args, "quiet", False)),
+    )
     where = to.describe()
     check = (
         "Check your direct messages with %s in Zulip (or `simple-chat dm-read`) before sending it again."
@@ -2277,7 +2310,10 @@ def cmd_reply(agent: Agent, args: argparse.Namespace) -> int:
     channel, topic = message_channel(original), message_topic(original)
     _scan_refusal(agent, topic=topic, channel=channel)
     mentions, labels = _resolve_targets(agent, args.to, to_owner)
-    body = _compose(agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag)
+    body = _compose(
+        agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag,
+        quiet=bool(getattr(args, "quiet", False)),
+    )
     return _send(agent, channel, topic, body)
 
 

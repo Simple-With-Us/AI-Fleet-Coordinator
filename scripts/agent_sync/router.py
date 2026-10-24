@@ -81,6 +81,41 @@ _RESOLVED_MARKS = ("\u2714\ufe0f", "\u2714")
 NOTE_SENDER_SEAT = "CLAUDE"
 _NOTE_TAG_RE = re.compile(r"^\s*\[CLAUDE\u00b7needsown(?:\u2192|->)")
 
+#: The no-wake marker (owner ask, relayed by Jet on 2026-10-21, Zulip 633790364):  a leading
+#: eyes emoji on a message means "never wake anyone".  The message stays readable in Zulip, and
+#: native human Zulip notifications are a separate system that this does not touch.  Both
+#: spellings are accepted, because Zulip's own emoji picker writes the shortcode and a pasted
+#: character arrives as itself.
+NO_WAKE_MARKER = ":eyes:"
+NO_WAKE_MARKERS = (":eyes:", "\U0001f440")
+_NO_WAKE_RE = re.compile(r"^\s*(?:%s)" % "|".join(re.escape(m) for m in NO_WAKE_MARKERS))
+#: One leading bracket seat tag (`[MM\u00b7session8] `, `[CLAUDE\u00b7needsown\u2192SEAT] `).  The
+#: marker may follow it, because `agent-sync post` prepends that tag to whatever the agent wrote.
+_SEAT_TAG_PREFIX_RE = re.compile(r"^\s*\[[A-Za-z0-9_.-]+\u00b7[^\]]*\]\s*")
+
+
+def strip_no_wake(content: str) -> tuple[str, bool]:
+    """(the content without a leading no-wake marker, whether the marker was there).
+
+    The marker is the first non-space character of the content, or the first non-space
+    character after one leading bracket seat tag.  A marker inside a quote line, a code span, a
+    code block or a sentence is not a marker:  only a leading one is.  The rest of the content
+    comes back unchanged, so the anchored tag regexes still match where they did.
+    """
+    text = str(content or "")
+    lead = len(text) - len(text.lstrip())
+    rest = text[lead:]
+    match = _NO_WAKE_RE.match(rest)
+    if match:
+        return text[:lead] + rest[match.end():], True
+    tag = _SEAT_TAG_PREFIX_RE.match(rest)
+    if tag:
+        after = rest[tag.end():]
+        match = _NO_WAKE_RE.match(after)
+        if match:
+            return text[:lead] + rest[: tag.end()] + after[match.end():], True
+    return text, False
+
 
 def fleet_wake_mention(content_outside_code: str, flags: Iterable[str]) -> bool:
     """True when the message carries a stream-wide wildcard:  Zulip's `stream_wildcard_mentioned` flag
@@ -255,6 +290,7 @@ class Classes:
             False
         )
         self.route_tag = False
+        self.no_wake = False
         self.owner_topic = self.owner_topic_peer = self.owner_note = False
         self.reply_to: int | None = None
         self.channel = ""
@@ -276,6 +312,7 @@ class Classes:
                 "dm",
                 "wake_tag",
                 "route_tag",
+                "no_wake",
                 "stale",
                 "owner_topic",
                 "owner_topic_peer",
@@ -289,6 +326,9 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     c = Classes()
     sender_id = message.get("sender_id")
     content = str(message.get("content") or "")
+    # The owner's per-message no-wake signal.  The marker comes off the content first, so the
+    # anchored tag regexes below still match where they did before it was stripped.
+    content, c.no_wake = strip_no_wake(content)
     flags = list(message.get("flags") or [])
     c.dm = message.get("type") == "private"
     if c.dm:
@@ -401,6 +441,12 @@ def route(
     kind, block = prefilter(c)
     d.wake_worthy = kind is not None
     d.wake_owner = kind == "owner"
+    if c.no_wake:
+        # The owner's per-message signal:  the message stays readable in Zulip and no seat is
+        # woken by it.  The gate is before the lease, the seat inbox and the wake branch, so a
+        # marker message never reaches a seat.
+        d.drop_reason = "no_wake"
+        return c, d
     if not c.dm and c.key in ctx.muted and not c.direct:
         d.drop_reason = "muted"
         return c, d

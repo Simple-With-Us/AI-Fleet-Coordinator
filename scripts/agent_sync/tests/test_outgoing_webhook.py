@@ -221,6 +221,42 @@ class OutgoingWebhookReceiverTests(ListenerHarness):
         allowed = self.daemon()
         self.assertTrue(allowed.connect_seat("CLAUDE"))
 
+    def test_a_marker_message_through_the_outgoing_webhook_spool_is_suppressed(self):
+        # The spool stores authenticated metadata only:  the daemon re-fetches the authoritative
+        # message and routes it, so the router's no-wake gate covers this path too (AFC-468).
+        self.write_config(extra_daemon='outgoing_webhook_seats = ["CLAUDE"]')
+        daemon = self.daemon()
+        self.assertTrue(daemon.connect_seat("CLAUDE"))
+        msg_id = self.fake.add_message(
+            "Jay Wedgeworth", "agent-sync", "AFC-309 no-wake", ":eyes: @**Codex** wake up",
+            deliver=False,
+        )
+        self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
+        daemon._drain_outgoing_webhook_spool()
+        self.assertEqual(
+            [row["id"] for row in self.inbox("CLAUDE") if row["id"] == msg_id],
+            [],
+            "the marker message never reaches the seat inbox",
+        )
+
+    def test_an_unmarked_message_through_the_outgoing_webhook_spool_still_routes(self):
+        # The control:  the same path without the marker does deliver, so the test above is
+        # measuring the marker and not a broken spool.
+        self.write_config(extra_daemon='outgoing_webhook_seats = ["CLAUDE"]')
+        daemon = self.daemon()
+        self.assertTrue(daemon.connect_seat("CLAUDE"))
+        msg_id = self.fake.add_message(
+            "Jay Wedgeworth", "agent-sync", "AFC-309 control", "@**Codex** wake up",
+            deliver=False,
+        )
+        self.assertEqual(daemon._accept_outgoing_webhook("CLAUDE", BOT_EMAIL, msg_id), "accepted")
+        daemon._drain_outgoing_webhook_spool()
+        self.assertEqual(
+            [row["id"] for row in self.inbox("CLAUDE") if row["id"] == msg_id],
+            [msg_id],
+            "the unmarked message reaches the seat inbox",
+        )
+
 
 if __name__ == "__main__":
     import unittest
