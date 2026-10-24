@@ -256,7 +256,7 @@ two spaces -- do not be fooled by copy-paste).  The same is true in the MiniMax
 pane:  the working mechanism there is the `&nbsp;` entity plus a normal space, the same
 form as the Code tab, NOT a raw U+00A0.  The owner confirmed both panes on 2026-10-24
 (Zulip #Policy):  the Claude Code and MiniMax Code chat panes require the
-`&nbsp;` entity, while GitHub, Zulip, docs and UI text take a real U+00A0 plus a space.  Also not
+`&nbsp;` entity plus a normal space, while GitHub, Zulip, docs and UI text take a real U+00A0 plus a space.  Also not
 worth trying: app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
 headless `claude -p` only, `axScreenReader` only drops borders); patching the client (the CLI is
 a ~277MB compiled Mach-O binary, the desktop app is a signed native bundle -- patching breaks
