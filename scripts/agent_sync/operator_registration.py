@@ -490,6 +490,7 @@ def answer(
     location: str,
     registrations: Callable[[str, str], list[dict[str, Any]]],
     register: Callable[..., dict[str, Any]],
+    answerer: str,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Record the location reply and letter the session, or refuse.
@@ -544,6 +545,17 @@ def answer(
                 "entry_id": entry["entry_id"],
             }
 
+        if answerer != "owner" and not entry.get("evidence_location"):
+            # A seat bot's word alone never mints where discovery carries no
+            # channel-authenticated location (kody 4366047282):  the question stays
+            # open for the pinned owner, whose answer is the attestation.  Entries
+            # WITH evidence took the conflict check above, so a bot answer reaching
+            # here with evidence is already corroborated against it.
+            return {
+                "status": "uncorroborated",
+                "reason": "no discovery evidence corroborates a seat-bot answer",
+                "entry_id": entry["entry_id"],
+            }
         out = register(
             platform=entry["platform"],
             verified_host=word,
@@ -793,6 +805,12 @@ def answer_reply(result: Mapping[str, Any]) -> str:
             "Not registered:  the fleet discovered this chat on %s, which disagrees with %s.  "
             "Settle which is right and I will re-register it (ref %s)."
             % (result.get("evidence") or "another location", result.get("claimed"), entry_id)
+        )
+    if status == "uncorroborated":
+        return (
+            "Not registered:  no discovery evidence corroborates this chat's location, "
+            "so the seat bot's answer cannot assign its letter - the owner's answer can "
+            "(ref %s)." % entry_id
         )
     if status == "refused":
         return (

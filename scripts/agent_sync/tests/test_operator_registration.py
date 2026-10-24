@@ -68,6 +68,9 @@ class OperatorRegistrationTest(unittest.TestCase):
             "location": location,
             "registrations": self.registry.registrations,
             "register": self.registry.register,
+            # Existing tests model the pinned owner answering;  pass
+            # answerer="seat_bot" to model the seat bot (kody 4366047282).
+            "answerer": "owner",
             "now": 2000.0,
         }
         kwargs.update(overrides)
@@ -398,6 +401,52 @@ class OperatorRegistrationTest(unittest.TestCase):
         self.assertEqual(SI.check(_session_id(), "test"), _session_id())
 
 
+
+
+    def test_seat_bot_answer_without_evidence_never_mints(self):
+        # kody 4366047282:  an uncorroborated seat-bot claim minted a letter.
+        entry = self.begin()["entry"]
+        out = self.answer(entry["entry_id"], "mac", answerer="seat_bot")
+        self.assertEqual(out["status"], "uncorroborated")
+        self.assertEqual(self.registry.writes, [])
+        # The question stays open and answerable for the owner.
+        reloaded = OREG.load(self.db)["entries"][0]
+        self.assertEqual(reloaded["state"], OREG.STATE_ASKED)
+        again = self.answer(entry["entry_id"], "mac", answerer="owner")
+        self.assertEqual(again["status"], "registered")
+
+    def test_seat_bot_answer_matching_evidence_mints(self):
+        # Evidence from the discovering channel corroborates the bot's answer.
+        entry = self.begin(evidence_location="cloud")["entry"]
+        out = self.answer(entry["entry_id"], "cloud", answerer="seat_bot")
+        self.assertEqual(out["status"], "registered")
+        self.assertEqual(self.registry.writes[0]["verified_host"], "cloud")
+
+    def test_seat_bot_answer_contradicting_evidence_conflicts(self):
+        entry = self.begin(evidence_location="cloud")["entry"]
+        out = self.answer(entry["entry_id"], "mac", answerer="seat_bot")
+        self.assertEqual(out["status"], "conflict")
+        self.assertEqual(out["reason"], OREG.REASON_EVIDENCE_MISMATCH)
+        self.assertEqual(self.registry.writes, [])
+
+    def test_dual_discovery_identities_corroborate_independently(self):
+        # The same chat discovered locally AND through a cloud adapter is two
+        # platform identities;  each entry is corroborated by its own channel's
+        # evidence, and an answer borrowed from the other channel conflicts.
+        self.begin(platform="cursor", session_id="chat-1", evidence_location="mac")
+        cloud = self.begin(platform="cursor-cloud", session_id="chat-1", evidence_location="cloud")["entry"]
+        out = self.answer(cloud["entry_id"], "mac", answerer="seat_bot")
+        self.assertEqual(out["status"], "conflict")
+        out = self.answer(cloud["entry_id"], "cloud", answerer="seat_bot")
+        self.assertEqual(out["status"], "registered")
+        self.assertEqual(self.registry.writes[0]["verified_host"], "cloud")
+
+    def test_uncorroborated_reply_points_to_the_owner(self):
+        entry = self.begin()["entry"]
+        out = self.answer(entry["entry_id"], "server", answerer="seat_bot")
+        reply = OREG.answer_reply(out)
+        self.assertIn("owner", reply)
+        self.assertIn(entry["entry_id"], reply)
 
 
 class OperatorRegistrationRouteRefreshTest(unittest.TestCase):

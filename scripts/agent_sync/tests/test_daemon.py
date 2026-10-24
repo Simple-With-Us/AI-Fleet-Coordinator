@@ -2315,7 +2315,9 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
             [],
         )
-        # A cursor-cloud chat is discovered through Cursor's API, not local files:  no evidence.
+        # cursor-cloud is discovered through Cursor's authenticated Cloud Agents API,
+        # an endpoint that lists only Cursor-hosted cloud agents:  endpoint membership
+        # pins "cloud" as the entry's evidence (kody 4366047282).
         self.write_lease(
             "L2", seat="CURSOR", platform="cursor-cloud", session_id="sess-bbbbbbbb",
             topics=[("agent-sync", "Cursor Cloud")],
@@ -2329,16 +2331,29 @@ class OperatorRegistrationWiringTests(DaemonHarness):
                 e for e in D.OREG.pending_entries(daemon._registration_db())
                 if e["session_id"] == "sess-bbbbbbbb"
             ][0]
-            self.assertEqual(remote_entry.get("evidence_location"), "")
+            self.assertEqual(remote_entry.get("evidence_location"), "cloud")
+            # The owner's answer contradicting the pinned cloud evidence is a conflict.
             consumed = daemon._maybe_registration_answer(
                 {"content": "server %s" % remote_entry["entry_id"], "sender_id": 12, "client": "website"},
                 2000.0,
                 channel="agent-sync",
                 topic="Cursor Cloud",
             )
+            self.assertTrue(consumed)
+            self.assertEqual(
+                D.OR.registrations_for_native_id(daemon._registration_db(), "cursor-cloud", "sess-bbbbbbbb"),
+                [],
+            )
+            # A corroborated answer mints.
+            consumed = daemon._maybe_registration_answer(
+                {"content": "cloud %s" % remote_entry["entry_id"], "sender_id": 12, "client": "website"},
+                2001.0,
+                channel="agent-sync",
+                topic="Cursor Cloud",
+            )
         self.assertTrue(consumed)
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "cursor-cloud", "sess-bbbbbbbb")
-        self.assertEqual([row["verified_host"] for row in rows], ["server"])
+        self.assertEqual([row["verified_host"] for row in rows], ["cloud"])
 
     def test_a_dm_that_is_not_an_answer_is_not_consumed(self):
         daemon = self.daemon()
@@ -2423,6 +2438,57 @@ class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
         entry = self._pending_entry(daemon)
         daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
         self.assertTrue(self._answer(daemon, entry, 4242))
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+
+    def test_the_answerer_class_reaches_answer(self):
+        # kody 4366047282:  the registry must know WHO answered.  The owner leg maps
+        # to "owner", the seat-bot leg to "seat_bot";  mock at the module seam and
+        # assert the mapping both ways.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
+        with mock.patch.object(D.OREG, "answer", return_value={"status": "registered"}) as ans:
+            self.assertTrue(self._answer(daemon, entry, 4242))
+            self.assertEqual(ans.call_args.kwargs["answerer"], "seat_bot")
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2001.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+            self.assertTrue(consumed)
+            self.assertEqual(ans.call_args.kwargs["answerer"], "owner")
+
+    def test_a_seat_bot_answer_without_evidence_is_refused_for_the_owner(self):
+        # kody 4366047282 end to end:  no channel-authenticated evidence (mocked at
+        # the evidence seam), the seat bot's word mints nothing;  the owner's does.
+        daemon = self.daemon()
+        with mock.patch.object(D.Daemon, "_registration_evidence", return_value=""):
+            entry = self._pending_entry(daemon)
+        self.assertEqual(entry.get("evidence_location"), "")
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 4242},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertTrue(consumed)
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
+        # The question stays open:  the owner's own answer still mints.
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
+            consumed = daemon._maybe_registration_answer(
+                {"content": "mac %s" % entry["entry_id"], "sender_id": 12, "client": "website"},
+                2001.0,
+                channel="agent-sync",
+                topic="AFC Work",
+            )
+        self.assertTrue(consumed)
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
         self.assertEqual([row["verified_host"] for row in rows], ["mac"])
 

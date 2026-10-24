@@ -3555,9 +3555,17 @@ class Daemon:
         instance name is real evidence when it is itself a fleet location.  Genuinely
         remote adapters (cursor-cloud discovers through Cursor's API, not local files)
         carry no such evidence:  the chat does not run here.
+
+        cursor-cloud DOES pin "cloud" (kody 4366047282):  the adapter reads Cursor's
+        authenticated Cloud Agents API (/v1/agents), an endpoint that lists only
+        Cursor-hosted cloud agents - endpoint membership is the corroboration, since
+        a Mac- or server-local session cannot appear in it.  The listing carries no
+        per-agent runtime field;  the pin rests on that API's product semantics, and
+        a session whose real runtime ever differed surfaces through dual discovery
+        (the local adapter's own evidence) and the owner-settled conflict path.
         """
         if platform == "cursor-cloud":
-            return ""
+            return "cloud"
         # The daemon's own instance from validated config, not the raw environment:
         # config load already refused anything outside INSTANCES, so this cannot be
         # empty-or-foreign while the daemon runs.
@@ -3998,6 +4006,9 @@ class Daemon:
                 register=lambda **identity: OR.register_session(
                     db, source="chat-topic-answer", issuer=OR.ISSUER_OPERATOR, **identity
                 ),
+                # Only the pinned owner's own answer attests an uncorroborated location;
+                # the seat bot's word needs discovery evidence (kody 4366047282).
+                answerer="owner" if sender == owner else "seat_bot",
                 now=now,
             )
             reply = OREG.answer_reply(out)
