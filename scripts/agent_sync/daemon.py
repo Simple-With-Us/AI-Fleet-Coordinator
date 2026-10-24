@@ -1676,14 +1676,21 @@ class Daemon:
         # where the fanout would wake every seat, so the fanout checks the marker too (AFC-468).
         if c.owner and c.broadcast_all and not c.dm and not c.stale and not c.no_wake:
             self.start_fanout(message, c)
-        if first_seen and c.owner and c.broadcast_all and not c.no_wake:
-            unsupported = self._broadcast_wake_unsupported()
-            if unsupported:
-                self.log.write(
-                    "broadcast-wake-unsupported",
-                    id=message["id"],
-                    seats=unsupported,
-                )
+        if (
+            first_seen
+            and c.owner
+            and c.broadcast_all
+            and not c.no_wake
+            and not c.dm
+            and not c.stale
+            and not c.owner_topic
+        ):
+            threading.Thread(
+                target=self._log_broadcast_wake_unsupported,
+                args=(int(message["id"]),),
+                name="broadcast-wake-unsupported",
+                daemon=True,
+            ).start()
         if (
             c.owner
             and c.dm
@@ -1746,19 +1753,33 @@ class Daemon:
                 # adapter configured, but never start it in parallel with a bridge decision.
                 done.add("wake")
             if d.wake and not d.delivered_to and "wake" not in done:
-                matched = False
-                if runner.seat in ("GROK", "CURSOR", "CODEX") and not c.dm:
-                    matched = self.chat_queue(runner.seat).enqueue(
-                        c.channel,
-                        c.topic,
-                        message["id"],
-                        now,
-                        owner=d.wake == "owner",
-                        stale=c.stale,
-                    )
-                if not matched:
-                    self.offer_wake(runner, row, owner=d.wake == "owner")
-                done.add("wake")
+                defer_broadcast = (
+                    c.owner
+                    and c.broadcast_all
+                    and not c.dm
+                    and not c.stale
+                    and not c.no_wake
+                )
+                if defer_broadcast:
+                    done.add("wake")
+                else:
+                    matched = False
+                    if (
+                        runner.seat in ("GROK", "CURSOR", "CODEX")
+                        and not c.dm
+                        and not c.broadcast_all
+                    ):
+                        matched = self.chat_queue(runner.seat).enqueue(
+                            c.channel,
+                            c.topic,
+                            message["id"],
+                            now,
+                            owner=d.wake == "owner",
+                            stale=c.stale,
+                        )
+                    if not matched:
+                        self.offer_wake(runner, row, owner=d.wake == "owner")
+                    done.add("wake")
 
     def _append_seat_inbox(self, runner: SeatRunner, rows: list[dict[str, Any]]) -> None:
         paths = runner.paths
@@ -3055,8 +3076,10 @@ class Daemon:
             return
         self._surface(runner, pending, listed, lost, finished)
 
-    def _broadcast_wake_unsupported(self) -> dict[str, str]:
-        """Seats this listener holds that cannot take a routine/headless wake (for owner `@all`)."""
+    def _log_broadcast_wake_unsupported(self, message_id: int) -> None:
+        """Seats this listener holds that cannot take a routine/headless wake (for owner `@all`).
+
+        Runs off the event thread:  route_mode walks lease files per seat."""
         blocked: dict[str, str] = {}
         for seat in sorted(self.config.seats):
             mode, why = self.route_mode(seat)
@@ -3064,7 +3087,8 @@ class Daemon:
                 blocked[seat] = why
             elif mode == "inbox only":
                 blocked[seat] = "inbox_only"
-        return blocked
+        if blocked:
+            self.log.write("broadcast-wake-unsupported", id=message_id, seats=blocked)
 
     def start_fanout(self, message: Mapping[str, Any], c: R.Classes) -> None:
         """The owner's channel-wide mention reaches the recently active chats (chat_fanout), once per message
@@ -3079,16 +3103,26 @@ class Daemon:
         where = FAN.scope(R.outside_code(str(message.get("content") or "")), c.topic)
         threading.Thread(
             target=self.fanout,
-            args=(message_id, c.channel, c.topic, where),
+            args=(message_id, c.channel, c.topic, where, FAN.ChatPlaces(), message),
             name="chat-fanout",
             daemon=True,
         ).start()
 
     def fanout(
-        self, message_id: int, channel: str, topic: str, where: FAN.Scope, places: Any = None
+        self,
+        message_id: int,
+        channel: str,
+        topic: str,
+        where: FAN.Scope,
+        places: Any = None,
+        message: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform."""
+        """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform.
+
+        When `message` is set (owner `@all`), seats that get no chat nudge still receive one
+        headless/routine wake here so the event thread never doubles fanout with offer_wake."""
         result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}}
+        nudged_seats: set[str] = set()
         try:
             # The catalog's own TTL decides when a rescan is due:  a burst of alerts reuses one walk instead of each
             # forcing one, and never holds the scan lock longer than an ordinary wake's refresh would.
@@ -3141,6 +3175,7 @@ class Daemon:
                 )
                 continue
             result["queued" if added else "already"] += 1
+            nudged_seats.add(str(row.get("seat") or ""))
         self.log.write(
             "fanout",
             id=message_id,
@@ -3149,7 +3184,21 @@ class Daemon:
             chosen=len(chosen),
             **{k: v for k, v in result.items() if v},
         )
+        if message is not None:
+            self._broadcast_wake_after_fanout(message, nudged_seats)
         return result
+
+    def _broadcast_wake_after_fanout(
+        self, message: Mapping[str, Any], nudged_seats: set[str]
+    ) -> None:
+        for seat, runner in self.seats.items():
+            if seat in nudged_seats or not runner.cfg.enabled or runner.me is None:
+                continue
+            c, d = R.route(message, runner.me, self.context(runner), self.lease_views(runner))
+            if not d.wake or d.delivered_to or MB.enabled(self.config, seat):
+                continue
+            item = self.make_item(runner, message, c, d)
+            self.offer_wake(runner, item, owner=d.wake == "owner")
 
     def chat_catalog(self) -> Any:
         # Fanout threads race here, so the check and the construction are one guarded step.
@@ -4603,9 +4652,11 @@ class Daemon:
             target = self.seats.get(seat)
             if target is not None and self.lease_views(target):
                 return "live session", None
-            return {"claude": "headless wake", "http": "routine wake"}.get(
-                cfg.wake, "inbox only"
-            ), None
+            return {
+                "claude": "headless wake",
+                "http": "routine wake",
+                "muse": "headless wake",
+            }.get(cfg.wake, "inbox only"), None
         assigned = self.partition.get(seat)
         if assigned in C.INSTANCES and assigned != self.config.instance:
             return "%s listener" % assigned, None
@@ -4670,12 +4721,15 @@ class Daemon:
         if any(i not in triggers for i in pending.trigger_ids):
             return "trigger_unreadable", None, None
         bot_ids = {int(b["user_id"]) for b in bots}
+        visible_by_content: dict[str, str] = {}
         for message in triggers.values():
             if message.get("sender_id") in bot_ids:
                 return "sender", None, None
-            visible = R.outside_code(
-                str(message.get("content") or "")
-            ).casefold()  # Zulip matches names without case
+            raw = str(message.get("content") or "")
+            visible = visible_by_content.get(raw)
+            if visible is None:
+                visible = R.outside_code(raw).casefold()  # Zulip matches names without case
+                visible_by_content[raw] = visible
             for bot in bots:
                 name = str(bot.get("full_name") or "").casefold()
                 if name and (

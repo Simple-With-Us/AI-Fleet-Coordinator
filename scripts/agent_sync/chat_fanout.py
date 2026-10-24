@@ -1,8 +1,9 @@
-"""The owner's `@all` or `@everyone` reaches the chats that are working now (owner 2026-10-19).
+"""The owner's `@all` reaches the chats that are working now (owner 2026-10-19).
 
 Zulip notifies every bot, but a bot is not a chat:  the chats doing the work (a Grok TUI, a Cursor cloud agent,
-and so on) never see a channel-wide mention.  When the owner posts one, the listener picks the recently active
-chats from the chat catalog and queues each a Zulip reminder through the existing chat-nudge queue.
+and so on) never see a channel-wide mention.  When the owner posts `@all`, the listener picks the recently active
+chats from the chat catalog and queues each a Zulip reminder through the existing chat-nudge queue.  `@everyone`
+is inbox-only and never starts this fanout (Jay, 2026-10-24).
 
 Which chats, per platform:
 
@@ -12,7 +13,7 @@ Which chats, per platform:
   activity.  Among the 2nd, 3rd and 4th most recent chats, the cut goes after the one followed by the widest gap
   to the next older chat;  a tie keeps more chats.
 
-Which repo (owner 2026-10-19):  `@all for ST: message` or `ST @all message` (or `@everyone for Socratic Trade:`, `@all for ST-123:`,
+Which repo (owner 2026-10-19):  `@all for ST: message` or `ST @all message` (or `@all for ST-123:`,
 `@all for CT, UM:`, a PR link or `Repo#12`) reaches ALL of those repos' chats active in the last six hours, with no
 cap.  `@all for SWU-32:` (or `SWU-32 @all`) reaches the chats working on that issue:  its id is in the chat's
 title, folder or git branch.  When no chat matches, it reaches the issue's repo instead.  So does an `@all` posted in

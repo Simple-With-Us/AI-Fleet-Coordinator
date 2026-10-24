@@ -5,8 +5,13 @@ from __future__ import annotations
 
 import unittest
 
+from agent_sync import chat_fanout as F
 from agent_sync import router as R
 from agent_sync.live import topic_key
+from agent_sync.tests.test_chat_fanout import FakeCatalog, cloud
+from agent_sync.tests.test_daemon import DaemonHarness
+
+ST_URL = "https://github.com/example-org/Socratic-Trade"
 
 ME = R.SeatIdentity("GB-ENGINEER", 20, "GB Engineer", "gb-engineer-bot@zulip.test")
 OWNER = 12
@@ -129,11 +134,60 @@ class OwnerEveryoneLeaseTests(unittest.TestCase):
         d = R.route(message, ME, ctx(), [on])[1]
         self.assertEqual(d.lease_items, [("A", "passive", "message")])
 
+    def test_everyone_with_reply_to_posted_id_stays_passive(self) -> None:
+        on = lease("A", topics=[("policy", "general")])
+        on.posted = (123,)
+        message = msg(content="re=123 @**everyone** FYI", **POLICY)
+        d = R.route(message, ME, ctx(), [on])[1]
+        self.assertEqual(d.lease_items, [("A", "passive", "message")])
+
     def test_at_all_still_interrupts_a_leased_topic(self) -> None:
         on = lease("A", topics=[("policy", "general")])
         message = msg(content="@all FYI", **POLICY)
         d = R.route(message, ME, ctx(), [on])[1]
         self.assertEqual(d.lease_items[0][1], "interrupt")
+
+
+class OwnerAllFanoutDedupTests(DaemonHarness):
+    def test_owner_at_all_fans_out_once_without_a_parallel_offer_wake(self) -> None:
+        daemon = self.started()
+        row = dict(
+            cloud(1, 0, ST_URL),
+            seat="CLAUDE",
+            host="7",
+            updated_at=self.clock.time(),
+        )
+        daemon._chat_catalog = FakeCatalog([row])
+        message_id = self.fake.add_message(
+            "Jay Wedgeworth", "work-in-progress", "fleet", "@**all** for ST: deploy"
+        )
+        queue = daemon.chat_queue("CLAUDE")
+
+        def settled() -> bool:
+            if not queue.snapshot()["items"]:
+                return False
+            wakes = [w for w in self.ledger() if w.get("message_id") == message_id]
+            return len(wakes) <= 1
+
+        self.pump_until(daemon, settled, rounds=40)
+        self.assertEqual(len(queue.snapshot()["items"]), 1)
+        wakes = [w for w in self.ledger() if w.get("message_id") == message_id]
+        self.assertEqual(len(wakes), 0, "the chat nudge owns the wake; offer_wake must not double it")
+
+
+class RouteModeMuseTests(unittest.TestCase):
+    def test_muse_wake_is_headless_not_inbox_only(self) -> None:
+        from types import SimpleNamespace
+
+        from agent_sync.daemon import Daemon
+
+        daemon = Daemon.__new__(Daemon)
+        cfg = SimpleNamespace(wake="muse")
+        daemon.config = SimpleNamespace(seats={"MM": cfg}, instance="mac")
+        daemon.partition = {"MM": "mac"}
+        daemon.seats = {"MM": SimpleNamespace(cfg=cfg)}
+        daemon.lease_views = lambda _runner: []
+        self.assertEqual(daemon.route_mode("MM"), ("headless wake", None))
 
 
 class OwnerTopicBroadcastTests(unittest.TestCase):

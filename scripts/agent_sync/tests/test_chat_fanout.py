@@ -1,4 +1,6 @@
-"""The owner's @all / @everyone reaches recently active chats (chat_fanout, owner 2026-10-19)."""
+"""The owner's @all reaches recently active chats (chat_fanout, owner 2026-10-19).
+
+`@everyone` is inbox-only and does not fan out (Jay, 2026-10-24)."""
 
 from __future__ import annotations
 

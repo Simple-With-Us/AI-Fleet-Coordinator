@@ -332,7 +332,6 @@ class RouteDroppedTests(RouteHarness):
         self.assertEqual(daemon.route_mode("CODEX"), ("live session", None))
         self.assertEqual(daemon.route_mode("MA"), ("server listener", None))
 
-
 class RouteUnitTests(RouteHarness):
     def test_validate_drops_only_a_malformed_route(self) -> None:
         bad = [{"seat": "CODEX"}, {"seat": "codex", "reason": "x"}, {"seat": "CODEX", "reason": ""},
