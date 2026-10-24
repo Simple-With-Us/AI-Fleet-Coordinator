@@ -131,6 +131,9 @@ test("claim label IDs, author overrides and protected label renames are refused"
     ['mutation { issueLabelCreate(input:{name:"claimed:CURSOR"}) { success } }', {}],
     ['mutation { issueLabelUpdate(id:"claimed",input:{name:"renamed"}) { success } }', {}],
     ['mutation { issueCreate(input:{createAsUser:"Jay",title:"x"}) { success } }', {}],
+    ['mutation { issueUpdate(id:"i1",input:{delegateId:"user-x"}) { success } }', {}],
+    ['mutation { issueUpdate(id:"i1",input:{delegateId:null}) { success } }', {}],
+    ['mutation M($input: IssueUpdateInput!) { issueUpdate(id:"i1",input:$input) { success } }', { input: { delegateId: "user-x" } }],
   ]) {
     const { tools, requests } = harness();
     const result = await tools.call("linear_mutation", input({ mutation: document, variables }));

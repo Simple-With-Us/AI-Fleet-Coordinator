@@ -230,7 +230,16 @@ class ContractTests(unittest.TestCase):
     def test_the_protocol_names_the_dm_command_the_cli_implements(self) -> None:
         from agent_sync import cli
 
-        self.assertIn('agent-sync dm --owner -- "<text>"', self.protocol())
+        # The protocol is a generated mirror of the Fleet-OPS handbook, so it spells the command
+        # with whichever launcher name it was generated from.  `simple-chat` is the current one
+        # and `agent-sync` survives only as a compatibility launcher for it, so both spell the
+        # same command and the mirror may carry the older spelling until it is regenerated.
+        protocol = self.protocol()
+        spellings = ['%s dm --owner -- "<text>"' % prog for prog in ("simple-chat", "agent-sync")]
+        self.assertTrue(
+            any(spelling in protocol for spelling in spellings),
+            "the protocol does not name the dm --owner command the CLI implements",
+        )
         self.assertEqual(cli.build_parser().parse_args(["dm", "--owner", "--", "x"]).command, "dm")
 
     def test_the_owner_ack_points_at_this_seat_not_at_a_product(self) -> None:

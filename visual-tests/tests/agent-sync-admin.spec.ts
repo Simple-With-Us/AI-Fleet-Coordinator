@@ -8,6 +8,7 @@ const facts = {
   seats: [
     { seat: 'CURSOR', epoch: 2, paused: false, armed: false, keyInstalled: true, role: { ok: true, role: 400, checked_at: stamp - 60000 }, grants: [{ client: 'Cursor', scope: ['zulip:read', 'zulip:write'], createdAt: stamp - 86400000 }], linearEnabled: true, linearConfigured: true, linearWrites: true, recallConfigured: true },
     { seat: 'JET', epoch: 1, paused: false, armed: false, keyInstalled: true, role: null, grants: [], linearEnabled: false, linearConfigured: false, linearWrites: false, recallConfigured: true },
+    { seat: 'JET-CHAT', epoch: 1, paused: false, armed: false, keyInstalled: true, role: { ok: true, role: 400, checked_at: stamp - 60000 }, grants: [{ client: 'ChatGPT', scope: ['zulip:read', 'zulip:write'], createdAt: stamp - 43200000 }], linearEnabled: true, linearConfigured: true, linearWrites: false, recallConfigured: true },
   ],
   calls: [call], statusCalls: [call], statusErrors: [call],
   clients: [], audits: [], statusAudits: [], tokenRefusals: [], runtimeErrors: [], manualSeats: [],

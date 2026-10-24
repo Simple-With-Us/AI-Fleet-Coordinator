@@ -555,7 +555,7 @@ _session_seat() {  # the resolved seat:  launcher's seat, else AGENT_SEAT, else 
 }
 
 _session_exempt() {  # $1 = seat tag:  one thread with the owner, so no session id to pass
-  case "$1" in ECHO|GROK-BOT|JET|MA|WISE|GB-*) return 0 ;; esac
+  case "$1" in ECHO|GROK-BOT|JET|JET-CHAT|MA|WISE|GB-*) return 0 ;; esac
   return 1
 }
 
@@ -1085,8 +1085,10 @@ def inline(s: str) -> str:
         return "\x00code" + str(len(code_spans) - 1) + "\x00"
     s = re.sub(r"`[^`]+`", hold_code_span, s)
     # Notes.app is an HTML renderer — two ASCII spaces collapse.
-    # Sentence gap in HTML is &nbsp; + space.
-    s = re.sub(r"([.!?]) {2,}", r"\1&nbsp; ", s)
+    # Sentence gap in HTML is the numeric reference `&#160; ` + space.
+    # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference renders
+    # as a real U+00A0 in Notes and adds no raw non-ASCII byte to the note HTML.
+    s = re.sub(r"([.!?]) {2,}", r"\1&#160; ", s)
     s = re.sub(r"\x00code(\d+)\x00", lambda m: code_spans[int(m.group(1))], s)
     # links [text](url) — after escape brackets still match
     s = re.sub(
@@ -1303,7 +1305,9 @@ PY
 }
 
 # Notes.app collapses ASCII double spaces.  Turn leftover `.  ` / `!  ` / `?  `
-# into `&nbsp; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
+# into `&#160; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
+# Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference renders as
+# a real U+00A0 in Notes and adds no raw non-ASCII byte to the note HTML.
 # A sentence that ends INSIDE inline markup puts the closing tag between the punctuation
 # and the run of spaces (`Bold end.</b>  Next`), so the run never sits next to the
 # punctuation and the gap was lost.  The optional tag group carries the closing tag
@@ -1318,7 +1322,7 @@ for i, part in enumerate(parts):
     if i % 2 == 1:
         out.append(part)
         continue
-    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&nbsp; ", part))
+    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#160; ", part))
 sys.stdout.write("".join(out))
 '
 }
