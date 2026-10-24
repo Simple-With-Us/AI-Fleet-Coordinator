@@ -62,6 +62,7 @@ from . import outgoing_webhook as OW
 from . import router as R
 from . import session_ids as SI
 from . import subscribe_all as SUB
+from . import typing_signal as TYPING
 from . import wakes as W
 from . import zulip as Z
 from .cli import format_time, seat_tag_for
@@ -2629,6 +2630,28 @@ class Daemon:
             and str(message.get("client") or "") in self.config.owner_clients
         )
 
+    def _typing_signal(
+        self, runner: SeatRunner, pending: W.Pending
+    ) -> TYPING.TypingSignal | None:
+        """The seat's typing indicator for this wake, or None when the seat has it off, the
+        seat is not connected, or the wake has no single conversation to type in."""
+        if not runner.cfg.typing_indicator:
+            return None
+        client = runner.client
+        if client is None:
+            return None
+        me = runner.me.user_id if runner.me else None
+        params = TYPING.target(pending, me)
+        if params is None:
+            return None
+        return TYPING.TypingSignal(
+            client,
+            params,
+            on_error=lambda exc: self.log.write(
+                "typing-failed", seat=runner.seat, error=self.scrub(str(exc))
+            ),
+        )
+
     def run_wake(self, runner: SeatRunner, pending: W.Pending) -> None:
         now = self.clock.time()
         lease_id = self.takeover(runner, pending)
@@ -2720,20 +2743,33 @@ class Daemon:
             )
         )
         schema = W.schema_text(self.fleet_tags)
-        if is_muse:
-            argv = A.muse_argv(binary, runner.cfg.model)
-            muse_env = A.muse_env(self.env, self.home, self.wake_path, seat=runner.seat)
-            result = self.muse_runner.run(
-                argv, muse_env, runner.paths.wake_dir, prompt, schema=schema
-            )
-        else:
-            argv = A.claude_argv(binary, runner.cfg.model, self.fleet_tags)
-            result = self.claude_runner.run(
-                argv,
-                A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat),
-                runner.paths.wake_dir,
-                prompt,
-            )
+        # The seat says it is typing while it thinks (AFC-515).  The run is silent for its
+        # whole length otherwise:  the adapter takes 30 to 50 seconds to answer and the reply
+        # is posted only after it has, so the person who woke the seat watches an empty
+        # topic the whole time.  The indicator is cosmetic:  it never decides whether the
+        # seat answers, and a failure to post it is logged and ignored.
+        typing = self._typing_signal(runner, pending)
+        if typing is not None:
+            typing.start()
+        try:
+            if is_muse:
+                argv = A.muse_argv(binary, runner.cfg.model)
+                muse_env = A.muse_env(self.env, self.home, self.wake_path, seat=runner.seat)
+                result = self.muse_runner.run(
+                    argv, muse_env, runner.paths.wake_dir, prompt, schema=schema
+                )
+            else:
+                argv = A.claude_argv(binary, runner.cfg.model, self.fleet_tags)
+                result = self.claude_runner.run(
+                    argv,
+                    A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat),
+                    runner.paths.wake_dir,
+                    prompt,
+                )
+        finally:
+            # The answer exists now and the reply is posted next, so the indicator goes down.
+            if typing is not None:
+                typing.stop()
         # The primary failed for any reason a fallback could answer differently (a crashed runtime,
         # an unparseable result, a missing binary).  A quota refusal never falls back:  a capped
         # provider stays capped whichever binary asks.
