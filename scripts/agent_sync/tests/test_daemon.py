@@ -670,7 +670,7 @@ class WakeTests(DaemonHarness):
         self.assertTrue(L.paused(self.root, "CLAUDE"), "no message ever resumes")
 
     def test_the_owner_dm_pause_takes_the_current_cli_name(self) -> None:
-        # The docs tell the owner to type `simple-chat pause`, so that phrase has to work.    The
+        # The docs tell the owner to type `simple-chat pause`, so that phrase has to work.  The
         # retired `agent-sync pause` stays live too, because that launcher is still on PATH.
         daemon = self.started()
         self.fake.add_direct_message("Jay Wedgeworth", "simple-chat pause", deliver=True)

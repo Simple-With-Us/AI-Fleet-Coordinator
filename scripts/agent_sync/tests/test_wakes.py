@@ -231,7 +231,7 @@ class ContractTests(unittest.TestCase):
         from agent_sync import cli
 
         # The protocol is a generated mirror of the Fleet-OPS handbook, so it spells the command
-        # with whichever launcher name it was generated from.    `simple-chat` is the current one
+        # with whichever launcher name it was generated from.  `simple-chat` is the current one
         # and `agent-sync` survives only as a compatibility launcher for it, so both spell the
         # same command and the mirror may carry the older spelling until it is regenerated.
         protocol = self.protocol()

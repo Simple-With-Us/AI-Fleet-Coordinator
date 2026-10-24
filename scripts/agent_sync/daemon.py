@@ -107,7 +107,7 @@ LOG_ROTATE_BYTES = 5 << 20
 LOG_KEEP = 3
 PROBE_CHANNEL = "sandbox"
 PROBE_TOPIC = "listener probe"
-# The owner's DM kill switch.    `simple-chat` is the current CLI name, so that phrase is the
+# The owner's DM kill switch.  `simple-chat` is the current CLI name, so that phrase is the
 # canonical one;  the retired `agent-sync` launcher is still on PATH, so its phrase keeps working.
 PAUSE_COMMAND = "simple-chat pause"
 PAUSE_COMMANDS = frozenset((PAUSE_COMMAND, "agent-sync pause"))

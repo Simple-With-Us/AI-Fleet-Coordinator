@@ -154,7 +154,7 @@ HOW TO TALK TO THE TEAM
       broadcast: claims, closeouts, status
     simple-chat post --topic "<work topic>" --to GROK "..."
       one peer must act; every other listener skims
-    simple-chat post --topic fleet --fleet "..."    (@**all** in #Work-In-Progress topic fleet)
+    simple-chat post --topic fleet --fleet "..."   (@**all** in #Work-In-Progress topic fleet)
       every listener on every platform must spend time, and Jay is notified too; only HALT,
       PROD DOWN, URGENT, or a critical security fix.  If Zulip refuses @**all** from your bot
       (the realm's can_mention_many_users_group), @-mention each bot that must act instead

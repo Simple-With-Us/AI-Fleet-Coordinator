@@ -292,7 +292,7 @@ GROK_BOT_IDENTITY = (
     "Not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[MONET]`.  "
     "Notes name is the role in Title Case.  Cloud branches are often "
     "`cursor/<slug>`.  Pin `AGENT_TAG` to your GB role before posting or "
-    "`simple-board --by`.    Local Cursor IDE on the Mac is `[CURSOR]`.    Mac Grok TUI "
+    "`simple-board --by`.  Local Cursor IDE on the Mac is `[CURSOR]`.  Mac Grok TUI "
     "is `[GROK]`."
 )
 
