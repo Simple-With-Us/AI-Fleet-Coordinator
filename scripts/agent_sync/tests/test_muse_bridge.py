@@ -696,3 +696,18 @@ class BridgeBinaryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main())
+
+
+class LoopSwitchTests(unittest.TestCase):
+    def test_bridge_uses_authoritative_config_switch_without_erasing_history(self):
+        with tempfile.TemporaryDirectory() as root:
+            cfg = _server_config("GB-DIRECTOR", wake="http")
+            row = _row(1, 9001)
+            key = L.topic_key(row["channel"], row["topic"])
+            guard = MB.W.LoopGuard(os.path.join(L.listener_dir(root), "loopguard.json"))
+            for _ in range(3):
+                guard.note(key, wake_reply=True, owner=False)
+            self.assertTrue(MB.source_blocked(root, cfg, row))
+            cfg.wake_loop_prevention = False
+            self.assertFalse(MB.source_blocked(root, cfg, row))
+            self.assertEqual(guard.count(key), 3)
