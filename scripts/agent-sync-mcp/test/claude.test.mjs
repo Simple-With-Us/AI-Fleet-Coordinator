@@ -13,7 +13,7 @@ const CLIENT = "AbCdEf1234567890";
 const cfg = loadConfig(testEnv({ HOSTED_SEATS: "JET,CLAUDE" }));
 const client = { clientId: CLIENT, clientName: "Claude (manual form, CLAUDE)" };
 
-test("hosted CLAUDE has an independent bot mapping and exact hosted callback; CODEX remains unenabled", () => {
+test("hosted CLAUDE has an independent bot mapping and exact hosted callback", () => {
   const prod = loadConfig(wranglerConfig().vars);
   assert.ok(prod.hostedSeats.includes("CLAUDE"));
   assert.equal(prod.botEmails.CLAUDE, "claude-bot@simplewithus.zulipchat.com");
@@ -25,7 +25,6 @@ test("hosted CLAUDE has an independent bot mapping and exact hosted callback; CO
   assert.equal(prod.redirectOwner.get(CHATGPT_REDIRECT), "JET");
   assert.equal(prod.cimdOwner.get(CHATGPT_CLIENT), "JET");
   assert.equal(prod.redirectOwner.get("https://www.cursor.com/agents/mcp/oauth/callback"), "CURSOR");
-  assert.ok(!KNOWN_SEATS.includes("CODEX"));
   assert.ok(!("CLAUDE" in WAKE_SECRETS));
   assert.ok(LINEAR_SEATS.includes("CLAUDE"));
   const installer = readFileSync(path.join(ROOT, "install_seat_key.py"), "utf8");
@@ -90,5 +89,6 @@ test("CLAUDE canonical email is required; other seats keep their existing bindin
     ECHO: { key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" },
     WISE: { key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE" },
     MA: { key: "ZULIP_KEY_MA", email: "ZULIP_EMAIL_MA" },
+    CODEX: { key: "ZULIP_KEY_CODEX", email: "ZULIP_EMAIL_CODEX" },
   });
 });
