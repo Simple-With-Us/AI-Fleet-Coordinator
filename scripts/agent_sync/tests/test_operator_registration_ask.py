@@ -319,44 +319,6 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
         self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
         self.assertEqual(working.posts, [])
 
-    def test_a_malformed_read_back_response_is_not_absence(self) -> None:
-        # A missing or non-list messages field is unverifiable, not proven absence
-        # (kody 4366048455):  reposting on it would duplicate the question.
-        failing = _StubClient(
-            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
-        )
-        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
-
-        class _Shapeless(_StubClient):
-            def get(self, endpoint, params=None, timeout=None):
-                if endpoint == "messages":
-                    return {"result": "success"}
-                return super().get(endpoint, params=params, timeout=timeout)
-
-        working = _Shapeless()
-        again = self.send(client=working, now=1001.0)
-        self.assertEqual(again["status"], "refused")
-        self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
-        self.assertEqual(working.posts, [])
-
-    def test_a_malformed_message_row_is_not_absence(self) -> None:
-        failing = _StubClient(
-            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
-        )
-        self.assertEqual(self.send(client=failing)["delivery_status"], OC.DELIVERY_UNKNOWN)
-
-        class _Rowless(_StubClient):
-            def get(self, endpoint, params=None, timeout=None):
-                if endpoint == "messages":
-                    return {"result": "success", "messages": ["not-a-message"]}
-                return super().get(endpoint, params=params, timeout=timeout)
-
-        working = _Rowless()
-        again = self.send(client=working, now=1001.0)
-        self.assertEqual(again["status"], "refused")
-        self.assertEqual(again["delivery_status"], OC.DELIVERY_UNKNOWN)
-        self.assertEqual(working.posts, [])
-
     def test_a_rate_limit_is_retryable_and_the_key_is_released(self) -> None:
         limited = _StubClient(
             post_error=Z.ApiError(

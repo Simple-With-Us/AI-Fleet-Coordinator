@@ -4013,7 +4013,11 @@ class Daemon:
                 now=now,
             )
             reply = OREG.answer_reply(out)
-            if done is not None and message_id is not None:
+            # Completion means the letter actually landed (kody 4366220094):  a
+            # refused or uncorroborated answer still gets its reply sent, but it must
+            # NOT close the register-location step, or the ledger would record a
+            # registration the owner never got and the open question would be lost.
+            if out.get("status") == "registered" and done is not None and message_id is not None:
                 done.add((message_id, "register-location", reply))
             reply_ready = True
             sent = ORASK.send_location_question(

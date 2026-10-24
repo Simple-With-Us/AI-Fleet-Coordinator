@@ -909,6 +909,10 @@ def main(argv: list[str] | None = None) -> int:
                 location=args.location,
                 registrations=registrations,
                 register=register,
+                # The CLI runs on the Operator's own machine under their session, so
+                # its caller is the pinned owner (kody 4366220357):  pass the owner
+                # classification explicitly rather than defaulting it inside answer().
+                answerer="owner",
             )
     except (ValueError, RegistrationRefused, OR.RegistryUnavailable) as exc:
         print(json.dumps({"error": str(exc)}))

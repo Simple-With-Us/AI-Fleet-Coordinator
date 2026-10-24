@@ -92,7 +92,13 @@ def _question_message_id(
     answer quoting the ref, or anyone else's message, never counts.  Absence is proven
     only when the topic's history is exhausted;  an unreadable topic or a hit page cap
     is "could not check", never "not there".
+    Absence is only proven on validated rows:  a malformed sender id, non-string
+    content or an oversized page makes the read-back unverifiable, never "not there".
     """
+    if not isinstance(sender_id, int) or isinstance(sender_id, bool) or sender_id <= 0:
+        # The match target itself must be a real Zulip user id:  anything else would
+        # silently match nothing and a later short page would read as proven absence.
+        return None, "the sender id was malformed", False
     narrow = json.dumps(
         [
             {"operator": "channel", "operand": channel},
@@ -131,6 +137,15 @@ def _question_message_id(
             # A malformed message object is not skipped:  discarding it could turn
             # the page into a false short page and read as proven absence.
             return None, "the topic read-back carried a malformed message", False
+        if len(rows) > READ_BACK_PAGE:
+            # An oversized page breaks the full/short-page math absence rests on.
+            return None, "the topic read-back page was oversized", False
+        for row in rows:
+            row_sender = row.get("sender_id")
+            if not isinstance(row_sender, int) or isinstance(row_sender, bool) or row_sender <= 0:
+                return None, "the topic read-back carried a malformed sender id", False
+            if not isinstance(row.get("content"), str):
+                return None, "the topic read-back carried non-string content", False
         messages = list(rows)
         for message in messages:
             if message.get("sender_id") != sender_id:
