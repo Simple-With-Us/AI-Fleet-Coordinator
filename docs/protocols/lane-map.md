@@ -141,7 +141,7 @@ cd scripts && python3 fleet_lanes/server_working_dirs.py --apply
 
 **Stray checkouts.**  A fleet checkout found outside the lanes root on the server is copied, not moved, into `/mnt/fleet-extra/apps/lanes/<Repo>/<seat>-<slug>` under the seat that made it:  `cp -a`, then the copy is proved identical (`diff -r`, the same HEAD and the same `git status`, an unfinished merge included).  The original stays where it is, because it is another seat's work and a session may still hold its path;  its seat, or the owner, deletes it once the seat has moved to the copy.  A remote URL with a token in it is rewritten to the plain `https://github.com/...` URL in the copy, and the token is reported for rotation.  The copy is a full clone, so `lane ls` reports it `FULL-CLONE-IN-LANE` and no cleaner ever removes it;  its seat retires it by hand when the PR is done.
 
-Copied on Fri, Oct 23, 2026 (2:02 PM to 2:03 PM), with the log in `/mnt/fleet-extra/apps/scratch/claude/lane-consolidation/`:
+Copied on Fri, Oct 23, 2026 (2:02 PM to 2:03 PM), with the log in `/mnt/fleet-extra/apps/scratch/claude/lane-consolidation/`.  At 10:10 PM the same day the owner asked for the old folders to be deleted:  each original was checked again (no file changed since the copy, the same HEAD, refs and `git status` as its copy, no process inside it) and then removed, which freed 2.4 GB on the main disk.
 
 | Was | Now | Seat | State |
 |---|---|---|---|
