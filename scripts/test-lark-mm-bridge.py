@@ -1557,6 +1557,7 @@ class LarkSurfaceTests(unittest.TestCase):
         bridge.signal_done_dir.mkdir(parents=True, exist_ok=True)
         bridge.last_chat_id = None
         bridge.env = {}
+        bridge.signal_retry = {}
         return bridge
 
     def owner_message(self, message_id, content, chat_id="oc_1"):
@@ -2002,6 +2003,140 @@ class LarkSurfaceTests(unittest.TestCase):
         # The step was not durable, so the signal cannot claim it.
         self.assertEqual(record["outcome"], "unknown")
         self.assertEqual(record["detail"], "signal_write_failed")
+
+    def run_signal_passes(self, bridge, passes, failure, clock=None):
+        """Run the watcher `passes` times, an hour apart, and count the sends.
+
+        Every send fails with `failure`.  The clock moves an hour between
+        passes, so every wait the bridge sets has passed by the next one.
+        A caller that runs passes twice hands in the same clock, so time
+        never runs backwards between them.
+        """
+        sends = []
+        clock = clock if clock is not None else [1_000_000.0]
+
+        def fake_run(command, stdin_text=None, timeout=120, env=None):
+            sends.append(command)
+            raise bridge_mod.CommandError(failure)
+
+        with (
+            mock.patch.object(bridge_mod, "run", fake_run),
+            mock.patch.object(bridge_mod.time, "time", lambda: clock[0]),
+        ):
+            for _ in range(passes):
+                bridge._signal_worker_once()
+                clock[0] += 3600
+        return sends
+
+    def test_a_pending_write_that_fails_does_not_reset_the_attempt_budget(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(
+            bridge,
+            "sig-budget.json",
+            {"signal_id": "sig-budget", "text": "wake up", "chat_id": "oc_1"},
+        )
+        # Every pending write fails, so the file never carries the count.
+        with mock.patch.object(bridge, "_write_signal", return_value=False):
+            sends = self.run_signal_passes(
+                bridge, bridge_mod.MAX_SIGNAL_ATTEMPTS + 3, "lark-cli failed: 429 rate limit"
+            )
+        # The count lives in memory as well, so the budget still runs out
+        # and the signal is filed instead of being retried forever.
+        self.assertEqual(len(sends), bridge_mod.MAX_SIGNAL_ATTEMPTS)
+        self.assertFalse(signal.exists())
+        record = self.read_outcome(bridge, "sig-budget.json")
+        self.assertEqual(record["outcome"], "unknown")
+        self.assertIn("retries exhausted", record["detail"])
+        self.assertEqual(bridge.signal_retry, {})
+
+    def test_a_pending_write_that_fails_keeps_the_wait_before_the_next_try(self):
+        bridge = self.make_bridge()
+        self.write_signal(
+            bridge, "sig-wait.json", {"signal_id": "sig-wait", "text": "wake up", "chat_id": "oc_1"}
+        )
+        sends = []
+
+        def fake_run(command, stdin_text=None, timeout=120, env=None):
+            sends.append(command)
+            raise bridge_mod.CommandError("lark-cli failed: 429 rate limit")
+
+        with (
+            mock.patch.object(bridge_mod, "run", fake_run),
+            mock.patch.object(bridge, "_write_signal", return_value=False),
+        ):
+            bridge._signal_worker_once()
+            # The next pass of the watcher comes a second later, well inside
+            # the wait, and must not send again.
+            bridge._signal_worker_once()
+        self.assertEqual(len(sends), 1)
+
+    def test_a_signal_whose_filing_fails_is_not_sent_past_its_budget(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(
+            bridge, "sig-disk.json", {"signal_id": "sig-disk", "text": "wake up", "chat_id": "oc_1"}
+        )
+
+        def failing_write(path, payload):
+            raise OSError("disk full")
+
+        # Every write fails, the filing too, so the file stays where the
+        # watcher finds it again on every pass.
+        clock = [1_000_000.0]
+        with mock.patch.object(bridge_mod, "_write_json_atomic", failing_write):
+            sends = self.run_signal_passes(
+                bridge, bridge_mod.MAX_SIGNAL_ATTEMPTS + 3, "lark-cli could not start", clock
+            )
+        self.assertEqual(len(sends), bridge_mod.MAX_SIGNAL_ATTEMPTS)
+        self.assertTrue(signal.exists())
+        # Once the disk takes writes again, the signal is filed without
+        # being sent again.
+        sends = self.run_signal_passes(bridge, 1, "lark-cli could not start", clock)
+        self.assertEqual(sends, [])
+        record = self.read_outcome(bridge, "sig-disk.json")
+        self.assertEqual(record["outcome"], "unknown")
+        self.assertEqual(record["detail"], "retries exhausted")
+
+    def test_an_invalid_grant_is_a_terminal_refusal_even_without_a_status(self):
+        bridge = self.make_bridge()
+        failure = 'lark-cli failed: {"error":"invalid_grant","error_description":"expired"}'
+        # The reply path and the signal path share the one classifier.
+        self.assertEqual(bridge_mod.Bridge._classify_reply_failure(failure), "terminal")
+        self.write_signal(
+            bridge,
+            "sig-grant.json",
+            {"signal_id": "sig-grant", "text": "wake up", "chat_id": "oc_1"},
+        )
+        sends = self.run_signal_passes(bridge, 2, failure)
+        # A refused grant is definite:  the signal is filed as refused after
+        # one try, not left unknown and not retried.
+        self.assertEqual(len(sends), 1)
+        record = self.read_outcome(bridge, "sig-grant.json")
+        self.assertEqual(record["outcome"], "refused")
+        self.assertIn("terminal", record["detail"])
+
+    def test_a_retry_after_in_the_error_sets_the_wait_and_is_kept(self):
+        bridge = self.make_bridge()
+        signal = self.write_signal(
+            bridge,
+            "sig-later.json",
+            {"signal_id": "sig-later", "text": "wake up", "chat_id": "oc_1"},
+        )
+        failure = 'lark-cli failed: 429 {"code":"rate_limited","retry_after":120}'
+        before = time.time()
+        with mock.patch.object(bridge_mod, "run", side_effect=bridge_mod.CommandError(failure)):
+            bridge._handle_signal(signal)
+        record = json.loads(signal.read_text(encoding="utf-8"))
+        self.assertEqual(record["outcome"], "pending")
+        # The server's wait is longer than the first local backoff, so it wins.
+        self.assertGreaterEqual(record["next_attempt"], before + 120)
+        self.assertIn("retry_after=120", record["detail"])
+        # A value too large to be a real wait is capped.
+        self.assertEqual(
+            bridge_mod.retry_after_from("Retry-After: 99999"), bridge_mod.SIGNAL_RETRY_AFTER_MAX
+        )
+        # No value, or the date form, leaves the local backoff in charge.
+        self.assertIsNone(bridge_mod.retry_after_from("429 rate limit"))
+        self.assertIsNone(bridge_mod.retry_after_from("Retry-After: Wed, 21 Oct 2026 07:28:00 GMT"))
 
     def test_a_duplicate_event_does_not_move_the_chat_the_signals_go_to(self):
         bridge = self.make_bridge()
