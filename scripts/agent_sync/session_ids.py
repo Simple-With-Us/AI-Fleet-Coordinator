@@ -34,7 +34,7 @@ from . import identity as I
 # ---- copies of fleet-apps.json `sessionIds` (keep them equal;  the parity test enforces it) ----------------------
 ID_PATTERN = "^[A-Za-z0-9][A-Za-z0-9._:-]{3,127}$"
 GENERIC_ENV = "AGENT_SESSION"
-EXEMPT_SEATS = ["ECHO", "GROK-BOT", "JET", "MA", "WISE"]
+EXEMPT_SEATS = ["ECHO", "GROK-BOT", "JET", "JET-CHAT", "MA", "WISE"]
 EXEMPT_PATTERNS = ["GB-*"]
 ENV_BY_SEAT = {
     "CLAUDE": ["CLAUDE_CODE_SESSION_ID"],
