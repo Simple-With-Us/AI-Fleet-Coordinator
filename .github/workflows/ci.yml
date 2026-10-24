@@ -283,14 +283,22 @@ jobs:
     - name: Notes AppleEvent timeout (AFC-436)
       run: |
         cd scripts && python3 -m unittest test_apple_notes_timeout
+    # AFC-486:  the helper's --read, --list and --existing-only modes and its action log.  A stub osascript on
+    # PATH stands in for Notes, so the tests touch no Notes and run here.
+    - name: Notes read, list and action log (AFC-486)
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_actions
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
     # slower and stays a local run.  TokenBlobTests (about 8 seconds) pins the per-key fleet-secrets reads and the
     # zero-mint, zero-write fresh-blob path (AFC-361).  CommentAuthorTests pins the comment account fields (author_id, author_app) that the
     # needs-owner notifier checks the owner's Linear reply by.
+    # CredentialPreviewTests and CredentialFailureTests pin what the board says about a credential it
+    # could not use:  a masked preview of the credential rather than the credential, and the name of
+    # the variable to fix on every exit-4 line (AFC-473).
     - name: Board CLI input files and flat labels
-      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests TokenBlobTests
+      run: python3 scripts/linear-board/test_board.py FileInputTests FlatLabelTests CommentAuthorTests TokenBlobTests CredentialPreviewTests CredentialFailureTests
     # Infisical for the board CLI (AFC-348):  client pairs from /linear before local files, the shared
     # LINEAR_<SEAT>_CACHE_TOKEN adopted and published, and the fallback when Infisical is down.  Mock servers only.
     - name: Board CLI Infisical tests

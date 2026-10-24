@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import unittest
 
+from needs_owner import links
 from needs_owner import text as T
 
 from .world import REALM_LINK, World
@@ -43,16 +44,18 @@ class FileTests(unittest.TestCase):
         self.assertIn("Recommendation: option 1", description)
         self.assertIn("Filed by: CLAUDE", description)
         self.assertNotIn("default", description.lower())
-        # the notice:  the filer's bot, the fixed session label, the owner mention, the body on stdin
+        # the notice:  the filer's bot, the fixed session label, the channel the notifier resolved
+        # from its own environment, the owner mention, the body on stdin
         (post,) = self.w.calls("simple-chat")
-        self.assertEqual(post["argv"], ["post", "--as", "CLAUDE", "--session", "needsown", "--json", "--topic", got["topic"],
+        self.assertEqual(post["argv"], ["post", "--as", "CLAUDE", "--session", "needsown", "--json",
+                                        "--channel", links.CHANNEL, "--topic", got["topic"],
                                         "--to-owner", "--", "-"])
         body = post["stdin"]
         self.assertIn("1️⃣ Option 1:", body)
         self.assertIn("(Tap to answer)", body)
         self.assertIn("Option 2:", body)
         self.assertIn("Recommendation:  option 1.", body)
-        self.assertIn("https://linear.app/simple-with-us/issue/AFC-300", body)
+        self.assertIn("https://linear.app/test-fleet/issue/AFC-300", body)
         self.assertIn("Answer here or as a comment on the Linear issue.", body)
         self.assertIn("`%s`" % got["uid"], body)
         # the record

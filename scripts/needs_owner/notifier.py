@@ -710,7 +710,7 @@ class Notifier:
 
     # ---- a pause or a resume in any OWNER topic -------------------------------------------------------------
     def topic_rows(self) -> list[dict] | None:
-        """The recent topics of #agent-sync (`agent-sync topics --json`), fetched once a run.  None when it failed."""
+        """The recent topics of #Work-In-Progress (`agent-sync topics --json`), fetched once a run.  None when it failed."""
         if not self._topic_rows_read:
             self._topic_rows_read = True
             result = self.agent_sync(

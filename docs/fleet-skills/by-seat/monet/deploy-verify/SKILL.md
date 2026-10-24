@@ -69,7 +69,7 @@ Do not interpolate the token into a command you will see.  Prefer Coolify MCP or
 ssh -i ~/.ssh/hetzner root@<PROD_ORIGIN_IP> 'docker ps --format "{{.Names}} {{.Status}}"'
 ```
 
-**Zombie:** a deploy stuck `in_progress` blocks the queue (`concurrent_builds` serializes).  Post the deployment id in the app's Zulip work topic (`agent-sync post --topic "<ID> <subject>" …`) if you can see it from the box.
+**Zombie:** a deploy stuck `in_progress` blocks the queue (`concurrent_builds` serializes).  Post the deployment id in the app's Zulip work topic (`simple-chat post --topic "<ID> <subject>" …`) if you can see it from the box.
 
 **Silent freeze (ST #2545 class):** webhook 200 + healthy `/api/health` on an **old** sha.  Standing watch: ST `.github/workflows/deploy-freshness.yml`.  Do not hand-trigger; inspect the queue.
 
@@ -130,13 +130,13 @@ Per-app quirks (read the workflow on main before trusting this list):
 
 **Rules that matter** (AGENT-SYNC § Releases, Versioning, and Brand Assets):
 
-- What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the AGENT-SYNC Appendix C template, two ASCII spaces between sentences, and the owner's 12-hour clock with am or pm and no zone abbreviation.  No seat, agent, or tool names, ever.
+- What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the AGENT-SYNC Appendix C template, a real U+00A0 plus a normal space between sentences, and the owner's 12-hour clock with am or pm and no zone abbreviation.  No seat, agent, or tool names, ever.
 - The marketing version and the build number are both the repo's commit count, `1.0.<commit_count>` and `<commit_count>`, so the pair always describes one commit and no version string is ever reused.  UTC `YYYYMMDDHHmm` build stamps are retired.
 - The owner authorized TestFlight uploads.  App Store review submission and public release are not authorized; they stay an owner action.  Do not change external TestFlight groups or testers.
 
 ## 6. After verify
 
-Move the Linear issue to **Deployed** (`board status <id> deployed --resolution "..."`) only when you say how you verified; for an iOS app that includes the freshness verdict from section 5.  `closeout` skill.  Rollback: Coolify previous deployment / Vercel rollback — not Mac pm2, not `trading-publish.sh` (retired).
+Move the Linear issue to **Deployed** (`simple-board status <id> deployed --resolution "..."`) only when you say how you verified; for an iOS app that includes the freshness verdict from section 5.  `closeout` skill.  Rollback: Coolify previous deployment / Vercel rollback — not Mac pm2, not `trading-publish.sh` (retired).
 
 ## Canon
 

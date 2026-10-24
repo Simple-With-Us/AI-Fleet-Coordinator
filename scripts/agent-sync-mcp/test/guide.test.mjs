@@ -32,7 +32,7 @@ test("every renamed-tools.json entry has a row in the guide's Old Names table", 
 
 test("the guide has the sections the design lists, each a ## heading", () => {
   const names = sectionNames(GUIDE_TEXT);
-  for (const wanted of ["How to Pass Identity", "Which Connection a Client Gets", "Tools by Family", "Old Names and New Names", "The Notes Relay", "CLI Equivalents"]) {
+  for (const wanted of ["How to Pass Identity", "Which Connection a Client Gets", "Tools by Family", "Old Names and New Names", "Apple Notes", "CLI Equivalents"]) {
     assert.ok(names.includes(wanted), wanted);
   }
 });
@@ -46,9 +46,9 @@ test("guideResult returns the whole guide, one section (matched loosely), or lis
   const whole = guideResult(GUIDE_TEXT, {});
   assert.equal(whole.content[0].text, GUIDE_TEXT);
   assert.equal(whole.structuredContent.section, null);
-  const one = guideResult(GUIDE_TEXT, { section: "the notes  RELAY" });
-  assert.equal(one.structuredContent.section, "The Notes Relay");
-  assert.ok(one.content[0].text.startsWith("## The Notes Relay\n"));
+  const one = guideResult(GUIDE_TEXT, { section: "apple  NOTES" });
+  assert.equal(one.structuredContent.section, "Apple Notes");
+  assert.ok(one.content[0].text.startsWith("## Apple Notes\n"));
   assert.ok(!one.content[0].text.includes("## CLI Equivalents"));
   assert.throws(() => guideResult(GUIDE_TEXT, { section: "nope" }), (error) => error.code === "not_found" && /How to Pass Identity/.test(error.message) && error.extra.sections.length === sectionNames(GUIDE_TEXT).length);
 });

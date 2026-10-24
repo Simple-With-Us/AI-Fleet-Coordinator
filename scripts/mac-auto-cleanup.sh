@@ -6,6 +6,25 @@
 
 set -u
 
+# begin operator inventory (AFC-504)
+# The operator's own inventory file, outside this repository.  It carries the
+# private deployment values this script needs -- the ssh target of the origin box
+# among them -- so none of them is ever written into a tracked file.  The file is
+# optional: with no file the script runs on whatever the environment gives it.
+HOUSEKEEPER_ENV_FILE="${HOUSEKEEPER_ENV_FILE:-$HOME/.config/fleet/housekeeper.env}"
+HOUSEKEEPER_INVENTORY=0
+if [ -r "$HOUSEKEEPER_ENV_FILE" ]; then
+  # shellcheck disable=SC1090
+  # An unbound variable inside the operator's file must not abort the run, so
+  # `set -u` is suspended for the source and restored right after it.
+  set +u
+  . "$HOUSEKEEPER_ENV_FILE"
+  set -u
+  HOUSEKEEPER_INVENTORY=1
+  export HOUSEKEEPER_SSH_ALIAS
+fi
+# end operator inventory (AFC-504)
+
 PRESSURE=0
 for arg in "$@"; do
   case "$arg" in
@@ -970,10 +989,45 @@ fi
 # hits every branch already in main) and then force-deleted the checkout,
 # including in-session trees #93 was just fixed to keep.
 
-# 5. Remote Hetzner Coolify maintenance trigger
-if ssh -o ConnectTimeout=3 -o BatchMode=yes coolify "exit 0" 2>/dev/null; then
-    echo "Triggering remote Hetzner Coolify maintenance..."
-    ssh -o ConnectTimeout=5 coolify "/etc/cron.daily/coolify-auto-maintenance" >> /dev/null 2>&1 || true
+# 5. Remote Hetzner Coolify maintenance trigger  (AFC-504)
+# The ssh target is private deployment inventory: it arrives in the environment as
+# HOUSEKEEPER_SSH_ALIAS, and the operator's own ssh config is what resolves it.
+# With no target the hop is skipped rather than guessed at, because a placeholder
+# target would reach the wrong host.  The hop is redundant with the host's own
+# /etc/cron.daily/coolify-auto-maintenance, so skipping it costs no maintenance:
+# the host still self-maintains on its own schedule.
+#
+# The remote hop is not optional once the script reaches it.  The target comes
+# from the operator's own inventory, and a target that does not resolve is a
+# configuration fault the operator has to see, so the hop fails closed and says
+# which variable is missing.  It is never skipped in silence.
+#
+# Exit code 75 means the local cleanup ran and only the remote hop failed.
+# The watcher reads that code as "cleaned", so a failed hop never sends it
+# round a second time on an already pruned Mac.
+HOUSEKEEPER_HOP_EXIT=75
+if [ -z "${HOUSEKEEPER_SSH_ALIAS:-}" ]; then
+    if [ "$HOUSEKEEPER_INVENTORY" = "1" ]; then
+        echo "HOUSEKEEPER_SSH_ALIAS is required: the operator's inventory file is present but names no ssh target for the remote Hetzner maintenance trigger." >&2
+    else
+        echo "HOUSEKEEPER_SSH_ALIAS is required: no operator inventory file names an ssh target for the remote Hetzner maintenance trigger." >&2
+    fi
+    exit "$HOUSEKEEPER_HOP_EXIT"
 fi
+if ssh_err=$(ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOUSEKEEPER_SSH_ALIAS" "exit 0" 2>&1); then
+    echo "Triggering remote Hetzner Coolify maintenance..."
+    if ssh_err=$(ssh -o ConnectTimeout=5 "$HOUSEKEEPER_SSH_ALIAS" "/etc/cron.daily/coolify-auto-maintenance" 2>&1); then
+        :
+    else
+        maintenance_status=$?
+        echo "Remote Hetzner maintenance trigger failed: the maintenance command exited $maintenance_status: $ssh_err" >&2
+        exit "$HOUSEKEEPER_HOP_EXIT"
+    fi
+else
+    status=$?
+    echo "Remote Hetzner maintenance trigger failed: the ssh connectivity check to the operator's inventory target exited $status: $ssh_err" >&2
+    exit "$HOUSEKEEPER_HOP_EXIT"
+fi
+# end remote Hetzner maintenance trigger
 
 echo "[$(date)] Mac cleanup completed successfully."
