@@ -16,6 +16,7 @@ import tempfile
 import threading
 import tomllib
 import unittest
+import urllib.parse
 from pathlib import Path
 
 from agent_sync import config as C
@@ -37,6 +38,11 @@ def _load(name: str):
 
 IE = _load("infisical_env")
 AL = _load("apply_live_config")
+
+
+def folder(path: str) -> str:
+    """The secretPath a fake Infisical read asked for."""
+    return urllib.parse.parse_qs(urllib.parse.urlsplit(path).query).get("secretPath", [""])[0]
 
 
 # --------------------------------------------------------------------------------------------
@@ -167,7 +173,9 @@ class InfisicalEnvTests(unittest.TestCase):
             fake.read_failures = 1
             out, line = IE.build_env(self.env(fake), sleep=lambda s: None)
         self.assertIn("loaded 5 variables", line)
-        self.assertEqual([m for m, _ in fake.requests], ["POST", "GET", "GET"])
+        # The /zulip read is retried once;  then the notes-queue keys' own folder is read once (AFC-486).
+        self.assertEqual([m for m, _ in fake.requests], ["POST", "GET", "GET", "GET"])
+        self.assertEqual([folder(p) for m, p in fake.requests if m == "GET"], ["/zulip", "/zulip", "/operator"])
 
     def test_a_plain_http_api_that_is_not_loopback_is_refused(self) -> None:
         out, line = IE.build_env(self.env(INFISICAL_API_URL="http://infisical.example.com/api"))
@@ -223,7 +231,9 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertFalse(json.loads(run.stdout)["running"], "agent-sync status --json ran with the given arguments")
         self.assertIn("agent-sync: loaded 5 variables from Infisical", run.stderr)
         self.assertEqual([p.split("?")[0] for _, p in fake.requests],
-                         ["/api/v1/auth/universal-auth/login", "/api/v3/secrets/raw"])
+                         ["/api/v1/auth/universal-auth/login", "/api/v3/secrets/raw", "/api/v3/secrets/raw"])
+        # one login, then /zulip and the notes-queue keys' /operator folder (AFC-486)
+        self.assertEqual([folder(p) for m, p in fake.requests if m == "GET"], ["/zulip", "/operator"])
 
     def test_the_entrypoint_without_an_identity_runs_as_before(self) -> None:
         env = self.env()
@@ -346,6 +356,50 @@ class ApplyLiveConfigTests(unittest.TestCase):
         self.assertEqual(after.count("[seat.GB-TRADER]"), 1)
         self.assertEqual(C.from_dict(tomllib.loads(after)).errors, [])
         self.assertIn("no changes", self.run_main()[1])
+
+    def test_listener_api_and_notes_queue_are_added_when_missing_and_never_changed(self) -> None:
+        """AFC-486:  a live volume gets the sample's [listener_api] and [notes_queue] (both off) when it has none, and
+        one it already has keeps its own values, because enabling either is the operator's step on that volume."""
+        headers = lambda text: [line for line in text.splitlines() if line in ("[listener_api]", "[notes_queue]")]  # noqa: E731
+        self.assertEqual(headers(self.live.read_text()), [])
+        code, out = self.run_main("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("[listener_api]\n    added", out)
+        self.assertIn("[notes_queue]\n    added", out)
+        after = self.live.read_text()
+        self.assertEqual(headers(after), ["[listener_api]", "[notes_queue]"])
+        sample = self.sections((SERVER_DIR / "listener.toml").read_text())
+        for name in ("listener_api", "notes_queue"):
+            self.assertEqual(self.sections(after)[name], sample[name])
+        cfg = C.from_dict(tomllib.loads(after))
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual((cfg.listener_api_enabled, cfg.notes_queue_enabled), (False, False))
+        self.assertEqual(cfg.notes_queue_server_seats, frozenset({"CLAUDE", "CODEX"}))
+        self.assertIn("no changes", self.run_main()[1])
+        # A volume where the operator turned both on (and narrowed the seats) keeps them byte for byte.
+        live = self.live.read_text()
+        for name in ("listener_api", "notes_queue"):
+            live = live.replace(self.sections(live)[name] + "\n", "")
+        enabled = (
+            '\n[listener_api]\nenabled = true\nbind = "0.0.0.0"\nport = 8788\n'
+            '\n[notes_queue]\nenabled = true\nworker_seats = ["JET"]\nserver_seats = []\n'
+        )
+        self.live.write_text(live + enabled)
+        code, out = self.run_main("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("no changes", out)
+        self.assertTrue(self.live.read_text().endswith(enabled))
+        cfg = C.from_dict(tomllib.loads(self.live.read_text()))
+        self.assertEqual(cfg.errors, [])
+        self.assertEqual((cfg.listener_api_enabled, cfg.notes_queue_enabled), (True, True))
+        self.assertEqual((cfg.notes_queue_worker_seats, cfg.notes_queue_server_seats), (frozenset({"JET"}), frozenset()))
+        # and a seat change elsewhere in the file still leaves them alone.
+        self.live.write_text(self.live.read_text().replace('wake = "http"', 'wake = "inbox"', 1))
+        code, out = self.run_main("--apply")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("[notes_queue]", out)
+        self.assertNotIn("[listener_api]", out)
+        self.assertTrue(self.live.read_text().endswith(enabled))
 
     def test_a_result_that_would_not_load_is_refused_and_nothing_is_written(self) -> None:
         # A Mac seat in the server's live file is a partition problem the merge cannot fix.

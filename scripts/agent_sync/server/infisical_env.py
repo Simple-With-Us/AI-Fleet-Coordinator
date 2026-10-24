@@ -21,6 +21,8 @@ The allowlist is built from the seat partition (every seat it gives to "server")
                                                          user id and an address, never a credential, and
                                                          needed so a seat can answer inside a DM the
                                                          Operator opened (dm_policy.py)
+    OPERATOR_NOTES_{WORKER,SERVER,RUNNER}_KEY            the notes queue's three keys, from the folder /operator
+                                                         (AFC-486), with the same login
 
 CODE is the seat with hyphens as underscores.  An Infisical value wins over a container variable of the same
 name, so a rotation in Infisical takes effect on the next restart even if Coolify still holds an old copy.
@@ -75,6 +77,11 @@ SHARED_NAMES = frozenset(
         "OPERATOR_ZULIP_EMAIL",
     }
 )  # the heartbeat's DSN and the Operator's identity;  the first of the two DSN names wins
+# The Operator's notes-queue keys (AFC-486, docs/protocols/operator-notes.md), read from their own folder.
+OPERATOR_PATH = "/operator"
+OPERATOR_NAMES = frozenset(
+    {"OPERATOR_NOTES_WORKER_KEY", "OPERATOR_NOTES_SERVER_KEY", "OPERATOR_NOTES_RUNNER_KEY"}
+)
 _SEAT_RE = re.compile(r"^[A-Z0-9][A-Z0-9-]*$")
 
 
@@ -174,30 +181,45 @@ def _request(
     raise LoadError("%s: %s" % (stage, last))
 
 
-def fetch(env: Mapping[str, str], **kw) -> dict[str, str]:
-    """{name: value} for every secret in the folder.  Raises LoadError."""
-    base = api_base(env)
-    login = _request(
+def login(env: Mapping[str, str], **kw) -> str:
+    """An access token for the machine identity.  Raises LoadError."""
+    got = _request(
         "login",
-        base + "/v1/auth/universal-auth/login",
+        api_base(env) + "/v1/auth/universal-auth/login",
         body={
             "clientId": env["INFISICAL_CLIENT_ID"].strip(),
             "clientSecret": env["INFISICAL_CLIENT_SECRET"].strip(),
         },
         **kw,
     )
-    token = login.get("accessToken")
+    token = got.get("accessToken")
     if not isinstance(token, str) or not token:
         raise LoadError("login: no access token in the response")
+    return token
+
+
+def fetch(
+    env: Mapping[str, str],
+    *,
+    path: str | None = None,
+    token: str | None = None,
+    stage: str = "read",
+    **kw,
+) -> dict[str, str]:
+    """{name: value} for every secret in one folder (default INFISICAL_SECRET_PATH, else /zulip).  Logs in first
+    unless `token` is given.  Raises LoadError."""
+    base = api_base(env)
+    if token is None:
+        token = login(env, **kw)
     query = urllib.parse.urlencode(
         {
             "workspaceId": env["INFISICAL_PROJECT_ID"].strip(),
             "environment": (env.get("INFISICAL_ENVIRONMENT") or "prod").strip(),
-            "secretPath": (env.get("INFISICAL_SECRET_PATH") or "/zulip").strip(),
+            "secretPath": path or (env.get("INFISICAL_SECRET_PATH") or "/zulip").strip(),
             "expandSecretReferences": "true",
         }
     )
-    got = _request("read", base + "/v3/secrets/raw?" + query, token=token, **kw)
+    got = _request(stage, base + "/v3/secrets/raw?" + query, token=token, **kw)
     secrets = got.get("secrets")
     if not isinstance(secrets, list):
         raise LoadError("read: no secrets list in the response")
@@ -237,9 +259,29 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
             "Infisical load skipped (the seat partition gives no seat to server); starting with the container environment",
         )
     try:
-        found = fetch(env, **kw)
+        token = login(env, **kw)
+        found = fetch(env, token=token, **kw)
     except LoadError as exc:
         return out, "Infisical load failed (%s); starting with the container environment" % exc
+    # The Operator's notes-queue keys (AFC-486) live in their own folder.  A failed read of it never stops the
+    # listener:  the queue then refuses every principal, and the line says so.
+    try:
+        operator = {
+            name: value
+            for name, value in fetch(
+                env, path=OPERATOR_PATH, token=token, stage="read operator", **kw
+            ).items()
+            if name in OPERATOR_NAMES
+        }
+        operator_note = "; notes-queue keys from %s: %d of %d" % (
+            OPERATOR_PATH,
+            len(operator),
+            len(OPERATOR_NAMES),
+        )
+    except LoadError as exc:
+        operator, operator_note = {}, "; notes-queue keys not loaded (%s)" % exc
+    found = dict(found, **operator)
+    allowed = allowed | set(operator)
     loaded = sorted(name for name in found if name in allowed)
     replaced = sum(1 for name in loaded if name in env)
     for name in loaded:
@@ -266,7 +308,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     ignored = len(found) - len(loaded)
     return out, (
         f"loaded {len(loaded)} variables from Infisical ({where}; {replaced} replaced a container value, "
-        f"{ignored} other names in the folder ignored){coverage}"
+        f"{ignored} other names in the folder ignored){coverage}{operator_note}"
     )
 
 

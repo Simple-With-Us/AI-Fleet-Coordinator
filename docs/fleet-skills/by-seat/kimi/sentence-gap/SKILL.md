@@ -545,9 +545,10 @@ U+00A0 from the model arrives as a plain space (0 NBSPs in the verified reply), 
 ASCII spaces collapse.  Owner-verified 2026-10-08 with a screenshot.  The 2026-09-04 ASCII
 ruling is withdrawn.
 
-**Terminal CLI — no newer ruling.**  Last checked 2026-08-19/20; not re-verified since.
-Default to two literal ASCII spaces there, and do not use the `&nbsp;` entity on a terminal
-TUI, which would print it literally.
+**Terminal CLI — superseded 2026-10-23.**  Last checked 2026-08-19/20, when two literal ASCII
+spaces were the default there.  Under the 2026-10-23 ruling the terminal takes a real U+00A0
+plus a normal space like every other surface, and never the `&nbsp;` entity, which a terminal
+TUI would print literally.
 
 What was found 2026-08-19/20:
 
@@ -563,8 +564,9 @@ What was found 2026-08-19/20:
   auto-update.  Never attempt.
 - ✅ The literal entity text `&nbsp;` + a space rendered as a visibly wider gap, and does
   again on the desktop app (re-verified 2026-10-08, see above).  Not re-verified on the
-  terminal CLI since, so use two ASCII spaces there.
-- ✅ **Two literal ASCII spaces in files** — correct and simplest; leave file content alone.
+  terminal CLI since.  History only:  the 2026-10-23 ruling retired the entity on every surface.
+- ✅ **Two literal ASCII spaces in files** — the 2026-08 finding.  History only:  since the
+  2026-10-23 ruling, prose files take a real U+00A0 plus a normal space;  code and config never do.
 
 ### The transferable lesson
 
