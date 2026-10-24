@@ -28,6 +28,10 @@ def _kind(spec: Spec) -> str:
 def _default(spec: Spec) -> str:
     if spec.secret:
         return "none, fails closed"
+    if spec.default is None:
+        # A knob with no default has no value until somebody sets one,  so the table
+        # says "unset" rather than printing a Python None.
+        return "unset"
     shown = values.render(spec, values.default_value(spec))
     return f"`{shown}`" if shown else {"list": "empty", "str": "unset"}.get(spec.kind, "empty")
 

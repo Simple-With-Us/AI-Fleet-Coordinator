@@ -184,17 +184,19 @@ def expand_target(target: str, home: os.PathLike[str]) -> str:
 # The programs this package may start.  Every one of them is a fleet tool with a fixed
 # shape,  so the allowlist is a closed set:  a command that is not on it is refused
 # before any process exists.
-ALLOWED_COMMANDS: frozenset[str] = frozenset({"fleet-secrets"})
+ALLOWED_COMMANDS: frozenset[str] = frozenset({"fleet-secrets", "security"})
 
 # The scripts this package may run with the interpreter,  by file name.  The MAC level
 # doctor is the only one.
 ALLOWED_SCRIPTS: frozenset[str] = frozenset({"fleet-tools-doctor.py"})
 
 # The modules this package may run with ``python3 -m``.  These are the installer engines
-# the apply side drives.  They are started as child processes and never imported,  because
-# this package has to stay importable with nothing but itself present.
+# the apply side drives,  and the knob registry the compliance rules read their
+# thresholds from.  They are started as child processes and never imported,  because this
+# package has to stay importable with nothing but itself present.
 ALLOWED_MODULES: frozenset[str] = frozenset(
     {
+        "fleet_knobs",
         "fleet_lanes.install_mcp",
         "fleet_lanes.install_rules",
         "fleet_lanes.install_tools",
@@ -508,6 +510,7 @@ def default_registry() -> CheckRegistry:
     order out of the aggregator's own body, and gives one place to see what exists.
     """
     from . import (
+        checks_compliance,
         checks_hooks,
         checks_instructions,
         checks_mcp,
@@ -523,4 +526,5 @@ def default_registry() -> CheckRegistry:
     registry._checks.update(checks_skills.CHECKS)
     registry._checks.update(checks_subagents.CHECKS)
     registry._checks.update(checks_permissions.CHECKS)
+    registry._checks.update(checks_compliance.CHECKS)
     return registry

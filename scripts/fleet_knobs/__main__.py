@@ -60,7 +60,25 @@ def _get(args, out) -> int:
         sys.stderr.write(f"{args.name} is a secret and is never printed\n")
         return 2
     k = knobs.resolve(args.name)
-    out.write(values.render(spec, k.value) + "\n")
+    if args.json:
+        # The JSON form carries the value and where it came from,  so a caller that
+        # must know whether a knob was really set (and not only defaulted) can ask.
+        json.dump(
+            {
+                "name": args.name,
+                "value": k.value,
+                "source": k.source,
+                "stale": k.stale,
+                "reason": k.reason,
+            },
+            out,
+            sort_keys=True,
+        )
+        out.write("\n")
+    elif k.value is None:
+        out.write("unset\n")
+    else:
+        out.write(values.render(spec, k.value) + "\n")
     if k.stale:
         sys.stderr.write("stale: Infisical was unreachable\n")
     return 0
@@ -92,6 +110,12 @@ def main(argv: Optional[List[str]] = None, out=None) -> int:
     p.add_argument("--json", action="store_true")
     p = sub.add_parser("get")
     p.add_argument("name")
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="print the value as JSON with its source, so a caller can tell a set knob "
+        "from a defaulted one",
+    )
     p = sub.add_parser("inventory")
     group = p.add_mutually_exclusive_group()
     group.add_argument("--check", metavar="FILE")

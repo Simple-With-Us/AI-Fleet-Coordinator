@@ -155,11 +155,17 @@ def build_status_envelope(report: StatusReport) -> dict[str, object]:
     """The pinned ``fleet-config status --json`` envelope for one report.
 
     The top-level keys are ``schemaVersion``, ``tool``, ``command``, ``generatedAt``,
-    ``summary``, ``results`` and ``uncovered``, in that order.  Consumers group the flat
-    ``results`` list by seat, platform and kind;  the envelope deliberately carries no
-    second, grouped copy that could disagree with it.  ``uncovered`` is flat for the
-    same reason:  it names the surfaces that fit none of the six kinds,  so the app can
-    render the blindness rather than leave a hole where a check would have been.
+    ``summary``, ``results``, ``uncovered`` and ``notImplemented``, in that order.
+    Consumers group the flat ``results`` list by seat, platform and kind;  the envelope
+    deliberately carries no second, grouped copy that could disagree with it.  ``uncovered``
+    is flat for the same reason:  it names the surfaces that fit none of the six kinds,  so
+    the app can render the blindness rather than leave a hole where a check would have been.
+
+    ``notImplemented`` names the fleet-wide rules the registry declares and the engine
+    cannot run yet.  They carry no result,  because a rule nobody can check must not make
+    every run unknown,  and they are listed so the gap stays visible.  The list is
+    additive:  a reader that does not know the key ignores it,  which is why the envelope
+    version stays where it is.
     """
     summary = report.summary
     return {
@@ -177,5 +183,13 @@ def build_status_envelope(report: StatusReport) -> dict[str, object]:
         "uncovered": [
             {"seat": item.seat, "surface": item.surface, "reason": item.reason}
             for item in report.uncovered
+        ],
+        "notImplemented": [
+            {
+                "ruleId": item.rule_id,
+                "ownerSeat": item.owner_seat,
+                "reason": item.reason,
+            }
+            for item in report.not_implemented
         ],
     }
