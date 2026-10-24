@@ -196,5 +196,6 @@ AGENT_SEAT=MM simple-board whoami
 | Version | When | Who | What |
 | --- | --- | --- | --- |
 | v1 | 2026-10-15 | MiniMax (MM) | First standalone guide, written for Jay alongside the Zulip guide v4 update.  Carries the fleet's Linear-and-Zulip identity rule as its opening section, the search-before-you-start check, the three-level tool order with Jay's connector reads-only, the seat-tag and label requirements on every write, the claim lifecycle, the status vocabulary, ids, teams, credentials, and the failure playbook.  Facts read live Thu, Oct 15, 2026 from `simple-board whoami`, `board --help`, and `scripts/linear-board/README.md`. |
+| v2 | 2026-10-23 | GB-ORACLE | Clutch's app acronym is `C` (AFC-333). |
 
-CLUTCH is the canonical app name. Its verified live Linear team key is `C`. `C`, `CLUTCH`, legacy `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same live team. Prior `CK-n` and `CLUTCH-n` identifiers remain resolvable after the rename.
+Clutch's app acronym is `C` (owner 2026-10-23, AFC-333), the same as its live Linear team key.  `C-n` is a Clutch Linear issue and `C#n` a Clutch PR.  `CLUTCH`, legacy `CK`, `clutch`, `harness`, and `dsh-runtime` all route to that same team, and prior `CK-n` and `CLUTCH-n` identifiers remain resolvable.  `CC` is CodeCaps, never Clutch.
