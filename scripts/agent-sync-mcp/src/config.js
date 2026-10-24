@@ -88,7 +88,7 @@ export const WAKE_SECRETS = Object.freeze({
 export const OPERATOR_NOTES_SECRET = "OPERATOR_NOTES_KEY";
 
 // What /admin and a manual client's name call each seat's app.
-export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise" , MA: "Rob" });
+export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise", MA: "Rob" });
 
 const BOT_EMAIL_RE = /^[a-z0-9-]+-bot@simplewithus\.zulipchat\.com$/;
 

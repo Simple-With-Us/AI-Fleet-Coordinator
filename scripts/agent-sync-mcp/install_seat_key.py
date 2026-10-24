@@ -74,7 +74,12 @@ SEATS = {
 }
 # Bot email local parts whose seat tag is not the upper-cased local part
 # (cli.py EMAIL_TAG_OVERRIDES, src/contract.js EMAIL_TAG_OVERRIDES).
-TAG_OVERRIDES = {"openai-dot": "JET", "instinct-bat": "ECHO", "instinct-owl": "WISE"}
+TAG_OVERRIDES = {
+    "muse-assist": "MA",
+    "openai-dot": "JET",
+    "instinct-bat": "ECHO",
+    "instinct-owl": "WISE",
+}
 
 
 def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
