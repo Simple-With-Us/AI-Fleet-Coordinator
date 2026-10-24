@@ -1762,7 +1762,11 @@ def cmd_post(agent: Agent, args: argparse.Namespace) -> int:
     if args.fleet:
         mentions.append(FLEET_WAKE_MENTION)
     body = _compose(
-        agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag,
+        agent,
+        text,
+        labels=labels,
+        mentions=mentions,
+        no_tag=args.no_tag,
         quiet=bool(getattr(args, "quiet", False)),
     )
     try:
@@ -2069,7 +2073,11 @@ def cmd_dm(agent: Agent, args: argparse.Namespace) -> int:
     to = _dm_recipients(agent, args)
     _dm_rule(agent, args, to)
     body = _compose(
-        agent, text, labels=to.labels, mentions=[], no_tag=args.no_tag,
+        agent,
+        text,
+        labels=to.labels,
+        mentions=[],
+        no_tag=args.no_tag,
         quiet=bool(getattr(args, "quiet", False)),
     )
     where = to.describe()
@@ -2311,7 +2319,11 @@ def cmd_reply(agent: Agent, args: argparse.Namespace) -> int:
     _scan_refusal(agent, topic=topic, channel=channel)
     mentions, labels = _resolve_targets(agent, args.to, to_owner)
     body = _compose(
-        agent, text, labels=labels, mentions=mentions, no_tag=args.no_tag,
+        agent,
+        text,
+        labels=labels,
+        mentions=mentions,
+        no_tag=args.no_tag,
         quiet=bool(getattr(args, "quiet", False)),
     )
     return _send(agent, channel, topic, body)

@@ -107,13 +107,13 @@ def strip_no_wake(content: str) -> tuple[str, bool]:
     rest = text[lead:]
     match = _NO_WAKE_RE.match(rest)
     if match:
-        return text[:lead] + rest[match.end():], True
+        return text[:lead] + rest[match.end() :], True
     tag = _SEAT_TAG_PREFIX_RE.match(rest)
     if tag:
-        after = rest[tag.end():]
+        after = rest[tag.end() :]
         match = _NO_WAKE_RE.match(after)
         if match:
-            return text[:lead] + rest[: tag.end()] + after[match.end():], True
+            return text[:lead] + rest[: tag.end()] + after[match.end() :], True
     return text, False
 
 
