@@ -35,11 +35,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# AGENT-SYNC.md is excluded because it is generated from Fleet-OPS handbook/, which carries the same fix.
 # The files that must not prescribe the superseded 2026-10-22 GitHub-entity split.
 STALE_RULE_FILES = (
     "docs/ZULIP-SWITCH-PROMPT.md",
     "docs/grok-web/INSTRUCTIONS.md",
-    "AGENT-SYNC.md",
 )
 
 # The files that state the rule, and therefore must carry the one exception.
@@ -49,7 +49,6 @@ EXCEPTION_FILES = (
     "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
     "docs/grok-web/INSTRUCTIONS.md",
     "docs/ZULIP-SWITCH-PROMPT.md",
-    "AGENT-SYNC.md",
 )
 
 # The stale prescriptions, as they are written.  Each one is a live instruction a
