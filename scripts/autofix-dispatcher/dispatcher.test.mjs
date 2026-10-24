@@ -174,10 +174,12 @@ check('a PR the dispatcher already tagged is recorded and skipped, so the next P
   assert.equal(out.result.dispatched, true);
   assert.equal(out.posts.length, 1);
   assert.ok(out.posts[0].includes(`${REPO_API}/issues/2/comments`));
-  // GitHub text takes the `&nbsp;` entity plus a space between sentences (owner ruling 2026-10-22).
+  // GitHub text takes a real U+00A0 plus a normal space between sentences (owner ruling
+  // 2026-10-23);  only the Claude Code and MiniMax Code chat panes keep the `&nbsp;` entity.
   const posted = out.posts[0].find((arg) => arg.startsWith('body=')).slice('body='.length);
   assert.doesNotMatch(posted, /[.!?] {2}/);
-  assert.equal(posted.match(/[.!?]&nbsp; /g).length, 4);
+  assert.equal(posted.match(/[.!?]\u00A0 /g).length, 4);
+  assert.ok(!posted.includes('&nbsp;'), 'the posted body never carries the entity');
   // PR 1's tag never reached the tally (the tick that posted it died), so it is recorded now.
   assert.deepEqual(out.saved.map((entry) => entry.number).sort(), [1, 2]);
   assert.match(out.saved.find((entry) => entry.number === 1).comment_url, /issuecomment-1$/);
