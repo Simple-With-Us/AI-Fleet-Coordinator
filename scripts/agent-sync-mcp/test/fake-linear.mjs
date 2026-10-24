@@ -73,7 +73,7 @@ export class FakeLinear {
   }
 
   /** An issue, with the parts every query in this module selects. */
-  addIssue({ id = null, identifier = "AFC-1", title = "An issue", team = "AFC", state = "Todo", labels = [], description = "", priority = 0, url = null } = {}) {
+  addIssue({ id = null, identifier = "AFC-1", title = "An issue", team = "AFC", state = "Todo", labels = [], description = "", priority = 0, url = null, delegate = null } = {}) {
     const row = {
       id: id ?? uniq(identifier),
       identifier,
@@ -87,6 +87,7 @@ export class FakeLinear {
       team: this.teamNode(team),
       labels: labels.map((name) => ({ id: this.labelNode(name).id, name: String(name), parent: null })),
       comments: [],
+      delegate: delegate ? { id: delegate.id, name: delegate.name ?? delegate.id, app: delegate.app ?? true } : null,
     };
     this.issues.push(row);
     return row;
@@ -218,8 +219,17 @@ export class FakeLinear {
         // Q_TEAMS selects `states(first: 50) { nodes { ... } }`, so the states
         // travel as a connection, exactly as Linear sends them.
         return { teams: connection(this.teams.map((t) => ({ id: t.id, key: t.key, name: t.name, states: connection(t.states) }))) };
-      case "BoardLabels":
-        return { issueLabels: connection(this.labels) };
+      case "BoardLabels": {
+        // Linear pages this connection like every other one;  the cursor is
+        // the offset into the label list.
+        const first = Number.isInteger(variables.first) ? variables.first : 250;
+        const raw = variables.after === null || variables.after === undefined || variables.after === "" ? 0 : Number(variables.after);
+        const start = Number.isInteger(raw) && raw >= 0 ? raw : 0;
+        const nodes = this.labels.slice(start, start + Math.max(first, 1));
+        const end = start + nodes.length;
+        const hasNextPage = end < this.labels.length;
+        return { issueLabels: { pageInfo: { hasNextPage, endCursor: hasNextPage ? String(end) : null }, nodes } };
+      }
       case "BoardIssue":
         return { issue: this.issueNode(this.findIssue(variables.id)) };
       case "BoardComments":
@@ -290,6 +300,9 @@ export class FakeLinear {
     const nameOf = (labelId) => this.labels.find((l) => l.id === labelId)?.name ?? labelId;
     for (const labelId of input.addedLabelIds ?? []) if (!row.labels.some((l) => l.id === labelId)) row.labels.push({ id: labelId, name: nameOf(labelId), parent: null });
     for (const labelId of input.removedLabelIds ?? []) row.labels = row.labels.filter((l) => l.id !== labelId);
+    if (Object.hasOwn(input, "delegateId")) {
+      row.delegate = input.delegateId === null ? null : { id: input.delegateId, name: input.delegateId === this.viewer.id ? this.viewer.name : input.delegateId, app: true };
+    }
     return { success: true, issue: this.issueNode(row) };
   }
 
