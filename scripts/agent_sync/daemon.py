@@ -2747,7 +2747,9 @@ class Daemon:
         # whole length otherwise:  the adapter takes 30 to 50 seconds to answer and the reply
         # is posted only after it has, so the person who woke the seat watches an empty
         # topic the whole time.  The indicator is cosmetic:  it never decides whether the
-        # seat answers, and a failure to post it is logged and ignored.
+        # seat answers, and a failure to post it is logged and ignored.  It is raised for the
+        # whole of the answer's making, the primary run, the fallback and the chat
+        # inspection alike, because the seat is still thinking through all of them.
         typing = self._typing_signal(runner, pending)
         if typing is not None:
             typing.start()
@@ -2766,80 +2768,83 @@ class Daemon:
                     runner.paths.wake_dir,
                     prompt,
                 )
-        finally:
-            # The answer exists now and the reply is posted next, so the indicator goes down.
-            if typing is not None:
-                typing.stop()
-        # The primary failed for any reason a fallback could answer differently (a crashed runtime,
-        # an unparseable result, a missing binary).  A quota refusal never falls back:  a capped
-        # provider stays capped whichever binary asks.
-        if result.refused or result.error:
-            fallback = self.run_fallback(
-                runner,
-                prompt,
-                schema,
-                adapter,
-                result.refused or result.error or "",
-                result.limited,
-            )
-            if fallback is not None:
-                self.log.write(
-                    "wake-fallback-result",
-                    seat=runner.seat,
-                    wake_id=pending.wake_id,
-                    runtime=runner.cfg.fallback,
-                    ok=fallback.ok,
-                    exit=fallback.exit,
-                    secs=fallback.secs,
-                    models=fallback.models,
-                    error=fallback.error,
+            # The primary failed for any reason a fallback could answer differently (a
+            # crashed runtime, an unparseable result, a missing binary).  A quota refusal
+            # never falls back:  a capped provider stays capped whichever binary asks.
+            if result.refused or result.error:
+                fallback = self.run_fallback(
+                    runner,
+                    prompt,
+                    schema,
+                    adapter,
+                    result.refused or result.error or "",
+                    result.limited,
                 )
-                if fallback.ok or fallback.refused or fallback.error:
-                    result = fallback
-                    adapter = runner.cfg.fallback
-        raw_result = result.parsed if isinstance(result.parsed, dict) else {}
-        requested_inspect = raw_result.get("chat_inspect")
-        if result.ok and requested_inspect is not None:
-            _, validation_error = W.validate(result.parsed)
-            if (
-                adapter != "muse"
-                or not is_muse
-                or validation_error
-                or not self.may_inspect_chat(pending)
-            ):
-                result.error = "chat inspection rejected"
-            else:
-                offered = next(
-                    (row for row in chat_context if row.get("id") == requested_inspect), None
-                )
-                capabilities = (offered or {}).get("capabilities") or {}
+                if fallback is not None:
+                    self.log.write(
+                        "wake-fallback-result",
+                        seat=runner.seat,
+                        wake_id=pending.wake_id,
+                        runtime=runner.cfg.fallback,
+                        ok=fallback.ok,
+                        exit=fallback.exit,
+                        secs=fallback.secs,
+                        models=fallback.models,
+                        error=fallback.error,
+                    )
+                    if fallback.ok or fallback.refused or fallback.error:
+                        result = fallback
+                        adapter = runner.cfg.fallback
+            raw_result = result.parsed if isinstance(result.parsed, dict) else {}
+            requested_inspect = raw_result.get("chat_inspect")
+            if result.ok and requested_inspect is not None:
+                _, validation_error = W.validate(result.parsed)
                 if (
-                    not offered
-                    or offered.get("stale") is not False
-                    or capabilities.get("read") is not True
+                    adapter != "muse"
+                    or not is_muse
+                    or validation_error
+                    or not self.may_inspect_chat(pending)
                 ):
                     result.error = "chat inspection rejected"
-                elif self._wake_block(runner, pending, self.clock.time()):
-                    result.error = "chat inspection blocked"
                 else:
-                    try:
-                        excerpt = self._chat_catalog.excerpt(requested_inspect, limit=4)
-                    except Exception:
-                        excerpt = []
-                    first = result
-                    inspect_prompt = self.chat_inspection_prompt(prompt, excerpt)
-                    second = self.muse_runner.run(
-                        argv, muse_env, runner.paths.wake_dir, inspect_prompt, schema=schema
+                    offered = next(
+                        (row for row in chat_context if row.get("id") == requested_inspect), None
                     )
-                    second.secs = float(second.secs or 0) + float(first.secs or 0)
-                    second.cost_usd = float(second.cost_usd or 0) + float(first.cost_usd or 0)
-                    second.models = list(
-                        dict.fromkeys((first.models or []) + (second.models or []))
-                    )
-                    second_output = second.parsed if isinstance(second.parsed, dict) else {}
-                    if second_output.get("chat_inspect") is not None:
-                        second.error = "recursive chat inspection rejected"
-                    result = second
+                    capabilities = (offered or {}).get("capabilities") or {}
+                    if (
+                        not offered
+                        or offered.get("stale") is not False
+                        or capabilities.get("read") is not True
+                    ):
+                        result.error = "chat inspection rejected"
+                    elif self._wake_block(runner, pending, self.clock.time()):
+                        result.error = "chat inspection blocked"
+                    else:
+                        try:
+                            excerpt = self._chat_catalog.excerpt(requested_inspect, limit=4)
+                        except Exception:
+                            excerpt = []
+                        first = result
+                        inspect_prompt = self.chat_inspection_prompt(prompt, excerpt)
+                        second = self.muse_runner.run(
+                            argv, muse_env, runner.paths.wake_dir, inspect_prompt, schema=schema
+                        )
+                        second.secs = float(second.secs or 0) + float(first.secs or 0)
+                        second.cost_usd = float(second.cost_usd or 0) + float(first.cost_usd or 0)
+                        second.models = list(
+                            dict.fromkeys((first.models or []) + (second.models or []))
+                        )
+                        second_output = second.parsed if isinstance(second.parsed, dict) else {}
+                        if second_output.get("chat_inspect") is not None:
+                            second.error = "recursive chat inspection rejected"
+                        result = second
+        finally:
+            # The answer exists now and the reply is posted next, so the indicator goes
+            # down.  The fallback and the chat inspection are inside this block on purpose:
+            # they are part of producing the answer, and the seat is still thinking while
+            # they run, so the indicator stays up for them.
+            if typing is not None:
+                typing.stop()
         self.log.write(
             "wake-run",
             seat=runner.seat,
