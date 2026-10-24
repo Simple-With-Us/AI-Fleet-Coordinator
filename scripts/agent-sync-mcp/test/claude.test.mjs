@@ -85,6 +85,7 @@ test("CLAUDE canonical email is required; other seats keep their existing bindin
   assert.deepEqual(Object.fromEntries(Object.entries(SEAT_SECRETS).filter(([seat]) => seat !== "CLAUDE")), {
     CURSOR: { key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR" },
     JET: { key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" },
+    "JET-CHAT": { key: "ZULIP_KEY_JET_CHAT", email: "ZULIP_EMAIL_JET_CHAT" },
     "GROK-WEB": { key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" },
     ECHO: { key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" },
     WISE: { key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE" },

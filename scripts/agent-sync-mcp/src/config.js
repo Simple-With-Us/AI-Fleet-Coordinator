@@ -33,7 +33,22 @@ export const SCOPES = Object.freeze(["zulip:read", "zulip:write"]);
 // Seats this Worker can ever serve.  HOSTED_SEATS (a var) narrows it further.
 // ECHO and WISE are two identities of one third-party app (Instinct), each
 // with its own Zulip bot (instinct-bat-bot and instinct-owl-bot).
-export const KNOWN_SEATS = Object.freeze(["JET", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "MA", "CODEX"]);
+// JET-CHAT is Jet's full-access login (owner decision, Oct 23 2026):  the
+// original JET connection is wake-only, so the second ChatGPT connection is
+// its own seat.  Both seats use the same openai-dot-bot;  the seat's expected
+// tag is SEAT_TAG_EXPECTATIONS in src/contract.js.
+// MA (Rob's admin-arming seat) landed on main via #894, and CODEX (Codex's
+// admin-arming seat, #890) joins beside it;  every seat set stays.
+export const KNOWN_SEATS = Object.freeze(["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "MA", "CODEX"]);
+
+// Seats whose connection serves event notifications only.  tools/list is
+// empty and tools/call refuses every name (src/delegated-identities.js);
+// events stay (src/index.js).  Turning a seat back on is a deploy step.
+// The constant lives in ./seats.js so src/pages.js can classify seats without
+// importing this module (which would drag in the zod chain the visual tests
+// cannot resolve); re-exported here for the existing consumers.
+export { EVENTS_ONLY_SEATS } from "./seats.js";
+import { EVENTS_ONLY_SEATS as DEFAULT_EVENTS_ONLY_SEATS } from "./seats.js";
 
 // AFC-331 (docs/protocols/per-call-identity.md section 3):  a grant for one of these seats may act as
 // either of them and as every enabled Grok Bot persona (GB_IDENTITIES);  every other grant acts only
@@ -65,6 +80,9 @@ export const SEAT_SECRETS = Object.freeze({
   CODEX: Object.freeze({ key: "ZULIP_KEY_CODEX", email: "ZULIP_EMAIL_CODEX" }),
   MA: Object.freeze({ key: "ZULIP_KEY_MA", email: "ZULIP_EMAIL_MA" }),
   JET: Object.freeze({ key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" }),
+  // Own env names (this table never shares one), same openai-dot-bot key
+  // value:  install_seat_key.py provisions it from the same Infisical entry.
+  "JET-CHAT": Object.freeze({ key: "ZULIP_KEY_JET_CHAT", email: "ZULIP_EMAIL_JET_CHAT" }),
   "GROK-WEB": Object.freeze({ key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" }),
   ECHO: Object.freeze({ key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" }),
   WISE: Object.freeze({ key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE" }),
@@ -89,7 +107,7 @@ export const WAKE_SECRETS = Object.freeze({
 export const OPERATOR_NOTES_SECRET = "OPERATOR_NOTES_KEY";
 
 // What /admin and a manual client's name call each seat's app.
-export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise", MA: "Rob", CODEX: "Codex" });
+export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "JET-CHAT": "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise", MA: "Rob", CODEX: "Codex" });
 
 const BOT_EMAIL_RE = /^[a-z0-9-]+-bot@simplewithus\.zulipchat\.com$/;
 
@@ -142,6 +160,18 @@ export function loadConfig(env) {
   const hostedSeats = parseList(env, "HOSTED_SEATS");
   for (const seat of hostedSeats) {
     if (!KNOWN_SEATS.includes(seat)) throw new Error(`config: unknown hosted seat ${seat}`);
+  }
+
+  // The events-only set is a var so the wake-only flip is a one-line reviewed
+  // config change at cutover, not a source edit:  absent means the seats.js
+  // staging default (no seat), "JET" restricts the old login once the new one
+  // is verified live.  Only known seats are ever accepted.
+  const eventsOnlyRaw = env.EVENTS_ONLY_SEATS;
+  const eventsOnlySeats = (eventsOnlyRaw === undefined || eventsOnlyRaw === null || String(eventsOnlyRaw).trim() === "")
+    ? [...DEFAULT_EVENTS_ONLY_SEATS]
+    : parseList(env, "EVENTS_ONLY_SEATS");
+  for (const seat of eventsOnlySeats) {
+    if (!KNOWN_SEATS.includes(seat)) throw new Error(`config: unknown events-only seat ${seat}`);
   }
 
   const seatsRaw = parseJsonVar(env, "SEATS");
@@ -260,6 +290,7 @@ export function loadConfig(env) {
     resourceMetadataUrl: RESOURCE_METADATA_URL,
     scopes: SCOPES,
     hostedSeats: Object.freeze(hostedSeats),
+    eventsOnlySeats: Object.freeze(eventsOnlySeats),
     seats: Object.freeze(seats),
     redirectSeats,
     redirectOwner,

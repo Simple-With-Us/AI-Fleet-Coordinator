@@ -2768,17 +2768,23 @@ class SeatAppTests(BoardTest):
             ).stderr,
         )
 
+    # The one deliberate share:  two Jet logins, one Linear app (owner,
+    # Oct 23 2026 - scripts/agent-sync-mcp/src/linear.js).  JET is wake-only
+    # with no tool surface, so no credential can swap unseen.
+    SHARED_APP_NAME_SEATS = (frozenset({"JET", "JET-CHAT"}),)
+
     def test_accepted_app_names_belong_to_one_seat(self):
         # a name two seats share would let their credentials be swapped without the check noticing
         cli = load_cli()
         owner = {}
         for seat in cli.SEAT_APP_NAMES:
             for name in {n.casefold() for n in (*cli.seat_app_names(seat), seat)}:
-                self.assertNotIn(
-                    name.casefold(),
-                    owner,
-                    f"{name!r} is accepted for both {owner.get(name.casefold())} and {seat}",
-                )
+                previous = owner.get(name.casefold())
+                if previous is not None:
+                    self.assertTrue(
+                        any({previous, seat} <= shared for shared in self.SHARED_APP_NAME_SEATS),
+                        f"{name!r} is accepted for both {previous} and {seat}",
+                    )
                 owner[name.casefold()] = seat
         self.assertEqual(set(cli.SEAT_APP_ALIASES) - set(cli.SEAT_APP_NAMES), set())
 

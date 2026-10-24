@@ -87,6 +87,9 @@ SEATS = {
         "ZULIP_EMAIL_MA",
     ),
     "JET": ("ZULIP_JET", "ZULIP_KEY_JET", "ZULIP_EMAIL_JET"),
+    # Jet's second login (full tools;  JET itself is wake-only):  the same
+    # openai-dot-bot key from the same Infisical entry, under its own names.
+    "JET-CHAT": ("ZULIP_JET", "ZULIP_KEY_JET_CHAT", "ZULIP_EMAIL_JET_CHAT"),
     "GROK-WEB": ("ZULIP_GROK_WEB", "ZULIP_KEY_GROK_WEB", "ZULIP_EMAIL_GROK_WEB"),
     "ECHO": ("ZULIP_ECHO", "ZULIP_KEY_ECHO", "ZULIP_EMAIL_ECHO"),
     "WISE": ("ZULIP_WISE", "ZULIP_KEY_WISE", "ZULIP_EMAIL_WISE"),
@@ -99,6 +102,10 @@ TAG_OVERRIDES = {
     "instinct-bat": "ECHO",
     "instinct-owl": "WISE",
 }
+
+# Seats whose bot signs as another seat's tag (src/contract.js
+# SEAT_TAG_EXPECTATIONS):  JET-CHAT runs on Jet's bot, so its key signs JET.
+EXPECTED_TAGS = {"JET-CHAT": "JET"}
 
 
 def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
@@ -342,7 +349,20 @@ def main() -> int:
     checks.append(
         ("users/me email is the seat's bot", str(me.get("email") or "").lower() == expected_email)
     )
-    checks.append((f"users/me signs as {args.seat}", seat_tag(me) == args.seat))
+    checks.append(
+        (
+            f"users/me signs as {EXPECTED_TAGS.get(args.seat, args.seat)}",
+            seat_tag(me) == EXPECTED_TAGS.get(args.seat, args.seat),
+        )
+    )
+    # The signing tag alone never grants the seat:  the bot's owner must be the
+    # pinned fleet owner.  handoff fails closed when the pin is unavailable.
+    checks.append(
+        (
+            "users/me bot owner is the pinned fleet owner (ZULIP_OWNER_USER_ID)",
+            str(me.get("bot_owner_id")) == handoff("ZULIP_OWNER_USER_ID"),
+        )
+    )
     checks.append(
         (
             f"role is member (400), live role {role}",
