@@ -416,7 +416,7 @@ class Reaper(Base):
             patch.object(reaper, "list_booted", lambda: devs),
             patch.object(reaper.os, "getloadavg", lambda: (850.0, 0.0, 0.0)),
             patch.object(reaper, "run", fake_run),
-            patch.object(reaper, "fleet_alert", lambda c: alerts.append(c) or True),
+            patch.object(reaper, "fleet_alert", lambda c: alerts.append(c) or "ok"),
         ):
             self.assertEqual(reaper.main(["--state", state_path]), 0)
         self.assertEqual(sorted(shut), sorted([A, B]))
@@ -486,9 +486,14 @@ class Reaper(Base):
         self.assertEqual(self.decide(90, app=(True, "user app running: x"))[0], "skip")
 
     def run_reaper(
-        self, args: list, booted: list, state: dict | None = None, bitrig_app: int = 0
+        self,
+        args: list,
+        booted: list,
+        state: dict | None = None,
+        bitrig_app: int = 0,
+        state_path: str | None = None,
     ) -> tuple[str, list]:
-        state_path = os.path.join(ROOT, "state", "state.json")
+        state_path = state_path or os.path.join(ROOT, "state", "state.json")
         if state is not None:
             hook.write_json(state_path, state)
         shut = []
@@ -580,12 +585,12 @@ class Reaper(Base):
         reaper.tidy_hook_state(set(), time.time(), False, False)
         self.assertFalse(os.path.exists(hook.session_path(SID)))
 
-    def run_guard(self, args, booted, alerts):
+    def run_guard(self, args, booted, alerts, outcome="ok", state_path=None):
         with (
             patch.object(reaper, "load_guard_tripped", lambda: 900.0),
-            patch.object(reaper, "fleet_alert", lambda c: alerts.append(c) or True),
+            patch.object(reaper, "fleet_alert", lambda c: alerts.append(c) or outcome),
         ):
-            return self.run_reaper(args, booted)
+            return self.run_reaper(args, booted, state_path=state_path)
 
     def test_load_guard_respects_udid_filter(self):
         other = {"udid": B, "name": "iPad", "runtime": "iOS-27-0"}
@@ -603,18 +608,104 @@ class Reaper(Base):
         self.assertEqual(len(alerts), 1)  # second trip inside the hour: no second post
         self.assertIn("alert cooldown active", log)
 
+    def test_load_guard_unknown_outcome_starts_cooldown(self):
+        alerts = []
+        self.run_guard([], [self.DEV], alerts, outcome="unknown")
+        log, _ = self.run_guard([], [self.DEV], alerts, outcome="unknown")
+        self.assertEqual(len(alerts), 1)  # it may already be in #Alerts:  never post it twice
+        self.assertIn("alert cooldown active", log)
+
+    def test_load_guard_unsent_outcome_does_not_start_cooldown(self):
+        alerts = []
+        self.run_guard([], [self.DEV], alerts, outcome="unsent")
+        self.run_guard([], [self.DEV], alerts, outcome="ok")
+        self.assertEqual(len(alerts), 2)  # nothing reached Zulip the first time:  try again
+        self.run_guard([], [self.DEV], alerts, outcome="ok")
+        self.assertEqual(len(alerts), 2)
+
+    def test_load_guard_cooldown_shared_across_state_paths(self):
+        alerts = []
+        other_dir = os.path.join(ROOT, "state", "elsewhere")
+        self.run_guard([], [self.DEV], alerts)
+        self.run_guard([], [self.DEV], alerts, state_path=os.path.join(other_dir, "s.json"))
+        self.assertEqual(len(alerts), 1)  # one machine-wide marker, whatever --state names
+        self.assertTrue(os.path.exists(os.path.join(reaper.STATE_DIR, "guard-alert.json")))
+        self.assertFalse(os.path.exists(os.path.join(other_dir, "guard-alert.json")))
+
     def test_load_guard_alert_house_format(self):
         alerts = []
         self.run_guard([], [self.DEV], alerts)
         content = alerts[0]
-        self.assertTrue(content.startswith("CRITICAL • sim-idle-reaper • "), content)
+        self.assertTrue(content.startswith("SEVERE • sim-idle-reaper • "), content)
         self.assertIn("1-min load 900 >= 800", content)
+        self.assertIn("shut down 1 of 1 simulator(s)", content)
         self.assertTrue(content.endswith(" • " + reaper.REAPER_LOG), content)
 
+    def fleet_alert_with(self, result):
+        calls = []
+
+        def fake(argv, **kw):
+            calls.append(argv)
+            if isinstance(result, BaseException):
+                raise result
+            return subprocess.CompletedProcess(argv, result, "", "simple-chat: some reason\n")
+
+        buf = io.StringIO()
+        with patch.object(reaper.subprocess, "run", fake), redirect_stdout(buf):
+            outcome = reaper.fleet_alert("SEVERE • sim-idle-reaper • x • y")
+        return outcome, calls, buf.getvalue()
+
+    def test_fleet_alert_posts_to_alerts_service_topic(self):
+        outcome, calls, log = self.fleet_alert_with(0)
+        self.assertEqual(outcome, "ok")
+        argv = calls[0]
+        self.assertEqual(argv[1:4], ["--as", "MA", "post"])
+        self.assertEqual(argv[argv.index("--channel") + 1], "Alerts")
+        self.assertEqual(argv[argv.index("--topic") + 1], "sim-idle-reaper")
+        self.assertIn("fleet alert posted", log)
+
+    def test_fleet_alert_outcomes(self):
+        cases = [
+            (2, "unsent"),  # usage error:  refused before anything was sent
+            (3, "unsent"),  # credential error:  refused before anything was sent
+            (5, "unknown"),  # an API refusal, or a gateway status after the POST went out
+            (6, "unknown"),  # network error:  the POST may have reached Zulip
+            (1, "unknown"),
+            (subprocess.TimeoutExpired(["simple-chat"], 60), "unknown"),
+            (FileNotFoundError(), "unsent"),  # the CLI is not installed
+        ]
+        for result, want in cases:
+            with self.subTest(result=result):
+                outcome, _, log = self.fleet_alert_with(result)
+                self.assertEqual(outcome, want)
+                if isinstance(result, int):
+                    self.assertIn(f"rc={result}: simple-chat: some reason", log)
+
+    def test_list_booted_skips_malformed_udid_without_echoing_it(self):
+        doc = {
+            "devices": {
+                "iOS-27-0": [
+                    {"udid": A, "name": "iPhone 17", "state": "Booted"},
+                    {"udid": "--standalone", "name": "bad", "state": "Booted"},
+                    {"udid": A.lower() + "\n", "name": "bad2", "state": "Booted"},
+                ]
+            }
+        }
+        buf = io.StringIO()
+        with (
+            patch.object(reaper, "run", lambda *a, **k: (0, json.dumps(doc))),
+            redirect_stdout(buf),
+        ):
+            devs = reaper.list_booted()
+        self.assertEqual([d["udid"] for d in devs], [A])
+        self.assertNotIn("--standalone", buf.getvalue())
+        self.assertEqual(buf.getvalue().count("invalid simulator UDID"), 2)
+
     def test_bad_udid_rejected(self):
-        with self.assertRaises(SystemExit) as cm:
-            reaper.main(["--udid", "not-a-udid"])
-        self.assertEqual(cm.exception.code, 2)
+        for bad in ("not-a-udid", A + "\n"):
+            with self.subTest(bad=bad), self.assertRaises(SystemExit) as cm:
+                reaper.main(["--udid", bad])
+            self.assertEqual(cm.exception.code, 2)
 
 
 if __name__ == "__main__":

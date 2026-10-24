@@ -25,8 +25,10 @@ Otherwise it runs `xcrun simctl shutdown <udid>`:  never `shutdown all`, never e
 A load guard runs before the idle pass:  when the 1-minute load average reaches 800
 (the box is heading toward the 926 seen 2026-10-14), every considered simulator
 (`--udid` filter respected) is shut down unconditionally and one alert is posted to
-Zulip #Alerts as the MA bot via the simple-chat CLI (house format
-`SEVERITY • service • what • link`), rate-limited to one post per hour.
+Zulip #Alerts, topic sim-idle-reaper, as the MA bot via the simple-chat CLI (house format
+`SEVERITY • service • what • link`, severity SEVERE), rate-limited to one post per hour.
+A post that may have reached Zulip (posted, timed out, or an unclear error) starts the hour;
+only a post that provably never left (CLI missing, usage or credential error) does not.
 TestFlight ships (com.jay.ios-ship-now, ship-testflight.sh) archive for generic/platform=iOS and
 boot no simulator;  their xcodebuild still trips skip 1 while it runs.
 
@@ -38,7 +40,8 @@ session entries for devices that are no longer booted.
   python3 ~/apps/sim-idle-reaper.py --udid <UDID>            # only consider this device
   tail -f ~/Library/Logs/sim-idle-reaper.log
 
-State:  ~/Library/Application Support/sim-idle-reaper/ (state.json, sessions/, pre/).
+State:  ~/Library/Application Support/sim-idle-reaper/ (state.json, guard-alert.json, sessions/,
+pre/).
 Tracked copy:  AI-Fleet-Coordinator/scripts/sim-idle-reaper.py.  Live:  ~/apps/sim-idle-reaper.py.
 """
 
@@ -73,6 +76,12 @@ GUARD_ALERT_COOLDOWN_SEC = 3600  # at most one #Alerts post per hour while the g
 SIMPLE_CHAT = os.environ.get("SIM_REAPER_SIMPLE_CHAT") or os.path.join(
     HOME, ".local", "bin", "simple-chat"
 )  # fleet chat CLI; resolves the MA bot credential itself, never a file default
+ALERT_CHANNEL = "Alerts"  # the realm stream's own name;  Zulip matches stream names in any case
+ALERT_TOPIC = "sim-idle-reaper"  # #alerts topic = service name (docs/protocols/zulip-fleet-guide)
+ALERT_SEVERITY = "SEVERE"  # one of the guide's SEVERE / MODERATE / INFO
+ALERT_TIMEOUT_SEC = 60
+# simple-chat exits 2 (usage) and 3 (credential) before anything is sent:  provably unsent.
+CHAT_UNSENT_EXITS = (2, 3)
 UDID_RE = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
     r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
@@ -109,7 +118,13 @@ def list_booted() -> list[dict] | None:
     for runtime, items in (doc.get("devices") or {}).items():
         for d in items or []:
             if isinstance(d, dict) and d.get("state") == "Booted" and d.get("udid"):
-                devs.append({"udid": d["udid"], "name": d.get("name", ""), "runtime": runtime})
+                udid = d["udid"]
+                if not isinstance(udid, str) or not UDID_RE.fullmatch(udid):
+                    # Every simctl argv, the state file and the #Alerts post take this value:
+                    # skip it and never echo it.
+                    out("reaper invalid simulator UDID from simctl; skipping that device")
+                    continue
+                devs.append({"udid": udid, "name": d.get("name", ""), "runtime": runtime})
     return devs
 
 
@@ -317,51 +332,71 @@ def load_guard_tripped() -> float | None:
     return load1 if load1 >= LOAD_GUARD_TRIP else None
 
 
-def fleet_alert(content: str) -> bool:
+def _chat_reason(stderr: str | None) -> str:
+    """The last non-empty stderr line of simple-chat (its classified diagnosis), shortened."""
+    lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
+    return lines[-1][:200] if lines else "no detail"
+
+
+def fleet_alert(content: str) -> str:
     """Post one message to Zulip #Alerts as the MA bot via the simple-chat CLI.
 
     simple-chat resolves the seat credential itself (no credential file default in
-    this script) and owns HTTPS/redirect/User-Agent handling. Never raises.
+    this script) and owns HTTPS/redirect/User-Agent handling.  Never raises.
+
+    Returns "ok" (posted), "unsent" (provably never sent:  the CLI could not start, or it
+    exited with a usage or credential error) or "unknown" (anything else, such as a timeout,
+    a network error or a refusal that may follow a send).  The post is never retried here.
     """
+    chat = shutil.which("simple-chat") or SIMPLE_CHAT
+    argv = [chat, "--as", "MA", "post", "--channel", ALERT_CHANNEL, "--topic", ALERT_TOPIC, content]
     try:
-        chat = shutil.which("simple-chat") or SIMPLE_CHAT
-        rc, _ = run(
-            [
-                chat,
-                "--as",
-                "MA",
-                "post",
-                "--channel",
-                "Alerts",
-                "--topic",
-                "sim-load-guard",
-                content,
-            ],
-            timeout=60,
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=ALERT_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired:
+        out(
+            f"load-guard: fleet alert outcome unknown (no answer in {ALERT_TIMEOUT_SEC}s); "
+            "counted as posted for the cooldown"
         )
-        ok = rc == 0
-        out(f"load-guard: fleet alert {'posted' if ok else 'failed'}")
-        return ok
+        return "unknown"
+    except (OSError, ValueError) as exc:  # the CLI never started
+        out(f"load-guard: fleet alert not sent ({type(exc).__name__})")
+        return "unsent"
     except Exception as exc:  # alerting must never break the guard itself
-        out(f"load-guard: fleet alert failed ({type(exc).__name__})")
-        return False
+        out(
+            f"load-guard: fleet alert outcome unknown ({type(exc).__name__}); "
+            "counted as posted for the cooldown"
+        )
+        return "unknown"
+    if p.returncode == 0:
+        out("load-guard: fleet alert posted")
+        return "ok"
+    reason = _chat_reason(p.stderr)
+    if p.returncode in CHAT_UNSENT_EXITS:
+        out(f"load-guard: fleet alert not sent (rc={p.returncode}: {reason})")
+        return "unsent"
+    out(
+        f"load-guard: fleet alert outcome unknown (rc={p.returncode}: {reason}); "
+        "counted as posted for the cooldown"
+    )
+    return "unknown"
 
 
-def _guard_alert_marker(state_path: str) -> str:
-    return os.path.join(os.path.dirname(state_path), "guard-alert.json")
+def _guard_alert_marker() -> str:
+    # One fixed marker per machine, whatever --state names, so every run shares one cooldown.
+    return os.path.join(STATE_DIR, "guard-alert.json")
 
 
-def guard_alert_due(state_path: str) -> bool:
-    """True when no guard alert was posted within the cooldown window."""
+def guard_alert_due() -> bool:
+    """True when no guard alert was posted (or may have been) within the cooldown window."""
     try:
-        last = float(load_json(_guard_alert_marker(state_path), {}).get("last_alert", 0))
+        last = float(load_json(_guard_alert_marker(), {}).get("last_alert", 0))
     except (TypeError, ValueError):
         return True
     return (time.time() - last) >= GUARD_ALERT_COOLDOWN_SEC
 
 
-def guard_alert_recorded(state_path: str) -> None:
-    write_json(_guard_alert_marker(state_path), {"last_alert": time.time()})
+def guard_alert_recorded(outcome: str) -> None:
+    write_json(_guard_alert_marker(), {"last_alert": time.time(), "outcome": outcome})
 
 
 def decide(
@@ -415,7 +450,7 @@ def main(argv: list | None = None) -> int:
     args = ap.parse_args(argv)
     mode = "dry-run" if args.dry_run else "live"
     for u in args.udid:
-        if not UDID_RE.match(u):
+        if not UDID_RE.fullmatch(u):
             ap.error(f"--udid {u!r} is not a simulator UDID")
 
     os.makedirs(STATE_DIR, exist_ok=True)
@@ -454,21 +489,24 @@ def main(argv: list | None = None) -> int:
         else:
             out(f"load-guard TRIP load1={trip:.0f}: shutting down {len(targets)} considered sim(s)")
             shut = []
+            done = 0
             for d in targets:
                 rc, _ = run([XCRUN, "simctl", "shutdown", d["udid"]], timeout=120)
                 label = f'{d["udid"]} "{d["name"]}"'
                 out(f"load-guard SHUTDOWN {label}: rc={rc}")
                 shut.append(f"{label} rc={rc}")
                 if rc == 0:
+                    done += 1
                     seen.pop(d["udid"], None)
             write_json(args.state, seen)
-            if guard_alert_due(args.state):
+            if guard_alert_due():
                 what = (
-                    "load guard tripped: 1-min load %.0f >= %.0f, shut down %d "
-                    "simulator(s): %s" % (trip, LOAD_GUARD_TRIP, len(targets), "; ".join(shut))
+                    f"load guard tripped: 1-min load {trip:.0f} >= {LOAD_GUARD_TRIP:.0f}, "
+                    f"shut down {done} of {len(targets)} simulator(s): " + "; ".join(shut)
                 )
-                if fleet_alert(f"CRITICAL • sim-idle-reaper • {what} • {REAPER_LOG}"):
-                    guard_alert_recorded(args.state)
+                outcome = fleet_alert(f"{ALERT_SEVERITY} • {ALERT_TOPIC} • {what} • {REAPER_LOG}")
+                if outcome != "unsent":  # it may be in #Alerts:  never post it twice in the hour
+                    guard_alert_recorded(outcome)
             else:
                 out("load-guard: alert cooldown active, skipping chat report")
             return 0  # emergency handled; skip the normal idle pass this run
