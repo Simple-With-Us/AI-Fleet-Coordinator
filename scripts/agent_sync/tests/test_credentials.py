@@ -687,5 +687,44 @@ class SecrecyTests(Harness):
         self.assertNotIn("Traceback", result.err)
 
 
+class OperatorIdentityTests(unittest.TestCase):
+    """The Operator's Zulip user id is private inventory, so it is read from the environment
+    and never committed.  A refused key is named by a masked preview, never in full."""
+
+    def test_the_operator_user_id_is_read_from_the_environment(self) -> None:
+        self.assertEqual(Z.operator_user_id({"OPERATOR_ZULIP_USER_ID": " 4242 "}), 4242)
+
+    def test_an_unset_operator_user_id_is_none_so_the_caller_fails_closed(self) -> None:
+        self.assertIsNone(Z.operator_user_id({}))
+        self.assertIsNone(Z.operator_user_id({"OPERATOR_ZULIP_USER_ID": "   "}))
+        self.assertIsNone(Z.operator_user_id({"OPERATOR_ZULIP_USER_ID": "not-a-number"}))
+
+    def test_no_production_user_id_is_committed(self) -> None:
+        # The constant is gone on purpose:  a pinned id is private inventory in source.
+        self.assertFalse(hasattr(Z, "OPERATOR_USER_ID"))
+
+    def test_a_masked_preview_names_the_key_without_writing_it_out(self) -> None:
+        key = "abcdefgh" + "x" * 20 + "wxyz"
+        preview = Z.masked_credential(key)
+        self.assertEqual(preview, "abcdefgh\u2026wxyz")
+        self.assertNotIn(key, preview)
+
+    def test_a_short_or_missing_key_still_gets_a_preview(self) -> None:
+        self.assertEqual(Z.masked_credential(""), "missing")
+        self.assertEqual(Z.masked_credential("short"), "s\u2026")
+
+    def test_a_short_credential_exposes_one_character_only(self) -> None:
+        #  Thirteen characters:  the old threshold showed twelve of them, which is nearly the
+        #  whole secret, in an error that can reach a log.
+        key = "abcdefghijklm"
+        preview = Z.masked_credential(key)
+        self.assertEqual(preview, "a\u2026")
+        self.assertNotIn(key[1:], preview)
+        #  The threshold itself:  under 24 characters one leading character, at or over it the
+        #  first eight and the last four.
+        self.assertEqual(Z.masked_credential("x" * 23), "x\u2026")
+        self.assertEqual(Z.masked_credential("y" * 24), "yyyyyyyy\u2026yyyy")
+
+
 if __name__ == "__main__":
     unittest.main()

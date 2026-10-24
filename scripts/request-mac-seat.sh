@@ -80,10 +80,10 @@ normalize_repo() {
   echo "${OWNER}/${raw}"
 }
 
-# A GitHub title is plain text:  GitHub renders it as it stands and does not decode an
-# entity there, so a title takes a real U+00A0 plus a space (owner ruling 2026-10-22).
-# The same form goes to Zulip, which also takes the real U+00A0.  Without perl the
-# text is passed through unchanged.
+# A GitHub title is plain text, so a title takes a real U+00A0 plus a space, and the
+# issue body below takes the same form (owner ruling 2026-10-23).  The same form goes
+# to Zulip, which also takes the real U+00A0.  Without perl the text is passed
+# through unchanged.
 title_gap() {
   if command -v perl >/dev/null 2>&1; then
     perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g'
@@ -123,9 +123,8 @@ esac
 
 FULL_REPO="$(normalize_repo "$REPO")"
 REPO_NAME="${FULL_REPO##*/}"
-#  A GitHub title is plain text and takes a real U+00A0 plus a space, never the entity.
-#  A Zulip post takes the same form.  The issue body below is a body, so its gaps are
-#  the entity.
+#  A GitHub title and the issue body below both take a real U+00A0 plus a space, never
+#  the entity (owner ruling 2026-10-23).  A Zulip post takes the same form.
 TITLE_GAP="$(printf '%s' "$TITLE" | title_gap)"
 ISSUE_TITLE="[needs-mac] ${TITLE_GAP}"
 
@@ -160,8 +159,8 @@ ${PROMPT}
 
 - Mac poller: \`mac-seat-claim.sh\` (launchd \`com.jay.mac-seat-watch\`).
 - Spawn uses Shellular-host argv: Grok \`grok -p\`, Cursor \`cursor-agent -p\` — not Shellular phone ACP.
-- grok-acp stays on \`127.0.0.1:12419\` only.&nbsp; Never \`:2419\`.
-- Do **not** close this issue until the Mac seat posts results.&nbsp; Scripts never claim compile passed.
+- grok-acp stays on \`127.0.0.1:12419\` only.  Never \`:2419\`.
+- Do **not** close this issue until the Mac seat posts results.  Scripts never claim compile passed.
 EOF
 
 echo "== request-mac-seat =="
