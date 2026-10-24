@@ -50,8 +50,6 @@ export function testEnv(overrides = {}) {
   const vars = { ...wranglerConfig().vars };
   vars.ACCESS_AUD = "a".repeat(64);
   vars.HOSTED_SEATS = "JET,GROK-WEB";
-  // In production this is a binding synced from Infisical (sync_notes_consumer.py);  tests carry the default here.
-  vars.NOTES_RELAY_CONSUMER = "CLAUDE";
   // The DM rule defaults ON (owner decision, Oct 22 2026).  The mechanical dm_send tests below are
   // about tagging, idempotency and refusals, not the rule, so they run with it off;  the rule's own
   // tests (test/dm-rule.test.mjs) turn it back on explicitly.

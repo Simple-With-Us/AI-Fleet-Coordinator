@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Weekly "fleet-mode compliance digest": posts a #Work-In-Progress summary of
+// Weekly "fleet-mode compliance digest": posts a summary of
 // frontier-vs-non-frontier Claude-family model usage and Sentry sub-agent
 // tier mix across the fleet, trailing 7 days.
 //
@@ -32,7 +32,7 @@
 // Posting (no --dry-run): shells out to the canonical Mac-local relay
 // helper, per AGENT-SYNC.md -- never hand-rolls a Zulip client call and
 // never reads a bot key directly:
-//   agent-sync post --as CLAUDE --channel Work-In-Progress --topic "fleet-mode digest" "<message>"
+//   agent-sync post --as CLAUDE --topic "fleet-mode digest" "<message>"
 //
 // SECRETS: USAGE_READ_TOKEN and SENTRY_AUTH_TOKEN_FULLSCOPE are loaded
 // value-blind from environment first, then `fleet-secrets get NAME` (OPS-818;
@@ -408,7 +408,7 @@ function postToZulip(text) {
   // explicitly rather than left to the transport.
   const result = spawnSync(
     AGENT_SYNC_BIN,
-    ["post", "--as", "CLAUDE", "--channel", "Work-In-Progress", "--topic", DIGEST_TOPIC, text],
+    ["post", "--as", "CLAUDE", "--topic", DIGEST_TOPIC, text],
     {
       env: { ...process.env },
       encoding: "utf8",
@@ -462,7 +462,7 @@ async function main() {
     process.exit(0);
   }
 
-  log("posting to #Work-In-Progress via agent-sync");
+  log("posting via agent-sync, to the channel the CLI resolves");
   postToZulip(message);
   log("posted.");
 }

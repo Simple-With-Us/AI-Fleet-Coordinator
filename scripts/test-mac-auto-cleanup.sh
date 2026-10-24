@@ -56,6 +56,69 @@ if ! grep -q 'name Journals' "$SCRIPT"; then
   fail "mac-auto-cleanup.sh must prune every PipelineStorage Journals dir, not only Urgent"
 fi
 
+# AFC-504: the remote maintenance trigger must reach the host through the
+# operator's own inventory, not through a target written into a published script.
+#
+# The ssh target is private deployment inventory: it arrives in the environment as
+# HOUSEKEEPER_SSH_ALIAS, and the operator's own ssh config is what resolves it.
+# A literal target in this script would ship the host name to every reader of a
+# public repository, and a placeholder would reach the wrong host instead of the
+# one the caller meant.
+#
+# The hop is skipped rather than refused when the variable is unset, because the
+# hop is redundant: the host self-maintains through its own
+# /etc/cron.daily/coolify-auto-maintenance, and the local cleanup that runs
+# before it is the part that matters.
+#
+# A line is an ssh command when it still says ssh after its quoted runs are
+# taken out, so a message that merely names ssh is not read as a command.  The
+# target of a real command has to be the inventory variable itself, so a target
+# hoisted into another variable is caught as well.
+ssh_command_lines() {
+  grep -nE 'ssh' "$SCRIPT" \
+    | grep -vE '^[^:]+:[[:space:]]*#' \
+    | while IFS= read -r line; do
+        shape=$(printf '%s' "$line" | sed -e 's/"[^"]*"/QQ/g' -e "s/'[^']*'/QQ/g")
+        case "$shape" in
+          *ssh\ *) printf '%s\n' "$line" ;;
+        esac
+      done
+}
+
+if [ -n "$(ssh_command_lines | grep -v '"[$]HOUSEKEEPER_SSH_ALIAS')" ]; then
+  fail "mac-auto-cleanup.sh must not ssh a literal host target (private deployment inventory)"
+fi
+
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must reach the remote host through HOUSEKEEPER_SSH_ALIAS"
+fi
+
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS:-' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must read the remote target without tripping on an unset HOUSEKEEPER_SSH_ALIAS"
+fi
+
+# The hop fails closed.  A target that does not resolve is a configuration
+# fault, so the script says which variable is missing and ends the run with a
+# nonzero exit, instead of reporting a success the operator would read as
+# "the remote maintenance ran".  A silent skip is the failure this rules out.
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS is required' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must name HOUSEKEEPER_SSH_ALIAS when no target resolves"
+fi
+
+if ! grep -q 'Remote Hetzner maintenance trigger failed' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must report a failed connectivity check instead of skipping it"
+fi
+
+# The exit code that means "the local cleanup ran, only the remote hop failed"
+# is the one the watcher reads as cleaned, so it is named in one place and both
+# scripts agree on it.
+if ! grep -q 'HOUSEKEEPER_HOP_EXIT=75' "$SCRIPT"; then
+  fail "mac-auto-cleanup.sh must exit 75 when the local cleanup ran and only the remote hop failed"
+fi
+if ! grep -q 'CLEANUP_EXIT_CLEANED = (0, 75)' "$ROOT/mac-resource-watch.py"; then
+  fail "mac-resource-watch.py must read the cleanup exit code 75 as cleaned"
+fi
+
 # The housekeeper lock must be taken over atomically.
 #
 # Checking that a lock is stale and then removing it is two steps, and two
@@ -957,6 +1020,188 @@ H23E="$LOCK_TEST_ROOT/case23-other-host"
 mkdir -p "$H23E"
 make_owner_lock "$H23E" "$DEAD_PID" "some-other-host"
 check_owner_gone "$H23E" no
+
+# AFC-504: the remote hop fails closed.  Every way it can go wrong -- a missing
+# target, a failed connectivity check, a failed maintenance command -- ends the
+# run with a nonzero exit that names the missing variable or the failed check,
+# and with exit code 75, which is the code that means the local cleanup ran and
+# only the remote hop failed.  A hop that skips in silence is the failure this
+# rules out.
+#
+# The block is run on its own with a stubbed ssh, so the check is about what the
+# script decides and never reaches a real host.
+HOP_ROOT="$LOCK_TEST_ROOT/hop"
+mkdir -p "$HOP_ROOT"
+HOP_BLOCK="$HOP_ROOT/block.sh"
+sed -n '/^# 5\. Remote Hetzner Coolify maintenance trigger/,/^# end remote Hetzner maintenance trigger/p' \
+  "$SCRIPT" > "$HOP_BLOCK"
+if [ ! -s "$HOP_BLOCK" ]; then
+  fail "the remote hop block is missing from the script"
+fi
+
+# The stub counts its calls and exits with the code the case asked for, so a
+# probe that succeeds and a maintenance command that fails are two different
+# hosts rather than one.  It also writes a diagnostic to stderr, because the
+# failure message has to carry ssh's own reason and not only its exit code.
+cat > "$HOP_ROOT/ssh-stub" <<'STUB'
+#!/bin/bash
+n=$(cat "$HOP_CASE/count" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$HOP_CASE/count"
+echo "$@" >> "$HOP_CASE/calls"
+codes=($HOP_CODES)
+index=$((n - 1))
+if [ "$index" -ge "${#codes[@]}" ]; then index=$(( ${#codes[@]} - 1 )); fi
+echo "ssh-stub diagnostic for call $n" >&2
+exit "${codes[$index]}"
+STUB
+chmod +x "$HOP_ROOT/ssh-stub"
+
+hop_run() {
+  # $1 the case name, $2 the exit codes (one per call, the last one repeating),
+  # $3 the alias value ("unset" leaves it out), $4 the inventory flag
+  HOP_CASE="$HOP_ROOT/$1"
+  rm -rf "$HOP_CASE"
+  mkdir -p "$HOP_CASE/bin"
+  cp "$HOP_ROOT/ssh-stub" "$HOP_CASE/bin/ssh"
+  if [ "$3" = "unset" ]; then
+    env -u HOUSEKEEPER_SSH_ALIAS PATH="$HOP_CASE/bin:$PATH" \
+      HOUSEKEEPER_INVENTORY="$4" HOP_CASE="$HOP_CASE" HOP_CODES="$2" \
+      bash "$HOP_BLOCK" > "$HOP_CASE/out" 2> "$HOP_CASE/err"
+  else
+    env PATH="$HOP_CASE/bin:$PATH" HOUSEKEEPER_SSH_ALIAS="$3" \
+      HOUSEKEEPER_INVENTORY="$4" HOP_CASE="$HOP_CASE" HOP_CODES="$2" \
+      bash "$HOP_BLOCK" > "$HOP_CASE/out" 2> "$HOP_CASE/err"
+  fi
+}
+
+# A reachable host: the hop runs and the maintenance command is the one asked
+# for.
+HOP_STATUS=0
+hop_run reachable 0 target 1 || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "0" ]; then
+  fail "a reachable host must let the remote hop succeed, it exited $HOP_STATUS"
+fi
+if ! grep -q 'Triggering remote Hetzner Coolify maintenance' "$HOP_ROOT/reachable/out"; then
+  fail "a reachable host must say that it is triggering the remote maintenance"
+fi
+if ! grep -q 'coolify-auto-maintenance' "$HOP_ROOT/reachable/calls"; then
+  fail "a reachable host must run the remote maintenance command"
+fi
+
+# An unreachable host: a real fault, so it says so and fails the run with the
+# code that means the local cleanup ran.
+HOP_STATUS=0
+hop_run unreachable 255 target 1 || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "75" ]; then
+  fail "a failed connectivity check must fail the run with the hop-failed code 75, it exited $HOP_STATUS"
+fi
+if ! grep -q 'Remote Hetzner maintenance trigger failed' "$HOP_ROOT/unreachable/err"; then
+  fail "a failed connectivity check must say so on stderr"
+fi
+if ! grep -q 'connectivity check' "$HOP_ROOT/unreachable/err"; then
+  fail "a failed connectivity check must say which check failed"
+fi
+if ! grep -q 'ssh-stub diagnostic' "$HOP_ROOT/unreachable/err"; then
+  fail "the failure message must carry ssh's own reason, not only its exit code"
+fi
+
+# A reachable host whose maintenance command fails: also a real fault, and the
+# status of the command is not thrown away.
+HOP_STATUS=0
+hop_run maintenance-fails "0 255" target 1 || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "75" ]; then
+  fail "a failed maintenance command must fail the run with the hop-failed code 75, it exited $HOP_STATUS"
+fi
+if ! grep -q 'the maintenance command exited' "$HOP_ROOT/maintenance-fails/err"; then
+  fail "a failed maintenance command must say so on stderr"
+fi
+if ! grep -q 'ssh-stub diagnostic' "$HOP_ROOT/maintenance-fails/err"; then
+  fail "the failure message must carry ssh's own reason, not only its exit code"
+fi
+
+# An inventory file that names no target: a misconfiguration, so it says so and
+# fails the run.
+HOP_STATUS=0
+hop_run misconfigured 0 unset 1 || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "75" ]; then
+  fail "an inventory file with no target must fail the run with the hop-failed code 75, it exited $HOP_STATUS"
+fi
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS is required' "$HOP_ROOT/misconfigured/err"; then
+  fail "an inventory file with no target must name HOUSEKEEPER_SSH_ALIAS"
+fi
+
+# Neither an inventory file nor the variable: the target does not resolve, so
+# the hop fails closed and says which variable is missing.  It never reaches for
+# a host it cannot name, and it never reports success.
+HOP_STATUS=0
+hop_run no-target 0 unset 0 || HOP_STATUS=$?
+if [ "$HOP_STATUS" != "75" ]; then
+  fail "a hop with no target must fail the run with the hop-failed code 75, it exited $HOP_STATUS"
+fi
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS is required' "$HOP_ROOT/no-target/err"; then
+  fail "a hop with no target must name HOUSEKEEPER_SSH_ALIAS"
+fi
+if [ -s "$HOP_ROOT/no-target/calls" ]; then
+  fail "a hop with no target must not reach for a host"
+fi
+
+# AFC-504: the script reads the operator's own inventory file, so a private
+# target never has to be written into a tracked file and launchd still finds it.
+# The block is run on its own with a temporary home, so the check is about what
+# the script reads and never reaches a real host.
+INV_BLOCK="$HOP_ROOT/inventory.sh"
+sed -n '/^# begin operator inventory (AFC-504)/,/^# end operator inventory (AFC-504)/p' \
+  "$SCRIPT" > "$INV_BLOCK"
+if [ ! -s "$INV_BLOCK" ]; then
+  fail "the operator inventory block is missing from the script"
+fi
+
+INV_HOME="$HOP_ROOT/home"
+mkdir -p "$INV_HOME/.config/fleet"
+printf 'HOUSEKEEPER_SSH_ALIAS=target\n' > "$INV_HOME/.config/fleet/housekeeper.env"
+
+inv_read() {
+  # $1 the home directory, $2 the file the readback goes to
+  env -u HOUSEKEEPER_SSH_ALIAS -u HOUSEKEEPER_INVENTORY HOME="$1" bash -c \
+    '. "$1"; printf "%s\n%s\n" "$HOUSEKEEPER_INVENTORY" "$HOUSEKEEPER_SSH_ALIAS"' \
+    _ "$INV_BLOCK" > "$2" 2>&1
+}
+
+inv_read "$INV_HOME" "$HOP_ROOT/readback"
+if [ "$(sed -n 1p "$HOP_ROOT/readback")" != "1" ]; then
+  fail "an operator inventory file must set HOUSEKEEPER_INVENTORY to 1"
+fi
+if [ "$(sed -n 2p "$HOP_ROOT/readback")" != "target" ]; then
+  fail "an operator inventory file must supply HOUSEKEEPER_SSH_ALIAS to the script"
+fi
+
+INV_EMPTY="$HOP_ROOT/empty-home"
+mkdir -p "$INV_EMPTY"
+inv_read "$INV_EMPTY" "$HOP_ROOT/readback-empty"
+if [ "$(sed -n 1p "$HOP_ROOT/readback-empty")" != "0" ]; then
+  fail "with no operator inventory file the script must not claim to have one"
+fi
+
+# A half-written inventory file must not abort the run.  An unbound variable
+# inside the operator's file is fatal in bash while `set -u` is on, so the block
+# suspends it for the source and restores it right after.
+INV_BAD="$HOP_ROOT/bad-home"
+mkdir -p "$INV_BAD/.config/fleet"
+printf 'HOUSEKEEPER_SSH_ALIAS="$BOX"\n' > "$INV_BAD/.config/fleet/housekeeper.env"
+BAD_STATUS=0
+env -u HOUSEKEEPER_SSH_ALIAS -u HOUSEKEEPER_INVENTORY HOME="$INV_BAD" bash -c '
+set -u
+. "$1"
+printf "readback:%s\n" "${HOUSEKEEPER_INVENTORY:-unset}"
+printf "%s" "$DEFINITELY_NOT_SET"
+' _ "$INV_BLOCK" > "$HOP_ROOT/readback-bad" 2>&1 || BAD_STATUS=$?
+if ! grep -q 'readback:1' "$HOP_ROOT/readback-bad"; then
+  fail "an unbound variable in the operator inventory file must not abort the run"
+fi
+if [ "$BAD_STATUS" = "0" ]; then
+  fail "the operator inventory block must restore set -u after it sources the file"
+fi
 
 bash -n "$SCRIPT" || fail "bash -n failed"
 

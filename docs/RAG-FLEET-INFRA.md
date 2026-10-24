@@ -256,7 +256,7 @@ with the local connection error, the Tailscale-down check, and the public call m
 network, no real subprocess).
 
 **Troubleshooting: the transparent proxy makes SSH/direct-connect failures look like
-successes.**  `nc -z -G 6 -w 6 167.233.254.55 47123` (a closed port on the Hetzner box)
+successes.**  `nc -z -G 6 -w 6 <the Hetzner host address> 47123` (a closed port on the Hetzner box; the host address is private deployment inventory, so it lives in the operator's own inventory on that Mac)
 "succeeding" in well under a second -- instead of refusing the connection or timing out --
 means this network's client-side transparent TCP proxy is intercepting the connect, not that
 the port is actually open.  Seeing that: stop retrying SSH by hand (it will keep "connecting"
@@ -604,7 +604,7 @@ Consequences:
   the status probe itself came back unknown.
 - **`recall-tunnel up` retries the SSH connect.**  On this network, about half of fresh SSH
   attempts to the box fail with "Connection timed out during banner exchange" or "Connection
-  closed by 167.233.254.55 port 22" even though ping RTT is a steady 330-680ms (the transparent
+  closed by <the Hetzner host address> port 22" even though ping RTT is a steady 330-680ms (the transparent
   proxy again: the sshd journal on the box shows those attempts never arrive, so retrying is
   not a fail2ban / PerSourcePenalties risk).  `up` now passes `-o ConnectTimeout=60 -o
   ServerAliveInterval=15 -o ServerAliveCountMax=8` (the CountMax tolerates about 2 minutes of a
