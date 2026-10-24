@@ -90,6 +90,15 @@ test("the consent page names the wake seat and states its real capability", asyn
   assert.match(full, /Connect ChatGPT as Jet\?/);
   assert.match(full, /name="seat" value="JET-CHAT"/);
   assert.match(full, /This seat reads and posts/);
+  // The private WhatsApp inbox grant is disclosed exactly when the bridge is
+  // on for this seat (kody 4365431558), and Zulip privacy is named as Zulip
+  // so the two scopes cannot blur together.
+  assert.ok(!wake.includes("WhatsApp"), "the wake-only seat never mentions WhatsApp");
+  assert.ok(!full.includes("WhatsApp"), "no WhatsApp sentence while the bridge is off");
+  assert.match(full, /Private Zulip channels are never open to it/);
+  const wa = await (await consentPage({ ...facts, seat: "JET-CHAT", whatsapp: true }, {})).text();
+  assert.match(wa, /read and acknowledge messages in the owner&#39;s private WhatsApp inbox/);
+  assert.match(wa, /Private Zulip channels are never open to it/);
 });
 
 test("the key installer provisions JET-CHAT from Jet's Infisical entry with the JET tag", () => {

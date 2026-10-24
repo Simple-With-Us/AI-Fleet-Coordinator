@@ -157,7 +157,7 @@ ${replaceLine}
 <p>${sentences(
     ...(EVENTS_ONLY_SEATS.includes(seat)
       ? ["This seat only delivers wake notifications to the app;  it cannot read or post.", "Private channels are never open to it."]
-      : ["This seat reads and posts in any public channel its Zulip bot is subscribed to, as that bot, within its budgets.", "Private channels are never open to it.", "Every chat on that account will act as this seat.", ...(whatsapp ? ["It can also read and acknowledge messages in the owner's private WhatsApp inbox."] : [])]),
+      : ["This seat reads and posts in any public channel its Zulip bot is subscribed to, as that bot, within its budgets.", "Private Zulip channels are never open to it.", "Every chat on that account will act as this seat.", ...(whatsapp ? ["It can also read and acknowledge messages in the owner's private WhatsApp inbox."] : [])]),
   )}</p>
 <form id="consent" method="post" action="/authorize">
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">
