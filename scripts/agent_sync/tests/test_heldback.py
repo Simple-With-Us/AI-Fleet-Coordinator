@@ -373,7 +373,7 @@ class WorkerRuleTests(unittest.TestCase):
         item = {
             "message_id": 4100,
             "dm": False,
-            "channel": "agent-sync",
+            "channel": "work-in-progress",
             "topic": "budget",
             "stream_id": 642232,
             "sender_full_name": "Codex",
@@ -1083,7 +1083,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         pending = W.Pending(
             wake_id,
             SEAT,
-            {"channel": "agent-sync", "topic": "batch", "stream_id": 642232},
+            {"channel": "work-in-progress", "topic": "batch", "stream_id": 642232},
             owner=False,
             now=1.0,
             due=1.0,
@@ -1181,7 +1181,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         pending = W.Pending(
             "w-long",
             SEAT,
-            {"channel": "agent-sync", "topic": long, "stream_id": 642232},
+            {"channel": "work-in-progress", "topic": long, "stream_id": 642232},
             owner=False,
             now=1.0,
             due=1.0,
@@ -1224,7 +1224,7 @@ class HeldBackRoutineTests(HeldMixin, ServerHarness):
         row = {
             "id": 5,
             "type": "stream",
-            "channel": "agent-sync",
+            "channel": "work-in-progress",
             "topic": long,
             "stream_id": 642232,
             "sender_id": 11,

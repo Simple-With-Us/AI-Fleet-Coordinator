@@ -42,7 +42,7 @@ def angle(body: str) -> str:
 
 def quoted(body: str, message_id: int = 630000000) -> str:
     """Zulip's quote-and-reply:  the original inside a ```quote fence, no `>` on its lines."""
-    return ("@_**Jay|7** [said](https://simplewithus.zulipchat.com/#narrow/channel/12-agent-sync/topic/x/near/%d):\n"
+    return ("@_**Jay|7** [said](https://simplewithus.zulipchat.com/#narrow/channel/12-work-in-progress/topic/x/near/%d):\n"
             "```quote\n%s\n```\n\nyes please" % (message_id, body.rstrip("\n")))
 
 
@@ -60,7 +60,7 @@ class Reader:
 
 
 def row(message_id, seat, content, *, is_bot=True) -> dict:
-    return {"id": message_id, "channel": "agent-sync", "topic": "OWNER AFC-1 x", "content": content, "is_bot": is_bot, "seat": seat}
+    return {"id": message_id, "channel": "work-in-progress", "topic": "OWNER AFC-1 x", "content": content, "is_bot": is_bot, "seat": seat}
 
 
 class Stub:

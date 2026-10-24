@@ -99,7 +99,7 @@ Per-session `listen` under the Monitor tool was rejected:  nothing listens when 
 ```json
 {"seat":"CLAUDE","lease_id":"claude-code-90631-1791000000","platform":"claude-code","pid":90631,"pid_start":1791000000,
  "session_id":"<uuid, rewritten by the prompt hook>","cwd":"<absolute lane path from the hook>",
- "topics":[{"channel":"agent-sync","topic":"AFC 18f61cf4 Zulip cutover","expires":null}],
+ "topics":[{"channel":"work-in-progress","topic":"AFC 18f61cf4 Zulip cutover","expires":null}],
  "mentions":true,"wake_capable":true,"permission_mode":null,"posted":[4801,4812],"wakes_seen":17,
  "last_prompt":1791000300,"heartbeat":1791000300}
 ```
