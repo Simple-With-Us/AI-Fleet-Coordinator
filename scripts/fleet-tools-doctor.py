@@ -614,7 +614,14 @@ def parse_utc(text) -> float | None:
 def systemd_timer(
     unit: str, runner: Callable = subprocess.run, clock: Callable = time.time
 ) -> dict | None:
-    """What systemd says about a timer, or None when systemctl could not answer."""
+    """What systemd says about a timer, or None when systemctl could not answer.
+
+    A timer's LastTriggerUSec only moves when the timer itself fires.  The service is also
+    started by hand and by GitHub on each merge, and those runs never touch it, so a service
+    that ran a minute ago can sit behind a timer that "last fired" hours back.  The last run is
+    the later of the timer's trigger and the paired service's start.
+    """
+    service = unit[: -len(".timer")] + ".service" if unit.endswith(".timer") else None
     try:
         out = runner(
             [
@@ -622,8 +629,8 @@ def systemd_timer(
                 "show",
                 "--timestamp=unix",
                 "-p",
-                "LoadState,ActiveState,LastTriggerUSec,NextElapseUSecRealtime",
-                unit,
+                "LoadState,ActiveState,LastTriggerUSec,NextElapseUSecRealtime,ExecMainStartTimestamp",
+                *([unit, service] if service else [unit]),
             ],
             capture_output=True,
             text=True,
@@ -634,13 +641,22 @@ def systemd_timer(
         return None
     if out.returncode != 0:
         return None
-    props = dict(line.split("=", 1) for line in (out.stdout or "").splitlines() if "=" in line)
+    # The timer's block comes first, so its LoadState and ActiveState are the first seen.
+    props: dict = {}
+    stamps = []
+    for line in (out.stdout or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in ("LastTriggerUSec", "ExecMainStartTimestamp"):
+            match = re.match(r"@(\d+)", value)
+            if match:
+                stamps.append(int(match.group(1)))
+        else:
+            props.setdefault(key, value)
     if "LoadState" not in props:
         return None
-    last = None
-    match = re.match(r"@(\d+)", props.get("LastTriggerUSec", ""))
-    if match:
-        last = int(match.group(1))
+    last = max(stamps) if stamps else None
     return {
         "unit": unit,
         "loadState": props.get("LoadState"),
