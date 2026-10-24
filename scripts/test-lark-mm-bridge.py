@@ -2070,6 +2070,43 @@ class LarkSurfaceTests(unittest.TestCase):
             bridge._signal_worker_once()
         self.assertEqual(len(sends), 1)
 
+    def test_a_remembered_count_is_not_inherited_by_a_new_signal_of_the_same_name(self):
+        bridge = self.make_bridge()
+        # An earlier signal of this name spent attempts and set a wait, and
+        # its file was replaced before the watcher pruned the count.
+        bridge.signal_retry["sig-reuse.json"] = (
+            bridge_mod.MAX_SIGNAL_ATTEMPTS - 1,
+            time.time() + 300,
+            "sig-old",
+        )
+        signal = self.write_signal(
+            bridge, "sig-reuse.json", {"signal_id": "sig-new", "text": "wake up", "chat_id": "oc_1"}
+        )
+        with mock.patch.object(
+            bridge_mod,
+            "run",
+            side_effect=bridge_mod.CommandError("lark-cli failed: 429 rate limit"),
+        ):
+            bridge._handle_signal(signal)
+        record = json.loads(signal.read_text(encoding="utf-8"))
+        # The new signal was tried now, on its own fresh budget.
+        self.assertEqual(record["outcome"], "pending")
+        self.assertEqual(record["attempts"], 1)
+        self.assertEqual(bridge.signal_retry["sig-reuse.json"][2], "sig-new")
+
+    def test_a_retry_after_of_seven_or_more_digits_is_capped_not_dropped(self):
+        self.assertEqual(
+            bridge_mod.retry_after_from("Retry-After: 1000000"), bridge_mod.SIGNAL_RETRY_AFTER_MAX
+        )
+        self.assertEqual(
+            bridge_mod.retry_after_from('"x-ogw-ratelimit-reset": "123456789"'),
+            bridge_mod.SIGNAL_RETRY_AFTER_MAX,
+        )
+        self.assertIn(
+            "retry_after=1000000",
+            bridge_mod.safe_error_detail("lark-cli failed", "429 Retry-After: 1000000"),
+        )
+
     def test_a_signal_whose_filing_fails_is_not_sent_past_its_budget(self):
         bridge = self.make_bridge()
         signal = self.write_signal(

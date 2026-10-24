@@ -141,9 +141,13 @@ _ERROR_REQUEST_ID_RE = re.compile(
 # sees only its exit status and its stderr, never the HTTP response, so a wait
 # the server sent in a header (Retry-After, or a rate-limit reset header such
 # as x-ogw-ratelimit-reset) reaches it only when the CLI writes the value into
-# its error text.
+# its error text.  Both are a relative wait in seconds (Lark documents
+# x-ogw-ratelimit-reset as the seconds until the window resets).  A long digit
+# run is still read, and retry_after_from caps it at SIGNAL_RETRY_AFTER_MAX, so
+# a server that asks for a very long wait gets the longest one, not the 5 s
+# local backoff.
 _ERROR_RETRY_AFTER_RE = re.compile(
-    r"(?:retry[-_ ]?after|x-ogw-ratelimit-reset)\"?\s*[:=]\s*\"?([0-9]{1,6})\b",
+    r"(?:retry[-_ ]?after|x-ogw-ratelimit-reset)\"?\s*[:=]\s*\"?([0-9]{1,12})(?![0-9])",
     re.IGNORECASE,
 )
 
@@ -1367,10 +1371,11 @@ class Bridge:
             attempts = attempts if isinstance(attempts, int) and attempts >= 0 else 0
             next_attempt = float(record.get("next_attempt") or 0)
             remembered = self.signal_retry.get(path.name)
-            if remembered is not None:
+            if remembered is not None and remembered[2] == record["signal_id"]:
                 # A pending write that failed left an older count in the
                 # file, so the count in memory is the true one, and the next
-                # write of the record carries it.
+                # write of the record carries it.  A count belongs to one
+                # signal id:  a later file of the same name starts clean.
                 attempts = max(attempts, remembered[0])
                 next_attempt = max(next_attempt, remembered[1])
                 record["attempts"] = attempts
@@ -1401,7 +1406,11 @@ class Bridge:
                         if attempts >= MAX_SIGNAL_ATTEMPTS:
                             # Remembered too, so a filing that fails does not
                             # put the signal back on a fresh budget.
-                            self.signal_retry[path.name] = (attempts, next_attempt)
+                            self.signal_retry[path.name] = (
+                                attempts,
+                                next_attempt,
+                                record["signal_id"],
+                            )
                             outcome, detail = "unknown", "retries exhausted: %s" % exc.detail
                             return
                         wait = min(SIGNAL_RETRY_BASE * (2 ** (attempts - 1)), 300)
@@ -1413,7 +1422,7 @@ class Bridge:
                         record["next_attempt"] = next_attempt
                         # Remembered before the record is written, so a write
                         # that fails cannot reset the count or the wait.
-                        self.signal_retry[path.name] = (attempts, next_attempt)
+                        self.signal_retry[path.name] = (attempts, next_attempt, record["signal_id"])
                         outcome, detail = "pending", "retryable: %s" % exc.detail
                         return
                     if exc.outcome == "terminal":
