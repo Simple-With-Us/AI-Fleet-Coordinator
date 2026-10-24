@@ -554,6 +554,12 @@ class RegistrationConfirmationPending(RuntimeError):
     """
 
 
+# The route done-set step that says a registration's confirmation cannot land in this
+# routing call (a terminal refusal or a rate limit):  the remaining attempts skip the
+# send, and the route's loop ends in quarantine.
+CONFIRMATION_HELD = "confirmation-held"
+
+
 class Daemon:
     def __init__(
         self,
@@ -3999,8 +4005,9 @@ class Daemon:
         only the step that failed - never a second registry mutation, never a skipped
         confirmation.  An exception once the mutation is recorded propagates so the
         route's retry (not the ordinary wake path) finishes the confirmation, and a
-        confirmation send that returns without landing (a retryable refusal or an unknown
-        delivery) raises RegistrationConfirmationPending for the same retry.
+        confirmation send that returns without landing raises
+        RegistrationConfirmationPending:  the route resends it, or, when no resend can
+        land in this call, its loop ends in the seat-inbox quarantine.
         """
         reply_ready = False
         out: dict[str, Any] | None = None
@@ -4043,6 +4050,12 @@ class Daemon:
                 # text recorded next to the mutation.  The send ledger dedupes a copy
                 # that already landed, so this posts at most one confirmation.
                 reply_ready = True
+                if (message_id, CONFIRMATION_HELD) in done:
+                    # An earlier attempt found that no resend can land in this routing
+                    # call:  skip the send, and let the route's loop end in quarantine.
+                    raise RegistrationConfirmationPending(
+                        "the registration confirmation is held for this routing call"
+                    )
                 sent = ORASK.send_location_question(
                     question=recorded[2],
                     entry_id=parsed["entry_id"],
@@ -4056,8 +4069,8 @@ class Daemon:
                     read_back_markers=(OREG.REGISTERED_REPLY_PREFIX,),
                 )
                 # Only a landed confirmation is done, on this path too (kody 4366258037):
-                # a returned refused or unknown outcome leaves the step open, and a
-                # retryable one goes back to the route's retry loop below.
+                # a returned refused or unknown outcome leaves the step open and goes
+                # back to the route's loop below.
                 if sent.get("status") == "sent":
                     done.add((message_id, "send-confirmation"))
                 self.log.write(
@@ -4066,11 +4079,8 @@ class Daemon:
                     status="confirm-retried",
                     delivery=sent.get("status"),
                 )
-                if self._confirmation_retryable(sent):
-                    raise RegistrationConfirmationPending(
-                        "the registration confirmation did not land (%s)"
-                        % str(sent.get("delivery_status") or "refused")[:20]
-                    )
+                if sent.get("status") != "sent":
+                    self._confirmation_not_landed(sent, message_id, done)
                 return True
             db = self._registration_db()
             # Asked entries answer directly;  conflicted ones settle through the same
@@ -4166,16 +4176,13 @@ class Daemon:
                 status=out.get("status"),
                 delivery=sent.get("status"),
             )
-            if registered and self._confirmation_retryable(sent):
-                # A returned (not raised) refused or unknown outcome is retried like a
-                # raised one (kody 4366258037):  the registration is recorded above, so
-                # the route's retry resends only the confirmation.  A reply to an
-                # answer that registered nothing is not retried here - a retry would
+            if registered and sent.get("status") != "sent":
+                # A returned (not raised) refused or unknown outcome goes back to the
+                # route like a raised one (kody 4366258037):  the registration is
+                # recorded above, so a retry resends only the confirmation.  A reply to
+                # an answer that registered nothing is not retried here - a retry would
                 # re-run answer(), and the open question takes the next answer anyway.
-                raise RegistrationConfirmationPending(
-                    "the registration confirmation did not land (%s)"
-                    % str(sent.get("delivery_status") or "refused")[:20]
-                )
+                self._confirmation_not_landed(sent, message_id, done)
             return True
         except OR.RegistryUnavailable as exc:
             # Fail closed and say so loudly:  no answer is registered while the identity
@@ -4211,17 +4218,38 @@ class Daemon:
             return False
 
     @staticmethod
-    def _confirmation_retryable(sent: Mapping[str, Any]) -> bool:
-        """A confirmation that did not land, and whose refusal is not terminal.
+    def _confirmation_resendable(sent: Mapping[str, Any]) -> bool:
+        """Whether resending a confirmation that did not land can help in this routing call.
 
-        The same rule the ask path uses (OREG.TERMINAL_REFUSAL_CODES):  a rejected
-        credential or a secret-scan withhold would be refused again on every retry, so
-        those end the step;  anything else that did not land goes back to the route's
-        bounded retry loop.
+        Not after a terminal refusal:  a rejected credential or a secret-scan withhold
+        is refused again on every resend (OREG.TERMINAL_REFUSAL_CODES, the ask path's
+        rule).  Not after a rate limit either (kody 4368853546):  the client already
+        waited out the server's Retry-After on its own bounded retries
+        (zulip.MAX_RATE_LIMIT_RETRIES), so an immediate resend would only meet the same
+        limit and hold the listener thread for another round.  A provably unsent
+        failure is resent, and an unknown delivery is reconciled by the topic read-back,
+        never re-posted blind.
         """
-        return (
-            sent.get("status") != "sent"
-            and str(sent.get("code") or "") not in OREG.TERMINAL_REFUSAL_CODES
+        if str(sent.get("code") or "") in OREG.TERMINAL_REFUSAL_CODES:
+            return False
+        return sent.get("http_status") != 429
+
+    def _confirmation_not_landed(
+        self, sent: Mapping[str, Any], message_id: Any, done: set[Any]
+    ) -> None:
+        """Hand a registration whose confirmation did not land back to the route's loop.
+
+        Always raises RegistrationConfirmationPending, so the answer is never consumed
+        with its confirmation missing:  a resendable outcome is retried by the route,
+        and one that cannot land in this routing call is marked CONFIRMATION_HELD, so
+        the remaining attempts skip the send and the loop ends in the seat-inbox
+        quarantine that surfaces every other unconfirmed answer (kody 4368853431).
+        """
+        if not self._confirmation_resendable(sent):
+            done.add((message_id, CONFIRMATION_HELD))
+        raise RegistrationConfirmationPending(
+            "the registration confirmation did not land (%s)"
+            % str(sent.get("delivery_status") or "refused")[:20]
         )
 
     @staticmethod

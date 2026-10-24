@@ -2656,7 +2656,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             "sender_id": 12, "client": "website",
         }
         done = set()
-        retryable = {"status": "refused", "reason": "rate-limited", "delivery_status": D.OC.DELIVERY_RETRYABLE}
+        retryable = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
         with mock.patch.object(D.ORASK, "send_location_question", return_value=retryable):
             with self.assertRaises(D.RegistrationConfirmationPending):
                 daemon._maybe_registration_answer(
@@ -2691,35 +2691,63 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         deliveries = [row.get("delivery") for row in self._log_rows("operator-registration-answer")]
         self.assertEqual(deliveries, ["refused", "refused", "sent"])
 
-    def test_a_terminal_confirmation_refusal_is_not_retried(self):
-        # The same terminal rule as the ask path:  a rejected credential is refused
-        # again on every retry, so the step ends without the route retrying it.
+    REJECTED = {
+        "status": "refused", "reason": "rejected",
+        "delivery_status": "refused", "code": "credential_rejected",
+    }
+    RATE_LIMITED = {
+        "status": "refused", "reason": "rate-limited", "delivery_status": "retryable",
+        "http_status": 429, "retry_after_seconds": 5.0,
+    }
+
+    def _assert_held_not_resent(self, outcome, message_id):
+        # kody 4368853431 and 4368853546:  a confirmation that cannot land in this
+        # routing call (a terminal refusal, a rate limit the client already waited out)
+        # is not resent, but the answer is never consumed with it missing either:  each
+        # attempt raises, and the attempts after the first skip the send.
         daemon = self.daemon()
         entry = self._pending_entry(daemon)
         message = {
-            "id": 45, "content": "mac %s" % entry["entry_id"],
+            "id": message_id, "content": "mac %s" % entry["entry_id"],
             "sender_id": 12, "client": "website",
         }
-        rejected = {
-            "status": "refused", "reason": "rejected",
-            "delivery_status": D.OC.DELIVERY_REFUSED, "code": "credential_rejected",
-        }
         done = set()
-        with mock.patch.object(D.ORASK, "send_location_question", return_value=rejected) as send:
-            self.assertTrue(
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=outcome) as send:
+            with self.assertRaises(D.RegistrationConfirmationPending):
                 daemon._maybe_registration_answer(
                     message, 2000.0, channel="agent-sync", topic="AFC Work", done=done
                 )
-            )
-            # The confirm-retry branch ends the same way.
-            self.assertTrue(
+            # The confirm-retry branch skips the send.
+            with self.assertRaises(D.RegistrationConfirmationPending):
                 daemon._maybe_registration_answer(
                     message, 2001.0, channel="agent-sync", topic="AFC Work", done=done
                 )
-            )
-        self.assertEqual(send.call_count, 2)
-        self.assertTrue(self._registration_marked(done, 45))
-        self.assertNotIn((45, "send-confirmation"), done)
+        self.assertEqual(send.call_count, 1)
+        self.assertIn((message_id, D.CONFIRMATION_HELD), done)
+        self.assertTrue(self._registration_marked(done, message_id))
+        self.assertNotIn((message_id, "send-confirmation"), done)
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual(len(rows), 1)
+
+    def test_a_terminally_refused_confirmation_is_held_not_resent(self):
+        self._assert_held_not_resent(self.REJECTED, 45)
+
+    def test_a_rate_limited_confirmation_is_held_not_resent(self):
+        self._assert_held_not_resent(self.RATE_LIMITED, 46)
+
+    def test_the_route_quarantines_a_held_confirmation_after_one_send(self):
+        # Through _route_message:  one send, no resend, and the answer is surfaced in
+        # the seat inbox instead of being consumed silently (kody 4368853431).
+        daemon = self.started()
+        entry = self._pending_entry(daemon)
+        message = self._owner_answer(daemon, entry)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=self.REJECTED) as send:
+            daemon.route_message(daemon.seats["CLAUDE"], message)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(len(self._log_rows("quarantined")), 1)
+        self.assertTrue(any(item.get("quarantined") for item in self.inbox()))
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual(len(rows), 1)
 
     def _owner_answer(self, daemon, entry):
         owner = self.fake.user_by_id(12)
@@ -2734,7 +2762,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         daemon = self.started()
         entry = self._pending_entry(daemon)
         message = self._owner_answer(daemon, entry)
-        unsent = {"status": "refused", "reason": "rate-limited", "delivery_status": D.OC.DELIVERY_RETRYABLE}
+        unsent = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
         with mock.patch.object(
             D.ORASK, "send_location_question", side_effect=[unsent, {"status": "sent"}]
         ) as send:
@@ -2757,7 +2785,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         daemon = self.started()
         entry = self._pending_entry(daemon)
         message = self._owner_answer(daemon, entry)
-        unsent = {"status": "refused", "reason": "rate-limited", "delivery_status": D.OC.DELIVERY_RETRYABLE}
+        unsent = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
         with mock.patch.object(D.ORASK, "send_location_question", return_value=unsent) as send:
             daemon.route_message(daemon.seats["CLAUDE"], message)
         self.assertEqual(send.call_count, 3)
