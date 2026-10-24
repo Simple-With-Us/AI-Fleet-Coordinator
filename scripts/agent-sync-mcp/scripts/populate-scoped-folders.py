@@ -498,9 +498,7 @@ def main():
         sys.exit(1)
     except Exception as e:  # noqa: BLE001 - any login failure stops visibly before any copy
         if timed_out_error(e):
-            print(
-                "STOP before the first copy: the Infisical login timed out.  Nothing was copied."
-            )
+            print("STOP before the first copy: the Infisical login timed out.  Nothing was copied.")
             sys.exit(TIMED_OUT)
         print(
             f"STOP before the first copy: the Infisical login failed ({type(e).__name__}).  "

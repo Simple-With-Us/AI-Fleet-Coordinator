@@ -422,9 +422,7 @@ class TestApply(Base):
 
             return answer
 
-        check = (
-            ";  check INFISICAL_AUTOMATION_CLIENT_ID and INFISICAL_AUTOMATION_CLIENT_SECRET"
-        )
+        check = ";  check INFISICAL_AUTOMATION_CLIENT_ID and INFISICAL_AUTOMATION_CLIENT_SECRET"
         answers = [
             (f"was refused (HTTP 401){check}", 1, refused(401)),
             (f"was refused (HTTP 403){check}", 1, refused(403)),
