@@ -26,7 +26,7 @@ inside a URL, email, filename, or a brand name containing a period.
 
 Jay, Fri, Oct 23:  update the rule everywhere, so it is the same on every surface.  Between
 sentences, write a **real U+00A0 (no-break space) followed by a normal space**.  That covers
-chat replies in every pane, Zulip, GitHub PR and issue text and review comments, Linear,
+chat replies in every other pane, Zulip, GitHub PR and issue text and review comments, Linear,
 commit messages, repo docs and Markdown, skills, agent instructions, and UI copy.
 
 - **The one exception:  the Claude Code Code tab and the MiniMax Code pane.**  In those two chat panes, write the `&nbsp;`
