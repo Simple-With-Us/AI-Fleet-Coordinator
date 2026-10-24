@@ -5,7 +5,7 @@ description: Land a Muse Assist feature branch to main across the fleet — seat
 
 # Land a feature branch (MA)
 
-> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM):  use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM):  use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
@@ -77,7 +77,7 @@ gh pr create --fill
 | Personal-Site | CI `verify` is file-existence + About-copy grep.  `site/` is the TanStack Start source (README).  `AGENTS.md` may still say "static snapshot" — believe README + the tree.  Preserve `Earlier work included` and the Doximity `/profiles/…/view` URL or the daily mirror reverts them. |
 | AFC | No app test gate.  `python3 scripts/check-fleet-registry.py` if you touched registries. |
 
-CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Progress` then tag.  Consumers pin the exact tag.
+CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Progress` then tag.  Consumers pin the exact tag.
 
 `STATUS.md` / `PLAN.md` (and the archived `docs/EFFORT-LOG.md`) often carry `merge=union` in `.gitattributes`.  Additive edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
 

@@ -5,7 +5,7 @@ description: Finish a Muse Code work unit — the Linear issue, the PR link, Zul
 
 # Closeout (MC)
 
-> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MC_ZULIP_EMAIL`, `MC_ZULIP_KEY`, `MC_ZULIP_SITE`).  Session tag `[MC·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MC_ZULIP_EMAIL`, `MC_ZULIP_KEY`, `MC_ZULIP_SITE`).  Session tag `[MC·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
@@ -47,6 +47,8 @@ There is no effort log to update and nothing for writeback to copy.  The effort 
 ## 3. The PR
 
 The PR body names the issue (`Fixes <ID>` or `Refs <ID>`), and the branch is `<seat>/<id>-<slug>`.  Say in the closeout post which of the two you used.
+
+Opening, editing, replying to, resolving and merging a PR all have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the interim `gh` and shell path is still the one that works, until the owner decides the cutover.
 
 ## 4. Zulip
 

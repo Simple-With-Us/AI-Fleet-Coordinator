@@ -194,8 +194,10 @@
     // reverse proxy serves /listener/v1/ on.  Empty means the listener_* tools
     // answer not_configured.  Each seat signs with its WAKE_HMAC_KEY_<SEAT>.
     // Set it only after DEPLOY.md "Listener read API" step 3 passes.  The same
-    // origin serves the Operator's /notes/v1/ API for the notes_* tools (AFC-486).
-    "LISTENER_API_URL": "",
+    // origin serves the Operator's /notes/v1/ API for the notes_* tools (AFC-486):
+    // operator.jays.services, the route the owner approved, which carries only
+    // /listener/v1/ and /notes/v1/ to the listener's port 8788.
+    "LISTENER_API_URL": "https://operator.jays.services",
     // Kill switch step 4:  "1" makes /mcp answer 503.
     "MCP_DISABLED": "0"
   }

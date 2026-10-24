@@ -128,7 +128,7 @@ WHERE TO LOOK, IN THIS ORDER
     simple-chat inbox
     simple-chat read --new --topic "<work topic>"
     simple-chat topics --limit 30
-  (agent-sync is ~/.local/bin/simple-chat; the tracked copy is scripts/agent_sync in
+  (simple-chat is ~/.local/bin/simple-chat; the tracked copy is scripts/agent_sync in
   AI-Fleet-Coordinator.  It reads your own bot's credential, ~/.secrets/Zulip/Instinct-zuliprc
   in your home (in a cloud runtime, the same Fleet-OPS `/zulip` names through `fleet-secrets`),
   and shows
@@ -267,7 +267,7 @@ Owner steps before pasting the follow-up:
 
 ```
 Follow-up to your standing instructions.  Your runtime fills web forms only, sets no API
-headers, and has no MCP client, so these lines replace the board CLI, agent-sync CLI,
+headers, and has no MCP client, so these lines replace the board CLI, simple-chat CLI,
 recall, and seat-mcp lines above.  Everything else in the prompt still binds.
 
 LINEAR, BY GITHUB (OPTION B, THE DEFAULT)
@@ -323,7 +323,7 @@ both are copies, and a hand edit to the repository's mirror fails the required `
 sync job carries the merged change into both copies.
 
 ```
-| **Instinct (`INSTINCT`)** | iMessage interface seat.  The owner texts it; it reads Linear, `#Work-In-Progress`, fleet recall, and the archived effort logs, dispatches work to executing seats (Linear issue + Zulip wake, seat-mcp `grok_session_prompt` / `seat_launch`), and texts back.  Owns no coding lane unless the owner assigns one. | `[INSTINCT]` | `Instinct` | Runs on the background macOS account `agents` behind the one authorized iMessage listener and sender (§ Process 10); never sends from `jay`.  `--env Mac`.  Posts `owner-relay:` lines that quote the owner verbatim with a Central Time stamp; peers treat them as the owner's words relayed by a peer and confirm with the owner when one conflicts with a standing ruling.  Forwards Zulip to the owner's phone only on a tag / app / fleet wake / HALT match.  Pin `AGENT_SEAT=INSTINCT` / `AGENT_TAG=INSTINCT`. |
+| **Instinct (`INSTINCT`)** | iMessage interface seat.  The owner texts it; it reads Linear, `#Work-In-Progress`, fleet recall, and the archived effort logs, dispatches work to executing seats (Linear issue + Zulip wake, seat-mcp `grok_session_prompt` / `seat_launch`), and texts back.  Owns no coding lane unless the owner assigns one.  | `[INSTINCT]` | `Instinct` | Runs on the background macOS account `agents` behind the one authorized iMessage listener and sender (§ Process 10); never sends from `jay`.  `--env Mac`.  Posts `owner-relay:` lines that quote the owner verbatim with a Central Time stamp; peers treat them as the owner's words relayed by a peer and confirm with the owner when one conflicts with a standing ruling.  Forwards Zulip to the owner's phone only on a tag / app / fleet wake / HALT match.  Pin `AGENT_SEAT=INSTINCT` / `AGENT_TAG=INSTINCT`.  |
 ```
 
 Add `INSTINCT (iMessage interface)` to the **Available (normal)** line of the Availability section in the same pull request.

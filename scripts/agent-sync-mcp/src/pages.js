@@ -12,7 +12,12 @@ export const SENTENCE_GAP = "\u00a0 ";
 
 /** Admin display label only; stored seat identifiers and action values remain canonical. */
 export function adminSeatLabel(seat) {
-  return seat === "CURSOR" ? "Cursor & Grok Bots" : String(seat ?? "");
+  if (seat === "CURSOR") return "Cursor & Grok Bots";
+  // The two Jet logins (owner decision, Oct 23 2026):  the original
+  // connection is wake-only;  the new one carries Jet's normal access.
+  if (seat === "JET") return "Jet-Wake";
+  if (seat === "JET-CHAT") return "Jet";
+  return String(seat ?? "");
 }
 
 // One fixed stylesheet, allowed by hash so the CSP can keep `default-src 'none'`.
@@ -119,7 +124,13 @@ export function errorPage(title, message, status = 400) {
  * The consent page (spec 3.4 step 5).  `facts` come from the library's parsed
  * request and client lookup;  every string is escaped here.
  */
-export function consentPage({ clientName, clientDomain, clientId, redirectHost, loopback = false, scopes, seat, handle, replacing }, headers) {
+export function consentPage({ clientName, clientDomain, clientId, redirectHost, loopback = false, scopes, seat, handle, replacing, whatsapp = false, eventsOnly }, headers) {
+  // eventsOnly is required and must come from the request's own loaded config:  a
+  // default read of the static staging set would show full-tool consent copy to a
+  // wake-only seat and misstate what the owner is approving.
+  if (typeof eventsOnly !== "boolean") {
+    throw new Error("consentPage: eventsOnly must be passed explicitly from the loaded config");
+  }
   const verified = clientDomain
     ? `Published by <strong>${escapeHtml(clientDomain)}</strong> (a client metadata document on that domain).`
     : `Registered by hand in Agent-Sync Admin.${SENTENCE_GAP}Its name is not verified.`;
@@ -131,7 +142,7 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
   const scopeBoxes = scopes
     .map((s) => `<label><input type="checkbox" name="scope" value="${escapeHtml(s)}" checked> <code>${escapeHtml(s)}</code></label>`)
     .join("<br>");
-  const body = `<h1>Connect ${escapeHtml(clientName)} as ${escapeHtml(seat)}?</h1>
+  const body = `<h1>Connect ${escapeHtml(clientName)} as ${escapeHtml(adminSeatLabel(seat))}?</h1>
 <table>
 <tr><th>App</th><td>${escapeHtml(clientName)}<br><small>${verified}</small></td></tr>
 <tr><th>Client ID</th><td><code>${escapeHtml(clientId)}</code></td></tr>
@@ -145,13 +156,13 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
         )}</small>`
       : `<strong>${escapeHtml(redirectHost)}</strong>`
   }</td></tr>
-<tr><th>Seat</th><td><label><input type="radio" name="seat" value="${escapeHtml(seat)}" form="consent" checked required> <strong>${escapeHtml(seat)}</strong></label> (the armed seat for this app)</td></tr>
+<tr><th>Seat</th><td><label><input type="radio" name="seat" value="${escapeHtml(seat)}" form="consent" checked required> <strong>${escapeHtml(adminSeatLabel(seat))}</strong></label> (the armed seat for this app)</td></tr>
 </table>
 ${replaceLine}
 <p>${sentences(
-    "This seat reads and posts in any public channel its Zulip bot is subscribed to, as that bot, within its budgets.",
-    "Private channels are never open to it.",
-    "Every chat on that account will act as this seat.",
+    ...(eventsOnly
+      ? ["This seat only delivers wake notifications to the app;  it cannot read or post.", "Private channels are never open to it."]
+      : ["This seat reads and posts in any public channel its Zulip bot is subscribed to, as that bot, within its budgets.", "Private Zulip channels are never open to it.", "Every chat on that account will act as this seat.", ...(whatsapp ? ["It can also read and acknowledge messages in the owner's private WhatsApp inbox."] : [])]),
   )}</p>
 <form id="consent" method="post" action="/authorize">
 <input type="hidden" name="handle" value="${escapeHtml(handle)}">
