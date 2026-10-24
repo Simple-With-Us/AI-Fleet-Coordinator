@@ -147,7 +147,9 @@ def handoff(name):
             return proc.stdout.strip()
     except (OSError, subprocess.SubprocessError):
         pass
-    raise SystemExit(f"{name} is not in the environment or fleet-secrets (name only; no value printed)")
+    raise SystemExit(
+        f"{name} is not in the environment or fleet-secrets (name only; no value printed)"
+    )
 
 
 def login():
@@ -192,9 +194,7 @@ def read_secret_opt(token, ws, path, name):
     only its status code so a server message can never leak a value."""
     q = urllib.parse.urlencode({"workspaceId": ws, "environment": ENV, "secretPath": path})
     try:
-        return secret_value(
-            req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}?{q}", token)
-        )
+        return secret_value(req(f"{BASE}/api/v3/secrets/raw/{urllib.parse.quote(name)}?{q}", token))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return None
