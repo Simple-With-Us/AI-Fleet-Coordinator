@@ -177,9 +177,9 @@ test("the grant's scope and pause govern a call made as another identity", async
 
 test("row 6:  each grant's tools/list offers exactly its own set, required on writes, and identities after whoami", () => {
   for (const seat of KNOWN_SEATS) {
-    const { list } = toolListFor(seat);
+    const { list } = toolListFor(seat, { whatsappEnabled: true });
     assert.deepEqual(list.slice(0, 3).map((t) => t.name), ["whoami", "identities", "guide"]);
-    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2);
+    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET" ? 0 : 1));
     for (const tool of list) {
       const properties = tool.inputSchema.properties ?? {};
       if (tool.name === "identities") {
@@ -193,7 +193,7 @@ test("row 6:  each grant's tools/list offers exactly its own set, required on wr
 });
 
 test("every hosted tool is classified as exactly one of read or write", () => {
-  const names = toolListFor("CURSOR").list.map((t) => t.name);
+  const names = toolListFor("JET", { whatsappEnabled: true }).list.map((t) => t.name);
   for (const name of names) assert.notEqual(HOSTED_READ_TOOLS.has(name), HOSTED_WRITE_TOOLS.has(name), name);
   assert.deepEqual(sorted([...HOSTED_READ_TOOLS, ...HOSTED_WRITE_TOOLS]), sorted(names));
 });
@@ -220,10 +220,17 @@ test("row 7:  refusal rows carry the grant's own seat and the claimed identity, 
 
 test("a removed name is refused with unknown_tool naming its replacement;  an unknown name stays a protocol error", async () => {
   const { r, caller } = router("JET");
-  const names = new Set(toolListFor("JET").list.map((t) => t.name));
+  const names = new Set(toolListFor("JET", { whatsappEnabled: true }).list.map((t) => t.name));
+  // The replacement must name a real tool.  The hosted server serves only the read-only
+  // eavesdropper_* tools, so eavesdropper_ack (stdio-only, like eavesdropper_ack before the rename)
+  // is a real name that this transport never served;  the old name is still refused here.
+  const contract = new Set(
+    JSON.parse(readFileSync(path.join(ROOT, "../agent_sync/mcp/eavesdropper-tools.json"), "utf8"))
+      .tools.map((t) => t.name),
+  );
   for (const [old, replacement] of Object.entries(RENAMED_TOOLS)) {
     assert.ok(!names.has(old), old);
-    assert.ok(names.has(replacement), replacement);
+    assert.ok(names.has(replacement) || contract.has(replacement), replacement);
     const error = errorOf(await r.call(old, { topic: "t" }));
     assert.equal(error.code, "unknown_tool");
     assert.equal(error.replacement, replacement);

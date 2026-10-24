@@ -164,3 +164,29 @@ class FailSoftDaemon(ListenerHarness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OperatorAllowConfig(unittest.TestCase):
+    """`[operator] dm_allow` (AFC-412):  the users besides the owner who may be handed a tagged
+    address's candidate list.  A bad section is an error and fails closed to the owner alone."""
+
+    def test_the_allowlist_is_empty_by_default(self) -> None:
+        cfg = load("")
+        self.assertEqual(cfg.operator_dm_allow, frozenset())
+        self.assertEqual(cfg.errors, [])
+
+    def test_a_list_of_user_ids_is_parsed(self) -> None:
+        cfg = C.from_dict(tomllib.loads(BASE % "" + "\n[operator]\ndm_allow = [4242, 77]\n"))
+        self.assertEqual(cfg.operator_dm_allow, frozenset({4242, 77}))
+        self.assertEqual(cfg.errors, [])
+
+    def test_a_malformed_list_is_an_error_and_allows_nobody(self) -> None:
+        for bad in ('dm_allow = ["4242"]', "dm_allow = [true]", "dm_allow = 4242", "dm_allow = [0]"):
+            with self.subTest(bad=bad):
+                cfg = C.from_dict(tomllib.loads(BASE % "" + "\n[operator]\n%s\n" % bad))
+                self.assertEqual(cfg.operator_dm_allow, frozenset())
+                self.assertIn("operator.dm_allow must be a list of user ids", cfg.errors)
+
+    def test_an_unknown_operator_setting_is_an_error(self) -> None:
+        cfg = C.from_dict(tomllib.loads(BASE % "" + "\n[operator]\ndm_alow = [1]\n"))
+        self.assertTrue(any("[operator] has unknown setting" in e for e in cfg.errors))

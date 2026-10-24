@@ -12,6 +12,7 @@ from unittest import mock
 
 from agent_sync import attach
 from agent_sync import live as L
+from agent_sync import zulip as Z
 from agent_sync.tests.listener_harness import ListenerHarness, fake_watcher, mode_of
 
 PID = os.getpid()
@@ -321,7 +322,12 @@ class DrainWaitDetachTests(AttachHarness):
         code, out, err = self.attach_run("--topic", "AFC 18f61cf4 Zulip cutover")
         self.assertEqual(out.strip(), "lease " + LEASE)
         topics = L.load_lease(self.seat_paths(), LEASE)["topics"]
-        self.assertEqual(topics, [{"channel": "agent-sync", "topic": "AFC 18f61cf4 Zulip cutover", "expires": None}])
+        # the lease is recorded under the channel the runtime defaults to, so a live message in
+        # that channel matches the lease key (live.topic_key casefolds both halves)
+        self.assertEqual(
+            topics,
+            [{"channel": Z.DEFAULT_CHANNEL, "topic": "AFC 18f61cf4 Zulip cutover", "expires": None}],
+        )
 
 
 class PostLeaseTests(AttachHarness):
@@ -335,8 +341,18 @@ class PostLeaseTests(AttachHarness):
         self.assertEqual(lease["posted"], [posted])
         self.assertEqual(lease["topics"][0]["topic"], "AFC work")
         self.assertIsNotNone(lease["topics"][0]["expires"])
-        self.assertEqual(self.run_cli("post", "--topic", "roll call", "online", env=env).code, 0)
-        self.assertEqual(len(L.load_lease(self.seat_paths(), LEASE)["topics"]), 1, "presence topics are never leased")
+        # A presence topic is never leased.  The presence list names the channel the
+        # runtime defaults to, so the post has to name that channel for the test to
+        # be about a presence topic at all.
+        self.assertEqual(
+            self.run_cli(
+                "post", "--channel", Z.DEFAULT_CHANNEL, "--topic", "roll call", "online", env=env
+            ).code,
+            0,
+        )
+        self.assertEqual(
+            len(L.load_lease(self.seat_paths(), LEASE)["topics"]), 1, "presence topics are never leased"
+        )
 
     @staticmethod
     def synthetic_github_token_shape() -> str:

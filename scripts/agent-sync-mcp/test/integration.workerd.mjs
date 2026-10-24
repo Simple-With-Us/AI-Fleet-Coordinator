@@ -31,7 +31,7 @@ const TOOLS = CONTRACT.tools;
 // the FleetLink tools (AFC-328), the rest of tools.json and the listener tools (AFC-330).
 const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
   // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only listener tools.
-  ...TOOLS.slice(12).map((t) => t.name), "listener_status", "listener_inbox", "listener_owner_queue", "listener_wakes", "listener_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_status"];
+  ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log"];
 const JET_KEY = zulipShapedKey(11);
 const CURSOR_KEY = zulipShapedKey(12);
 // One enabled Grok Bot persona, wired through the legacy per-role variables loadDelegatedCredentials reads.
@@ -1667,6 +1667,71 @@ try {
     // A persona with no credentials cannot mint.
     const none = await adminAction("mint_gb_bearer", { identity: other });
     assert.equal(none.status, 400);
+  });
+
+  await step("AFC-477 WhatsApp: real SeatGate storage, signed ingestion, owner and Operator provenance, eyes suppression and read/ack", async () => {
+    await mf.dispose();
+    const bridgeKey = randomBytes(32).toString("hex");
+    const operatorKey = randomBytes(32).toString("hex");
+    const agentHash = "a".repeat(64), senderHash = "b".repeat(64);
+    mf = startWorker(HOST, {
+      WHATSAPP_BRIDGE_ENABLED: "on", WHATSAPP_BRIDGE_WAKE_ENABLED: "on",
+      WA_BRIDGE_HMAC_KEY_JET: bridgeKey, WA_OPERATOR_HMAC_KEY_JET: operatorKey,
+      WA_OWNER_BINDING_JET: JSON.stringify({ agent_hash: agentHash, sender_hash: senderHash, cutoff: Math.floor(Date.now() / 1000) - 30, verified_via: "code+creator_check" }),
+    });
+    jar.clear(); pagePolicy = null; callbackCalls.length = 0;
+    await adminAction("arm", { seat: "JET" });
+    const c = pkce();
+    const handle = await openConsent(c.challenge, "whatsapp-on");
+    const consent = await browser("/authorize", { method: "POST", form: { handle, seat: "JET", decision: "approve", scope: "zulip:read" } });
+    assert.equal(consent.status, 302);
+    const loc = new URL(consent.headers.get("location"));
+    const granted = await token({ grant_type: "authorization_code", code: loc.searchParams.get("code"), code_verifier: c.verifier, redirect_uri: CHATGPT_REDIRECT, client_id: CHATGPT_CLIENT, resource: RESOURCE });
+    assert.equal(granted.status, 200);
+    const access = granted.body.access_token;
+    const events = (await mcpModern(access, "events/list")).json.result.events;
+    assert.deepEqual(events.map(e => e.name), ["zulip.mention", "whatsapp.message"]);
+    for (const name of ["zulip.mention", "whatsapp.message"]) {
+      const sub = await mcpModern(access, "events/subscribe", { name, arguments: {}, delivery: { mode: "webhook", url: CALLBACK, secret: CALLBACK_SECRET } });
+      assert.ok(!sub.json.error, JSON.stringify(sub.json));
+    }
+    callbackCalls.length = 0;
+    const postWa = async (body, kind = "ingest", key = bridgeKey) => {
+      const raw = JSON.stringify(body);
+      return mf.dispatchFetch(`${HOST}/internal/wa-${kind}/JET`, { method: "POST", headers: { "X-WA-Bridge-Signature": createHmac("sha256", key).update(raw).digest("hex") }, body: raw });
+    };
+    const message = (id, text) => ({ id_hash: id.repeat(64), sender_hash: senderHash, timestamp: Math.floor(Date.now() / 1000), type: "text", text });
+    const body = { contract: "wa-ingest/1", seat: "JET", sent_at: Math.floor(Date.now() / 1000), agent_hash: agentHash, sender_hash: senderHash, next_offset: "9223372036854775807", messages: [message("1", "received owner fixture")] };
+    assert.equal((await postWa(body, "ingest", operatorKey)).status, 401);
+    assert.equal((await postWa({ ...body, sender_hash: "f".repeat(64) })).status, 403);
+    const ack = await (await postWa(body)).json();
+    assert.equal(ack.processed, true);
+    assert.equal(ack.next_offset, "9223372036854775807");
+    assert.equal(ack.delivered, 1);
+    assert.deepEqual(callbackCalls[0].body.data, { source: "authenticated_owner", owner_authorized: true });
+    assert.equal(callbackCalls[0].body.name, "whatsapp.message");
+    await postWa(body);
+    assert.equal(callbackCalls.length, 1, "replay is deduped durably");
+    await postWa({ ...body, messages: [message("2", "👀 silent fixture")] });
+    assert.equal(callbackCalls.length, 1, "eyes message did not wake");
+    const early = await call(access, "whatsapp_read", { ack_through: "2" });
+    assert.equal(early.json.result.isError, true);
+    const read = await call(access, "whatsapp_read", {});
+    assert.ok(!read.json.result.isError, JSON.stringify(read.json));
+    assert.match(read.json.result.content[0].text, /received owner fixture/);
+    assert.match(read.json.result.content[0].text, /👀 silent fixture/);
+    const acknowledged = await call(access, "whatsapp_read", { ack_through: "2" });
+    assert.ok(!acknowledged.json.result.isError);
+    const op = { contract: "wa-operator/1", seat: "JET", request_id: crypto.randomUUID(), sent_at: Math.floor(Date.now() / 1000) };
+    await postWa(op, "operator", operatorKey);
+    assert.equal(callbackCalls.length, 2);
+    assert.deepEqual(callbackCalls[1].body.data, { source: "operator", owner_authorized: false });
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE");
+    assert.equal((await ns.get(ns.idFromName("JET")).eventSubscriptions({})).length, 2);
+    const maximum = { ...body, messages: Array.from({ length: 100 }, (_, i) => ({ ...message("3", "😀".repeat(4096)), id_hash: (100 + i).toString(16).padStart(64, "0") })) };
+    const full = await (await postWa(maximum)).json();
+    assert.equal(full.stored, 100, "maximum provider batch commits to real SQLite storage");
+    assert.equal(full.delivered, 1, "maximum batch coalesces into one owner wake");
   });
 
   console.log(`\n${passed} passed`);

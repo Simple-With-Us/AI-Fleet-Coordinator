@@ -1,5 +1,11 @@
 # Status
 
+## 2026-10-23 CODEX — WhatsApp Wake Bridge Implementation (AFC-477)
+
+Adds default-off authenticated WhatsApp ingestion and private read/ack for Jet, automatic owner wakes with leading-👀 silent retention, a distinct signed Operator doorbell, and a durable sole poller.  Existing Jet identity and Zulip subscriptions are preserved.  Code and local fake-service tests only; deployment, verified owner binding, credentials, service activation and real-message/silent-prefix acceptance remain pending.  Reply/send outbox remains outside this wake-focused unit.
+
+Rollout: `docs/rollouts/2026-10-23-whatsapp-wake-bridge.md`.
+
 ## 2026-10-19 CODEX — Native Codex Wake Transport (AFC-305, AFC-326)
 
 Adds exact loaded-thread delivery through Codex’s durable queue, CODEX queue dispatch in the existing listener, and CODEX destination selection in the Muse bridge.  Operator remains the existing listener service, with Echo’s token work integrated separately.  Native preflight, one queue acknowledgment and its exact stored-message receipt are verified; actual idle-turn pickup is verified, while fresh live Zulip-to-Muse acceptance remains pending.  Live source switches remain off until review and activation gates pass.

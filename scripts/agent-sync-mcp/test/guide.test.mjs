@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { guideModuleText, GUIDE_MD, GUIDE_MODULE } from "../scripts/export-guide.mjs";
+import RENAMED_CONTRACT from "../../agent_sync/mcp/renamed-tools.json" with { type: "json" };
 import { GUIDE_TEXT } from "../src/guide-text.js";
 import { guideResult, sectionNames, splitSections } from "../src/guide.js";
 import { IdentityRouter } from "../src/delegated-identities.js";
@@ -14,9 +15,24 @@ test("src/guide-text.js is the guide markdown, bundled at build time (regenerate
   assert.equal(GUIDE_TEXT, readFileSync(GUIDE_MD, "utf8"));
 });
 
+// The Old Names table is the client-visible half of the rename registry (AFC-331 section 4, and the
+// listener_* -> eavesdropper_* cutover, owner 2026-10-22).  The generator only bundles the markdown,
+// so nothing else keeps the two in step:  every renamed-tools.json key must appear as a row, or the
+// guide tells an agent a name the router refuses with unknown_tool.
+test("every renamed-tools.json entry has a row in the guide's Old Names table", () => {
+  const renamed = RENAMED_CONTRACT.renamed;
+  const section = GUIDE_TEXT.split(/^## Old Names and New Names$/m)[1]?.split(/^## /m)[0] ?? "";
+  const rows = new Set(
+    [...section.matchAll(/^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|$/gm)].map((m) => m[1]),
+  );
+  assert.ok(rows.size > 0, "the Old Names table has rows to check");
+  const missing = Object.keys(renamed).filter((old) => !rows.has(old));
+  assert.deepEqual(missing, [], "renamed-tools.json names with no guide row");
+});
+
 test("the guide has the sections the design lists, each a ## heading", () => {
   const names = sectionNames(GUIDE_TEXT);
-  for (const wanted of ["How to Pass Identity", "Which Connection a Client Gets", "Tools by Family", "Old Names and New Names", "The Notes Relay", "CLI Equivalents"]) {
+  for (const wanted of ["How to Pass Identity", "Which Connection a Client Gets", "Tools by Family", "Old Names and New Names", "Apple Notes", "CLI Equivalents"]) {
     assert.ok(names.includes(wanted), wanted);
   }
 });
@@ -30,9 +46,9 @@ test("guideResult returns the whole guide, one section (matched loosely), or lis
   const whole = guideResult(GUIDE_TEXT, {});
   assert.equal(whole.content[0].text, GUIDE_TEXT);
   assert.equal(whole.structuredContent.section, null);
-  const one = guideResult(GUIDE_TEXT, { section: "the notes  RELAY" });
-  assert.equal(one.structuredContent.section, "The Notes Relay");
-  assert.ok(one.content[0].text.startsWith("## The Notes Relay\n"));
+  const one = guideResult(GUIDE_TEXT, { section: "apple  NOTES" });
+  assert.equal(one.structuredContent.section, "Apple Notes");
+  assert.ok(one.content[0].text.startsWith("## Apple Notes\n"));
   assert.ok(!one.content[0].text.includes("## CLI Equivalents"));
   assert.throws(() => guideResult(GUIDE_TEXT, { section: "nope" }), (error) => error.code === "not_found" && /How to Pass Identity/.test(error.message) && error.extra.sections.length === sectionNames(GUIDE_TEXT).length);
 });

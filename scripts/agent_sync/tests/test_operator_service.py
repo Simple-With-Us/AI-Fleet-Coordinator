@@ -45,20 +45,14 @@ class Tests(unittest.TestCase):
             check_bot({"bot_owner_id":12,"is_bot": False, "user_id": OPERATOR_BOT_ID, "email": OPERATOR_EMAIL})
         )
 
-    def test_not_agent_roster(self):
+    def test_operator_is_now_an_agent_seat(self):
+        """Operator used to be deliberately off the seat registry:  it was a service, not a seat.
+        Jay made it the admin [Operator] bot (decision, Oct 22 2026), so it is a real seat now."""
+        self.assertEqual(I.strict_seat("OPERATOR"), "OPERATOR")
+        self.assertEqual(I.seat_app("OPERATOR"), "operator")
+        # A name that was never a seat is still refused.
         with self.assertRaises(I.UnknownSeat):
-            I.strict_seat("OPERATOR")
-
-    def test_notes_consumer_names_missing_identity_configuration(self):
-        from types import SimpleNamespace as NS
-        from agent_sync.mcp.tools import Tools
-
-        tools = Tools.__new__(Tools)
-        tools.notes_consumer = "OPERATOR"
-        tools.agent = NS(rt=NS(env={}))
-        tools.owner_user_id = 12
-        with self.assertRaisesRegex(Z.CredentialError, "OPERATOR_ZULIP_USER_ID"):
-            tools._relay_consumer_user({"user_id": OPERATOR_BOT_ID})
+            I.strict_seat("OPERATOR-EXTRA")
 
     def test_credential_names(self):
         seen = []
@@ -164,8 +158,7 @@ class ListenerConnectTests(unittest.TestCase):
         runner = D.SeatRunner.__new__(D.SeatRunner)
         runner.daemon = NS(
             env=dict(env),
-            config=NS(owner_user_id=12, notes_relay_enabled=True, notes_relay_seat="OPERATOR",
-                      outgoing_webhook_seats=()),
+            config=NS(owner_user_id=12, outgoing_webhook_seats=()),
             realm="https://realm.example.test",
         )
         runner.cfg = cfg
@@ -230,37 +223,3 @@ class ConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class HostNotesAcceptanceTests(unittest.TestCase):
-    def setUp(self):
-        from types import SimpleNamespace
-        from agent_sync.mcp.tools import Tools
-        self.bot = {"bot_owner_id": 12, "is_bot": True, "user_id": OPERATOR_BOT_ID,
-                    "email": OPERATOR_EMAIL}
-        self.tools = Tools.__new__(Tools)
-        self.tools.agent = SimpleNamespace(rt=SimpleNamespace(env=dict(ENV)), users=lambda: [self.bot])
-        self.tools.notes_consumer = "OPERATOR"
-        self.tools.owner_user_id = 12
-
-    def test_host_accepts_only_pinned_operator_and_owner(self):
-        self.assertTrue(self.tools._relay_consumer(OPERATOR_BOT_ID))
-        self.assertEqual(self.tools._relay_consumer_id(), OPERATOR_BOT_ID)
-        for field, wrong in (("bot_owner_id", 99), ("email", "operator-bot@example.test"),
-                             ("user_id", 999), ("is_bot", False)):
-            original = dict(self.bot)
-            self.bot[field] = wrong
-            self.assertFalse(self.tools._relay_consumer(self.bot["user_id"]))
-            self.assertIsNone(self.tools._relay_consumer_id())
-            self.bot = original
-
-    def test_missing_pins_or_owner_fail_closed(self):
-        for pins in ({}, dict(ENV, OPERATOR_ZULIP_USER_ID=""), dict(ENV, OPERATOR_ZULIP_EMAIL="")):
-            self.tools.agent.rt.env = pins
-            with self.assertRaisesRegex(Z.CredentialError, "OPERATOR_ZULIP_USER_ID"):
-                self.tools._relay_consumer(OPERATOR_BOT_ID)
-            with self.assertRaisesRegex(Z.CredentialError, "OPERATOR_ZULIP_USER_ID"):
-                self.tools._relay_consumer_id()
-        self.tools.agent.rt.env = ENV
-        self.tools.owner_user_id = 0
-        self.assertFalse(self.tools._relay_consumer(OPERATOR_BOT_ID))

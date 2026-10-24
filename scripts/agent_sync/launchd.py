@@ -20,7 +20,7 @@ from typing import TextIO
 from . import live as L
 from . import zulip as Z
 
-LABEL = "com.jay.agent-sync-listener"
+LABEL = "com.jay.operator"
 # Fleet seats with a reader on this Mac (they can be enabled), then bots that have none.
 READER_SEATS = [
     "CLAUDE",
@@ -126,6 +126,10 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         "# the partition gives BF-DIRECTOR to the server and the other ten BF seats to none.",
         'outgoing_webhook_seats = ["BF-BUILDER", "BF-COMPILER", "BF-DEPLOYER", "BF-DESIGNER", "BF-DIRECTOR", "BF-FIXER", "BF-HOUSEKEEPER", "BF-MONITOR", "BF-ORACLE", "BF-PLUMBER", "BF-PUBLISHER"]',
         "owner_user_id = 0                 # pinned by `simple-chat daemon init`, never derived at runtime",
+        "# The Operator service bot's own Zulip user id, pinned by hand:  a production user id is private",
+        '# inventory, so none is committed.  Without it a seat cannot be told "the Operator opened this DM"',
+        '# from "a seat opened it", and the runtime refuses by name instead of guessing.',
+        "operator_user_id = 0",
         "eligible_user_ids = []            # optional extra pins:  every fleet bot is eligible at runtime (owner 2026-10-09)",
         "# Owner priority needs the owner's user id AND one of these clients (human Zulip apps).  A post",
         "# made with the owner's key from any other client is treated as not the owner and flagged.",
@@ -135,7 +139,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         "coalesce_seconds = 20",
         "coalesce_max_seconds = 90",
         "owner_coalesce_seconds = 5",
-        'presence_topics = [["agent-sync", "roll call"], ["agent-sync", "fleet"], ["builds", "gates"], ["alerts", "*"]]',
+        'presence_topics = [["work-in-progress", "roll call"], ["work-in-progress", "fleet"], ["builds", "gates"], ["alerts", "*"]]',
         "",
         "[platform.claude-code]",
         'seat = "CLAUDE"                   # the Claude Code platform default:  hooks and local views when AGENT_SEAT is',

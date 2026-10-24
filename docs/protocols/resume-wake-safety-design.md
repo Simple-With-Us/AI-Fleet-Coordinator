@@ -35,7 +35,7 @@ The gate is deterministic and runs on the classification the router already comp
 
 | Sender class | How it is known | Channel @-mention | DM | Anything else |
 |---|---|---|---|---|
-| **Owner** | `sender_id == owner_user_id`, a human client, and `verify-owner-msg <id> --topic T` (or `--dm-with`) exits 0, run by the daemon just before spawn.  Given P3, this counts as Jay (section 5) | Resume-eligible | Resume-eligible | `fleet` wildcard in #agent-sync › `fleet`:  inbox and today's wake, never a resume (one post would resume every seat) |
+| **Owner** | `sender_id == owner_user_id`, a human client, and `verify-owner-msg <id> --topic T` (or `--dm-with`) exits 0, run by the daemon just before spawn.  Given P3, this counts as Jay (section 5) | Resume-eligible | Resume-eligible | `fleet` wildcard in #Work-In-Progress › `fleet`:  inbox and today's wake, never a resume (one post would resume every seat) |
 | **Fleet seat bot** (Mac and cloud seats, GB personas, BF roles, JET) | An active bot the owner owns whose email maps to a fleet tag (`router.fleet_bot_ids`) | Resume-eligible when `RESUME_WAKE_SENDERS` is `owner+peers` (the decided setting at `on`), router risk `low` only | Same | Inbox only |
 | **Integration bot** (Sentry, PagerDuty, Linear, GitHub, any webhook or embedded bot) | Bot type, or not owner-owned | Never | Never | Never |
 | **Unknown sender, or API post from Jay's account** | Not in the user cache as an owner-owned bot, or the owner id from a non-human client | Never (flagged `owner_api` as today) | Never | Never |
@@ -341,7 +341,7 @@ and at the end `[CLAUDE·resume] re=<trigger id> done:  <turns> turns, <minutes>
 | An owner DM saying `simple-chat pause` | Pauses every seat, resumes included (existing) | Immediate |
 | `~/.agent-sync/listener/resume.STOP` | The fleet-knobs STOP file:  every resume knob reads its narrowest value | Next check |
 | `RESUME_WAKE_SEATS` minus a seat, or `RESUME_WAKE_MODE=off` | Per-seat or global off from Infisical | Within 5 minutes |
-| `launchctl bootout gui/$(id -u)/com.jay.agent-sync-listener` | Hard stop of the whole listener | Immediate |
+| `launchctl bootout gui/$(id -u)/com.jay.operator` | Hard stop of the whole listener | Immediate |
 
 **Alerting.**  Every failure class sends a notify-owner banner and owner-queue note, and one `[SEAT·note]` owner DM per seat per hour.  The daemon's Sentry heartbeat already covers the listener;  a `resume-wake` Sentry cron check-in per run and an issue on `failed` or `killed` make a silent failure visible off the Mac.  Three consecutive failures for a seat trip a circuit breaker that pauses that seat's resumes for an hour and says so.
 

@@ -65,6 +65,9 @@ class Queue:
 
 
 FAKE_OWNER_ID = 12  # the realm owner (Jay); every fake bot is his, like the real fleet's
+# the fake realm's channel:  these suites pin AGENT_SYNC_CHANNEL to it, so they keep
+# exercising their own name instead of the runtime default (which follows the realm).
+FAKE_CHANNEL = "agent-sync"
 
 
 def user(user_id: int, email: str, full_name: str, is_bot: bool, role: int | None = None) -> dict[str, Any]:
@@ -103,8 +106,8 @@ class FakeZulip:
             user(15, "minimax-bot@zulip.test", "MiniMax", True),
         ]
         self.keys: dict[str, dict[str, Any]] = {key: self.me}  # API key -> the bot it belongs to
-        self.streams = {"agent-sync": 7, "other": 8, "sandbox": 9}
-        self.subscribed = {"agent-sync", "other"}
+        self.streams = {FAKE_CHANNEL: 7, "other": 8, "sandbox": 9}
+        self.subscribed = {FAKE_CHANNEL, "other"}
         self.subscription_properties: list[dict[str, Any]] = []
         self.user_groups: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = []
@@ -804,6 +807,12 @@ class FakeZulip:
         anchor = params["anchor"]
         if anchor == "newest":
             chosen = matching[-before:] if before else []
+        elif anchor in ("oldest", "first"):
+            # The head of the conversation, as the live server reads it:  the anchor plus the next
+            # `after` messages.  The DM rule asks whether the OLDEST message came from Operator, so
+            # a read anchored here is the only window that can contain the opener of a long
+            # conversation (mirrors fake-zulip.mjs).
+            chosen = matching[: max(after, 1)]
         else:
             anchor_id = int(anchor)
             lower = [m for m in matching if m["id"] < anchor_id or (include and m["id"] == anchor_id)]

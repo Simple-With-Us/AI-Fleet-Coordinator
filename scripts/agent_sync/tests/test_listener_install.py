@@ -45,9 +45,9 @@ class InstallTests(ListenerHarness):
             "daemon", "install", "--python", sys.executable, env=self.install_env()
         )
         self.assertEqual(result.code, 0, result.err)
-        plist_file = self.home / "Library" / "LaunchAgents" / "com.jay.agent-sync-listener.plist"
+        plist_file = self.home / "Library" / "LaunchAgents" / "com.jay.operator.plist"
         data = plistlib.loads(plist_file.read_bytes())
-        self.assertEqual(data["Label"], "com.jay.agent-sync-listener")
+        self.assertEqual(data["Label"], "com.jay.operator")
         self.assertEqual(
             data["ProgramArguments"],
             [sys.executable, str(self.home / ".local/bin/simple-chat"), "daemon", "run"],
@@ -101,10 +101,10 @@ class InstallTests(ListenerHarness):
         self.run_cli("daemon", "install", "--python", sys.executable, env=self.install_env())
         result = self.run_cli("daemon", "uninstall", env=self.install_env())
         self.assertIn(
-            "launchctl bootout gui/%d/com.jay.agent-sync-listener" % os.getuid(), result.out
+            "launchctl bootout gui/%d/com.jay.operator" % os.getuid(), result.out
         )
         self.assertFalse(
-            (self.home / "Library/LaunchAgents/com.jay.agent-sync-listener.plist").exists()
+            (self.home / "Library/LaunchAgents/com.jay.operator.plist").exists()
         )
         self.assertTrue((self.home / ".agent-sync" / "listener.toml").exists(), "state is kept")
 
@@ -135,6 +135,28 @@ class InstallTests(ListenerHarness):
         self.assertEqual(len(self.banners), 2, self.banners)
         self.assertTrue(any("is NOT loaded" in b[8] for b in self.banners), self.banners)
         self.assertIn("CLAUDE", status["skipped_seats"])
+
+    def test_the_operator_user_id_is_pinned_in_the_hosts_own_config(self) -> None:
+        # The Operator service bot's own Zulip user id is private inventory, so none is committed:
+        # the host pins it in its listener.toml, the same place the owner's id is pinned, and the
+        # runtime reads it from there.  Without it a seat cannot be told "the Operator opened this
+        # DM" from "a seat opened it".
+        (self.state_dir / "listener.toml").write_text(
+            '[daemon]\nowner_user_id = 7\noperator_user_id = 4242\n[seat.CLAUDE]\nbot = "Claude"\n'
+        )
+        cfg = C.load(self.root)
+        self.assertEqual(cfg.operator_user_id, 4242)
+        self.assertEqual(cfg.errors, [])
+        # An unpinned host is 0, not an error:  the id is the host's choice.
+        (self.state_dir / "listener.toml").write_text(
+            '[daemon]\nowner_user_id = 7\noperator_user_id = 0\n[seat.CLAUDE]\nbot = "Claude"\n'
+        )
+        self.assertEqual(C.load(self.root).operator_user_id, 0)
+        # A value that is not a user id is an error, like the owner's.
+        (self.state_dir / "listener.toml").write_text(
+            '[daemon]\nowner_user_id = 7\noperator_user_id = "jay"\n[seat.CLAUDE]\nbot = "Claude"\n'
+        )
+        self.assertIn("operator_user_id", " ".join(C.load(self.root).errors))
 
     def test_status_displays_per_seat_nudge_counts_and_legacy_snapshot(self):
         path = os.path.join(self.root, "listener", "status.json")

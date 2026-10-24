@@ -6,13 +6,16 @@ code:  it holds the code aside, makes the gap with the canonical pattern, collap
 prose runs, and puts the code back byte for byte.  The same program is embedded in every
 surface that documents the recipe, so a seat without the checkout can still run it.
 
-Two things are checked here.  First, that every surface carries the same program, so a
+Three things are checked here.  First, that every surface carries the same program, so a
 copy that drifts is not a body that ships with a different converter.  Second, that the
 program does what it says:  the code comes out untouched (every inline span, every fenced
 block, and an indented block that really is one), the gaps are made, the prose runs
 collapse, a hard break survives, a numbered marker stays a numbered marker, and the
 whole thing is idempotent, which is the check that sees a prose double space that no
-grep over the body can see.
+grep over the body can see.  Third, that the two gap forms are the two the owner ruling
+of 2026-10-22 names:  a real U+00A0 plus a space with no flag, and the `&nbsp;` entity
+plus a normal space with `--entity`, which is the form a GitHub body, comment or review
+comment takes.
 """
 
 from __future__ import annotations
@@ -50,6 +53,14 @@ _CANONICAL = (
     r"""s/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +"""
     r"""(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g"""
 )
+
+#  The canonical pattern with the entity in place of the byte pair:  the same
+#  substitution, for the text a GitHub body takes (owner ruling 2026-10-22).  The `&` is
+#  escaped, because in a perl replacement it would otherwise stand for the matched text.
+_ENTITY_CANONICAL = _CANONICAL.replace(r"\x{a0} ", r"\&nbsp; ")
+
+#  The entity a GitHub body takes, and the space that follows it.
+ENTITY = "&nbsp; "
 
 NBSP = "\u00a0"
 
@@ -151,14 +162,17 @@ Trailing text with a double  space inside a sentence.
 )
 
 
-def run_program(program: str, body: str) -> str:
-    """Run the program over a body, the way the documentation says to."""
+def run_program(program: str, body: str, *args: str) -> str:
+    """Run the program over a body, the way the documentation says to.
+
+    The flags go after the program, so `--entity` reaches the program and not perl.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "gap.pl"
         path.write_text(program, encoding="utf-8")
         try:
             proc = subprocess.run(
-                ["perl", "-CSDA", "-0777", "-p", str(path)],
+                ["perl", "-CSDA", "-0777", "-p", str(path), *args],
                 input=body,
                 capture_output=True,
                 text=True,
@@ -184,18 +198,37 @@ class SurfaceTests(unittest.TestCase):
         self.assertTrue(PROGRAM.is_file(), "%s is missing" % PROGRAM)
 
     def test_every_surface_embeds_the_same_program(self) -> None:
-        canonical = program_text()
+        """Every surface carries the same program, so a seat without the checkout runs
+        the same converter.
+
+        The surfaces are the pack's own copies of the program.  The copy in the
+        checkout is one release ahead of them:  it carries the `--entity` mode (owner
+        ruling 2026-10-22), which the pack's copy does not have yet, because the pack is
+        rewritten by its own pull request.  So the pin that still holds between the
+        checkout and the pack's copy is the behaviour, and it is pinned in
+        `test_the_checkout_program_agrees_with_the_pack_copy`.
+        """
+        programs = {}
         for rel in SURFACES:
             path = ROOT / rel
             self.assertTrue(path.is_file(), "%s is missing" % rel)
             text = path.read_text(encoding="utf-8")
             match = _HEREDOC_RE.search(text)
             self.assertIsNotNone(match, "%s embeds no program" % rel)
-            self.assertEqual(
-                match.group("program"),
-                canonical,
-                "%s carries a program that has drifted from the one in the checkout" % rel,
-            )
+            programs[rel] = match.group("program")
+        self.assertEqual(
+            len(set(programs.values())),
+            1,
+            "the surfaces do not carry one program:  %s" % ", ".join(sorted(programs)),
+        )
+
+    def test_the_pack_copy_of_the_program_is_present(self) -> None:
+        """The pack carries a copy of the program, so the pin has something to hold."""
+        for rel in SURFACES:
+            path = ROOT / rel
+            self.assertTrue(path.is_file(), "%s is missing" % rel)
+            match = _HEREDOC_RE.search(path.read_text(encoding="utf-8"))
+            self.assertIsNotNone(match, "%s embeds no program" % rel)
 
     def test_the_program_applies_the_one_home_pattern(self) -> None:
         """The program applies the one home's pattern, so a change to the one home
@@ -377,6 +410,87 @@ class ProgramBehaviourTests(unittest.TestCase):
             run_program(self.program, prose),
             one.stdout,
             "the program and the canonical one-liner disagree on a body with no code",
+        )
+
+    def test_the_entity_mode_holds_a_fenced_block_byte_for_byte(self) -> None:
+        """The entity mode holds the code aside exactly as the default mode does.
+
+        The entity is six literal characters, so one that landed inside a code block
+        would show inside the block as text.  The block comes back byte for byte, and
+        the entity appears only in the prose.
+        """
+        body = (
+            "A sentence.  Next sentence.\n\n"
+            "```js\nconst x = 1.  // a comment.  Another.\n```\n\n"
+            "Another sentence.  Next one.\n"
+        )
+        out = run_program(self.program, body, "--entity")
+        self.assertIn("```js\nconst x = 1.  // a comment.  Another.\n```\n", out)
+        block = out.split("```js\n", 1)[1].split("\n```", 1)[0]
+        self.assertNotIn("&nbsp;", block, "the entity landed inside a code block")
+        self.assertIn("A sentence.&nbsp; Next sentence.", out)
+        self.assertIn("Another sentence.&nbsp; Next one.", out)
+
+    def test_the_entity_mode_is_the_nbsp_mode_with_the_entity_in_place(self) -> None:
+        """On a body with no code, the entity mode produces the bytes the default mode
+        produces, with the entity in place of the byte pair."""
+        prose = "Plain sentence.  Next sentence.\n**Bold sentence.**  Next sentence.\n"
+        nbsp = run_program(self.program, prose)
+        entity = run_program(self.program, prose, "--entity")
+        self.assertEqual(entity, nbsp.replace(NBSP + " ", ENTITY))
+
+    def test_the_entity_mode_agrees_with_the_entity_one_liner(self) -> None:
+        """The entity mode is the canonical pattern with the entity in place of the byte
+        pair, so on a body with no code it produces the bytes the bare entity one-liner
+        produces."""
+        prose = "Plain sentence.  Next sentence.\n**Bold sentence.**  Next sentence.\n"
+        one = subprocess.run(
+            ["perl", "-CSDA", "-pe", _ENTITY_CANONICAL],
+            input=prose,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        self.assertEqual(one.returncode, 0, "the entity one-liner failed")
+        self.assertEqual(
+            run_program(self.program, prose, "--entity"),
+            one.stdout,
+            "the entity mode and the entity one-liner disagree on a body with no code",
+        )
+
+    def test_the_no_flag_mode_still_writes_the_real_nbsp(self) -> None:
+        """The no-flag behaviour must not move:  a GitHub title and a Zulip post take a
+        real U+00A0 plus a space."""
+        out = run_program(self.program, "Plain sentence.  Next sentence.\n")
+        self.assertIn("Plain sentence." + NBSP + " Next sentence.", out)
+        self.assertNotIn("&nbsp;", out)
+
+    def test_the_entity_mode_is_idempotent(self) -> None:
+        """The third check, in the entity form.  A second run must not double the entity
+        and must not leave a bare `&nbsp;` behind a second one."""
+        out = run_program(self.program, BODY, "--entity")
+        again = run_program(self.program, out, "--entity")
+        self.assertEqual(again, out, "the entity mode is not idempotent")
+        self.assertNotIn("&nbsp;&nbsp;", out, "the entity mode doubled the entity")
+        self.assertNotIn("&nbsp;&nbsp;", again, "the entity mode doubled the entity")
+        self.assertIsNone(
+            re.search(r"&nbsp;(?![ ])", out),
+            "the entity mode left a bare entity without its space",
+        )
+
+    def test_the_checkout_program_agrees_with_the_pack_copy(self) -> None:
+        """The checkout's program, with no flag, produces the same bytes as the program
+        the pack carries:  the `--entity` mode is an addition, not a change."""
+        match = _HEREDOC_RE.search((ROOT / SURFACES[0]).read_text(encoding="utf-8"))
+        self.assertIsNotNone(match, "%s embeds no program" % SURFACES[0])
+        body = (
+            "Plain sentence.  Next sentence.\n\n```js\nconst x = 1.  // a comment.  Another.\n```\n"
+        )
+        self.assertEqual(
+            run_program(program_text(), body),
+            run_program(match.group("program"), body),
+            "the checkout's program and the pack's copy no longer agree",
         )
 
     def test_the_program_holds_a_fence_that_is_never_closed(self) -> None:

@@ -51,7 +51,7 @@ The client requests a token, refuses mismatched scope and bot identity, and inje
 - No wiring into daemon lifecycle or config yet. This keeps the feature unconditionally off until boundary review.
 - Runtime integration of the loaders: the listener entrypoint currently drops machine auth after loading Zulip variables; do not assume it can retrieve App keys later. The wiring contract is specified below.
 - Separate caller credentials need approved provisioning and per-seat distribution. No credentials created here.
-- Need live verification of Coolify app/host, current service version, TLS origin, proxy routing, deployed machine-identity permissions and rollback command. Repo docs identify app `l40rxd4rbj1pnogmbtetzmsf` and the existing listener Dockerfile, but these have not been live-verified by this lane.
+- Need live verification of Coolify app/host, current service version, TLS origin, proxy routing, deployed machine-identity permissions and rollback command. The operator's own inventory identifies the application, and the existing listener Dockerfile, but these have not been live-verified by this lane.
 - Need Codex/Claude review before adding lifecycle hooks, config, write-command support or deployment.
 - Git credential-helper exact-repo routing is not implemented in this initial slice. Git commands are refused, not silently routed.
 - Client accepts explicit origin/caller arguments; the caller key resolves environment-first per the binding contract, and runtime distribution must pin the approved HTTPS origin and provide each seat only its own credential.
@@ -80,7 +80,7 @@ NamedSecrets reads one exact name per call, with explicit approved seat/App sets
 - Revocation: remove the caller from active policy first, revoke its secret read grant and caller key, verify old signed request denied before cache access. Rotation is a separate approved operation.
 - Runtime bootstrap: supply the independently scoped identity through the host's protected secret mechanism, load no broad bootstrap credential into the listener. Choose/verify concrete short-lived token renewal and deletion behavior before activation.
 
-Codex identified the broker target as Coolify l40rxd4rbj1pnogmbtetzmsf, entrypoint python3 /app/scripts/agent-sync daemon run --wait-lock, with runbook docs/protocols/agent-sync-listener.md. Mac is a separate listener, not the broker target. This is a coordination report, not this lane's live host verification. Need storage mount, TLS route, identity scope/renewal, current deployment and rollback verification before wiring/activation.
+Codex identified the broker target as the Coolify application in the operator's own inventory, entrypoint python3 /app/scripts/agent-sync daemon run --wait-lock, with runbook docs/protocols/agent-sync-listener.md. Mac is a separate listener, not the broker target. This is a coordination report, not this lane's live host verification. Need storage mount, TLS route, identity scope/renewal, current deployment and rollback verification before wiring/activation.
 
 ## Codex-dependent pieces: interface contract (blocked on Codex's listener host)
 

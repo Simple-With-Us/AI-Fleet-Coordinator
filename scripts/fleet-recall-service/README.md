@@ -137,8 +137,8 @@ attach `recall-api` to the two service networks and use the `qdrant` / `tei` ali
 ## Deploy on Coolify (orchestrator applies; nothing here is automated)
 
 Targets: project `l11qegr5vie93o7dqlfjgd6n`, environment `production`, server
-`jxzqcs3h6g1wiipnnblhismp` (the Hetzner box, public `167.233.254.55` /
-`2a01:4f8:1c1b:e6a5::1`), FQDN `https://recall.jays.services`.
+`jxzqcs3h6g1wiipnnblhismp` (the Hetzner box; its public addresses are private
+deployment inventory, so they live in the operator's own inventory on that Mac), FQDN `https://recall.jays.services`.
 
 1. **Coolify resource.**  Project → production → *New Resource* → *Docker Compose* (empty) on
    server `jxzqcs3h6g1wiipnnblhismp`.  Paste `compose.example.yaml`.  Name it `recall-api`.
@@ -154,7 +154,8 @@ Targets: project `l11qegr5vie93o7dqlfjgd6n`, environment `production`, server
 3. **Domain.**  On the `recall-api` service set the domain to `https://recall.jays.services`
    (port 8080).  Traefik issues the Let's Encrypt certificate once DNS resolves.
 4. **Cloudflare DNS** (zone `jays.services`, account *Usage.Jays.Services*): `A recall →
-   167.233.254.55`, proxied; optionally `AAAA recall → 2a01:4f8:1c1b:e6a5::1`, proxied.  The
+   <the host's public address>`, proxied; optionally an `AAAA recall` record for the same host's
+   public IPv6 address, proxied.  The
    zone is already *Full (strict)*, which is what the other Coolify-hosted names use.
 5. **Cloudflare Access** (org `silent-frost-37e0.cloudflareaccess.com`), mirroring
    `agents.jays.services` (app `1e1a5fc4-0f7d-44ac-bb0d-5fa6d5d73ddf`):

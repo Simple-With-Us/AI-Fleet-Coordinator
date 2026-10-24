@@ -28,7 +28,7 @@ from agent_sync import identity as I
 from agent_sync.mcp import identity_router as R
 from agent_sync.mcp import stdio as S
 from agent_sync.mcp import tools as T
-from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH
+from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH, FAKE_CHANNEL
 from agent_sync.tests.harness import SESSION, Harness, write_rc
 
 SCRIPT = Path(__file__).resolve().parents[2] / "simple-chat"
@@ -240,7 +240,7 @@ class McpHarness(Harness):
         self.add_infisical_bot("CLAUDE", email=BOT_EMAIL, key=self.key)
         self.fake_secrets_file = self.tmp / "fake-fleet-secrets.json"
         self.clock = FakeClock()
-        self.spec = T.load_served_tools()  # tools.json, then listener-tools.json (AFC-330)
+        self.spec = T.load_served_tools()  # tools.json, then eavesdropper-tools.json (AFC-330)
         # What tools/list serves a CLAUDE session whose Infisical holds only Claude's keys:  every tool with an
         # identity property whose enum is that one bot (AFC-331).
         self.served = R.decorate(self.spec, ["CLAUDE"], "CLAUDE")
@@ -261,12 +261,19 @@ class McpHarness(Harness):
         base = {
             "HOME": str(self.home),
             "AGENT_SYNC_REALM": self.fake.url,
+            # the fake realm's channel:  the suite pins it here so these tests keep
+            # exercising their own channel name instead of the runtime default
+            "AGENT_SYNC_CHANNEL": FAKE_CHANNEL,
             "AGENT_SYNC_STATE_DIR": str(self.state_dir),
             "AGENT_SEAT": "CLAUDE",
             "CLAUDE_CODE_SESSION_ID": SESSION,
             "FLEET_SECRETS_BIN": str(FAKE_FLEET_SECRETS),
             "FAKE_FLEET_SECRETS_FILE": str(self.fake_secrets_file),
             "INFISICAL_FLEET_OPS_PROJECT_ID": FAKE_PROJECT_ID,
+            # The DM rule defaults ON (owner decision, Oct 22 2026).  The mechanical DM tool tests
+            # are about tagging, grouping, the secret scan and idempotency, not the rule, so they run
+            # with it off;  the rule's own tests are agent_sync/tests/test_dm_rule.py.
+            "AGENT_SYNC_DM_RULE": "off",
         }
         base.update({k: v for k, v in overrides.items() if v is not None})
         for name, value in overrides.items():

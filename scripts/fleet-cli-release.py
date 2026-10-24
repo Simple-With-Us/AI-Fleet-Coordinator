@@ -43,8 +43,8 @@ RECALL_MODULES = (
     "search_log",
     "telemetry",
 )
-# `simple-chat` reads the NOTES_RELAY_CONSUMER knob through these fleet_knobs modules (stdlib only;  the package's
-# tests, its inventory CLI and its README stay out).  Without them a host silently falls back to the default consumer.
+# `simple-notes` reads the OPERATOR_API_URL knob through these fleet_knobs modules (stdlib only;  the package's
+# tests, its inventory CLI and its README stay out).  Without them a server host cannot find the Operator's notes queue.
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout")
@@ -68,7 +68,7 @@ EXACT = frozenset(
         "scripts/agent_sync/mcp/fixtures.jsonl",
         # AFC-331:  the stdio server reads these beside tools.json (the listener tools, the removed-name map
         # and the enabled Grok Bot personas).
-        "scripts/agent_sync/mcp/listener-tools.json",
+        "scripts/agent_sync/mcp/eavesdropper-tools.json",
         "scripts/agent_sync/mcp/renamed-tools.json",
         "scripts/agent_sync/mcp/gb-identities.json",
         # AFC-331:  the notes_* and recall_* tool contracts, the core Linear tools the stdio server serves
@@ -120,8 +120,8 @@ TOOL_REQUIRED = frozenset(
         "scripts/fleet-mode",
         "docs/FLEET-MODE.md",
         *AFC331_FILES,
-        # The listener_* MCP tools (AFC-330):  `simple-chat mcp` reads it at startup.
-        "scripts/agent_sync/mcp/listener-tools.json",
+        # The eavesdropper_* MCP tools (AFC-330):  `simple-chat mcp` reads it at startup.
+        "scripts/agent_sync/mcp/eavesdropper-tools.json",
         # The knob reader (AFC-331):  a new bundle must carry it;  a retained older release need not (rollback stays valid).
         *("scripts/fleet_knobs/" + name + ".py" for name in KNOB_MODULES),
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained

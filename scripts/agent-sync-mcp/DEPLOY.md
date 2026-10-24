@@ -170,7 +170,7 @@ Owner, Thu, Oct 15:  "I'd like Agent-Sync and whatever local agents use to be ab
 
 ## Listener read API (AFC-330)
 
-The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes` and `listener_held_back` tools (spec section 1.7) read the server listener's signed read API with the seat's `WAKE_HMAC_KEY_<SEAT>`.  Until both halves are set up they answer `not_configured` and nothing else changes.
+The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes` and `eavesdropper_held_back` tools (spec section 1.7) read the server listener's signed read API with the seat's `WAKE_HMAC_KEY_<SEAT>`.  Until both halves are set up they answer `not_configured` and nothing else changes.
 
 1. The listener half first:  `docs/protocols/agent-sync-server.md`, "The Read API", steps 1 to 5 (redeploy, keys, `[listener_api]`, the proxy route, the checks).
 2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://listener.jays.services"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
@@ -178,11 +178,22 @@ The `listener_status`, `listener_inbox`, `listener_owner_queue`, `listener_wakes
    ```bash
    fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"
    ```
-4. Deploy (step 1).  From a connected JET chat, `listener_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
+4. Deploy (step 1).  From a connected JET chat, `eavesdropper_status` answers counts;  a 401 there means the two keys differ or the clocks are more than five minutes apart, a 404 that the listener has no key for the seat.  **Not deployed yet.**
 
-## Notes, recall and the guide (AFC-331)
+## Notes, recall and the guide (AFC-331, AFC-486)
 
-`notes_create`, `notes_update`, `notes_pin`, `notes_unpin` and `notes_status` (`src/notes.js`) relay Apple Notes requests to `#notes-relay`;  the Mac listener does the work (`docs/protocols/per-call-identity.md`, section 5).  Before the first call: the owner creates the public channel `#notes-relay`, every bot that relays is subscribed to it (the channel rule needs that), and the Mac's `listener.toml` has `[notes_relay] enabled = true`.  No secret or var changes.  The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/agent-sync-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/agent_sync/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools.  `notes_status` counts a check mark, a cross mark or a refusal reply only from the relay consumer's bot, named by the fleet knob `NOTES_RELAY_CONSUMER`.  It is a tunable, so it lives in Infisical (not in `wrangler.jsonc`):  **the owner creates the key `NOTES_RELAY_CONSUMER` with the value `CLAUDE` in the AI Fleet Coordinator project, `prod`, root path `/`** (INFISICAL.md, "Fleet knobs").  The Mac reads it through `fleet_knobs` (default `CLAUDE` when Infisical is unreachable with no last-known-good copy, logged as `default CLAUDE (unreachable:...)`);  the Worker gets it as a binding of the same name.  Copy it at deploy, after the key exists:  `python3 -I sync_notes_consumer.py` checks (prints the seat name, writes nothing to Infisical), `python3 -I sync_notes_consumer.py --apply` runs `wrangler secret put NOTES_RELAY_CONSUMER` with the value on stdin.  Rerun it whenever the key changes.  **Rotating the consumer:**  only the current consumer's marks and replies are trusted, on purpose, so a former consumer cannot forge a result.  Rotate it only with an empty spool (no request queued or half-run), and expect the status of any request sent before the rotation to read `queued` afterwards.  Until it has run, `notes_status` answers `not_configured` and trusts no reaction.  One more binding counts against the Worker's limit (see the FleetLink note below).  **Live since Sun, Oct 18, 2026:**  the knob is `CLAUDE` in Infisical, the Worker binding is installed, `#notes-relay` exists with every fleet agent bot subscribed (38, created by the realm-admin bot), and the Mac listener's `[notes_relay]` is on (`notes-relay-started`, consumer from Infisical).  Create, pin and unpin through the relay were verified end to end that afternoon.
+The eight notes tools (`notes_create`, `notes_update`, `notes_pin`, `notes_unpin`, `notes_read`, `notes_list`, `notes_status` and `notes_log`, in `src/notes.js`) send each request to the Operator's notes queue over signed HTTPS, and the Mac runner does the work (`docs/protocols/operator-notes.md`).  No Zulip message is involved:  the `#notes-relay` transport of AFC-331 is retired (owner, Thu, Oct 22, 2026:  "I don't want notes going from Zulip to Apple notes").  The Worker signs every request as the principal `WORKER` with the Worker secret `OPERATOR_NOTES_KEY`, which holds the Infisical key `OPERATOR_NOTES_WORKER_KEY` (AI Fleet Coordinator, `prod`, folder `/operator`), and it reaches the Operator at `LISTENER_API_URL`, the same https origin as the listener read API.  The seat a request acts for is always the grant's.  Until both the secret and the var are set, every notes tool answers `not_configured` and nothing else changes.
+
+1. The Operator half first:  `[notes_queue] enabled = true` with this Worker's seats in `worker_seats`, the three keys in Infisical `/operator`, and the public route that sends `/notes/v1/` to port 8788 (`docs/protocols/operator-notes.md`, "Operator Configuration").
+2. Install the key with Step 1's credentials.  The value goes to wrangler on stdin and is never printed:
+   ```bash
+   fleet-secrets get OPERATOR_NOTES_WORKER_KEY --path /operator --project ai-fleet-coordinator | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put OPERATOR_NOTES_KEY >/dev/null && echo "set OPERATOR_NOTES_KEY"
+   ```
+3. Set `LISTENER_API_URL` in `wrangler.jsonc` if "Listener read API" step 2 has not already (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
+4. Remove the retired relay binding:  `WRANGLER_SEND_METRICS=false npx --no-install wrangler secret delete NOTES_RELAY_CONSUMER`, with Step 1's credentials.  One binding goes and one comes, so the Worker's binding count does not change (see the FleetLink note below).  `sync_notes_consumer.py`, which copied that knob from Infisical, is gone.
+5. Deploy (step 1).  From a connected seat, `notes_list` with `{"limit": 3}` answers `done` with three titles while the Mac runner is up;  `queued` means the Operator took the request and the runner has not answered within 25 seconds (`notes_status` follows it from there).  A `not_configured` that names the signature means the two keys differ or the clocks are more than five minutes apart;  one that names `[notes_queue]` means the Operator has no `WORKER` key or the queue is off;  `forbidden` means the seat is not in `worker_seats`.  **Not deployed yet.**
+
+The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/agent-sync-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/agent_sync/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools (the notes tools went from five to eight).
 
 ## AFC-477 second-event spike (temporary)
 
@@ -407,17 +418,17 @@ Check with `fleetlink_whoami` from any seat:  `user.id` is `usr_agent_<seat>` an
 
 ## Linear token health (AFC-478 follow-up, deploy step)
 
-`POST /internal/health/linear` answers each seat's Linear token state (age, days to the day-28 re-mint, expiry, mint count, last mint ok and failure kind, and `state` ok, warn or fail) for the six Linear seats and the twelve Grok Bot personas. It holds no token, client id, secret or upstream message text. It is signed with its own `HEALTH_HMAC_KEY` (at least 32 characters, never a seat's wake key; equal to one means 404) and is outside Access like the wake. Without the secret the route is a 404.
+`POST /internal/health/linear` answers each seat's Linear token state (age, days to the day-28 re-mint, expiry, mint count, last mint ok and failure kind, and `state` ok, warn or fail) for the six Linear seats and the twelve Grok Bot personas.  It holds no token, client id, secret or upstream message text.  It is signed with its own `HEALTH_HMAC_KEY` (at least 32 characters, never a seat's wake key; equal to one means 404) and is outside Access like the wake.  Without the secret the route is a 404.
 
-Deploy step (by hand, after the merge, with Jay's go): `openssl rand -hex 32 | wrangler secret put HEALTH_HMAC_KEY`, store the same value in Fleet-OPS as `HEALTH_HMAC_KEY`, then deploy. Muster reads the file written by `scripts/fleet-worker-health.py` (`--dry-run` first), run on the Mac by a launchd job like `com.jay.fleet-tools-doctor`, to `~/.local/state/fleet-tools/worker-health.json` (0600, atomic, `schemaVersion` 1, unknown when older than 45 minutes). No timer is installed by this change.
+Deploy step (by hand, after the merge, with Jay's go): `openssl rand -hex 32 | wrangler secret put HEALTH_HMAC_KEY`, store the same value in Fleet-OPS as `HEALTH_HMAC_KEY`, then deploy.  Muster reads the file written by `scripts/fleet-worker-health.py` (`--dry-run` first), run on the Mac by a launchd job like `com.jay.fleet-tools-doctor`, to `~/.local/state/fleet-tools/worker-health.json` (0600, atomic, `schemaVersion` 1, unknown when older than 45 minutes).  No timer is installed by this change.
 
 ## Per-bot MCP bearers for the Grok Bot personas
 
-Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers"), which sits behind the Cloudflare Access gate. No new secret and no new machine identity is needed.
+Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers"), which sits behind the Cloudflare Access gate.  No new secret and no new machine identity is needed.
 
-- The token looks like `gbb_<role>_<43 characters>`. It is shown once, on the response to the mint button (no-store). The Worker keeps only its SHA-256 hash in the persona's Durable Object. It is not in Infisical, KV, logs or audit rows.
-- A bearer works on `/mcp` only, and only as its own persona. Any other `identity` is refused. It cannot create identities and cannot reach ECHO, JET or any hosted seat.
-- Rotate is mint again: the old token stops at once. Revoke is the Revoke button. Tokens expire after 90 days. A paused persona is refused.
+- The token looks like `gbb_<role>_<43 characters>`.  It is shown once, on the response to the mint button (no-store).  The Worker keeps only its SHA-256 hash in the persona's Durable Object.  It is not in Infisical, KV, logs or audit rows.
+- A bearer works on `/mcp` only, and only as its own persona.  Any other `identity` is refused.  It cannot create identities and cannot reach ECHO, JET or any hosted seat.
+- Rotate is mint again: the old token stops at once.  Revoke is the Revoke button.  Tokens expire after 90 days.  A paused persona is refused.
 - A persona with no credentials in the bindings cannot mint.
 - Leak paths to know: whoever holds an Access session for the admin email can mint; the page response is the only place the token appears.
-- Deploy is normal. Nothing to configure first.
+- Deploy is normal.  Nothing to configure first.
