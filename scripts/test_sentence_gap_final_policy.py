@@ -15,7 +15,7 @@ The 2026-10-22 GitHub-entity split is superseded:  GitHub takes the real U+00A0
 like every other surface, and no file may tell an agent to write two plain ASCII
 spaces as the rule.
 
-Two checks run here.
+Three checks run here.
 
 1.  No live line prescribes the superseded split:  GitHub text taking the
     `&nbsp;` entity, or two plain ASCII spaces as the rule.  A line that marks
@@ -25,30 +25,51 @@ Two checks run here.
 2.  Every file that states the rule names the one exception, with both panes and
     the entity together, so the rule cannot be read as "never the entity" again,
     and no file may claim that every chat pane takes the real U+00A0.
+
+3.  The published note takes a real U+00A0:  `scripts/fleet_facts/publish.py`
+    writes its gap to GitHub, so the GAP constant is the real U+00A0 plus a
+    space, never the entity (owner ruling 2026-10-23).
 """
 
 from __future__ import annotations
 
+import ast
 import re
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# AGENT-SYNC.md is excluded because it is generated from Fleet-OPS handbook/, which carries the same fix.
+# AGENT-SYNC.md is excluded because it is a Fleet-OPS mirror:  it is generated from
+# the Fleet-OPS handbook, which carries the same fix, so this repo does not edit it.
+# FLEET-UI-COPY.md is excluded because it is owned by open PR #904, which carries the
+# same fix there; editing it here would collide with that pull request.
+# The Cursor rule is not listed here:  like the canonical sentence-gap skill it keeps
+# the 2026-08-19/20 findings block, which records what was found that day rather than
+# prescribing a rule, so the stale-split scan would read that block as a prescription.
+# It is covered by EXCEPTION_FILES below, which is the check that matters for it.
 # The files that must not prescribe the superseded 2026-10-22 GitHub-entity split.
 STALE_RULE_FILES = (
     "docs/ZULIP-SWITCH-PROMPT.md",
     "docs/grok-web/INSTRUCTIONS.md",
+    "docs/protocols/zulip-fleet-guide.md",
+    "docs/fleet-skills/fleet-coordination/SKILL.md",
+    "skills/fleet-coordination/SKILL.md",
 )
 
 # The files that state the rule, and therefore must carry the one exception.
+# The Cursor rule, the fleet-coordination pack (canonical and rendered) and the
+# Zulip guide all state the rule, so all of them must name the one exception.
 EXCEPTION_FILES = (
     "docs/fleet-skills/sentence-gap/SKILL.md",
     "docs/fleet-skills/owner-copy/SKILL.md",
     "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
     "docs/grok-web/INSTRUCTIONS.md",
     "docs/ZULIP-SWITCH-PROMPT.md",
+    ".cursor/rules/sentence-gap.mdc",
+    "docs/fleet-skills/fleet-coordination/SKILL.md",
+    "skills/fleet-coordination/SKILL.md",
+    "docs/protocols/zulip-fleet-guide.md",
 )
 
 # The stale prescriptions, as they are written.  Each one is a live instruction a
@@ -87,6 +108,9 @@ HISTORY_MARKERS = (
     re.compile(r"\bthe history\b", re.IGNORECASE),
     re.compile(r"\bin history\b", re.IGNORECASE),
     re.compile(r"history:", re.IGNORECASE),
+    # A changelog row records a past ruling, so it may hold the old text:  the
+    # guide's v4.7 row is the 2026-10-22 per-surface ruling, superseded since.
+    re.compile(r"^\| v\d"),
 )
 
 # The exception has to be named as the only exception, not as one option among many.
@@ -182,6 +206,23 @@ class PaneExceptionTests(unittest.TestCase):
             [],
             "blanket chat-pane claims that the two exception panes contradict:\n"
             + "\n".join(problems),
+        )
+
+
+class PublishedGapTests(unittest.TestCase):
+    """The published note takes a real U+00A0, GitHub included."""
+
+    PUBLISH = "scripts/fleet_facts/publish.py"
+
+    def test_publish_gap_is_the_real_nbsp_plus_a_space(self) -> None:
+        text = _read(self.PUBLISH)
+        match = re.search(r"^GAP = (.*)$", text, re.MULTILINE)
+        self.assertIsNotNone(match, "%s has no GAP constant" % self.PUBLISH)
+        value = ast.literal_eval(match.group(1).split("#")[0].strip())
+        self.assertEqual(
+            value,
+            "\u00a0 ",
+            "the published gap is a real U+00A0 plus a normal space, never the entity",
         )
 
 
