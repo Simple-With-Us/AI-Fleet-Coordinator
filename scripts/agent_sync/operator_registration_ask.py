@@ -106,7 +106,16 @@ def _question_message_id(
         except Exception as exc:
             return None, type(exc).__name__, False
         rows = result.get("messages") if isinstance(result, Mapping) else None
-        messages = [m for m in (rows or []) if isinstance(m, Mapping)]
+        if not isinstance(rows, list):
+            # A missing or non-list messages field is a malformed response, not an
+            # empty page:  report the read-back unverifiable instead of proving
+            # absence, or the caller could repost and duplicate the question.
+            return None, "the topic read-back response was malformed", False
+        if any(not isinstance(m, Mapping) for m in rows):
+            # A malformed message object is not skipped:  discarding it could turn
+            # the page into a false short page and read as proven absence.
+            return None, "the topic read-back carried a malformed message", False
+        messages = list(rows)
         for message in messages:
             if message.get("sender_id") != sender_id:
                 continue
