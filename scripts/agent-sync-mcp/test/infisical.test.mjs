@@ -268,3 +268,33 @@ test("resolveRecallSecrets: required mode resolves all three; absent everywhere 
   assert.ok(recallClientFromResolved(r, env, { fetch: async () => { throw new Error("unused"); } }), "client builds from resolved values");
   assert.equal(recallClientFromResolved({ token: "", accessId: "", accessSecret: "" }, env), null, "absent everywhere = not configured, never throws");
 });
+
+test("prefetchFolder: one listing warms the cache and makes optional misses subrequest-free", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const calls = mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: "va" }, { secretKey: "B", secretValue: "vb" }] } }]]);
+  await prefetchFolder(ENV, "/tools");
+  assert.equal(await resolveSecret(ENV, { name: "A", path: "/tools", envName: "LEGACY" }), "va");
+  assert.equal(await resolveSecret(ENV, { name: "B", path: "/tools", envName: "LEGACY" }), "vb");
+  // An unlisted optional name is absent by the fresh listing: no fetch, empty.
+  assert.equal(await resolveSecret(ENV, { name: "MISSING", path: "/tools", envName: "LEGACY", optional: true }), "");
+  assert.equal(calls.length, 1, "one listing served every read");
+});
+
+test("prefetchFolder: a required expected name absent from the listing still throws", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [] } }]]);
+  await prefetchFolder(ENV, "/wake");
+  await assert.rejects(() => resolveSecret(ENV, { name: "WAKE_HMAC_KEY_JET", path: "/wake", envName: "LEGACY" }), InfisicalError, "declared-but-absent is visible drift, not a silent miss");
+});
+
+test("prefetchFolder: fallback mode keeps per-name env fallback when the listing fails", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  const calls = mockFetch([]);
+  const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+  await prefetchFolder(env, "/tools");
+  assert.equal(await resolveSecret(env, { name: "S", path: "/tools", envName: "LEGACY", optional: true }), "v0");
+  assert.equal(calls.length, 2, "listing 404 + one per-name attempt, then env");
+});

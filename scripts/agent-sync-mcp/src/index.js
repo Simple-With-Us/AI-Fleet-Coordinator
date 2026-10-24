@@ -76,7 +76,7 @@ import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
 import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_MAX_BODY } from "./health.js";
 import { serveWa } from "./wa/index.js";
-import { resolveSecret, infisicalStats } from "./infisical.js";
+import { resolveSecret, infisicalStats, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
 
 export { SeatGate };
@@ -206,6 +206,9 @@ async function recordDiagnostic(env, entry) {
 
 async function serveMcp(request, env, ctx) {
   const config = loadConfig(env);
+  // One listing per folder beats a cold per-name burst (sentry 4364275308);
+  // the listings also make later optional misses subrequest-free.
+  await Promise.all(["/zulip", "/linear", "/fleetlink", "/wake", "/tools"].map((path) => prefetchFolder(env, path)));
   const props = ctx.props ?? {};
   const auth = ctx.auth ?? {};
   const seat = props.seat;
@@ -610,6 +613,7 @@ async function serveLinearHealth(request, env, config) {
   }
   const identities = [];
   const missing = [];
+  await prefetchFolder(env, "/linear");
   for (const seat of LINEAR_SEATS) {
     if (!linearSecretNames(seat) || !config.hostedSeats.includes(seat)) continue;
     // Resolved through Infisical (src/linear.js), not env:  in required mode
@@ -932,6 +936,7 @@ async function serveAdmin(request, env, config, oauth, email) {
     const infisical = { mode: String(env.INFISICAL_MODE ?? "off").trim().toLowerCase() || "off", ...infisicalStats() };
     // Collect seats independently so a diagnostic read failure is visible on
     // the page rather than hiding every other seat behind an admin 500.
+    await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
     await Promise.all(config.hostedSeats.map(async (seat) => {
       const g = gate(env, seat);
       const pair = linearSecretNames(seat);

@@ -30,6 +30,11 @@ export class InfisicalError extends Error {
 const CACHE_TTL_MS = 60_000;
 const cache = new Map(); // "path\0name" -> { value, at }
 const stats = { fetched: 0, cacheHits: 0, fallbacks: 0 };
+// Folder listings warm the same per-name cache; while a folder's listing is
+// fresh it is authoritative for absence too, so optional misses cost no
+// subrequest (sentry 4364275308: a cold per-name burst could pass the free
+// plan's subrequest budget on shared seats).
+const folderWarm = new Map();
 
 export function infisicalStats() {
   return { ...stats };
@@ -40,6 +45,7 @@ export function _resetInfisicalForTests() {
   stats.fetched = 0;
   stats.cacheHits = 0;
   stats.fallbacks = 0;
+  folderWarm.clear();
 }
 
 import { INFISICAL_EXPECT_DEFAULT } from "./infisical-manifest.js";
@@ -85,6 +91,39 @@ async function fetchRaw(env, path, name) {
   return value;
 }
 
+/** List one folder and warm the cache with every value in it.  While the
+ * listing is fresh, resolveSecret treats an unlisted name as absent without
+ * another subrequest.  "off" mode is a no-op; a listing failure throws in
+ * required mode and only warns in fallback (per-name fallback still covers).
+ */
+export async function prefetchFolder(env, path) {
+  const m = mode(env);
+  if (m === "off") return;
+  const token = typeof env.INFISICAL_SERVICE_TOKEN === "string" ? env.INFISICAL_SERVICE_TOKEN.trim() : "";
+  const workspace = String(env.INFISICAL_WORKSPACE_ID ?? "").trim();
+  const environment = String(env.INFISICAL_ENVIRONMENT ?? "prod").trim() || "prod";
+  const base = String(env.INFISICAL_BASE_URL ?? "https://app.infisical.com").replace(/\/+$/, "");
+  const qs = new URLSearchParams({ workspaceId: workspace, environment, secretPath: path, expandSecretReferences: "true" });
+  let res;
+  try {
+    if (!token || !workspace) throw new InfisicalError("INFISICAL_SERVICE_TOKEN/WORKSPACE_ID not bound", { code: "not_configured" });
+    res = await fetch(`${base}/api/v3/secrets/raw?${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) throw new InfisicalError(`Infisical answered ${res.status} listing ${path}`, { code: "infisical_unavailable", status: res.status });
+    const body = await res.json();
+    const now = Date.now();
+    for (const item of body?.secrets ?? []) {
+      if (typeof item?.secretKey === "string" && typeof item?.secretValue === "string" && item.secretValue !== "") {
+        cache.set(`${path}${item.secretKey}`, { value: item.secretValue, at: now });
+      }
+    }
+    folderWarm.set(path, now);
+    stats.fetched++;
+  } catch (error) {
+    if (m === "required") throw error instanceof InfisicalError ? error : new InfisicalError(String(error));
+    console.warn(`infisical folder listing ${path} failed, per-name fallback covers: ${error.code ?? error.message}`);
+  }
+}
+
 /**
  * Resolve one secret.  `path` is the Fleet-OPS folder the read-tools token
  * may read ("/tools", "/wake", "/fleetlink", ...).  `envName` is the legacy
@@ -99,7 +138,11 @@ export async function resolveSecret(env, { name, path, envName, optional = false
     stats.cacheHits++;
     return hit.value;
   }
+  // A fresh folder listing is authoritative for absence: no subrequest.
+  const warmAt = folderWarm.get(path);
+  const listed = warmAt !== undefined && Date.now() - warmAt < CACHE_TTL_MS;
   try {
+    if (listed) throw new InfisicalError(`Infisical has no ${name} at ${path}`, { code: "not_found", status: 404 });
     const value = await fetchRaw(env, path, name);
     cache.set(cacheKey, { value, at: Date.now() });
     stats.fetched++;
