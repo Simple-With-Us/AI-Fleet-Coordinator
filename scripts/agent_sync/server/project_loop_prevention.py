@@ -109,20 +109,21 @@ def main() -> int:
             if path.read_text() != old:
                 raise ValueError("config changed during projection")
             os.replace(tmp, path)
-            # Replacement has happened.  Report durability failure without claiming refusal.
-            directory_synced = False
-            try:
-                dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-                try:
-                    os.fsync(dir_fd)
-                    directory_synced = True
-                finally:
-                    os.close(dir_fd)
-            except OSError:
-                print("projection applied: directory durability not confirmed", file=sys.stderr)
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
+    if args.apply:
+        # Applied or converged.  Retry directory durability even when no replacement is needed.
+        directory_synced = False
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+                directory_synced = True
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            print("projection applied: directory durability not confirmed", file=sys.stderr)
     print(
         json.dumps(
             {

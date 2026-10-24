@@ -65,3 +65,27 @@ class LoopProjectionTests(unittest.TestCase):
             self.assertIn("durability not confirmed", err.getvalue())
             self.assertNotIn("refused", err.getvalue())
             self.assertIn("wake_loop_prevention = false", path.read_text())
+
+    def test_converged_apply_retries_directory_sync(self):
+        import contextlib
+        import io
+        import json
+        import tempfile
+        from unittest import mock
+        row = {"secret": {"secretKey": P.KEY, "secretValue": "false", "workspace": "p", "environment": "prod", "secretPath": "/zulip"}}
+        for failure in (False, True):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "listener.toml"
+                old = "[daemon]\nwake_loop_prevention = false\nowner_user_id = 12\n"
+                path.write_text(old)
+                out, err = io.StringIO(), io.StringIO()
+                with mock.patch.object(P.sys, "argv", ["projection", "--config", str(path), "--project-id", "p", "--apply"]), mock.patch.object(P.sys, "stdin", io.StringIO(json.dumps(row))), mock.patch.object(P.os, "fsync", side_effect=OSError("test") if failure else None) as sync, mock.patch.object(P.os, "replace") as replace, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(P.main(), 0)
+                report = json.loads(out.getvalue())
+                self.assertFalse(report["changed"])
+                self.assertTrue(report["applied"])
+                self.assertEqual(report["directory_synced"], not failure)
+                self.assertEqual(sync.call_count, 1)
+                replace.assert_not_called()
+                self.assertEqual(path.read_text(), old)
+                self.assertEqual("durability not confirmed" in err.getvalue(), failure)
