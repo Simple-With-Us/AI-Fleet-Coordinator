@@ -538,9 +538,10 @@ the text as it is, never switch to the `&nbsp;` entity, and report the surface i
 **2026-10-23 update — one mechanism everywhere.**  The owner replaced every per-surface rule
 with one:  a real U+00A0 plus a normal space on every surface, never the `&nbsp;` entity, and
 never two plain ASCII spaces.  The one exception is the Claude Code Code tab and the MiniMax
-Code chat pane, which keep the entity because they normalize a raw U+00A0 away.  The entity
-rows (chat panes 2026-10-08 and 2026-10-18, GitHub 2026-10-22) and the two-ASCII-space rows
-(files, commits, terminals, untested surfaces) below are history only.
+Code chat pane, which keep the entity because they normalize a raw U+00A0 away.  The
+chat-pane entity entries below (the Code tab 2026-10-08, the MiniMax Code pane 2026-10-18)
+stay current for those two panes;  the GitHub entity row (2026-10-22) and the
+two-ASCII-space rows (files, commits, terminals, untested surfaces) are history only.
 
 **2026-09-04 update — desktop app superseded.**  The entity finding below for the desktop
 app (Code tab) was superseded by an owner-verified ruling on 2026-09-04: use **two literal
