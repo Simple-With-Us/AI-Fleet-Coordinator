@@ -1993,6 +1993,45 @@ class PrivateInventoryTests(unittest.TestCase):
                     )
         return hits
 
+    def _zip_members(self) -> list[tuple[str, str, str]]:
+        """Every member of every published pack archive, with its archive, name
+        and text.
+
+        The archives are what a seat installs, so a guard that opens only the
+        files in the tree cannot see what the tree ships.  A stale archive
+        carries the text the tree no longer has, which is exactly the exposure
+        this guard has to catch.
+        """
+        out: list[tuple[str, str, str]] = []
+        for path in sorted(Path(DOCS).glob("*.zip")):
+            with zipfile.ZipFile(path) as archive:
+                for name in archive.namelist():
+                    if name.endswith("/"):
+                        continue
+                    try:
+                        text = archive.read(name).decode("utf-8")
+                    except (UnicodeDecodeError, KeyError):
+                        continue
+                    out.append((path.name, name, text))
+        return out
+
+    def test_no_published_pack_archive_carries_private_inventory(self) -> None:
+        hits: list[str] = []
+        for archive, member, text in self._zip_members():
+            label = f"{archive}::{member}"
+            for hit in self._address_hits(member, text):
+                hits.append(hit.replace(member, label, 1))
+            for hit in self._alias_hits(member, text):
+                hits.append(hit.replace(member, label, 1))
+            for hit in self._ssh_hits(member, text):
+                hits.append(hit.replace(member, label, 1))
+        self.assertEqual(
+            hits,
+            [],
+            "a published pack archive must not carry private inventory, because "
+            "the archive is what a seat installs:\n" + "\n".join(hits),
+        )
+
     def test_no_tracked_file_carries_a_private_address(self) -> None:
         hits: list[str] = []
         for rel in self._tracked_text_files():

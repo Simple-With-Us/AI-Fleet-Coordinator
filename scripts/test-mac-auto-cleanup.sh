@@ -1023,7 +1023,7 @@ check_owner_gone "$H23E" no
 # The block is run on its own with a stubbed ssh, so the check is about what the
 # script decides and never reaches a real host.
 HOP_ROOT="$LOCK_TEST_ROOT/hop"
-mkdir -p "$HOP_ROOT" "$HOP_ROOT/bin"
+mkdir -p "$HOP_ROOT"
 HOP_BLOCK="$HOP_ROOT/block.sh"
 sed -n '/^# 5\. Remote Hetzner Coolify maintenance trigger/,/^# end remote Hetzner maintenance trigger/p' \
   "$SCRIPT" > "$HOP_BLOCK"
@@ -1031,66 +1031,100 @@ if [ ! -s "$HOP_BLOCK" ]; then
   fail "the remote hop block is missing from the script"
 fi
 
+# The stub counts its calls and exits with the code the case asked for, so a
+# probe that succeeds and a maintenance command that fails are two different
+# hosts rather than one.
+cat > "$HOP_ROOT/ssh-stub" <<'STUB'
+#!/bin/bash
+n=$(cat "$HOP_CASE/count" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" > "$HOP_CASE/count"
+echo "$@" >> "$HOP_CASE/calls"
+codes=($HOP_CODES)
+index=$((n - 1))
+if [ "$index" -ge "${#codes[@]}" ]; then index=$(( ${#codes[@]} - 1 )); fi
+exit "${codes[$index]}"
+STUB
+chmod +x "$HOP_ROOT/ssh-stub"
+
 hop_run() {
-  # $1 the stub's exit code, $2 the alias value ("unset" leaves it out), $3 the
-  # inventory flag, $4 the file the stub records its calls in
-  printf '#!/bin/bash\necho "$@" >> "%s"\nexit %s\n' "$4" "$1" > "$HOP_ROOT/bin/ssh"
-  chmod +x "$HOP_ROOT/bin/ssh"
-  if [ "$2" = "unset" ]; then
-    env -u HOUSEKEEPER_SSH_ALIAS PATH="$HOP_ROOT/bin:$PATH" HOUSEKEEPER_INVENTORY="$3" \
-      bash "$HOP_BLOCK" > "$HOP_ROOT/out" 2> "$HOP_ROOT/err"
+  # $1 the case name, $2 the exit codes (one per call, the last one repeating),
+  # $3 the alias value ("unset" leaves it out), $4 the inventory flag
+  HOP_CASE="$HOP_ROOT/$1"
+  rm -rf "$HOP_CASE"
+  mkdir -p "$HOP_CASE/bin"
+  cp "$HOP_ROOT/ssh-stub" "$HOP_CASE/bin/ssh"
+  if [ "$3" = "unset" ]; then
+    env -u HOUSEKEEPER_SSH_ALIAS PATH="$HOP_CASE/bin:$PATH" \
+      HOUSEKEEPER_INVENTORY="$4" HOP_CASE="$HOP_CASE" HOP_CODES="$2" \
+      bash "$HOP_BLOCK" > "$HOP_CASE/out" 2> "$HOP_CASE/err"
   else
-    env PATH="$HOP_ROOT/bin:$PATH" HOUSEKEEPER_SSH_ALIAS="$2" HOUSEKEEPER_INVENTORY="$3" \
-      bash "$HOP_BLOCK" > "$HOP_ROOT/out" 2> "$HOP_ROOT/err"
+    env PATH="$HOP_CASE/bin:$PATH" HOUSEKEEPER_SSH_ALIAS="$3" \
+      HOUSEKEEPER_INVENTORY="$4" HOP_CASE="$HOP_CASE" HOP_CODES="$2" \
+      bash "$HOP_BLOCK" > "$HOP_CASE/out" 2> "$HOP_CASE/err"
   fi
 }
 
 # A reachable host: the hop runs and the maintenance command is the one asked
 # for.
 HOP_STATUS=0
-hop_run 0 target 1 "$HOP_ROOT/calls-ok" || HOP_STATUS=$?
+hop_run reachable 0 target 1 || HOP_STATUS=$?
 if [ "$HOP_STATUS" != "0" ]; then
   fail "a reachable host must let the remote hop succeed, it exited $HOP_STATUS"
 fi
-if ! grep -q 'Triggering remote Hetzner Coolify maintenance' "$HOP_ROOT/out"; then
+if ! grep -q 'Triggering remote Hetzner Coolify maintenance' "$HOP_ROOT/reachable/out"; then
   fail "a reachable host must say that it is triggering the remote maintenance"
 fi
-if ! grep -q 'coolify-auto-maintenance' "$HOP_ROOT/calls-ok"; then
+if ! grep -q 'coolify-auto-maintenance' "$HOP_ROOT/reachable/calls"; then
   fail "a reachable host must run the remote maintenance command"
 fi
 
 # An unreachable host: a real fault, so it says so and fails the run.
 HOP_STATUS=0
-hop_run 255 target 1 "$HOP_ROOT/calls-bad" || HOP_STATUS=$?
+hop_run unreachable 255 target 1 || HOP_STATUS=$?
 if [ "$HOP_STATUS" = "0" ]; then
   fail "a failed connectivity check must fail the run, not skip the hop"
 fi
-if ! grep -q 'Remote Hetzner maintenance trigger failed' "$HOP_ROOT/err"; then
+if ! grep -q 'Remote Hetzner maintenance trigger failed' "$HOP_ROOT/unreachable/err"; then
   fail "a failed connectivity check must say so on stderr"
+fi
+if ! grep -q 'connectivity check' "$HOP_ROOT/unreachable/err"; then
+  fail "a failed connectivity check must say which check failed"
+fi
+
+# A reachable host whose maintenance command fails: also a real fault, and the
+# status of the command is not thrown away.
+HOP_STATUS=0
+hop_run maintenance-fails "0 255" target 1 || HOP_STATUS=$?
+if [ "$HOP_STATUS" = "0" ]; then
+  fail "a failed maintenance command must fail the run, not report success"
+fi
+if ! grep -q 'the maintenance command exited' "$HOP_ROOT/maintenance-fails/err"; then
+  fail "a failed maintenance command must say so on stderr"
 fi
 
 # An inventory file that names no target: a misconfiguration, so it says so and
 # fails the run.
 HOP_STATUS=0
-hop_run 0 unset 1 "$HOP_ROOT/calls-misconf" || HOP_STATUS=$?
+hop_run misconfigured 0 unset 1 || HOP_STATUS=$?
 if [ "$HOP_STATUS" != "1" ]; then
   fail "an inventory file with no target must fail the run, it exited $HOP_STATUS"
 fi
-if ! grep -q 'HOUSEKEEPER_SSH_ALIAS is required' "$HOP_ROOT/err"; then
+if ! grep -q 'HOUSEKEEPER_SSH_ALIAS is required' "$HOP_ROOT/misconfigured/err"; then
   fail "an inventory file with no target must name HOUSEKEEPER_SSH_ALIAS"
 fi
 
 # Neither an inventory file nor the variable: the hop is redundant, so it is
 # skipped loudly and the run still succeeds.
 HOP_STATUS=0
-hop_run 0 unset 0 "$HOP_ROOT/calls-skip" || HOP_STATUS=$?
+hop_run skipped 0 unset 0 || HOP_STATUS=$?
 if [ "$HOP_STATUS" != "0" ]; then
   fail "a hop with no inventory must be skipped, not fail the run, it exited $HOP_STATUS"
 fi
-if ! grep -q 'Skipping the remote Hetzner maintenance trigger' "$HOP_ROOT/out"; then
+if ! grep -q 'Skipping the remote Hetzner maintenance trigger' "$HOP_ROOT/skipped/out"; then
   fail "a skipped hop must say so"
 fi
-if [ -s "$HOP_ROOT/calls-skip" ]; then
+if [ -s "$HOP_ROOT/skipped/calls" ]; then
   fail "a skipped hop must not reach for a host"
 fi
 

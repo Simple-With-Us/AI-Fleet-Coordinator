@@ -14,8 +14,8 @@
          HOUSEKEEPER_SSH_ALIAS.  The target is private deployment inventory, so it is
          deliberately not written into this plist: the script reads it from the
          operator's own inventory file outside this repository, and skips the hop when
-         that file is absent.  The host still self-maintains through its own
-         /etc/cron.daily/coolify-auto-maintenance, so the skip costs no maintenance. -->
+         that file is absent.  The host self-maintains on its own schedule, so the
+         skip costs no maintenance. -->
     <!-- Run every 4 hours (14400 seconds) -->
     <key>StartInterval</key>
     <integer>14400</integer>

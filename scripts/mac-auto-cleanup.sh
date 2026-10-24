@@ -999,7 +999,11 @@ fi
 if [ -n "${HOUSEKEEPER_SSH_ALIAS:-}" ]; then
     if ssh -o ConnectTimeout=3 -o BatchMode=yes "$HOUSEKEEPER_SSH_ALIAS" "exit 0" 2>/dev/null; then
         echo "Triggering remote Hetzner Coolify maintenance..."
-        ssh -o ConnectTimeout=5 "$HOUSEKEEPER_SSH_ALIAS" "/etc/cron.daily/coolify-auto-maintenance" >> /dev/null 2>&1 || true
+        ssh -o ConnectTimeout=5 "$HOUSEKEEPER_SSH_ALIAS" "/etc/cron.daily/coolify-auto-maintenance" >> /dev/null 2>&1 || {
+            maintenance_status=$?
+            echo "Remote Hetzner maintenance trigger failed: the maintenance command exited $maintenance_status." >&2
+            exit "$maintenance_status"
+        }
     else
         status=$?
         echo "Remote Hetzner maintenance trigger failed: the ssh connectivity check to the operator's inventory target exited $status." >&2

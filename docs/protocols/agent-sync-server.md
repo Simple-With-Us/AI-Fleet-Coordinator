@@ -194,7 +194,7 @@ These are optional, and best left unset:
 
    Over a non-interactive `docker exec` there is no terminal to answer the prompt, so `init` needs `--yes` or it changes nothing.  The Coolify host is reached over ssh at the target the operator's own ssh config resolves; the target arrives in the environment as `HOUSEKEEPER_SSH_ALIAS` and is deliberately not written down here:
    ```
-   : "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target}"
+   : "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target}" || exit 1
    ssh "$HOUSEKEEPER_SSH_ALIAS"
    C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
    docker exec "$C" /app/scripts/agent_sync/server/entrypoint.sh daemon init --seat MA --yes
@@ -286,7 +286,7 @@ One change window, Sat, Oct 10 or later, after this PR has merged.  Restarting a
 3. **Deploy** the app from `main` in Coolify (a rebuild:  the entrypoint changed).
 4. **Update the live config** in the new container (it holds no secrets, so the diff is safe to read):
    ```
-   : "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target}"
+   : "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target}" || exit 1
    ssh "$HOUSEKEEPER_SSH_ALIAS"
    C=$(docker ps --filter name=l40rxd4rbj1pnogmbtetzmsf --format '{{.Names}}')
    docker exec "$C" python3 /app/scripts/agent_sync/server/apply_live_config.py           # the diff, writes nothing
