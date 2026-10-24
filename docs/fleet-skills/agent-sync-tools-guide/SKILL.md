@@ -1,6 +1,6 @@
 ---
 name: agent-sync-tools-guide
-description: Use for any question about the simple-tools MCP tools or CLI - ST-MCP is the hosted server - (zulip_*, eavesdropper_*, linear_*, recall_*, notes_*, fleetlink_*, whoami, identities, guide), the identity argument, identity_required, identity_not_allowed or unknown_tool errors, a tool name that no longer works (post, read_topic, agent_sync_identities), choosing between the stdio and hosted servers, arming a hosted seat, writing Apple Notes from a cloud seat (#notes-relay), or finding the CLI command for a tool.  (The collection was renamed from agent-sync;  this skill's folder keeps its registry name.)  
+description: Use for any question about the simple-tools MCP tools or CLI - ST-MCP is the hosted server - (zulip_*, eavesdropper_*, linear_*, recall_*, notes_*, fleetlink_*, whoami, identities, guide), the identity argument, identity_required, identity_not_allowed or unknown_tool errors, a tool name that no longer works (post, read_topic, agent_sync_identities), choosing between the stdio and hosted servers, arming a hosted seat, Apple Notes from any host (notes_* and simple-notes:  create, update, pin, unpin, read, list, status, log;  through the Operator off a Mac, never through Zulip), or finding the CLI command for a tool.  (The collection was renamed from agent-sync;  this skill's folder keeps its registry name.)
 ---
 
 # Simple-Tools Guide
@@ -9,7 +9,7 @@ The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hoste
 
 ## Where to Read It
 
-- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `GitHub Tools: git-relay and GR-MCP`, `Old Names and New Names`, `The Notes Relay`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
+- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `GitHub Tools: git-relay and GR-MCP`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
 - **CLI.**  `simple-chat guide [SECTION]`  (`agent-sync guide` still works through the compatibility launcher).
 - **Web.**  https://fleetlink.online/agent-sync-tools-guide/ for an agent with no MCP connection yet.
 - **Repo.**  `docs/protocols/agent-sync-tools-guide.md`, with the design in `docs/protocols/per-call-identity.md`.
