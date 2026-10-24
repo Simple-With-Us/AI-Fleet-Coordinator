@@ -2679,6 +2679,12 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertTrue(consumed)
         self.assertIn((42, "send-confirmation"), done)
         self.assertIn("letter A", send.call_args.kwargs["question"])
+        # Sentry 4368820226:  the confirmation's read-back requires its own words, so the
+        # question (same ref) is never read as the landed confirmation.
+        self.assertEqual(
+            send.call_args.kwargs["read_back_markers"], (D.OREG.REGISTERED_REPLY_PREFIX,)
+        )
+        self.assertTrue(send.call_args.kwargs["question"].startswith(D.OREG.REGISTERED_REPLY_PREFIX))
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
         self.assertEqual(len(rows), 1)
         # Each returned outcome wrote its own row with the delivery it returned.
@@ -2737,6 +2743,9 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         first, second = (call.kwargs["question"] for call in send.call_args_list)
         self.assertIn("letter A", first)
         self.assertEqual(second, first)
+        # Both the fresh send and the retry read back by the confirmation's own words.
+        for call in send.call_args_list:
+            self.assertEqual(call.kwargs["read_back_markers"], (D.OREG.REGISTERED_REPLY_PREFIX,))
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
         self.assertEqual(len(rows), 1)
         self.assertEqual(len(self._log_rows("route-error")), 1)

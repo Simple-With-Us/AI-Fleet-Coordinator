@@ -84,12 +84,20 @@ READ_BACK_DEADLINE_SECONDS = 60.0
 
 
 def _question_message_id(
-    client: Any, channel: str, topic: str, marker: str, sender_id: int
+    client: Any,
+    channel: str,
+    topic: str,
+    marker: str,
+    sender_id: int,
+    extra_markers: Sequence[str] = (),
 ) -> tuple[int | None, str | None, bool]:
     """(the landed question's id, error kind, proven-absent) for one topic read-back.
 
-    A match is the Operator bot's OWN post carrying the question's unique ref:  an
-    answer quoting the ref, or anyone else's message, never counts.  Absence is proven
+    A match is the Operator bot's OWN post carrying the question's unique ref (and every
+    one of ``extra_markers``):  an answer quoting the ref, or anyone else's message, never
+    counts.  A confirmation carries the same ref as the question it answers, so it passes
+    its own leading words as an extra marker and the question is never taken for it
+    (Sentry 4368820226).  Absence is proven
     only when the topic's history is exhausted;  an unreadable topic or a hit page cap
     is "could not check", never "not there".
     Absence is only proven on validated rows:  a malformed sender id, non-string
@@ -150,7 +158,8 @@ def _question_message_id(
         for message in messages:
             if message.get("sender_id") != sender_id:
                 continue
-            if marker not in str(message.get("content") or ""):
+            content = str(message.get("content") or "")
+            if marker not in content or any(extra not in content for extra in extra_markers):
                 continue
             message_id = message.get("id")
             if isinstance(message_id, int) and not isinstance(message_id, bool) and message_id > 0:
@@ -188,6 +197,7 @@ def send_location_question(
     credentials: Any = None,
     fetch: Callable[[Sequence[str]], Mapping[str, str]] | None = None,
     window: float = OC.DEDUPE_WINDOW,
+    read_back_markers: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Post the one location question in the chat's channel/topic, as the Operator bot.
 
@@ -198,7 +208,9 @@ def send_location_question(
     on a sent outcome the caller stamps the entry with mark_notified.  An `unknown`
     delivery is reconciled by reading the topic back for the question's unique ref, never
     resent on a timer:  the question may already sit in the topic, and a duplicate
-    question is not automatically benign.
+    question is not automatically benign.  ``read_back_markers`` is further text a
+    landed copy must carry beside the ref:  a confirmation sent through this function
+    passes its leading words, so the read-back never takes the question for it.
     """
     environment = dict(env if env is not None else os.environ)
     at = time.time() if now is None else float(now)
@@ -332,7 +344,12 @@ def send_location_question(
         # A window's expiry never proves a post missed:  reconcile against the topic
         # itself.  The question carries a unique ref, so a landed copy is identifiable.
         landed_id, read_error, proven_absent = _question_message_id(
-            client, channel, topic, entry_id, me.get("user_id")
+            client,
+            channel,
+            topic,
+            entry_id,
+            me.get("user_id"),
+            tuple(str(extra) for extra in read_back_markers if str(extra or "")),
         )
         if read_error is not None:
             return _outcome(

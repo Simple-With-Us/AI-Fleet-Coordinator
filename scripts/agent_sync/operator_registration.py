@@ -874,6 +874,12 @@ def mark_reconciled(registry_db: str, entry_id: str, *, now: float | None = None
         return True
 
 
+# The registered confirmation's leading words.  The question carries the same ref, so a
+# confirmation's delivery read-back also requires these words (Sentry 4368820226);  no
+# other reply starts with them ("Not registered:" is lower-case r).
+REGISTERED_REPLY_PREFIX = "Registered:"
+
+
 def answer_reply(result: Mapping[str, Any]) -> str:
     """The one-line reply posted where the answer arrived.  Ids and the letter only, never a body."""
     status = str(result.get("status") or "")
@@ -881,7 +887,8 @@ def answer_reply(result: Mapping[str, Any]) -> str:
     if status == "registered":
         generation = int(result.get("generation") or 1)
         suffix = " (gen %d)" % generation if generation > 1 else ""
-        return "Registered:  the chat is on %s, letter %s%s (ref %s)." % (
+        return "%s  the chat is on %s, letter %s%s (ref %s)." % (
+            REGISTERED_REPLY_PREFIX,
             result.get("location"),
             result.get("label"),
             suffix,

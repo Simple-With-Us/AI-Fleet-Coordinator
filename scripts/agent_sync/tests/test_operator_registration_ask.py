@@ -275,6 +275,53 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
         self.assertEqual(again["delivery_status"], OC.DELIVERY_OK)
         self.assertEqual(working.posts, [])
 
+    def test_a_confirmation_read_back_never_takes_the_question_for_it(self) -> None:
+        # Sentry 4368820226:  the confirmation carries the same ref as the question, so
+        # an unknown confirmation's read-back must require the confirmation's own words.
+        confirmation = OREG.answer_reply(
+            {"status": "registered", "location": "mac", "label": "A",
+             "generation": 1, "entry_id": ENTRY["entry_id"]}
+        )
+        markers = (OREG.REGISTERED_REPLY_PREFIX,)
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        first = self.send(question=confirmation, client=failing, read_back_markers=markers)
+        self.assertEqual(first["delivery_status"], OC.DELIVERY_UNKNOWN)
+        # Only the question is in the topic:  the confirmation is proven absent and posted.
+        question_only = _StubClient(
+            messages=[{"id": 42, "content": QUESTION, "sender_id": OPERATOR_ID}]
+        )
+        again = self.send(
+            question=confirmation, client=question_only, now=1001.0, read_back_markers=markers
+        )
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(len(question_only.posts), 1)
+        self.assertNotEqual(again["message_id"], 42)
+
+    def test_a_landed_confirmation_is_recovered_beside_its_question(self) -> None:
+        confirmation = OREG.answer_reply(
+            {"status": "registered", "location": "mac", "label": "A",
+             "generation": 1, "entry_id": ENTRY["entry_id"]}
+        )
+        markers = (OREG.REGISTERED_REPLY_PREFIX,)
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.send(question=confirmation, client=failing, read_back_markers=markers)
+        both = _StubClient(
+            messages=[
+                {"id": 42, "content": QUESTION, "sender_id": OPERATOR_ID},
+                {"id": 43, "content": confirmation, "sender_id": OPERATOR_ID},
+            ]
+        )
+        again = self.send(
+            question=confirmation, client=both, now=1001.0, read_back_markers=markers
+        )
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(again["message_id"], 43)
+        self.assertEqual(both.posts, [])
+
     def test_a_ref_quoted_by_another_sender_is_not_the_landed_question(self) -> None:
         failing = _StubClient(
             post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
