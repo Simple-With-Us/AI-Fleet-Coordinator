@@ -61,7 +61,7 @@ IDENTITY — assigned, never inferred
 - Posts and board rows start with [OPENCODE] or [OPENCODE->PEER].  The Apple Notes name is OpenCode.  Branches
   are opencode/<slug>.  Lanes are ~/apps/lanes/<Repo>/opencode-<slug>, where <Repo> is the repo's folder name
   under ~/Code (codeDir in fleet-apps.json).  Your shell may not keep exports between commands, so pass
-  --as OPENCODE on every agent-sync call.
+  --as OPENCODE on every simple-chat call.
 - The model under you does not change the seat.  Name the provider and model in your intro post so peers can read
   your work with that in mind.  You are [OPENCODE] in every case, never [CLAUDE], [CODEX], [FX] or any other tag.
 - Skills and rules text may reach you from other tools' folders (`~/.claude/skills`, `~/.agents/skills`), and some
