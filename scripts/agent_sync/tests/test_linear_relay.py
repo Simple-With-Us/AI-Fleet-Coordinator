@@ -891,6 +891,22 @@ class RelayTests(unittest.TestCase):
         self.w.tick()  # the next cycle has its own budget
         self.assertEqual(len(self.lin.created), 1)
 
+    def test_the_startup_reconcile_shares_the_cycle_budget(self) -> None:
+        entry = lr.new_entry("AFC-1", 5, "builds", "AFC-1 relay", 1)
+        entry["pending"] = True
+        entry["dirty"] = True
+        self.led.entries[self.key("AFC-1", 5, "AFC-1 relay")] = entry
+        self.lin.by_marker[entry["marker"]] = "c-lost"
+        with mock.patch.object(lr, "TICK_BUDGET", -1.0):
+            self.w.start_cycle()
+            self.w.reconcile()  # the budget is spent: no scan before the first poll
+        self.assertIsNone(entry["comment_id"])
+        self.assertTrue(entry["pending"])
+        self.w.start_cycle()  # run() opens a fresh cycle once the first poll returns
+        self.w.tick()  # the next write scans first and adopts, never stacks
+        self.assertEqual(entry["comment_id"], "c-lost")
+        self.assertEqual(self.lin.created, [])
+
     def test_a_stream_event_routed_to_the_worker_is_logged(self) -> None:
         self.w.handle_event({"type": "stream", "op": "update", "stream_id": 5})
         self.assertTrue(any("set_public_streams" in line for line in self.logs))

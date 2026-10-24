@@ -1345,7 +1345,10 @@ class RelayWorker:
 
     def reconcile(self) -> None:
         """Adopt the comments of creates whose answer was lost.  Only entries that were written
-        ahead are looked at, so the cost is bounded by the number of uncertain writes."""
+        ahead are looked at, so the cost is bounded by the number of uncertain writes, and the
+        scans share the open cycle's budget (run() opens one first), so a restart after a Linear
+        outage cannot hold off the first Zulip poll.  An entry the budget does not reach stays
+        pending, and its next write scans for the marker before it creates anything."""
         if self.public_streams is None:
             return  # nothing is known about any stream yet: look up nothing, drop nothing
         for key, entry in list(self.ledger.entries.items()):
@@ -1353,6 +1356,11 @@ class RelayWorker:
                 continue
             if entry.get("comment_id") or not entry.get("pending"):
                 continue
+            if self._budget_spent():
+                self.log(
+                    "the reconcile budget is spent; the rest are checked before their next write"
+                )
+                break
             try:
                 uuid = self._issue_uuid(entry["issue"])
                 if uuid is None:
@@ -1548,6 +1556,7 @@ def run(env: Mapping[str, str], *, check_only: bool = False) -> int:
                 continue
             queue = EventQueue(client, None, types)
             queue.register()
+            worker.start_cycle()  # the startup reconcile gets a cycle's budget, then polling starts
             worker.reconcile()
             worker.log("relay queue registered%s" % (" (dry run)" if dry else ""))
             while True:

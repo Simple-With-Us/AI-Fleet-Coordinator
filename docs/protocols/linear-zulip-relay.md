@@ -121,7 +121,9 @@ auth failure: those are different problems and the operator needs to know which 
 The client never follows a redirect, so the bearer token is never re-sent to another host, and it
 sends its own User-Agent.  Every call has one deadline that its retries share, and the marker scan
 has one deadline for all of its pages.  Each poll cycle has a two-minute write budget, which the
-creates made while its messages are handled and the tick after them share: a write starts only
+creates made while its messages are handled and the tick after them share (the reconcile at
+start gets a cycle of its own, and a pending entry it does not reach is checked before its next
+write): a write starts only
 inside the budget, and what it does not reach stays dirty for the next cycle.  A write already
 under way finishes within its own deadline, so one cycle's writes end within a few minutes and the
 Zulip poll loop keeps polling.
