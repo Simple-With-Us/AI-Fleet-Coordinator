@@ -405,6 +405,7 @@ test("a claim sets In Progress, adds claimed:<seat> and seat:<seat>, and posts a
   fake.addIssue({ id: "issue-301", identifier: "AFC-301", team: "AFC" });
   const claimed = ok(await tools.call("linear_claim", { id: "AFC-301", session: "mvs-1234-5678", comment: "starting here" }), "linear_claim");
   assert.equal(claimed.label, "claimed:GROK-WEB");
+  assert.equal(claimed.delegate, "Grok Web");
   assert.equal(claimed.identifier, "AFC-301");
   assert.deepEqual(mutationNames(fake), ["BoardUpdate", "BoardComment"]);
   const update = fake.mutations()[0].body.variables;
@@ -413,6 +414,8 @@ test("a claim sets In Progress, adds claimed:<seat> and seat:<seat>, and posts a
   assert.equal(update.input.stateId, fake.stateId("AFC", "In Progress"));
   assert.deepEqual(update.input.addedLabelIds, [fake.labelId("claimed:GROK-WEB"), fake.labelId("seat:GROK-WEB")]);
   assert.deepEqual(update.input.removedLabelIds, []);
+  assert.equal(update.input.delegateId, fake.viewer.id);
+  assert.equal(update.input.assigneeId, undefined);
   const body = fake.mutations()[1].body.variables.input.body;
   assert.match(body, /^\[GROK-WEB·mvs12345\] CLAIMED/);
   assert.equal(body.split("\n")[0], "[GROK-WEB·mvs12345] CLAIMED");
@@ -435,6 +438,99 @@ test("an issue another seat holds is refused with claim_held, and no mutation is
   fake.addIssue({ id: "issue-306", identifier: "AFC-306", team: "AFC", labels: ["claimed:GROK-WEB"] });
   ok(await tools.call("linear_claim", { id: "AFC-306" }), "linear_claim");
   assert.deepEqual(mutationNames(fake), ["BoardUpdate", "BoardComment"]);
+});
+
+test("a claim with no seat labels delegates to the seat's app user instead of throwing", async () => {
+  const { tools, fake } = harness({ seat: "JET", viewer: { id: "user-jet", name: "Jet", app: true } });
+  fake.addIssue({ id: "issue-307", identifier: "AFC-307", team: "AFC" });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-307" }), "linear_claim");
+  assert.equal(claimed.label, null);
+  assert.equal(claimed.delegate, "Jet");
+  const update = fake.mutations()[0].body.variables;
+  assert.equal(update.input.delegateId, "user-jet");
+  assert.deepEqual(update.input.addedLabelIds, []);
+  assert.equal(update.input.assigneeId, undefined);
+  assert.equal(fake.findIssue("issue-307").delegate?.id, "user-jet");
+});
+
+test("an issue held by another app delegate is refused with claim_held, and no mutation is sent", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-308", identifier: "AFC-308", team: "AFC", delegate: { id: "user-claude", name: "Claude" } });
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-308" }), "claim_held");
+  assert.match(error.message, /AFC-308/);
+  assert.match(error.message, /Claude/);
+  assert.equal(error.held_by, "Claude");
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("a human delegate is no claim hold:  claiming delegates to the seat's app user", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-314", identifier: "AFC-314", team: "AFC", delegate: { id: "user-jay", name: "Jay", app: false } });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-314" }), "linear_claim");
+  assert.equal(claimed.label, "claimed:GROK-WEB");
+  assert.equal(claimed.delegate, "Grok Web");
+  const update = fake.mutations()[0].body.variables;
+  assert.equal(update.input.delegateId, fake.viewer.id);
+  assert.deepEqual(update.input.addedLabelIds, [fake.labelId("claimed:GROK-WEB"), fake.labelId("seat:GROK-WEB")]);
+  assert.equal(fake.findIssue("issue-314").delegate?.id, fake.viewer.id);
+});
+
+test("a claim label past the first label page is still found", async () => {
+  const { tools, fake } = harness();
+  for (let n = 0; n < 250; n += 1) fake.addLabel(`filler-${n}`);
+  // Linear's page order is its own:  move the fleet markers past the cap.
+  for (const name of ["claimed:GROK-WEB", "seat:GROK-WEB"]) {
+    const at = fake.labels.findIndex((l) => l.name === name);
+    fake.labels.push(...fake.labels.splice(at, 1));
+  }
+  fake.addIssue({ id: "issue-315", identifier: "AFC-315", team: "AFC" });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-315" }), "linear_claim");
+  assert.equal(claimed.label, "claimed:GROK-WEB");
+  const update = fake.mutations()[0].body.variables;
+  assert.deepEqual(update.input.addedLabelIds, [fake.labelId("claimed:GROK-WEB"), fake.labelId("seat:GROK-WEB")]);
+  const labelCalls = fake.calls().filter((r) => opOf(r.body.query)?.name === "BoardLabels");
+  assert.ok(labelCalls.length >= 2, `expected paged label reads, got ${labelCalls.length}`);
+});
+
+test("re-claiming your own delegated issue stays idempotent", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-309", identifier: "AFC-309", team: "AFC", labels: ["claimed:GROK-WEB", "seat:GROK-WEB"], delegate: { id: fake.viewer.id, name: fake.viewer.name } });
+  const first = ok(await tools.call("linear_claim", { id: "AFC-309" }), "linear_claim");
+  assert.equal(first.label, "claimed:GROK-WEB");
+  assert.equal(first.delegate, "Grok Web");
+  const second = ok(await tools.call("linear_claim", { id: "AFC-309", comment: "still mine" }), "linear_claim");
+  assert.equal(second.label, "claimed:GROK-WEB");
+  assert.equal(second.delegate, "Grok Web");
+  assert.equal(fake.findIssue("issue-309").delegate?.id, fake.viewer.id);
+});
+
+test("releasing to open clears the delegate and the claim label", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-311", identifier: "AFC-311", team: "AFC", state: "In Progress", labels: ["claimed:GROK-WEB"], delegate: { id: fake.viewer.id, name: fake.viewer.name } });
+  const done = ok(await tools.call("linear_status", { id: "AFC-311", status: "open" }), "linear_status");
+  assert.equal(done.status, "open");
+  const update = fake.mutations()[0].body.variables;
+  assert.equal(update.input.delegateId, null);
+  assert.ok(update.input.removedLabelIds.includes(fake.labelId("claimed:GROK-WEB")));
+  assert.equal(fake.findIssue("issue-311").delegate, null);
+});
+
+test("a release leaves a human delegate alone", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-313", identifier: "AFC-313", team: "AFC", state: "In Progress", delegate: { id: "user-jay", name: "Jay", app: false } });
+  ok(await tools.call("linear_status", { id: "AFC-313", status: "open" }), "linear_status");
+  const update = fake.mutations()[0].body.variables;
+  assert.equal(Object.hasOwn(update.input, "delegateId"), false);
+  assert.equal(fake.findIssue("issue-313").delegate?.id, "user-jay");
+});
+
+test("a closing status leaves the delegate alone", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-312", identifier: "AFC-312", team: "AFC", state: "In Progress", labels: ["claimed:GROK-WEB"], delegate: { id: fake.viewer.id, name: fake.viewer.name } });
+  ok(await tools.call("linear_status", { id: "AFC-312", status: "completed" }), "linear_status");
+  const update = fake.mutations()[0].body.variables;
+  assert.equal(Object.hasOwn(update.input, "delegateId"), false);
+  assert.equal(fake.findIssue("issue-312").delegate?.id, fake.viewer.id);
 });
 
 // ---------------------------------------------------------------- duplicate and idempotency

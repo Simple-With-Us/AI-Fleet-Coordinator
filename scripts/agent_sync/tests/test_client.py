@@ -204,6 +204,31 @@ class ProtocolTests(Harness):
         self.assertTrue(self.fake.messages[-1]["content"].endswith("naïve — text"))
 
 
+class QuietPostTests(Harness):
+    """The owner's no-wake signal from the command line (AFC-468)."""
+
+    def test_quiet_prefixes_the_marker_before_the_seat_tag(self) -> None:
+        result = self.run_cli("post", "--topic", "t", "--quiet", "hello")
+        self.assertEqual(result.code, 0, result.err)
+        content = self.fake.messages[0]["content"]
+        self.assertTrue(content.startswith(":eyes: "), content)
+        self.assertLess(content.index(":eyes:"), content.index("["), "the marker comes first")
+        self.assertIn("] hello", content, "the seat tag and the text follow the marker")
+
+    def test_a_post_without_quiet_carries_no_marker(self) -> None:
+        result = self.run_cli("post", "--topic", "t", "hello")
+        self.assertEqual(result.code, 0, result.err)
+        self.assertNotIn(":eyes:", self.fake.messages[0]["content"])
+
+    def test_the_marker_is_read_back_as_a_signal(self) -> None:
+        from agent_sync import router as R
+
+        result = self.run_cli("post", "--topic", "t", "--quiet", "hello")
+        self.assertEqual(result.code, 0, result.err)
+        _, suppressed = R.strip_no_wake(self.fake.messages[0]["content"])
+        self.assertTrue(suppressed, "the composed message reads back as a marker message")
+
+
 if __name__ == "__main__":
     unittest.main()
 

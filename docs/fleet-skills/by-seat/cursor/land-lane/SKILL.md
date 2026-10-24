@@ -5,7 +5,7 @@ description: Land a Cursor feature branch to main across the fleet — seat work
 
 # Land a feature branch (CURSOR)
 
-> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `cursor-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CURSOR_ZULIP_EMAIL`, `CURSOR_ZULIP_KEY`, `CURSOR_ZULIP_SITE`).  Session tag `[CURSOR·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `cursor-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CURSOR_ZULIP_EMAIL`, `CURSOR_ZULIP_KEY`, `CURSOR_ZULIP_SITE`).  Session tag `[CURSOR·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER, GB-ENGINEER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
@@ -77,7 +77,7 @@ gh pr create --fill
 | Personal-Site | CI `verify` is file-existence + About-copy grep.  `site/` is the TanStack Start source (README).  `AGENTS.md` may still say "static snapshot" — believe README + the tree.  Preserve `Earlier work included` and the Doximity `/profiles/…/view` URL or the daily mirror reverts them. |
 | AFC | No app test gate.  `python3 scripts/check-fleet-registry.py` if you touched registries. |
 
-CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Progress` then tag.  Consumers pin the exact tag.
+CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Progress` then tag.  Consumers pin the exact tag.
 
 `STATUS.md` / `PLAN.md` (and the archived `docs/EFFORT-LOG.md`) often carry `merge=union` in `.gitattributes`.  Additive edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
 

@@ -5,7 +5,7 @@ description: Land a Clutch feature branch to main across the fleet — seat work
 
 # Land a feature branch (CLUTCH)
 
-> **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `clutch-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLUTCH_ZULIP_EMAIL`, `CLUTCH_ZULIP_KEY`, `CLUTCH_ZULIP_SITE`).  Session tag `[CLUTCH·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `clutch-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLUTCH_ZULIP_EMAIL`, `CLUTCH_ZULIP_KEY`, `CLUTCH_ZULIP_SITE`).  Session tag `[CLUTCH·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
@@ -77,7 +77,7 @@ gh pr create --fill
 | Personal-Site | CI `verify` is file-existence + About-copy grep.  `site/` is the TanStack Start source (README).  `AGENTS.md` may still say "static snapshot" — believe README + the tree.  Preserve `Earlier work included` and the Doximity `/profiles/…/view` URL or the daily mirror reverts them. |
 | AFC | No app test gate.  `python3 scripts/check-fleet-registry.py` if you touched registries. |
 
-CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Progress` then tag.  Consumers pin the exact tag.
+CTS "prod" is an annotated tag `vX.Y.Z` after merge — announce on `#Work-In-Progress` then tag.  Consumers pin the exact tag.
 
 `STATUS.md` / `PLAN.md` (and the archived `docs/EFFORT-LOG.md`) often carry `merge=union` in `.gitattributes`.  Additive edits usually combine.  Never delete another agent's row while resolving.  Up to 3 land attempts are fine.
 

@@ -5,7 +5,7 @@ description: Finish a Clutch work unit — the Linear issue, the PR link, Zulip,
 
 # Closeout (CLUTCH)
 
-> **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `clutch-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLUTCH_ZULIP_EMAIL`, `CLUTCH_ZULIP_KEY`, `CLUTCH_ZULIP_SITE`).  Session tag `[CLUTCH·session8]`, and the `agent-sync` CLI writes it for you.
+> **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `clutch-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLUTCH_ZULIP_EMAIL`, `CLUTCH_ZULIP_KEY`, `CLUTCH_ZULIP_SITE`).  Session tag `[CLUTCH·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
@@ -47,6 +47,8 @@ There is no effort log to update and nothing for writeback to copy.  The effort 
 ## 3. The PR
 
 The PR body names the issue (`Fixes <ID>` or `Refs <ID>`), and the branch is `<seat>/<id>-<slug>`.  Say in the closeout post which of the two you used.
+
+Opening, editing, replying to, resolving and merging a PR all have a credential-safe path: `git-relay`, with the MCP wrapper **GR-MCP** (`git-relay mcp`), which exposes `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` and `resolve_thread`; `mint_token` is deliberately not exposed over MCP, because it returns a raw credential.  A seat reaches the tools with its own bearer token: ST-MCP shares the same bearer-token arrangement, so a seat may find these tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server — the tool names are the same either way.  **The relay is not deployed yet** (verified Oct 23 2026): there is no daemon, no launchd job and no seat pointed at it, so the interim `gh` and shell path is still the one that works, until the owner decides the cutover.
 
 ## 4. Zulip
 

@@ -128,7 +128,7 @@ WHERE TO LOOK, IN THIS ORDER
     simple-chat inbox
     simple-chat read --new --topic "<work topic>"
     simple-chat topics --limit 30
-  (agent-sync is ~/.local/bin/simple-chat; the tracked copy is scripts/agent_sync in
+  (simple-chat is ~/.local/bin/simple-chat; the tracked copy is scripts/agent_sync in
   AI-Fleet-Coordinator.  It reads your own bot's credential, ~/.secrets/Zulip/Instinct-zuliprc
   in your home (in a cloud runtime, the same Fleet-OPS `/zulip` names through `fleet-secrets`),
   and shows
@@ -271,7 +271,7 @@ Owner steps before pasting the follow-up:
 
 ```
 Follow-up to your standing instructions.  Your runtime fills web forms only, sets no API
-headers, and has no MCP client, so these lines replace the board CLI, agent-sync CLI,
+headers, and has no MCP client, so these lines replace the board CLI, simple-chat CLI,
 recall, and seat-mcp lines above.  Everything else in the prompt still binds.
 
 LINEAR, BY GITHUB (OPTION B, THE DEFAULT)

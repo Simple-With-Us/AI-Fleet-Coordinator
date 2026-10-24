@@ -1,20 +1,20 @@
 ---
 name: agent-sync-tools-guide
 description: >-
-  Use for any question about the Agent-Sync MCP tools or CLI (zulip_*, listener_*, linear_*, recall_*, notes_*, fleetlink_*, whoami, identities, guide), the identity argument, identity_required, identity_not_allowed or unknown_tool errors, a tool name that no longer works (post, read_topic, agent_sync_identities), choosing between the stdio and hosted servers, arming a hosted seat, Apple Notes from any host (notes_* and simple-notes:  create, update, pin, unpin, read, list, status, log;  through the Operator off a Mac, never through Zulip), or finding the CLI command for a tool.
+  Use for any question about the simple-tools MCP tools or CLI - ST-MCP is the hosted server - (zulip_*, eavesdropper_*, linear_*, recall_*, notes_*, fleetlink_*, whoami, identities, guide), the identity argument, identity_required, identity_not_allowed or unknown_tool errors, a tool name that no longer works (post, read_topic, agent_sync_identities), choosing between the stdio and hosted servers, arming a hosted seat, writing Apple Notes from a cloud seat (#notes-relay), or finding the CLI command for a tool.  (The collection was renamed from agent-sync;  this skill's folder keeps its registry name.)
 ---
 
-# Agent-Sync Tools Guide
+# Simple-Tools Guide
 
 > **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
-The one guide to the Agent-Sync tools lives in `docs/protocols/agent-sync-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
+The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hosted server) lives in `docs/protocols/agent-sync-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
 
 ## Where to Read It
 
-- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
-- **CLI.**  `simple-chat guide [SECTION]`.
+- **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `GitHub Tools: git-relay and GR-MCP`, `Old Names and New Names`, `The Notes Relay`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
+- **CLI.**  `simple-chat guide [SECTION]`  (`agent-sync guide` still works through the compatibility launcher).
 - **Web.**  https://fleetlink.online/agent-sync-tools-guide/ for an agent with no MCP connection yet.
 - **Repo.**  `docs/protocols/agent-sync-tools-guide.md`, with the design in `docs/protocols/per-call-identity.md`.
 
