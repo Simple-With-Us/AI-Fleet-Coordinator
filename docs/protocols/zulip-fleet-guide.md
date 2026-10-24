@@ -55,7 +55,7 @@ simplewithus.zulipchat.com — for the fleet bots and Jay.
 
 Zulip calls these channels.  Older docs and the API's `type=stream` still say stream; it is the same thing.  All of them exist (verified live Thu, Oct 22, 2026, `agent-sync channels`).
 
-- **#Work-In-Progress** — live coordination between seats.  Topic = one unit of work, or the repo for low-traffic repos (see [Topic Hygiene](#topic-hygiene)).  Standing topics:  `roll call` and `fleet`.  This channel was called **#agent-sync** until the owner renamed it on Oct 22, 2026;  the stream id did not change, so the standing topics moved with it.
+- **#Work-In-Progress** — live coordination between seats.  Topic = one unit of work, or the repo for low-traffic repos (see [Topic Hygiene](#topic-hygiene)).  Standing topics:  `roll call` and `fleet`.  The stream id did not change when the owner renamed this channel, so the standing topics moved with it.
 - **#side-chats** — focused bot-to-bot coordination, visible to Jay.  Use a topic per discussion and mention only the participants needed;  use #Work-In-Progress for fleet-wide coordination.
 - **#alerts** — automated alerts ONLY (watchdog trips, deploy results, CI failures).  No discussion here.  Topic = service name.
 - **#trading** — Socratic.Trade and Congress.Trade work.
@@ -260,11 +260,11 @@ The business rules that script enforces (AFC-359 acceptance criteria):
 
 ```
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" -G \
-  --data-urlencode "stream=agent-sync" \
+  --data-urlencode "stream=work-in-progress" \
   https://simplewithus.zulipchat.com/api/v1/get_stream_id
 
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
-  --data-urlencode 'subscriptions=[{"name":"agent-sync"},{"name":"builds"}]' \
+  --data-urlencode 'subscriptions=[{"name":"work-in-progress"},{"name":"builds"}]' \
   https://simplewithus.zulipchat.com/api/v1/users/me/subscriptions
 ```
 
@@ -339,7 +339,7 @@ These are the wire rules every bot follows, whether it uses the `agent-sync` CLI
 ```
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
   --data-urlencode "type=stream" \
-  --data-urlencode "to=agent-sync" \
+  --data-urlencode "to=work-in-progress" \
   --data-urlencode "topic=AFC 18f61cf4 Zulip cutover" \
   --data-urlencode $'content=[GB-Director] repo:  AI-Fleet-Coordinator  |  IN PROGRESS\nLinkifier pass started.' \
   https://simplewithus.zulipchat.com/api/v1/messages
@@ -358,7 +358,7 @@ On the raw API there is no reply-by-id:  a reply is a post to the same channel a
 ```
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
   --data-urlencode "type=stream" \
-  --data-urlencode "to=agent-sync" \
+  --data-urlencode "to=work-in-progress" \
   --data-urlencode "topic=AFC 18f61cf4 Zulip cutover" \
   --data-urlencode $'content=[GB-Director→CLAUDE] id=r9q1 re=k7f2\n@**Claude** done, linkifiers match the guide.' \
   https://simplewithus.zulipchat.com/api/v1/messages
@@ -445,7 +445,7 @@ curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" -X PATCH \
   --data-urlencode "propagate_mode=change_all" \
   https://simplewithus.zulipchat.com/api/v1/messages/4821
 
-# Follow (3), mute (1), or reset (0) a topic for this bot.  Get stream_id from GET /get_stream_id?stream=agent-sync.
+# Follow (3), mute (1), or reset (0) a topic for this bot.  Get stream_id from GET /get_stream_id?stream=work-in-progress.
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" \
   --data-urlencode "stream_id=$STREAM_ID" \
   --data-urlencode "topic=AFC 18f61cf4 Zulip cutover" \

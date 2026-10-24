@@ -37,7 +37,8 @@ export const SCOPES = Object.freeze(["zulip:read", "zulip:write"]);
 // original JET connection is wake-only, so the second ChatGPT connection is
 // its own seat.  Both seats use the same openai-dot-bot;  the seat's expected
 // tag is SEAT_TAG_EXPECTATIONS in src/contract.js.
-export const KNOWN_SEATS = Object.freeze(["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE"]);
+// MA (Rob's admin-arming seat) landed on main via #894;  both seat sets stay.
+export const KNOWN_SEATS = Object.freeze(["JET", "JET-CHAT", "GROK-WEB", "ECHO", "WISE", "CURSOR", "CLAUDE", "MA"]);
 
 // Seats whose connection serves event notifications only.  tools/list is
 // empty and tools/call refuses every name (src/delegated-identities.js);
@@ -75,6 +76,7 @@ export const PROPS_PHASE = 2;
 export const SEAT_SECRETS = Object.freeze({
   CURSOR: Object.freeze({ key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR" }),
   CLAUDE: Object.freeze({ key: "ZULIP_CLAUDE_API_KEY", email: "ZULIP_CLAUDE_EMAIL" }),
+  MA: Object.freeze({ key: "ZULIP_KEY_MA", email: "ZULIP_EMAIL_MA" }),
   JET: Object.freeze({ key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" }),
   // Own env names (this table never shares one), same openai-dot-bot key
   // value:  install_seat_key.py provisions it from the same Infisical entry.
@@ -103,7 +105,7 @@ export const WAKE_SECRETS = Object.freeze({
 export const OPERATOR_NOTES_SECRET = "OPERATOR_NOTES_KEY";
 
 // What /admin and a manual client's name call each seat's app.
-export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "JET-CHAT": "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise" });
+export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "JET-CHAT": "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise", MA: "Rob" });
 
 const BOT_EMAIL_RE = /^[a-z0-9-]+-bot@simplewithus\.zulipchat\.com$/;
 

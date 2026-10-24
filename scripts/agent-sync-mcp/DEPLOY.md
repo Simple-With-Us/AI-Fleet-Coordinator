@@ -193,7 +193,7 @@ Owner, Thu, Oct 15:  "I'd like Agent-Sync and whatever local agents use to be ab
 The `eavesdropper_status`, `eavesdropper_inbox`, `eavesdropper_owner_queue`, `eavesdropper_wakes` and `eavesdropper_held_back` tools (spec section 1.7) read the server listener's signed read API with the seat's `WAKE_HMAC_KEY_<SEAT>`.  Until both halves are set up they answer `not_configured` and nothing else changes.
 
 1. The listener half first:  `docs/protocols/agent-sync-server.md`, "The Read API", steps 1 to 5 (redeploy, keys, `[listener_api]`, the proxy route, the checks).
-2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://listener.jays.services"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
+2. Set the var in `wrangler.jsonc`:  `"LISTENER_API_URL": "https://operator.jays.services"` (an https origin with no path;  anything else reads as unset).  Open a PR and merge it.
 3. Make sure each seat that should read its records has `WAKE_HMAC_KEY_<SEAT>` (JET already does;  the others only if Jay chose to add them in the server doc's step 2):
    ```bash
    fleet-secrets get JET_ROUTINE_KEY | tr -d '"\n' | WRANGLER_SEND_METRICS=false npx --no-install wrangler secret put WAKE_HMAC_KEY_JET >/dev/null && echo "set WAKE_HMAC_KEY_JET"

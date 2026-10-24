@@ -1430,9 +1430,20 @@ export class HostedTools {
       const data = await client.call(Q_TEAMS, { first: 100 });
       return data?.teams?.nodes ?? [];
     });
+    // Board follows every label page (board:1635), and so does this:  the first
+    // 250 alone could miss a claim label that exists, and the claim would
+    // then run without the fleet's marker.
     const labels = await this.linearCall(async () => {
-      const data = await client.call(Q_LABELS, { first: 250 });
-      return data?.issueLabels?.nodes ?? [];
+      const nodes = [];
+      let after = null;
+      for (;;) {
+        const data = await client.call(Q_LABELS, { first: 250, after });
+        const conn = data?.issueLabels;
+        for (const node of conn?.nodes ?? []) nodes.push(node);
+        if (conn?.pageInfo?.hasNextPage !== true || !conn.pageInfo.endCursor) break;
+        after = conn.pageInfo.endCursor;
+      }
+      return nodes;
     });
     const value = {
       teams: teams.map((t) => ({ id: t.id, key: t.key, name: t.name, states: (t.states?.nodes ?? []).map((s) => ({ id: s.id, name: s.name, type: s.type })) })),
@@ -1653,26 +1664,40 @@ export class HostedTools {
     this.scanLinearText(args.comment?.trim() ? `CLAIMED\n\n${args.comment.trim()}` : "CLAIMED", args.session, { field: "comment" });
     const issue = await this.linearIssue(args.id);
     const seat = seatTagForSeat(this.seat);
+    const claimName = `${CLAIM_PREFIX}${seat}`;
+    // The viewer first:  its id is the delegate the update sets, and the held
+    // check compares it against the issue's current delegate.  The human
+    // assignee stays;  assigneeId is never touched.
+    const viewer = await this.linearCall(() => this.linear.confirmViewer());
+    const viewerId = viewer?.id || null;
+    const viewerName = viewer?.name || null;
     const keys = linearLabelKeys(issue);
     const held = keys.find((n) => n.startsWith(CLAIM_PREFIX));
-    if (held && held !== `${CLAIM_PREFIX}${seat}`) {
+    if (held && held !== claimName) {
       throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${held.slice(CLAIM_PREFIX.length)}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: held.slice(CLAIM_PREFIX.length) } });
     }
+    const delegate = issue?.delegate ?? null;
+    // Only an app delegate is a fleet claim marker, exactly as on the release
+    // path:  a human delegation (Jay's triage, a colleague's) never holds a
+    // claim, and claiming the issue delegates it to this seat's app user.
+    if (delegate?.id && delegate.app === true && delegate.id !== viewerId) {
+      const heldBy = delegate.name || "another seat";
+      throw new ToolError("claim_held", `${issue.identifier} is already claimed by ${heldBy}.  Do not take it;  ask the owner in #Work-In-Progress.`, { extra: { held_by: heldBy } });
+    }
     const workspace = await this.linearWorkspace();
-    const idsOf = async (names) => {
-      const out = [];
-      for (const name of names) {
-        const hit = this.flatLabel(workspace, name);
-        if (!hit) throw new ToolError("invalid_argument", `this workspace has no flat label named "${name}".  Jay creates the claim labels once per seat.`);
-        out.push(hit.id);
-      }
-      return out;
-    };
-    const claimName = `${CLAIM_PREFIX}${seat}`;
-    // A claim is In Progress plus the claimed:<seat> and seat:<seat> labels; it
-    // drops every other seat's claim and a stale one, and never removes a
-    // `seat:` label, which is attribution (board cmd_claim).
-    const added = [...(await idsOf([claimName, `${SEAT_PREFIX}${seat}`]))];
+    // A claim is In Progress plus the claimed:<seat> and seat:<seat> labels
+    // where they exist, and the seat's app user as delegate; it drops every
+    // other seat's claim and a stale one, and never removes a `seat:` label,
+    // which is attribution (board cmd_claim).  Seats with no claim labels
+    // still claim through the delegate alone.
+    const claimHit = this.flatLabel(workspace, claimName);
+    const seatHit = this.flatLabel(workspace, `${SEAT_PREFIX}${seat}`);
+    const added = [];
+    if (claimHit) added.push(claimHit.id);
+    if (seatHit) added.push(seatHit.id);
+    if (!claimHit && !viewerId) {
+      throw new ToolError("invalid_argument", `this workspace has no flat label named "${claimName}" and no Linear app user for ${seat} (viewer id missing).  Jay creates the claim labels once per seat.`);
+    }
     const removed = [];
     for (const key of keys) {
       if ((key.startsWith(CLAIM_PREFIX) && key !== claimName) || key === "stale-claim") {
@@ -1686,13 +1711,13 @@ export class HostedTools {
     const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const commentId = await linearCommentId(issue.id, this.seat, "claim", body, args.session, centralDay(this.now()));
-    await this.linearCall(() => this.linear.confirmViewer());
+    const input = { stateId: state.id, addedLabelIds: added, removedLabelIds: removed, ...(viewerId ? { delegateId: viewerId } : {}) };
     const result = await this.linearWrite(idem, { issue: issue.id, label: claimName }, async () => {
-      const updated = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input: { stateId: state.id, addedLabelIds: added, removedLabelIds: removed } }), { write: true });
+      const updated = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input }), { write: true });
       if (updated?.issueUpdate?.success !== true) throw new ToolError("linear_error", "Linear did not set the claim.");
       const commented = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issue.id, commentId, body) }), { write: true });
       if (commented?.commentCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the CLAIMED comment.");
-      return { id: issue.id, identifier: issue.identifier, label: claimName, held_by: null };
+      return { id: issue.id, identifier: issue.identifier, label: claimHit ? claimName : null, delegate: viewerName, held_by: null };
     });
     return this.writeResult(result);
   }
@@ -1745,15 +1770,24 @@ export class HostedTools {
     const state = await this.linearState(workspace, issue.team?.id ?? null, args.status);
     // board cmd_status:  releasing to open or backlog drops every claim marker,
     // so a later move back to In Progress cannot inherit one; a closing status
-    // drops the two labels that mean "waiting on the owner".
+    // drops the two labels that mean "waiting on the owner".  A release also
+    // clears an app delegate (this seat's or any other's);  closing statuses
+    // leave the delegate alone.
     const keys = linearLabelKeys(issue);
-    const drop = args.status === "open" || args.status === "backlog" ? keys.filter((k) => k.startsWith(CLAIM_PREFIX)) : CLOSING_STATUSES.includes(args.status) ? keys.filter((k) => k === "needs-owner" || k === "ask-capture") : [];
+    const releasing = args.status === "open" || args.status === "backlog";
+    const drop = releasing ? keys.filter((k) => k.startsWith(CLAIM_PREFIX)) : CLOSING_STATUSES.includes(args.status) ? keys.filter((k) => k === "needs-owner" || k === "ask-capture") : [];
     const removed = [];
     for (const key of drop) {
       const hit = this.flatLabel(workspace, key);
       if (hit) removed.push(hit.id);
     }
-    const input = removed.length ? { stateId: state.id, removedLabelIds: removed } : { stateId: state.id };
+    // Only an app delegate is a fleet claim marker:  a human delegation (Jay's
+    // triage, a colleague's) is never cleared here.  A release clears this
+    // seat's delegate or any other's app delegate;  a non-release, a missing
+    // delegate, or a human one leaves it alone.
+    const delegate = issue?.delegate ?? null;
+    const clearDelegate = releasing && !!delegate?.id && delegate.app === true;
+    const input = { stateId: state.id, ...(removed.length ? { removedLabelIds: removed } : {}), ...(clearDelegate ? { delegateId: null } : {}) };
     const result = await this.linearWrite(idem, { issue: issue.id, status: args.status }, async () => {
       const data = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input }), { write: true });
       if (data?.issueUpdate?.success !== true) throw new ToolError("linear_error", "Linear did not set the state.");
