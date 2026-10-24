@@ -43,8 +43,8 @@ RECALL_MODULES = (
     "search_log",
     "telemetry",
 )
-# `simple-chat` reads the NOTES_RELAY_CONSUMER knob through these fleet_knobs modules (stdlib only;  the package's
-# tests, its inventory CLI and its README stay out).  Without them a host silently falls back to the default consumer.
+# `simple-notes` reads the OPERATOR_API_URL knob through these fleet_knobs modules (stdlib only;  the package's
+# tests, its inventory CLI and its README stay out).  Without them a server host cannot find the Operator's notes queue.
 KNOB_MODULES = ("__init__", "knobs", "lkg", "registry", "source", "values")
 # `lane` runs from these fleet_lanes modules plus its bash shim (fleet-apps.json is already shipped).
 LANE_MODULES = ("__init__", "doctor", "guard", "lane", "layout")

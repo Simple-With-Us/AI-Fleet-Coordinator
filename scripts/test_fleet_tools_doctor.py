@@ -1346,5 +1346,213 @@ class ReportAndRunTests(HomeCase):
         self.assertNotIn("release", runtime["detail"])
 
 
+class NotesServiceTests(unittest.TestCase):
+    """AFC-486:  the Notes rows Muster shows (category `service`)."""
+
+    PRINT = "gui/501/com.jay.operator-notes-runner = {\n\tstate = running\n\truns = 3\n\tlast exit code = 0\n}\n"
+    NOW = 1_800_000_000.0
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.state = root / "notes-runner.json"
+        self.log = root / "apple-notes-actions.jsonl"
+        for name, value in (("NOTES_RUNNER_STATE", self.state), ("NOTES_ACTION_LOG", self.log)):
+            patcher = mock.patch.object(doctor, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def iso(self, seconds_ago):
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.NOW - seconds_ago))
+
+    def rows(self, host, answer=(0, PRINT), health=None, network=True):
+        report = doctor.Report()
+        doctor.check_notes(
+            report,
+            host,
+            {},
+            fake_runner([(("launchctl", "print"), answer)]),
+            network=network,
+            health=health or (lambda env: {}),
+            clock=lambda: self.NOW,
+        )
+        return {row["check"]: row for row in report.rows}
+
+    def test_a_runner_that_is_not_loaded_fails(self):
+        rows = self.rows("mac", answer=(113, ""))
+        self.assertEqual(
+            (rows["notes:runner"]["status"], rows["notes:runner"]["category"]), ("FAIL", "service")
+        )
+
+    def test_a_loaded_runner_that_polls_is_current_and_a_silent_one_is_stale(self):
+        self.state.write_text(json.dumps({"last_poll_at": self.iso(30), "handled": 4}))
+        self.assertEqual(self.rows("mac")["notes:runner"]["state"], "current")
+        self.state.write_text(
+            json.dumps({"last_poll_at": self.iso(3600), "last_error": "unavailable: x"})
+        )
+        row = self.rows("mac")["notes:runner"]
+        self.assertEqual((row["status"], row["state"]), ("WARN", "stale"))
+        self.assertIn("last error", row["detail"])
+
+    def test_the_action_log_row_reports_unsent_lines(self):
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "unknown")  # no log yet
+        self.log.write_text('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n')
+        self.state.write_text(
+            json.dumps(
+                {
+                    "last_poll_at": self.iso(10),
+                    "log": {"offset": 0},
+                    "log_shipped_at": self.iso(7200),
+                }
+            )
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "stale")
+        size = self.log.stat().st_size
+        self.state.write_text(
+            json.dumps(
+                {
+                    "last_poll_at": self.iso(10),
+                    "log": {"inode": self.log.stat().st_ino, "offset": size},
+                    "log_shipped_at": self.iso(60),
+                }
+            )
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+
+    def test_unsent_bytes_are_counted_from_the_file_the_cursor_names(self):
+        # The cursor can sit in a rotated copy (a send that failed after a rotation):  the rest of that copy and the
+        # whole newer log are unsent, however small the new log is.
+        rotated = self.log.with_name(self.log.name + ".1")
+        rotated.write_text("x" * 3999 + "\n")
+        self.log.write_text("y" * 99 + "\n")
+        cursor = {"inode": rotated.stat().st_ino, "offset": 1000}
+        self.state.write_text(
+            json.dumps(
+                {
+                    "last_poll_at": self.iso(10),
+                    "log": cursor,
+                    "log_shipped_at": self.iso(7200),
+                    "last_error": "log:  unavailable: the Operator notes API could not be reached",
+                    "last_error_at": self.iso(60),
+                }
+            )
+        )
+        row = self.rows("mac")["notes:action-log"]
+        self.assertEqual(row["state"], "stale")
+        self.assertIn("%d bytes not yet sent" % (4000 - 1000 + 100), row["detail"])
+        self.assertIn("last error (60 s ago)", row["detail"])
+        # A cursor that names no kept file:  the runner sends every kept file again, so all of it counts.
+        self.state.write_text(
+            json.dumps({"log": {"inode": -1, "offset": 50}, "log_shipped_at": self.iso(7200)})
+        )
+        self.assertIn("4100 bytes not yet sent", self.rows("mac")["notes:action-log"]["detail"])
+        # A file cut short in place (shorter than the cursor):  the runner finds its place again, so all of it counts.
+        self.state.write_text(
+            json.dumps(
+                {
+                    "log": {"inode": self.log.stat().st_ino, "offset": 500},
+                    "log_shipped_at": self.iso(7200),
+                }
+            )
+        )
+        self.assertIn("4100 bytes not yet sent", self.rows("mac")["notes:action-log"]["detail"])
+
+    def test_a_torn_tail_and_an_old_or_unrelated_error_are_not_reported_as_waiting(self):
+        self.log.write_text(
+            '{"id":"a","ts":"2026-10-22T10:00:00Z"}\n{"id":"b","ts":'
+        )  # the last line torn
+        whole = len('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n')
+        state = {
+            "last_poll_at": self.iso(10),
+            "log": {"inode": self.log.stat().st_ino, "offset": whole},
+            "log_shipped_at": self.iso(7200),
+            "last_error": "log:  unavailable: x",
+            "last_error_at": self.iso(9000),  # before the last send
+        }
+        self.state.write_text(json.dumps(state))
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+        self.log.write_text(self.log.read_text() + "1}\n")  # finished:  now one line waits
+        self.state.write_text(json.dumps(state))
+        row = self.rows("mac")["notes:action-log"]
+        self.assertEqual(row["state"], "stale")
+        self.assertNotIn("last error", row["detail"])  # the only error is older than the last send
+        self.state.write_text(
+            json.dumps(dict(state, last_error="internal: a claim", last_error_at=self.iso(60)))
+        )
+        self.assertNotIn(
+            "last error", self.rows("mac")["notes:action-log"]["detail"]
+        )  # not from shipping the log
+        # A torn tail longer than the doctor's first look back (64 KiB) is still left out.
+        self.log.write_text('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n' + "z" * 100_000)
+        self.state.write_text(
+            json.dumps(dict(state, log={"inode": self.log.stat().st_ino, "offset": whole}))
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+
+    def test_a_line_written_moments_ago_is_not_late_however_long_ago_the_last_send(self):
+        # A quiet Mac sends nothing for hours;  a line it writes now waits only for the runner's next pass (25 s).
+        self.log.write_text('{"id":"a","ts":"2026-10-22T10:00:00Z"}\n')
+        os.utime(self.log, (self.NOW - 20, self.NOW - 20))
+        self.state.write_text(
+            json.dumps(
+                {
+                    "last_poll_at": self.iso(5),
+                    "log": {"offset": 0},
+                    "log_shipped_at": self.iso(7200),
+                }
+            )
+        )
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "current")
+        os.utime(
+            self.log, (self.NOW - 600, self.NOW - 600)
+        )  # written ten minutes ago and still not sent
+        self.assertEqual(self.rows("mac")["notes:action-log"]["state"], "stale")
+
+    def test_the_doctor_counts_the_copies_the_script_keeps(self):
+        from agent_sync import notes as N
+
+        self.assertEqual(doctor.NOTES_LOG_ROTATIONS, N.ACTION_LOG_ROTATIONS)
+
+    def test_the_server_reads_the_queue_health(self):
+        fresh = {
+            "queued": 1,
+            "running": 0,
+            "oldest_queued_seconds": 20,
+            "runner_polled_at": self.iso(10),
+        }
+        self.assertEqual(
+            self.rows("server", health=lambda env: fresh)["notes:queue"]["status"], "OK"
+        )
+        silent = dict(fresh, runner_polled_at=None)
+        self.assertEqual(
+            self.rows("server", health=lambda env: silent)["notes:queue"]["state"], "stale"
+        )
+        backlog = dict(fresh, oldest_queued_seconds=4000)
+        self.assertIn(
+            "waited", self.rows("server", health=lambda env: backlog)["notes:queue"]["detail"]
+        )
+
+    def test_a_failed_probe_is_a_row_never_a_crash(self):
+        class Refused(Exception):
+            def __init__(self, code):
+                super().__init__(code)
+                self.code, self.message = code, "x"
+
+        def raises(code):
+            def health(env):
+                raise Refused(code)
+
+            return health
+
+        self.assertEqual(
+            self.rows("server", health=raises("not_configured"))["notes:queue"]["status"], "WARN"
+        )
+        self.assertEqual(
+            self.rows("server", health=raises("unavailable"))["notes:queue"]["status"], "FAIL"
+        )
+        self.assertEqual(self.rows("server", network=False)["notes:queue"]["state"], "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()
