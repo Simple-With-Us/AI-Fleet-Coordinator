@@ -88,6 +88,7 @@ def main() -> int:
     )
     old = path.read_text()
     new = project(old, value)
+    directory_synced = None
     if args.apply and old != new:
         # Same-directory atomic rename, preserving the original permissions and config verbatim
         # except this single typed setting. No secret value is written to the config or audit.
@@ -108,11 +109,17 @@ def main() -> int:
             if path.read_text() != old:
                 raise ValueError("config changed during projection")
             os.replace(tmp, path)
-            dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            # Replacement has happened.  Report durability failure without claiming refusal.
+            directory_synced = False
             try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
+                dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(dir_fd)
+                    directory_synced = True
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                print("projection applied: directory durability not confirmed", file=sys.stderr)
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
@@ -129,6 +136,7 @@ def main() -> int:
                 "changed": old != new,
                 "applied": args.apply,
                 "daemon_reloaded": False,
+                "directory_synced": directory_synced,
             }
         )
     )
