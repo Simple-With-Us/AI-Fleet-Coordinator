@@ -110,11 +110,20 @@ export async function prefetchFolder(env, path) {
     res = await fetch(`${base}/api/v3/secrets/raw?${qs}`, { headers: { Authorization: `Bearer ${token}` } });
     if (!res.ok) throw new InfisicalError(`Infisical answered ${res.status} listing ${path}`, { code: "infisical_unavailable", status: res.status });
     const body = await res.json();
+    // Authoritative absence requires a COMPLETE, validated listing.  Any
+    // shape doubt (no array, non-string fields, pagination markers) refuses
+    // to warm:  an empty-looking malformed listing must never deactivate
+    // tools or masquerade as drift.
+    const items = body?.secrets;
+    if (!Array.isArray(items) || items.some((item) => typeof item?.secretKey !== "string" || typeof item?.secretValue !== "string")) {
+      throw new InfisicalError(`Infisical listing for ${path} failed schema validation`, { code: "invalid_listing" });
+    }
+    if ("totalCount" in (body ?? {}) && body.totalCount !== items.length) {
+      throw new InfisicalError(`Infisical listing for ${path} is truncated (${items.length} of ${body.totalCount})`, { code: "truncated_listing" });
+    }
     const now = Date.now();
-    for (const item of body?.secrets ?? []) {
-      if (typeof item?.secretKey === "string" && typeof item?.secretValue === "string" && item.secretValue !== "") {
-        cache.set(`${path}${item.secretKey}`, { value: item.secretValue, at: now });
-      }
+    for (const item of items) {
+      if (item.secretValue !== "") cache.set(`${path}${item.secretKey}`, { value: item.secretValue, at: now });
     }
     folderWarm.set(path, now);
     stats.fetched++;

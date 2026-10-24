@@ -298,3 +298,67 @@ test("prefetchFolder: fallback mode keeps per-name env fallback when the listing
   assert.equal(await resolveSecret(env, { name: "S", path: "/tools", envName: "LEGACY", optional: true }), "v0");
   assert.equal(calls.length, 2, "listing 404 + one per-name attempt, then env");
 });
+
+test("prefetchFolder: malformed listing never warms and required mode throws", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  mockFetch([["/api/v3/secrets/raw?", { body: { secrets: "oops" } }]]);
+  await assert.rejects(() => prefetchFolder(ENV, "/tools"), (e) => e instanceof InfisicalError && e.code === "invalid_listing");
+  // Nothing warmed: a later resolve still fetches per-name (404 here) rather than trusting the bad listing.
+  await assert.rejects(() => resolveSecret(ENV, { name: "A", path: "/tools", envName: "L" }), (e) => e.code === "not_found");
+});
+
+test("prefetchFolder: truncated listing (totalCount mismatch) refuses to warm", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: "va" }], totalCount: 2 } }]]);
+  await assert.rejects(() => prefetchFolder(ENV, "/tools"), (e) => e.code === "truncated_listing");
+  const calls2 = mockFetch([["secrets/raw/A", { body: { secret: { secretValue: "va" } } }]]);
+  assert.equal(await resolveSecret(ENV, { name: "A", path: "/tools", envName: "L" }), "va", "per-name fetch still works after a refused listing");
+  assert.equal(calls2.length, 1);
+});
+
+test("prefetchFolder: permission denial (403) throws in required, never falls back to env", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  mockFetch([["/api/v3/secrets/raw?", { status: 403, body: {} }]]);
+  const env = { ...ENV, LEGACY: "should-not-serve" };
+  await assert.rejects(() => prefetchFolder(env, "/zulip"), (e) => e.code === "infisical_unavailable" && e.status === 403);
+  await assert.rejects(() => resolveSecret(env, { name: "A", path: "/zulip", envName: "LEGACY" }), InfisicalError, "required mode never serves the env binding");
+});
+
+test("prefetchFolder: transport failure in fallback mode warns, does not warm, env serves", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  globalThis.fetch = async () => { throw new Error("socket hangup"); };
+  const env = { ...ENV, INFISICAL_MODE: "fallback", LEGACY: "v0" };
+  await prefetchFolder(env, "/tools");
+  assert.equal(await resolveSecret(env, { name: "A", path: "/tools", envName: "LEGACY", optional: true }), "v0");
+});
+
+test("cache expiry: a rotated value is picked up after the TTL", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: "old" }] } }]]);
+  await prefetchFolder(ENV, "/tools");
+  assert.equal(await resolveSecret(ENV, { name: "A", path: "/tools", envName: "L" }), "old");
+  // Re-list past the TTL with the rotated value.
+  mockFetch([["/api/v3/secrets/raw?", { body: { secrets: [{ secretKey: "A", secretValue: "new" }] } }]]);
+  const realNow = Date.now;
+  Date.now = () => realNow() + 61000;
+  try {
+    await prefetchFolder(ENV, "/tools");
+    assert.equal(await resolveSecret(ENV, { name: "A", path: "/tools", envName: "L" }), "new", "post-TTL listing serves the rotated value");
+    // And while the folder is warm, an intentional absence stays a free miss.
+    assert.equal(await resolveSecret(ENV, { name: "NEVER_THERE", path: "/tools", envName: "L2", optional: true }), "");
+  } finally {
+    Date.now = realNow;
+  }
+});
+
+test("folder 404 (missing folder) in required mode throws as unavailable, not as per-name absence", async () => {
+  _resetInfisicalForTests();
+  const { prefetchFolder } = await import("../src/infisical.js");
+  mockFetch([]);
+  await assert.rejects(() => prefetchFolder(ENV, "/nonexistent"), (e) => e.code === "infisical_unavailable" && e.status === 404, "a missing folder is an infra signal, not authoritative emptiness");
+});
