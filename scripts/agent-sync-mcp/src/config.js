@@ -85,6 +85,13 @@ export const WAKE_SECRETS = Object.freeze({
   WISE: "WAKE_HMAC_KEY_INSTINCT",
 });
 
+// The Operator notes API key (AFC-486, docs/protocols/operator-notes.md):  the Worker signs every notes_* request
+// to <LISTENER_API_URL>/notes/v1/ as the principal WORKER with this secret, the Infisical key
+// OPERATOR_NOTES_WORKER_KEY (AI Fleet Coordinator, prod, /operator).  One key for every seat:  the seat comes only
+// from the grant, and the Operator checks it against [notes_queue] worker_seats.  A Worker secret, never a var.
+// Unset (or shorter than 32 characters) means every notes tool answers not_configured (src/notes.js).
+export const OPERATOR_NOTES_SECRET = "OPERATOR_NOTES_KEY";
+
 // What /admin and a manual client's name call each seat's app.
 export const SEAT_LABELS = Object.freeze({ CLAUDE: "Claude", CURSOR: "Cursor Cloud", JET: "ChatGPT", "GROK-WEB": "Grok", ECHO: "Echo", WISE: "Wise" });
 
@@ -211,23 +218,6 @@ export function loadConfig(env) {
     botEmails[seat] = email;
   }
 
-  // The seat whose bot is the Notes relay consumer (the Mac listener's [notes_relay] seat).  notes_status counts a
-  // check mark, a cross mark or a refusal reply only from this bot:  #notes-relay is public and any fleet bot can
-  // react.  Not committed to wrangler.jsonc:  it is the fleet knob NOTES_RELAY_CONSUMER (Infisical, INFISICAL.md), copied
-  // to a Worker binding at deploy by sync_notes_consumer.py.  Unset means null:  notes_status then answers
-  // not_configured instead of guessing a consumer.
-  const consumerRaw = String(env.NOTES_RELAY_CONSUMER ?? "").trim().toUpperCase();
-  const notesRelayConsumer = consumerRaw || null;
-  if (notesRelayConsumer !== null && !/^[A-Z0-9][A-Z0-9-]{0,31}$/.test(notesRelayConsumer)) {
-    throw new Error("config: NOTES_RELAY_CONSUMER must be a seat name such as CLAUDE");
-  }
-
-  const operatorZulipUserId = Number(env.OPERATOR_ZULIP_USER_ID);
-  const operatorZulipEmail = String(env.OPERATOR_ZULIP_EMAIL ?? "").trim().toLowerCase();
-  if (notesRelayConsumer === "OPERATOR" && (!Number.isSafeInteger(operatorZulipUserId) || operatorZulipUserId <= 0 || !/^[^@\s]+@[^@\s]+$/.test(operatorZulipEmail))) {
-    throw new Error("config: OPERATOR requires OPERATOR_ZULIP_USER_ID and OPERATOR_ZULIP_EMAIL");
-  }
-
   // MCP Events callback hosts (src/events.js).  Unset means the compiled
   // default;  a malformed entry fails closed like every other var.
   const eventCallbackHosts = env.EVENT_CALLBACK_HOSTS === undefined || env.EVENT_CALLBACK_HOSTS === "" ? [...DEFAULT_CALLBACK_HOSTS] : parseList(env, "EVENT_CALLBACK_HOSTS").map((h) => h.toLowerCase());
@@ -292,9 +282,6 @@ export function loadConfig(env) {
     ownerUserId,
     ownerClients: Object.freeze(ownerClients),
     botEmails: Object.freeze(botEmails),
-    notesRelayConsumer,
-    operatorZulipUserId,
-    operatorZulipEmail,
     eventCallbackHosts: Object.freeze(eventCallbackHosts),
     // AFC-477 spike (temporary):  offer `fleet.spike.ping` and answer
     // POST /internal/spike/<SEAT> only while this is exactly "on".  It is a

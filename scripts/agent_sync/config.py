@@ -341,6 +341,12 @@ class Config:
         self.skipped_seats: dict[str, list[str]] = {}
         self.instance = "mac"
         self.owner_user_id = 0
+        # The Operator service bot's own Zulip user id, pinned in this host's listener.toml the
+        # same way the owner's is.  A production user id is private inventory, so none is
+        # committed:  the host pins it and the runtime reads it (Kody review on AFC-473).  Without
+        # it a seat cannot be told "the Operator opened this DM" from "a seat opened it", and the
+        # runtime refuses by name instead of guessing.
+        self.operator_user_id = 0
         self.eligible_user_ids: set[int] = set()
         # `[operator] dm_allow`:  the user ids besides the pinned owner that the Operator may hand a
         # tagged address's candidate list to (AFC-412).  The list carries internal session ids and
@@ -384,10 +390,12 @@ class Config:
         self.outgoing_webhook_port = OUTGOING_WEBHOOK_DEFAULT_PORT
         # The signed read API for the hosted Worker's listener_* tools (AFC-330, listener_api.py).
         self.listener_api_enabled = False
-        # The #notes-relay consumer (AFC-331, notes_relay.py):  the Mac listener runs apple-notes-coding.sh for
-        # requests agents post from anywhere else.  Off by default;  `seat` is the seat whose bot reads and reacts.
-        self.notes_relay_enabled = False
-        self.notes_relay_seat = "CLAUDE"
+        # The Operator's Apple Notes queue (AFC-486, notes_queue.py), served under /notes/v1/ by the listener API:
+        # the server instance only.  `worker_seats` and `server_seats` are the seats the WORKER and SERVER principals
+        # may act for.  The [notes_relay] section of AFC-331 is retired and ignored.
+        self.notes_queue_enabled = False
+        self.notes_queue_worker_seats: frozenset[str] = frozenset()
+        self.notes_queue_server_seats: frozenset[str] = frozenset()
         self.listener_api_bind = "127.0.0.1"
         self.listener_api_port = LISTENER_API_DEFAULT_PORT
         # Mac-only wake backpressure during host saturation (OPS-950).  Peer wakes are held back
@@ -599,6 +607,11 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("daemon.owner_user_id must be a user id (0 means not pinned yet)")
     else:
         cfg.owner_user_id = owner
+    operator = daemon.get("operator_user_id", 0)
+    if isinstance(operator, bool) or not isinstance(operator, int) or operator < 0:
+        errors.append("daemon.operator_user_id must be a user id (0 means not pinned yet)")
+    else:
+        cfg.operator_user_id = operator
     eligible = daemon.get("eligible_user_ids", [])
     if not isinstance(eligible, list) or not all(
         isinstance(i, int) and not isinstance(i, bool) for i in eligible
@@ -781,30 +794,33 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("operator.dm_allow must be a list of user ids")
     else:
         cfg.operator_dm_allow = frozenset(dm_allow)
-    relay_errors_before = len(errors)
-    relay = raw.get("notes_relay") or {}
-    if not isinstance(relay, dict):
-        errors.append("[notes_relay] must be a table")
-        relay = {}
-    unknown_relay = set(relay) - {"enabled", "seat"}
-    if unknown_relay:
-        errors.append("[notes_relay] has unknown setting(s): %s" % ", ".join(sorted(unknown_relay)))
-    if not isinstance(relay.get("enabled", False), bool):
-        errors.append("notes_relay.enabled must be true or false")
+    queue_errors_before = len(errors)
+    queue_section = raw.get("notes_queue") or {}
+    if not isinstance(queue_section, dict):
+        errors.append("[notes_queue] must be a table")
+        queue_section = {}
+    unknown_queue = set(queue_section) - {"enabled", "worker_seats", "server_seats"}
+    if unknown_queue:
+        errors.append("[notes_queue] has unknown setting(s): %s" % ", ".join(sorted(unknown_queue)))
+    if not isinstance(queue_section.get("enabled", False), bool):
+        errors.append("notes_queue.enabled must be true or false")
     else:
-        cfg.notes_relay_enabled = relay.get("enabled", False)
-    relay_seat = relay.get("seat", "CLAUDE")
-    if not isinstance(relay_seat, str) or not _SEAT_RE.match(relay_seat.upper()):
-        errors.append("notes_relay.seat must be a seat name such as CLAUDE")
-    else:
-        cfg.notes_relay_seat = relay_seat.upper()
-    if len(errors) > relay_errors_before:
-        cfg.notes_relay_enabled = False  # a section with a problem never turns the consumer on
-    if cfg.notes_relay_enabled and cfg.instance != "mac":
+        cfg.notes_queue_enabled = queue_section.get("enabled", False)
+    for name in ("worker_seats", "server_seats"):
+        seats_list = queue_section.get(name, [])
+        if not isinstance(seats_list, list) or not all(
+            isinstance(s, str) and _SEAT_RE.match(s.upper()) for s in seats_list
+        ):
+            errors.append("notes_queue.%s must be a list of seat names such as CLAUDE" % name)
+        else:
+            setattr(cfg, "notes_queue_%s" % name, frozenset(s.upper() for s in seats_list))
+    if len(errors) > queue_errors_before:
+        cfg.notes_queue_enabled = False  # a section with a problem never turns the queue on
+    if cfg.notes_queue_enabled and cfg.instance != "server":
         errors.append(
-            "notes_relay.enabled applies to the mac instance only:  the notes script needs Notes.app"
+            "notes_queue.enabled applies to the server instance only:  the Mac writes its own notes directly"
         )
-        cfg.notes_relay_enabled = False
+        cfg.notes_queue_enabled = False
     cfg.presence = L.presence_topics(raw)
     platform = (
         ((raw.get("platform") or {}).get("claude-code") or {})
@@ -1077,12 +1093,6 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         )
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
     _refuse_shared_env(cfg)
-    if cfg.notes_relay_enabled and cfg.notes_relay_seat not in cfg.seats:
-        errors.append(
-            "notes_relay.seat %s is not an enabled [seat.X] section, so nothing reads #notes-relay"
-            % cfg.notes_relay_seat
-        )
-        cfg.notes_relay_enabled = False
     return cfg
 
 

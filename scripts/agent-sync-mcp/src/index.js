@@ -71,6 +71,7 @@ import { fleetlinkClientFromEnv, fleetlinkClientFromSecret, resolveFleetlinkSeat
 import { LinearClient, linearClientFromEnv, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat, LINEAR_SECRETS } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { listenerClientFromEnv } from "./eavesdropper.js";
+import { operatorNotesClientFromEnv } from "./notes.js";
 import { ConsentForm, AdminForm, CONSENT_ARRAY_KEYS, parseForm } from "./forms.js";
 import { SeatEvents, deliverWake, wakeReply, WAKE_BUDGET_MS, EVENT_NAME } from "./events.js";
 import { verifyWake, wakePathSeat, readBodyBytes, WAKE_SIGNATURE_HEADER, WAKE_MAX_BODY } from "./wake.js";
@@ -278,6 +279,8 @@ async function serveMcp(request, env, ctx) {
     // Null unless LISTENER_API_URL and this seat's WAKE_HMAC_KEY_<SEAT> are set:  the listener_*
     // tools then answer not_configured and every other tool works as before (AFC-330).
     listener: listenerClientFromEnv(env, seat, { wakeKey: listenerWakeKey }),
+    // Null unless LISTENER_API_URL and OPERATOR_NOTES_KEY are set:  the notes_* tools then answer not_configured
+    notes: operatorNotesClientFromEnv(env),
   });
   // AFC-331:  every grant is routed by identity.  A CURSOR or GROK-WEB grant may act as either seat and as
   // every enabled Grok Bot persona;  any other grant only as its own seat (src/delegated-identities.js).
@@ -312,6 +315,7 @@ async function serveMcp(request, env, ctx) {
         cf: tools.cf,
         recall: tools.recall,
         fleetlink: tools.fleetlink,
+        notes: tools.notes,
         linearWrites: tools.linearWrites,
       };
       const roleCredentials = delegatedCredentials.roles.get(identity);
@@ -442,6 +446,7 @@ async function serveGbBearerMcp(request, env, token) {
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     recall: recallClientFromResolved(recallSecrets, env),
     fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
+    notes: operatorNotesClientFromEnv(env),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     delegatedLinear: true,
     config: { ...config, botEmails: { ...config.botEmails, [identity]: credentials.email } },

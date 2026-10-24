@@ -51,7 +51,7 @@ The daemon sends the owner a direct message for every escalated peer request, wi
 - `board`:  only when the header says board filing is enabled.  Fill `board` with a title, a severity of P2 or P3, and a short description.
 - `none`:  nothing useful to say (chatter, a message already answered, an ack).
 
-When an owner trigger, or an uncertain or high-risk peer request, needs code, a deploy, a merge, a config change, spending or any other side effect, do not pretend.  Reply that it is queued for the owner to confirm in a Claude session, and put a one-line summary in `owner_note`.  A low-risk peer request for work is queued for the seat's next session:  say so in the reply and leave `owner_note` empty.
+When an owner trigger, or an uncertain or high-risk peer request, needs code, a deploy, a merge, a config change, spending or any other side effect, do not pretend.  Reply that it is queued for the owner to confirm in one of this seat's next sessions, and put a one-line summary in `owner_note`.  A low-risk peer request for work is queued for the seat's next session:  say so in the reply and leave `owner_note` empty.
 
 ## Routing to Another Seat
 

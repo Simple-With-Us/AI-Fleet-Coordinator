@@ -329,6 +329,12 @@ CODE_SPAN_RE = re.compile(r"(`+)(.+?)\1", re.S)
 MD_ESCAPE_RE = re.compile(r"\\([\\`*_{}\[\]()#+\-.!~|>])")
 IDENT_RE = re.compile(r"^[A-Za-z]{1,8}-\d+$")
 HEX_RE = re.compile(r"^[0-9a-f]+$")
+# The name of an environment variable, as the board writes it.  Only a name ever
+# comes out of here:  a credential arrives as its masked preview and never as itself.
+CREDENTIAL_VAR = re.compile(r"\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b")
+# A request id is a request id:  short, and made of the characters one has.
+REQUEST_ID_VALUE = re.compile(r"^[A-Za-z0-9_-]{4,64}$")
+REQUEST_ID_HEADERS = ("x-request-id", "request-id", "x-linear-request-id", "x-correlation-id")
 
 
 # ----------------------------------------------------------------- small helpers
@@ -339,8 +345,80 @@ def prog_name() -> str:
     return name or "simple-board"
 
 
-def die(msg: str, code: int = EXIT_ERROR) -> "NoReturn":  # noqa: F821
-    print(f"{prog_name()}: {msg}", file=sys.stderr)
+def credential_preview(secret: str) -> str:
+    """A credential's safe preview:  the first eight and the last four characters.
+
+    A refused credential has to be identifiable without ever being written out in
+    full, and a short value is not a preview at all, so one under twenty-four
+    characters shows its single leading character and nothing else."""
+    text = str(secret or "")
+    if not text:
+        return ""
+    if len(text) < 24:
+        return text[:1] + "\u2026"
+    return text[:8] + "\u2026" + text[-4:]
+
+
+def credential_vars(where: str) -> str:
+    """The names of the credential variables a credential came from, comma separated.
+
+    The board's own message names them, so the structured field and the prose
+    cannot disagree.  A name is a name:  no value ever comes out of here."""
+    return ",".join(dict.fromkeys(CREDENTIAL_VAR.findall(where or "")))
+
+
+def request_id(headers: dict, errors: list | None = None) -> str:
+    """The request id the response carries, if it carries one.
+
+    It is what Linear's support asks for, and it is not a secret.  An empty string
+    means the response carried none:  the field is then left off rather than
+    invented."""
+    for key in REQUEST_ID_HEADERS:
+        value = str((headers or {}).get(key) or "")
+        if REQUEST_ID_VALUE.match(value):
+            return value
+    for err in errors or []:
+        ext = (err.get("extensions") or {}) if isinstance(err, dict) else {}
+        value = str(ext.get("requestId") or ext.get("request_id") or "")
+        if REQUEST_ID_VALUE.match(value):
+            return value
+    return ""
+
+
+def error_fields(error: Exception, credential: str = "", where: str = "") -> dict:
+    """The allow-listed fields of a failure:  a stable error name, the status code,
+    the request id, the masked credential and the names of the credential variables.
+
+    Nothing else.  The provider's own text never comes out of an error, because a
+    GraphQL error body or a transport error can carry a credential or PII, and this
+    line reaches a job log and a Linear comment."""
+    fields = {"error_type": type(error).__name__}
+    status = getattr(error, "status", None)
+    if not isinstance(status, int):
+        status = getattr(error, "code", None)
+    if isinstance(status, int) and 100 <= status <= 599:
+        fields["http"] = str(status)
+    rid = request_id(getattr(error, "headers", None) or {}, getattr(error, "errors", None))
+    if rid:
+        fields["request_id"] = rid
+    if credential:
+        fields["credential"] = credential
+    if where:
+        fields["credential_field"] = credential_vars(where)
+    return fields
+
+
+def die(msg: str, code: int = EXIT_ERROR, **fields: str) -> "NoReturn":  # noqa: F821
+    """Stop with an error line.
+
+    `fields` are allow-listed key=value pairs for a caller downstream that has to
+    read this error without trusting its prose:  that caller parses the named field
+    and never the sentence around it.  Only a value that is already safe to print
+    goes here, so a credential arrives as its masked preview and never as itself."""
+    line = f"{prog_name()}: {msg}"
+    if fields:
+        line += "  " + " ".join("%s=%s" % (k, v) for k, v in fields.items())
+    print(line, file=sys.stderr)
     raise SystemExit(code)
 
 
@@ -927,9 +1005,16 @@ def resolve_identity(seat: str = "") -> Identity:
     seat_part = (f", and {seat} has no app credentials of its own ({k}_LINEAR_CLIENT_ID and {k}_LINEAR_CLIENT_SECRET "
                  f"in Infisical Fleet-OPS {FLEET_OPS_LINEAR_PATH}, or LINEAR_{k}_CLIENT_ID and LINEAR_{k}_CLIENT_SECRET "
                  "in the environment)") if app else ""
+    # The variables the message names, in the order it names them:  the structured
+    # field is what a caller downstream reads, and it cannot disagree with the prose.
+    missing = ["FLEET_LINEAR_CLIENT_ID", "FLEET_LINEAR_CLIENT_SECRET", "LINEAR_CLIENT_ID", "LINEAR_CLIENT_SECRET"]
+    if app:
+        missing += [f"{k}_LINEAR_CLIENT_ID", f"{k}_LINEAR_CLIENT_SECRET",
+                    f"LINEAR_{k}_CLIENT_ID", f"LINEAR_{k}_CLIENT_SECRET"]
     die(f"no Fleet credentials: FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET are missing from Infisical "
         f"Fleet-OPS {FLEET_OPS_LINEAR_PATH} (`fleet-secrets get`), and LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are not "
-        f"set{seat_part}.  Check `fleet-secrets doctor`.  Until then use BOARD_BACKEND=mac-collab.", EXIT_NO_CREDS)
+        f"set{seat_part}.  Check `fleet-secrets doctor`.  Until then use BOARD_BACKEND=mac-collab.", EXIT_NO_CREDS,
+        credential_field=",".join(missing))
 
 
 def _read_cache(fd: int) -> dict:
@@ -1066,7 +1151,8 @@ class Auth:
             die(f"{why}, and it was minted {central(minted)}, under 24 hours ago.  Not minting "
                 "again (design section 2: at most one mint a day per app).  If the app was rotated, "
                 "update its credentials in Infisical; to force one mint, rerun with LINEAR_BOARD_REMINT=1.",
-                EXIT_AUTH)
+                EXIT_AUTH, credential=credential_preview(tok),
+                credential_field=credential_vars(ident.where))
         return self._store(ident, fp, now)
 
     def _store(self, ident: Identity, fp: str, now: float) -> str:
@@ -1106,7 +1192,10 @@ class Auth:
         try:
             d = L.call(Q_WHOAMI)
         except GqlError as e:
-            die(f"cannot confirm which Linear app the credentials in {self.where} belong to: {e}", EXIT_AUTH)
+            # The sentence says what failed and nothing of Linear's own text:  the
+            # codes, the status and the request id come back as fields of their own.
+            die(f"cannot confirm which Linear app the credentials in {self.where} belong to: {gql_summary(e)}", EXIT_AUTH,
+                **error_fields(e, credential_preview(self.token or ""), self.identity().where))
         vw, org = d.get("viewer") or {}, d.get("organization") or {}
         self.remember_viewer(vw, org)
         return {"name": vw.get("name"), "app": bool(vw.get("app")), "workspace": org.get("urlKey")}
@@ -1123,17 +1212,16 @@ class Auth:
             with opener().open(req, timeout=timeout) as r:
                 js = json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as e:
-            try:
-                js = json.loads(e.read() or b"{}")
-            except ValueError:
-                js = {}
-            err = str(js.get("error") or "")[:80]
-            desc = str(js.get("error_description") or "")[:200]
-            die(f"minting the {ident.label} token failed: HTTP {e.code} {err} {desc}".rstrip(), EXIT_AUTH)
+            # The error body is Linear's own text and can carry anything, so it is
+            # not read:  the status and the request id come back as fields instead.
+            die(f"minting the {ident.label} token failed", EXIT_AUTH,
+                **error_fields(e, credential_preview(ident.sec), ident.where))
         except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
             die(f"cannot reach Linear to mint the {ident.label} token ({type(e).__name__})", EXIT_ERROR)
         if not isinstance(js, dict) or not js.get("access_token"):
-            die(f"minting the {ident.label} token failed: Linear answered without an access token", EXIT_AUTH)
+            die(f"minting the {ident.label} token failed: Linear answered without an access token", EXIT_AUTH,
+                credential=credential_preview(ident.sec),
+                credential_field=credential_vars(ident.where))
         return js
 
 
@@ -1152,7 +1240,8 @@ def write_identity_problem(ident: Identity, v: dict) -> str:
         return ""
     if ident.kind == "seat":
         fix = (f"They look swapped with another seat's.  Put the {' or '.join(ident.accept)} app's client credentials "
-               f"there, or move them aside so {ident.seat} writes as the shared {fleet_app_name()} app.")
+               f"there, or move them aside so {ident.seat} writes as the shared {fleet_app_name()} app.  "
+               "Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET to that app's pair, or unset them.")
     else:
         fix = ("Set LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET to this seat's app or the shared "
                f"{fleet_app_name()} app, or unset them.")
@@ -1169,16 +1258,23 @@ def check_write_identity(L: "Linear", auth: Auth) -> None:
         return
     problem = write_identity_problem(ident, auth.viewer(L))
     if problem:
-        die(f"refusing to write as {ident.seat}: {problem}  Reads still work.", EXIT_NO_CREDS)
+        # The fix names LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET, and the field
+        # names the same two:  a caller downstream reads the field, never the prose.
+        die(f"refusing to write as {ident.seat}: {problem}  Reads still work.", EXIT_NO_CREDS,
+            credential_field="LINEAR_CLIENT_ID,LINEAR_CLIENT_SECRET")
 
 
 # ----------------------------------------------------------------- GraphQL client
 
 class GqlError(Exception):
-    def __init__(self, errors: list, data=None, status=None, request_id=None):
+    def __init__(self, errors: list, data=None, status: int | None = None,
+                 headers: dict | None = None, request_id: str | None = None):
         self.errors = [e for e in (errors or []) if isinstance(e, dict)] or [{"message": "unknown error"}]
         self.data = data
+        # The response the error came from:  its status, its headers and the request
+        # id they carry are what Linear's support asks for.
         self.status = status
+        self.headers = headers or {}
         self.request_id = request_id
         super().__init__("; ".join((e.get("message") or "error")[:300] for e in self.errors))
 
@@ -1199,6 +1295,27 @@ class GqlError(Exception):
         return False
 
 
+def gql_summary(e: BaseException) -> str:
+    """Allow-listed fields from an external API error for logs:  error name, HTTP status,
+    the GraphQL codes and the request id.  Never the response body, headers, or credentials.
+
+    Linear's error body is third-party text:  it can carry a credential, a person's words or a
+    prompt.  Every message the CLI prints reaches stderr and a job log keeps it, so only the
+    machine-readable codes are quoted and the prose is dropped.  The codes are enough to tell a
+    rate limit from a refused scope from a validation failure.
+    """
+    codes = set()
+    for err in (getattr(e, "errors", None) or []):
+        if not isinstance(err, dict):
+            continue
+        code = str((err.get("extensions") or {}).get("code") or "").strip()
+        if code:
+            codes.add(code)
+    code = ", ".join(sorted(codes)) if codes else getattr(e, "code", None)
+    return (f"error={type(e).__name__} status={getattr(e, 'status', None)} "
+            f"code={code} request_id={getattr(e, 'request_id', None)}")
+
+
 def _err_code(e: dict) -> str:
     ext = e.get("extensions") or {}
     return str(ext.get("code") or ext.get("type") or "").upper().replace(" ", "_")
@@ -1210,14 +1327,6 @@ def _is_ratelimit(e: dict) -> bool:
 
 def _is_auth_error(e: dict) -> bool:
     return _err_code(e) in ("AUTHENTICATION_ERROR", "UNAUTHENTICATED")
-
-
-def gql_summary(e: BaseException) -> str:
-    """Allow-listed fields from an external API error for logs:  error name,
-    HTTP status, GraphQL code, and request id.  Never the response body,
-    headers, or credentials."""
-    return (f"error={type(e).__name__} status={getattr(e, 'status', None)} "
-            f"code={getattr(e, 'code', None)} request_id={getattr(e, 'request_id', None)}")
 
 
 class Linear:
@@ -1310,13 +1419,19 @@ class Linear:
                 continue
             if status == 401 or any(_is_auth_error(e) for e in errs):
                 if reminted:
+                    fields = {"credential": credential_preview(self.auth.token or ""),
+                              "credential_field": credential_vars(self.auth.identity().where)}
+                    if status >= 400:
+                        fields["http"] = str(status)
                     die(f"Linear refused a freshly minted {self.auth.label} token; check the app in Linear's API settings",
-                        EXIT_AUTH)
+                        EXIT_AUTH, **fields)
                 token = self.auth.get(failed=token)
                 reminted = True
                 continue
             if status == 403:
-                die(f"Linear answered 403: the {self.auth.label} may not do this (scope or team access)", EXIT_AUTH)
+                die(f"Linear answered 403: the {self.auth.label} may not do this (scope or team access)", EXIT_AUTH,
+                    credential=credential_preview(self.auth.token or ""),
+                    credential_field=credential_vars(self.auth.identity().where), http="403")
             if status >= 500:
                 if time.time() + delay > deadline:
                     self.fail(f"Linear answered HTTP {status} until LINEAR_BOARD_MAX_WAIT ran out")
@@ -1328,7 +1443,7 @@ class Linear:
                 rid = hdrs.get("x-request-id") or hdrs.get("request-id") \
                     or hdrs.get("x-linear-request-id") or hdrs.get("cf-ray")
                 raise GqlError(errs or [{"message": f"HTTP {status} with no data"}], data,
-                               status=status, request_id=rid)
+                               status=status, headers=hdrs, request_id=rid)
             return data
         self.fail("gave up after repeated retries against Linear")
 
@@ -1592,7 +1707,7 @@ class Workspace:
             self._load(refresh=True)
             if key in self.labels:
                 return self.labels[key]
-            die(f"could not create label {key!r}: {e}")
+            die(f"could not create label {key!r}: {gql_summary(e)}")
         self.labels[key] = lid
         d = read_json_file(self._path()) or {}
         if d.get("api") == self.L.url:
@@ -1616,7 +1731,7 @@ class Workspace:
             self._load(refresh=True)
             if name in self.flat:
                 return self.flat[name]
-            die(f"could not create label {name!r}: {e}")
+            die(f"could not create label {name!r}: {gql_summary(e)}")
         self.flat[name] = lid
         self.labels.setdefault(name, lid)
         d = read_json_file(self._path()) or {}
@@ -2272,7 +2387,7 @@ def cmd_file(L: Linear, a, seat: str) -> int:
         except GqlError:
             pass
         if not issue:
-            die(f"Linear refused the new issue: {e}")
+            die(f"Linear refused the new issue: {gql_summary(e)}")
     if not issue:
         issue = fetch_issue(L, iid, iid)
     remember([issue])
@@ -2288,7 +2403,7 @@ def cmd_file(L: Linear, a, seat: str) -> int:
         try:
             L.call(M_ATTACH, {"input": {"issueId": issue["id"], "url": url, "title": label}})
         except GqlError as e:
-            warn(f"filed, but attaching {url} failed ({e}); the footer still carries it")
+            warn(f"filed, but attaching {url} failed ({gql_summary(e)}); the footer still carries it")
     return 0
 
 
@@ -2315,7 +2430,7 @@ def post_comment(L: Linear, n: dict, body: str, seat: str, verb: str, sessions: 
                 return False
         except GqlError:
             pass
-        L.fail(f"Linear refused the comment: {e}")
+        L.fail(f"Linear refused the comment: {gql_summary(e)}")
     return True
 
 
@@ -2498,7 +2613,7 @@ def cmd_status(L: Linear, ids: IdIndex, a, seat: str) -> int:
             back = fetch_issue(L, n["id"], a.id)
             if not any(x.get("type") == "duplicate" and (x.get("relatedIssue") or {}).get("id") == canon["id"]
                        for x in (back.get("relations") or {}).get("nodes") or []):
-                die(f"Linear refused the duplicate relation: {e}")
+                die(f"Linear refused the duplicate relation: {gql_summary(e)}")
         L.landed.append(f"{n['identifier']} marked a duplicate of {canon['identifier']}")
         state = (fetch_issue(L, n["id"], a.id).get("state") or {}).get("name")
         if state != "Duplicate":
@@ -2611,7 +2726,7 @@ def cmd_label(L: Linear, ids: IdIndex, a, seat: str) -> int:
     try:
         L.call(M_UPDATE, {"id": n["id"], "input": inp})
     except GqlError as e:
-        die(f"Linear refused the label change: {e}")
+        die(f"Linear refused the label change: {gql_summary(e)}")
     remember([n])
     if a.action == "add":
         print(f"labeled {short} +{name}  {n['identifier']}")
@@ -2658,7 +2773,10 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     try:
         d = L.call(Q_WHOAMI)
     except GqlError as e:
-        die(f"whoami failed: {e}", EXIT_AUTH)
+        # The sentence says what failed and nothing of Linear's own text:  the
+        # codes, the status and the request id come back as fields of their own.
+        die(f"whoami failed: {gql_summary(e)}", EXIT_AUTH,
+            **error_fields(e, credential_preview(auth.token or ""), auth.identity().where))
     v = d.get("viewer") or {}
     org = d.get("organization") or {}
     auth.remember_viewer(v, org)
@@ -3736,7 +3854,7 @@ def linear_send_once(L: "Linear", query: str, variables: dict) -> dict:
     token = L.auth.get()
     body = json.dumps({"query": query, "variables": variables}).encode()
     try:
-        status, js, _hdrs = L._post(body, token)
+        status, js, hdrs = L._post(body, token)
     except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
         raise SendFailed(f"no usable response from Linear ({type(e).__name__})", False) from None
     errs = [e for e in (js.get("errors") or []) if isinstance(e, dict)]
@@ -3751,9 +3869,12 @@ def linear_send_once(L: "Linear", query: str, variables: dict) -> dict:
         raise SendFailed(f"Linear answered HTTP {status}", False)
     data = js.get("data")
     if errs or data is None:
-        e = GqlError(errs or [{"message": f"HTTP {status} with no data"}], data)
+        rid = hdrs.get("x-request-id") or hdrs.get("request-id") \
+            or hdrs.get("x-linear-request-id") or hdrs.get("cf-ray")
+        e = GqlError(errs or [{"message": f"HTTP {status} with no data"}], data,
+                     status=status, headers=hdrs, request_id=rid)
         definitive = bool(errs) and all(_err_code(x) in PRE_EXECUTION_CODES for x in errs)
-        raise SendFailed(f"Linear error: {e}", definitive)
+        raise SendFailed(f"Linear error: {gql_summary(e)}", definitive)
     return data
 
 
@@ -3769,8 +3890,10 @@ def guarded_write(store: IdemStore, request_sha: str, operation: str, send, desc
             store.drop()
             die(str(e), e.code)
         store.unknown()
-        die(f"{e}.  The {describe} may have reached Linear:  check its result before using another idempotency "
-            "key.  This key will not be replayed automatically for 24 hours.")
+        # `SendFailed` carries its own sanitized message and its mapped code; it is not a
+        # `GqlError`, so re-summarizing it here threw both away and left "no error code".
+        die(f"{e}.  The {describe} may have reached Linear: check its result before using another idempotency "
+            "key.  This key will not be replayed automatically for 24 hours.", e.code)
     except BaseException:
         store.unknown()
         raise
@@ -4536,7 +4659,7 @@ def main(argv: list[str] | None = None) -> int:
         if a.cmd == "label":
             return cmd_label(L, ids, a, seat)
     except GqlError as e:
-        die(f"Linear error: {e}")
+        die(f"Linear error: {gql_summary(e)}")
     return EXIT_ERROR
 
 
