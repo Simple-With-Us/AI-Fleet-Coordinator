@@ -125,7 +125,7 @@ export function errorPage(title, message, status = 400) {
  * The consent page (spec 3.4 step 5).  `facts` come from the library's parsed
  * request and client lookup;  every string is escaped here.
  */
-export function consentPage({ clientName, clientDomain, clientId, redirectHost, loopback = false, scopes, seat, handle, replacing, whatsapp = false }, headers) {
+export function consentPage({ clientName, clientDomain, clientId, redirectHost, loopback = false, scopes, seat, handle, replacing, whatsapp = false, eventsOnly = EVENTS_ONLY_SEATS.includes(seat) }, headers) {
   const verified = clientDomain
     ? `Published by <strong>${escapeHtml(clientDomain)}</strong> (a client metadata document on that domain).`
     : `Registered by hand in Agent-Sync Admin.${SENTENCE_GAP}Its name is not verified.`;
@@ -155,7 +155,7 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
 </table>
 ${replaceLine}
 <p>${sentences(
-    ...(EVENTS_ONLY_SEATS.includes(seat)
+    ...(eventsOnly
       ? ["This seat only delivers wake notifications to the app;  it cannot read or post.", "Private channels are never open to it."]
       : ["This seat reads and posts in any public channel its Zulip bot is subscribed to, as that bot, within its budgets.", "Private Zulip channels are never open to it.", "Every chat on that account will act as this seat.", ...(whatsapp ? ["It can also read and acknowledge messages in the owner's private WhatsApp inbox."] : [])]),
   )}</p>

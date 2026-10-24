@@ -15,8 +15,13 @@ import { UnknownTool } from "../src/hosted-tools.js";
 import { adminSeatLabel, consentPage } from "../src/pages.js";
 import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
 
+// The events-only mechanism is pinned with a test-local set:  the production
+// constant is the staging state (empty) until the reviewed flip commit turns
+// JET wake-only after the JET-CHAT login verifies live (no-gap rollout).
+const TEST_EVENTS_ONLY = ["JET"];
+
 test("JET is the wake-only seat;  JET-CHAT is a full seat on the same bot", () => {
-  assert.deepEqual([...EVENTS_ONLY_SEATS], ["JET"]);
+  assert.deepEqual([...EVENTS_ONLY_SEATS], [], "staging: no seat is events-only until the post-verification flip commit");
   assert.equal(KNOWN_SEATS.indexOf("JET-CHAT"), KNOWN_SEATS.indexOf("JET") + 1);
   assert.deepEqual(SEAT_SECRETS["JET-CHAT"], { key: "ZULIP_KEY_JET_CHAT", email: "ZULIP_EMAIL_JET_CHAT" });
   assert.notEqual(SEAT_SECRETS["JET-CHAT"].key, SEAT_SECRETS.JET.key, "the table never shares a secret name");
@@ -26,8 +31,9 @@ test("JET is the wake-only seat;  JET-CHAT is a full seat on the same bot", () =
 });
 
 test("the wake-only seat advertises no tools;  the full seat advertises them", () => {
-  assert.deepEqual(toolListFor("JET").list, []);
-  assert.deepEqual(toolListFor("JET", { whatsappEnabled: true }).list, [], "no flag reopens a wake-only seat");
+  assert.deepEqual(toolListFor("JET", { eventsOnlySeats: TEST_EVENTS_ONLY }).list, []);
+  assert.deepEqual(toolListFor("JET", { whatsappEnabled: true, eventsOnlySeats: TEST_EVENTS_ONLY }).list, [], "no flag reopens a wake-only seat");
+  assert.ok(toolListFor("JET").list.length > 0, "staging state: JET still advertises tools until the flip commit");
   const names = toolListFor("JET-CHAT").list.map((t) => t.name);
   assert.deepEqual(names.slice(0, 3), ["whoami", "identities", "guide"]);
   assert.ok(names.includes("zulip_post"));
@@ -52,7 +58,7 @@ class StubTools {
 
 test("the wake-only seat refuses every tools/call name, audited, as the unknown-tool protocol error", async () => {
   const caller = new StubTools("JET");
-  const r = new IdentityRouter({ callerTools: caller });
+  const r = new IdentityRouter({ callerTools: caller, eventsOnlySeats: TEST_EVENTS_ONLY });
   for (const name of ["zulip_post", "whoami", "identities", "guide", "post"]) {
     await assert.rejects(r.call(name, {}), UnknownTool, name);
   }
@@ -81,12 +87,14 @@ test("the consent page names the wake seat and states its real capability", asyn
     handle: "h",
     replacing: [],
   };
-  const wake = await (await consentPage({ ...facts, seat: "JET" }, {})).text();
+  const wake = await (await consentPage({ ...facts, seat: "JET", eventsOnly: true }, {})).text();
   assert.match(wake, /Connect ChatGPT as Jet-Wake\?/);
   assert.match(wake, /name="seat" value="JET"/, "the posted value stays the canonical seat");
   assert.match(wake, /This seat only delivers wake notifications to the app/);
   assert.ok(!wake.includes("This seat reads and posts"));
   const full = await (await consentPage({ ...facts, seat: "JET-CHAT" }, {})).text();
+  const stagedJet = await (await consentPage({ ...facts, seat: "JET" }, {})).text();
+  assert.match(stagedJet, /This seat reads and posts/, "staging state: the wake copy is flag-driven, not seat-name-driven");
   assert.match(full, /Connect ChatGPT as Jet\?/);
   assert.match(full, /name="seat" value="JET-CHAT"/);
   assert.match(full, /This seat reads and posts/);
@@ -108,6 +116,12 @@ test("the key installer provisions JET-CHAT from Jet's Infisical entry with the 
   // The tag alone never grants the seat:  the installer pins the bot owner
   // (kody 4365430953), failing closed when the pin cannot be resolved.
   assert.match(installer, /str\(me\.get\("bot_owner_id"\)\) == handoff\("ZULIP_OWNER_USER_ID"\)/);
+});
+
+test("the events-only flip is a config var:  absent means no restriction, an unknown seat fails closed", () => {
+  assert.deepEqual([...loadConfig(wranglerConfig().vars).eventsOnlySeats], [], "production default: no seat restricted while staging");
+  assert.deepEqual([...loadConfig(testEnv({ EVENTS_ONLY_SEATS: "JET" })).eventsOnlySeats], ["JET"], "the cutover flip is one reviewed var line");
+  assert.throws(() => loadConfig(testEnv({ EVENTS_ONLY_SEATS: "NOPE" })), /unknown events-only seat/, "never widen to an unknown seat");
 });
 
 test("JET-CHAT is absent by default, and only hosting it unprovisioned fails closed", () => {
@@ -132,7 +146,7 @@ test("JET-CHAT loads with Jet's bot email under its own var name", () => {
 
 test("the wake-only refusal never carries a secret-shaped tool name (kody 4363581984)", async () => {
   const caller = new StubTools("JET");
-  const r = new IdentityRouter({ callerTools: caller });
+  const r = new IdentityRouter({ callerTools: caller, eventsOnlySeats: TEST_EVENTS_ONLY });
   // Split in source per the repo fixture convention: the scanner must see the
   // stripe-shaped value only at runtime, and gitleaks must never see it at rest.
   // The suffix is obviously synthetic (kody 4365432461/4365432924):  the Stripe

@@ -143,8 +143,10 @@ const EMPTY_TOOL_SET = Object.freeze({ list: Object.freeze([]), byName: Object.f
 export function toolListFor(seat, config = {}) {
   // An events-only seat advertises no tools;  the call path refuses every
   // name too (IdentityRouter.call), so this is never discovery-only hiding.
-  if (EVENTS_ONLY_SEATS.includes(seat)) return EMPTY_TOOL_SET;
-  const cacheKey = `${seat}:${config.whatsappEnabled === true}`;
+  // `eventsOnlySeats` overrides the production set in tests only.
+  const eventsOnlySeats = config.eventsOnlySeats ?? EVENTS_ONLY_SEATS;
+  if (eventsOnlySeats.includes(seat)) return EMPTY_TOOL_SET;
+  const cacheKey = `${seat}:${config.whatsappEnabled === true}:${config.eventsOnlySeats ? config.eventsOnlySeats.join(",") : ""}`;
   const cached = LIST_CACHE.get(cacheKey);
   if (cached) return cached;
   const allowed = allowedIdentities(seat);
@@ -166,15 +168,19 @@ export function toolListFor(seat, config = {}) {
  * says whether a peer seat's Zulip and Linear credentials are installed (names only).
  */
 export class IdentityRouter {
-  constructor({ callerTools, credentials = null, createIdentity = null, identityStatus = null, guideText = GUIDE_TEXT }) {
+  constructor({ callerTools, credentials = null, createIdentity = null, identityStatus = null, guideText = GUIDE_TEXT, eventsOnlySeats = callerTools.config?.eventsOnlySeats ?? EVENTS_ONLY_SEATS }) {
     this.guideText = guideText;
     this.callerTools = callerTools;
     this.seat = callerTools.seat;
     this.credentials = credentials;
     this.createIdentity = createIdentity;
     this.identityStatus = identityStatus;
+    // Test-only override for the events-only mechanism;  production reads the
+    // seats.js constant through the default.
+    this.eventsOnlySeats = eventsOnlySeats;
+    this.eventsOnly = eventsOnlySeats.includes(this.seat);
     this.allowed = allowedIdentities(this.seat);
-    const { list, byName } = toolListFor(this.seat, callerTools.config);
+    const { list, byName } = toolListFor(this.seat, { ...(callerTools.config ?? {}), eventsOnlySeats });
     this.toolList = list;
     this.toolsByName = byName;
     this.built = new Map();
@@ -204,7 +210,7 @@ export class IdentityRouter {
     // An events-only seat serves notifications only:  every name is unknown
     // to the connection, the same protocol error as any unknown name
     // (buildServer maps UnknownTool), audited like one.
-    if (EVENTS_ONLY_SEATS.includes(this.seat)) {
+    if (this.eventsOnly) {
       // The requested name is client-controlled:  audit it secret-scanned and
       // length-capped, the same hygiene seat-state applies to error messages.
       // Bound before scanning (kody 4365544427):  an unbounded client string

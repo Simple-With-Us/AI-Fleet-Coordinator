@@ -17,7 +17,7 @@ import { createMcpHandler } from "agents/mcp/server";
 import { Server, ProtocolError, ProtocolErrorCode } from "@modelcontextprotocol/server";
 import { UnknownTool, hostedInstructions, wakeOnlyInstructions } from "./hosted-tools.js";
 import { IdentityRouter } from "./delegated-identities.js";
-import { EVENTS_ONLY_SEATS, PUBLIC_HOST } from "./config.js";
+import { PUBLIC_HOST } from "./config.js";
 import { EventError } from "./events.js";
 import { z } from "zod";
 
@@ -63,7 +63,7 @@ export function buildServer(tools, events = null) {
     { name: "ST-MCP", version: SERVER_VERSION },
     {
       capabilities: events ? { tools: {}, events: {} } : { tools: {} },
-      instructions: EVENTS_ONLY_SEATS.includes(router.seat)
+      instructions: router.eventsOnly
         ? wakeOnlyInstructions(router.seat, events !== null)
         : hostedInstructions(router.seat) + router.instructions(),
     },

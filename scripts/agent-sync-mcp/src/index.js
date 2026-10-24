@@ -38,7 +38,6 @@ import {
   SHARED_IDENTITY_SEATS,
   SEAT_LABELS,
   WAKE_SECRETS,
-  EVENTS_ONLY_SEATS,
 } from "./config.js";
 import {
   hostAllowed,
@@ -710,6 +709,7 @@ async function authorizeGet(request, env, config, oauth, email) {
   const grants = await listAllGrants(oauth, seat);
   return consentPage(
     {
+      eventsOnly: config.eventsOnlySeats.includes(seat),
       clientName: client.clientName ?? client.clientId,
       clientDomain: cimdHostname(client.clientId),
       clientId: client.clientId,
@@ -717,7 +717,7 @@ async function authorizeGet(request, env, config, oauth, email) {
       loopback: isLoopbackRedirect(authRequest.redirectUri),
       // A wake-only seat subscribes to events (zulip:read) and never posts:
       // offering zulip:write would promise a capability the router refuses.
-      scopes: EVENTS_ONLY_SEATS.includes(seat) ? config.scopes.filter((s) => s !== "zulip:write") : [...config.scopes],
+      scopes: config.eventsOnlySeats.includes(seat) ? config.scopes.filter((s) => s !== "zulip:write") : [...config.scopes],
       // Consent copy must disclose the WhatsApp inbox grant exactly when this
       // seat would actually receive it (hosted-tools.js gates it the same way).
       whatsapp: seat === "JET-CHAT" && config.whatsappEnabled,
@@ -780,7 +780,7 @@ async function authorizePost(request, env, config, oauth, email) {
   }
 
   // postedSeat is verified against the armed seat below before anything is minted.
-  const offered = EVENTS_ONLY_SEATS.includes(postedSeat) ? config.scopes.filter((s) => s !== "zulip:write") : config.scopes;
+  const offered = config.eventsOnlySeats.includes(postedSeat) ? config.scopes.filter((s) => s !== "zulip:write") : config.scopes;
   const scopes = [...new Set(parsed.data.scope ?? [])].filter((s) => offered.includes(s));
   if (scopes.length === 0) return errorPage("Pick A Scope", "Approve needs at least one scope.  Go back and tick one.", 400);
 
