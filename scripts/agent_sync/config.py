@@ -335,6 +335,9 @@ class Config:
         self.raw: dict[str, Any] = {}
         self.muse_bridge_enabled = False
         self.muse_bridge_remote_seats: tuple[str, ...] = ()
+        # The production application the Mac bridge reaches, from the operator's
+        # own config.  Empty when the bridge is off.
+        self.muse_bridge_remote_app = ""
         self.errors: list[str] = []
         # Seats a config problem kept out entirely (AFC-358):  seat -> why.  They have no runner, so
         # status shows them as a red row instead of letting them vanish.
@@ -582,6 +585,16 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         errors.append("muse_bridge.enabled must be true or false")
     else:
         cfg.muse_bridge_enabled = bridge_enabled
+    # The production application the Mac bridge talks to is private deployment
+    # inventory, so it lives in the operator's own config and never in this
+    # repository.  It stays optional here: the bridge fails closed at request
+    # time and says so, which keeps a config that never enabled the bridge
+    # valid.
+    remote_app = bridge.get("remote_app", "")
+    if not isinstance(remote_app, str):
+        errors.append("muse_bridge.remote_app must be a string")
+        remote_app = ""
+    cfg.muse_bridge_remote_app = remote_app.strip()
     remote_seats = bridge.get("remote_seats", [])
     if (
         not isinstance(remote_seats, list)
