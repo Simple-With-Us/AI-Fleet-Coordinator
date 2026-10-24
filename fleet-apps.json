@@ -160,7 +160,7 @@
     },
     {
       "repo": "Clutch",
-      "acronym": "CLUTCH",
+      "acronym": "C",
       "displayName": "Clutch",
       "codeDir": "Clutch",
       "liveBoard": "CLUTCH-EFFORT-LOG.md",
@@ -170,7 +170,7 @@
       "hasAppIcon": true,
       "iconFile": "agent-logos/app-clutch.png",
       "kind": "infra",
-      "notes": "Friendly adaptation of @deepseek-ai/dsh for DSH and MiniMax parity (formerly named Harness; renamed to Clutch 2026-09-30).  Always-on pm2 clutch-web on 127.0.0.1:3180.  Live install ~/apps/clutch-runtime (a real standalone clone of origin/main, updated by scripts/update-mac-app.sh), state in ~/.clutch.  Canonical npm package (clutch) for BotFleet's DSH driver."
+      "notes": "Friendly adaptation of @deepseek-ai/dsh for DSH and MiniMax parity (formerly named Harness; renamed to Clutch 2026-09-30).  Always-on pm2 clutch-web on 127.0.0.1:3180.  Live install ~/apps/clutch-runtime (a real standalone clone of origin/main, updated by scripts/update-mac-app.sh), state in ~/.clutch.  Canonical npm package (clutch) for BotFleet's DSH driver.  App acronym C (owner 2026-10-23, AFC-333):  C-n is a Clutch Linear issue and C#n a Clutch PR, replacing CLUTCH;  the seat tag stays CLUTCH."
     },
     {
       "repo": "CodeCaps",
@@ -313,7 +313,7 @@
       ],
       "retired": true,
       "retiredDate": "2026-09-19",
-      "retiredReason": "DSH work moved to the Harness seat, which the Clutch seat has since replaced.  Use CLUTCH for new work in Simple-With-Us/Clutch."
+      "retiredReason": "DSH work moved to the Harness seat, which the Clutch seat has since replaced.  Use C (the Clutch app) for new work in Simple-With-Us/Clutch."
     },
     {
       "tag": "HARNESS",

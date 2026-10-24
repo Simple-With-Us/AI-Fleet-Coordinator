@@ -40,6 +40,10 @@ BF_SECRET_FOLDER = "/botfleet-housekeeper-webhook"
 GB_SECRET_FOLDER = "/grok-bot-housekeeper-webhook"
 CLEANUP = HOME / "apps" / "mac-auto-cleanup.sh"
 JANITOR = HOME / ".claude-disk-janitor" / "janitor.sh"
+# The exit codes that mean the cleanup itself ran.  75 is the cleanup
+# script's "the local cleanup ran, only the remote maintenance hop failed"
+# code, so a failed hop is not a second cleanup on an already pruned Mac.
+CLEANUP_EXIT_CLEANED = (0, 75)
 
 # Live defaults, the same table the housekeeper skill carries: 25G free to warn,
 # 15G to be critical, a 15G drop, swap at 90% AND 32G absolute, load1 at 65.
@@ -1175,7 +1179,7 @@ def _main_body(args) -> int:
     if should_clean and not args.dry_run:
         free_before = s["disk_free_gb"]
         rc = run_cleanup(pressure=pressure or disk_hit)
-        cleaned = rc == 0
+        cleaned = rc in CLEANUP_EXIT_CLEANED
         s_after = sample()
         delta = round(s_after["disk_free_gb"] - free_before, 2)
         swap_delta = round(s_after["swap_used_gb"] - s["swap_used_gb"], 2)

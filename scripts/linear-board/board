@@ -2074,8 +2074,8 @@ def all_comments(L: Linear, issue_id: str) -> list[dict]:
 def route_app(app: str | None) -> tuple[str, str | None]:
     """(team key, fallback slug).  Team keys and board slugs both work."""
     a = (app or DEFAULT_APP).strip()
-    # CLUTCH is the canonical app name; C is the verified live Linear key. CK is a legacy alias.
-    # All spellings route to the same team.
+    # C is the Clutch app acronym and live Linear team key (owner 2026-10-23, AFC-333).
+    # CLUTCH and CK are legacy aliases.  All spellings route to the same team.
     if a.upper() in {"CLUTCH", "CK", "C"}:
         return "C", None
     if a.upper() in TEAM_KEYS:
