@@ -48,6 +48,9 @@ READ_TOOLS = {
     "identities",
     "guide",
     "notes_status",
+    "notes_read",  # AFC-486:  the notes read, list and log verbs (mcp/notes-tools.json)
+    "notes_list",
+    "notes_log",
     "recall_search",
     "recall_stats",
     "zulip_topics",

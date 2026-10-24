@@ -32,7 +32,7 @@ mac-auto-cleanup
 ### 2. What It Cleans (Safe & Idempotent)
 
 1. **Merged Git Worktrees**:
-   - Owned by **Hog Hunter's robotic vacuum** now that `com.jay.disk-janitor` was retired on 2026-10-11 (clean + idle + no `--force`).  This script does not reap worktrees or wipe `~/.grok/worktrees`.
+   - Owned by **Hog Hunter's robotic vacuum** now that the older disk-janitor daemon was retired on 2026-10-11 (clean + idle + no `--force`).  This script does not reap worktrees or wipe the Grok worktree directory.
 2. **Xcode Developer Caches**:
    - Cleans `~/Library/Developer/Xcode/iOS DeviceSupport` symbols.
    - Cleans `~/Library/Developer/Xcode/DerivedData` build caches.
@@ -51,16 +51,20 @@ mac-auto-cleanup
    - Prunes Grok session transcripts older than 7 days (`~/.grok/sessions`).
    - Prunes old Codex archived sessions (`~/.codex/archived_sessions`).
    - Prunes old Antigravity brain conversation folders older than 7 days (`~/.gemini/antigravity/brain`).
-7. **Remote Hetzner Coolify Server (`167.233.254.55`)**:
+7. **Remote Hetzner Coolify Server** (its address is private deployment inventory, so it lives in the operator's own inventory on that Mac):
    - Automatically triggers remote Docker cleanup (`docker builder prune -af --filter "until=72h"` and `docker system prune -af --volumes`).
 
 Pass `--pressure` (or `MAC_CLEANUP_PRESSURE=1`) for the tighter path: CleanMyMac purge, 3-day Grok session prune, pm2 log cap.  Resource-watch uses that flag.
 
 ## Scheduled Automation
-- **Mac LaunchAgent**: `~/Library/LaunchAgents/com.jay.mac-cleanup.plist` runs automatically every 4 hours (`StartInterval: 14400`).
-- **Resource watch**: `~/Library/LaunchAgents/com.jay.mac-resource-watch.plist` every 5 minutes.  Samples disk/RAM/CPU, runs this script on a hit, and POSTs BotFleet Housekeeper.  See the `housekeeper` skill.
-- **Hog Hunter robotic vacuum**: `~/Library/LaunchAgents/com.simplewithus.hoghunter.robotic-vacuum.plist` every 300 seconds.  This is the **primary** automatic path since `com.jay.disk-janitor` was retired on 2026-10-11.  It takes the same `~/.claude-disk-janitor/.housekeeper.lock` as the scripts above, so the two never reclaim at once.
-- **Hetzner Cron**: `/etc/cron.d/coolify-maintenance` runs automatically every 4 hours.
+Each scheduled job below is a launchd entry on the Mac, or a cron entry on the remote host.  Its
+exact path, its launchd label and its lock location are private deployment inventory:  they live in
+the operator's own inventory on that Mac, not in this pack.
+
+- **Mac cleanup**:  a scheduled Mac job runs the cleanup sweep automatically every 4 hours.
+- **Resource watch**:  a scheduled Mac job every 5 minutes.  Samples disk/RAM/CPU, runs this script on a hit, and POSTs BotFleet Housekeeper.  See the `housekeeper` skill.
+- **Hog Hunter robotic vacuum**:  a scheduled Mac job every 300 seconds.  This is the **primary** automatic path, since the older disk-janitor daemon was retired on 2026-10-11.  It takes the same shared housekeeper lock as the scripts above, so the two never reclaim at once.
+- **Hetzner cleanup**:  a scheduled job on the remote host runs automatically every 4 hours.
 
 ## Quick Status Check
 To view live disk space and system process health:

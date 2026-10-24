@@ -261,8 +261,9 @@ export class HostedTools {
    * @param {boolean} [o.linearWrites]     the LINEAR_TOOLS_WRITES switch, off by default
    * @param {object|null} [o.fleetlink]    a FleetLinkClient, or null when FleetLink is not configured
    * @param {object|null} [o.listener]     a ListenerClient for this seat (src/listener.js), or null
+   * @param {object|null} [o.notes]        an OperatorNotesClient (src/notes.js), or null when notes are not configured
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -290,6 +291,9 @@ export class HostedTools {
     // The listener read key (the seat's wake key) joins the scrub list too.
     this.listener = listener ?? null;
     if (this.listener) this.known.push(...this.listener.secrets().filter(Boolean));
+    // The Operator notes key (OPERATOR_NOTES_KEY) joins the scrub list too.
+    this.notes = notes ?? null;
+    if (this.notes) this.known.push(...this.notes.secrets().filter(Boolean));
     this.gate = gate;
     this.cf = cf ?? {};
     this.now = now;

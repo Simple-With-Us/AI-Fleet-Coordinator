@@ -330,7 +330,7 @@ deployment machine.
 ## Inter-Agent Coordination
 
 Look first at Linear (`https://linear.app/simple-with-us`, through the `simple-board` CLI).  Coordinate with other AI
-agents in Zulip `#agent-sync` (realm `https://simplewithus.zulipchat.com`).  Every post names
+agents in Zulip `#Work-In-Progress` (realm `https://simplewithus.zulipchat.com`).  Every post names
 both a channel and a topic, and the topic is the thread.  Full protocol: `~/apps/AGENT-SYNC.md`
 (canonical - read it before your first message; covers Linear and the claim lifecycle, sender tags, terse post
 shape, reaction acks, read/post mechanics).  Chat mechanics live in the Zulip Fleet Guide:
@@ -344,14 +344,14 @@ cloud), not a per-app seat.  Other agents state their cadence in their first mes
 
 **Zulip + Linear (binding — always):**
 - **Start of work:** `simple-board claim` the Linear issue (In Progress), branch `<seat>/<id>-<slug>`,
-  and open the work topic `<ID> <subject>` in `#agent-sync` (`[<YOUR_SEAT>·session8]` + `repo:` + what you will do).
+  and open the work topic `<ID> <subject>` in `#Work-In-Progress` (`[<YOUR_SEAT>·session8]` + `repo:` + what you will do).
 - **End of work:** the PR says `Fixes <ID>` (finished) or `Refs <ID>` (partial); mark Completed/Deployed
   with `simple-board status`, post the closeout in the same topic, then resolve that topic.
 - Keep **Linear and the PR matching and accurate**.  Writes need `AGENT_SEAT`.  The effort logs
   and the effort-issues mirror are retired.
 - Post shape: `[<YOUR_SEAT>·session8]` or `[<YOUR_SEAT>·session8-><PEER_SEAT>]`, then `repo:`
   first.  A directed post also @-mentions the peer (`@**<Display Name>**`); the bracket label
-  alone wakes nobody.  Wake every seat only with `@**all**` in `#agent-sync` › `fleet`
+  alone wakes nobody.  Wake every seat only with `@**all**` in `#Work-In-Progress` › `fleet`
   (`simple-chat post --topic fleet --fleet`), when every seat must act;  it notifies Jay too.
   Every seat's bot is a member and the realm's `can_mention_many_users_group` is `role:members`,
   so each can send it.  If Zulip ever refuses it (`STREAM_WILDCARD_MENTION_NOT_ALLOWED`),
@@ -466,7 +466,7 @@ Canonical: `~/apps/AGENT-SYNC.md` § Linear and the Claim Lifecycle.
 
 ## Two spaces between sentences (owner — ALL contexts)
 
-Two spaces after sentence terminators in **all** human-readable prose: web, PWA,
+The sentence gap (a real U+00A0 plus a normal space, as below) after sentence terminators in **all** human-readable prose: web, PWA,
 iOS, **every App Store Connect field** (description, promotional text, What’s
 New, App Review notes, IAP / subscription review notes), push/email, help,
 privacy, owner Notes.  HTML must preserve the gap (NBSP+space / `SENTENCE_GAP`).
@@ -476,20 +476,21 @@ Store listing copy must also be **accurate** (corpus, trial length).
 context, always use 2 spaces to separate a period from the beginning of a new sentence."
 Not limited to product copy — covers every paragraph an agent writes anywhere: **chat
 replies to the owner**, PR titles and bodies, commit messages, Zulip posts to
-#agent-sync, Apple Notes, Linear issues and comments, rollout notes, review reports, and design
+#Work-In-Progress, Apple Notes, Linear issues and comments, rollout notes, review reports, and design
 docs.  If it is prose a human reads, it gets two spaces.
 
 Canonical: `~/apps/AGENT-SYNC.md` § Two spaces and `~/apps/FLEET-UI-COPY.md`.
 Portable skill (verbatim protocol, do not weaken): `docs/SENTENCE-GAP-PORTABLE-SKILL.md`
 and `docs/fleet-skills/sentence-gap/SKILL.md`.
 
-**HOW to emit it so it's actually visible (owner ruling 2026-10-08, every agent on every platform):**  intent is not enough, the gap has to survive the renderer.  Pick by destination.
+**HOW to emit it (owner ruling 2026-10-23, the same on every surface):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  This covers chat replies, Zulip, GitHub PR and issue text, Linear, Slack, commit messages, repo docs, UI copy, skills and agent instructions.
 
-- **Chat reply in a Markdown-rendering pane** (the Claude Code desktop app Code tab, owner-verified 2026-10-08; other agent chat panes by the same ruling, not individually verified): type the literal HTML entity text `&nbsp;` right after the period, then a normal space, outside code spans, as in `Sentence one.&nbsp; Sentence two.`  The renderer decodes it into a visibly wider gap.  Two literal spaces collapse, and a raw U+00A0 typed by the model arrives as a plain space.
-- **GitHub PR and issue titles, bodies and comments, review comments, and Zulip posts** (anything a tool writes that a Markdown or HTML renderer then shows): a real U+00A0 plus a space after each sentence.  Never the `&nbsp;` entity there, because GitHub can copy a PR body into a plain-text squash commit, where the entity would show literally.
-- **Plain-text surfaces** (git commit messages, source files and repo docs read as source, terminal output, terminal TUI chat): two literal ASCII spaces.  Do not write `&nbsp;` or U+00A0 into files.  A terminal TUI chat is unverified, and a terminal would print the entity literally.
-- **HTML, JSX and SwiftUI product copy:** a real U+00A0 plus a space, or a shared `SENTENCE_GAP` constant.
-- The owner must never see the six characters `&nbsp;`.  If a chat surface shows them, stop using the entity there and report the surface in #agent-sync, because that surface then needs a different mechanism, which is unknown until tested.  When a surface is known to collapse two typed spaces, use its working mechanism without asking.
+- Never write the `&nbsp;` entity in prose.  It shows up as literal text in squash-merge commits, plain-text email and many APIs.
+- Two plain ASCII spaces are not enough.  Rendered surfaces (Zulip, GitHub, Linear, HTML, Markdown chat panes) collapse them to one.
+- Generate the U+00A0 in the shell (`printf 'One.\302\240 Two.'`, or the converter in the canonical `sentence-gap` skill (`AI-Fleet-Coordinator/docs/fleet-skills/sentence-gap/SKILL.md`)) rather than typing it, because a model-typed U+00A0 can be normalized to a plain space.  Check the bytes before you post.
+- Product copy in source, by language:  Swift string literals `"\u{00A0} "`;  JS/TS string literals `"\u00A0 "`;  JSX text `{'\u00A0'}` followed by a space, or `&#160;` inside JSX text;  HTML markup source `&#160;` (markup only, never prose);  or the repo's shared `SENTENCE_GAP` constant where one exists.
+- Code, identifiers and machine-readable config never get a U+00A0.  If a surface strips U+00A0, leave the text as it is rather than switching to the entity, and report that surface in #Work-In-Progress (formerly #agent-sync) so it can be given a working mechanism.
+- This replaces the earlier per-surface rules (the entity in chat panes or on GitHub, and two plain ASCII spaces in files, commits and terminals).
 
 ## Times: owner's clock, 12-hour, am or pm (owner 2026-08-22, amended 2026-10-05)
 
@@ -561,7 +562,7 @@ is the replacement.
 | **`PS`** | Personal-Site | `Simple-With-Us/Personal-Site` |
 | **`CTS`** | congress-trading-shared | `Simple-With-Us/congress-trading-shared` |
 | **`SWU`** | Simple With Us website (`https://simplewithus.com`; registered Linear team; lane prefix pending AFC-297) | `Simple-With-Us/Simple-With-Us` |
-| **`FLEET`** | Fleet-wide wake: every seat must act | Not a repo.  Not the coordinator.  `@**all**` in `#agent-sync` › `fleet`;  never a seat tag or a sender. |
+| **`FLEET`** | Fleet-wide wake: every seat must act | Not a repo.  Not the coordinator.  `@**all**` in `#Work-In-Progress` › `fleet`;  never a seat tag or a sender. |
 
 ## Fleet docs (start here)
 
@@ -584,7 +585,7 @@ is the replacement.
   Also spawn a child for a smaller slice when it would save context, run in
   parallel, or be cheaper at a different tier.  Do not serialize out of habit.
   Skip only one-step work where spawn overhead exceeds the task.  Sub-teams
-  follow the same Linear + #agent-sync rules as top-level agents.
+  follow the same Linear + #Work-In-Progress rules as top-level agents.
 - **Right-size the model for EVERY task, including each sub-agent — even if
   that tier is lower or higher than the model you are running.**  Pick the most
   economical model that completes that task very effectively.  Small = mechanical

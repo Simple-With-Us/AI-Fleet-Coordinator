@@ -169,7 +169,7 @@ echo "     it is being generated from Fleet-OPS handbook/, so its app rows are a
 echo "     (handbook/appendix/reference-tables.md), and neither copy of AGENT-SYNC.md is edited directly."
 echo "  3. python3 $here/scripts/check-fleet-registry.py"
 echo "  4. PR the app + this coordinator repo.  Claim the Linear issue (board claim) and close out in Zulip:  topic \"$ACRONYM-<n> <subject>\""
-echo "     in #agent-sync, posted with 'agent-sync post' (docs/protocols/zulip-fleet-guide.md)."
+echo "     in #Work-In-Progress, posted with 'agent-sync post' (docs/protocols/zulip-fleet-guide.md)."
 echo "     If the app's PR numbers should link in Zulip, ask Jay about a linkifier for it: the guide's"
 echo "     Current Linkifiers table lists the acronyms that have one, and an unlisted \`$ACRONYM#n\` falls through"
 echo "     to the generic repo pattern.  Never change a linkifier without Jay's OK."
