@@ -545,6 +545,15 @@ PRIMARY_RUNTIMES = ("claude", "muse")
 _REGISTRATION_SKIP_STATUSES = frozenset({"unavailable", "stale", "metadata-only"})
 
 
+class RegistrationConfirmationPending(RuntimeError):
+    """A registration's confirmation send returned without landing, and may be retried.
+
+    Raised only once the registration is recorded in the route's done set, so the route's
+    retry loop (_route_message) re-enters through the confirm-retry branch and resends the
+    recorded reply:  never a second registry mutation (kody 4366258037).
+    """
+
+
 class Daemon:
     def __init__(
         self,
@@ -3770,142 +3779,192 @@ class Daemon:
                 )
             lease_maps: dict[str, dict[str, list[dict[str, Any]]]] = {}
             for row in rows:
-                if labels.get(str(row.get("id") or ""), ("", ""))[0]:
-                    continue
-                # Ask the rows the catalog calls readable:  its vocabulary is
-                # available/stale/metadata-only/unavailable (chat_catalog._row),
-                # so skip exactly its unreadable set instead of matching one
-                # literal value - a literal "active" matched nothing the catalog
-                # produces and silently killed the flow (kody 4366047801).
-                if str(row.get("status") or "") in _REGISTRATION_SKIP_STATUSES:
-                    continue
-                platform = str(row.get("platform") or "")
-                scope = str(row.get("profile_scope") or "")
-                session_id = str(row.get("session_id") or "")
-                seat = str(row.get("seat") or "")
-                if not (platform and scope and session_id and seat):
-                    continue
-                if seat not in lease_maps:
-                    lease_maps[seat] = self._registration_seat_lease_map(seat)
-                topics = self._registration_lease_topics(row, lease_maps[seat])
+                # The whole per-row body sits inside one guard (kody 4366012641):  a
+                # failure anywhere in it - the lease read, a stamp, a drop, or a log line
+                # - is logged by exception type and the batch goes on with the next row.
+                # The error log write has its own guard, so a logger that raises cannot
+                # end the batch either.
                 try:
-                    out = OREG.begin(
-                        db,
-                        platform=platform,
-                        profile_scope=scope,
-                        session_id=session_id,
-                        seat=seat,
-                        requester="catalog",
-                        evidence_location=self._registration_evidence(platform),
-                        route=self._registration_route(row, topics),
-                        route_topics=topics,
-                        registrations=lambda pf, sid: self._registrations(db, pf, sid),
+                    self._ask_registration_row(
+                        row, labels, db=db, owner=owner, lease_maps=lease_maps
                     )
                 except Exception as exc:
-                    self.log.write(
-                        "operator-registration-ask",
-                        platform=platform,
-                        status="error",
-                        error=type(exc).__name__,
-                    )
-                    continue
-                if out.get("status") not in ("ask", "pending"):
-                    continue
-                entry = out["entry"]
-                if out.get("route_change") == "lost":
-                    self.log.write(
-                        "operator-registration-route-lost",
-                        entry_id=entry.get("entry_id"),
-                        platform=platform,
-                        session_id=session_id,
-                    )
-                if entry.get("notified_at"):
-                    continue
-                if entry.get("route_lost"):
-                    # The asked topic is gone and no rename continuation matched:  do not
-                    # post into a dead topic name.  Drop the entry NOW (kody 4366047591):
-                    # the next pass asks a fresh question on the chat's current route
-                    # instead of the chat staying unasked until the 24h deadline.
-                    OREG.mark_dropped(db, entry["entry_id"], "route_lost")
-                    continue
-                route = entry.get("route")
-                if not isinstance(route, dict):
-                    # No known channel/topic for the chat:  the registration stays pending
-                    # (recoverable - a later pass fills the route once the chat's lease
-                    # names one) and the gap is logged, never routed to the owner by DM.
-                    self.log.write(
-                        "operator-registration-missing-route",
-                        entry_id=entry.get("entry_id"),
-                        platform=platform,
-                        session_id=session_id,
-                    )
-                    continue
-                reconciled = entry.get("reconciled_at")
-                if (
-                    isinstance(reconciled, (int, float))
-                    and not isinstance(reconciled, bool)
-                    and time.time() - float(reconciled) < REGISTRATION_RECONCILE_INTERVAL
-                ):
-                    # The last pass could not prove this question's delivery and already
-                    # spent its topic read-back:  reconcile at most once per interval, so
-                    # a stuck-unknown entry cannot stall the wake with a 10-page walk
-                    # every pass.
-                    continue
-                try:
-                    sent = ORASK.send_location_question(
-                        question=out["question"],
-                        entry_id=entry["entry_id"],
-                        channel=str(route["channel"]),
-                        topic=str(route["topic"]),
-                        env=self.env,
-                        home=self.home,
-                        owner_user_id=owner,
-                        # The ledger row must outlive every state that can resend:  keep
-                        # it at least until the entry's own deadline (past it the sweep
-                        # drops the entry, so no pass can post for it again) - never let
-                        # a pruned row make a landed question look never-sent.
-                        window=max(
-                            OC.DEDUPE_WINDOW,
-                            float(entry.get("deadline") or 0) - time.time() + 60,
-                        ),
-                    )
-                    if sent.get("status") == "sent":
-                        OREG.mark_notified(db, entry["entry_id"])
-                    elif sent.get("delivery_status") == OC.DELIVERY_UNKNOWN:
-                        OREG.mark_reconciled(db, entry["entry_id"])
-                    elif str(sent.get("code") or "") in OREG.TERMINAL_REFUSAL_CODES:
-                        # Terminal refusals stay terminal (kody 4366047123):  the
-                        # entry is dropped with its reason and never requeued;
-                        # retryable refusals stay unstamped for the next pass.
-                        OREG.mark_refused(
-                            db, entry["entry_id"], str(sent.get("reason") or "terminal_refusal")
+                    try:
+                        self.log.write(
+                            "operator-registration-ask",
+                            platform=str(row.get("platform") or "")
+                            if isinstance(row, Mapping)
+                            else "",
+                            status="error",
+                            error=type(exc).__name__,
                         )
-                    sent_status = sent.get("status")
-                    sent_reason = str(sent.get("reason") or "")[:80]
-                    # The log line stays inside the row's guard:  the complete begin,
-                    # send, stamp and log sequence is isolated per row, so one row's
-                    # failure can never abort the rest of the batch.
-                    self.log.write(
-                        "operator-registration-ask",
-                        entry_id=entry.get("entry_id"),
-                        platform=platform,
-                        status=sent_status,
-                        reason=sent_reason,
-                    )
-                except Exception as exc:
-                    # One row's failure never aborts the rest of the batch:  each
-                    # question is independent, and the un-stamped entry is retried on
-                    # the next pass.
-                    self.log.write(
-                        "operator-registration-ask",
-                        entry_id=entry.get("entry_id"),
-                        platform=platform,
-                        status="error",
-                        error=type(exc).__name__,
-                    )
-                    continue
+                    except Exception:
+                        pass
         except Exception as exc:
             self.log.write("operator-registration-ask", status="error", error=type(exc).__name__)
+
+    def _ask_registration_row(
+        self,
+        row: Mapping[str, Any],
+        labels: dict[str, tuple[str, str]],
+        *,
+        db: str,
+        owner: int,
+        lease_maps: dict[str, dict[str, list[dict[str, Any]]]],
+    ) -> None:
+        """One catalog row of maybe_ask_registrations;  its caller isolates any failure."""
+        if labels.get(str(row.get("id") or ""), ("", ""))[0]:
+            return
+        # Ask the rows the catalog calls readable:  its vocabulary is
+        # available/stale/metadata-only/unavailable (chat_catalog._row),
+        # so skip exactly its unreadable set instead of matching one
+        # literal value - a literal "active" matched nothing the catalog
+        # produces and silently killed the flow (kody 4366047801).
+        if str(row.get("status") or "") in _REGISTRATION_SKIP_STATUSES:
+            return
+        platform = str(row.get("platform") or "")
+        scope = str(row.get("profile_scope") or "")
+        session_id = str(row.get("session_id") or "")
+        seat = str(row.get("seat") or "")
+        if not (platform and scope and session_id and seat):
+            return
+        if seat not in lease_maps:
+            lease_maps[seat] = self._registration_seat_lease_map(seat)
+        topics = self._registration_lease_topics(row, lease_maps[seat])
+        try:
+            out = OREG.begin(
+                db,
+                platform=platform,
+                profile_scope=scope,
+                session_id=session_id,
+                seat=seat,
+                requester="catalog",
+                evidence_location=self._registration_evidence(platform),
+                route=self._registration_route(row, topics),
+                route_topics=topics,
+                registrations=lambda pf, sid: self._registrations(db, pf, sid),
+            )
+        except Exception as exc:
+            self.log.write(
+                "operator-registration-ask",
+                platform=platform,
+                status="error",
+                error=type(exc).__name__,
+            )
+            return
+        # "refused" is a session a terminal refusal still holds:  nothing to ask, and
+        # its drop was logged once when it happened.
+        if out.get("status") not in ("ask", "pending"):
+            return
+        entry = out["entry"]
+        if out.get("route_change") == "lost":
+            self.log.write(
+                "operator-registration-route-lost",
+                entry_id=entry.get("entry_id"),
+                platform=platform,
+                session_id=session_id,
+            )
+        if entry.get("notified_at"):
+            return
+        if entry.get("route_lost"):
+            # The asked topic is gone and no rename continuation matched:  do not
+            # post into a dead topic name.  Drop the entry NOW (kody 4366047591):
+            # the next pass asks a fresh question on the chat's current route
+            # instead of the chat staying unasked until the 24h deadline.
+            OREG.mark_dropped(db, entry["entry_id"], "route_lost")
+            return
+        route = entry.get("route")
+        if not isinstance(route, dict):
+            # No known channel/topic for the chat:  the registration stays pending
+            # (recoverable - a later pass fills the route once the chat's lease
+            # names one) and the gap is logged, never routed to the owner by DM.
+            self.log.write(
+                "operator-registration-missing-route",
+                entry_id=entry.get("entry_id"),
+                platform=platform,
+                session_id=session_id,
+            )
+            return
+        reconciled = entry.get("reconciled_at")
+        if (
+            isinstance(reconciled, (int, float))
+            and not isinstance(reconciled, bool)
+            and time.time() - float(reconciled) < REGISTRATION_RECONCILE_INTERVAL
+        ):
+            # The last pass could not prove this question's delivery and already
+            # spent its topic read-back:  reconcile at most once per interval, so
+            # a stuck-unknown entry cannot stall the wake with a 10-page walk
+            # every pass.
+            return
+        try:
+            sent = ORASK.send_location_question(
+                question=out["question"],
+                entry_id=entry["entry_id"],
+                channel=str(route["channel"]),
+                topic=str(route["topic"]),
+                env=self.env,
+                home=self.home,
+                owner_user_id=owner,
+                # The ledger row must outlive every state that can resend:  keep
+                # it at least until the entry's own deadline (past it the sweep
+                # drops the entry, so no pass can post for it again) - never let
+                # a pruned row make a landed question look never-sent.
+                window=max(
+                    OC.DEDUPE_WINDOW,
+                    float(entry.get("deadline") or 0) - time.time() + 60,
+                ),
+            )
+            code = str(sent.get("code") or "")
+            refused_reason = ""
+            if sent.get("status") == "sent":
+                OREG.mark_notified(db, entry["entry_id"])
+            elif sent.get("delivery_status") == OC.DELIVERY_UNKNOWN:
+                OREG.mark_reconciled(db, entry["entry_id"])
+            elif code in OREG.TERMINAL_REFUSAL_CODES:
+                # Terminal refusals stay terminal (kody 4366047123):  the
+                # entry is dropped with a code-word reason, and begin() holds the
+                # session instead of opening a new question on the next pass
+                # (kody 4366099679);  retryable refusals stay unstamped for the
+                # next pass.
+                field = str(sent.get("field") or "")
+                if OREG.mark_refused(db, entry["entry_id"], code, field=field):
+                    refused_reason = OREG.refusal_reason(code, field)
+            # The log line stays inside the row's guard:  the complete begin,
+            # send, stamp and log sequence is isolated per row, so one row's
+            # failure can never abort the rest of the batch.  The delivery class
+            # and the refusal code ride along (kody 4365989242), so retryable and
+            # terminal refusals read apart in the log, not only through the
+            # reason text.
+            self.log.write(
+                "operator-registration-ask",
+                entry_id=entry.get("entry_id"),
+                platform=platform,
+                status=sent.get("status"),
+                reason=str(sent.get("reason") or "")[:80],
+                delivery_status=str(sent.get("delivery_status") or ""),
+                code=code,
+            )
+            if refused_reason:
+                # A terminal refusal is surfaced the way an expired question is
+                # (kody 4366099679, gap 3):  the same drop line the sweep's drops
+                # write, so a refused session is never visible only as a send line.
+                self.log.write(
+                    "operator-registration-drop",
+                    entry_id=entry.get("entry_id"),
+                    platform=platform,
+                    reason=refused_reason,
+                )
+        except Exception as exc:
+            # One row's failure never aborts the rest of the batch:  each
+            # question is independent, and the un-stamped entry is retried on
+            # the next pass.
+            self.log.write(
+                "operator-registration-ask",
+                entry_id=entry.get("entry_id"),
+                platform=platform,
+                status="error",
+                error=type(exc).__name__,
+            )
 
     def _maybe_registration_answer(
         self,
@@ -3939,7 +3998,9 @@ class Daemon:
         after it runs and the confirmation send after it lands, so a route retry repeats
         only the step that failed - never a second registry mutation, never a skipped
         confirmation.  An exception once the mutation is recorded propagates so the
-        route's retry (not the ordinary wake path) finishes the confirmation.
+        route's retry (not the ordinary wake path) finishes the confirmation, and a
+        confirmation send that returns without landing (a retryable refusal or an unknown
+        delivery) raises RegistrationConfirmationPending for the same retry.
         """
         reply_ready = False
         out: dict[str, Any] | None = None
@@ -3991,13 +4052,22 @@ class Daemon:
                     home=self.home,
                     owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
                 )
-                done.add((message_id, "send-confirmation"))
+                # Only a landed confirmation is done, on this path too (kody 4366258037):
+                # a returned refused or unknown outcome leaves the step open, and a
+                # retryable one goes back to the route's retry loop below.
+                if sent.get("status") == "sent":
+                    done.add((message_id, "send-confirmation"))
                 self.log.write(
                     "operator-registration-answer",
                     entry_id=parsed["entry_id"],
                     status="confirm-retried",
                     delivery=sent.get("status"),
                 )
+                if self._confirmation_retryable(sent):
+                    raise RegistrationConfirmationPending(
+                        "the registration confirmation did not land (%s)"
+                        % str(sent.get("delivery_status") or "refused")[:20]
+                    )
                 return True
             db = self._registration_db()
             # Asked entries answer directly;  conflicted ones settle through the same
@@ -4065,8 +4135,10 @@ class Daemon:
             # refused or uncorroborated answer still gets its reply sent, but it must
             # NOT close the register-location step, or the ledger would record a
             # registration the owner never got and the open question would be lost.
+            registered = False
             if out.get("status") == "registered" and done is not None and message_id is not None:
                 done.add((message_id, "register-location", reply))
+                registered = True
             reply_ready = True
             sent = ORASK.send_location_question(
                 question=reply,
@@ -4088,6 +4160,16 @@ class Daemon:
                 status=out.get("status"),
                 delivery=sent.get("status"),
             )
+            if registered and self._confirmation_retryable(sent):
+                # A returned (not raised) refused or unknown outcome is retried like a
+                # raised one (kody 4366258037):  the registration is recorded above, so
+                # the route's retry resends only the confirmation.  A reply to an
+                # answer that registered nothing is not retried here - a retry would
+                # re-run answer(), and the open question takes the next answer anyway.
+                raise RegistrationConfirmationPending(
+                    "the registration confirmation did not land (%s)"
+                    % str(sent.get("delivery_status") or "refused")[:20]
+                )
             return True
         except OR.RegistryUnavailable as exc:
             # Fail closed and say so loudly:  no answer is registered while the identity
@@ -4106,18 +4188,35 @@ class Daemon:
                 # failure still leaves exactly one outcome row - the fresh-answer path
                 # names the registration status, the confirm-retry path names the
                 # retry - so "letter minted, confirmation outstanding" is diagnosable.
-                self.log.write(
-                    "operator-registration-answer",
-                    entry_id=parsed["entry_id"],
-                    status=(out or {}).get("status") or "confirm-retried",
-                    delivery="raised:" + type(exc).__name__,
-                )
+                # A returned outcome that did not land already wrote its row, with
+                # the delivery it returned.
+                if not isinstance(exc, RegistrationConfirmationPending):
+                    self.log.write(
+                        "operator-registration-answer",
+                        entry_id=parsed["entry_id"],
+                        status=(out or {}).get("status") or "confirm-retried",
+                        delivery="raised:" + type(exc).__name__,
+                    )
                 # The mutation is recorded in the route's done set:  let the route
                 # retry finish the confirmation rather than dropping the answer into
                 # the ordinary wake path with its letter already minted.
                 raise
             self.log.write("operator-registration-answer", status="error", error=type(exc).__name__)
             return False
+
+    @staticmethod
+    def _confirmation_retryable(sent: Mapping[str, Any]) -> bool:
+        """A confirmation that did not land, and whose refusal is not terminal.
+
+        The same rule the ask path uses (OREG.TERMINAL_REFUSAL_CODES):  a rejected
+        credential or a secret-scan withhold would be refused again on every retry, so
+        those end the step;  anything else that did not land goes back to the route's
+        bounded retry loop.
+        """
+        return (
+            sent.get("status") != "sent"
+            and str(sent.get("code") or "") not in OREG.TERMINAL_REFUSAL_CODES
+        )
 
     @staticmethod
     def may_inspect_chat(pending: W.Pending) -> bool:

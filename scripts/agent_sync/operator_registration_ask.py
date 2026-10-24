@@ -252,8 +252,10 @@ def send_location_question(
     try:
         me = client.get("users/me")
     except Z.AgentSyncError as exc:
-        # A rejected credential is named by a masked preview only, never by any part of
-        # the key a caller could not otherwise see (the candidate list's convention).
+        # A rejected credential is named by its identity (the bot email) and the
+        # server's status code only:  no part of the key, not even a masked
+        # first-eight/last-four preview.  This flow is deliberately stricter than the
+        # candidate list's masked-preview convention (kody 4365984867, 4365987041).
         status = getattr(exc, "status", getattr(exc, "status_code", None))
         if status in (401, 403):
             # Never any part of the key:  the credential is named by its identity

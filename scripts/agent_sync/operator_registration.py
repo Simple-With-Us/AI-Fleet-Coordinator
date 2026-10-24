@@ -16,7 +16,8 @@ The flow:
   1.  ``begin`` records the one pending question for a session identity.  A session that is
       already lettered is answered from the registry instead of being asked again, and a
       second ``begin`` for the same identity returns the live question rather than opening
-      another one.
+      another one.  A session whose last question met a terminal refusal (``mark_refused``)
+      is held for ``REFUSAL_HOLD_SECONDS`` instead of being asked again on every pass.
   2.  ``answer`` takes the reply.  Only "mac", "server" or "cloud" counts.  A reply that
       contradicts the catalog's discovery evidence, or that would letter a session already
       lettered at another location, is a conflict:  nothing is registered and the owner
@@ -463,6 +464,17 @@ def begin(
                     "reason": entry.get("reason") or "",
                     "entry": dict(entry),
                 }
+        held = _refusal_hold(data["entries"].values(), (platform, scope, native), clean_route, now)
+        if held is not None:
+            # A terminal refusal is terminal for the session, not only for its entry
+            # (kody 4366099679, gap 1):  a fresh question would meet the same refusal, so
+            # no new entry opens while the hold lasts.  The drop itself was logged once
+            # when it happened (the daemon's operator-registration-drop line).
+            return {
+                "status": "refused",
+                "reason": held.get("reason") or "",
+                "entry": dict(held),
+            }
         entry_id = "reg-" + secrets.token_hex(6)
         entry = {
             "entry_id": entry_id,
@@ -614,10 +626,12 @@ def sweep(registry_db: str, *, now: float | None = None) -> list[dict[str, Any]]
                 dropped.append(dict(entry))
         settled = []
         for entry_id, entry in data["entries"].items():
+            # Only the settled states are cleanup, named explicitly (kody 4366124687):
+            # a state added later is kept by default rather than pruned by default.
             # Conflicts are never cleanup:  they stay answerable until the owner
             # settles which location is right (kody 4366048276) - pruning one
             # after seven days would delete the very entry the owner must settle.
-            if entry["state"] in (STATE_ASKED, STATE_CONFLICT):
+            if entry["state"] not in (STATE_REGISTERED, STATE_DROPPED):
                 continue
             touched = max(
                 float(entry.get(field) or 0)
@@ -710,21 +724,100 @@ def mark_notified(registry_db: str, entry_id: str, *, now: float | None = None) 
         return True
 
 
-REASON_TERMINAL_REFUSAL = "terminal_refusal"
-
 # Refusal codes that can never clear by retrying the same question:  the
 # withheld content will match the scan again, and a rejected credential is
 # refused again until the owner reinstalls it (kody 4366047123).
 TERMINAL_REFUSAL_CODES = frozenset({"secret", "credential_rejected"})
 
+# A terminally refused entry's reason:  "refused:<code>", or "refused:<code>:<field>"
+# when the refusal names the field it matched (the secret scan does).  A code word
+# only, never the refusal's text:  that text can name the Operator bot, and entries
+# hold ids, labels and timestamps.
+REASON_REFUSED_PREFIX = "refused:"
+_REFUSAL_FIELDS = ("question", "channel", "topic")
+# The fields whose refusal binds only the route it matched:  a later lease can name a
+# clean topic, so a route-scoped refusal never holds the session on a different route.
+_ROUTE_SCOPED_FIELDS = ("channel", "topic")
 
-def mark_refused(registry_db: str, entry_id: str, reason: str, *, now: float | None = None) -> bool:
+# How long a terminal refusal holds its session before one fresh question may open
+# (kody 4366099679, gap 1).  The same cadence as an unanswered question:  the sweep
+# drops one at its 24h deadline and the next pass asks again, so a held session is
+# retried at most once a day, and a credential the owner reinstalls is picked up by
+# the next day's question.  It must stay inside SETTLED_KEEP_SECONDS, or the sweep
+# would prune the dropped entry that carries the hold before the hold ends.
+REFUSAL_HOLD_SECONDS = DEFAULT_TIMEOUT_SECONDS
+
+
+def refusal_reason(code: str, field: str = "") -> str:
+    """The reason a terminally refused entry is dropped with:  a code word, never text."""
+    word = str(code or "").strip().lower()
+    if not re.fullmatch(r"[a-z_]{1,32}", word):
+        word = "unknown"
+    reason = REASON_REFUSED_PREFIX + word
+    scope = str(field or "").strip().lower()
+    if scope in _REFUSAL_FIELDS:
+        reason += ":" + scope
+    return reason
+
+
+def _route_key(route: Any) -> tuple[str, str] | None:
+    if not isinstance(route, Mapping):
+        return None
+    return (
+        str(route.get("channel") or "").casefold(),
+        str(route.get("topic") or "").casefold(),
+    )
+
+
+def _refusal_hold(
+    entries: Iterable[Mapping[str, Any]],
+    identity: tuple[str, str, str],
+    clean_route: Mapping[str, Any] | None,
+    now: float,
+) -> Mapping[str, Any] | None:
+    """The terminally refused entry that still holds this session, or None.
+
+    Only a mark_refused drop holds:  an unanswered question (no_reply) and a lost route
+    (route_lost) are not refusals, and the next pass asks fresh after them as before.
+    A refusal that matched the route holds only while the chat has no route or the
+    same one;  a chat that has moved to another topic is asked there.
+    """
+    for entry in entries:
+        if entry.get("state") != STATE_DROPPED or _identity(entry) != identity:
+            continue
+        reason = str(entry.get("reason") or "")
+        if not reason.startswith(REASON_REFUSED_PREFIX):
+            continue
+        if now - float(entry.get("dropped_at") or 0) >= REFUSAL_HOLD_SECONDS:
+            continue
+        parts = reason.split(":")
+        if (
+            len(parts) == 3
+            and parts[2] in _ROUTE_SCOPED_FIELDS
+            and clean_route is not None
+            and _route_key(clean_route) != _route_key(entry.get("route"))
+        ):
+            continue
+        return entry
+    return None
+
+
+def mark_refused(
+    registry_db: str,
+    entry_id: str,
+    code: str,
+    *,
+    field: str = "",
+    now: float | None = None,
+) -> bool:
     """Drop a live asked entry after a terminal refusal;  returns False when nothing was live.
 
-    A terminal refusal must stay terminal:  the entry leaves the answerable set here,
-    the caller logs one refusal line naming the reason, and no later pass can requeue
-    the same doomed question.  Retryable refusals (missing credential, unpinned owner,
-    unreadable client) never reach this - they stay stamped-free and retried.
+    A terminal refusal must stay terminal:  the entry leaves the answerable set here with
+    the reason ``refusal_reason(code, field)``, the caller logs one drop line naming that
+    reason, and ``begin`` holds the session for REFUSAL_HOLD_SECONDS instead of opening
+    the same doomed question on the next pass.  Retryable refusals (missing credential,
+    unpinned owner, unreadable client) never reach this - they stay stamped-free and
+    retried.
     """
     now = time.time() if now is None else float(now)
     with L.locked(queue_path(registry_db)):
@@ -734,7 +827,7 @@ def mark_refused(registry_db: str, entry_id: str, reason: str, *, now: float | N
             return False
         entry["state"] = STATE_DROPPED
         entry["dropped_at"] = round(now, 3)
-        entry["reason"] = str(reason or REASON_TERMINAL_REFUSAL)[:80]
+        entry["reason"] = refusal_reason(code, field)
         save(registry_db, data)
         return True
 
