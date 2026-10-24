@@ -2008,7 +2008,7 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             "profile_scope": "default",
             "session_id": "sess-aaaaaaaa",
             "seat": "CLAUDE",
-            "status": "active",
+            "status": "available",
         }
         row.update(overrides)
         return [row]
@@ -2103,9 +2103,9 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         db = self._registry(daemon)
         rows = [
             {"id": "row-1", "platform": "claude", "profile_scope": "default",
-             "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "active"},
+             "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available"},
             {"id": "row-2", "platform": "claude", "profile_scope": "default",
-             "session_id": "sess-bbbbbbbb", "seat": "CLAUDE", "status": "active"},
+             "session_id": "sess-bbbbbbbb", "seat": "CLAUDE", "status": "available"},
         ]
         with mock.patch.object(
             D.ORASK, "send_location_question",
@@ -2350,7 +2350,7 @@ class OperatorRegistrationRouteTests(DaemonHarness):
     def _rows(self):
         return [{
             "id": "row-1", "platform": "claude", "profile_scope": "default",
-            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "active",
+            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
         }]
 
     def test_the_route_is_the_active_topic_not_the_oldest(self):
@@ -2398,7 +2398,7 @@ class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
             registry.close_db()
         rows = [{
             "id": "row-1", "platform": "claude", "profile_scope": "default",
-            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "active",
+            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
         }]
         with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}):
             daemon.maybe_ask_registrations(rows, {})
@@ -2535,7 +2535,7 @@ class OperatorRegistrationRouteFollowTests(DaemonHarness):
     def _rows(self):
         return [{
             "id": "row-1", "platform": "claude", "profile_scope": "default",
-            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "active",
+            "session_id": "sess-aaaaaaaa", "seat": "CLAUDE", "status": "available",
         }]
 
     def _registry(self, daemon):

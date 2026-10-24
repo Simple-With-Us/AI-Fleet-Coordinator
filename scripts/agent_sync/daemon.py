@@ -3668,6 +3668,11 @@ class Daemon:
     def _registrations(db: str, platform: str, session_id: str) -> list[dict[str, Any]]:
         """The registry scan for the ask/answer flow;  a MISSING file reads as empty.
 
+# Chat-catalog statuses that must NOT be asked for a location (mirror of
+# chat_catalog._row's readability rule; "available" and future readable
+# statuses are asked).
+_REGISTRATION_SKIP_STATUSES = frozenset({"unavailable", "stale", "metadata-only"})
+
         First run:  nothing has ever registered, so the file does not exist yet, and the
         registry layer fails closed on that (its wake-path rule:  never let a lookup
         bring a registry into being).  At this boundary a missing file is the truthful
@@ -3710,7 +3715,12 @@ class Daemon:
             for row in rows:
                 if labels.get(str(row.get("id") or ""), ("", ""))[0]:
                     continue
-                if str(row.get("status") or "") != "active":
+                # Ask the rows the catalog calls readable:  its vocabulary is
+                # available/stale/metadata-only/unavailable (chat_catalog._row),
+                # so skip exactly its unreadable set instead of matching one
+                # literal value - a literal "active" matched nothing the catalog
+                # produces and silently killed the flow (kody 4366047801).
+                if str(row.get("status") or "") in _REGISTRATION_SKIP_STATUSES:
                     continue
                 platform = str(row.get("platform") or "")
                 scope = str(row.get("profile_scope") or "")
