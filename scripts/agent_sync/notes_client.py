@@ -30,7 +30,9 @@ from . import notes as N
 from . import notes_wire as W
 
 KNOB = "OPERATOR_API_URL"
-KNOB_PATH = "/"  # fleet knobs live at the AI Fleet Coordinator project's root (fleet_knobs/source.py)
+KNOB_PATH = (
+    "/"  # fleet knobs live at the AI Fleet Coordinator project's root (fleet_knobs/source.py)
+)
 CALL_TIMEOUT_S = 20.0
 POLL_FIRST_S, POLL_LATER_S = 1.0, 2.0
 KEY_CACHE_S = 600.0
@@ -82,7 +84,8 @@ def fleet_secrets_get(
         # Nothing has been sent yet, so this is never an unknown outcome.
         raise N.NotesError(
             "not_configured",
-            "fleet-secrets did not answer within 30 seconds reading %s, so nothing was sent;  try again" % name,
+            "fleet-secrets did not answer within 30 seconds reading %s, so nothing was sent;  try again"
+            % name,
         ) from None
     except (OSError, subprocess.SubprocessError):
         return ""
