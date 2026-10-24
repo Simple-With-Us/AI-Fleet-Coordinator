@@ -204,7 +204,7 @@ gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Markd
 two spaces at the END of a line is a hard line break -- a different thing; this rule is about
 the gap BETWEEN sentences.)
 
-**HOW to emit it (owner ruling 2026-10-23, the same on every surface but two chat panes):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity, which shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
+**HOW to emit it (owner ruling 2026-10-23, the same on every surface but two chat panes):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity outside the chat panes named below, because everywhere else it shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
 
 - **Claude Code Code tab and MiniMax Code chat panes (the one exception, owner ruling 2026-10-23):**
   the `&nbsp;` entity plus a normal space, outside code spans.  Both renderers decode it.
@@ -245,7 +245,7 @@ the gap BETWEEN sentences.)
   `&nbsp; `.
 - **Any surface not listed above:**  the same U+00A0 plus a space.
 
-**Rendering trap — history (chat advice reversed twice; all of it superseded by the 2026-10-23 one-mechanism ruling above):** the 2026-08-19 entity advice for
+**Rendering trap — history (chat advice reversed twice; the 2026-10-23 ruling above supersedes all of it except in the chat panes it names as its exception):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was
 superseded on 2026-10-08 by the entity again.  Do not re-run these tests.  Owner ruling
 2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or HTML
