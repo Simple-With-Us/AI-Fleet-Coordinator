@@ -365,6 +365,10 @@ jobs:
       run: |
         npm ci --ignore-scripts --prefix scripts/agent-sync-mcp
         node --test scripts/agent-sync-mcp/test/*.test.mjs
+    # The scoped-folder copy script (AFC-478) against a mocked Infisical and a fake
+    # fleet-secrets:  names-only output, collisions, exit codes and reruns.
+    - name: agent-sync MCP scoped-folder copy script tests
+      run: python3 -I scripts/agent-sync-mcp/scripts/test_populate_scoped_folders.py
     - name: Kody defer and deferred sweep tests
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs
     - name: Autofix dispatcher tests

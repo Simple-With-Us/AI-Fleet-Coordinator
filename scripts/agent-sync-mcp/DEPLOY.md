@@ -6,6 +6,74 @@ A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every dep
 
 Run everything from `scripts/agent-sync-mcp/` in a fresh worktree off `origin/main` (never `~/Code/AI-Fleet-Coordinator`).  Never merge stderr into output (`2>&1`) on a command that touches a credential.
 
+## Runtime secrets from Infisical (scoped service token, INFISICAL_MODE)
+
+The Worker can read its secrets at runtime from Fleet-OPS `prod` through one
+read-tools service token (`INFISICAL_SERVICE_TOKEN` + `INFISICAL_WORKSPACE_ID`
+bindings), instead of install-time copied Worker secrets.  `INFISICAL_MODE`:
+
+- `off` (default):  only the legacy Worker bindings are read.  Fully
+  compatible with every install below;  nothing changes until the mode is set.
+- `fallback`:  Infisical first, the legacy binding on a miss or a read
+  failure.  Every read a binding serves is logged as one JSON event,
+  `{"event":"infisical_fallback","path":...,"name":...,"binding":...,"served":...,"code":...,"status":...}`
+  (names and a fixed code only, never a value), and counted as a fallback
+  (`/admin` status shows the counters).  A FleetLink seat token's binding is
+  its bundle entry, `FLEETLINK_SEAT_TOKENS[<SEAT>]`.  An optional secret that
+  is undeclared and set nowhere (not in Infisical, no binding) reads as empty
+  and is counted apart as absent, never as a fallback:  `required` gives the
+  same answer.
+- `required`:  Infisical only, zero fallbacks.  A missing secret that is
+  DECLARED configured throws visibly;  a secret absent from the declaration
+  list is an intentionally-off capability and reads as empty.
+
+**The proof before `required`.**  Run `fallback` and exercise the Worker (an
+`/mcp` session per seat, `/admin`).  `required` is turned on only when
+`/admin` shows 0 fallbacks and the Worker log has no `infisical_fallback`
+event:  then every read was served by Infisical or found a secret that is set
+nowhere, which every mode answers the same way, so `required` changes nothing
+that works.  A fallback event names the Infisical record that is missing and
+the binding that served it, and either the record is created or the binding
+was serving a capability that is meant to go.  Absent reads do not hold the
+gate:  the wake keys of GROK-WEB, ECHO and WISE, which no binding or Infisical
+record holds (so those seats get no events), and the FleetLink tokens of MA
+and JET-CHAT, which have none (so those seats keep the agent secret with
+`X-Fleet-Seat`, as on main).
+
+The declaration list is `INFISICAL_EXPECT` (comma-separated `path:name`), and
+it defaults to `INFISICAL_EXPECT_DEFAULT` in `src/infisical-manifest.js` -
+exactly the 72 secrets the population run copies into the scoped Fleet-OPS
+folders (3 wake at `/wake`, 18 FleetLink at `/fleetlink`, 48 Grok-Bot fields
+at `/zulip` + `/linear`, 3 recall at `/tools`).  GB-ENGINEER's FleetLink token
+was never provisioned and is deliberately NOT declared:  that seat is denied
+outright (`FLEETLINK_SEATS_DISABLED`), never silently put on the shared agent
+secret.  The ephemeral SPIKE wake key is never declared or stored here.
+
+Seat zulip keys are NOT copied:  runtime reads use the canonical
+`<SEAT>_ZULIP_KEY` records already in Fleet-OPS `/zulip`.  The stale
+`ZULIP_KEY_<SEAT>` code names matched no Infisical secret and were migrated in
+`SEAT_SECRETS`;  the legacy Worker binding names stay only as the
+off-mode/fallback bindings.  JET-CHAT reads Jet's record (one bot key), and
+its Linear pair reads Jet's `/linear` record (one Linear app).  How the names
+were checked:  a names-only listing of Fleet-OPS prod `/zulip` on Fri, Oct 23
+(PR #901 for CURSOR, CLAUDE, JET, GROK-WEB, ECHO and WISE;  #894 for
+`MA_ZULIP_KEY`).  That listing left no output in this repo, so treat the names
+as unproven until fallback mode proves them:  a seat key that misses Infisical
+is served from its Worker binding, logged and counted on `/admin`, and the
+proof above does not pass until that record exists.  A seat key absent in
+`required` mode leaves only that seat's Zulip tools `not_configured`;  an
+outage or a scope denial fails the request visibly.
+
+**The copies are point-in-time and are NOT a source-rotation sync.**  Rotating
+a source secret does NOT update its Fleet-OPS copy, and re-running the
+population copy script does not either:  it stops (exit 2) at the first
+destination that already holds a different value and never overwrites one.
+After any source rotation, update the Fleet-OPS copy by hand to the rotated
+value;  a re-run then reports it in sync, and the Worker's read cache picks the
+new value up within its TTL.  Secret references were rejected for this:
+cross-project references are unsupported, and same-project references would
+force the scoped token to read source paths outside its grant.
+
 ## Step 0:  Preflight
 
 ```bash
