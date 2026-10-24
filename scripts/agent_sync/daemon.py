@@ -1754,11 +1754,7 @@ class Daemon:
                 done.add("wake")
             if d.wake and not d.delivered_to and "wake" not in done:
                 defer_broadcast = (
-                    c.owner
-                    and c.broadcast_all
-                    and not c.dm
-                    and not c.stale
-                    and not c.no_wake
+                    c.owner and c.broadcast_all and not c.dm and not c.stale and not c.no_wake
                 )
                 if defer_broadcast:
                     done.add("wake")

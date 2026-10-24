@@ -509,11 +509,7 @@ def route(
             wants = c.eligible and (
                 (c.owner and not c.everyone_inert)
                 or c.direct
-                or (
-                    not c.everyone_inert
-                    and c.reply_to is not None
-                    and c.reply_to in lease.posted
-                )
+                or (not c.everyone_inert and c.reply_to is not None and c.reply_to in lease.posted)
             )
             klass = PASSIVE
             if wants and not presence:
