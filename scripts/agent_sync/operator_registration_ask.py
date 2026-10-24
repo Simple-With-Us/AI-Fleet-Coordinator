@@ -28,8 +28,10 @@ Standard library only, Python 3.11+.
 
 from __future__ import annotations
 
+import html
 import json
 import os
+import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -64,6 +66,20 @@ def _retry_after_seconds(exc: BaseException) -> float | None:
     return max(0.0, min(seconds, Z.RETRY_AFTER_CAP))
 
 
+_TAG_RE = re.compile(r"<[^>]*>")
+
+
+def _plain(value: str) -> str:
+    """Text as a read-back compares it:  tags dropped, entities decoded, whitespace folded.
+
+    A read-back sees Zulip's rendered content, where the posted text sits inside HTML
+    and its sentence gaps carry U+00A0, so an extra marker is compared in this folded
+    form on both sides, never byte for byte.
+    """
+    text = html.unescape(_TAG_RE.sub(" ", str(value or "")))
+    return " ".join(text.replace(chr(0xA0), " ").split())
+
+
 def _fingerprint(channel: str, topic: str, body: str) -> str:
     return OC._fingerprint(0, "%s\n%s\n%s" % (channel.casefold(), topic.casefold(), body))
 
@@ -94,10 +110,11 @@ def _question_message_id(
     """(the landed question's id, error kind, proven-absent) for one topic read-back.
 
     A match is the Operator bot's OWN post carrying the question's unique ref (and every
-    one of ``extra_markers``):  an answer quoting the ref, or anyone else's message, never
-    counts.  A confirmation carries the same ref as the question it answers, so it passes
-    its own leading words as an extra marker and the question is never taken for it
-    (Sentry 4368820226).  Absence is proven
+    one of ``extra_markers``, compared in _plain form):  an answer quoting the ref, or
+    anyone else's message, never counts.  A reply carries the same ref as the question
+    it answers, so it passes its own text as an extra marker and neither the question
+    nor a different reply is ever taken for it (Sentry 4368820226, kody 4368936156).
+    Absence is proven
     only when the topic's history is exhausted;  an unreadable topic or a hit page cap
     is "could not check", never "not there".
     Absence is only proven on validated rows:  a malformed sender id, non-string
@@ -159,8 +176,12 @@ def _question_message_id(
             if message.get("sender_id") != sender_id:
                 continue
             content = str(message.get("content") or "")
-            if marker not in content or any(extra not in content for extra in extra_markers):
+            if marker not in content:
                 continue
+            if extra_markers:
+                plain = _plain(content)
+                if any(_plain(extra) not in plain for extra in extra_markers):
+                    continue
             message_id = message.get("id")
             if isinstance(message_id, int) and not isinstance(message_id, bool) and message_id > 0:
                 return int(message_id), None, False
@@ -209,8 +230,9 @@ def send_location_question(
     delivery is reconciled by reading the topic back for the question's unique ref, never
     resent on a timer:  the question may already sit in the topic, and a duplicate
     question is not automatically benign.  ``read_back_markers`` is further text a
-    landed copy must carry beside the ref:  a confirmation sent through this function
-    passes its leading words, so the read-back never takes the question for it.
+    landed copy must carry beside the ref:  a reply sent through this function passes
+    its own text, so the read-back never takes the question, or another reply with the
+    same ref, for it.
     """
     environment = dict(env if env is not None else os.environ)
     at = time.time() if now is None else float(now)
@@ -349,7 +371,13 @@ def send_location_question(
             topic,
             entry_id,
             me.get("user_id"),
-            tuple(str(extra) for extra in read_back_markers if str(extra or "")),
+            # The markers get the same mention neutralizing the posted body got, so a
+            # reply passed as its own marker still matches its landed copy.
+            tuple(
+                W.neutralize_mentions(str(extra))
+                for extra in read_back_markers
+                if str(extra or "").strip()
+            ),
         )
         if read_error is not None:
             return _outcome(

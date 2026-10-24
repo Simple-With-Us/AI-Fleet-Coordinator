@@ -2631,6 +2631,9 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertTrue(posted.startswith("Not registered"), posted)
         self.assertIn("resumed_closed", posted)
         self.assertNotIn("Registered:", posted)
+        # kody 4368936156:  a reply that registered nothing is its own read-back
+        # marker too, so the question can never stand in for it.
+        self.assertEqual(send.call_args.kwargs["read_back_markers"], (posted,))
         self.assertEqual(len(D.OREG.pending_entries(db)), 1)
         # A reply to an answer that registered nothing is not retried by the route:  it
         # returns consumed, records nothing, and the question stays open.
@@ -2679,12 +2682,11 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertTrue(consumed)
         self.assertIn((42, "send-confirmation"), done)
         self.assertIn("letter A", send.call_args.kwargs["question"])
-        # Sentry 4368820226:  the confirmation's read-back requires its own words, so the
+        # Sentry 4368820226:  the confirmation is its own read-back marker, so the
         # question (same ref) is never read as the landed confirmation.
         self.assertEqual(
-            send.call_args.kwargs["read_back_markers"], (D.OREG.REGISTERED_REPLY_PREFIX,)
+            send.call_args.kwargs["read_back_markers"], (send.call_args.kwargs["question"],)
         )
-        self.assertTrue(send.call_args.kwargs["question"].startswith(D.OREG.REGISTERED_REPLY_PREFIX))
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
         self.assertEqual(len(rows), 1)
         # Each returned outcome wrote its own row with the delivery it returned.
@@ -2771,9 +2773,9 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         first, second = (call.kwargs["question"] for call in send.call_args_list)
         self.assertIn("letter A", first)
         self.assertEqual(second, first)
-        # Both the fresh send and the retry read back by the confirmation's own words.
+        # Both the fresh send and the retry read back by the confirmation's own text.
         for call in send.call_args_list:
-            self.assertEqual(call.kwargs["read_back_markers"], (D.OREG.REGISTERED_REPLY_PREFIX,))
+            self.assertEqual(call.kwargs["read_back_markers"], (first,))
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
         self.assertEqual(len(rows), 1)
         self.assertEqual(len(self._log_rows("route-error")), 1)

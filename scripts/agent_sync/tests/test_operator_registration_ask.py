@@ -277,12 +277,12 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
 
     def test_a_confirmation_read_back_never_takes_the_question_for_it(self) -> None:
         # Sentry 4368820226:  the confirmation carries the same ref as the question, so
-        # an unknown confirmation's read-back must require the confirmation's own words.
+        # an unknown confirmation's read-back must require the confirmation's own text.
         confirmation = OREG.answer_reply(
             {"status": "registered", "location": "mac", "label": "A",
              "generation": 1, "entry_id": ENTRY["entry_id"]}
         )
-        markers = (OREG.REGISTERED_REPLY_PREFIX,)
+        markers = (confirmation,)
         failing = _StubClient(
             post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
         )
@@ -304,15 +304,19 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
             {"status": "registered", "location": "mac", "label": "A",
              "generation": 1, "entry_id": ENTRY["entry_id"]}
         )
-        markers = (OREG.REGISTERED_REPLY_PREFIX,)
+        markers = (confirmation,)
         failing = _StubClient(
             post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
         )
         self.send(question=confirmation, client=failing, read_back_markers=markers)
+        # The read-back sees rendered content:  the text inside HTML, with Zulip's
+        # renderer collapsing the doubled space.  The marker still matches it.
+        rendered = "<p>%s</p>" % " ".join(confirmation.split())
+        self.assertNotIn(confirmation, rendered)
         both = _StubClient(
             messages=[
                 {"id": 42, "content": QUESTION, "sender_id": OPERATOR_ID},
-                {"id": 43, "content": confirmation, "sender_id": OPERATOR_ID},
+                {"id": 43, "content": rendered, "sender_id": OPERATOR_ID},
             ]
         )
         again = self.send(
@@ -321,6 +325,59 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
         self.assertEqual(again["status"], "sent", again["reason"])
         self.assertEqual(again["message_id"], 43)
         self.assertEqual(both.posts, [])
+
+    def test_a_not_registered_reply_is_not_taken_for_another_reply(self) -> None:
+        # kody 4368936156:  a reply that registered nothing also shares the ref with the
+        # question and with every earlier reply;  only its own text proves it landed.
+        refused = OREG.answer_reply(
+            {"status": "refused", "reason": "resumed_closed", "entry_id": ENTRY["entry_id"]}
+        )
+        earlier = OREG.answer_reply(
+            {"status": "refused", "reason": "seat_mismatch", "entry_id": ENTRY["entry_id"]}
+        )
+        markers = (refused,)
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.send(question=refused, client=failing, read_back_markers=markers)
+        others = _StubClient(
+            messages=[
+                {"id": 42, "content": QUESTION, "sender_id": OPERATOR_ID},
+                {"id": 44, "content": "<p>%s</p>" % earlier, "sender_id": OPERATOR_ID},
+            ]
+        )
+        again = self.send(
+            question=refused, client=others, now=1001.0, read_back_markers=markers
+        )
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(len(others.posts), 1)
+        self.assertNotIn(again["message_id"], (42, 44))
+
+    def test_a_reply_with_a_sentence_gap_is_matched_as_rendered(self) -> None:
+        # A conflict reply has a sentence gap, which the outbound fix turns into
+        # U+00A0 plus a space before the post:  the read-back still recognizes it.
+        conflict = OREG.answer_reply(
+            {"status": "conflict", "reason": OREG.REASON_OTHER_LOCATION, "known": ["server"],
+             "claimed": "mac", "entry_id": ENTRY["entry_id"]}
+        )
+        posted = textfmt.fix_outbound(conflict)[0]
+        self.assertIn(chr(0xA0), posted)
+        markers = (conflict,)
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.send(question=conflict, client=failing, read_back_markers=markers)
+        landed = _StubClient(
+            messages=[
+                {"id": 42, "content": QUESTION, "sender_id": OPERATOR_ID},
+                {"id": 45, "content": "<p>%s</p>" % posted, "sender_id": OPERATOR_ID},
+            ]
+        )
+        again = self.send(
+            question=conflict, client=landed, now=1001.0, read_back_markers=markers
+        )
+        self.assertEqual(again["message_id"], 45)
+        self.assertEqual(landed.posts, [])
 
     def test_a_ref_quoted_by_another_sender_is_not_the_landed_question(self) -> None:
         failing = _StubClient(

@@ -4064,9 +4064,10 @@ class Daemon:
                     env=self.env,
                     home=self.home,
                     owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
-                    # The recorded reply is a registered confirmation:  its read-back
-                    # must not take the question (same ref) for it (Sentry 4368820226).
-                    read_back_markers=(OREG.REGISTERED_REPLY_PREFIX,),
+                    # The reply is its own read-back marker:  the question and every
+                    # other reply carry the same ref, so only this text proves this
+                    # reply landed (Sentry 4368820226, kody 4368936156).
+                    read_back_markers=(recorded[2],),
                 )
                 # Only a landed confirmation is done, on this path too (kody 4366258037):
                 # a returned refused or unknown outcome leaves the step open and goes
@@ -4161,9 +4162,9 @@ class Daemon:
                 env=self.env,
                 home=self.home,
                 owner_user_id=int(getattr(self.config, "owner_user_id", 0) or 0),
-                read_back_markers=(OREG.REGISTERED_REPLY_PREFIX,)
-                if out.get("status") == "registered"
-                else (),
+                # Every reply, registered or not, is its own read-back marker
+                # (Sentry 4368820226, kody 4368936156).
+                read_back_markers=(reply,),
             )
             # Only a landed confirmation is done (kody 4366047395):  a failed or
             # unknown delivery keeps the route step open so the pass retries the
