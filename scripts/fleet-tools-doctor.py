@@ -61,6 +61,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -71,7 +72,7 @@ from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 RUNTIME = HOME / ".local/share/fleet-cli"
-CODE_ROOTS = [Path("/root/Code"), HOME / "Code"]
+CODE_ROOTS = [Path("/root/Code"), Path("/home/jay/Code"), HOME / "Code"]
 REPOS = ("AI-Fleet-Coordinator", "FleetLink")
 # The tools both hosts carry (docs/protocols/fleet-tool-parity.md), then FleetLink's CLI.
 FLEET_TOOLS = ("simple-chat", "simple-notes", "simple-board", "recall", "lane", "fleet-mode")
@@ -328,6 +329,7 @@ TOOL_REGISTRY: tuple = (
 TOOL_PATH_DIRS = (
     "{home}/.local/bin",
     "/root/.local/bin",
+    "/home/jay/.local/bin",
     "/opt/homebrew/bin",
     "/opt/homebrew/sbin",
     "/usr/local/bin",
@@ -1120,14 +1122,37 @@ def check_checkouts(
     return states
 
 
-def tool_path_dirs() -> list[str]:
-    """The registry's search path:  TOOL_PATH_DIRS, then the caller's PATH."""
+def dir_is_root_safe(directory: str) -> bool:
+    """Whether root may run binaries from `directory`:  owned by root and not group- or world-writable.
+
+    A directory another user can write (``/home/jay/.local/bin``) can hold a binary that user
+    planted, and the doctor runs what it finds (``probe_version`` runs ``<tool> --version``), so
+    as root such a directory is never searched.  A missing directory is harmless and kept.
+    """
+    try:
+        info = os.stat(directory)
+    except OSError:
+        return True
+    return info.st_uid == 0 and not (info.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+
+
+def tool_path_dirs(euid: int | None = None) -> list[str]:
+    """The registry's search path:  TOOL_PATH_DIRS, then the caller's PATH.
+
+    Run as root, a directory another user can write is left out (see ``dir_is_root_safe``), so
+    the doctor never executes a binary as root from one.  The ``jay`` login's own tools are
+    checked by running the doctor as ``jay``, where ``{home}/.local/bin`` is that directory.
+    """
+    as_root = (os.geteuid() if euid is None else euid) == 0
     dirs: list[str] = []
     for entry in [d.format(home=HOME) for d in TOOL_PATH_DIRS] + os.environ.get("PATH", "").split(
         os.pathsep
     ):
-        if entry and entry not in dirs:
-            dirs.append(entry)
+        if not entry or entry in dirs:
+            continue
+        if as_root and not dir_is_root_safe(entry):
+            continue
+        dirs.append(entry)
     return dirs
 
 
