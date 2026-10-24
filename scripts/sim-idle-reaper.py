@@ -326,8 +326,17 @@ def fleet_alert(content: str) -> bool:
     try:
         chat = shutil.which("simple-chat") or SIMPLE_CHAT
         rc, _ = run(
-            [chat, "--as", "MA", "post", "--channel", "Alerts",
-             "--topic", "sim-load-guard", content],
+            [
+                chat,
+                "--as",
+                "MA",
+                "post",
+                "--channel",
+                "Alerts",
+                "--topic",
+                "sim-load-guard",
+                content,
+            ],
             timeout=60,
         )
         ok = rc == 0
