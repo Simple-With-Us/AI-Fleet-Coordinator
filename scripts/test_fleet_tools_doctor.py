@@ -22,6 +22,43 @@ doctor = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(doctor)
 
 
+class RootSearchPathTests(unittest.TestCase):
+    """As root, the doctor never searches a directory another user can write."""
+
+    def test_root_skips_a_directory_not_owned_by_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            planted = Path(tmp) / "bin"
+            planted.mkdir()
+            fake = mock.Mock(st_uid=1000, st_mode=stat.S_IFDIR | 0o755)
+            real_stat = os.stat
+            with (
+                mock.patch.object(doctor, "TOOL_PATH_DIRS", (str(planted), "/usr/bin")),
+                mock.patch.dict(os.environ, {"PATH": ""}),
+                mock.patch.object(
+                    doctor.os,
+                    "stat",
+                    side_effect=lambda p, *a, **k: (
+                        fake if p == str(planted) else real_stat(p, *a, **k)
+                    ),
+                ),
+            ):
+                self.assertNotIn(str(planted), doctor.tool_path_dirs(euid=0))
+                # Not root:  the caller's own directories are searched as before.
+                self.assertIn(str(planted), doctor.tool_path_dirs(euid=1000))
+
+    def test_root_skips_a_group_or_world_writable_root_directory(self):
+        for mode in (0o775, 0o757):
+            fake = mock.Mock(st_uid=0, st_mode=stat.S_IFDIR | mode)
+            with mock.patch.object(doctor.os, "stat", return_value=fake):
+                self.assertFalse(doctor.dir_is_root_safe("/some/dir"))
+        safe = mock.Mock(st_uid=0, st_mode=stat.S_IFDIR | 0o755)
+        with mock.patch.object(doctor.os, "stat", return_value=safe):
+            self.assertTrue(doctor.dir_is_root_safe("/usr/bin"))
+
+    def test_a_missing_directory_is_kept(self):
+        self.assertTrue(doctor.dir_is_root_safe("/no/such/dir/for/the/doctor"))
+
+
 class SeatAndMcpTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1120,6 +1157,20 @@ class ServerTests(HomeCase):
             doctor.check_server_timers(report, fake_runner([(("systemctl",), answer)]))
             row = report.row("updater:fleet-cli-git-update.timer")
             self.assertEqual((row["state"], row["status"]), want, answer)
+
+    def test_service_run_newer_than_the_timer_counts_as_a_run(self):
+        now = int(time.time())
+        out = (
+            "LoadState=loaded\nActiveState=active\nLastTriggerUSec=@%d\n"
+            "NextElapseUSecRealtime=\nExecMainStartTimestamp=\n\n"
+            "LoadState=loaded\nActiveState=inactive\nLastTriggerUSec=\n"
+            "NextElapseUSecRealtime=\nExecMainStartTimestamp=@%d\n"
+        ) % (now - 300 * 60, now - 20 * 60)
+        report = doctor.Report()
+        doctor.check_server_timers(report, fake_runner([(("systemctl",), (0, out))]))
+        row = report.row("updater:fleet-cli-git-update.timer")
+        self.assertEqual((row["state"], row["status"]), ("current", "OK"))
+        self.assertIn("fired 20 minutes ago", row["reason"])
 
     def test_wrappers_and_the_fleet_secrets_link(self):
         current = str(self.fleet_cli / "current")

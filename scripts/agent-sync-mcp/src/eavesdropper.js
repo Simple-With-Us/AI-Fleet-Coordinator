@@ -138,10 +138,12 @@ export class ListenerClient {
 }
 
 /** A ListenerClient for `seat`, or null when the read API is not configured for it.  Never throws. */
-export function listenerClientFromEnv(env, seat, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
+export function listenerClientFromEnv(env, seat, { fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now, wakeKey } = {}) {
   const baseUrl = listenerBaseUrl(env?.LISTENER_API_URL);
   const name = Object.hasOwn(WAKE_SECRETS, seat) ? WAKE_SECRETS[seat] : null;
-  const key = name && typeof env?.[name] === "string" ? env[name].trim() : "";
+  // wakeKey: an already-resolved key (src/infisical.js resolveSecret), so the
+  // listener honors required mode; without it the legacy env binding is read.
+  const key = wakeKey !== undefined ? String(wakeKey).trim() : name && typeof env?.[name] === "string" ? env[name].trim() : "";
   if (!baseUrl || key.length < LISTENER_MIN_KEY_LEN || typeof fetchImpl !== "function") return null;
   return new ListenerClient({ baseUrl, seat, key, fetch: fetchImpl, now });
 }

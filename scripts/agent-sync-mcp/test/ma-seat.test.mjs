@@ -19,7 +19,7 @@ import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
 
 test("MA is a known seat labeled Rob with its own secret names and full tools", () => {
   assert.ok(KNOWN_SEATS.includes("MA"));
-  assert.deepEqual(SEAT_SECRETS.MA, { key: "ZULIP_KEY_MA", email: "ZULIP_EMAIL_MA" });
+  assert.deepEqual(SEAT_SECRETS.MA, { key: "ZULIP_KEY_MA", email: "ZULIP_EMAIL_MA", infisical: { name: "MA_ZULIP_KEY", path: "/zulip" } });
   assert.equal(SEAT_LABELS.MA, "Rob");
   assert.ok(!("MA" in WAKE_SECRETS), "no wake route for MA");
   assert.deepEqual([...allowedIdentities("MA")], ["MA"], "an MA grant acts only as MA");

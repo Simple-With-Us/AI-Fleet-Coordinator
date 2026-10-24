@@ -27,7 +27,9 @@ const CODEX_EMAIL = JSON.parse(readFileSync(path.join(ROOT, "../../fleet-apps.js
 test("CODEX is a known seat with its own secret names, label and full tools", () => {
   assert.equal(typeof CODEX_EMAIL, "string", "fleet-apps.json carries the CODEX bot address");
   assert.ok(KNOWN_SEATS.includes("CODEX"));
-  assert.deepEqual(SEAT_SECRETS.CODEX, { key: "ZULIP_KEY_CODEX", email: "ZULIP_EMAIL_CODEX" });
+  // The runtime read is codex-bot's canonical Fleet-OPS /zulip record, the
+  // same name install_seat_key.py reads (CODEX_ZULIP_KEY), never a copy.
+  assert.deepEqual(SEAT_SECRETS.CODEX, { key: "ZULIP_KEY_CODEX", email: "ZULIP_EMAIL_CODEX", infisical: { name: "CODEX_ZULIP_KEY", path: "/zulip" } });
   assert.equal(SEAT_LABELS.CODEX, "Codex");
   assert.ok(!("CODEX" in WAKE_SECRETS), "no wake route for Codex");
   assert.deepEqual([...allowedIdentities("CODEX")], ["CODEX"], "a Codex grant acts only as Codex");

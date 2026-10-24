@@ -78,6 +78,42 @@ class StateTests(unittest.TestCase):
         self.assertEqual(state.cursor("AGENT-SYNC", "ROLL CALL"), 10)
         self.assertIsNone(state.cursor("agent-sync", "other"))
 
+    def test_cursor_falls_back_to_legacy_channel_name(self) -> None:
+        state = S.State(self.root, "CLAUDE", "t")
+        state.advance_cursor("agent-sync", "Roll Call", 10)
+        self.assertEqual(state.cursor("Work-In-Progress", "roll call"), 10)
+        self.assertEqual(state.cursor("agent-sync", "Roll Call"), 10)
+
+    def test_advance_rekeys_legacy_cursor_under_the_new_channel(self) -> None:
+        state = S.State(self.root, "CLAUDE", "t")
+        state.advance_cursor("agent-sync", "Roll Call", 10)
+        state.advance_cursor("Work-In-Progress", "Roll Call", 12)
+        data = json.loads(state.path.read_text())
+        self.assertEqual(
+            list(data["cursors"]), [S.cursor_key("Work-In-Progress", "Roll Call")]
+        )
+        self.assertEqual(state.cursor("Work-In-Progress", "Roll Call"), 12)
+        self.assertIsNone(state.cursor("agent-sync", "Roll Call"))
+
+    def test_advance_with_lower_id_keeps_the_legacy_position(self) -> None:
+        state = S.State(self.root, "CLAUDE", "t")
+        state.advance_cursor("agent-sync", "Roll Call", 10)
+        state.advance_cursor("Work-In-Progress", "Roll Call", 4)
+        self.assertEqual(state.cursor("Work-In-Progress", "Roll Call"), 10)
+        data = json.loads(state.path.read_text())
+        # The position is consolidated under the new key, never rewound;  the covered
+        # legacy entry goes only after the new key holds an equal or larger value.
+        self.assertEqual(
+            list(data["cursors"]), [S.cursor_key("Work-In-Progress", "Roll Call")]
+        )
+
+    def test_advance_after_rekey_never_moves_back(self) -> None:
+        state = S.State(self.root, "CLAUDE", "t")
+        state.advance_cursor("agent-sync", "Roll Call", 10)
+        state.advance_cursor("Work-In-Progress", "Roll Call", 12)
+        state.advance_cursor("Work-In-Progress", "Roll Call", 4)
+        self.assertEqual(state.cursor("Work-In-Progress", "Roll Call"), 12)
+
     def test_ledger_keeps_the_newest_500(self) -> None:
         state = S.State(self.root, "CLAUDE", "t")
         state.record_posted(1)
