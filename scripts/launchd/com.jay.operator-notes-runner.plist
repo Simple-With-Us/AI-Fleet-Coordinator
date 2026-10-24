@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.jay.operator-notes-runner (AFC-486, docs/protocols/operator-notes.md):  the Mac runner for the
+  Operator's Apple Notes queue.  Resident (KeepAlive):  it long-polls the Operator for a request (up to
+  25 seconds a claim), runs apple-notes-coding.sh for it, reports the result, and sends the script's
+  action log to the Operator.  It acts as no seat and holds no Zulip key;  it never listens on a port.
+
+  No secret lives in this plist or in any file:  the runner reads OPERATOR_NOTES_RUNNER_KEY with
+  `fleet-secrets get` (Infisical, AI Fleet Coordinator prod /operator) and keeps it in memory, and the
+  Operator's address is the fleet knob OPERATOR_API_URL.  It runs `simple-notes runner` from the managed
+  runtime with the same Homebrew python as the listener, so the Notes automation permission that python
+  already holds applies.
+  Install:  cp this file to ~/Library/LaunchAgents/ and
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.operator-notes-runner.plist
+  Stop:     launchctl bootout gui/$(id -u)/com.jay.operator-notes-runner
+  Status:   simple-notes runner state in ~/.local/state/operator/notes-runner.json;  the fleet tools
+            doctor (and so Muster) reads it as the notes:runner row.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.operator-notes-runner</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>umask 077 &amp;&amp; mkdir -p "$HOME/.local/state/operator" &amp;&amp; chmod 700 "$HOME/.local/state/operator" &amp;&amp; exec /opt/homebrew/bin/python3 /Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/simple-notes runner</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/jay/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+  </dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ProcessType</key>
+  <string>Standard</string>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/.local/state/operator/notes-runner.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/.local/state/operator/notes-runner.log</string>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

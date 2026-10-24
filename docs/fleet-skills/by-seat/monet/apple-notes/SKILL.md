@@ -1,7 +1,7 @@
 ---
 name: apple-notes
 description: >-
-  Write owner-facing Apple Notes in the `Coding` folder (local on this Mac) — plans, designs, reviews, handoffs, rollouts, living Completion notes. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Title [TEAM_KEY, Agent] Topic (Title Case) with a refreshed timestamp.
+  Write, read and fix owner-facing Apple Notes in the `Coding` folder — plans, designs, reviews, handoffs, rollouts, living Completion notes, and static notes such as the Background Jobs Master List. Use whenever an agent produces something the owner needs to read, not only when they say "Notes." Works the same on the Mac, the server and cloud seats (simple-notes or the notes_* tools). Title [TEAM_KEY, Agent] Topic (Title Case) with a refreshed timestamp.
 ---
 
 # Apple Notes (Universal)
@@ -9,11 +9,23 @@ description: >-
 > **Retired seat.**  Owner directive 2026-10-07: the Monet Claude account and app are no longer used, and `CLAUDE` is the only Claude seat.  Do not take work as MONET, do not leave MONET In Progress, and do not install this pack anywhere.  This catalog copy is inactive.
 
 
-Mac only.  Cloud sessions: skip Notes, say so, leave the handoff in the PR.
+Every host has the same tool set:  `simple-notes` (CLI) and the `notes_*` MCP tools, verb for verb:  `create`, `update`, `pin`, `unpin`, `read`, `list`, `status`, `log` (AFC-486, `docs/protocols/operator-notes.md`).  On the Mac they run the helper below directly;  on the server and from cloud seats they go through the Operator's notes queue to a runner on the Mac and wait for its answer.  No Notes request goes through Zulip.
+
+```bash
+simple-notes create "[AFC, Claude] Topic" --body-file body.md
+simple-notes read "⭐️ Background Jobs Master List" --format html > list.html   # edit list.html, then:
+simple-notes update "⭐️ Background Jobs Master List" --html list.html
+simple-notes list --query "AFC"
+simple-notes log --since-hours 24
+```
+
+- **Who may change what.**  A create's title carries your own agent name.  Update, pin, unpin, read and list work on any Coding note:  fixing formatting across other agents' notes is expected.  An update never creates a note whose title is not yours (a missing one answers `not_found`).
+- **Read before you rewrite.**  `read --format html` returns the content without the title, date and Session rows (the helper writes those on every save), ready to send back with `update --html`.
+- **The helper formats and logs every write**, wherever it came from (date row, Session row, sentence gaps, fleet dates).  `simple-notes log` shows who changed which note and what was reformatted.
 
 Notes.app does not render raw Markdown.  The helper converts MD → HTML.  Pass `--html` only when you already have Notes-safe HTML.
 
-## Helper
+## Helper (the Mac)
 
 ```bash
 /Users/jay/apps/apple-notes-coding.sh "Title" "plain body"
@@ -28,7 +40,9 @@ Also: `--notify` / `--pushover`, `--needs-owner` / `--action-required`, `--summa
 
 Default is headless pin via the `Pin Coding Note` shortcut (no focus steal).  Do not `APPLE_NOTES_ACTIVATE=1` unless the owner is sitting at the Mac.
 
-**Pass your session id.**  Every `board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `agent-sync notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
+There is no GUI fallback.  When the Shortcut does not pin, the helper prints `pin skipped: ... note saved unpinned` on stderr and the create or update still succeeds (exit 0);  `--pin-only` exits 4.  Nothing brings Notes to the front except an explicit `--activate` or `APPLE_NOTES_ACTIVATE=1`.  `--pin` and `APPLE_NOTES_PIN=1` are accepted and change nothing.  Never loop on a failed pin:  one pin or unpin Shortcut runs at a time across processes, a run that timed out is not repeated, and `APPLE_NOTES_PIN=0` skips pinning when you only need the write.  The `notes_create` and `notes_update` results and `simple-notes` carry a `pin_skipped` reason when that happened, so "done" with `pin_skipped` means the note is saved but not pinned.
+
+**Pass your session id.**  Every `simple-board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `simple-notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
 
 ## Title
 
@@ -66,7 +80,7 @@ Then: type line (`Completion` / `Plan` / `Review` / `Design` / `Handoff` / `Roll
 
 Order: `Needs owner` first when applicable, then Problem → What was done → Decisions → Next steps.
 
-Two ASCII spaces between sentences in the body file you pass the helper.
+A real U+00A0 plus a normal space between sentences in the body file you pass the helper (owner ruling 2026-10-23).  Never write the `&nbsp;` entity yourself.
 
 ## Layout (owner 2026-08-21; updated 2026-10-01 — binding)
 
@@ -86,7 +100,7 @@ Never pass empty `- ` bullets (they render as blank dots).  Put identifiers with
 
 Do Notes: plans, design docs, reviews, handoffs, rollouts, **Completion / work-complete** for anything the owner might ask about.
 
-Skip: pure #agent-sync topic chatter, Linear issue edits, routine commit messages, peer-only PR nits.
+Skip: pure #Work-In-Progress topic chatter, Linear issue edits, routine commit messages, peer-only PR nits.
 
 Open a living work note when substantial work starts.  Always Completion at the end.  Update in place; unpin stale Completion notes when the lane closes (`--unpin-only`).
 

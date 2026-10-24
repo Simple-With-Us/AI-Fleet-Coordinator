@@ -13,6 +13,8 @@
   // (DEPLOY.md, "Fleet recall").  AFC-477 spike (temporary):  SPIKE_HMAC_KEY
   // and the flag SPIKE_EXTRA_EVENTS are secrets too, so a deploy from main
   // never flips the flag (DEPLOY.md, "AFC-477 second-event spike").
+  // OPERATOR_NOTES_KEY signs the notes_* tools' Operator requests (DEPLOY.md,
+  // "Notes, recall and the guide").
   "$schema": "node_modules/wrangler/config-schema.json",
   // The Worker SCRIPT NAME stays `agent-sync-mcp`, deliberately, even though the
   // server is now called ST-MCP.  A Durable Object namespace is named
@@ -99,8 +101,10 @@
     // allowed.  CHANNELS_DENY lists stream ids no seat may use even when they
     // are public;  every check is by id, so a rename cannot dodge it.
     "CHANNELS_DENY": [],
-    // NOTES_RELAY_CONSUMER (the seat whose bot is the Apple Notes relay consumer, AFC-331) is NOT set here:  it is a
-    // fleet knob in Infisical (INFISICAL.md) copied to a Worker binding by sync_notes_consumer.py at deploy.
+    // OPERATOR_NOTES_KEY (AFC-486) is a Worker secret, never set or committed here:  the key the notes_* tools sign
+    // their Operator requests with (principal WORKER), Infisical AI Fleet Coordinator prod /operator
+    // OPERATOR_NOTES_WORKER_KEY (DEPLOY.md, "Notes, recall and the guide").  The notes tools also need
+    // LISTENER_API_URL below;  without both they answer not_configured.
     // MCP Events callback hosts (src/events.js).  ChatGPT's real callback host
     // is not documented;  a refused one shows on /admin under refusals as
     // callback_host_not_allowed with its host, and is added here.
@@ -189,7 +193,8 @@
     // The server listener's signed read API (AFC-330):  the https origin the
     // reverse proxy serves /listener/v1/ on.  Empty means the listener_* tools
     // answer not_configured.  Each seat signs with its WAKE_HMAC_KEY_<SEAT>.
-    // Set it only after DEPLOY.md "Listener read API" step 3 passes.
+    // Set it only after DEPLOY.md "Listener read API" step 3 passes.  The same
+    // origin serves the Operator's /notes/v1/ API for the notes_* tools (AFC-486).
     "LISTENER_API_URL": "",
     // Kill switch step 4:  "1" makes /mcp answer 503.
     "MCP_DISABLED": "0"
