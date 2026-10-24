@@ -306,7 +306,6 @@ TOOL_REGISTRY: tuple = (
     {"name": "wrangler", "kind": "dev-tool", "mac": OPTIONAL, "npm": "wrangler"},
     {"name": "cloudflared", "kind": "dev-tool", "mac": OPTIONAL},
     {
-    {
         "name": "minisign",
         "kind": "dev-tool",
         "mac": REQUIRED,
