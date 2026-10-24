@@ -414,7 +414,10 @@ class TestApply(Base):
 
         answers = [
             ("was refused (HTTP 401)", refused),
-            ("failed (ResponseLimitError)", lambda url: io.BytesIO(b"x" * (psf.MAX_RESPONSE_BYTES + 1))),
+            (
+                "failed (ResponseLimitError)",
+                lambda url: io.BytesIO(b"x" * (psf.MAX_RESPONSE_BYTES + 1)),
+            ),
             ("failed (ValueError)", lambda url: io.BytesIO(b"{}")),
             ("failed (URLError)", unreachable),
         ]
@@ -429,7 +432,10 @@ class TestApply(Base):
                 psf.urlopen = login_fails
                 code, out = self.run_main("--apply")
                 self.assertEqual(code, 1)
-                self.assertIn(f"STOP before the first copy: the Infisical login {expected}.  Nothing was copied.", out)
+                self.assertIn(
+                    f"STOP before the first copy: the Infisical login {expected}.  Nothing was copied.",
+                    out,
+                )
                 self.assertNotIn("Traceback", out)
                 self.assertNotIn("VALUE-", out)
                 self.assertNotIn("leak", out)
