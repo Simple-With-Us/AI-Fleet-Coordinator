@@ -33,6 +33,9 @@ const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_re
   // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only listener tools.
   ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log"];
 const JET_KEY = zulipShapedKey(11);
+// Jet's bot login comes from the committed var, never a literal copy:  it is not a secret, and the bot-email check, the
+// openai-dot tag mapping and seatProblem accept no other address, so a synthetic one cannot stand in (kody, PR 889).
+const JET_EMAIL = wranglerConfig().vars.ZULIP_EMAIL_JET;
 const CURSOR_KEY = zulipShapedKey(12);
 // One enabled Grok Bot persona, wired through the legacy per-role variables loadDelegatedCredentials reads.
 const PERSONA = GB_IDENTITIES.find((name) => name === "GB-FIXER") ?? GB_IDENTITIES[0];
@@ -55,7 +58,7 @@ const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 const zulip = new FakeZulip({ bots: [
   // The borrowed-bot grant (JET-CHAT) needs the pinned owner (kody 4365848649):
   // the fake users/me carries the same owner id the committed var pins.
-  { email: "openai-dot-bot@simplewithus.zulipchat.com", full_name: "Jet", key: JET_KEY, bot_owner_id: Number(wranglerConfig().vars.OWNER_USER_ID) },
+  { email: JET_EMAIL, full_name: "Jet", key: JET_KEY, bot_owner_id: Number(wranglerConfig().vars.OWNER_USER_ID) },
   { email: "cursor-bot@simplewithus.zulipchat.com", full_name: "Cursor", key: CURSOR_KEY },
   { email: PERSONA_EMAIL, full_name: PERSONA.slice(3), key: PERSONA_KEY },
   { email: "claude-bot@simplewithus.zulipchat.com", full_name: "Claude", key: CLAUDE_KEY },
@@ -256,7 +259,7 @@ function startWorker(upstream, bindingOverrides = {}) {
         compatibilityFlags: w.compatibility_flags,
         kvNamespaces: ["OAUTH_KV"],
         durableObjects: { SEAT_GATE: { className: "SeatGate", useSQLite: true } },
-        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", EVENTS_ONLY_SEATS: "JET", SEATS: { ...wranglerConfig().vars.SEATS, "JET-CHAT": { redirect_uris: [JETCHAT_REDIRECT], cimd_client_ids: [JETCHAT_CLIENT] } }, ZULIP_KEY_JET_CHAT: JET_KEY, ZULIP_EMAIL_JET_CHAT: "openai-dot-bot@simplewithus.zulipchat.com", ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, SPIKE_HMAC_KEY: SPIKE_KEY, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
+        bindings: testEnv({ ACCESS_AUD: AUD, HOSTED_SEATS: "JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE", EVENTS_ONLY_SEATS: "JET", SEATS: { ...wranglerConfig().vars.SEATS, "JET-CHAT": { redirect_uris: [JETCHAT_REDIRECT], cimd_client_ids: [JETCHAT_CLIENT] } }, ZULIP_KEY_JET_CHAT: JET_KEY, ZULIP_EMAIL_JET_CHAT: JET_EMAIL, ZULIP_KEY_CURSOR: CURSOR_KEY, ZULIP_CLAUDE_API_KEY: CLAUDE_KEY, ZULIP_KEY_GROK_WEB: zulip.key, ZULIP_KEY_JET: JET_KEY, [PERSONA_NAMES.zulipEmail]: PERSONA_EMAIL, [PERSONA_NAMES.zulipKey]: PERSONA_KEY, [PERSONA_NAMES.linearClientId]: "workerd-persona-linear-id", [PERSONA_NAMES.linearClientSecret]: "workerd-persona-linear-secret", WAKE_HMAC_KEY_JET: WAKE_KEY_JET, SPIKE_HMAC_KEY: SPIKE_KEY, LINEAR_GROK_WEB_CLIENT_ID: "workerd-linear-client-id", LINEAR_GROK_WEB_CLIENT_SECRET: "workerd-linear-client-secret", LINEAR_TOOLS_WRITES: "1", ...bindingOverrides }),
         outboundService: outboundFetch,
       },
     ],
@@ -643,7 +646,7 @@ try {
     const who = await call(chatTokens.access_token, "whoami");
     assert.equal(who.json.result.structuredContent.seat, "JET-CHAT");
     assert.equal(who.json.result.structuredContent.transport, "hosted");
-    assert.equal(who.json.result.structuredContent.email, "openai-dot-bot@simplewithus.zulipchat.com");
+    assert.equal(who.json.result.structuredContent.email, JET_EMAIL);
   });
 
   await step("MCP Events:  server/discover advertises events at 2026-07-28, and events/list offers zulip.mention", async () => {
