@@ -87,7 +87,7 @@ export class FakeLinear {
       team: this.teamNode(team),
       labels: labels.map((name) => ({ id: this.labelNode(name).id, name: String(name), parent: null })),
       comments: [],
-      delegate: delegate ? { id: delegate.id, name: delegate.name ?? delegate.id } : null,
+      delegate: delegate ? { id: delegate.id, name: delegate.name ?? delegate.id, app: delegate.app ?? true } : null,
     };
     this.issues.push(row);
     return row;
@@ -292,7 +292,7 @@ export class FakeLinear {
     for (const labelId of input.addedLabelIds ?? []) if (!row.labels.some((l) => l.id === labelId)) row.labels.push({ id: labelId, name: nameOf(labelId), parent: null });
     for (const labelId of input.removedLabelIds ?? []) row.labels = row.labels.filter((l) => l.id !== labelId);
     if (Object.hasOwn(input, "delegateId")) {
-      row.delegate = input.delegateId === null ? null : { id: input.delegateId, name: input.delegateId === this.viewer.id ? this.viewer.name : input.delegateId };
+      row.delegate = input.delegateId === null ? null : { id: input.delegateId, name: input.delegateId === this.viewer.id ? this.viewer.name : input.delegateId, app: true };
     }
     return { success: true, issue: this.issueNode(row) };
   }

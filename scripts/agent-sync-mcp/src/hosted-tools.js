@@ -1729,10 +1729,12 @@ export class HostedTools {
       const hit = this.flatLabel(workspace, key);
       if (hit) removed.push(hit.id);
     }
-    // Any delegate is an app user (the human assignee lives in assigneeId, which
-    // this never touches), so a release clears this seat's delegate or any
-    // other's;  a non-release leaves it alone.
-    const clearDelegate = releasing && !!issue?.delegate?.id;
+    // Only an app delegate is a fleet claim marker:  a human delegation (Jay's
+    // triage, a colleague's) is never cleared here.  A release clears this
+    // seat's delegate or any other's app delegate;  a non-release, a missing
+    // delegate, or a human one leaves it alone.
+    const delegate = issue?.delegate ?? null;
+    const clearDelegate = releasing && !!delegate?.id && delegate.app === true;
     const input = { stateId: state.id, ...(removed.length ? { removedLabelIds: removed } : {}), ...(clearDelegate ? { delegateId: null } : {}) };
     const result = await this.linearWrite(idem, { issue: issue.id, status: args.status }, async () => {
       const data = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input }), { write: true });

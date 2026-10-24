@@ -486,6 +486,15 @@ test("releasing to open clears the delegate and the claim label", async () => {
   assert.equal(fake.findIssue("issue-311").delegate, null);
 });
 
+test("a release leaves a human delegate alone", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-313", identifier: "AFC-313", team: "AFC", state: "In Progress", delegate: { id: "user-jay", name: "Jay", app: false } });
+  ok(await tools.call("linear_status", { id: "AFC-313", status: "open" }), "linear_status");
+  const update = fake.mutations()[0].body.variables;
+  assert.equal(Object.hasOwn(update.input, "delegateId"), false);
+  assert.equal(fake.findIssue("issue-313").delegate?.id, "user-jay");
+});
+
 test("a closing status leaves the delegate alone", async () => {
   const { tools, fake } = harness();
   fake.addIssue({ id: "issue-312", identifier: "AFC-312", team: "AFC", state: "In Progress", labels: ["claimed:GROK-WEB"], delegate: { id: fake.viewer.id, name: fake.viewer.name } });

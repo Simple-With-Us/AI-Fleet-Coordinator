@@ -277,7 +277,7 @@ export const Q_ISSUE = `query BoardIssue($id: String!) {
   issue(id: $id) {
     ...BoardIssue
     description
-    delegate { id name }
+    delegate { id name app }
     relations(first: 50) { nodes { type relatedIssue { id identifier } } }
     inverseRelations(first: 50) { nodes { type issue { id identifier } } }
   }
