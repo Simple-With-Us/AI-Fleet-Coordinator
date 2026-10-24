@@ -718,6 +718,9 @@ async function authorizeGet(request, env, config, oauth, email) {
       // A wake-only seat subscribes to events (zulip:read) and never posts:
       // offering zulip:write would promise a capability the router refuses.
       scopes: EVENTS_ONLY_SEATS.includes(seat) ? config.scopes.filter((s) => s !== "zulip:write") : [...config.scopes],
+      // Consent copy must disclose the WhatsApp inbox grant exactly when this
+      // seat would actually receive it (hosted-tools.js gates it the same way).
+      whatsapp: seat === "JET-CHAT" && config.whatsappEnabled,
       seat,
       handle: consent.handle,
       replacing: grants.map((g) => ({ client: g.metadata?.client_name ?? g.clientId, createdAt: toMs(g.createdAt) })),

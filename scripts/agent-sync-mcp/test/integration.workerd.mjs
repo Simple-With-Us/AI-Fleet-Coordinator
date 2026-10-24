@@ -148,10 +148,21 @@ async function step(name, fn) {
 // only (RFC 6749 error payloads), capped, never tokens.  (Kody review
 // 5633616477, high.)
 const summarize = (body) => {
-  if (body === null || typeof body !== "object") return String(body);
+  if (body === null || typeof body !== "object") return "<non-object body omitted>";
   const safe = {};
   for (const k of ["error", "error_description", "error_uri", "code", "message"]) {
-    if (body[k] !== undefined) safe[k] = typeof body[k].slice === "function" ? body[k].slice(0, 120) : body[k];
+    const v = body[k];
+    if (v === null || v === undefined) continue;
+    if (typeof v === "string") safe[k] = v.slice(0, 120);
+    else if (typeof v === "number" || typeof v === "boolean") safe[k] = v;
+    else if (typeof v === "object") {
+      // A nested error object is reduced to its own capped code/message, never copied whole.
+      const inner = {};
+      for (const ik of ["code", "message"]) {
+        if (typeof v[ik] === "string") inner[ik] = v[ik].slice(0, 120);
+      }
+      safe[k] = inner;
+    }
   }
   return JSON.stringify(safe);
 };

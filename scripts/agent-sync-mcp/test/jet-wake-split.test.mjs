@@ -6,6 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { z } from "zod";
 import path from "node:path";
 import { EVENTS_ONLY_SEATS, KNOWN_SEATS, SEAT_LABELS, SEAT_SECRETS, WAKE_SECRETS, loadConfig } from "../src/config.js";
 import { SEAT_TAG_EXPECTATIONS } from "../src/contract.js";
@@ -122,7 +123,9 @@ test("the wake-only refusal never carries a secret-shaped tool name (kody 436358
   const r = new IdentityRouter({ callerTools: caller });
   // Split in source per the repo fixture convention: the scanner must see the
   // stripe-shaped value only at runtime, and gitleaks must never see it at rest.
-  const secretish = ["sk", "live", "4eC39HqLyjWDarjtT1zdp7dc"].join("_");
+  // The suffix is obviously synthetic (kody 4365432461/4365432924):  the Stripe
+  // shape still trips the secret scan, and no reader can mistake it for a live key.
+  const secretish = ["sk", "live", "FAKE".repeat(6)].join("_");
   try {
     await r.call(secretish, {});
     assert.fail("must refuse");
@@ -147,6 +150,12 @@ test("JET-CHAT carries Jet's Linear app under its own env names (kody 4363263223
 test("JET-CHAT is session-id exempt like the JET it replaces (kody 4363263820)", async () => {
   const { EXEMPT_SEATS } = await import("../src/session-ids.js");
   assert.ok(EXEMPT_SEATS.includes("JET-CHAT"));
-  const registry = JSON.parse(readFileSync(path.join(ROOT, "../../fleet-apps.json"), "utf8"));
+  // Boundary check before the registry is read (kody 4365432623/4365432771):  the
+  // consumed section is validated with zod, every element typed.  The full-file
+  // contract stays with scripts/test_session_ids_parity.py.
+  const registrySchema = z.object({
+    sessionIds: z.object({ exemptSeats: z.array(z.string().min(1)).min(1) }).loose(),
+  }).loose();
+  const registry = registrySchema.parse(JSON.parse(readFileSync(path.join(ROOT, "../../fleet-apps.json"), "utf8")));
   assert.deepEqual([...EXEMPT_SEATS].sort(), [...registry.sessionIds.exemptSeats].sort(), "code and registry stay aligned");
 });

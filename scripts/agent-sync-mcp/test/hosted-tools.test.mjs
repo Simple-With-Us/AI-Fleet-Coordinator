@@ -445,11 +445,11 @@ test("seat binding:  only a member bot whose users/me is this seat's email and t
   assert.match(seatProblem({ ...good, role: 300 }, seat), /member \(400\) only/);
   assert.match(seatProblem({ ...good, is_bot: false }, seat), /not a bot/);
   assert.match(seatProblem({ ...good, email: "claude-bot@simplewithus.zulipchat.com" }, seat), /another bot/);
-  assert.match(seatProblem({ ...good, email: "openai-dot-bot@simplewithus.zulipchat.com" }, { seat: "GROK-WEB", email: "openai-dot-bot@simplewithus.zulipchat.com" }), /another seat/);
+  assert.match(seatProblem({ ...good, email: "openai-dot-bot@example.test" }, { seat: "GROK-WEB", email: "openai-dot-bot@example.test" }), /another seat/);
   // JET-CHAT runs on Jet's bot (SEAT_TAG_EXPECTATIONS):  the openai-dot key,
   // signing JET, is its expected signer;  any other tag fails closed.
-  const jetMe = { is_bot: true, email: "openai-dot-bot@simplewithus.zulipchat.com", role: 400, is_admin: false, is_owner: false };
-  assert.equal(seatProblem(jetMe, { seat: "JET-CHAT", email: "openai-dot-bot@simplewithus.zulipchat.com" }), null);
+  const jetMe = { is_bot: true, email: "openai-dot-bot@example.test", role: 400, is_admin: false, is_owner: false };
+  assert.equal(seatProblem(jetMe, { seat: "JET-CHAT", email: "openai-dot-bot@example.test" }), null);
   assert.match(seatProblem(good, { seat: "JET-CHAT", email: BOT_EMAIL }), /another seat/);
   assert.match(seatProblem(good, { seat: "JET", email: BOT_EMAIL }), /another seat/);
 });
@@ -772,7 +772,7 @@ test("CURSOR refuses a missing key and credentials for Jet", async () => {
   const cursorConfig = loadConfig(testEnv({ HOSTED_SEATS: "CURSOR" }));
   const missing = harness({ seat: "CURSOR", noKey: true, over: { config: cursorConfig } });
   toolError(await missing.tools.call("whoami", {}), "not_authorized");
-  const jet = { is_bot: true, email: "openai-dot-bot@simplewithus.zulipchat.com", role: 400, is_admin: false, is_owner: false };
+  const jet = { is_bot: true, email: "openai-dot-bot@example.test", role: 400, is_admin: false, is_owner: false };
   assert.match(seatProblem(jet, { seat: "CURSOR", email: cursorConfig.botEmails.CURSOR }), /another bot/);
   assert.match(seatProblem(jet, { seat: "CURSOR", email: jet.email }), /another seat/);
 });

@@ -252,6 +252,14 @@ def main() -> int:
             seat_tag(me) == EXPECTED_TAGS.get(args.seat, args.seat),
         )
     )
+    # The signing tag alone never grants the seat:  the bot's owner must be the
+    # pinned fleet owner.  handoff fails closed when the pin is unavailable.
+    checks.append(
+        (
+            "users/me bot owner is the pinned fleet owner (ZULIP_OWNER_USER_ID)",
+            str(me.get("bot_owner_id")) == handoff("ZULIP_OWNER_USER_ID"),
+        )
+    )
     checks.append(
         (
             f"role is member (400), live role {role}",
