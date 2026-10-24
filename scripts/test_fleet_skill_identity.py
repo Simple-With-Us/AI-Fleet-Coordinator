@@ -1726,8 +1726,26 @@ class PrivateInventoryTests(unittest.TestCase):
     # The ssh options that take a value in the next token, so a host search
     # steps over the option and its value instead of taking one of them.
     SSH_OPTIONS_WITH_VALUE = {
-        "-b", "-c", "-D", "-E", "-e", "-F", "-I", "-i", "-J", "-L", "-l", "-m",
-        "-o", "-O", "-p", "-Q", "-R", "-S", "-W", "-w",
+        "-b",
+        "-c",
+        "-D",
+        "-E",
+        "-e",
+        "-F",
+        "-I",
+        "-i",
+        "-J",
+        "-L",
+        "-l",
+        "-m",
+        "-o",
+        "-O",
+        "-p",
+        "-Q",
+        "-R",
+        "-S",
+        "-W",
+        "-w",
     }
     # A shell assignment, so a target hoisted into a variable is still a target.
     ASSIGNMENT = re.compile(
@@ -1869,11 +1887,9 @@ class PrivateInventoryTests(unittest.TestCase):
         `$(ssh ...)` are commands there too.
         """
         pattern = (
-            self.SSH_COMMAND_PROSE
-            if rel.endswith(self.PROSE_SUFFIXES)
-            else self.SSH_COMMAND_CODE
+            self.SSH_COMMAND_PROSE if rel.endswith(self.PROSE_SUFFIXES) else self.SSH_COMMAND_CODE
         )
-        return [line[match.start("ssh"):] for match in pattern.finditer(line)]
+        return [line[match.start("ssh") :] for match in pattern.finditer(line)]
 
     def _ssh_host(self, command: str) -> str:
         """The host an ssh command names, or an empty string when it names none.
@@ -1973,9 +1989,7 @@ class PrivateInventoryTests(unittest.TestCase):
                 hoisted = sorted(v for v in variables if v in literals)
                 if hoisted:
                     hits.append(
-                        f"{rel}:{number} (an ssh target hoisted into "
-                        + ", ".join(hoisted)
-                        + ")"
+                        f"{rel}:{number} (an ssh target hoisted into " + ", ".join(hoisted) + ")"
                     )
         return hits
 
@@ -2067,8 +2081,7 @@ class PrivateInventoryTests(unittest.TestCase):
             stale,
             [],
             "an allowlist entry must name a file that still carries the private "
-            "inventory; clean the file up and take the entry off the list:\n"
-            + "\n".join(stale),
+            "inventory; clean the file up and take the entry off the list:\n" + "\n".join(stale),
         )
 
 
