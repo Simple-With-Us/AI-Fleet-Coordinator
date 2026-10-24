@@ -955,6 +955,27 @@ class WakeTests(DaemonHarness):
         # daemon must pass the write switch the old ~/.local/bin/board wrapper used to export.
         self.assertEqual(board_envs[0].get("LINEAR_BOARD_WRITES"), "1")
 
+    def test_disabled_loop_guard_allows_new_wake_without_owner_and_reload_keeps_history(self) -> None:
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text().replace("[daemon]", "[daemon]\nwake_loop_prevention = false", 1))
+        daemon = self.started()
+        for n in range(4):
+            self.fake.add_message("Codex", "agent-sync", "t", "[CODEX·wake] re=%d\nreply" % n)
+        mid = self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.assertEqual(self.ledger()[0]["state"], "queued")
+        self.assertEqual(self.ledger()[0]["trigger_ids"], [mid])
+        self.assertFalse(daemon.status()["wake_loop_prevention"])
+        self.assertEqual(daemon.status()["loop_guard"], [])
+        self.assertGreaterEqual(daemon.loopguard.count(TOPIC_KEY), 4)
+        daemon.reload()
+        self.assertFalse(daemon.loopguard.blocked(TOPIC_KEY))
+        # No counter deletion or backlog replay. Re-enable is an explicit separate config action.
+        path.write_text(path.read_text().replace("wake_loop_prevention = false", "wake_loop_prevention = true"))
+        daemon.reload()
+        self.assertTrue(daemon.loopguard.blocked(TOPIC_KEY))
+        self.assertEqual(len(self.ledger()), 1)
+
     def test_the_loop_guard_resets_only_on_an_owner_post(self) -> None:
         daemon = self.started()
         jay = self.fake.user_named("Jay Wedgeworth")

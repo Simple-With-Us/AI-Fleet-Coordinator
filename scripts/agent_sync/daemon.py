@@ -639,7 +639,10 @@ class Daemon:
             owner_window=self.config.owner_coalesce_seconds,
             new_id=self._new_wake_id,
         )
-        self.loopguard = W.LoopGuard(os.path.join(L.listener_dir(self.root), "loopguard.json"))
+        self.loopguard = W.LoopGuard(
+            os.path.join(L.listener_dir(self.root), "loopguard.json"),
+            enabled=self.config.wake_loop_prevention,
+        )
         self.global_ring = Ring()
         self.agents_cache: tuple[float, dict[int, str] | None] = (-1e9, None)
         self.start_cache: dict[int, tuple[float, int]] = {}
@@ -1140,6 +1143,7 @@ class Daemon:
             return
         self.reload_refused = []
         self.config = new
+        self.loopguard.enabled = new.wake_loop_prevention
         self.config_notified = False
         self._apply_config()
         self._configure_outgoing_webhook()
@@ -5765,6 +5769,7 @@ class Daemon:
             ],
             "owner_user_id": self.config.owner_user_id,
             "chat_nudges": all_nudges,
+            "wake_loop_prevention": self.loopguard.enabled,
             "loop_guard": self.loopguard.holding(now),
             "rewake_verified": self.config.rewake_verified,
             "rewake_verified_cli": self.config.rewake_verified_cli,
