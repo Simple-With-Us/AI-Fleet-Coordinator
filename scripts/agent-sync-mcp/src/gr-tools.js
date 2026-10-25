@@ -103,7 +103,12 @@ export class GrRelayClient {
     } catch {
       return { status: 0, body: { error: "upstream_unreachable" } };
     }
-    const text = await response.text();
+    let text;
+    try {
+      text = await response.text();
+    } catch {
+      return { status: 0, body: { error: "upstream_unreachable" } };
+    }
     if (text.length > GR_RESPONSE_LIMIT) return { status: 502, body: { error: "upstream_oversize" } };
     let body;
     try {

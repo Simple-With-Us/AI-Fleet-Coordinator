@@ -59,6 +59,10 @@ test("GrRelayClient maps an unreachable upstream and a bad answer to fixed statu
   const { status, body } = await refused.call("merge_pr", {});
   assert.equal(status, 403);
   assert.equal(body.error, "policy_denied");
+  const midbody = new GrRelayClient({ baseUrl: "https://git-relay.jays.services", accessId: "i", accessSecret: "s", bearer: "b", fetch: async () => ({ status: 200, text: async () => { throw new Error("stream reset"); } }) });
+  const cut = await midbody.call("open_pr", {});
+  assert.equal(cut.status, 0);
+  assert.equal(cut.body.error, "upstream_unreachable");
 });
 
 /** A minimal HostedTools over an in-memory gate, mirroring hosted-tools.test.mjs. */

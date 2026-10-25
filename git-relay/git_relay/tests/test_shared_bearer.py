@@ -64,6 +64,56 @@ def verifier_for(behavior, key=KEY):
 
 
 class VerifierTest(unittest.TestCase):
+    def test_threaded_resolve_never_false_refuses_a_valid_bearer(self):
+        # The server is threaded (ThreadingHTTPServer), so concurrent resolve()
+        # calls share the cache.  A non-atomic min()+del eviction raced into
+        # RuntimeError/KeyError, and the fail-closed handler turned that into a
+        # false refusal of a VALID bearer.  Churn the cache hard from many
+        # threads and require the valid bearer to resolve every single time.
+        import sys
+        import threading
+
+        from git_relay import shared_bearer as sb
+
+        good = hashlib.sha256(TOKEN.strip().encode()).hexdigest()
+
+        def behavior(body):
+            time.sleep(0.0002)  # yield the GIL so cache sections interleave
+            if json.loads(body)["hash"] == good:
+                return 200, json.dumps(
+                    {"ok": True, "identity": IDENTITY, "expires_at": int((time.time() + 3600) * 1000)}
+                ).encode()
+            return 200, json.dumps({"ok": False, "reason": "mismatch"}).encode()
+
+        v = verifier_for(behavior)
+        junk = ["gbb_fill_" + ("%043x" % i) for i in range(256)]
+        errors = []
+        old_cap = sb.CACHE_MAX_ENTRIES
+        old_interval = sys.getswitchinterval()
+        sb.CACHE_MAX_ENTRIES = 8
+        sys.setswitchinterval(0.00001)  # force preemption inside min()+del
+        try:
+            def hammer(n):
+                try:
+                    for i in range(300):
+                        got = v.resolve(TOKEN)
+                        if got != IDENTITY:
+                            errors.append(("false refusal", n, i, got))
+                            return
+                        v.resolve(junk[(n * 7 + i) % len(junk)])
+                except Exception as exc:  # resolve() must never raise
+                    errors.append(("raise", n, repr(exc)))
+
+            threads = [threading.Thread(target=hammer, args=(n,)) for n in range(32)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        finally:
+            sb.CACHE_MAX_ENTRIES = old_cap
+            sys.setswitchinterval(old_interval)
+        self.assertEqual(errors, [])
+
     def test_resolves_a_live_bearer(self):
         v = verifier_for(ok_answer())
         self.assertEqual(v.resolve(TOKEN), IDENTITY)

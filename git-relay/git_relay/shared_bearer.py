@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import threading
 import json
 import re
 import time
@@ -70,6 +71,11 @@ class SharedBearerVerifier:
         if len(self._key) < 32:
             raise ValueError("git-relay config: bearer verify key is shorter than 32 characters")
         self._transport = transport or self._urllib_transport
+        # Guards every cache read/evict/write: the server is threaded, and a
+        # non-atomic min()+del under concurrency raised RuntimeError/KeyError,
+        # which the fail-closed handler turned into a false refusal of a valid
+        # bearer.  The remote verify stays outside the lock (slow IO).
+        self._lock = threading.Lock()
         import os
 
         try:
@@ -116,26 +122,30 @@ class SharedBearerVerifier:
             if identity is None:
                 return None
             digest = hashlib.sha256(token.strip().encode()).hexdigest()
-            cached = self._cache.get(digest)
+            with self._lock:
+                cached = self._cache.get(digest)
             now = time.time()
             if cached and cached[1] > now:
                 return cached[0]
             resolved = self._verify_remote(identity, digest, now)
-            if len(self._cache) >= CACHE_MAX_ENTRIES:
-                oldest = min(self._cache, key=lambda k: self._cache[k][2])
-                del self._cache[oldest]
             # Positive answers cache only when the operator opted in
             # (GIT_RELAY_VERIFY_CACHE_S):  the default verifies every call so a
             # revocation or pause in the admin panel takes effect immediately.
             # Refusals always cache briefly, or a guessing loop costs one Worker
             # call per request.
+            with self._lock:
+                if len(self._cache) >= CACHE_MAX_ENTRIES:
+                    oldest = min(self._cache, key=lambda k: self._cache[k][2])
+                    del self._cache[oldest]
+                if resolved is not None:
+                    identity_name, expires_at_s = resolved
+                    ttl = min(self._positive_ttl, max(0.0, expires_at_s - now))
+                    if ttl > 0:
+                        self._cache[digest] = (identity_name, now + ttl, now)
+                else:
+                    self._cache[digest] = (None, now + NEGATIVE_CACHE_S, now)
             if resolved is not None:
-                identity_name, expires_at_s = resolved
-                ttl = min(self._positive_ttl, max(0.0, expires_at_s - now))
-                if ttl > 0:
-                    self._cache[digest] = (identity_name, now + ttl, now)
                 return identity_name
-            self._cache[digest] = (None, now + NEGATIVE_CACHE_S, now)
             return None
         except Exception:
             return None  # fail closed, always
