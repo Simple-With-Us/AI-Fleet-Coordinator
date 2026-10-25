@@ -885,10 +885,35 @@ class TestFleetSecretsSource(unittest.TestCase):
         self.assertNotIn("usage:", str(ctx.exception))
         self.assertNotIn("\n", str(ctx.exception))
 
+    def test_unreadable_pair_output_is_an_app_token_error(self):
+        from git_relay.app_tokens import AppTokenError
+
+        # For several names the CLI prints one JSON object.  Anything else on
+        # stdout (a stray banner, JSON that is not an object) is a lookup
+        # failure like every other:  AppTokenError, never a bare ValueError
+        # (a 400 bad_request) or AttributeError (a 500), and the message
+        # carries the names only, never the output.
+        for stdout in (b"warning: a newer release is available\n", b"[]", b'"SENTINEL_OUT"'):
+            calls = []
+            source = self._source(stdout=stdout, calls=calls)
+            with self.assertRaises(AppTokenError, msg=stdout) as ctx:
+                source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
+            self.assertIn("GH_APP_X_ID", str(ctx.exception))
+            self.assertNotIn("newer release", str(ctx.exception))
+            self.assertNotIn("SENTINEL_OUT", str(ctx.exception))
+            self.assertEqual(len(calls), 1)
+
     def test_path_guard_matches_the_cli_rules(self):
         from git_relay.app_tokens import AppTokenError, FleetSecretsSource
 
-        for bad in ("github-apps", "", "/github apps", "/github-apps/../linear", "/github-apps/.."):
+        for bad in (
+            "github-apps",
+            "",
+            "/github apps",
+            "/github-apps/../linear",
+            "/github-apps/..",
+            "/github-apps\n",
+        ):
             with self.assertRaises(AppTokenError, msg=bad):
                 FleetSecretsSource(path=bad)
         FleetSecretsSource(path="/github-apps")  # the real folder stays accepted
@@ -1426,6 +1451,35 @@ class TestAppTokenErrorMapped(unittest.TestCase):
             with open(os.path.join(tmp, "a.jsonl")) as fh:
                 logged = fh.read()
             self.assertIn("unavailable", logged)
+
+    def test_unreadable_fleet_secrets_output_is_503_not_400(self):
+        from git_relay.app_tokens import AppTokenMinter, FleetSecretsSource
+
+        # The real minter and source, with only the CLI faked:  stdout that is
+        # not the JSON object a pair read prints must answer like every other
+        # fleet-secrets failure (503, audited "unavailable"), not as the seat's
+        # bad request.
+        def runner(argv, capture_output, timeout):
+            return subprocess.CompletedProcess(argv, 0, stdout=b"not json\n", stderr=b"")
+
+        def api(method, path, bearer, payload=None):
+            raise AssertionError("no GitHub call may follow a failed secrets read")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = Relay(
+                SeatPolicy(APP_SEATS_JSON),
+                StubClient(),
+                AuditLog(os.path.join(tmp, "a.jsonl")),
+                app_minter=AppTokenMinter(
+                    FleetSecretsSource(runner=runner), api, signer=lambda *a: "JWT"
+                ),
+            )
+            status, body = relay.handle(SEAT_TOKEN, "merge_pr", {"repo": "example/x", "number": 1})
+            self.assertEqual(status, 503)
+            self.assertIn("unreadable output", body["error"])
+            with open(os.path.join(tmp, "a.jsonl")) as fh:
+                rows = [json.loads(line) for line in fh]
+            self.assertEqual(rows[-1]["result"], "unavailable")
 
 
 class TestMcpSchemaEnforcement(unittest.TestCase):
