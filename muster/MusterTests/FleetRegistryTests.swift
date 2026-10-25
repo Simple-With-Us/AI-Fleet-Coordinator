@@ -4,8 +4,8 @@ final class FleetRegistryTests: XCTestCase {
     private let sampleRegistry = """
     {
       "owner": "Simple-With-Us",
-      "codeRoot": "/Users/jay/Code",
-      "appsRoot": "/Users/jay/apps",
+      "codeRoot": "/home/fixture/Code",
+      "appsRoot": "/home/fixture/apps",
       "zulipChannel": "work-in-progress",
       "apps": [
         {
@@ -29,7 +29,7 @@ final class FleetRegistryTests: XCTestCase {
         { "tag": "AG", "notesName": "AG", "worktreeSuffix": "antigravity", "branchPrefixes": ["ag/"] },
         { "tag": "MC", "notesName": "MC", "worktreeSuffix": "muse-code", "branchPrefixes": ["muse-code/"] },
         { "tag": "GROK", "notesName": "Grok", "worktreeSuffix": "grok", "branchPrefixes": ["grok/"] },
-        { "tag": "MONET", "notesName": "Monet", "worktreeSuffix": "monet", "retired": true, "aliasOf": "MC" }
+        { "tag": "RET", "notesName": "Retired Fixture", "worktreeSuffix": "retired-fixture", "branchPrefixes": ["retired-fixture/"], "retired": true, "aliasOf": "MC" }
       ],
       "seatApps": {
         "bySeat": {
@@ -85,8 +85,8 @@ final class FleetRegistryTests: XCTestCase {
     func test_production_and_coding_apps_are_built_from_registry_and_activity() throws {
         let envelope = try JSONDecoder().decode(FleetViewEnvelope.self, from: Data(sampleEnvelopeJSON.utf8))
         let existingPaths: Set<String> = [
-            "/Users/jay/Code/Socratic-Trade",
-            "/Users/jay/apps/trading-publish.sh",
+            "/home/fixture/Code/Socratic-Trade",
+            "/home/fixture/apps/trading-publish.sh",
         ]
         let summary = FleetRegistryReader.build(
             from: Data(sampleRegistry.utf8),
@@ -122,7 +122,7 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertEqual(afc.activeClaims, 1)
         XCTAssertEqual(afc.state, .drift)
 
-        // Coding apps group live seats (AG, MC, GROK; MONET retired is excluded) plus extraSeats (JET).
+        // Coding apps group live seats (AG, MC, GROK; RET retired is excluded) plus extraSeats (JET).
         XCTAssertEqual(summary.codingApps.map(\.appSlug), ["antigravity", "muse-code", "grok-terminal", "chatgpt"])
         let ag = summary.codingApps[0]
         XCTAssertEqual(ag.displayName, "Antigravity")
