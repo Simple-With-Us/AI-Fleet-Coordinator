@@ -155,6 +155,32 @@ class ClientGuardTests(Harness):
         self.assertEqual(caught.exception.code, "dm_owner_not_participant")
         self.assertEqual(self.fake.requests_to("POST", "drafts"), [])
 
+    def test_editing_a_direct_draft_is_guarded_too(self) -> None:
+        #  A draft's recipient set is rewritten by a PATCH, and a draft is a message nobody has
+        #  sent yet, so the edit is checked exactly like the create is (AFC-469).
+        client = self.client(OWNER_ID)
+        with self.assertRaises(Z.DmGuardRefused) as caught:
+            client.patch(
+                "drafts/42",
+                {"draft": {"type": "private", "to": [CODEX_ID], "topic": "", "content": "hello"}},
+            )
+        self.assertEqual(caught.exception.code, "dm_owner_not_participant")
+        self.assertEqual(self.fake.requests_to("PATCH", "drafts/42"), [])
+
+    def test_editing_a_direct_draft_with_the_owner_goes_out(self) -> None:
+        client = self.client(OWNER_ID)
+        made = client.post(
+            "drafts",
+            {"drafts": [{"type": "private", "to": [CODEX_ID, OWNER_ID], "topic": "", "content": "hi"}]},
+        )
+        draft_id = made["ids"][0]
+        result = client.patch(
+            "drafts/%d" % draft_id,
+            {"draft": {"type": "private", "to": [CODEX_ID, OWNER_ID], "topic": "", "content": "hi"}},
+        )
+        self.assertEqual(result["result"], "success")
+        self.assertEqual(len(self.fake.requests_to("PATCH", "drafts/%d" % draft_id)), 1)
+
 
 class CliGuardTests(Harness):
     """`agent-sync dm`:  the guard on the recipient set the CLI resolves."""

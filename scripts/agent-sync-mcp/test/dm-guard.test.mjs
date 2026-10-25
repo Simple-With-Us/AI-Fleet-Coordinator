@@ -130,3 +130,21 @@ test("a stream draft is not a direct message and goes out", async () => {
   await c.post("drafts", { drafts: [{ type: "stream", to: [fake.streamId("work-in-progress")], topic: "t", content: "hello" }] });
   assert.equal(fake.drafts.size, 1);
 });
+
+test("editing a direct draft is guarded too", async () => {
+  //  A draft's recipient set is rewritten by a PATCH, and a draft is a message nobody has sent
+  //  yet, so the edit is checked exactly like the create is (AFC-469).
+  const { c, fake } = harness({ ownerUserId: OWNER_ID });
+  await assert.rejects(
+    c.patch("drafts/42", { draft: { type: "private", to: [CODEX_ID], topic: "", content: "hello" } }),
+    (e) => e instanceof DmGuardRefused && e.code === "dm_owner_not_participant",
+  );
+  assert.equal(fake.requestsTo("PATCH", "drafts/42").length, 0, "nothing was sent");
+});
+
+test("editing a direct draft with the owner in it goes out", async () => {
+  const { c, fake } = harness({ ownerUserId: OWNER_ID });
+  fake.failNext("PATCH", /drafts/, () => fake.ok({}));
+  await c.patch("drafts/42", { draft: { type: "private", to: [CODEX_ID, OWNER_ID], topic: "", content: "hello" } });
+  assert.equal(fake.requestsTo("PATCH", "drafts/42").length, 1, "the edit went out");
+});

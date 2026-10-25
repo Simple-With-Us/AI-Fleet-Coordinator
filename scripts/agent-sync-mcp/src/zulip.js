@@ -103,6 +103,16 @@ export function directRecipients(params) {
     //  A drafts list with no direct draft in it is not a direct message at all.
     return direct ? found : null;
   }
+  //  One draft being rewritten:  PATCH drafts/<id> carries {draft: {type, to}}, the same shape a
+  //  created draft has, so a draft's recipient set is checked when it is rewritten and not only
+  //  when it is created.
+  if (params.draft && typeof params.draft === "object" && !Array.isArray(params.draft)) {
+    const one = params.draft;
+    if (DM_GUARD_TYPES.includes(String(one.type ?? "").trim().toLowerCase())) {
+      return recipientIds(one.to);
+    }
+    return null;
+  }
   if (DM_GUARD_TYPES.includes(String(params.type ?? "").trim().toLowerCase())) {
     return recipientIds(params.to);
   }
@@ -118,7 +128,10 @@ export function directRecipients(params) {
  *  with no owner id pinned a direct send is refused.
  */
 export function checkDmGuard(path, params, ownerUserId) {
-  if (!DM_GUARD_PATHS.includes(String(path ?? "").replace(/^\/+|\/+$/g, ""))) return;
+  //  The endpoint is the path's first segment:  drafts/123 is the same endpoint as drafts, and a
+  //  draft's recipient set is rewritten by a PATCH.
+  const endpoint = String(path ?? "").replace(/^\/+|\/+$/g, "").split("/")[0];
+  if (!DM_GUARD_PATHS.includes(endpoint)) return;
   const recipients = directRecipients(params);
   if (recipients === null) return;
   const owner = Number(ownerUserId);
@@ -196,9 +209,11 @@ export class ZulipClient {
   /** One API call.  Returns the parsed JSON on result "success";  throws ApiError or NetworkError. */
   async request(method, path, params, { form = null } = {}) {
     if (!pathAllowed(method, path)) throw new ApiError("bad API path", { status: 0, code: "BAD_PATH" });
-    // A POST that would deliver a direct message is checked before anything is sent:  the owner
-    // has to be in the recipient list (AFC-469).  The check throws and sends nothing.
-    if (method === "POST") checkDmGuard(path, params, this.ownerUserId);
+    // A POST or a PATCH that would deliver a direct message is checked before anything is sent:
+    // the owner has to be in the recipient list (AFC-469).  A PATCH matters because editing a
+    // draft rewrites its recipient set, and a draft is a message nobody has sent yet.  The check
+    // throws and sends nothing.
+    if (method === "POST" || method === "PATCH") checkDmGuard(path, params, this.ownerUserId);
     let sendParams = params ?? {};
     if ((method === "POST" || method === "PATCH") && typeof sendParams.content === "string" && OUTBOUND_TEXT_PATH.test(path)) {
       sendParams = { ...sendParams, content: fixOutbound(sendParams.content, { limit: MAX_CONTENT_LENGTH })[0] };

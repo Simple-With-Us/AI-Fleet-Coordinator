@@ -301,10 +301,12 @@ test("scheduled messages:  tagged, idempotent, channel rule, edit and delete", a
 });
 
 test("drafts and typing", async () => {
-  const { fake, tools, codex } = harness();
+  const { fake, tools, codex, jay } = harness();
   const draft = ok(await tools.call("zulip_draft_create", { topic: "d", text: "note" }), "zulip_draft_create");
-  ok(await tools.call("zulip_draft_edit", { draft_id: draft.id, user_ids: [codex.user_id], text: "n2" }), "zulip_draft_edit");
-  assert.deepEqual(fake.drafts.get(draft.id).to, [codex.user_id]);
+  //  Jay is in the direct draft (AFC-469):  it goes out only when the owner takes part in it,
+  //  and the same rule covers editing a draft, which rewrites its recipient set.
+  ok(await tools.call("zulip_draft_edit", { draft_id: draft.id, user_ids: [codex.user_id, jay.user_id], text: "n2" }), "zulip_draft_edit");
+  assert.deepEqual(fake.drafts.get(draft.id).to, [codex.user_id, jay.user_id].sort((a, b) => a - b));
   assert.deepEqual(ok(await tools.call("zulip_drafts_list", {}), "zulip_drafts_list").ids, [draft.id]);
   ok(await tools.call("zulip_draft_delete", { draft_id: draft.id }), "zulip_draft_delete");
   toolError(await tools.call("zulip_draft_create", { channel: "other", topic: "d", text: "x" }), "channel_not_allowed");

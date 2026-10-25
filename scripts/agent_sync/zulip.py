@@ -1072,6 +1072,14 @@ DM_GUARD_PATHS = frozenset({"messages", "scheduled_messages", "drafts"})
 DM_GUARD_TYPES = frozenset({"direct", "private"})
 
 
+def _guard_endpoint(path: Any) -> str:
+    """The endpoint a path names, for the guard:  its first segment.
+
+    ``drafts/123`` is the same endpoint as ``drafts``, and a draft's recipient set is rewritten
+    by a PATCH, so the guard has to recognise the path with the id on it."""
+    return str(path or "").strip("/").split("/", 1)[0]
+
+
 def _recipient_ids(value: Any) -> list[int]:
     """The user ids in a `to` value, or an empty list when it names no user id.
 
@@ -1105,11 +1113,15 @@ def _recipient_ids(value: Any) -> list[int]:
 def direct_recipients(params: Mapping[str, Any] | None) -> list[int] | None:
     """The user ids a request would deliver a direct message to, or None when it is not one.
 
-    Three shapes carry a direct message:
+    Four shapes carry a direct message:
 
     * ``{"type": "direct", "to": [id, ...]}``  (messages, scheduled_messages)
     * ``{"type": "private", "to": [id, ...]}``  (the older name for the same thing)
-    * ``{"drafts": [{"type": "private", "to": [id, ...]}, ...]}``  (the drafts endpoint)
+    * ``{"drafts": [{"type": "private", "to": [id, ...]}, ...]}``  (creating drafts)
+    * ``{"draft": {"type": "private", "to": [id, ...]}}``  (editing one draft)
+
+    The last one is the body of ``PATCH drafts/<id>``, so a draft's recipient set is checked when
+    it is rewritten and not only when it is created.
 
     A channel send names a stream, not a user, so it is never a direct message and never one of
     this guard's business."""
@@ -1127,6 +1139,12 @@ def direct_recipients(params: Mapping[str, Any] | None) -> list[int] | None:
                 found.extend(_recipient_ids(draft.get("to")))
         #  A drafts list with no direct draft in it is not a direct message at all.
         return found if direct else None
+    draft = params.get("draft")
+    if isinstance(draft, Mapping):
+        #  One draft being rewritten:  the body carries the whole draft, not the list.
+        if str(draft.get("type") or "").strip().lower() in DM_GUARD_TYPES:
+            return _recipient_ids(draft.get("to"))
+        return None
     if str(params.get("type") or "").strip().lower() in DM_GUARD_TYPES:
         return _recipient_ids(params.get("to"))
     return None
@@ -1147,7 +1165,7 @@ def check_dm_guard(
     It **fails closed**:  with no owner id pinned (0, unset, or unreadable) a direct send is
     refused, because a send nobody can check is a send nobody may make.  A channel post is never
     touched by this guard."""
-    if str(path or "").strip("/") not in DM_GUARD_PATHS:
+    if _guard_endpoint(path) not in DM_GUARD_PATHS:
         return
     recipients = direct_recipients(params)
     if recipients is None:
@@ -1234,11 +1252,12 @@ class ZulipClient:
         timeout, because a quiet queue is normal.  Non-GET requests are never retried on a
         network failure or a gateway error: a POST /messages that timed out may have posted.
 
-        A POST that would deliver a direct message is checked before anything is sent:  the owner
-        has to be in the recipient list (AFC-469).  The check raises DmGuardRefused and sends
-        nothing."""
+        A POST or a PATCH that would deliver a direct message is checked before anything is sent:
+        the owner has to be in the recipient list (AFC-469).  A PATCH matters because editing a
+        draft rewrites its recipient set, and a draft is a message nobody has sent yet.  The check
+        raises DmGuardRefused and sends nothing."""
         method = method.upper()
-        if method == "POST":
+        if method in ("POST", "PATCH"):
             check_dm_guard(path, params, self.owner_user_id)
         query = encode_params(outbound_params(method, path, params))
         url = self.base + path.lstrip("/")
