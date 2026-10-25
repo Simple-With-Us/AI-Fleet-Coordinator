@@ -73,7 +73,7 @@ test("the route resolves a live bearer, and refuses none/mismatch/expired/paused
       headers: { "Content-Type": "application/json", [WAKE_SIGNATURE_HEADER]: signature },
       body: bytes,
     });
-    const resp = await serveGrBearerVerify(req, { [GR_VERIFY_KEY_VAR]: KEY }, gates);
+    const resp = await serveGrBearerVerify(req, {}, gates, { resolveKey: async () => KEY });
     return { status: resp.status, body: await resp.json() };
   };
 
@@ -102,7 +102,7 @@ test("the route never echoes the query or the hash", async () => {
     headers: { [WAKE_SIGNATURE_HEADER]: signature },
     body: bytes,
   });
-  const resp = await serveGrBearerVerify(req, { [GR_VERIFY_KEY_VAR]: KEY }, fakeGates(memStore()));
+  const resp = await serveGrBearerVerify(req, {}, fakeGates(memStore()), { resolveKey: async () => KEY });
   const text = await resp.text();
   assert.equal(text.includes(hash), false);
   assert.equal(text.includes(String(bytes)), false);
@@ -121,7 +121,7 @@ test("seat (sbt_) bearers verify through the same route and row", async () => {
     headers: { [WAKE_SIGNATURE_HEADER]: signature },
     body: bytes,
   });
-  const resp = await serveGrBearerVerify(req, { [GR_VERIFY_KEY_VAR]: KEY }, fakeGates(store));
+  const resp = await serveGrBearerVerify(req, {}, fakeGates(store), { resolveKey: async () => KEY });
   const body = await resp.json();
   assert.deepEqual({ ok: body.ok, identity: body.identity }, { ok: true, identity: "JET" });
   const status = await S.gbBearerStatus(store);
@@ -139,4 +139,19 @@ test("the recorded mcp_accept choice survives mint and reads back in status", as
   const legacy = memStore();
   await legacy.put("gb_bearer", { hash, created_at: 1, created_by: "t", expires_at: Date.now() + 1000, last_used_at: 0, mint_count: 1 });
   assert.equal((await S.gbBearerStatus(legacy)).mcp_accept, false);
+});
+
+test("the route fails closed when the verify key resolves empty (Infisical-only, no binding)", async () => {
+  const { hash } = await newGbBearer(ID);
+  const { bytes, signature } = await signedBody({ contract: GR_VERIFY_CONTRACT, identity: ID, hash, sent_at: Math.floor(Date.now() / 1000) });
+  const req = new Request("https://x.test/internal/gr-bearer-verify", {
+    method: "POST",
+    headers: { [WAKE_SIGNATURE_HEADER]: signature },
+    body: bytes,
+  });
+  // An env binding must NOT serve the key even when present:  GR_BEARER_VERIFY_KEY
+  // lives only in Fleet-OPS /tools, so an empty resolveKey means not_configured.
+  const resp = await serveGrBearerVerify(req, { [GR_VERIFY_KEY_VAR]: KEY }, fakeGates(memStore()), { resolveKey: async () => "" });
+  assert.equal(resp.status, 404);
+  assert.equal((await resp.json()).reason, "not_configured");
 });

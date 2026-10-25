@@ -9,7 +9,11 @@
 //
 // Auth on the route itself reuses the wake scheme (src/wake.js):  the
 // X-Agent-Sync-Signature header is the lowercase hex HMAC-SHA256 of the raw
-// body bytes keyed with GR_BEARER_VERIFY_KEY, checked before any JSON parse,
+// body bytes keyed with GR_BEARER_VERIFY_KEY, checked before any JSON parse.
+// The key itself lives ONLY in Fleet-OPS /tools (owner direction 2026-10-23:
+// no persistent Cloudflare copy) and is resolved at request time through
+// src/infisical.js;  with INFISICAL_MODE=off or the key absent the route
+// answers not_configured, never a Worker binding.
 // with the same sent_at freshness window.  A verify call is read-only and
 // idempotent, so a replay inside the window costs nothing;  the window keeps
 // a captured signature useless after five minutes.
@@ -23,6 +27,7 @@
 // node --test can drive it without a Worker runtime.
 
 import { safeEqual } from "./policy.js";
+import { resolveSecret, prefetchFolder } from "./infisical.js";
 import { readBodyBytes, wakeSignature, WAKE_SIGNATURE_HEADER, WAKE_MAX_AGE_S, WAKE_MAX_SKEW_S, WAKE_MIN_KEY_LEN } from "./wake.js";
 import { GB_IDENTITIES } from "./delegated-identities.js";
 import { KNOWN_SEATS } from "./config.js";
@@ -74,16 +79,28 @@ export async function verifyGrRequest({ bytes, signature, key, now = Date.now() 
 }
 
 /**
+ * The verify key, resolved at request time from Fleet-OPS /tools.  No envName
+ * is passed, so resolveSecret never reads a Worker binding:  "off" mode and
+ * every Infisical failure answer "" here, and the route fails closed
+ * (not_configured).  In "required" mode an outage or scope denial throws,
+ * visibly, as every other required-mode read does (src/infisical.js).
+ */
+export async function resolveGrVerifyKey(env) {
+  await prefetchFolder(env, "/tools");
+  return String(await resolveSecret(env, { name: GR_VERIFY_KEY_VAR, path: "/tools", optional: true }) ?? "").trim();
+}
+
+/**
  * The route.  Answers 200 with {ok: true, identity, expires_at} for a live
  * bearer, or 200 with {ok: false, reason} for a well-formed query whose
  * bearer fails - the route's own auth is the signature, so the introspection
  * answer is data, not an HTTP status.  Route-level failures (bad signature,
  * stale, malformed) keep their 4xx.  `gates` defaults to the real SeatGate
- * factory and is injectable for tests.
+ * factory and `resolveKey` to the Infisical-only resolver;  both are
+ * injectable for tests.
  */
-export async function serveGrBearerVerify(request, env, gates) {
-  const rawKey = env[GR_VERIFY_KEY_VAR];
-  const key = typeof rawKey === "string" ? rawKey.trim() : "";
+export async function serveGrBearerVerify(request, env, gates, { resolveKey = resolveGrVerifyKey } = {}) {
+  const key = await resolveKey(env);
   if (request.method !== "POST") return jsonResponse({ ok: false, reason: "method_not_allowed" }, 405);
   const declared = Number(request.headers.get("content-length") ?? "0");
   const bytes = Number.isFinite(declared) && declared > GR_VERIFY_MAX_BODY ? null : await readBodyBytes(request, GR_VERIFY_MAX_BODY);
