@@ -187,13 +187,13 @@ sight.
 - Code identifiers, API enums, log lines, internal “live stream” engineering labels
   (SSE, live snapshot) unless user-facing product chrome.
 
-## Two spaces between sentences (owner rule 2026-08-08, strengthened 2026-08-10, 2026-08-14, and 2026-09-03; the per-surface gap mechanics re-ruled 2026-10-22 and again 2026-10-23 — ALL agents, ALL contexts)
+## Two spaces between sentences, made with a U+00A0 (owner rule 2026-08-08, strengthened 2026-08-10, 2026-08-14, 2026-08-19 and 2026-09-03; the per-surface gap mechanics re-ruled 2026-10-22, then replaced 2026-10-23 by one mechanism and its two-chat-pane exception — ALL agents, ALL contexts)
 
-Owner: **two spaces between sentences everywhere (a real U+00A0 plus a normal space, commit messages included), including App Store
+Owner: **two spaces between sentences everywhere (a real U+00A0 plus a normal space, commit messages included, except the two chat panes named below, which take the `&nbsp;` entity plus a space), including App Store
 submission fields.**  Not optional.  Not “web only.”  Not “UI only.”
 **Every single agent, every app, every surface, forever.**
 
-**Strengthened again 2026-08-19 (owner, in-conversation):** "For any and all paragraphs in
+**Strengthened again 2026-08-19 (owner, in-conversation, with the two spaces made as "HOW to emit it" below says, never as two plain ASCII spaces):** "For any and all paragraphs in
 any context, always use 2 spaces to separate a period from the beginning of a new sentence."
 This closes the last loophole -- the rule is NOT limited to product/user-facing copy.  It
 covers every paragraph an agent writes anywhere: **chat replies to the owner**, PR titles and
@@ -204,9 +204,12 @@ gap with NBSP+space or SENTENCE_GAP, since raw double spaces collapse.  In Mark
 two spaces at the END of a line is a hard line break -- a different thing; this rule is about
 the gap BETWEEN sentences.)
 
-**HOW to emit it (owner ruling 2026-10-23, the same on every surface):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity, which shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
+**HOW to emit it (owner ruling 2026-10-23, the same on every surface but two chat panes):**  between sentences, write a real U+00A0 (no-break space) followed by a normal space.  Never the `&nbsp;` entity outside the chat panes named below, because everywhere else it shows up as literal text in squash-merge commits, plain-text email and many APIs, and never two plain ASCII spaces, which rendered surfaces collapse to one.  This replaces the earlier per-surface bullets (the entity in chat panes and on GitHub, two ASCII spaces in files, commits, terminals and untested surfaces).
 
-- **Chat replies in every pane, Zulip, Linear, Slack, cloud and BotFleet chat:**  a real U+00A0 plus a
+- **Claude Code Code tab and MiniMax Code chat panes (the one exception, owner ruling 2026-10-23):**
+  the `&nbsp;` entity plus a normal space, outside code spans.  These panes normalize a raw U+00A0 away and collapse two ASCII spaces, so the entity is the form that renders a real gap there
+  (owner-verified 2026-10-08 with a screenshot for the Code tab and 2026-10-18 for the MiniMax Code pane, and confirmed by the owner for both on 2026-10-24).
+- **Chat replies in every other pane, Zulip, Linear, Slack, cloud and BotFleet chat:**  a real U+00A0 plus a
   space.  If a pane strips it, leave the text as it is, report the pane, and do not switch to the entity.
 - **GitHub PR and issue titles, bodies and comments, review comments, and Zulip posts**
   (anything a tool writes that a Markdown or HTML renderer then shows):  a real U+00A0 plus a
@@ -239,28 +242,29 @@ the gap BETWEEN sentences.)
   `&nbsp; `.
 - **Any surface not listed above:**  the same U+00A0 plus a space.
 
-**Rendering trap — history (chat advice reversed twice; all of it superseded by the 2026-10-23 one-mechanism ruling above):** the 2026-08-19 entity advice for
+**Rendering trap — history (chat advice reversed twice; the 2026-10-23 ruling above supersedes all of it except in the chat panes it names as its exception):** the 2026-08-19 entity advice for
 chat replies was superseded by the 2026-09-04 ASCII ruling for the Code tab, and that was
 superseded on 2026-10-08 by the entity again.  Do not re-run these tests.  Owner ruling
 2026-10-08: when a surface is known to collapse two typed spaces (any Markdown or HTML
 renderer), use its working mechanism without asking; confirmation is no longer needed per
 surface.  Owner ruling 2026-10-22 split the surfaces (GitHub the entity, Zulip a real U+00A0,
-files read as source two ASCII spaces);  the 2026-10-23 ruling above replaced that split with one mechanism.
+files read as source two ASCII spaces);  the 2026-10-23 ruling above replaced that split with one mechanism and its two-pane exception.
 
 **What does NOT work, tested in front of the owner:** a raw U+00A0 character in chat
 in the **Claude Code Code tab** (normalized away in the view, even though copy-paste showed
-two spaces -- do not be fooled by copy-paste; under the 2026-10-23 ruling above still emit
-it there, and if the pane strips it report the pane).  The same is true in the MiniMax Code
-pane:  until the 2026-10-23 ruling the working mechanism there was the `&nbsp;` entity plus a
-normal space, the same form as the Code tab, NOT a raw U+00A0.  The 2026-10-23 ruling above
-replaces that:  a real U+00A0 plus a space, never the entity.  Also not
+two spaces -- do not be fooled by copy-paste).  The same is true in the MiniMax Code
+pane:  the working mechanism there is the `&nbsp;` entity plus a normal space, the same
+form as the Code tab, NOT a raw U+00A0.  The owner confirmed both panes on 2026-10-24
+(Zulip #Policy):  the Claude Code and MiniMax Code chat panes require the
+`&nbsp;` entity plus a normal space,
+while GitHub, Zulip, docs and UI text take a real U+00A0 plus a space.  Also not
 worth trying: app settings (none exist -- `outputStyle` changes tone only, `--output-format` is
 headless `claude -p` only, `axScreenReader` only drops borders); patching the client (the CLI is
 a ~277MB compiled Mach-O binary, the desktop app is a signed native bundle -- patching breaks
 code signing and is wiped by auto-update; do not attempt).  (Two literal ASCII spaces in chat
 were logged here as not working on 2026-08-19, and they still do not work in the Code tab
-(re-confirmed 2026-10-08); the Code tab used the entity instead until the 2026-10-23 ruling, and
-"HOW to emit it" above now gives a real U+00A0 plus a space there too.)
+(re-confirmed 2026-10-08); the Code tab and the MiniMax Code pane use the entity instead — see
+"HOW to emit it" above.)
 
 **Process lesson that cost four rounds of owner correction:** when an instruction appears not to
 take effect, diagnose the RENDERING/transport layer between you and the reader -- and ask what
@@ -293,7 +297,7 @@ not.
 - Marketing, screenshot captions, TestFlight “What to Test”
 
 **How:**
-- Between sentences in a paragraph, on every surface:  a real U+00A0 plus a space after `.` `!` `?` (owner ruling 2026-10-23).  Never `&nbsp;`, never two plain ASCII spaces.
+- Between sentences in a paragraph, on every surface:  a real U+00A0 plus a space after `.` `!` `?` (owner ruling 2026-10-23).  Never `&nbsp;` except in the Claude Code Code tab and MiniMax Code chat panes, never two plain ASCII spaces.
 - HTML/JSX/SwiftUI source:  Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant (ST: `SENTENCE_GAP`)
 - Code, identifiers and config never get a U+00A0.
 - Prefer ONE paragraph for short related sentences over stacked one-liners when

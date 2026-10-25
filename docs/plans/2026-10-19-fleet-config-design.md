@@ -49,6 +49,10 @@ A `collector` says where a check runs:  `mac` now, with `vm`, `hetzner` and `api
 
 A `platform` is a harness config surface id from `scripts/fleet_lanes/install_rules.py` `PLATFORMS` (such as `claude`, `codex`, `grok`, `antigravity`, `minimax`, `cursor`, `clutch`, `kimi`, `opencode`, `muse-code`).  Platform ids are passed into `fleet_config` as data, never hardcoded in this package and never imported from `fleet_lanes` at runtime.  The shared `home-agents` file is not a seat platform and must not appear in a manifest.  A platform with no file for a kind (per the installer tables) yields `UNSUPPORTED` for that kind, not an invented path.
 
+The seventh kind is `compliance` (AFC-400).  It is the family of rules about the fleet rather than about one seat's config surface:  a certificate that expires,  a backup that stopped,  a secret that ended up in a flat key file,  a repo whose Kody rules drifted from the canonical copy.  A compliance rule names the hosts it is about in a `scope` (`mac`, `vm`, `hetzner`, `cloud` or `fleet`) instead of naming harness config surfaces,  so it never takes part in a seat's coverage tuple.  `SEAT_CONFIG_KINDS` is the six per-seat kinds the coverage rule walks;  `CONFIG_KINDS` is all seven.
+
+A scope says which host a rule is about;  the collector says where the check runs.  They are usually the same word today,  but they are not the same fact,  and a rule about a repo on every host has the scope `fleet` while its check still runs on the Mac.
+
 ## 4. Fail-Closed Semantics
 
 A check that is stale (past its TTL), errors, times out or produces unparseable output counts as failing, never as passing.  The mapping is total, and the aggregator applies it in this order per rule and platform:
@@ -87,6 +91,20 @@ Finished CLI exit codes are pinned now:  0 for verdict `PASS`, 1 for verdict `FA
 | `permissions` | `permissions_match` | Harness settings file | `names` (permission identifiers), `mode` |
 | `permissions` | `credential_stat` | Credential file path;  detail is the credential reference name | `present`, `mode` |
 | `permissions` | `credential_key_present` | Secret-store folder path, such as `/zulip`;  detail is the credential reference name | `names` (secret-store key names only), `present` |
+
+The compliance family has three check types of its own (AFC-400).  They share the fail-closed mapping of section 4 with every other check.
+
+| Kind | Check type | Target and detail | Expected fields used |
+|---|---|---|---|
+| `compliance` | `command` | Allowlisted program name;  detail is its arguments | `names` (the JSON keys the answer must carry), `timeoutSeconds` |
+| `compliance` | `secrets_hygiene` | The retired flat key directory;  detail unused | `names` (the published surfaces, each prefixed `published:`) |
+| `compliance` | `certificate_expiry` | Unused;  the inventory is in `expected.names` | `names` (the certificate sources) |
+
+`command` is the generic runner for a fleet-wide rule:  it runs one allowlisted program through the one allowlisted runner,  so a program that is not on the list is refused before any process exists.  A missing binary,  a timeout and an unreadable answer all read `UNKNOWN` with a failing reason code.  The program's output never reaches the result;  a rule that wants the answer read names the JSON keys it wants in `expected.names`,  and only the keys are reported.
+
+`secrets_hygiene` looks for a credential written as a plain key file and for an internal identifier inside a published file.  It reads names and shapes,  never contents:  the retired flat key directory is counted by name,  and the published files are scanned for shapes (an internal host address,  a tailnet name,  a private key block,  an internal project or container id).  The shapes match no value,  because a rule that carried the values would put them in a public repository.
+
+`certificate_expiry` reads the expiry of the Apple signing identities and provisioning profiles the fleet uses.  The rule declares the inventory,  and a rule that declares none reads `UNKNOWN`:  an empty list is not a clean bill of health.
 
 `credential_key_present` is how the fleet reaches a credential now that the flat credential directory is retired (AFC-359).  It asks the `fleet-secrets` CLI for the KEY NAMES in one secret-store folder, using the `names` verb, which prints names and never values, so a secret cannot reach a result, a reason or a log by construction.  A key that is absent is step 3 (`MISSING`);  a secret store that cannot be reached, because the CLI is missing, the machine identity is gone, the call timed out or the output was unreadable, is step 4 (`UNKNOWN` with a failing reason code).  The listing is cached on the run context, so one status run asks the secret store once per folder rather than once per rule.  A rule reports only the names it asked for, so one seat's rule never carries another seat's key names into a result, a reason or a log.
 
@@ -233,11 +251,60 @@ Every rule carries exactly these fields (camelCase in JSON, snake_case in `types
 | `ttlSeconds` | How long a result stays fresh;  default 900;  at least 86400 for an `L2` rule |
 | `source` | Provenance only:  standing directive plus date, or Zulip message id;  empty when uncited |
 
+A compliance rule carries the same fields,  with four additions and one change (section 6.3).  It has no `platforms` (it has a `scope`),  it never asks for proof above `L0` (the proof machinery is about a seat's hook),  and it never allows an automatic fix (no installer writes a fleet rule).
+
 A file that fits none of the six kinds (AFC-416 Finding 3:  MiniMax channel and identity YAMLs, `mcp-runtime-names.json`, `review-links.json`, unbounded `background-tasks/` state) is not a seventh kind.  It is named in the seat's `uncovered` list, as `{surface, reason}`,  never by silence and never by forcing it into a kind it does not fit;  a later phase that grows the kinds can move a surface out of the list and into a rule.  The list is its own field because a `notApplicable` cover carries a kind,  and a cover for a surface that fits no kind would have to name one anyway.  The app renders the list,  so the surface is visible as knowingly blind rather than accidentally unchecked,  and the list produces no result and no verdict:  it is the honest statement that the surface is not checked,  and the reason says why.
 
 ### 6.2 Where A Seat Entry Comes From
 
 A seat with no Mac config surface (a hosted or cloud seat) still gets an entry.  It lists `platforms` as an empty list and carries one seat-wide `notApplicable` entry per kind, each with a human reason, for example `"hosted seat;  no Mac harness config surface in Phase 2"`.  Not-applicable entries produce no check results.  The app renders them from the manifest, so the seat is visible without inventing a check nobody can run.
+
+### 6.3 The Fleet-Wide Compliance Family
+
+The compliance family is a second list in the same manifest, under the top-level key `complianceRules` (AFC-400).  It is ADDITIVE:  a reader that does not know the key ignores it,  so `schemaVersion` stays at 2 and the app keeps reading the manifest it reads today.  A manifest with no such key loads with an empty list,  which is what every manifest before this family looked like.
+
+```json
+{
+  "schemaVersion": 2,
+  "seats": { "...": "..." },
+  "complianceRules": [
+    {
+      "id": "compliance-secrets-hygiene",
+      "kind": "compliance",
+      "scope": ["mac"],
+      "check": {"type": "secrets_hygiene", "target": "~/.secrets", "detail": ""},
+      "expected": {
+        "description": "No credential is written as a flat key file,  and no published file names an internal attack-map asset.",
+        "names": ["published:.github/workflows", "published:github-workflows-template"]
+      },
+      "proofLevel": "L0",
+      "ownerSeat": "CLAUDE",
+      "autofixAllowed": false,
+      "collector": "mac",
+      "ttlSeconds": 3600,
+      "description": "...",
+      "source": "OPS-818;  Kody rules 37 and 60",
+      "threshold": {"knob": "COMPLIANCE_SECRETS_FINDINGS_MAX", "minimum": 0, "maximum": 10, "unit": "findings"},
+      "implemented": true
+    }
+  ]
+}
+```
+
+A compliance rule carries the seat rule's vocabulary and four fields of its own.
+
+| Field | Meaning |
+|---|---|
+| `scope` | The hosts the rule is about:  `mac`, `vm`, `hetzner`, `cloud` or `fleet`.  It replaces `platforms`,  which mean a harness config surface and never a host |
+| `threshold` | The knob the rule's number comes from,  with the range of values the rule accepts.  The number itself is never in the manifest |
+| `implemented` | Whether the engine has a check for this rule's check type.  A rule that is not implemented produces no result and is named in the envelope's `notImplemented` list |
+| `implementationReason` | Why the rule cannot run yet.  It is required when `implemented` is false,  because a gap dressed as a rule is a gap the registry hides |
+
+A rule's `expected.names` is its declared list:  the published surfaces for a secrets rule,  the certificate sources for a certificate rule.  Each entry says what it is,  with a prefix (`published:`,  `keychain:`,  `profiles:`),  so one list never mixes two vocabularies.
+
+The threshold knob is a fleet knob (Infisical through `scripts/fleet_knobs/`),  never a literal in the manifest.  A rule whose knob is unset,  or whose value is outside the range the rule accepts,  reads `UNKNOWN` with a failing reason code:  a threshold nobody set is not a threshold,  and a rule that cannot decide never reads as a pass.  The knob's registry default is the value to set,  not one the rule may use.
+
+A rule that is not implemented produces NO result.  That is the same choice decision D5 made for a hosted seat:  a permanent wall of unsupported rows trains everyone to ignore the state that a genuinely unsupported check needs.  The gap is named in the envelope's `notImplemented` list and in the human output instead,  with the reason the registry gives for it.
 
 ## 7. Registry Source Of Truth And Coverage
 
@@ -254,9 +321,15 @@ Coverage is a validation rule, enforced by `manifest.py` `validate_coverage()`:
 5. Only `hooks` rules may require `L1` or `L2`, and an `L2` rule needs `ttlSeconds` of at least 86400.
 6. Every platform named anywhere is in the known platform list passed to `validate_platforms()` from the installer tables at the call site.
 
+The compliance family has its own validator, `validate_compliance_rules()`, because a fleet rule is about a host and not about a seat's config surface.  A compliance rule must name an owner seat that the registry holds live, at least one scope that is a known host scope, a check type its kind supports, proof `L0`, and no automatic fix.  A rule that is not implemented must say why.  A rule with a threshold must name a knob and a real range.  Rule ids are unique across BOTH families,  and the loader refuses a duplicate.
+
+The knob a threshold names must exist in the fleet's knob registry.  That check lives in the test suite,  which may read `scripts/fleet_knobs/registry.py`;  the engine itself never imports it,  so the isolated copy keeps working.
+
 ## 8. The `status --json` Envelope
 
 `contract.py` `SCHEMA_VERSION` is the integer 1, pinned by a contract test.  A breaking envelope change raises it deliberately and updates this document in the same commit;  a version never changes in place.  The envelope carries a flat `uncovered` list of `{seat, surface, reason}` beside the flat `results` list,  for the same reason the results list is flat:  two flat lists cannot disagree with each other.  Adding that list did not raise the version,  because the consumer that exists  (the Muster app's decoder)  ignores unknown fields,  so a new top-level key is additive for it and not a breaking change;  the version moves when a field's meaning changes,  or when a consumer has to be told.  A breaking envelope change raises it deliberately and updates this document in the same commit.  The envelope is one flat `results` list;  consumers group by seat, platform and kind.  It carries no second grouped copy that could disagree with the flat list.
+
+The envelope also carries a flat `notImplemented` list of `{ruleId, ownerSeat, reason}` (AFC-400).  It names the fleet-wide rules the registry declares and the engine cannot run yet.  Those rules carry no result,  so the list is where they stay visible.  The key is additive in the same way the `uncovered` list was,  so the version stays at 1.
 
 ```json
 {
@@ -347,6 +420,8 @@ Every module in `scripts/fleet_config/`, with one owner lane each, so four paral
 | `checks_skills.py` | `skills` checks:  installed skill names per platform | Implementer 2 (checks) |
 | `checks_subagents.py` | `subagents` checks:  installed sub-agent definition names per platform | Implementer 2 (checks) |
 | `checks_permissions.py` | `permissions` checks:  permission identifiers, file modes and credential `stat` (never contents) | Implementer 2 (checks) |
+| `checks_compliance.py` | The fleet-wide compliance checks:  the generic `command` runner, the secrets hygiene check, the certificate expiry check, and the knob reader the thresholds come from | AFC-400 |
+| `certs.py` | Reading a certificate's expiry:  a small DER walker for the `notAfter` field, the keychain reader and the provisioning profile reader | AFC-400 |
 | `proof.py` | L1 sentinel probes and L2 headless canaries, per-platform adapters, TTL evidence handling | Implementer 3 (proof) |
 | `collectors.py` | Collector dispatch:  `mac` runs locally;  reserved collectors return the pinned `UNSUPPORTED` result | Implementer 3 (proof) |
 | `aggregator.py` | Runs every rule through collectors, checks and proof;  applies the section 4 mapping, the clock, staleness and timeouts;  builds the `StatusReport` | Implementer 4 (engine) |
@@ -395,6 +470,8 @@ Each implementer lands tests with their module, under `scripts/fleet_config/test
 
 The names are the pin, not a suggestion:  a test that asserts the same thing under another name does not satisfy it, because the pinned name is what a reader greps for and what a future change has to find.  Test 4 in particular is the only thing that keeps the two marked-block implementations agreeing, and nothing else in the suite does it, so it is the one most easily lost.
 
+The compliance family adds its own pins (AFC-400), in `scripts/fleet_config/tests/test_compliance.py`:  the seeded manifest loads and every validator passes;  every threshold names a knob the fleet's registry holds;  every rule the engine claims to run names a check the engine registers;  a knob that is unset or out of range leaves the rule `UNKNOWN`;  and the two real rules are exercised on fixtures.  The one test that reads this Mac's real state is skipped unless `FLEET_CONFIG_LIVE_TESTS` is set,  and it never prints a secret value.
+
 ## 14. Decisions And Rejected Alternatives
 
 | # | Decision | Why | Rejected alternative |
@@ -407,6 +484,9 @@ The names are the pin, not a suggestion:  a test that asserts the same thing und
 | D6 | Only `hooks` rules may require `L1` or `L2` in Phase 2 | L1 and L2 are hook proofs;  a higher requirement anywhere else would make `UNPROVEN` the permanent state of five kinds | Allowing any kind to require any level, rejected because no proof machinery exists for the other kinds and the manifest would promise what the engine cannot run |
 | D7 | This package mirrors `fleet_lanes` semantics (roster, marked-block hash) instead of importing it | The isolated stable copy under `python3 -I` carries just this package, as `fleet_knobs` established | Direct imports of `fleet_lanes.layout` and `fleet_lanes.marked_block`, rejected because they break that copy silently, at hook time, on the worst possible day |
 | D8 | Credential checks never read a secret's contents:  `credential_stat` reports `stat` data only, and `credential_key_present` asks the secret store for key NAMES only | A hash of contents is a fingerprint of a secret and needs the file opened;  mode plus presence, or the presence of a key name, is the compliance fact Muster needs | Hashing the credential file to detect rotation, rejected because presence and mode answer the admin question and rotation is the credential owner's business, not a config drift |
+| D9 | The compliance family arrives as an ADDITIVE top-level key,  `complianceRules`,  and the manifest version stays at 2 | The Muster app pins the manifest version and refuses anything it does not know,  so a version bump would break the app for a family the app can ignore;  a key an old reader does not know is the safe shape | A `schemaVersion` bump to 3 with the app updated in the same change, rejected because it makes every reader of the manifest  (including the isolated copies and any other tool) move for a feature they do not use |
+| D10 | A compliance rule that is not implemented produces NO result and is named in the envelope's `notImplemented` list | The same reason D5 gives for a hosted seat:  a permanent wall of unsupported rows trains everyone to ignore the state a genuinely unsupported check needs,  and seven starter rows would make every run's verdict unknown forever | One `UNSUPPORTED` result per unimplemented rule, rejected for the reason D5 gives |
+| D11 | A compliance threshold is read only once the knob has been SET,  and a knob that still holds only its registry default leaves the rule `UNKNOWN` | A threshold nobody chose is not a threshold,  and a rule that decides on a default it invented is not answering the question it was asked;  the knob's default is the value to set,  not one the rule may use | Letting the rule use the registry default, rejected because then "unset" would never be an outcome and the fail-closed rule would be untested in practice |
 
 ## 15. Risks And Blockers For Other Workers
 

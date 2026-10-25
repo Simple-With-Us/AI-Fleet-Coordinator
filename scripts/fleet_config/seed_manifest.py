@@ -279,6 +279,215 @@ def _cover(kind: str, reason: str, platforms: Sequence[str] = ()) -> dict[str, o
     return {"kind": kind, "reason": reason, "platforms": list(platforms)}
 
 
+def _compliance_rule(
+    rule_id: str,
+    scope: Sequence[str],
+    check: dict[str, str],
+    expected: dict[str, object],
+    owner_seat: str,
+    description: str,
+    *,
+    threshold: dict[str, object] | None = None,
+    ttl_seconds: int = 3600,
+    source: str = "",
+    collector: str = "mac",
+    implemented: bool = True,
+    implementation_reason: str = "",
+) -> dict[str, object]:
+    """One fleet-wide compliance rule,  in the shape the design doc pins (section 6.3).
+
+    A compliance rule carries the same vocabulary a seat rule carries,  plus the four
+    fields that only make sense for a rule about the fleet:  the scope it is about,  the
+    knob its threshold comes from,  whether the engine can run it,  and why it cannot
+    when it cannot.
+    """
+    rule: dict[str, object] = {
+        "id": rule_id,
+        "kind": "compliance",
+        "scope": list(scope),
+        "check": check,
+        "expected": expected,
+        "proofLevel": "L0",
+        "ownerSeat": owner_seat,
+        "autofixAllowed": False,
+        "collector": collector,
+        "ttlSeconds": ttl_seconds,
+        "description": description,
+        "source": source,
+        "implemented": implemented,
+    }
+    if threshold is not None:
+        rule["threshold"] = threshold
+    if implementation_reason:
+        rule["implementationReason"] = implementation_reason
+    return rule
+
+
+def _planned_command_rule(
+    rule_id: str,
+    scope: Sequence[str],
+    command: str,
+    description: str,
+    owner_seat: str,
+    reason: str,
+    *,
+    source: str = "",
+    ttl_seconds: int = 3600,
+) -> dict[str, object]:
+    """A starter rule the engine cannot run yet.
+
+    The rule is a registry row,  so the gap is visible in the registry and not only in a
+    review.  It names the command that will answer it,  and it says plainly that the
+    command does not exist yet.
+    """
+    return _compliance_rule(
+        rule_id,
+        scope,
+        {"type": "command", "target": command, "detail": ""},
+        {"description": description},
+        owner_seat,
+        description,
+        ttl_seconds=ttl_seconds,
+        source=source,
+        implemented=False,
+        implementation_reason=reason,
+    )
+
+
+def _compliance_rules() -> list[dict[str, object]]:
+    """The fleet-wide compliance family,  in registry order.
+
+    The starter set is AFC-400's nine rules.  Two of them have a check the engine can
+    run on this Mac today:  the secrets hygiene rule (OPS-818,  with Kody rules 37 and
+    60) and the Apple certificate expiry rule.  The other seven are registry rows that
+    say they are not implemented yet,  so the gap is visible without pretending.
+    """
+    return [
+        _compliance_rule(
+            "compliance-secrets-hygiene",
+            ["mac"],
+            {"type": "secrets_hygiene", "target": "~/.secrets", "detail": ""},
+            {
+                "description": "No credential is written as a flat key file,  and no "
+                "published file names an internal attack-map asset.",
+                "names": [
+                    "published:.github/workflows",
+                    "published:github-workflows-template",
+                ],
+            },
+            "CLAUDE",
+            "The retired flat key directory must hold no credential,  and the published "
+            "workflows must name no internal host,  tailnet name,  private key or "
+            "project id.",
+            threshold={
+                "knob": "COMPLIANCE_SECRETS_FINDINGS_MAX",
+                "minimum": 0,
+                "maximum": 10,
+                "unit": "findings",
+            },
+            ttl_seconds=3600,
+            source="OPS-818;  Kody rules 37 and 60",
+        ),
+        _compliance_rule(
+            "compliance-apple-cert-expiry",
+            ["mac"],
+            {"type": "certificate_expiry", "target": "", "detail": ""},
+            {
+                "description": "Every Apple signing identity and provisioning profile "
+                "the fleet uses is valid for at least the threshold window.",
+                "names": [
+                    "keychain:Developer ID Application",
+                    "keychain:Apple Distribution",
+                    "profiles:~/Library/MobileDevice/Provisioning Profiles/*.mobileprovision",
+                ],
+            },
+            "CODEX",
+            "The inventory is declared,  so a machine that does not hold one of these "
+            "certificates reads unknown rather than a clean bill of health.",
+            threshold={
+                "knob": "COMPLIANCE_CERT_EXPIRY_DAYS",
+                "minimum": 1,
+                "maximum": 365,
+                "unit": "days",
+            },
+            ttl_seconds=86400,
+            source="AFC-400 starter rule 5;  the BotFleet Developer ID identity is one "
+            "of the keychain sources",
+        ),
+        _planned_command_rule(
+            "compliance-kody-rule-sync",
+            ["fleet"],
+            "fleet-kody-rules-check",
+            "The Kody rules of every repo match the canonical copy.",
+            "CODEX",
+            "No command compares a repo's Kody rules with the canonical copy yet,  so "
+            "the rule is a registry row and the check lands when the command does.",
+            source="AFC-400 starter rule 2",
+        ),
+        _planned_command_rule(
+            "compliance-seat-wake-config",
+            ["mac"],
+            "fleet-seat-wake-check",
+            "Every seat's wake configuration on this Mac is sane.",
+            "MM",
+            "No command reads every seat's wake configuration yet,  so the rule is a "
+            "registry row and the check lands when the command does.",
+            source="AFC-400 starter rule 3",
+        ),
+        _planned_command_rule(
+            "compliance-backup-heartbeat",
+            ["mac"],
+            "fleet-backup-heartbeat",
+            "The fleet backup job is fresh and healthy.",
+            "CLAUDE",
+            "No command reads the backup heartbeat yet,  so the rule is a registry row "
+            "and the check lands when the command does.",
+            source="AFC-400 starter rule 4",
+        ),
+        _planned_command_rule(
+            "compliance-litestream-heartbeat",
+            ["hetzner"],
+            "fleet-litestream-heartbeat",
+            "The litestream replication on the server is fresh.",
+            "CODEX",
+            "No command reads the litestream heartbeat yet,  so the rule is a registry "
+            "row and the check lands when the command does.",
+            source="AFC-400 starter rule 4",
+        ),
+        _planned_command_rule(
+            "compliance-testflight-group",
+            ["fleet"],
+            "fleet-testflight-groups",
+            "Every app's TestFlight group assignments are the ones the fleet intends.",
+            "AG",
+            "No command reads the TestFlight group assignments yet,  so the rule is a "
+            "registry row and the check lands when the command does.",
+            source="AFC-400 starter rule 6",
+        ),
+        _planned_command_rule(
+            "compliance-vercel-git-link",
+            ["fleet"],
+            "fleet-vercel-git-links",
+            "Every Vercel project is linked to the repository and branch it should be.",
+            "MC",
+            "No command reads the Vercel git links yet,  so the rule is a registry row "
+            "and the check lands when the command does.",
+            source="AFC-400 starter rule 7",
+        ),
+        _planned_command_rule(
+            "compliance-connector-credential-health",
+            ["fleet"],
+            "fleet-connector-health",
+            "Every connector credential is live,  and none of them answers with an "
+            "authentication failure.",
+            "FX",
+            "No command checks the connector credentials yet,  so the rule is a registry "
+            "row and the check lands when the command does.",
+            source="AFC-400 starter rule 8;  the Nylas 401 class",
+        ),
+    ]
+
+
 def _instructions_rule(seat: str, platform: str) -> dict[str, object]:
     """The rule that pins the marker block of a platform's rules file."""
     path = platform_rules_path(platform)
@@ -889,7 +1098,11 @@ def build_manifest() -> dict[str, object]:
             "the seed has an entry for a seat the registry does not hold live: %s"
             % ", ".join(unknown)
         )
-    return {"schemaVersion": 2, "seats": {tag: seats[tag] for tag in sorted(seats)}}
+    return {
+        "schemaVersion": 2,
+        "seats": {tag: seats[tag] for tag in sorted(seats)},
+        "complianceRules": _compliance_rules(),
+    }
 
 
 def render_manifest(manifest: dict[str, object]) -> str:

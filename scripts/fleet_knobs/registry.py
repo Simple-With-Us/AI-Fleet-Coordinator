@@ -313,6 +313,34 @@ REGISTRY: tuple[Spec, ...] = (
         note="milliseconds the Fleet RAG ingest may run before fleet-apps-sheet-sync.mjs gives up on it;  "
         "a full corpus walk took about 43 minutes, so the default is 90;  a local file may only lower it",
     ),
+    # C8 fleet compliance rules (AFC-400):  the thresholds the fleet-config compliance
+    # rules read.  The default is the value the owner is expected to set,  and a
+    # compliance rule reads UNKNOWN while the knob still only holds it:  a threshold
+    # nobody set is not a threshold,  so the rule cannot decide on one.
+    _S(
+        "COMPLIANCE_CERT_EXPIRY_DAYS",
+        "int",
+        "C8",
+        default=30,
+        narrower="min",
+        minimum=1,
+        maximum=365,
+        note="days before an Apple signing certificate expires that the fleet-config compliance rule "
+        "calls a finding;  the rule reads the value only once it is set in Infisical,  so the default "
+        "is the value to set rather than one the rule may use",
+    ),
+    _S(
+        "COMPLIANCE_SECRETS_FINDINGS_MAX",
+        "int",
+        "C8",
+        default=0,
+        narrower="min",
+        minimum=0,
+        maximum=10,
+        note="how many secrets-hygiene findings the fleet-config compliance rule tolerates;  the rule "
+        "reads the value only once it is set in Infisical,  so the default is the value to set rather "
+        "than one the rule may use",
+    ),
 )
 
 BY_NAME: dict[str, Spec] = {s.name: s for s in REGISTRY}
