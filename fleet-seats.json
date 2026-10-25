@@ -1,4 +1,241 @@
 {
+  "complianceRules": [
+    {
+      "autofixAllowed": false,
+      "check": {
+        "detail": "",
+        "target": "~/.secrets",
+        "type": "secrets_hygiene"
+      },
+      "collector": "mac",
+      "description": "The retired flat key directory must hold no credential,  and the published workflows must name no internal host,  tailnet name,  private key or project id.",
+      "expected": {
+        "description": "No credential is written as a flat key file,  and no published file names an internal attack-map asset.",
+        "names": [
+          "published:.github/workflows",
+          "published:github-workflows-template"
+        ]
+      },
+      "id": "compliance-secrets-hygiene",
+      "implemented": true,
+      "kind": "compliance",
+      "ownerSeat": "CLAUDE",
+      "proofLevel": "L0",
+      "scope": [
+        "mac"
+      ],
+      "source": "OPS-818;  Kody rules 37 and 60",
+      "threshold": {
+        "knob": "COMPLIANCE_SECRETS_FINDINGS_MAX",
+        "maximum": 10,
+        "minimum": 0,
+        "unit": "findings"
+      },
+      "ttlSeconds": 3600
+    },
+    {
+      "autofixAllowed": false,
+      "check": {
+        "detail": "",
+        "target": "",
+        "type": "certificate_expiry"
+      },
+      "collector": "mac",
+      "description": "The inventory is declared,  so a machine that does not hold one of these certificates reads unknown rather than a clean bill of health.",
+      "expected": {
+        "description": "Every Apple signing identity and provisioning profile the fleet uses is valid for at least the threshold window.",
+        "names": [
+          "keychain:Developer ID Application",
+          "keychain:Apple Distribution",
+          "profiles:~/Library/MobileDevice/Provisioning Profiles/*.mobileprovision"
+        ]
+      },
+      "id": "compliance-apple-cert-expiry",
+      "implemented": true,
+      "kind": "compliance",
+      "ownerSeat": "CODEX",
+      "proofLevel": "L0",
+      "scope": [
+        "mac"
+      ],
+      "source": "AFC-400 starter rule 5;  the BotFleet Developer ID identity is one of the keychain sources",
+      "threshold": {
+        "knob": "COMPLIANCE_CERT_EXPIRY_DAYS",
+        "maximum": 365,
+        "minimum": 1,
+        "unit": "days"
+      },
+      "ttlSeconds": 86400
+    },
+    {
+      "autofixAllowed": false,
+      "check": {
+        "detail": "",
+        "target": "fleet-kody-rules-check",
+        "type": "command"
+      },
+      "collector": "mac",
+      "description": "The Kody rules of every repo match the canonical copy.",
+      "expected": {
+        "description": "The Kody rules of every repo match the canonical copy."
+      },
+      "id": "compliance-kody-rule-sync",
+      "implementationReason": "No command compares a repo's Kody rules with the canonical copy yet,  so the rule is a registry row and the check lands when the command does.",
+      "implemented": false,
+      "kind": "compliance",
+      "ownerSeat": "CODEX",
+      "proofLevel": "L0",
+      "scope": [
+        "fleet"
+      ],
+      "source": "AFC-400 starter rule 2",
+      "ttlSeconds": 3600
+    },
+    {
+      "autofixAllowed": false,
+      "check": {
+        "detail": "",
+        "target": "fleet-seat-wake-check",
+        "type": "command"
+      },
+      "collector": "mac",
+      "description": "Every seat's wake configuration on this Mac is sane.",
+      "expected": {
+        "description": "Every seat's wake configuration on this Mac is sane."
+      },
+      "id": "compliance-seat-wake-config",
+      "implementationReason": "No command reads every seat's wake configuration yet,  so the rule is a registry row and the check lands when the command does.",
+      "implemented": false,
+      "kind": "compliance",
+      "ownerSeat": "MM",
+      "proofLevel": "L0",
+      "scope": [
+        "mac"
+      ],
+      "source": "AFC-400 starter rule 3",
+      "ttlSeconds": 3600
+    },
+    {
+      "autofixAllowed": false,
+      "check": {
+        "detail": "",
+        "target": "fleet-backup-heartbeat",
+        "type": "command"
+      },
+      "collector": "mac",
+      "description": "The fleet backup job is fresh and healthy.",
+      "expected": {
+        "description": "The fleet backup job is fresh and healthy."
+      },
+      "id": "compliance-backup-heartbeat",
+      "implementationReason": "No command reads the backup heartbeat yet,  so the rule is a registry row and the check lands when the command does.",
+      "implemented": false,
+      "kind": "compliance",
+      "ownerSeat": "CLAUDE",
+      "proofLevel": "L0",
+      "scope": [
+        "mac"
+      ],
+      "source": "AFC-400 starter rule 4",
+      "ttlSeconds": 3600
+    },
+    {
+      "autofixAllowed": false,
+      "check": {
+        "detail": "",
+        "target": "fleet-litestream-heartbeat",
+        "type": "command"
+      },
+      "collector": "mac",
+      "description": "The litestream replication on the server is fresh.",
+      "expected": {
+        "description": "The litestream replication on the server is fresh."
+      },
+      "id": "compliance-litestream-heartbeat",
+      "implementationReason": "No command reads the litestream heartbeat yet,  so the rule is a registry row and the check lands when the command does.",
+      "implemented": false,
+      "kind": "compliance",
+      "ownerSeat": "CODEX",
+      "proofLevel": "L0",
+      "scope": [
+        "hetzner"
+      ],
+      "source": "AFC-400 starter rule 4",
+      "ttlSeconds": 3600
+    },
+    {
+      "autofixAllowed": false,
+      "check": {
+        "detail": "",
+        "target": "fleet-testflight-groups",
+        "type": "command"
+      },
+      "collector": "mac",
+      "description": "Every app's TestFlight group assignments are the ones the fleet intends.",
+      "expected": {
+        "description": "Every app's TestFlight group assignments are the ones the fleet intends."
+      },
+      "id": "compliance-testflight-group",
+      "implementationReason": "No command reads the TestFlight group assignments yet,  so the rule is a registry row and the check lands when the command does.",
+      "implemented": false,
+      "kind": "compliance",
+      "ownerSeat": "AG",
+      "proofLevel": "L0",
+      "scope": [
+        "fleet"
+      ],
+      "source": "AFC-400 starter rule 6",
+      "ttlSeconds": 3600
+    },
+    {
+      "autofixAllowed": false,
+      "check": {
+        "detail": "",
+        "target": "fleet-vercel-git-links",
+        "type": "command"
+      },
+      "collector": "mac",
+      "description": "Every Vercel project is linked to the repository and branch it should be.",
+      "expected": {
+        "description": "Every Vercel project is linked to the repository and branch it should be."
+      },
+      "id": "compliance-vercel-git-link",
+      "implementationReason": "No command reads the Vercel git links yet,  so the rule is a registry row and the check lands when the command does.",
+      "implemented": false,
+      "kind": "compliance",
+      "ownerSeat": "MC",
+      "proofLevel": "L0",
+      "scope": [
+        "fleet"
+      ],
+      "source": "AFC-400 starter rule 7",
+      "ttlSeconds": 3600
+    },
+    {
+      "autofixAllowed": false,
+      "check": {
+        "detail": "",
+        "target": "fleet-connector-health",
+        "type": "command"
+      },
+      "collector": "mac",
+      "description": "Every connector credential is live,  and none of them answers with an authentication failure.",
+      "expected": {
+        "description": "Every connector credential is live,  and none of them answers with an authentication failure."
+      },
+      "id": "compliance-connector-credential-health",
+      "implementationReason": "No command checks the connector credentials yet,  so the rule is a registry row and the check lands when the command does.",
+      "implemented": false,
+      "kind": "compliance",
+      "ownerSeat": "FX",
+      "proofLevel": "L0",
+      "scope": [
+        "fleet"
+      ],
+      "source": "AFC-400 starter rule 8;  the Nylas 401 class",
+      "ttlSeconds": 3600
+    }
+  ],
   "schemaVersion": 2,
   "seats": {
     "AG": {
@@ -433,7 +670,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "3d25def81d144305a7abe0cdc156a86f1dcfc9f694ae6c79d3cb66cd9afc91ac"
+            "sha256": "e7ae28801208a47a233331c16525f093c37372c626abea9b180dfdef68d75515"
           },
           "id": "clutch-instructions-lane-map",
           "kind": "instructions",

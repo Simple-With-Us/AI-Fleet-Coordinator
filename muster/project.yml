@@ -55,6 +55,11 @@ targets:
       - path: Muster/ApplyPlanModel.swift
       - path: Muster/ApplyCoordinator.swift
       - path: Muster/Model/ConfigFileReader.swift
+      - path: Muster/Model/DriftAlerts.swift
+      - path: Muster/Model/DriftHistory.swift
+      - path: Muster/Model/DriftMonitor.swift
+      - path: Muster/Model/DriftWatcher.swift
+      - path: Muster/Model/DriftWatchList.swift
       - path: Muster/Model/EngineIdentity.swift
       - path: Muster/Model/EngineRunner.swift
       - path: Muster/Model/FleetConfigContract.swift

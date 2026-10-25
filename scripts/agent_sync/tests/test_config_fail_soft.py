@@ -30,6 +30,15 @@ def load(extra: str) -> C.Config:
 
 
 class FailSoftConfig(unittest.TestCase):
+    def test_wake_loop_prevention_is_explicit_boolean(self) -> None:
+        self.assertTrue(C.from_dict({}).wake_loop_prevention)
+        self.assertFalse(C.from_dict({"daemon": {"wake_loop_prevention": False}}).wake_loop_prevention)
+        for value in ("false", 0, None):
+            cfg = C.from_dict({"daemon": {"wake_loop_prevention": value}})
+            self.assertTrue(cfg.wake_loop_prevention)
+            self.assertIn("daemon.wake_loop_prevention must be true or false", cfg.errors)
+
+
     def assertDowngraded(self, cfg: C.Config) -> C.SeatConfig:
         self.assertIn("CLAUDE", cfg.seats, "the seat still loads")
         self.assertEqual(cfg.skipped_seats, {})

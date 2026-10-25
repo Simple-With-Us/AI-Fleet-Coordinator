@@ -213,7 +213,8 @@ def find_cli(env: Mapping[str, str]) -> str | None:
 
 
 def check_path(path: str) -> str:
-    if not PATH_RE.match(path or "") or ".." in path.split("/"):
+    # fullmatch:  `$` also matches before a final newline, so re.match would pass "/x\n".
+    if not PATH_RE.fullmatch(path or "") or ".." in path.split("/"):
         raise UsageError("bad --path:  use an absolute Infisical folder path such as /")
     return path
 

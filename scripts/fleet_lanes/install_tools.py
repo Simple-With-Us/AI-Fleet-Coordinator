@@ -6122,20 +6122,42 @@ def opencode_entry(paths: Paths) -> str:
     return paths.opencode_plugin_dir
 
 
+_OPENCODE_PLUGIN_FILES = ("index.ts", "fleet-lane-guard.ts")
+
+
+def _fleet_opencode_path(entry: str) -> bool:
+    """True for the plugin directory, or one of the two files earlier releases listed inside it, under any
+    fleet stable directory (`<somewhere>/lane-tools/opencode-plugin`), whichever machine or release wrote it.
+    The `lane-tools` parent is what makes it ours:  a plugin that merely sits in a directory called
+    `opencode-plugin` belongs to someone else and is left alone."""
+    parts = [part for part in entry.replace("\\", "/").split("/") if part not in ("", ".")]
+    if len(parts) >= 2 and parts[-1] == "opencode-plugin" and parts[-2] == "lane-tools":
+        return True
+    return (
+        len(parts) >= 3
+        and parts[-1] in _OPENCODE_PLUGIN_FILES
+        and parts[-2] == "opencode-plugin"
+        and parts[-3] == "lane-tools"
+    )
+
+
 def _is_opencode_ours(entry: object, paths: Paths) -> bool:
-    """Whether `entry` is this tool's own plugin entry:  the directory itself, or the exact file
-    forms earlier releases listed inside the stable dir.  Never a suffix test:  a user's plugin
-    that happens to sit in a directory called `opencode-plugin` is not ours."""
-    want = opencode_entry(paths)
-    ours = {
-        want,
-        os.path.join(paths.stable, "opencode-plugin", "index.ts"),
-        os.path.join(paths.stable, "opencode-plugin", "fleet-lane-guard.ts"),
-    }
+    """Whether `entry` is this tool's own plugin entry:  this stable directory itself, the file forms earlier
+    releases listed inside it (whatever `--stable-dir` named it), and an entry a previous machine or stable
+    root recorded under a `lane-tools` directory.  Never a bare suffix test:  a user's plugin that happens to
+    sit in a directory called `opencode-plugin` is not ours."""
+    ours_here = {opencode_entry(paths)}
+    ours_here.update(
+        os.path.join(paths.stable, "opencode-plugin", name) for name in _OPENCODE_PLUGIN_FILES
+    )
+
+    def ours(value: str) -> bool:
+        return value in ours_here or _fleet_opencode_path(value)
+
     if isinstance(entry, str):
-        return entry in ours
+        return ours(entry)
     if isinstance(entry, (list, tuple)) and entry and isinstance(entry[0], str):
-        return entry[0] in ours
+        return ours(entry[0])
     return False
 
 

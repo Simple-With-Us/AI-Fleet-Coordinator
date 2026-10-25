@@ -38,6 +38,8 @@ struct FleetOverviewView: View {
                     .tabItem { Label("Wake Settings", systemImage: "bell.badge") }
                 SeatActivityView()
                     .tabItem { Label("Seat Activity", systemImage: "person.2.badge.gearshape") }
+                DriftHistoryView()
+                    .tabItem { Label("Drift History", systemImage: "exclamationmark.triangle") }
             }
             Divider()
             ApplyActivityView()
@@ -191,4 +193,5 @@ enum ThemeChoice: String, CaseIterable, Identifiable {
 #Preview {
     FleetOverviewView()
         .environmentObject(FleetStore())
+        .environmentObject(DriftMonitor(grid: PreviewGrid.shared))
 }

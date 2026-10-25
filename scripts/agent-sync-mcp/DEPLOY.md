@@ -6,6 +6,74 @@ A merge is never a deploy (spec 3.2):  agents auto-merge to `main`, so every dep
 
 Run everything from `scripts/agent-sync-mcp/` in a fresh worktree off `origin/main` (never `~/Code/AI-Fleet-Coordinator`).  Never merge stderr into output (`2>&1`) on a command that touches a credential.
 
+## Runtime secrets from Infisical (scoped service token, INFISICAL_MODE)
+
+The Worker can read its secrets at runtime from Fleet-OPS `prod` through one
+read-tools service token (`INFISICAL_SERVICE_TOKEN` + `INFISICAL_WORKSPACE_ID`
+bindings), instead of install-time copied Worker secrets.  `INFISICAL_MODE`:
+
+- `off` (default):  only the legacy Worker bindings are read.  Fully
+  compatible with every install below;  nothing changes until the mode is set.
+- `fallback`:  Infisical first, the legacy binding on a miss or a read
+  failure.  Every read a binding serves is logged as one JSON event,
+  `{"event":"infisical_fallback","path":...,"name":...,"binding":...,"served":...,"code":...,"status":...}`
+  (names and a fixed code only, never a value), and counted as a fallback
+  (`/admin` status shows the counters).  A FleetLink seat token's binding is
+  its bundle entry, `FLEETLINK_SEAT_TOKENS[<SEAT>]`.  An optional secret that
+  is undeclared and set nowhere (not in Infisical, no binding) reads as empty
+  and is counted apart as absent, never as a fallback:  `required` gives the
+  same answer.
+- `required`:  Infisical only, zero fallbacks.  A missing secret that is
+  DECLARED configured throws visibly;  a secret absent from the declaration
+  list is an intentionally-off capability and reads as empty.
+
+**The proof before `required`.**  Run `fallback` and exercise the Worker (an
+`/mcp` session per seat, `/admin`).  `required` is turned on only when
+`/admin` shows 0 fallbacks and the Worker log has no `infisical_fallback`
+event:  then every read was served by Infisical or found a secret that is set
+nowhere, which every mode answers the same way, so `required` changes nothing
+that works.  A fallback event names the Infisical record that is missing and
+the binding that served it, and either the record is created or the binding
+was serving a capability that is meant to go.  Absent reads do not hold the
+gate:  the wake keys of GROK-WEB, ECHO and WISE, which no binding or Infisical
+record holds (so those seats get no events), and the FleetLink tokens of MA
+and JET-CHAT, which have none (so those seats keep the agent secret with
+`X-Fleet-Seat`, as on main).
+
+The declaration list is `INFISICAL_EXPECT` (comma-separated `path:name`), and
+it defaults to `INFISICAL_EXPECT_DEFAULT` in `src/infisical-manifest.js` -
+exactly the 72 secrets the population run copies into the scoped Fleet-OPS
+folders (3 wake at `/wake`, 18 FleetLink at `/fleetlink`, 48 Grok-Bot fields
+at `/zulip` + `/linear`, 3 recall at `/tools`).  GB-ENGINEER's FleetLink token
+was never provisioned and is deliberately NOT declared:  that seat is denied
+outright (`FLEETLINK_SEATS_DISABLED`), never silently put on the shared agent
+secret.  The ephemeral SPIKE wake key is never declared or stored here.
+
+Seat zulip keys are NOT copied:  runtime reads use the canonical
+`<SEAT>_ZULIP_KEY` records already in Fleet-OPS `/zulip`.  The stale
+`ZULIP_KEY_<SEAT>` code names matched no Infisical secret and were migrated in
+`SEAT_SECRETS`;  the legacy Worker binding names stay only as the
+off-mode/fallback bindings.  JET-CHAT reads Jet's record (one bot key), and
+its Linear pair reads Jet's `/linear` record (one Linear app).  How the names
+were checked:  a names-only listing of Fleet-OPS prod `/zulip` on Fri, Oct 23
+(PR #901 for CURSOR, CLAUDE, JET, GROK-WEB, ECHO and WISE;  #894 for
+`MA_ZULIP_KEY`).  That listing left no output in this repo, so treat the names
+as unproven until fallback mode proves them:  a seat key that misses Infisical
+is served from its Worker binding, logged and counted on `/admin`, and the
+proof above does not pass until that record exists.  A seat key absent in
+`required` mode leaves only that seat's Zulip tools `not_configured`;  an
+outage or a scope denial fails the request visibly.
+
+**The copies are point-in-time and are NOT a source-rotation sync.**  Rotating
+a source secret does NOT update its Fleet-OPS copy, and re-running the
+population copy script does not either:  it stops (exit 2) at the first
+destination that already holds a different value and never overwrites one.
+After any source rotation, update the Fleet-OPS copy by hand to the rotated
+value;  a re-run then reports it in sync, and the Worker's read cache picks the
+new value up within its TTL.  Secret references were rejected for this:
+cross-project references are unsupported, and same-project references would
+force the scoped token to read source paths outside its grant.
+
 ## Step 0:  Preflight
 
 ```bash
@@ -40,9 +108,29 @@ python3 -I install_seat_key.py JET                 # checks only
 python3 -I install_seat_key.py JET --apply         # wrangler secret put ZULIP_KEY_JET, value on stdin
 python3 -I install_seat_key.py ECHO --apply        # ZULIP_KEY_ECHO
 python3 -I install_seat_key.py WISE --apply        # ZULIP_KEY_WISE, from Infisical's ZULIP_WISE pair
+python3 -I install_seat_key.py JET-CHAT --apply    # ZULIP_KEY_JET_CHAT, from the same ZULIP_JET pair (one bot, two seats)
 ```
 
 Every seat's key comes from Infisical;  `--zuliprc` is gone (AFC-347).  WISE's Worker names are `ZULIP_KEY_WISE` and `ZULIP_EMAIL_WISE` since AFC-347.  Before that the Worker read `ZULIP_KEY_INSTINCT`, installed from Infisical's old `ZULIP_INSTINCT` pair, which Zulip now refuses, so every WISE call answered `not_authorized`.  Delete the old secret once WISE is verified (`wrangler secret delete ZULIP_KEY_INSTINCT`, with Step 1's credentials).
+
+## Step 2a:  The Jet split rolls out without a gap
+
+The old JET login must not lose its tools before the new JET-CHAT login works.  The events-only set is therefore a Worker var (`EVENTS_ONLY_SEATS`), not a source edit:
+
+1. Deploy this change with JET-CHAT configured as deploy-time var overrides, never committed (the pinning tests depend on that absence):  `HOSTED_SEATS` gains JET-CHAT, `ZULIP_EMAIL_JET_CHAT` is set to the shared bot's address, and `SEATS` is the committed registry **plus** a JET-CHAT entry carrying its own captured connector pair (`redirect_uris` and `cimd_client_ids`).  The SEATS override is required, not optional:  a redirect URI binds to exactly one seat (`config.test.mjs` pins the committed ChatGPT redirect to JET), so without a JET-CHAT entry no consent can ever bind to the seat and step 2 cannot succeed.  `--var` replaces a whole var, so pass the full SEATS JSON, not a fragment:
+
+   ```bash
+   WRANGLER_SEND_METRICS=false npx --no-install wrangler deploy \
+     --var 'HOSTED_SEATS:JET,JET-CHAT,GROK-WEB,ECHO,WISE,CURSOR,CLAUDE' \
+     --var 'ZULIP_EMAIL_JET_CHAT:<shared bot address>' \
+     --var "SEATS:$(python3 -c 'import json,sys; c=json.load(open("wrangler.jsonc")); c["vars"]["SEATS"]["JET-CHAT"]={"redirect_uris":["<captured JET-CHAT redirect>"],"cimd_client_ids":["<captured JET-CHAT CIMD client id>"]}; print(json.dumps(c["vars"]["SEATS"]))')"
+   ```
+
+   The seats.js staging default is empty, so this deploy restricts nothing and the old login is untouched.
+2. Arm JET-CHAT, connect the new login, approve its consent and verify it end to end.
+3. Only then flip the old login: add `"EVENTS_ONLY_SEATS": "JET"` to `vars` in its own reviewed commit and redeploy.  The suites pin both states, so the flip commit is exactly two lines:  the var, and the production-default assertion in `test/jet-wake-split.test.mjs` changing its expected `eventsOnlySeats` from `[]` to `["JET"]` (the `testEnv({ EVENTS_ONLY_SEATS: "JET" })` pin already covers the flipped behavior).  A var-only flip fails CI by design.
+
+Every run also pins the bot owner:  `users/me`'s `bot_owner_id` must equal `ZULIP_OWNER_USER_ID`, resolved through `handoff()` (environment first, then `fleet-secrets get`, which reads Fleet-OPS prod root).  The pin fails closed:  without it the script exits before any check output, for every seat.  The value is the realm owner's Zulip user id (the same id `wrangler.jsonc` pins as `OWNER_USER_ID`);  each hosted bot's `bot_owner_id` equals it.  Seeding it at Fleet-OPS prod root is a direct Infisical write, owner-gated:  `fleet-secrets set` refuses every name outside its `/linear` CACHE_* allowlist (exit 2 before auth, INFISICAL.md), and widening that list is a reviewed change.  Until the owner seeds it, export it for the run:  `ZULIP_OWNER_USER_ID=<realm owner id> python3 -I install_seat_key.py <SEAT> --apply`.
 
 For each seat the script reads `ZULIP_<SEAT>_EMAIL` and `ZULIP_<SEAT>_API_KEY` (`ZULIP_GROK_WEB_*`, `ZULIP_JET_*`, `ZULIP_CLAUDE_*`) from Infisical (project "AI Fleet Coordinator", `prod`, `/zulip`) through the INFISICAL_AUTOMATION identity, and refuses unless the seat is in `HOSTED_SEATS`, the email equals the seat's configured Worker email binding (`ZULIP_EMAIL_<SEAT>` for every seat except CLAUDE, which uses the canonical `ZULIP_CLAUDE_EMAIL`), and Zulip's `users/me` for the key is that bot, a bot, and a member (role 400).  The value goes to wrangler on stdin and is never printed, logged or written to a file.  `wrangler secret put` deploys a new version at once.
 

@@ -1006,7 +1006,7 @@ class RegistryTests(unittest.TestCase):
         implemented = default_registry().implemented()
         expected = tuple(sorted(check.value for check in CheckType))
         self.assertEqual(implemented, expected)
-        self.assertEqual(len(implemented), 9)
+        self.assertEqual(len(implemented), 12)
 
 
 class DocumentReaderTests(TempHome):

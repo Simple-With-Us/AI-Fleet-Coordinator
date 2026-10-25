@@ -1798,6 +1798,7 @@ class PrivateInventoryTests(unittest.TestCase):
         "docs/rollouts/2026-09-01-dsh-tailscale-shellular-thinking.md": "history: a rollout record",
         "docs/rollouts/2026-09-02-fleet-rag-memory-platform.md": "history: a rollout record",
         "scripts/agent_sync/tests/test_wake_alerter.py": "AFC-505: a fixture that names the address it alerts on",
+        "scripts/fleet_config/tests/test_compliance.py": "AFC-400: a fixture for the internal address shape the rule looks for",
         "scripts/agent_sync/wake_alerter.py": "AFC-505: a live script that reads the address it alerts on",
         "scripts/fleet-recall-service/.env.example": "AFC-505: the service example names the address it points at",
         "scripts/fleet-recall-service/README.md": "AFC-505: the service readme names the address it points at",

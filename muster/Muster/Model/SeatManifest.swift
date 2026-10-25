@@ -19,6 +19,14 @@ struct SeatManifest: Decodable {
     let schemaVersion: Int
     let seats: [String: SeatManifestEntry]
 
+    /// The fleet-wide compliance rules,  when the manifest declares them.
+    ///
+    /// The key is additive and optional (AFC-400):  a manifest from before the
+    /// compliance family has none,  and this app reads that manifest unchanged.  The
+    /// rules are decoded here so the model knows the family exists,  and the grid
+    /// column for them lands in a later phase.
+    let complianceRules: [ComplianceRule]?
+
     /// The manifest,  if it is a version this app reads.
     static func read(at url: URL) throws -> SeatManifest {
         let data = try Data(contentsOf: url)
@@ -84,6 +92,25 @@ struct ManifestCover: Decodable {
     let platforms: [String]
 }
 
+/// One fleet-wide rule, as the manifest declares it.
+///
+/// A compliance rule is about the fleet rather than about one seat's config surface, so
+/// it names the owner seat that answers for it, the hosts it is about, and whether the
+/// engine can run it yet.
+struct ComplianceRule: Decodable {
+    let id: String
+    /// The seat that answers for this rule's drift.
+    let ownerSeat: String?
+    /// The hosts the rule is about.
+    let scope: [String]?
+    /// Whether the engine has a check for this rule's check type.
+    let implemented: Bool?
+    /// Why the rule cannot run yet, when it cannot.
+    let implementationReason: String?
+    /// What the rule checks, and where.
+    let check: ManifestRule.ManifestCheck?
+}
+
 extension SeatManifest {
     /// The reason this seat and kind are covered by an explicit not-applicable entry.
     ///
@@ -104,6 +131,19 @@ extension SeatManifest {
     func rules(seat: String, kind: ConfigKind) -> [ManifestRule] {
         guard let entry = seats[seat] else { return [] }
         return entry.rules.filter { $0.kind == kind.rawValue }
+    }
+
+    /// The fleet-wide rules the manifest declares,  in manifest order.
+    var allComplianceRules: [ComplianceRule] {
+        complianceRules ?? []
+    }
+
+    /// The fleet-wide rules the engine cannot run yet.
+    ///
+    /// These are the gaps the registry is honest about, and the panel will show them
+    /// rather than leave the fleet's own missing checks invisible.
+    var complianceRulesNotImplemented: [ComplianceRule] {
+        allComplianceRules.filter { $0.implemented == false }
     }
 
     /// The artifact the manifest says a seat and kind live in.

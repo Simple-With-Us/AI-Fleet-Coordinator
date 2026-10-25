@@ -212,6 +212,18 @@ class GetTests(Base):
         self.assertEqual(self.call("get", "ALPHA", "--path", "../x")[0], 2)
         self.assertEqual(w.calls, [])
 
+    def test_a_path_with_a_trailing_newline_is_refused_before_any_fetch(self):
+        # The whole path must match:  `$` also matches before a final newline,
+        # so a bare re.match would pass "/github-apps\n" on to the export as a
+        # folder of its own.
+        w = self.use(World())
+        self.assertEqual(self.call("get", "ALPHA", "--path", "/github-apps\n")[0], 2)
+        self.assertEqual(self.call("names", "--path=/x\n")[0], 2)
+        self.assertEqual(w.calls, [])
+        with self.assertRaises(core.UsageError):
+            core.check_path("/github-apps\n")
+        self.assertEqual(core.check_path("/github-apps"), "/github-apps")
+
 
 class UnresolvedReferenceTests(Base):
     def test_unresolved_reference_fails_closed_naming_the_key(self):

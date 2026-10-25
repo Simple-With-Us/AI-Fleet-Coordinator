@@ -37,6 +37,8 @@ Runs on the Mac's /usr/bin/python3 (3.9): stdlib only, no 3.10+ syntax.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import hashlib
 import json
 import os
 import queue
@@ -47,6 +49,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 # The secret scanner lives in the managed agent-sync runtime, which is a
@@ -88,6 +91,65 @@ MAX_REPLY_ATTEMPTS = 3
 # initialize.  On a loaded Mac that handshake is slow, and a tight timeout
 # turns a working seat into "could not answer" (AFC-417).
 ACP_HANDSHAKE_TIMEOUT = 300
+
+# The owner's marker for "do not wake the seat for this one".  A message whose
+# very first character is the eyes emoji is read and dropped:  no turn, no
+# reply, no record of it.  The owner asked for it on Oct 22, 2026;  Jet's
+# WhatsApp bridge takes the same marker.
+SILENT_MARKER = "\U0001f440"
+
+# The Operator (the agent-sync listener) can put a message into the Lark chat.
+# It drops a JSON file into the signal directory and the bridge picks it up,
+# sends it to Lark as the bot, and runs the seat turn on it, so the owner gets
+# the signal and the answer in one place.  The bridge is the only process that
+# holds the Lark bot identity, so nothing else may write into the chat.
+SIGNAL_DIRNAME = "signal"
+SIGNAL_SUFFIX = ".json"
+# The filed signals the done directory keeps.  A long-lived installation would
+# otherwise keep every signal it ever handled, and the disk use would grow
+# without bound.
+SIGNAL_DONE_WINDOW = 200
+# A signal that keeps failing is filed rather than retried forever.
+MAX_SIGNAL_ATTEMPTS = 5
+# Seconds;  the wait between a signal's attempts doubles from here.
+SIGNAL_RETRY_BASE = 5
+# Seconds;  the longest wait a retry-after value in the CLI's error can ask for.
+# A malformed value must not park a signal for hours.
+SIGNAL_RETRY_AFTER_MAX = 600
+# A signal is not the owner's own message, so it carries its own sender id and
+# the seat inbox records the exchange as the Operator's.
+OPERATOR_SENDER = "operator"
+
+# The refusal code for a credential-shaped text.  It names the field and
+# nothing else:  the text is the thing being kept out of the chat, the disk
+# and the log, so it is never echoed with the code.
+SECRET_IN_TEXT = "secret_in_text"
+
+# The fields of a third-party error that may be written down.  The raw text of
+# a CLI error can carry a response body, a request payload or an
+# authorization header, and the detail of a signal is persisted, so every
+# field that survives is a scalar from this list and is length-capped.
+_ERROR_STATUS_RE = re.compile(r"\b([1-5][0-9]{2})\b")
+_ERROR_CODE_RE = re.compile(
+    r"\"(?:error_)?code\"\s*:\s*\"?([A-Za-z0-9_.:-]{1,32})\"?", re.IGNORECASE
+)
+_ERROR_REQUEST_ID_RE = re.compile(
+    r"\"(?:request_?id|log_?id|x-tt-logid)\"\s*:\s*\"?([A-Za-z0-9_-]{1,64})\"?",
+    re.IGNORECASE,
+)
+# The wait a rate limit asked for, in seconds.  The bridge runs lark-cli and
+# sees only its exit status and its stderr, never the HTTP response, so a wait
+# the server sent in a header (Retry-After, or a rate-limit reset header such
+# as x-ogw-ratelimit-reset) reaches it only when the CLI writes the value into
+# its error text.  Both are a relative wait in seconds (Lark documents
+# x-ogw-ratelimit-reset as the seconds until the window resets).  A long digit
+# run is still read, and retry_after_from caps it at SIGNAL_RETRY_AFTER_MAX, so
+# a server that asks for a very long wait gets the longest one, not the 5 s
+# local backoff.
+_ERROR_RETRY_AFTER_RE = re.compile(
+    r"(?:retry[-_ ]?after|x-ogw-ratelimit-reset)\"?\s*[:=]\s*\"?([0-9]{1,12})(?![0-9])",
+    re.IGNORECASE,
+)
 
 # The owner's house rule: a visibly wider gap between sentences, after . ! and ?
 # only, never after a colon, semicolon, comma or dash.  Lark renders a plain
@@ -166,16 +228,23 @@ class DeliveryError(Exception):
     already has.
     """
 
-    def __init__(self, outcome, detail):
+    def __init__(self, outcome, detail, retry_after=None):
         super().__init__(detail)
         self.outcome = outcome
         self.detail = detail
+        # Seconds the server asked the caller to wait, when the error said.
+        self.retry_after = retry_after
 
 
 # Durable per-message delivery states.  "pending" means claimed but not yet
 # delivered; "ok" is a delivered reply; "refused" is a definite refusal that
 # will not improve; "unknown" is a write whose outcome we cannot establish.
 DELIVERY_STATES = ("pending", "ok", "refused", "unknown")
+
+# How long a peer signal waits behind the owner's own turns before it is
+# served next.  The owner's message goes first, because the owner is the one
+# waiting, but the Operator's signal is never starved by a busy owner.
+PEER_TURN_MAX_WAIT = 60.0
 
 
 def run(command, stdin_text=None, timeout=120, env=None):
@@ -212,6 +281,227 @@ def lark_env():
     if os.path.isdir(prefix):
         env["PATH"] = prefix + os.pathsep + env.get("PATH", "")
     return env
+
+
+def _message_id_from(output):
+    """The message id in a lark-cli send answer, or None.
+
+    lark-cli answers with one JSON object holding message_id, chat_id and
+    create_time.  A shape this bridge does not know is a missing id, not a
+    guess:  the id is what the reply hangs on, and a wrong one posts the
+    answer into the wrong place.
+    """
+    try:
+        data = json.loads(output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    for candidate in (data, data.get("data") if isinstance(data.get("data"), dict) else {}):
+        for key in ("message_id", "messageId"):
+            value = candidate.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _signal_key(signal_id):
+    """The idempotency key for one signal.
+
+    lark-cli takes at most 50 characters, and the key must survive a restart
+    unchanged, so it is built from the signal's own id.  An id that has to be
+    changed keeps a digest of the original, so two ids that differ only in
+    punctuation cannot end up sharing one key and one of the signals being
+    swallowed by Lark.
+    """
+    raw = signal_id or ""
+    safe = re.sub(r"[^A-Za-z0-9_-]", "-", raw)
+    if safe != raw or len(safe) > 50:
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+        safe = (safe[: 50 - len(digest) - 1] + "-" + digest).strip("-")
+    return safe or "signal"
+
+
+def safe_error_detail(prefix, text):
+    """A normalized error name plus the allow-listed fields of the error.
+
+    Only the name of the failure and a status, a code or a request id
+    survive.  Everything else in the error text is dropped, because the
+    detail of a delivery is written to the done directory and read by
+    whoever opens it, and a CLI error can carry a response body, a request
+    payload or an authorization header.
+    """
+    parts = [prefix]
+    for name, pattern in (
+        ("status", _ERROR_STATUS_RE),
+        ("code", _ERROR_CODE_RE),
+        ("request_id", _ERROR_REQUEST_ID_RE),
+        ("retry_after", _ERROR_RETRY_AFTER_RE),
+    ):
+        found = pattern.search(text or "")
+        if found:
+            parts.append(f"{name}={found.group(1)}")
+    return " ".join(parts)
+
+
+def retry_after_from(text):
+    """The wait in seconds a rate limit asked for, capped, or None.
+
+    Only a whole number of seconds is read.  The date form of Retry-After
+    is not, and a value that is missing or not read leaves the local
+    backoff in charge.
+    """
+    found = _ERROR_RETRY_AFTER_RE.search(text or "")
+    if not found:
+        return None
+    return min(int(found.group(1)), SIGNAL_RETRY_AFTER_MAX)
+
+
+class TurnQueue:
+    """Pending turns, with the owner's own message ahead of a peer's.
+
+    The owner's message in a chat is the thing the owner is waiting for, so
+    it is served before a peer signal for the same chat.  A peer is never
+    starved:  once it has waited PEER_TURN_MAX_WAIT seconds it is served
+    even while owners keep arriving, because a signal that never lands is
+    worse than one that arrives late.
+
+    The candidates of one chat keep their own order, so two messages of the
+    same chat are answered in the order they were written.
+    """
+
+    def __init__(self, owner_senders=(), max_peer_wait=PEER_TURN_MAX_WAIT):
+        self._lock = threading.Condition()
+        self._owner_senders = set(owner_senders or ())
+        self._max_peer_wait = max_peer_wait
+        # chat id -> [owner candidates, peer candidates]
+        self._chats = {}
+        self._chat_order = deque()
+        self._unfinished = 0
+
+    def _is_peer(self, sender_id):
+        """A peer is the Operator's signal, or anything that is not the owner."""
+        return sender_id == OPERATOR_SENDER or sender_id not in self._owner_senders
+
+    def put(self, item):
+        """Queue one turn:  a (message id, chat id, text, sender, attempt) tuple."""
+        slot = 1 if self._is_peer(item[3]) else 0
+        chat_id = item[1]
+        with self._lock:
+            slots = self._chats.get(chat_id)
+            if slots is None:
+                slots = [deque(), deque()]
+                self._chats[chat_id] = slots
+                self._chat_order.append(chat_id)
+            slots[slot].append((time.monotonic(), item))
+            self._unfinished += 1
+            self._lock.notify_all()
+
+    def task_done(self):
+        with self._lock:
+            if self._unfinished <= 0:
+                raise ValueError("task_done() called too many times")
+            self._unfinished -= 1
+
+    def qsize(self):
+        with self._lock:
+            return sum(len(slots[0]) + len(slots[1]) for slots in self._chats.values())
+
+    def empty(self):
+        with self._lock:
+            return not any(slots[0] or slots[1] for slots in self._chats.values())
+
+    def _select(self):
+        """The next turn to serve, or None when there is nothing to serve.
+
+        A peer that has waited long enough goes first, because a signal
+        that never lands is worse than one that arrives late.  Otherwise
+        the owner's own message goes first, and the peers wait for it.
+        """
+        now = time.monotonic()
+        oldest_peer = None
+        overdue_peer = None
+        for chat_id in self._chat_order:
+            slots = self._chats.get(chat_id)
+            if slots is None or not slots[1]:
+                continue
+            enqueued = slots[1][0][0]
+            if oldest_peer is None or enqueued < oldest_peer[0]:
+                oldest_peer = (enqueued, chat_id)
+            if now - enqueued >= self._max_peer_wait:
+                if overdue_peer is None or enqueued < overdue_peer[0]:
+                    overdue_peer = (enqueued, chat_id)
+        if overdue_peer is not None:
+            return self._take(overdue_peer[1], 1)
+        for chat_id in self._chat_order:
+            slots = self._chats.get(chat_id)
+            if slots is not None and slots[0]:
+                return self._take(chat_id, 0)
+        if oldest_peer is not None:
+            return self._take(oldest_peer[1], 1)
+        return None
+
+    def _take(self, chat_id, slot):
+        slots = self._chats[chat_id]
+        _, item = slots[slot].popleft()
+        if not slots[0] and not slots[1]:
+            self._chat_order.remove(chat_id)
+            del self._chats[chat_id]
+        return item
+
+    def get(self, timeout=None):
+        """The next turn, waiting up to `timeout` seconds for one to arrive."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._lock:
+            while True:
+                item = self._select()
+                if item is not None:
+                    return item
+                if deadline is None:
+                    self._lock.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise queue.Empty
+                self._lock.wait(remaining)
+
+    def get_nowait(self):
+        with self._lock:
+            item = self._select()
+            if item is None:
+                raise queue.Empty
+            return item
+
+
+def _write_json_atomic(path, payload):
+    """Write `payload` to `path` atomically.
+
+    A temp file in the same directory, fsynced, renamed over the target, and
+    the directory fsynced.  A crash leaves either the old file or the new one
+    and never a torn one, so a record that is read later is always whole.
+
+    The temp file is named with a suffix the signal watcher does not match,
+    because a temp file left behind by a crash between the two writes would
+    otherwise be picked up as a signal and replayed as a second one.
+    """
+    path = str(path)
+    directory = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(prefix=".tmp-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    dir_fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 class LarkEventReader:
@@ -587,7 +877,7 @@ class Bridge:
         self.env = lark_env()
         self.sessions = {}
         self.sessions_lock = threading.Lock()
-        self.turns = queue.Queue()
+        self.turns = TurnQueue(getattr(args, "allowed_sender", None))
         # message_id -> delivery state.  A plain dict keeps insertion order,
         # which is what the dedup window needs: ids are opaque strings, so
         # sorting them evicts by spelling rather than by age.
@@ -601,6 +891,25 @@ class Bridge:
             raise ValueError("refusing a symlinked state directory: %s" % self.state_dir)
         self.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.state_file = self.state_dir / "state.json"
+        self.signal_dir = self.state_dir / SIGNAL_DIRNAME
+        self.signal_done_dir = self.signal_dir / "done"
+        for path in (self.signal_dir, self.signal_done_dir):
+            if path.is_symlink():
+                raise ValueError("refusing a symlinked signal directory: %s" % path)
+            # No parents:  the state directory above already exists, and a
+            # permissive parent would put the signals somewhere other eyes
+            # can read.
+            path.mkdir(mode=0o700, exist_ok=True)
+            with contextlib.suppress(OSError):
+                os.chmod(str(path), 0o700)
+        # Signal file name -> (attempts, next attempt).  The signal file holds
+        # both, but a write of it can fail, and the count on the disk would
+        # then stay where it was:  the signal would be tried again on every
+        # pass, and the attempt budget would never run out.
+        self.signal_retry = {}
+        # The chat the owner last wrote in.  A signal that names no chat of its
+        # own goes there, so the Operator does not have to know the chat id.
+        self.last_chat_id = None
         self._load_state()
         self.stopping = threading.Event()
 
@@ -639,6 +948,10 @@ class Bridge:
                 "treat corrupt state as authoritative" % (self.state_file, exc)
             )
         self.rows = self._parse_state(data)
+        last_chat = data.get("last_chat_id")
+        if last_chat is not None and not isinstance(last_chat, str):
+            raise RuntimeError("Lark bridge state last_chat_id must be a string")
+        self.last_chat_id = last_chat
         jobs = data.get("jobs", {})
         if not isinstance(jobs, dict):
             raise RuntimeError("invalid durable job inventory")
@@ -665,7 +978,10 @@ class Bridge:
             if (
                 self.rows.get(message_id) == "pending"
                 and job["stage"] in ("queued", "reply")
-                and job["sender_id"] in self.args.allowed_sender
+                and (
+                    job["sender_id"] in self.args.allowed_sender
+                    or job["sender_id"] == OPERATOR_SENDER
+                )
                 and job.get("cwd") == self.args.cwd
             ):
                 job["attempt"] = 0  # A new process gets a bounded reply-only retry budget.
@@ -704,6 +1020,7 @@ class Bridge:
                     json.dump(
                         {
                             "messages": dict(kept),
+                            "last_chat_id": getattr(self, "last_chat_id", None),
                             "jobs": {
                                 key: job
                                 for key, job in jobs.items()
@@ -805,6 +1122,11 @@ class Bridge:
             return "outcome_unknown"
         if re.search(r"\b429\b", detail):
             return "retryable"
+        if re.search(r"\binvalid_grant\b", detail):
+            # A token grant that was refused is a definite auth failure, with
+            # or without a status in the text:  nothing was sent, and no
+            # retry works until the credential is fixed.
+            return "terminal"
         if re.search(r"\b4\d\d\b", detail):
             return "terminal"
         if "could not start" in detail:
@@ -844,7 +1166,7 @@ class Bridge:
         except CommandError as exc:
             raise DeliveryError(self._classify_reply_failure(str(exc)), str(exc))
 
-    def _mirror(self, chat_id, session_id, question, answer, failed=False):
+    def _mirror(self, chat_id, session_id, question, answer, failed=False, sender_id=None):
         """Post the Lark exchange to Zulip, where the owner is watching.
 
         Lark is a second surface, not a second seat: the answer comes from
@@ -856,10 +1178,13 @@ class Bridge:
             return
         topic = "%s %s" % (ZULIP_TOPIC_PREFIX, chat_id[-8:])
         kind = "failed turn" if failed else "answered"
+        # The Operator's signal is not the owner's own message, and the post
+        # says who sent it.
+        author = "Operator" if sender_id == OPERATOR_SENDER else "Owner"
         body = sentence_gap(
             "Lark chat %s (%s)  |  MiniMax session %s  |  %s\n\n"
-            "Owner: %s\n\nMM: %s"
-            % (chat_id, chat_id, session_id or "none", kind, question, answer),
+            "%s: %s\n\nMM: %s"
+            % (chat_id, chat_id, session_id or "none", kind, author, question, answer),
             gap=ZULIP_SENTENCE_GAP,
         )
         env = dict(self.env)
@@ -899,21 +1224,26 @@ class Bridge:
         try:
             paths = L.SeatPaths(self.args.agent_sync_root, self.args.seat)
             now = time.time()
+            # The owner flag and the wake flags follow who sent it:  an
+            # Operator signal is not the owner asking, so it must not wake the
+            # seat as if it were.
+            owner = sender_id != OPERATOR_SENDER
+            author = "Jay" if owner else "Operator"
             row = {
                 "channel": "lark",
                 "classes": ["direct"],
-                "content": "Jay: %s\n\nMM: %s\n\n(MiniMax session %s)"
-                % (question, answer, session_id or "unknown"),
+                "content": "%s: %s\n\nMM: %s\n\n(MiniMax session %s)"
+                % (author, question, answer, session_id or "unknown"),
                 "delivered_to": None,
                 "flags": ["mentioned"],
                 "id": "lark:%s" % message_id,
                 "is_bot": False,
                 "kind": "message",
                 "muse_bridge": False,
-                "owner": True,
+                "owner": owner,
                 "owner_api": False,
                 "recipients": [],
-                "sender": "Jay Wedgeworth" if sender_id is None else sender_id,
+                "sender": "Jay Wedgeworth" if owner else sender_id,
                 "sender_email": "",
                 "sender_id": sender_id,
                 "stream_id": 0,
@@ -921,8 +1251,8 @@ class Bridge:
                 "topic": "%s %s" % (ZULIP_TOPIC_PREFIX, chat_id[-8:]),
                 "ts": int(now),
                 "type": "stream",
-                "wake_owner": True,
-                "wake_worthy": True,
+                "wake_owner": owner,
+                "wake_worthy": owner,
             }
             with L.locked(paths.seat_inbox_meta):
                 meta = L.read_json(paths.seat_inbox_meta)
@@ -935,6 +1265,291 @@ class Bridge:
             # The seat inbox is a convenience, not the reply path: a failure
             # here must never cost the answer.
             log("could not record the Lark exchange in the seat inbox: %s" % exc)
+
+    def _post_signal(self, chat_id, text, signal_id):
+        """Send the signal into the Lark chat and return the message id.
+
+        The outcome is raised, not returned:  a caller that cannot tell a
+        definite refusal from an uncertain one would retry a write that may
+        already be on the issue, and the Operator's message would be in the
+        chat twice.  The idempotency key is the signal's own id, so a bridge
+        that dies after Lark accepted the message does not post it twice when
+        it comes back.
+        """
+        command = [
+            self.args.lark_cli,
+            "im",
+            "+messages-send",
+            "--as",
+            "bot",
+            "--chat-id=" + chat_id,
+            "--text=" + text,
+            "--idempotency-key=" + _signal_key(signal_id),
+        ]
+        try:
+            output = run(command, timeout=REPLY_TIMEOUT, env=self.env)
+        except CommandError as exc:
+            # The raw text of the error can carry a response body, a request
+            # payload or an authorization header, and this detail is written
+            # to the done directory, so only the name of the failure and the
+            # allow-listed fields of it survive.
+            raise DeliveryError(
+                self._classify_reply_failure(str(exc)),
+                safe_error_detail("command_error", str(exc)),
+                retry_after=retry_after_from(str(exc)),
+            ) from exc
+        message_id = _message_id_from(output)
+        if not message_id:
+            # The message may be on the issue without an id to answer on, so
+            # the outcome is uncertain rather than a failure to send.
+            raise DeliveryError("outcome_unknown", "lark accepted the signal without a message id")
+        return message_id
+
+    def _read_signal(self, path):
+        """The signal's own record with its steps, and why it was refused.
+
+        The file is the done-set:  it records the steps that are already
+        done, so a retry after a crash neither sends the message again nor
+        queues the turn again.  The reason is None when the record was
+        read, and otherwise names the one thing that made it unusable, so
+        the filed outcome says why the signal was refused.
+        """
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            log("could not read a signal file: %s" % type(exc).__name__)
+            return None, "unreadable"
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            return None, "invalid_json"
+        if not isinstance(record, dict):
+            return None, "not_an_object"
+        text = record.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return None, "empty_text"
+        if scan_secret(text):
+            # The text is the thing being kept out of the chat, so it must
+            # not be named in the log either.
+            log(f"signal refused: code={SECRET_IN_TEXT} field=text")
+            return None, SECRET_IN_TEXT
+        # The shape of every field read from an external file is checked
+        # before any of it is used.  A malformed "queued" of "false" is a
+        # truthy string, and a truthy "queued" would suppress the queueing
+        # and report a success that never happened.
+        queued = record.get("queued")
+        if queued is not None and not isinstance(queued, bool):
+            log("signal refused: code=invalid_field field=queued")
+            return None, "invalid_field:queued"
+        sent = record.get("sent")
+        if sent is not None and (not isinstance(sent, str) or not sent):
+            log("signal refused: code=invalid_field field=sent")
+            return None, "invalid_field:sent"
+        record["text"] = text.strip()
+        signal_id = record.get("signal_id")
+        if not isinstance(signal_id, str) or not signal_id:
+            record["signal_id"] = path.stem
+        return record, None
+
+    def _handle_signal(self, path):
+        """Deliver one Operator signal into the Lark chat and wake the seat for it.
+
+        Exactly one outcome is written for every signal, in a finally block,
+        so a signal never ends with no record at all.  A signal that cannot be
+        delivered yet stays where the watcher will find it again, with the
+        attempt count and the wait before the next try.
+        """
+        outcome = "unknown"
+        detail = "no_outcome"
+        record = None
+        try:
+            record, reason = self._read_signal(path)
+            if record is None:
+                outcome, detail = "refused", reason
+                return
+            attempts = record.get("attempts")
+            attempts = attempts if isinstance(attempts, int) and attempts >= 0 else 0
+            next_attempt = float(record.get("next_attempt") or 0)
+            remembered = self.signal_retry.get(path.name)
+            if remembered is not None and remembered[2] == record["signal_id"]:
+                # A pending write that failed left an older count in the
+                # file, so the count in memory is the true one, and the next
+                # write of the record carries it.  A count belongs to one
+                # signal id:  a later file of the same name starts clean.
+                attempts = max(attempts, remembered[0])
+                next_attempt = max(next_attempt, remembered[1])
+                record["attempts"] = attempts
+                record["next_attempt"] = next_attempt
+            if time.time() < next_attempt:
+                # The wait before the next try has not passed yet.  The
+                # signal is not finished, so it stays pending and the
+                # watcher finds it again when the wait has passed.
+                outcome, detail = "pending", "retry_not_due"
+                return
+            chat_id = record.get("chat_id") or self.last_chat_id
+            if not isinstance(chat_id, str) or not chat_id:
+                outcome, detail = "refused", "no_chat"
+                return
+            message_id = record.get("sent")
+            if not isinstance(message_id, str) or not message_id:
+                if attempts >= MAX_SIGNAL_ATTEMPTS:
+                    # The budget was spent on an earlier pass whose filing did
+                    # not reach the disk.  Sending again would spend more.
+                    outcome, detail = "unknown", "retries exhausted"
+                    return
+                try:
+                    message_id = self._post_signal(chat_id, record["text"], record["signal_id"])
+                except DeliveryError as exc:
+                    if exc.outcome == "retryable":
+                        attempts += 1
+                        record["attempts"] = attempts
+                        if attempts >= MAX_SIGNAL_ATTEMPTS:
+                            # Remembered too, so a filing that fails does not
+                            # put the signal back on a fresh budget.
+                            self.signal_retry[path.name] = (
+                                attempts,
+                                next_attempt,
+                                record["signal_id"],
+                            )
+                            outcome, detail = "unknown", "retries exhausted: %s" % exc.detail
+                            return
+                        wait = min(SIGNAL_RETRY_BASE * (2 ** (attempts - 1)), 300)
+                        if exc.retry_after:
+                            # The server said how long to wait, and asking
+                            # sooner only spends an attempt on another refusal.
+                            wait = max(wait, exc.retry_after)
+                        next_attempt = time.time() + wait
+                        record["next_attempt"] = next_attempt
+                        # Remembered before the record is written, so a write
+                        # that fails cannot reset the count or the wait.
+                        self.signal_retry[path.name] = (attempts, next_attempt, record["signal_id"])
+                        outcome, detail = "pending", "retryable: %s" % exc.detail
+                        return
+                    if exc.outcome == "terminal":
+                        outcome, detail = "refused", "terminal: %s" % exc.detail
+                        return
+                    outcome, detail = "unknown", "unknown: %s" % exc.detail
+                    return
+                record["sent"] = message_id
+                if not self._write_signal(path, record):
+                    # The message is in the chat but the marker is not on the
+                    # disk, so the record cannot claim it:  a crash here
+                    # would send the message a second time.
+                    outcome, detail = "unknown", "signal_write_failed"
+                    return
+            # The shape of "queued" was checked when the record was read, so
+            # this is exactly "the turn is not queued yet".
+            if record.get("queued") is not True:
+                if not self._queue_turn(message_id, chat_id, record["text"], OPERATOR_SENDER):
+                    outcome, detail = "unknown", "state_unavailable"
+                    return
+                record["queued"] = True
+                if not self._write_signal(path, record):
+                    outcome, detail = "unknown", "signal_write_failed"
+                    return
+            outcome, detail = "ok", message_id
+        except Exception as exc:
+            outcome, detail = "unknown", "unexpected: %s" % type(exc).__name__
+        finally:
+            # Every result goes through the one recorder, so a pending
+            # signal carries its outcome and its detail too.
+            self._record_signal(path, outcome, detail, record)
+
+    def _write_signal(self, path, record):
+        """Write the signal's record back, atomically, so a crash cannot tear it.
+
+        The flag says whether the write reached the disk:  a step that was
+        not written is not done, and a signal that is recorded as sent or
+        queued when it is not would be replayed after a crash.
+        """
+        try:
+            _write_json_atomic(path, record)
+            return True
+        except OSError as exc:
+            log("could not write a signal record: %s" % type(exc).__name__)
+            return False
+
+    def _record_signal(self, path, outcome, detail, record=None):
+        """File one signal with its outcome, and keep the done directory small.
+
+        A terminal signal moves to the done directory and carries the outcome
+        with it;  a pending one stays where the watcher will find it again.
+        The outcome is written atomically, so a crash leaves either the old
+        record or the new one and never a torn one.
+        """
+        payload = dict(record or {})
+        payload["outcome"] = outcome
+        payload["detail"] = detail
+        payload["at"] = time.time()
+        if outcome == "pending":
+            self._write_signal(path, payload)
+            return
+        target = self.signal_done_dir / path.name
+        # The file is scrubbed before it is filed:  a refused signal may
+        # still carry the text that was refused, and moving it into the done
+        # directory first would persist that text under a filed name.
+        try:
+            _write_json_atomic(path, payload)
+        except OSError as exc:
+            log("could not record a signal outcome: %s" % type(exc).__name__)
+            return
+        try:
+            os.replace(str(path), str(target))
+        except OSError as exc:
+            log("could not file a signal: %s" % type(exc).__name__)
+            return
+        # Filed, so the watcher will not see it again.  Until then the count
+        # stays in memory, so a filing that failed is not a fresh budget.
+        self.signal_retry.pop(path.name, None)
+        self._prune_done()
+
+    def _prune_done(self):
+        """Keep the done directory to its newest records.
+
+        A long-lived installation would otherwise keep every signal it ever
+        handled, and the disk use would grow without bound.
+        """
+        try:
+            entries = sorted(self.signal_done_dir.glob("*" + SIGNAL_SUFFIX))
+        except OSError:
+            return
+        for path in entries[:-SIGNAL_DONE_WINDOW]:
+            with contextlib.suppress(OSError):
+                path.unlink()
+
+    def _signal_worker_once(self):
+        """One pass over the signal directory.
+
+        Each file is handled on its own:  one file that raises must not leave
+        the later files of the same pass undelivered.
+        """
+        try:
+            paths = sorted(self.signal_dir.glob("*" + SIGNAL_SUFFIX))
+        except OSError as exc:
+            log("could not read the signal directory: %s" % type(exc).__name__)
+            return
+        # A count is kept only while its file is still waiting:  a file that
+        # was taken away must not hand its count to a later file of that name.
+        present = {path.name for path in paths}
+        for name in [name for name in self.signal_retry if name not in present]:
+            del self.signal_retry[name]
+        for path in paths:
+            if path.name.startswith("."):
+                # A dot-prefixed file is a temporary one, not a signal:  the
+                # atomic write leaves one behind when it is interrupted.
+                continue
+            try:
+                self._handle_signal(path)
+            except Exception as exc:
+                # One signal must not take the watcher down:  the owner would
+                # stop getting signals and nothing would say why.
+                log("signal file %s failed: %s" % (path.name, type(exc).__name__))
+
+    def _signal_worker(self):
+        """Watch the signal directory and deliver what the Operator drops in it."""
+        while not self.stopping.is_set():
+            self._signal_worker_once()
+            self.stopping.wait(1.0)
 
     def _handle(self, event):
         # Every field below is read off a frame the Lark socket delivered, and
@@ -966,6 +1581,17 @@ class Bridge:
         if sender_id not in self.args.allowed_sender:
             log("ignoring message %s from unallowed sender %s" % (message_id, sender_id))
             return
+        # The owner marks a message with the eyes emoji at the very start to
+        # say "do not wake the seat for this one".  The check is on the first
+        # character of the trimmed text and it runs before the message is
+        # claimed, so a marked message never becomes a turn, never gets a
+        # reply, and leaves no delivery row behind.
+        if content.startswith(SILENT_MARKER):
+            log(
+                "ignoring message %s in %s: the silent marker is at the start"
+                % (message_id, chat_id)
+            )
+            return
         if not self._mentioned(event):
             log("ignoring message %s in %s: bot was not mentioned" % (message_id, chat_id))
             return
@@ -974,8 +1600,29 @@ class Bridge:
             # out of the log, so it must not be named here either.
             log("incoming message refused for %s: code=secret field=content" % message_id)
             return
+        # The pointer to the owner's chat moves only when the turn was
+        # claimed:  a redelivered event from an older chat must not send the
+        # next signal into the wrong chat.
+        if self._queue_turn(message_id, chat_id, content, sender_id):
+            self.last_chat_id = chat_id
+            # The pointer is saved with the turn, not after it.  The turn's
+            # own save happens inside the queue, so a crash between the two
+            # left the previous chat in the file and the next signal that
+            # named no chat of its own was sent to that previous chat.
+            if not self._save_state():
+                log("could not persist the owner's chat pointer")
+
+    def _queue_turn(self, message_id, chat_id, content, sender_id):
+        """Put one message on the turn queue and persist the job.
+
+        The durable job is what keeps a restart from replaying the message, so
+        a job that could not be persisted is not answered:  the turn would run
+        with no receipt and the next start would answer it again.  The row is
+        claimed first, because the saved state keeps a job only while its row
+        says pending, so an unclaimed turn would be lost on the next start.
+        """
         if not self._claim(message_id):
-            return
+            return False
         if not hasattr(self, "jobs"):
             self.jobs = {}
         self.jobs[message_id] = {
@@ -989,8 +1636,9 @@ class Bridge:
         if not self._save_state():
             with self.seen_lock:
                 self.active_ids.discard(message_id)
-            return
+            return False
         self.turns.put((message_id, chat_id, content, sender_id, 0))
+        return True
 
     def _mentioned(self, event):
         """In a group chat the bot answers only when it is mentioned.
@@ -1029,7 +1677,7 @@ class Bridge:
             # unwritten -- the next start would answer the same message again.
             retry = False
             try:
-                retry = not self._turn(message_id, chat_id, content, attempt)
+                retry = not self._turn(message_id, chat_id, content, sender_id, attempt)
                 if retry:
                     getattr(self, "jobs", {}).get(message_id, {}).update(attempt=attempt + 1)
                     self.stopping.wait(min(2**attempt, 8))
@@ -1053,7 +1701,7 @@ class Bridge:
                 self.turns.task_done()
                 self._save_state()
 
-    def _turn(self, message_id, chat_id, content, attempt):
+    def _turn(self, message_id, chat_id, content, sender_id, attempt):
         """Run the model once; delivery retries reuse a durable safe reply."""
         jobs = getattr(self, "jobs", {})
         job = jobs.get(message_id)
@@ -1070,7 +1718,7 @@ class Bridge:
         except Exception as exc:
             log("turn failed for %s: %s" % (message_id, exc))
             note = "MM could not answer: %s" % exc
-            self._mirror(chat_id, session_id, content, note, failed=True)
+            self._mirror(chat_id, session_id, content, note, failed=True, sender_id=sender_id)
             done = self._send(message_id, note)
             with self.sessions_lock:
                 broken = self.sessions.pop(chat_id, None)
@@ -1089,8 +1737,19 @@ class Bridge:
         # Name the thread in the chat itself, so the owner can tell which
         # MiniMax session answered even when he only has the Lark window.
         answer = "%s\n\n(MiniMax session %s)" % (answer, session_id or "unknown")
-        self._mirror(chat_id, session_id, content, answer)
-        self._record_in_seat_inbox(chat_id, message_id, session_id, content, answer)
+        self._mirror(chat_id, session_id, content, answer, sender_id=sender_id)
+        # The seat inbox is the queue a wake lands in, so the exchange is
+        # attributed to whoever sent it:  the owner's own message is the
+        # owner's, and the Operator's signal is the Operator's, so a signal
+        # cannot wake the seat as if the owner had asked.
+        self._record_in_seat_inbox(
+            chat_id,
+            message_id,
+            session_id,
+            content,
+            answer,
+            sender_id=sender_id if sender_id == OPERATOR_SENDER else None,
+        )
         return self._send(message_id, answer, attempt)
 
     def _send(self, message_id, text, attempt=0):
@@ -1141,6 +1800,10 @@ class Bridge:
         reader = LarkEventReader(self.args.lark_cli, self.env, self.args.event_log_dir)
         worker = threading.Thread(target=self._worker, daemon=True)
         worker.start()
+        # The Operator's signals arrive as files, not as Lark events, so they
+        # need their own watcher.
+        signal_worker = threading.Thread(target=self._signal_worker, daemon=True)
+        signal_worker.start()
 
         def handle_signal(signum, frame):
             log("signal %s received; shutting down" % signum)
@@ -1168,6 +1831,7 @@ class Bridge:
                     reader.stop()
                 finally:
                     worker.join(timeout=min(self.args.timeout + 130, 300))
+                    signal_worker.join(timeout=5)
                     with self.sessions_lock:
                         sessions = list(self.sessions.values())
                         self.sessions.clear()
@@ -1241,7 +1905,78 @@ def build_parser():
         default=AGENT_SYNC_ROOT,
         help="the agent-sync state root that holds the seat inbox",
     )
+    parser.add_argument(
+        "--signal",
+        dest="signal",
+        default=None,
+        help="deliver this text into the Lark chat through the running bridge, then exit",
+    )
+    parser.add_argument(
+        "--signal-chat-id",
+        dest="signal_chat_id",
+        default=None,
+        help="the chat to signal; the chat the owner last wrote in when it is not given",
+    )
     return parser
+
+
+def signal_out(args):
+    """Hand a signal to the running bridge and exit.
+
+    The bridge is the only process that holds the Lark bot identity, so the
+    Operator leaves the message in the signal directory and the bridge sends
+    it into the chat, wakes the seat for it, and puts the answer back in the
+    same chat.  This process never talks to Lark itself.
+    """
+    text = (args.signal or "").strip()
+    if not text:
+        print("nothing to signal", file=sys.stderr)
+        return 2
+    # The scan runs before the payload is built, so a credential-shaped text
+    # never reaches the disk.  The refusal names the code and the field
+    # only:  the text is the thing being kept out of the chat, the disk and
+    # the log, so it is not echoed.
+    if scan_secret(text):
+        print(f"signal refused: code={SECRET_IN_TEXT} field=text", file=sys.stderr)
+        return 2
+    state_dir = Path(args.state_dir)
+    if state_dir.is_symlink():
+        print("refusing a symlinked state directory: %s" % state_dir, file=sys.stderr)
+        return 2
+    # The same rules as the bridge's own start:  the state directory is
+    # created private, and the signal directory refuses a symlink and is
+    # created without parents, so the Operator's text cannot be carried out of
+    # the private state location or land in a directory other eyes can read.
+    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    signal_dir = state_dir / SIGNAL_DIRNAME
+    if signal_dir.is_symlink():
+        print("refusing a symlinked signal directory: %s" % signal_dir, file=sys.stderr)
+        return 2
+    signal_dir.mkdir(mode=0o700, exist_ok=True)
+    signal_id = "sig-%d-%s" % (int(time.time()), os.urandom(4).hex())
+    payload = {"signal_id": signal_id, "text": text}
+    if args.signal_chat_id:
+        payload["chat_id"] = args.signal_chat_id
+    target = signal_dir / ("%s%s" % (signal_id, SIGNAL_SUFFIX))
+    tmp = signal_dir / (".tmp-%s" % signal_id)
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload))
+        handle.flush()
+        # The bytes have to be on the disk before the name points at them, or
+        # a crash can leave the watcher with a signal file that is half
+        # written and refuse it for good.
+        os.fsync(handle.fileno())
+    os.chmod(str(tmp), 0o600)
+    os.replace(str(tmp), str(target))
+    # The rename is a directory entry:  without this it can still be lost on
+    # a crash, and the Operator's message would never be picked up.
+    dir_fd = os.open(str(signal_dir), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+    print("signal queued: %s" % signal_id)
+    return 0
 
 
 def preview_events(args):
@@ -1277,6 +2012,11 @@ def preview_events(args):
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # The signal path never starts the bridge and never needs the seat's own
+    # tools:  it only leaves a message for the running bridge.
+    if args.signal is not None:
+        return signal_out(args)
 
     for tool, path in (("lark-cli", args.lark_cli), ("mcode", args.mcode)):
         if not os.path.exists(path):

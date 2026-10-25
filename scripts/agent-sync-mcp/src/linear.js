@@ -1,6 +1,7 @@
 import { SEAT_NAME_ALIASES } from "./identity-aliases.js";
 import { LINEAR_MCP_TOOLS, LINEAR_MCP_READ_TOOLS, LINEAR_MCP_WRITE_TOOLS } from "./linear-mcp-specs.js";
 import { LINEAR_NAMED_TOOLS, LINEAR_NAMED_COMMANDS } from "./linear-named-specs.js";
+import { resolveSecret } from "./infisical.js";
 // Linear tools for hosted seats, so a seat with no shell (GROK-WEB first, then
 // ECHO and WISE) works the board as its own bot app and never as Jay.
 // Every rule here is ported from scripts/linear-board/board, which stays the
@@ -51,6 +52,11 @@ export const LINEAR_REMINT_AFTER_S = 28 * 86_400;
 
 export const LINEAR_SECRETS = Object.freeze({
   JET: Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
+  // JET-CHAT is Jet's second login on the SAME Linear app (owner, Oct 23 2026:
+  // one Jet identity, two logins).  Own env names - this table never shares
+  // one - provisioned with the same app's credential values at deploy, the way
+  // SEAT_SECRETS gives the seat its own names for the same bot key.
+  "JET-CHAT": Object.freeze({ clientId: "LINEAR_JET_CHAT_CLIENT_ID", clientSecret: "LINEAR_JET_CHAT_CLIENT_SECRET" }),
   "GROK-WEB": Object.freeze({ clientId: "LINEAR_GROK_WEB_CLIENT_ID", clientSecret: "LINEAR_GROK_WEB_CLIENT_SECRET" }),
   ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
   WISE: Object.freeze({ clientId: "LINEAR_INSTINCT_CLIENT_ID", clientSecret: "LINEAR_INSTINCT_CLIENT_SECRET" }),
@@ -64,13 +70,52 @@ export function linearSecretNames(seat) {
   return Object.hasOwn(LINEAR_SECRETS, canonical) ? LINEAR_SECRETS[canonical] : null;
 }
 
+/** The Fleet-OPS /linear Infisical names for each seat pair (Oct 22 fleet
+ * decision:  the WISE seat's Worker names are LINEAR_INSTINCT_*, its
+ * Infisical names WISE_LINEAR_*).  Names verified against the live folder. */
+export const LINEAR_INFISICAL = Object.freeze({
+  JET: Object.freeze({ clientId: "JET_LINEAR_CLIENT_ID", clientSecret: "JET_LINEAR_CLIENT_SECRET" }),
+  // JET-CHAT is Jet's second login on the same Linear app (LINEAR_SECRETS
+  // above):  its runtime read is Jet's record, never a copy.
+  "JET-CHAT": Object.freeze({ clientId: "JET_LINEAR_CLIENT_ID", clientSecret: "JET_LINEAR_CLIENT_SECRET" }),
+  "GROK-WEB": Object.freeze({ clientId: "GROK_WEB_LINEAR_CLIENT_ID", clientSecret: "GROK_WEB_LINEAR_CLIENT_SECRET" }),
+  ECHO: Object.freeze({ clientId: "ECHO_LINEAR_CLIENT_ID", clientSecret: "ECHO_LINEAR_CLIENT_SECRET" }),
+  WISE: Object.freeze({ clientId: "WISE_LINEAR_CLIENT_ID", clientSecret: "WISE_LINEAR_CLIENT_SECRET" }),
+  CURSOR: Object.freeze({ clientId: "CURSOR_LINEAR_CLIENT_ID", clientSecret: "CURSOR_LINEAR_CLIENT_SECRET" }),
+  CLAUDE: Object.freeze({ clientId: "CLAUDE_LINEAR_CLIENT_ID", clientSecret: "CLAUDE_LINEAR_CLIENT_SECRET" }),
+});
+
+/** Async: the seat's Linear pair resolved through Infisical when INFISICAL_MODE
+ * allows (src/infisical.js), else the legacy Worker bindings.  Null when the
+ * seat has no Linear app.  Prefetch at request entry so the synchronous
+ * configured()/identityStatus contracts keep working. */
+export async function resolveLinearPair(env, seat) {
+  const canonical = seatTagForSeat(seat);
+  const names = Object.hasOwn(LINEAR_SECRETS, canonical) ? LINEAR_SECRETS[canonical] : null;
+  const inf = Object.hasOwn(LINEAR_INFISICAL, canonical) ? LINEAR_INFISICAL[canonical] : null;
+  if (!names || !inf) return null;
+  const [clientId, clientSecret] = await Promise.all([
+    resolveSecret(env, { name: inf.clientId, path: "/linear", envName: names.clientId, optional: true }),
+    resolveSecret(env, { name: inf.clientSecret, path: "/linear", envName: names.clientSecret, optional: true }),
+  ]);
+  return { clientId: clientId.trim(), clientSecret: clientSecret.trim() };
+}
+
+/** Sync: build a client from an already-resolved pair (same null contract as
+ * linearClientFromEnv). */
+export function linearClientFromPair(pair, seat, { gate, fetch: fetchImpl = globalThis.fetch?.bind(globalThis), now = Date.now } = {}) {
+  if (!pair || !pair.clientId || !pair.clientSecret || typeof fetchImpl !== "function" || !gate) return null;
+  return new LinearClient({ seat, clientId: pair.clientId, clientSecret: pair.clientSecret, gate, fetch: fetchImpl, now });
+}
+
 // Seats whose Linear tools are live.  GROK-WEB first (owner 2026-10-11):  it is
 // the seat with no shell and the one that acts as Jay today through its own
 // connector.  A seat missing here answers not_configured even when its
 // credentials are installed, so enabling a seat is a deliberate deploy step.
 // JET, ECHO, WISE and CLAUDE joined on 2026-10-16 (owner), each pair checked
-// first with `board whoami` against its own app.
-export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "ECHO", "WISE", "CLAUDE"]);
+// first with `board whoami` against its own app.  JET-CHAT carries Jet's
+// normal access (owner, Oct 23 2026), so it is enabled with the Jet app.
+export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE"]);
 
 // ---------------------------------------------------------------- ported board rules
 
@@ -152,9 +197,12 @@ export const INPUT_MAX_BYTES = 64 * 1024;
 // other names the owner may give it.  confirmViewer() accepts any of these, or
 // the seat tag, ignoring case, so renaming an app in Linear never breaks its
 // seat (board SEAT_APP_NAMES / SEAT_APP_ALIASES / app_name_ok).  Every name
-// belongs to one seat only.
+// belongs to one seat only - except the deliberate JET/JET-CHAT share:  two
+// logins, one Linear app (owner, Oct 23 2026), and JET itself is wake-only
+// with no tool surface, so no credential can swap unseen.
 export const SEAT_APP_NAMES = Object.freeze({
   JET: "Jet",
+  "JET-CHAT": "Jet",
   "GROK-WEB": "Grok Web",
   ECHO: "Echo (Instinct)",
   WISE: "Wise (Instinct)",
@@ -164,6 +212,7 @@ export const SEAT_APP_NAMES = Object.freeze({
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
+  "JET-CHAT": Object.freeze(["Jet (OpenAI dot)"]),
   "GROK-WEB": Object.freeze(["Grok (Web/iOS)", "Grok Web/iOS"]),
   ECHO: Object.freeze(["Echo"]),
   WISE: Object.freeze(["Wise", "Wise-Instinct", "Echo-Instinct", "Instinct"]),

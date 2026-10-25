@@ -121,6 +121,7 @@ class CliTests(FleetTestCase):
                 "summary",
                 "results",
                 "uncovered",
+                "notImplemented",
             ],
         )
         self.assertEqual(document["schemaVersion"], contract.SCHEMA_VERSION)

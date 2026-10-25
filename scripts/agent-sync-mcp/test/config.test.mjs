@@ -141,8 +141,8 @@ test("config refuses loose or ambiguous allowlists", () => {
     [{ SEATS: seats({ redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }, { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }) }, /two seats/],
     [{ SEATS: seats({ redirect_uris: ["http://127.0.0.1:8737/callback", "http://127.0.0.1:8737/callback"], cimd_client_ids: [] }) }, /twice/],
     [{ SEATS: seats({ redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }, { redirect_uris: [CHATGPT_REDIRECT], cimd_client_ids: [] }) }, /two seats/],
-    [{ SEATS: { CODEX: { redirect_uris: [], cimd_client_ids: [] } } }, /unknown seat/],
-    [{ HOSTED_SEATS: "JET,CODEX" }, /unknown hosted seat/],
+    [{ SEATS: { GEMINI: { redirect_uris: [], cimd_client_ids: [] } } }, /unknown seat/],
+    [{ HOSTED_SEATS: "JET,GEMINI" }, /unknown hosted seat/],
     [{ PUBLIC_HOST: "evil.example" }, /PUBLIC_HOST/],
     [{ SEATS: "{not json" }, /not valid JSON/],
     [{ SEATS: "" }, /not set/],
@@ -220,7 +220,7 @@ test("Cursor binds its CIMD client to its exact Cloud callback", () => {
   assert.deepEqual(cfg.seats.CURSOR.cimdClientIds, ["https://cursor.com/oauth/mcp-client.json"]);
   assert.equal(cfg.redirectOwner.get(callback), "CURSOR");
   assert.equal(cfg.botEmails.CURSOR, "cursor-bot@simplewithus.zulipchat.com");
-  assert.deepEqual(SEAT_SECRETS.CURSOR, { key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR" });
+  assert.deepEqual(SEAT_SECRETS.CURSOR, { key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR", infisical: { name: "CURSOR_ZULIP_KEY", path: "/zulip" } });
   for (const wrong of ["https://cursor.com/agents/mcp/oauth/callback", `${callback}/`, "http://localhost:8788/callback"]) {
     assert.equal(cfg.redirectSeats.has(wrong), false);
   }

@@ -13,11 +13,11 @@ const CLIENT = "AbCdEf1234567890";
 const cfg = loadConfig(testEnv({ HOSTED_SEATS: "JET,CLAUDE" }));
 const client = { clientId: CLIENT, clientName: "Claude (manual form, CLAUDE)" };
 
-test("hosted CLAUDE has an independent bot mapping and exact hosted callback; CODEX remains unenabled", () => {
+test("hosted CLAUDE has an independent bot mapping and exact hosted callback", () => {
   const prod = loadConfig(wranglerConfig().vars);
   assert.ok(prod.hostedSeats.includes("CLAUDE"));
   assert.equal(prod.botEmails.CLAUDE, "claude-bot@simplewithus.zulipchat.com");
-  assert.deepEqual(SEAT_SECRETS.CLAUDE, { key: "ZULIP_CLAUDE_API_KEY", email: "ZULIP_CLAUDE_EMAIL" });
+  assert.deepEqual(SEAT_SECRETS.CLAUDE, { key: "ZULIP_CLAUDE_API_KEY", email: "ZULIP_CLAUDE_EMAIL", infisical: { name: "CLAUDE_ZULIP_KEY", path: "/zulip" } });
   assert.equal(SEAT_LABELS.CLAUDE, "Claude");
   assert.deepEqual([...prod.seats.CLAUDE.redirectUris], [REDIRECT]);
   assert.deepEqual([...prod.seats.CLAUDE.cimdClientIds], []);
@@ -25,7 +25,6 @@ test("hosted CLAUDE has an independent bot mapping and exact hosted callback; CO
   assert.equal(prod.redirectOwner.get(CHATGPT_REDIRECT), "JET");
   assert.equal(prod.cimdOwner.get(CHATGPT_CLIENT), "JET");
   assert.equal(prod.redirectOwner.get("https://www.cursor.com/agents/mcp/oauth/callback"), "CURSOR");
-  assert.ok(!KNOWN_SEATS.includes("CODEX"));
   assert.ok(!("CLAUDE" in WAKE_SECRETS));
   assert.ok(LINEAR_SEATS.includes("CLAUDE"));
   const installer = readFileSync(path.join(ROOT, "install_seat_key.py"), "utf8");
@@ -84,11 +83,13 @@ test("unprovisioned CLAUDE key fails closed for identity and writes", async () =
 test("CLAUDE canonical email is required; other seats keep their existing binding names", () => {
   assert.throws(() => loadConfig(testEnv({ HOSTED_SEATS: "CLAUDE", ZULIP_CLAUDE_EMAIL: "", ZULIP_EMAIL_CLAUDE: "claude-bot@simplewithus.zulipchat.com" })), /ZULIP_CLAUDE_EMAIL/);
   assert.deepEqual(Object.fromEntries(Object.entries(SEAT_SECRETS).filter(([seat]) => seat !== "CLAUDE")), {
-    CURSOR: { key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR" },
-    JET: { key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET" },
-    "GROK-WEB": { key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB" },
-    ECHO: { key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO" },
-    WISE: { key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE" },
-    MA: { key: "ZULIP_KEY_MA", email: "ZULIP_EMAIL_MA" },
+    CURSOR: { key: "ZULIP_KEY_CURSOR", email: "ZULIP_EMAIL_CURSOR", infisical: { name: "CURSOR_ZULIP_KEY", path: "/zulip" } },
+    JET: { key: "ZULIP_KEY_JET", email: "ZULIP_EMAIL_JET", infisical: { name: "JET_ZULIP_KEY", path: "/zulip" } },
+    "JET-CHAT": { key: "ZULIP_KEY_JET_CHAT", email: "ZULIP_EMAIL_JET_CHAT", infisical: { name: "JET_ZULIP_KEY", path: "/zulip" } },
+    "GROK-WEB": { key: "ZULIP_KEY_GROK_WEB", email: "ZULIP_EMAIL_GROK_WEB", infisical: { name: "GROK_WEB_ZULIP_KEY", path: "/zulip" } },
+    ECHO: { key: "ZULIP_KEY_ECHO", email: "ZULIP_EMAIL_ECHO", infisical: { name: "ECHO_ZULIP_KEY", path: "/zulip" } },
+    WISE: { key: "ZULIP_KEY_WISE", email: "ZULIP_EMAIL_WISE", infisical: { name: "WISE_ZULIP_KEY", path: "/zulip" } },
+    MA: { key: "ZULIP_KEY_MA", email: "ZULIP_EMAIL_MA", infisical: { name: "MA_ZULIP_KEY", path: "/zulip" } },
+    CODEX: { key: "ZULIP_KEY_CODEX", email: "ZULIP_EMAIL_CODEX", infisical: { name: "CODEX_ZULIP_KEY", path: "/zulip" } },
   });
 });

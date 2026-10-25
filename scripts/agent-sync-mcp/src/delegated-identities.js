@@ -15,12 +15,16 @@
 // scope, pause and budget still govern every call.
 //
 // GB_IDENTITIES is read from scripts/agent_sync/mcp/gb-identities.json, the one list the stdio
-// server reads too.  No other list of personas exists, here or anywhere.
-import GB_TABLE from "../../agent_sync/mcp/gb-identities.json" with { type: "json" };
+// server reads too.  No other list of personas exists, here or anywhere.  It comes through
+// infisical-manifest.js, which checks the table's shape once:  a malformed table enables no
+// persona (an empty list and one logged event) instead of failing this module's load, which
+// would stop the whole Worker (kody 4367022121).
+import { GB_ENABLED_IDENTITIES } from "./infisical-manifest.js";
 import RENAMED from "../../agent_sync/mcp/renamed-tools.json" with { type: "json" };
-import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS } from "./hosted-tools.js";
-import { ToolError, errorResult, okResult, schemaProblem } from "./contract.js";
-import { SHARED_IDENTITY_SEATS } from "./config.js";
+import { HOSTED_TOOL_LIST, HOSTED_TOOLS_BY_NAME, HOSTED_WRITE_TOOLS, UnknownTool } from "./hosted-tools.js";
+import { resolveSecret, infisicalMode } from "./infisical.js";
+import { ToolError, errorResult, okResult, scanSecret, schemaProblem } from "./contract.js";
+import { EVENTS_ONLY_SEATS, SHARED_IDENTITY_SEATS } from "./config.js";
 import { IDENTITIES_SPEC, GUIDE_SPEC } from "./zulip-tool-specs.js";
 import { guideResult, GuideArgs, GUIDE_URL } from "./guide.js";
 import { canonicalSeatName } from "./identity-aliases.js";
@@ -30,7 +34,7 @@ import { GUIDE_TEXT } from "./guide-text.js";
 
 const GuideCall = GuideArgs.extend({ identity: z.unknown().optional() });
 
-export const GB_IDENTITIES = Object.freeze([...GB_TABLE.enabled]);
+export const GB_IDENTITIES = GB_ENABLED_IDENTITIES;
 const GB_SET = new Set(GB_IDENTITIES);
 export const GB_CREDENTIAL_BUNDLE = "GB_IDENTITY_CREDENTIALS";
 export const GB_CREDENTIAL_BUNDLE_MAX_BYTES = 5 * 1024;
@@ -109,6 +113,47 @@ export function loadDelegatedCredentials(env) {
   return { source: "legacy", valid: true, roles };
 }
 
+/**
+ * The GB credential set with Infisical resolution (paths /zulip + /linear).
+ * Off mode is exactly loadDelegatedCredentials(env).  Every field of every
+ * enabled persona is declared in INFISICAL_EXPECT:  in required mode a
+ * missing declared field throws visibly instead of silently dropping a
+ * configured persona.  In fallback each field's read falls back to its
+ * legacy per-field env binding (observable in logs + stats);  when NO field
+ * resolves at all the family falls back to the env bundle/legacy rows as a
+ * whole, so a bundle-configured deployment is never silently emptied.  A
+ * partial resolution in fallback keeps the bundle row of every persona the
+ * Infisical path could not assemble completely (kody 4365622415).
+ * completeRole validates every assembled row exactly as for the bundle.
+ */
+export async function resolveDelegatedCredentials(env) {
+  const mode = infisicalMode(env);
+  if (mode === "off") return loadDelegatedCredentials(env);
+  const roles = new Map();
+  let resolvedAny = false;
+  await Promise.all(GB_IDENTITIES.map(async (identity) => {
+    const names = delegatedNames(identity);
+    const [zulipEmail, zulipKey, linearClientId, linearClientSecret] = await Promise.all([
+      resolveSecret(env, { name: names.zulipEmail, path: "/zulip", envName: names.zulipEmail, optional: true }),
+      resolveSecret(env, { name: names.zulipKey, path: "/zulip", envName: names.zulipKey, optional: true }),
+      resolveSecret(env, { name: names.linearClientId, path: "/linear", envName: names.linearClientId, optional: true }),
+      resolveSecret(env, { name: names.linearClientSecret, path: "/linear", envName: names.linearClientSecret, optional: true }),
+    ]);
+    if (zulipEmail || zulipKey || linearClientId || linearClientSecret) resolvedAny = true;
+    const row = completeRole(identity, [zulipEmail, zulipKey, linearClientId, linearClientSecret]);
+    if (row) roles.set(identity, row);
+  }));
+  if (!resolvedAny) return loadDelegatedCredentials(env);
+  if (mode === "fallback" && roles.size < GB_IDENTITIES.length) {
+    // E.g. /zulip served while /linear was out of scope:  every row is
+    // incomplete although the bundle still holds them all.  Each missing
+    // field was already counted as a fallback by resolveSecret.
+    const legacy = loadDelegatedCredentials(env);
+    if (legacy.valid) for (const [identity, row] of legacy.roles) if (!roles.has(identity)) roles.set(identity, row);
+  }
+  return { source: "infisical", valid: true, roles };
+}
+
 export function delegatedStatus(credentials, identity) {
   if (!GB_SET.has(identity)) return null;
   const configured = Boolean(credentials?.valid && credentials.roles.has(identity));
@@ -137,13 +182,20 @@ function decorate(spec, allowed, seat) {
 
 const LIST_CACHE = new Map();
 
+const EMPTY_TOOL_SET = Object.freeze({ list: Object.freeze([]), byName: Object.freeze({}) });
+
 /** The tools/list a grant for `seat` gets:  every hosted tool with its identity enum, then identities after whoami. */
 export function toolListFor(seat, config = {}) {
-  const cacheKey = `${seat}:${config.whatsappEnabled === true}`;
+  // An events-only seat advertises no tools;  the call path refuses every
+  // name too (IdentityRouter.call), so this is never discovery-only hiding.
+  // `eventsOnlySeats` overrides the production set in tests only.
+  const eventsOnlySeats = config.eventsOnlySeats ?? EVENTS_ONLY_SEATS;
+  if (eventsOnlySeats.includes(seat)) return EMPTY_TOOL_SET;
+  const cacheKey = `${seat}:${config.whatsappEnabled === true}:${config.eventsOnlySeats ? config.eventsOnlySeats.join(",") : ""}`;
   const cached = LIST_CACHE.get(cacheKey);
   if (cached) return cached;
   const allowed = allowedIdentities(seat);
-  const decorated = HOSTED_TOOL_LIST.filter(spec => !spec.name.startsWith("whatsapp_") || (seat === "JET" && config.whatsappEnabled === true)).map((spec) => decorate(spec, allowed, seat));
+  const decorated = HOSTED_TOOL_LIST.filter(spec => !spec.name.startsWith("whatsapp_") || (seat === "JET-CHAT" && config.whatsappEnabled === true)).map((spec) => decorate(spec, allowed, seat));
   const at = decorated.findIndex((spec) => spec.name === "whoami") + 1;
   const list = Object.freeze([...decorated.slice(0, at), IDENTITIES_SPEC, decorate(GUIDE_SPEC, allowed, seat), ...decorated.slice(at)]);
   const byName = Object.freeze(Object.fromEntries(list.map((spec) => [spec.name, spec])));
@@ -161,15 +213,19 @@ export function toolListFor(seat, config = {}) {
  * says whether a peer seat's Zulip and Linear credentials are installed (names only).
  */
 export class IdentityRouter {
-  constructor({ callerTools, credentials = null, createIdentity = null, identityStatus = null, guideText = GUIDE_TEXT }) {
+  constructor({ callerTools, credentials = null, createIdentity = null, identityStatus = null, guideText = GUIDE_TEXT, eventsOnlySeats = callerTools.config?.eventsOnlySeats ?? EVENTS_ONLY_SEATS }) {
     this.guideText = guideText;
     this.callerTools = callerTools;
     this.seat = callerTools.seat;
     this.credentials = credentials;
     this.createIdentity = createIdentity;
     this.identityStatus = identityStatus;
+    // Test-only override for the events-only mechanism;  production reads the
+    // seats.js constant through the default.
+    this.eventsOnlySeats = eventsOnlySeats;
+    this.eventsOnly = eventsOnlySeats.includes(this.seat);
     this.allowed = allowedIdentities(this.seat);
-    const { list, byName } = toolListFor(this.seat, callerTools.config);
+    const { list, byName } = toolListFor(this.seat, { ...(callerTools.config ?? {}), eventsOnlySeats });
     this.toolList = list;
     this.toolsByName = byName;
     this.built = new Map();
@@ -196,6 +252,26 @@ export class IdentityRouter {
   }
 
   async call(name, rawArgs) {
+    // An events-only seat serves notifications only:  every name is unknown
+    // to the connection, the same protocol error as any unknown name
+    // (buildServer maps UnknownTool), audited like one.
+    if (this.eventsOnly) {
+      // The requested name is client-controlled:  audit it secret-scanned and
+      // length-capped, the same hygiene seat-state applies to error messages.
+      // Bound before scanning (kody 4365544427):  an unbounded client string
+      // must not reach scanSecret.  The cap is a plain string slice
+      // (kody 4365848075):  spreading first would materialize one array
+      // element per code point of the unbounded input.
+      // Same bound as the seat-state path:  64 code units caps the encoded
+      // size at 192 UTF-8 bytes (kody 4366019266), and a trailing lone high
+      // surrogate is trimmed (kody 4366019481).
+      const requested = (typeof name === "string" ? name : "").slice(0, 64).replace(/[\uD800-\uDBFF]$/, "");
+      const audited = scanSecret(requested) ? "<omitted after secret scan>" : requested;
+      await this.audit({ acting_identity: "none", tool: audited, error_code: "unknown_tool", error_message: "This connection delivers event notifications only;  it has no tools." });
+      // The thrown error carries the AUDITED name too:  a secret-shaped tool
+      // name must never echo back to the caller (kody 4363581984).
+      throw new UnknownTool(audited);
+    }
     if (typeof name === "string" && Object.hasOwn(RENAMED_TOOLS, name)) {
       const replacement = RENAMED_TOOLS[name];
       return this.refuse(name, "none", new ToolError("unknown_tool", `${name} was renamed ${replacement} (AFC-331):  call ${replacement} instead`, { extra: { replacement } }));

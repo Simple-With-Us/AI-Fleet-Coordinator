@@ -5,6 +5,7 @@ Muster is a native SwiftUI macOS 14+ scaffold.  Its initial window explicitly re
 ## Scope
 
 - `Muster/` contains the app entry point, the fleet overview view, the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`), the Fleet Hosts panel (what the fleet tools doctor's own report says about each host, from `~/.local/state/fleet-tools/report.json`) and the Seat Activity panel (AFC-395:  open sessions, listener state, Zulip presence and the last Zulip post, per seat).
+- `Muster/` contains the app entry point, the fleet overview view, the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`), the Fleet Hosts panel (what the fleet tools doctor's own report says about each host, from `~/.local/state/fleet-tools/report.json`) and the Drift History panel (AFC-390:  every cell that turned red,  kept in `~/Library/Application Support/Muster/drift-history.json`).
 - `project.yml` is the XcodeGen source of truth.  The generated Xcode project is ignored.
 - `script/build_and_run.sh` owns local project generation, signing, installation, and launch.
 - The repository's `.codex/environments/environment.toml` exposes the same script through the Codex **Run** action.
@@ -20,6 +21,15 @@ The Seat Activity panel (AFC-395) shows one row per seat from the app's own rost
 Two sources, and no third:  the listener's own published state at `~/.agent-sync/listener/status.json`, and the fleet chat CLI (`simple-chat`).  The panel reads the CLI's `users`, `presence` and `search` verbs and nothing else;  `ChatCLI` refuses any other verb before a process exists,  so the panel cannot write to Zulip.  It never posts as Jay:  the CLI resolves the credential of the bot seat named by `MUSTER_ZULIP_SEAT` (default `CLAUDE`),  and the app never sees a key.
 
 A refresh makes at most one `users` call, one `presence` call per seat and one `search` call per seat,  so the ceiling is `1 + 2 * seats`;  the panel shows the count it made beside the ceiling.  A source that fails leaves its column UNKNOWN with the reason under the row:  a missing binary, a refused call, an unreadable file and a presence record that does not exist all read as unknown,  never as "no sessions" and never as "offline".
+## Drift Alerts
+
+The app watches the paths the manifest names and says when a cell turns red.  It is idle between refreshes:  FSEvents is the only thing that wakes it,  and there is no poll of any file's contents.
+
+The watch list is **derived from the manifest**,  never written down:  every rule's `check.target` becomes a path,  `~` is expanded,  and a rule that checks a credential is skipped because the app never reads a credential.  A new seat is watched because the manifest names its paths.  Each path is watched by its own path,  which FSEvents filters to that path alone;  a path that is not there yet is watched too,  and FSEvents reports it when it appears.  The nearest directory above it is watched as well,  unless that directory is the home directory:  FSEvents watches a directory recursively,  and the home directory is the largest tree on the Mac.
+
+A change is gathered for a second and a half,  so a write that lands in two pieces is one run,  and the engine runs again.  A slow safety net runs the engine every ten minutes for a change the watcher could not see.  A cell that was not red and becomes red posts one notification that names the seat and the check;  a cell that stays red says nothing again,  and a cell that recovers and turns red again says so again.  The notification fails soft:  an app without permission,  or a process without a bundle,  records the turn and posts nothing.  The menubar item carries the red count,  in the same red the grid uses.
+
+The first run that could be trusted is a reading and not a change:  there is no earlier answer to compare it with.  A run that could not be trusted says nothing,  and the count is unknown rather than zero.
 
 ## Prerequisites
 

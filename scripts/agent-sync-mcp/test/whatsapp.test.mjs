@@ -157,13 +157,20 @@ test("pause and disabled defaults; Jet-only event and read tool; provenance encl
   assert.equal(s.calls.length, 0);
   assert.equal(loadConfig(testEnv()).whatsappEnabled, false);
   for (const seat of ["CODEX", "CURSOR", "GROK-WEB"]) assert.ok(!toolListFor(seat).byName.whatsapp_read);
+  // JET is wake-only:  its tools/list is empty, so whatsapp_read stays
+  // unreachable there even with the flag on, and the tool's own gate refuses
+  // it too.  The new full-tool Jet login (JET-CHAT) reads and ACKs;  the inbox
+  // itself stays on the original JET gate (Jay, WhatsApp Oct 23 2026 5:03 PM CT).
   assert.ok(!toolListFor("JET").byName.whatsapp_read);
-  assert.ok(toolListFor("JET", config).byName.whatsapp_read);
-  const tools = new HostedTools({ seat: "JET", scopes: ["zulip:read"], config, gate: s.gate, key: "", zulip: null, log: () => {} });
+  assert.ok(!toolListFor("JET", config).byName.whatsapp_read);
+  assert.ok(toolListFor("JET-CHAT", config).byName.whatsapp_read);
+  const tools = new HostedTools({ seat: "JET-CHAT", scopes: ["zulip:read"], config, gate: s.gate, whatsappGate: s.gate, key: "", zulip: null, log: () => {} });
   const result = await tools.call("whatsapp_read", {});
   assert.equal(result.isError, undefined);
   assert.match(result.content[0].text, /owner message/);
   assert.match(result.content[0].text, /nonce=/);
+  const wakeSeat = new HostedTools({ seat: "JET", scopes: ["zulip:read"], config, gate: s.gate, key: "", zulip: null, log: () => {} });
+  assert.equal((await wakeSeat.call("whatsapp_read", {})).isError, true);
   const foreign = new HostedTools({ seat: "CODEX", scopes: ["zulip:read"], config, gate: s.gate, key: "", zulip: null, log: () => {} });
   assert.equal((await foreign.call("whatsapp_read", {})).isError, true);
   assert.equal(classifyPath("/internal/wa-ingest/JET"), "wa");
@@ -494,4 +501,28 @@ test("a consumed claim token cannot settle twice or change owner rejection histo
   assert.notEqual(next.token, claim.token);
   await s.gate.waSettle({ ...next, delivered: false, permanent: true });
   assert.equal((await s.store.get("wa:owner_gate")).permanent_failures, 2);
+});
+
+test("required mode:  the WA keys come from Infisical /wake, and the reuse guard sees Infisical's wake keys (kody 4365623241)", async () => {
+  const { _resetInfisicalForTests } = await import("../src/infisical.js");
+  const realFetch = globalThis.fetch;
+  const listing = (secrets) => async (url) => (String(url).includes("/api/v3/secrets/raw?")
+    ? Response.json({ secrets: Object.entries(secrets).map(([secretKey, secretValue]) => ({ secretKey, secretValue })) })
+    : new Response("not found", { status: 404 }));
+  const infisicalEnv = { INFISICAL_MODE: "required", INFISICAL_SERVICE_TOKEN: "st-test", INFISICAL_WORKSPACE_ID: "ws-test", WA_BRIDGE_HMAC_KEY_JET: undefined, WA_OPERATOR_HMAC_KEY_JET: undefined };
+  try {
+    _resetInfisicalForTests();
+    globalThis.fetch = listing({ WA_BRIDGE_HMAC_KEY_JET: KEY, WA_OPERATOR_HMAC_KEY_JET: OPKEY, WAKE_HMAC_KEY_JET: "e".repeat(64) });
+    const s = setup(); await s.sub(EVENT_NAME); await s.sub(WA_EVENT);
+    const ok =await request(s.gate, s.fetchFn, batch([msg(41)]), "ingest", infisicalEnv);
+    assert.equal(ok.status, 200, "no Worker binding needed:  the bridge key is Infisical's");
+    _resetInfisicalForTests();
+    globalThis.fetch = listing({ WA_BRIDGE_HMAC_KEY_JET: KEY, WA_OPERATOR_HMAC_KEY_JET: OPKEY, WAKE_HMAC_KEY_JET: KEY });
+    const reused = await request(s.gate, s.fetchFn, batch([msg(42)]), "ingest", infisicalEnv);
+    assert.equal(reused.status, 404);
+    assert.equal((await reused.json()).reason, "key_reused", "a wake key served only by Infisical still counts as reuse");
+  } finally {
+    globalThis.fetch = realFetch;
+    _resetInfisicalForTests();
+  }
 });

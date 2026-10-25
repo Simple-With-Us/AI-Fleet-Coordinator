@@ -66,7 +66,7 @@ Apple Notes requests from the server and cloud seats go to the Operator's notes 
 
 | Name | Where | Who reads it |
 |---|---|---|
-| `OPERATOR_API_URL` (its row in "Fleet knobs" below is the generated one) | root `/`, a fleet knob (`scripts/fleet_knobs/registry.py`) | `simple-notes`, the stdio MCP and the Mac runner, through `fleet_knobs`:  the Operator API's https origin.  Empty means not configured.  The Worker has the same origin as its committed `LISTENER_API_URL` var. |
+| `OPERATOR_API_URL` (its row in "Fleet knobs" below is the generated one) | root `/`, a fleet knob (`scripts/fleet_knobs/registry.py`) | `simple-notes`, the stdio MCP and the Mac runner, through `fleet_knobs`, else (when the knob reads empty, as on the server once its last-known-good copy lapses) through `fleet-secrets get --project ai-fleet-coordinator`:  the Operator API's https origin.  Empty means not configured.  The Worker has the same origin as its committed `LISTENER_API_URL` var. |
 | `OPERATOR_NOTES_WORKER_KEY` | `/operator`, a secret | the Operator (container start, `server/infisical_env.py`) and the Worker, as its secret `OPERATOR_NOTES_KEY` (DEPLOY.md, "Notes, recall and the guide") |
 | `OPERATOR_NOTES_SERVER_KEY` | `/operator`, a secret | the Operator, and the server's CLIs and stdio MCP (`fleet-secrets get OPERATOR_NOTES_SERVER_KEY --path /operator --project ai-fleet-coordinator`, held in memory) |
 | `OPERATOR_NOTES_RUNNER_KEY` | `/operator`, a secret | the Operator, and the Mac runner (`com.jay.operator-notes-runner`, the same `fleet-secrets get`) |
@@ -173,6 +173,8 @@ Until a key is set in Infisical, a job runs on the Default column, which is the 
 | `CONSULT_ENABLED` | C7 | bool | `false` | no | only set it to `false` | false refuses every consult verb |
 | `FLEET_SHEET_INGEST_ENABLED` | S1 | bool | `true` | no | only set it to `false` | false writes the registry mirror and skips the `recall ingest --source doc` that carries it;  the sheet itself is still written |
 | `FLEET_SHEET_INGEST_TIMEOUT_MS` | S1 | int 60000 to 21600000 | `5400000` | no | only lower it | milliseconds the Fleet RAG ingest may run before fleet-apps-sheet-sync.mjs gives up on it;  a full corpus walk took about 43 minutes, so the default is 90;  a local file may only lower it |
+| `COMPLIANCE_CERT_EXPIRY_DAYS` | C8 | int 1 to 365 | `30` | no | only lower it | days before an Apple signing certificate expires that the fleet-config compliance rule calls a finding;  the rule reads the value only once it is set in Infisical,  so the default is the value to set rather than one the rule may use |
+| `COMPLIANCE_SECRETS_FINDINGS_MAX` | C8 | int 0 to 10 | `0` | no | only lower it | how many secrets-hygiene findings the fleet-config compliance rule tolerates;  the rule reads the value only once it is set in Infisical,  so the default is the value to set rather than one the rule may use |
 
 <!-- fleet-knobs:end -->
 
