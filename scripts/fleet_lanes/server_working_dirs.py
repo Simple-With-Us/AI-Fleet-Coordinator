@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Point every agent tool's session working directory at the lanes root.
 
-Owner policy, Oct 22, 2026:  on a server host the project mirrors live on the
-fleet-extra volume (`/mnt/fleet-extra/Code`) and the lanes live beside them
-(`/mnt/fleet-extra/apps/lanes`), and `~/Code` and `~/apps` resolve to them, so
+Owner policy, Oct 22, 2026:  on a server host the project mirrors live on a
+volume the host names in the environment and the lanes live beside them, and
+`~/Code` and `~/apps` resolve to them, so
 the policy path `~/apps/lanes/<Repo>/<seat>-<slug>` still holds.  Every tool
 session starts in the lanes root, so work lands in a lane and never in an
 integration tree.
@@ -34,12 +34,19 @@ import ast
 import json
 import os
 import re
+import shlex
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", "/root")).expanduser()
+
+# The volume a server host keeps its integration trees and its apps folder on.
+# The path is not in this repository:  the host names it in the environment, and a
+# host that names none has no volume, so the copy under the home is the fallback.
+ENV_SERVER_VOLUME = "FLEET_SERVER_VOLUME"
 
 # Where the systemd units live.  Overridable so a test can write them somewhere
 # harmless, and so a host that keeps its units elsewhere can point at it.
@@ -62,12 +69,29 @@ def _resolve(candidate: str) -> Path:
     return path if path.is_absolute() else HOME / path
 
 
+def server_volume() -> Path | None:
+    """The volume a server host keeps its trees on, when the host names one.
+
+    The path is read from the environment, so it is not in this repository.  A host
+    that names no volume has none, and the copy under the home is the only fallback
+    there is.
+    """
+    raw = (os.environ.get(ENV_SERVER_VOLUME) or "").strip()
+    if not raw:
+        return None
+    path = _resolve(raw)
+    return path if path.is_dir() else None
+
+
 def lanes_root() -> Path:
-    for candidate in (
+    volume = server_volume()
+    candidates = [
         os.environ.get("FLEET_LANES_ROOT"),
         str(HOME / "apps" / "lanes"),
-        "/mnt/fleet-extra/apps/lanes",
-    ):
+    ]
+    if volume is not None:
+        candidates.append(str(volume / "apps" / "lanes"))
+    for candidate in candidates:
         if not candidate:
             continue
         path = _resolve(candidate)
@@ -77,11 +101,14 @@ def lanes_root() -> Path:
 
 
 def apps_root() -> Path:
-    for candidate in (
+    volume = server_volume()
+    candidates = [
         os.environ.get("FLEET_APPS_ROOT"),
         str(HOME / "apps"),
-        "/mnt/fleet-extra/apps",
-    ):
+    ]
+    if volume is not None:
+        candidates.append(str(volume / "apps"))
+    for candidate in candidates:
         if not candidate:
             continue
         path = _resolve(candidate)
@@ -92,11 +119,14 @@ def apps_root() -> Path:
 
 def code_root() -> Path:
     """Where the integration trees live:  FLEET_CODE_ROOT, then ~/Code, then the volume."""
-    for candidate in (
+    volume = server_volume()
+    candidates = [
         os.environ.get("FLEET_CODE_ROOT"),
         str(HOME / "Code"),
-        "/mnt/fleet-extra/Code",
-    ):
+    ]
+    if volume is not None:
+        candidates.append(str(volume / "Code"))
+    for candidate in candidates:
         if not candidate:
             continue
         path = _resolve(candidate)
@@ -124,6 +154,32 @@ def read(path: Path) -> str:
 def write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
+
+
+def write_atomic(path: Path, text: str) -> None:
+    """Replace the file in one step, so a failure cannot leave it half written.
+
+    The content goes to a temporary file in the same directory, is flushed and
+    synced, and only then is moved over the target, so a reader sees either the
+    old file or the new one and never a truncated one.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
+    handle = tempfile.NamedTemporaryFile(
+        "w", dir=path.parent, prefix=f".{path.name}.", suffix=".tmp",
+        delete=False, encoding="utf-8",
+    )
+    temporary = Path(handle.name)
+    try:
+        with handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def which(name: str) -> str:
@@ -163,14 +219,59 @@ BASHRC_BLOCK = """
 # The roots come from the environment because they live on a volume, not in the
 # home directory:  a lane tool that resolved ~/Code or ~/apps would look in a
 # folder that is not there and would find no integration tree and no repo.
-export FLEET_CODE_ROOT="{code}"
-export FLEET_APPS_ROOT="{apps}"
-export FLEET_LANES_ROOT="{lanes}"
-if [ -d "{lanes}" ] && [ "$PWD" = "$HOME" ]; then
-  cd "{lanes}"
+# The values below are shell-quoted, because they are read from the environment
+# and a path that carried a metacharacter would otherwise run a command
+# substitution in every shell that sources this file.
+{exports}if [ -d {lanes_q} ] && [ "$PWD" = "$HOME" ]; then
+  cd {lanes_q}
 fi
 {end} ----------------------------------------------
 """
+
+
+def bashrc_exports(code: Path, apps: Path, lanes: Path) -> str:
+    """The export lines of the fleet block, with every value shell-quoted.
+
+    The values are read from the environment, so a path that carried a shell
+    metacharacter would otherwise be written between double quotes and run a
+    command substitution in every shell that sources the file.
+    """
+    lines = [
+        f"export FLEET_CODE_ROOT={shlex.quote(str(code))}",
+        f"export FLEET_APPS_ROOT={shlex.quote(str(apps))}",
+        f"export FLEET_LANES_ROOT={shlex.quote(str(lanes))}",
+    ]
+    volume = server_volume()
+    if volume is not None:
+        lines.append(f"export FLEET_SERVER_VOLUME={shlex.quote(str(volume))}")
+    return "".join(line + "\n" for line in lines)
+
+
+def systemd_value(text: str) -> str:
+    """A value quoted the way systemd reads an Environment= line.
+
+    systemd splits the line on whitespace unless the value is quoted, so a path
+    with a space in it would otherwise arrive as two values.
+    """
+    return '"' + str(text).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def unit_environments(root: Path) -> dict[str, str]:
+    """The Environment= lines that give a unit-launched session the canonical roots.
+
+    A unit reads no shell profile, so the roots are declared in the unit itself:  a
+    session that fell back to ~/Code and ~/apps would find no integration tree and
+    no repo, which is the failure this script exists to prevent.
+    """
+    volume = server_volume()
+    return {
+        "code_env": f"Environment={systemd_value('FLEET_CODE_ROOT=' + str(code_root()))}",
+        "apps_env": f"Environment={systemd_value('FLEET_APPS_ROOT=' + str(apps_root()))}",
+        "lanes_env": f"Environment={systemd_value('FLEET_LANES_ROOT=' + str(root))}",
+        "volume_env": "" if volume is None else
+        f"Environment={systemd_value('FLEET_SERVER_VOLUME=' + str(volume))}\n",
+    }
+
 
 OPENCODE_UNIT = """[Unit]
 Description=OpenCode server (agent working directory: the lanes root)
@@ -183,7 +284,13 @@ User=root
 WorkingDirectory={lanes}
 Environment=HOME={home}
 Environment=PATH={home}/.opencode/bin:{home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# The config's server block is deprecated in v2 and the port is ignored, so the
+# The canonical roots are declared here as well as in the shell profile, because a
+# unit-launched session reads no profile:  a tool that fell back to ~/Code and
+# ~/apps would find no integration tree and no repo.
+{code_env}
+{apps_env}
+{lanes_env}
+{volume_env}# The config's server block is deprecated in v2 and the port is ignored, so the
 # host and port the fleet's clients use are passed explicitly.
 ExecStart={opencode} serve --service{flags}
 Restart=on-failure
@@ -206,7 +313,13 @@ User=root
 WorkingDirectory={lanes}
 Environment=HOME={home}
 Environment=PATH={home}/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-# The OAuth token is read into memory once and never refreshed, so the process
+# The canonical roots are declared here as well as in the shell profile, because a
+# unit-launched session reads no profile:  a tool that fell back to ~/Code and
+# ~/apps would find no integration tree and no repo.
+{code_env}
+{apps_env}
+{lanes_env}
+{volume_env}# The OAuth token is read into memory once and never refreshed, so the process
 # must not outlive the 8 hour token life.  RuntimeMaxSec recycles it, which is
 # the systemd-native form of the Mac's capped launcher.
 ExecStart={claude} remote-control
@@ -469,26 +582,40 @@ def bashrc_block(text: str) -> str:
     return BASHRC_BEGIN + rest.split(BASHRC_END, 1)[0]
 
 
+def shell_value(text: str) -> str:
+    """The value of a shell word list, as the shell would read it.
+
+    The fleet block writes its values shell-quoted, so the check reads them back
+    the way a shell would, and not as the raw text of the line.
+    """
+    try:
+        parts = shlex.split(text.strip())
+    except ValueError:
+        return text.strip()
+    return parts[0] if parts else text.strip()
+
+
 def knob_bashrc(root: Path) -> tuple[bool, str]:
     path = HOME / ".bashrc"
     if not path.exists():
         return True, "not installed (no .bashrc)"
     block = bashrc_block(read(path))
-    target = re.search(r'^\s*cd\s+"([^"]+)"', block, flags=re.MULTILINE)
-    if not (target and same_dir(target.group(1), root)):
-        return False, f"interactive shells start in {target.group(1) if target else 'nowhere'}, not {root}"
+    target = re.search(r"^\s*cd\s+(.+)$", block, flags=re.MULTILINE)
+    directory = shell_value(target.group(1)) if target else ""
+    if not (target and same_dir(directory, root)):
+        return False, f"interactive shells start in {directory or 'nowhere'}, not {root}"
     missing = []
     for var, want in (("FLEET_CODE_ROOT", code_root()),
                       ("FLEET_APPS_ROOT", apps_root()),
                       ("FLEET_LANES_ROOT", root)):
-        found = re.search(rf'^\s*export\s+{var}="([^"]+)"', block, flags=re.MULTILINE)
+        found = re.search(rf"^\s*export\s+{var}=(.+)$", block, flags=re.MULTILINE)
         if not found:
             missing.append(var)
-        elif not same_dir(found.group(1), want):
-            missing.append(f"{var}={found.group(1)}")
+        elif not same_dir(shell_value(found.group(1)), want):
+            missing.append(f"{var}={shell_value(found.group(1))}")
     if missing:
         return False, "the bashrc block does not set " + ", ".join(missing)
-    return True, f"interactive shells start in {target.group(1)}"
+    return True, f"interactive shells start in {directory}"
 
 
 def claude_settings(path: Path) -> dict | None:
@@ -521,6 +648,14 @@ def knob_unit(path: Path, root: Path, flags: str = "") -> tuple[bool, str]:
     wd = match.group(1) if match else None
     if not same_dir(wd, root):
         return False, f"WorkingDirectory is {wd or 'unset'}, not {root}"
+    for var, want in (("FLEET_CODE_ROOT", code_root()),
+                      ("FLEET_APPS_ROOT", apps_root()),
+                      ("FLEET_LANES_ROOT", root)):
+        found = re.search(rf'^Environment="{var}=([^"]*)"', text, flags=re.MULTILINE)
+        if not found:
+            return False, f"{path.name} sets no {var}"
+        if not same_dir(found.group(1), want):
+            return False, f"{var} is {found.group(1)}, not {want}"
     if flags and unit_execstart_flags(text) != flags:
         return False, f"ExecStart has no {flags.strip()}"
     return True, f"WorkingDirectory is {wd}"
@@ -645,16 +780,21 @@ def apply_bashrc(root: Path) -> bool:
     backup(path)
     new_block = BASHRC_BLOCK.format(
         begin=BASHRC_BEGIN, end=BASHRC_END, lanes=root, lanes_root=root,
-        code=code_root(), apps=apps_root(),
+        lanes_q=shlex.quote(str(root)),
+        exports=bashrc_exports(code_root(), apps_root(), root),
     ).strip("\n")
     if bashrc_block(text):
         start = text.index(BASHRC_BEGIN)
         end = text.index(BASHRC_END) + len(BASHRC_END)
-        new_text = text[:start] + new_block + text[end:]
+        # The old block's closing marker is a whole line, so cut past the end of
+        # that line:  the new block renders its own closing line, and keeping the
+        # tail of the old one would write the marker twice.
+        line_end = text.find("\n", end)
+        end = len(text) if line_end == -1 else line_end + 1
+        new_text = text[:start] + new_block + "\n" + text[end:]
     else:
         new_text = text.rstrip("\n") + "\n\n" + new_block + "\n"
-    with path.open("w") as handle:
-        handle.write(new_text)
+    write_atomic(path, new_text)
     return True
 
 
@@ -733,13 +873,17 @@ def apply(root: Path) -> int:
         elif label.startswith("opencode"):
             flags = opencode_server_flags() or unit_execstart_flags(read(path))
             body = OPENCODE_UNIT.format(
-                lanes=root, home=HOME, opencode=which("opencode"), flags=flags
+                lanes=root, home=HOME, opencode=which("opencode"), flags=flags,
+                **unit_environments(root),
             )
             touched = apply_unit(path, body)
             if touched:
                 restart.append("opencode-server.service")
         else:
-            body = CLAUDE_UNIT.format(lanes=root, home=HOME, claude=which("claude"))
+            body = CLAUDE_UNIT.format(
+                lanes=root, home=HOME, claude=which("claude"),
+                **unit_environments(root),
+            )
             touched = apply_unit(path, body)
             if touched:
                 restart.append("claude-remote-control.service")

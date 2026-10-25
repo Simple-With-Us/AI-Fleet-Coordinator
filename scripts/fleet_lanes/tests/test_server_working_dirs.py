@@ -11,6 +11,8 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shlex
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -334,7 +336,7 @@ class ServerWorkingDirsTest(unittest.TestCase):
     def test_the_bashrc_block_names_the_resolved_root(self) -> None:
         self.apply()
         text = self.read(".bashrc")
-        self.assertIn(f'cd "{self.lanes}"', text)
+        self.assertIn(f"cd {shlex.quote(str(self.lanes))}", text)
         self.assertNotIn('cd "$HOME/apps/lanes"', text)
 
     def test_a_bashrc_block_pointing_elsewhere_fails_the_knob(self) -> None:
@@ -348,14 +350,40 @@ class ServerWorkingDirsTest(unittest.TestCase):
         """A host that keeps its trees on a volume needs the roots in the environment."""
         self.apply()
         text = self.read(".bashrc")
-        self.assertIn(f'export FLEET_LANES_ROOT="{self.lanes}"', text)
-        self.assertIn(f'export FLEET_APPS_ROOT="{self.apps}"', text)
-        self.assertIn(f'export FLEET_CODE_ROOT="{self.home / "Code"}"', text)
+        self.assertIn(f"export FLEET_LANES_ROOT={shlex.quote(str(self.lanes))}", text)
+        self.assertIn(f"export FLEET_APPS_ROOT={shlex.quote(str(self.apps))}", text)
+        self.assertIn(f"export FLEET_CODE_ROOT={shlex.quote(str(self.home / 'Code'))}", text)
+
+    def test_the_bashrc_block_quotes_a_root_that_carries_a_metacharacter(self) -> None:
+        """A root read from the environment is written into a file every shell sources.
+
+        A path that carried a metacharacter would otherwise run a command substitution
+        in every interactive shell on the host (kody: critical, on AFC-541).
+        """
+        nasty = self.home / "a$(id)" / "b"
+        nasty.mkdir(parents=True)
+        with mock.patch.dict(os.environ, {"FLEET_APPS_ROOT": str(nasty)}):
+            self.apply()
+        text = self.read(".bashrc")
+        self.assertIn(f"export FLEET_APPS_ROOT={shlex.quote(str(nasty))}", text)
+        self.assertNotIn(f'export FLEET_APPS_ROOT="{nasty}"', text)
+        # The real proof: a shell that sources the block reads the path as it was
+        # written, and the substitution in it never runs.
+        bash = Path("/bin/bash")
+        if not bash.exists():
+            self.skipTest("this host has no /bin/bash")
+        result = subprocess.run(
+            [str(bash), "-c",
+             f'source {shlex.quote(str(self.home / ".bashrc"))}; printf %s "$FLEET_APPS_ROOT"'],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, str(nasty))
 
     def test_a_bashrc_block_without_the_exports_fails_the_knob(self) -> None:
         self.apply()
         path = self.home / ".bashrc"
-        path.write_text(path.read_text().replace('export FLEET_CODE_ROOT="', 'export UNUSED_CODE_ROOT="'))
+        path.write_text(path.read_text().replace("export FLEET_CODE_ROOT=", "export UNUSED_CODE_ROOT="))
         ok, note = swd.knob_bashrc(self.lanes)
         self.assertFalse(ok, note)
         self.assertIn("FLEET_CODE_ROOT", note)
@@ -363,12 +391,23 @@ class ServerWorkingDirsTest(unittest.TestCase):
     def test_apply_upgrades_a_block_that_lacks_the_exports(self) -> None:
         self.apply()
         path = self.home / ".bashrc"
-        path.write_text(path.read_text().replace(f'export FLEET_CODE_ROOT="{self.home / "Code"}"\n', ""))
+        path.write_text(path.read_text().replace(
+            f"export FLEET_CODE_ROOT={shlex.quote(str(self.home / 'Code'))}\n", ""))
         ok, _ = swd.knob_bashrc(self.lanes)
         self.assertFalse(ok)
         self.apply()
         self.assertTrue(swd.knob_bashrc(self.lanes)[0])
         self.assertEqual(self.verify(), 0)
+
+    def test_apply_does_not_duplicate_the_closing_marker(self) -> None:
+        """The block renders its own closing line, so the old one's tail must not survive."""
+        self.apply()
+        first = self.read(".bashrc")
+        self.apply()
+        second = self.read(".bashrc")
+        self.assertEqual(first.count(swd.BASHRC_END), 1)
+        self.assertEqual(second.count(swd.BASHRC_END), 1)
+        self.assertEqual(first, second)
 
     def test_a_marker_without_the_fleet_block_is_not_a_pass(self) -> None:
         (self.home / ".bashrc").write_text("# fleet: agent working directory\n# nothing else\n")

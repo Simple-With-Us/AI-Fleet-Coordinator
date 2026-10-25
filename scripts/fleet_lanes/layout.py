@@ -158,7 +158,7 @@ DEFAULT_LAYOUT = LAYOUT_NESTED
 ENV_LAYOUT = "FLEET_LAYOUT"
 ENV_LANES_ROOT = "FLEET_LANES_ROOT"
 # Where the integration trees and the apps folder live when they are not under the home directory.
-# The server keeps both on the fleet-extra volume and the root account has no ~/Code or ~/apps
+# The server keeps both on a volume the host names and the root account has no ~/Code or ~/apps
 # alias, so the roots come from the environment there (owner 2026-10-25).  Unset means the
 # default under the home directory.
 ENV_CODE_ROOT = "FLEET_CODE_ROOT"

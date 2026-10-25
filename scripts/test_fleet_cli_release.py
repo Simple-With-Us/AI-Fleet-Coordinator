@@ -298,6 +298,30 @@ class ReleaseTests(unittest.TestCase):
             f"os.environ.setdefault('FLEET_APPS_ROOT', {str(self.home / 'apps')!r})", text
         )
 
+    def test_the_roots_follow_the_volume_the_host_names(self):
+        # A server host keeps its trees on a volume and links no ~/Code or ~/apps into the home.
+        # The volume's path is named by the host in the environment, so it is not in this repository.
+        with tempfile.TemporaryDirectory() as volume:
+            (Path(volume) / "Code").mkdir()
+            (Path(volume) / "apps").mkdir()
+            with mock.patch.dict(os.environ, {"FLEET_SERVER_VOLUME": volume}):
+                self.receive()
+            text = (self.home / ".local/bin/lane").read_text()
+            self.assertIn(
+                f"os.environ.setdefault('FLEET_CODE_ROOT', {str(Path(volume) / 'Code')!r})", text
+            )
+            self.assertIn(
+                f"os.environ.setdefault('FLEET_APPS_ROOT', {str(Path(volume) / 'apps')!r})", text
+            )
+
+    def test_a_configured_root_wins_over_the_home_and_the_volume(self):
+        with tempfile.TemporaryDirectory() as volume:
+            (Path(volume) / "Code").mkdir()
+            with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "/srv/other/Code"}):
+                self.receive()
+            text = (self.home / ".local/bin/lane").read_text()
+            self.assertIn("os.environ.setdefault('FLEET_CODE_ROOT', '/srv/other/Code')", text)
+
     def test_only_the_lane_wrapper_carries_the_roots(self):
         self.receive()
         for name in ("simple-board", "simple-chat", "simple-notes", "recall", "fleet-mode"):

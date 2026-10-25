@@ -486,17 +486,17 @@ class PathsTests(unittest.TestCase):
 
     def test_the_apps_root_from_the_environment(self) -> None:
         """A server host keeps the apps folder on a volume and links no ~/apps into the home."""
-        p = T.make_paths("/h", env={"FLEET_APPS_ROOT": "/mnt/fleet-extra/apps"})
-        self.assertEqual(p.apps_dir, "/mnt/fleet-extra/apps")
-        self.assertEqual(p.stable, "/mnt/fleet-extra/apps/lane-tools")
-        self.assertEqual(p.lane_shim, "/mnt/fleet-extra/apps/lane")
+        p = T.make_paths("/h", env={"FLEET_APPS_ROOT": "/srv/fleet/apps"})
+        self.assertEqual(p.apps_dir, "/srv/fleet/apps")
+        self.assertEqual(p.stable, "/srv/fleet/apps/lane-tools")
+        self.assertEqual(p.lane_shim, "/srv/fleet/apps/lane")
 
     def test_a_tilde_apps_root_expands_against_the_home(self) -> None:
         self.assertEqual(T.make_paths("/h", env={"FLEET_APPS_ROOT": "~/v/apps"}).apps_dir, "/h/v/apps")
         self.assertEqual(T.make_paths("/h", env={"FLEET_APPS_ROOT": "rel/apps"}).apps_dir, "/h/rel/apps")
 
     def test_an_explicit_stable_dir_still_wins(self) -> None:
-        p = T.make_paths("/h", "/srv/lane-tools", env={"FLEET_APPS_ROOT": "/mnt/fleet-extra/apps"})
+        p = T.make_paths("/h", "/srv/lane-tools", env={"FLEET_APPS_ROOT": "/srv/fleet/apps"})
         self.assertEqual(p.stable, "/srv/lane-tools")
 
     def test_the_host_apps_root_follows_the_home_when_it_has_one(self) -> None:
@@ -507,22 +507,32 @@ class PathsTests(unittest.TestCase):
             self.assertEqual(p.apps_dir, os.path.join(home, "apps"))
             self.assertEqual(p.stable, os.path.join(home, "apps", "lane-tools"))
 
-    def test_the_host_apps_root_falls_back_to_the_canonical_root(self) -> None:
+    def test_the_host_apps_root_falls_back_to_the_volume_the_host_names(self) -> None:
         """A server host keeps the apps folder on a volume and links no ~/apps into the home.
 
         An install there must write to the volume, not create a second apps folder under
-        the home:  the owner asked for the /root alias to be gone for good.
+        the home:  the owner asked for the /root alias to be gone for good.  The volume's
+        path is named by the host in the environment, so it is not in this repository.
         """
         with tempfile.TemporaryDirectory() as home:
-            with mock.patch.object(T.os.path, "isdir", side_effect=lambda p: p == T.CANONICAL_APPS_ROOT):
-                p = T.host_paths(home, env={})
-            self.assertEqual(p.apps_dir, T.CANONICAL_APPS_ROOT)
-            self.assertEqual(p.stable, os.path.join(T.CANONICAL_APPS_ROOT, "lane-tools"))
+            with tempfile.TemporaryDirectory() as volume:
+                apps = os.path.join(volume, "apps")
+                os.makedirs(apps)
+                p = T.host_paths(home, env={"FLEET_SERVER_VOLUME": volume})
+                self.assertEqual(p.apps_dir, apps)
+                self.assertEqual(p.stable, os.path.join(apps, "lane-tools"))
 
-    def test_a_configured_apps_root_wins_over_the_canonical_root(self) -> None:
+    def test_a_host_that_names_no_volume_keeps_the_copy_under_the_home(self) -> None:
+        """Without a named volume there is no volume, so the home copy is the only folder."""
         with tempfile.TemporaryDirectory() as home:
-            p = T.host_paths(home, env={"FLEET_APPS_ROOT": "/mnt/fleet-extra/apps"})
-            self.assertEqual(p.apps_dir, "/mnt/fleet-extra/apps")
+            p = T.host_paths(home, env={})
+            self.assertEqual(p.apps_dir, os.path.join(home, "apps"))
+            self.assertEqual(p.stable, os.path.join(home, "apps", "lane-tools"))
+
+    def test_a_configured_apps_root_wins_over_the_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            p = T.host_paths(home, env={"FLEET_APPS_ROOT": "/srv/fleet/apps"})
+            self.assertEqual(p.apps_dir, "/srv/fleet/apps")
 
 
 class MergeTests(unittest.TestCase):
@@ -1673,7 +1683,7 @@ class CliTests(World):
         with tempfile.TemporaryDirectory() as outside:
             marker = os.path.join(outside, "lane-tools")
             os.makedirs(marker)
-            with mock.patch.object(T, "CANONICAL_APPS_ROOT", outside):
+            with mock.patch.dict(os.environ, {"FLEET_SERVER_VOLUME": outside}):
                 lines: list[str] = []
                 rc = T.self_test(lines.append, timeout=TIMEOUT, minimal_path=False, source=self.source)
             text = "\n".join(lines)

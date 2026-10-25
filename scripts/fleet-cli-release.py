@@ -294,27 +294,36 @@ def smoke(release: Path, home: Path) -> None:
 
 
 BASH_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane", "scripts/fleet-mode"})
-# Where a host keeps its integration trees and its apps folder when the home directory holds no
-# alias for them.  The server keeps both on the fleet-extra volume and links no ~/Code or ~/apps
-# into the home, so a tool that resolves only the home finds no tree and no repo.  The managed
-# wrappers carry the roots, so every shell that calls them resolves the same directories, with or
-# without an interactive login (owner 2026-10-25).
-SERVER_VOLUME = "/mnt/fleet-extra"
+# The volume a host keeps its integration trees and its apps folder on when the
+# home directory holds no alias for them.  The server keeps both on a volume and
+# links no ~/Code or ~/apps into the home, so a tool that resolves only the home
+# finds no tree and no repo.  The path is not in this repository:  the host names
+# it in the environment, and a host that names none has no volume.  The managed
+# wrappers carry the roots, so every shell that calls them resolves the same
+# directories, with or without an interactive login (owner 2026-10-25).
+ENV_SERVER_VOLUME = "FLEET_SERVER_VOLUME"
 ROOTED_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane"})
 
 
 def host_root(home: Path, name: str) -> str:
     """The host's folder for `name` ("Code" or "apps").
 
-    The copy under the home wins when it is there; the fleet-extra volume is where the server
-    keeps these folders, and it holds the real trees when the home holds no alias for them.
+    A root the caller configured wins, because that is the root the rest of the
+    fleet is using.  Then the copy under the home wins when it is there; then the
+    volume the host names holds these folders, and it holds the real trees when
+    the home holds no alias for them.
     """
+    configured = os.environ.get("FLEET_CODE_ROOT" if name == "Code" else "FLEET_APPS_ROOT")
+    if configured:
+        return configured
     local = home / name
     if local.is_dir():
         return str(local)
-    volume = Path(SERVER_VOLUME) / name
-    if volume.is_dir():
-        return str(volume)
+    raw = (os.environ.get(ENV_SERVER_VOLUME) or "").strip()
+    if raw:
+        volume = Path(raw).expanduser() / name
+        if volume.is_dir():
+            return str(volume)
     return str(local)
 
 
