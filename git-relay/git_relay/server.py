@@ -675,6 +675,10 @@ def _build_shared_verifier():
     through the Worker's verify route.  The route key is a fleet-secrets read
     like every other credential here;  a configured URL with an unreadable or
     short key is a startup error, never silent unauthenticated operation.
+
+    The verify key lives in Fleet-OPS /tools (the same folder the Worker
+    resolves it from), NOT in /github-apps with the App credentials:
+    GIT_RELAY_VERIFY_KEY_PATH overrides the folder, default "/tools".
     """
     verify_url = os.environ.get("GIT_RELAY_VERIFY_URL", "").strip()
     if not verify_url:
@@ -684,12 +688,12 @@ def _build_shared_verifier():
     from .app_tokens import AppTokenError, FleetSecretsSource
     from .shared_bearer import SharedBearerVerifier
 
-    raw_path = os.environ.get("GIT_RELAY_SECRETS_PATH")
+    raw_path = os.environ.get("GIT_RELAY_VERIFY_KEY_PATH")
     try:
         return SharedBearerVerifier(
             url=verify_url,
             key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
-            key_source=FleetSecretsSource(path=(raw_path or "/github-apps").strip()),
+            key_source=FleetSecretsSource(path=(raw_path or "/tools").strip()),
         )
     except (AppTokenError, ValueError) as exc:
         raise SystemExit(f"git-relay config: {exc}") from exc
