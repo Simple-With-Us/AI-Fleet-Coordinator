@@ -61,6 +61,7 @@ import {
   RECALL_MARKER_BEGIN,
   RECALL_MARKER_END,
 } from "./recall.js";
+import { GR_SECRETS } from "./gr-tools.js";
 import {
   FLEETLINK_TOOLS,
   FLEETLINK_READ_TOOLS,
@@ -300,8 +301,9 @@ export class HostedTools {
    * @param {object|null} [o.fleetlink]    a FleetLinkClient, or null when FleetLink is not configured
    * @param {object|null} [o.listener]     a ListenerClient for this seat (src/listener.js), or null
    * @param {object|null} [o.notes]        an OperatorNotesClient (src/notes.js), or null when notes are not configured
+   * @param {object|null} [o.gr]           a GrRelayClient for this bearer identity (src/gr-tools.js), or null when the GR front is not configured
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -319,6 +321,9 @@ export class HostedTools {
     this.recall = recall ?? null;
     // The recall secrets join the scrub list, so no error text can carry them.
     if (this.recall) this.known.push(...this.recall.secrets().filter(Boolean));
+    this.gr = gr ?? null;
+    // The GR front's Access pair and the caller's bearer join the scrub list too.
+    if (this.gr) this.known.push(...this.gr.secrets().filter(Boolean));
     this.linear = linear ?? null;
     this.linearWrites = linearWrites === true;
     this.fleetlink = fleetlink ?? null;
@@ -1263,6 +1268,27 @@ export class HostedTools {
       "not_configured",
       `Fleet recall is not configured on this server.  The owner sets ${Object.values(RECALL_SECRETS).join(", ")} (scripts/agent-sync-mcp/DEPLOY.md).  The Zulip tools still work.`,
     );
+  }
+
+  // ---------------------------------------------------------------- GR-MCP front (git-relay)
+
+  requireGr() {
+    if (this.gr) return this.gr;
+    throw new ToolError(
+      "not_configured",
+      `GR-MCP is not configured on this server.  The owner sets GR_UPSTREAM_URL and ${Object.values(GR_SECRETS).join(", ")} (scripts/agent-sync-mcp/DEPLOY.md).  The other tools still work.`,
+    );
+  }
+
+  /** One git-relay call:  the relay's own answer is data (its allowlist
+   * verdicts are 4xx bodies meant for the caller);  only an unreachable or
+   * mis-answering upstream becomes a ToolError. */
+  async grCall(action, args) {
+    const { status, body } = await this.requireGr().call(action, args);
+    if (status === 0) throw new ToolError("unavailable", "GR-MCP could not reach git-relay.  Try again shortly;  if it persists, the relay host is down.");
+    if (status === 502) throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
+    if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error : "refused");
+    return body;
   }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */
