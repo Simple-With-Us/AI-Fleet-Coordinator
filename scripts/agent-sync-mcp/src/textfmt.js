@@ -127,7 +127,7 @@ export function sentenceGap(text) {
 //
 // sentenceGap only widens a gap the author typed as two spaces.  Agents often type one (and some tools collapse
 // two into one before the text reaches the client), so singleGaps also widens ONE space after a sentence when a
-// capital letter, digit, quote, `*`, `#`, `(`, code or a mention follows.  It is a heuristic:  a list marker
+// capital letter, digit, quote, `*`, `#`, `(`, `[` (a markdown link opener), code or a mention follows.  It is a heuristic:  a list marker
 // (`1. Item`) is skipped, and so are known abbreviations, dotted words and single-letter initials (`Dr. Smith`,
 // `U.S. Army`, `J. Doe`).  A missed gap is the old behaviour;  a wrong one is a slightly wider space, never changed
 // words.
@@ -148,7 +148,7 @@ const ABBREVIATIONS = new Set([
 
 // The lookahead carries MASK as well as the plain characters:  a one-space gap before a code span or a mention
 // is still a gap, and masking is what lets that stay true (textfmt.py's class holds U+E000 for the same reason).
-const SINGLE_GAP_RE = /([.!?]["'”’)\]*_]*)( )(?=[A-Z0-9"“(*#])/g;
+const SINGLE_GAP_RE = /([.!?]["'”’)\]*_]*)( )(?=[A-Z0-9"“(*#\[])/g;
 // Python's `$` also matches before one trailing newline;  singleGaps strips it rather than emulate it.
 const WORD_BEFORE_RE = /([A-Za-z][A-Za-z.]*)$/;
 const ANY_SINGLE_GAP_RE = /[.!?]\S* /;

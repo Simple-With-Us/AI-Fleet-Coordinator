@@ -577,6 +577,10 @@ def map_exception(exc: BaseException, *, write: bool = False, sent: bool = False
     `sent` is the send phase of a write, where a timeout or a gateway status may have posted."""
     if isinstance(exc, ToolError):
         return exc
+    if isinstance(exc, Z.DmGuardRefused):
+        # The owner-in-the-conversation guard (AFC-469):  the machine-readable reason rides in the
+        # code, so the hosted Worker can report the same one (Kody parity rule on AFC-469).
+        return ToolError(exc.code, str(exc), extra={"reason": exc.code})
     if isinstance(exc, Z.UsageError):
         return ToolError("invalid_argument", str(exc))
     if isinstance(exc, Z.CredentialError):

@@ -65,7 +65,7 @@ function harness({ fakeOptions = {}, scopes = ["zulip:read", "zulip:write"], pau
       grantRef: "abcdef012345",
       paused,
       config,
-      zulip: noKey ? null : new ZulipClient({ email: BOT_EMAIL, key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
+      zulip: noKey ? null : new ZulipClient({ email: BOT_EMAIL, key: fake.key, ownerUserId: config.ownerUserId, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
       key: noKey ? "" : fake.key,
       gate,
       cf: { asn: 13335, country: "US" },
@@ -284,7 +284,8 @@ test("a rewritten post, reply and DM report what the outbound fixes changed;  cl
   const theirMessage = (await tools.call("zulip_read_topic", { channel: "sandbox", topic: "fmt", include_self: true })).structuredContent.ids[0];
   const replied = structured(await tools.call("zulip_reply", { message_id: theirMessage, text: rewritten }), "zulip_reply");
   assert.ok(replied.reformatted.some((line) => /dates rewritten/.test(line)), JSON.stringify(replied));
-  const sent = structured(await tools.call("zulip_dm_send", { emails: ["codex-bot@simplewithus.zulipchat.com"], text: rewritten }), "zulip_dm_send");
+  //  Jay is in the direct message (AFC-469):  it goes out only when the owner takes part in it.
+  const sent = structured(await tools.call("zulip_dm_send", { emails: ["codex-bot@simplewithus.zulipchat.com", "jay@zulip.test"], text: rewritten }), "zulip_dm_send");
   assert.ok(sent.reformatted.some((line) => /dates rewritten/.test(line)), JSON.stringify(sent));
   const untouched = structured(await tools.call("zulip_post", { channel: "sandbox", topic: "fmt2", text: clean }), "zulip_post");
   assert.equal(untouched.reformatted, undefined, "nothing changed, so the field is absent");
