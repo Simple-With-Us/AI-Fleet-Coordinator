@@ -1,7 +1,7 @@
 # git-relay - the GitHub relay CLI, and GR-MCP
 
-git-relay knows each seat from its bearer token and picks the credential by task:  PR-write
-authoring runs under the owner's scoped PR-only token (the only copy lives in the service's
+git-relay knows each seat from its bearer token and picks the credential by task:  Opening a PR
+runs under the owner's scoped PR-only token (the only copy lives in the service's
 environment), and every other GitHub task runs under the seat's own GitHub App token, which
 git-relay mints and refreshes from App keys in Infisical.  Every call is checked against per-seat
 policy and written to the audit log, allowed or denied.
@@ -42,17 +42,15 @@ not perform or schedule that cutover.
 
 `GET /healthz` needs no auth. Everything else needs `Authorization: Bearer <seat token>`.
 
-PRs and comments are authored as whoever the GitHub token belongs to (a scoped fine-grained PAT
-on the owner's account, PR write only).  Merges, workflow dispatches, thread resolves and token
-mints run under each seat's OWN GitHub App with a relay-minted installation token - see the action
-catalog below.  Seats can never push;  no seat policy can exceed its GitHub credential.
+Only opening a PR is authored as the owner through the scoped PR-only token.  Edits, review
+replies, comments, merges, workflow dispatches, thread resolves and token mints run under each
+seat's OWN GitHub App with a relay-minted installation token - see the action catalog below.  Seats can never push;  no seat policy can exceed its GitHub credential.
 
 ## Scope and action catalog (owner direction 2026-10-21)
 
 The relay covers every GitHub task seats need.  It knows the seat from its bearer token and picks
-the credential BY TASK:  PR-write authoring (which must be the owner's identity so Kody reviews it,
-and which bot Apps can no longer do since the PR:read change) uses the owner's scoped PR-only token;
-everything else uses the seat's OWN GitHub App token, which the relay mints and refreshes itself
+the credential BY TASK:  opening a PR uses the owner's scoped PR-only token so Kody can review an
+owner-authored PR; every other write, including edits, review replies and comments, uses the seat's OWN GitHub App token, which the relay mints and refreshes itself
 from App keys in Infisical - seats never handle an App id, private key, or the 1-hour token expiry.
 GITHUB_UNIVERSAL_PAT is not used by anyone.  Default deny:  an action is callable only by seats
 explicitly allowlisted for it, and App actions only within the seat's mint_permissions ceiling.
@@ -62,9 +60,9 @@ is only a policy entry.
 | Action | Credential | Status |
 | --- | --- | --- |
 | open_pr | owner PR-only token | implemented |
-| edit_pr (title/body only) | owner PR-only token | implemented |
-| reply_thread (inline review reply) | owner PR-only token | implemented |
-| comment_pr | owner PR-only token | implemented |
+| edit_pr (title/body only) | seat's App, relay-minted | implemented |
+| reply_thread (inline review reply) | seat's App, relay-minted | implemented |
+| comment_pr | seat's App, relay-minted | implemented |
 | mint_token (per-repo, per-permission) | seat's App, relay-minted | implemented |
 | merge_pr (squash/merge/rebase) | seat's App (contents+pull_requests write) | implemented |
 | workflow_dispatch | seat's App (actions write) | implemented |
