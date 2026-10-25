@@ -413,7 +413,7 @@ export class HostedTools {
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(publicName);
-      if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP Admin.");
+      if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP + GR-MCP Admin.");
       // Every delegated service call first verifies the selected role's own
       // Zulip bot is present, matches its email and is a member (role 400).
       if (this.callerGate !== this.gate || this.verifySeat) await this.ensureSeat();
@@ -588,7 +588,7 @@ export class HostedTools {
       if (slot?.code === "budget_exhausted") {
         throw new ToolError("budget_exhausted", `This seat's ${kind} budget for the ${slot.window ?? "hour"} is spent.  Try again after reset_at.`, { retryable: true, resetAt: slot.resetAt });
       }
-      if (slot?.code === "paused") throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP Admin.");
+      if (slot?.code === "paused") throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP + GR-MCP Admin.");
       throw new ToolError("rate_limited", "Other calls from this seat are queued", { retryable: true, retryAfterS: slot?.retryAfterS ?? 3 });
     }
     if (slot.waitMs > 0) await this.sleep(slot.waitMs);

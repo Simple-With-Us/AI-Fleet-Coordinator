@@ -814,7 +814,7 @@ async function authorizeGet(request, env, config, oauth, email) {
   if (!pick.ok) {
     await logRefusal(env, { where: "authorize", reason: pick.reason, clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
     if (pick.reason === "not_armed") return noConnectionPage();
-    return errorPage("More Than One Seat Armed", `These seats share this app's callback:  ${pre.seats.join(", ")}.  More than one is armed, so the connection cannot tell which one you meant.  Disarm all but one in ST-MCP Admin, then start the connection again.`, 409);
+    return errorPage("More Than One Seat Armed", `These seats share this app's callback:  ${pre.seats.join(", ")}.  More than one is armed, so the connection cannot tell which one you meant.  Disarm all but one in ST-MCP + GR-MCP Admin, then start the connection again.`, 409);
   }
   const seat = pick.seat;
   // An allowlisted CIMD id names its seat;  it must be the armed one.  Checked
@@ -844,7 +844,7 @@ async function authorizeGet(request, env, config, oauth, email) {
   // callback) cannot mint a grant for this one.
   if (!clientBoundToSeat(client, seat, authRequest.redirectUri, config)) {
     await logRefusal(env, { where: "authorize", reason: "client_seat_mismatch", clientId: pre.clientId, redirectUri: pre.redirectUri, by: email });
-    return errorPage("Request Refused", `This client is not bound to ${seat}.  Create a manual client for ${seat} in ST-MCP Admin and use its client ID.`, 400);
+    return errorPage("Request Refused", `This client is not bound to ${seat}.  Create a manual client for ${seat} in ST-MCP + GR-MCP Admin and use its client ID.`, 400);
   }
 
   const consent = await oauth.beginConsent(authRequest);
@@ -947,7 +947,7 @@ async function authorizePost(request, env, config, oauth, email) {
   if (!pick.ok || pick.seat !== seat) {
     const reason = pick.ok ? "seat_family_mismatch" : pick.reason;
     await logRefusal(env, { where: "consent", reason, clientId: approved.request.clientId, redirectUri: approved.request.redirectUri, by: email });
-    if (reason === "not_armed") return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in ST-MCP Admin.", 409);
+    if (reason === "not_armed") return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in ST-MCP + GR-MCP Admin.", 409);
     return errorPage("Request Refused", `The armed seat is no longer ${seat}, or more than one seat sharing this app's callback is armed.  Leave exactly one armed and start the connection again.`, 409);
   }
   // Resolve the display name first:  it may fetch a CIMD document, and a failure
@@ -968,7 +968,7 @@ async function authorizePost(request, env, config, oauth, email) {
   const seatGate = gate(env, seat);
   const won = await seatGate.approve({ by: email });
   if (!won.ok) {
-    return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in ST-MCP Admin.", 409);
+    return errorPage("Arming Window Closed", "The 10-minute window closed or was already used.  Arm the seat again in ST-MCP + GR-MCP Admin.", 409);
   }
 
   const approvedAt = Date.now();
@@ -1157,8 +1157,8 @@ async function serveAdmin(request, env, config, oauth, email) {
   if (path === "/admin/action" && request.method === "POST") {
     if (!sameOriginPost(request, config.issuer, { requireFetchSite: true })) return errorPage("Request Refused", "Admin changes must come from the admin page.", 403);
     const parsed = await readForm(request, AdminForm, []);
-    if (!parsed.ok) return errorPage("Request Refused", "That form was not valid.  Reload ST-MCP Admin and try again.", 400);
-    if (!safeEqual(parsed.data.csrf, readCookie(request, CSRF_COOKIE))) return errorPage("Request Refused", "The admin form expired.  Reload ST-MCP Admin and try again.", 403);
+    if (!parsed.ok) return errorPage("Request Refused", "That form was not valid.  Reload ST-MCP + GR-MCP Admin and try again.", 400);
+    if (!safeEqual(parsed.data.csrf, readCookie(request, CSRF_COOKIE))) return errorPage("Request Refused", "The admin form expired.  Reload ST-MCP + GR-MCP Admin and try again.", 403);
     const { action, seat = "" } = parsed.data;
     const needsSeat = ["arm", "disarm", "pause", "unpause", "revoke", "create_manual_client"].includes(action);
     if (needsSeat && !config.hostedSeats.includes(seat)) return errorPage("Request Refused", "Unknown seat.", 400);

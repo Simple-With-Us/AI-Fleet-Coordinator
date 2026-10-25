@@ -91,7 +91,7 @@ export function noConnectionPage() {
     "No Connection Expected",
     `<h1>No Connection Expected</h1><p>${sentences(
       "No seat is armed for this app right now, so nothing was granted.",
-      "If you meant to connect, open ST-MCP Admin, arm the seat, and start again within 10 minutes.",
+      "If you meant to connect, open ST-MCP + GR-MCP Admin, arm the seat, and start again within 10 minutes.",
     )}</p>`,
     { status: 403 },
   );
@@ -133,7 +133,7 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
   }
   const verified = clientDomain
     ? `Published by <strong>${escapeHtml(clientDomain)}</strong> (a client metadata document on that domain).`
-    : `Registered by hand in ST-MCP Admin.${SENTENCE_GAP}Its name is not verified.`;
+    : `Registered by hand in ST-MCP + GR-MCP Admin.${SENTENCE_GAP}Its name is not verified.`;
   const replaceLine = replacing.length
     ? `<p class="warn">${replacing
         .map((g) => `This replaces the grant from ${escapeHtml(g.client)}, created ${escapeHtml(ownerTime(g.createdAt))}.`)
@@ -235,7 +235,7 @@ export function gbBearerRevealPage({ identity, token, expiresAt, kind = "persona
 <p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only its hash, so it cannot show it again.", "Refreshing or resubmitting cannot mint a replacement by accident:  this form was single-use, so a resubmit is refused and the bearer stays exactly as it is.", "To replace it on purpose, mint a new one from the admin page.")}</p>
 <p><code id="gb-bearer-token">${escapeHtml(token)}</code></p>
 <p>${sentences(`Expires ${ownerTime(expiresAt)}.`, send)}</p>
-<p><a href="/admin">Back to ST-MCP Admin</a></p>`;
+<p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
   return htmlResponse(`Bearer For ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
@@ -249,7 +249,7 @@ export function gbBearerMintRefusedPage({ identity, reason = "stale" }) {
     : "Reload the admin page and mint again from the fresh form.";
   const body = `<h1>Nothing Was Minted</h1>
 <p>${sentences(why, "No bearer was minted and the current one is unchanged.", next)}</p>
-<p><a href="/admin">Back to ST-MCP Admin</a></p>`;
+<p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
   return htmlResponse(`Nothing Was Minted - ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
@@ -340,7 +340,7 @@ export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, 
   // Owner controls first, then everything long folded behind a summary that shows its count (AFC-347).
   const fold = (title, count, inner) =>
     `<details class="fold"><summary><h2>${escapeHtml(title)}</h2> <span class="count">${escapeHtml(count)}</span></summary>${inner}</details>`;
-  const body = `<h1>ST-MCP Admin</h1>
+  const body = `<h1>ST-MCP + GR-MCP Admin</h1>
 <p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}A seat serves tools only with its key installed and a live member role.</p>
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Seats</h2>
@@ -364,5 +364,5 @@ ${fold("Refused Token Requests (Unauthenticated, Counted)", `${tokenRefusals.len
 ${fold("Tool Calls", `${calls.length} calls`, `<p>${sentences("One row per call, newest first.", "Bodies, keys and tokens are never stored.", "A topic that looked like a secret shows as its hash.")}</p>
 <table><tr><th>When</th><th>Seat</th><th>Tool</th><th>Outcome</th><th>Stream</th><th>Topic</th><th>Message</th><th>Ms</th><th>Grant</th><th>Network</th></tr>${callRows}</table>`)}
 ${fold("Audit", `${audits.length} events`, `<table><tr><th>When</th><th>Seat</th><th>Event</th><th>Detail</th></tr>${auditRows}</table>`)}`;
-  return htmlResponse("ST-MCP Admin", body, { headers });
+  return htmlResponse("ST-MCP + GR-MCP Admin", body, { headers });
 }
