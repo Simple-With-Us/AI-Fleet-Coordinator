@@ -142,14 +142,77 @@ class OperatorRegistrationTest(unittest.TestCase):
 
     def test_mark_refused_drops_a_live_asked_entry_terminally(self):
         entry = self.begin()["entry"]
-        self.assertTrue(OREG.mark_refused(self.db, entry["entry_id"], "the question was withheld: it matched the secret scan", now=3000.0))
+        self.assertTrue(
+            OREG.mark_refused(self.db, entry["entry_id"], "secret", field="question", now=3000.0)
+        )
         stored = OREG.load(self.db)["entries"][entry["entry_id"]]
         self.assertEqual(stored["state"], OREG.STATE_DROPPED)
-        self.assertEqual(stored["reason"], "the question was withheld: it matched the secret scan")
+        # A code word, never the refusal's text (that text can name the Operator bot).
+        self.assertEqual(stored["reason"], "refused:secret:question")
         self.assertEqual(stored["dropped_at"], 3000.0)
         # Terminal stays terminal:  a second refusal finds nothing live, and the
         # answerable set no longer holds the entry.
-        self.assertFalse(OREG.mark_refused(self.db, entry["entry_id"], "again", now=3001.0))
+        self.assertFalse(OREG.mark_refused(self.db, entry["entry_id"], "secret", now=3001.0))
+        self.assertEqual(OREG.answerable_entries(self.db), [])
+
+    def test_refusal_reason_is_a_bounded_code_word(self):
+        self.assertEqual(OREG.refusal_reason("credential_rejected"), "refused:credential_rejected")
+        self.assertEqual(OREG.refusal_reason("secret", "topic"), "refused:secret:topic")
+        # Anything that is not a short code word is not stored as given.
+        self.assertEqual(OREG.refusal_reason("bot@example.com was rejected"), "refused:unknown")
+        self.assertEqual(OREG.refusal_reason("secret", "body"), "refused:secret")
+
+    def test_a_terminal_refusal_holds_the_session_instead_of_asking_again(self):
+        # kody 4366099679, gap 1:  the refusal is terminal for the session, not only
+        # for its entry - the next begin opens no new question while the hold lasts.
+        entry = self.begin(now=1000.0)["entry"]
+        self.assertTrue(
+            OREG.mark_refused(self.db, entry["entry_id"], "credential_rejected", now=1500.0)
+        )
+        for later in (1501.0, 1500.0 + OREG.REFUSAL_HOLD_SECONDS - 1):
+            held = self.begin(now=later)
+            self.assertEqual(held["status"], "refused")
+            self.assertEqual(held["reason"], "refused:credential_rejected")
+            self.assertEqual(held["entry"]["entry_id"], entry["entry_id"])
+        self.assertEqual(len(OREG.load(self.db)["entries"]), 1)
+        # Past the hold one fresh question opens, at the cadence of an unanswered one.
+        fresh = self.begin(now=1500.0 + OREG.REFUSAL_HOLD_SECONDS)
+        self.assertEqual(fresh["status"], "ask")
+        self.assertNotEqual(fresh["entry"]["entry_id"], entry["entry_id"])
+
+    def test_the_hold_lasts_no_longer_than_the_dropped_entry_is_kept(self):
+        # The hold lives on the dropped entry, so the sweep must not prune it first.
+        self.assertLessEqual(OREG.REFUSAL_HOLD_SECONDS, OREG.SETTLED_KEEP_SECONDS)
+
+    def test_drops_that_are_not_refusals_do_not_hold(self):
+        # An unanswered question and a lost route ask fresh on the next pass, as before.
+        entry = self.begin(now=1000.0)["entry"]
+        OREG.sweep(self.db, now=1000.0 + OREG.DEFAULT_TIMEOUT_SECONDS + 1)
+        again = self.begin(now=1000.0 + OREG.DEFAULT_TIMEOUT_SECONDS + 2)
+        self.assertEqual(again["status"], "ask")
+        self.assertTrue(OREG.mark_dropped(self.db, again["entry"]["entry_id"], "route_lost"))
+        third = self.begin(now=1000.0 + OREG.DEFAULT_TIMEOUT_SECONDS + 3)
+        self.assertEqual(third["status"], "ask")
+        self.assertNotIn(third["entry"]["entry_id"], (entry["entry_id"], again["entry"]["entry_id"]))
+
+    def test_a_route_scoped_refusal_holds_only_its_own_route(self):
+        # The route scan's refusal binds the topic it matched:  a later lease naming a
+        # clean topic is asked there (kody 4366099679, the field split).
+        old = {"channel": "agent-sync", "topic": "Old Lane"}
+        new = {"channel": "agent-sync", "topic": "New Lane"}
+        entry = self.begin(
+            route=old, route_topics=[dict(old, expires=None)], now=1000.0
+        )["entry"]
+        self.assertTrue(
+            OREG.mark_refused(self.db, entry["entry_id"], "secret", field="topic", now=1500.0)
+        )
+        same = self.begin(route=old, route_topics=[dict(old, expires=None)], now=1600.0)
+        self.assertEqual(same["status"], "refused")
+        no_route = self.begin(now=1601.0)
+        self.assertEqual(no_route["status"], "refused")
+        moved = self.begin(route=new, route_topics=[dict(new, expires=None)], now=1602.0)
+        self.assertEqual(moved["status"], "ask")
+        self.assertEqual(moved["entry"]["route"], new)
 
     def test_mark_reconciled_stamps_only_a_live_asked_entry(self):
         entry = self.begin()["entry"]
@@ -663,6 +726,11 @@ class QueueValidationAndPruningTests(unittest.TestCase):
             "reg-cccccccccccc": self._entry(
                 entry_id="reg-cccccccccccc", state=OREG.STATE_CONFLICT, answered_at=old, asked_at=old - 10, deadline=old
             ),
+            # The prune names its settled states (kody 4366124687):  an old drop goes too.
+            "reg-dddddddddddd": self._entry(
+                entry_id="reg-dddddddddddd", state=OREG.STATE_DROPPED, dropped_at=old,
+                asked_at=old - 10, deadline=old, reason="refused:credential_rejected",
+            ),
         }
         self._write_queue(entries)
         OREG.sweep(self.db, now=now)
@@ -671,6 +739,7 @@ class QueueValidationAndPruningTests(unittest.TestCase):
         self.assertIn("reg-aaaaaaaaaaaa", kept)
         self.assertIn("reg-bbbbbbbbbbbb", kept)
         self.assertIn("reg-cccccccccccc", kept)
+        self.assertNotIn("reg-dddddddddddd", kept)
 
 
     def test_a_route_lost_entry_drops_now_and_is_not_answerable(self):

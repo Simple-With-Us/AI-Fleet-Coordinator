@@ -40,7 +40,9 @@ test("the key installer reads MA's existing Fleet-OPS entry instead of duplicati
   const installer = readFileSync(path.join(ROOT, "install_seat_key.py"), "utf8");
   const flat = installer.replace(/\s+/g, " ");
   assert.match(flat, /FLEET_OPS_PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"/);
-  assert.match(flat, /"MA": \( FLEET_OPS_PROJECT, "MA_ZULIP_EMAIL", "MA_ZULIP_KEY", "ZULIP_KEY_MA", "ZULIP_EMAIL_MA", \)/);
+  // None:  the Fleet-OPS project is resolved at call time, as for CODEX
+  // (seat_entry and fleet_ops_project, pinned behaviorally in codex-seat.test.mjs).
+  assert.match(flat, /"MA": \( None, "MA_ZULIP_EMAIL", "MA_ZULIP_KEY", "ZULIP_KEY_MA", "ZULIP_EMAIL_MA", \)/);
   // Its users/me check must derive MA from muse-assist-bot, as seatTagFor does above.
   assert.match(flat, /TAG_OVERRIDES = \{ "muse-assist": "MA",/);
 });

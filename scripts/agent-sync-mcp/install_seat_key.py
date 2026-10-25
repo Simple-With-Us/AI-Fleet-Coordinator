@@ -6,8 +6,9 @@
     python3 -I install_seat_key.py GROK-WEB --delete --apply   # remove it (kill switch)
 
 The key never touches a file, a command line, a log or this process's output.
-It is read from Infisical (project "AI Fleet Coordinator", environment prod,
-folder /zulip, through the INFISICAL_AUTOMATION identity), checked against
+It is read from Infisical (project "AI Fleet Coordinator", or Fleet-OPS for
+CODEX and MA, whose keys already live there;  environment prod, folder /zulip,
+through the INFISICAL_AUTOMATION identity), checked against
 Zulip, and written to `wrangler secret put` on stdin.  Spec 3.6 says the
 Worker gets its copy from Infisical's Cloudflare sync;  until Jay sets that up
 (owner item A4), this script is that sync, run by hand.  Rerun it after a
@@ -50,18 +51,36 @@ INFISICAL_PATH = "/zulip"
 REALM = "https://simplewithus.zulipchat.com"
 ACCOUNT_ID = "3a9368057468d0909cafaa85df12d1b7"  # Usage.Jays.Services (decision D1)
 MEMBER_ROLE = 400
+UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 # Seat -> (Infisical key prefix, Worker secret name, wrangler var for the email, the bot's seat tag source).
 SEATS = {
     "CURSOR": ("ZULIP_CURSOR", "ZULIP_KEY_CURSOR", "ZULIP_EMAIL_CURSOR"),
     "CLAUDE": ("ZULIP_CLAUDE", "ZULIP_CLAUDE_API_KEY", "ZULIP_CLAUDE_EMAIL"),
+    # The Fleet-OPS seats carry a 5-tuple:  (project, email name, key name,
+    # Worker secret name, email var).  A None project is the Fleet-OPS project,
+    # resolved at call time by fleet_ops_project():  env
+    # INFISICAL_FLEET_OPS_PROJECT_ID, then ~/.agent-sync/fleet-ops-project-id,
+    # then the FLEET_OPS_PROJECT fallback.
+    #
+    # Codex's bot key already lives in Fleet-OPS prod /zulip as CODEX_ZULIP_*
+    # (names verified live 2026-10-23):  read it there instead of duplicating
+    # it into the AI Fleet Coordinator project (secret consolidation).
+    "CODEX": (
+        None,
+        "CODEX_ZULIP_EMAIL",
+        "CODEX_ZULIP_KEY",
+        "ZULIP_KEY_CODEX",
+        "ZULIP_EMAIL_CODEX",
+    ),
     # MA (Muse Assist, the seat Jay calls Rob):  its bot key already lives in
     # Fleet-OPS prod /zulip as MA_ZULIP_* (names verified live 2026-10-23), so
     # read it there instead of duplicating it into the AI Fleet Coordinator
-    # project (secret consolidation).  The 5-tuple is (project, email name,
-    # key name, Worker secret name, email var).
+    # project (secret consolidation).
     "MA": (
-        FLEET_OPS_PROJECT,
+        None,
         "MA_ZULIP_EMAIL",
         "MA_ZULIP_KEY",
         "ZULIP_KEY_MA",
@@ -91,6 +110,56 @@ EXPECTED_TAGS = {"JET-CHAT": "JET"}
 
 def fail(message: str) -> NoReturn:  # type: ignore[name-defined]
     raise SystemExit(f"install_seat_key: {message}")
+
+
+def fleet_ops_project() -> str:
+    """Fleet-OPS project id: env INFISICAL_FLEET_OPS_PROJECT_ID, then the first
+    line of ~/.agent-sync/fleet-ops-project-id (same sources as
+    scripts/fleet_secrets/core.py), with the committed constant as the fallback
+    when neither is set.  A value that is set but is not a UUID fails closed,
+    naming both sources and never echoing the value, as fleet-secrets does."""
+    value = os.environ.get("INFISICAL_FLEET_OPS_PROJECT_ID", "").strip()
+    if not value:
+        try:
+            value = (
+                (pathlib.Path.home() / ".agent-sync" / "fleet-ops-project-id")
+                .read_text(encoding="utf-8")
+                .strip()
+                .splitlines()[0]
+                .strip()
+            )
+        except (OSError, RuntimeError, UnicodeDecodeError, IndexError):
+            # RuntimeError:  Path.home() when no home directory can be found.
+            value = ""
+    if not value:
+        return FLEET_OPS_PROJECT
+    if not UUID_RE.match(value):
+        fail(
+            "the Fleet-OPS Infisical project id (INFISICAL_FLEET_OPS_PROJECT_ID or "
+            "~/.agent-sync/fleet-ops-project-id) is not a UUID"
+        )
+    return value
+
+
+def seat_entry(seat: str, *, resolve_project: bool = True) -> tuple[str | None, str, str, str, str]:
+    """(project, email name, key name, Worker secret name, email var) for a seat.
+    Legacy seats carry a 3-tuple prefix and derive the AFC project + names; the
+    Fleet-OPS seats (CODEX, MA) carry the explicit 5-tuple, and their None
+    project is resolved at call time by fleet_ops_project().  With
+    resolve_project=False that project stays None, for a caller that never
+    reads Infisical (the --delete kill switch)."""
+    entry = SEATS[seat]
+    if len(entry) == 5:
+        project, email_name, key_name, secret_name, email_var = entry
+        return (
+            fleet_ops_project() if project is None and resolve_project else project,
+            email_name,
+            key_name,
+            secret_name,
+            email_var,
+        )
+    prefix, secret_name, email_var = entry
+    return INFISICAL_PROJECT, f"{prefix}_EMAIL", f"{prefix}_API_KEY", secret_name, email_var
 
 
 def handoff(name: str) -> str:
@@ -170,7 +239,11 @@ def infisical_pair(
             "clientSecret": handoff("INFISICAL_AUTOMATION_CLIENT_SECRET"),
         },
     )
-    token = login.get("accessToken") or fail("Infisical login returned no access token")
+    if not isinstance(login, dict):
+        fail("Infisical login returned a malformed response (not an object)")
+    token = login.get("accessToken")
+    if not isinstance(token, str) or not token:
+        fail("Infisical login returned no access token")
     query = urllib.parse.urlencode(
         {
             "workspaceId": project,
@@ -182,7 +255,19 @@ def infisical_pair(
     data = http_json(
         "GET", f"{INFISICAL_API}/api/v3/secrets/raw?{query}", headers={"Authorization": auth_header}
     )
-    found = {s.get("secretKey"): s.get("secretValue") or "" for s in data.get("secrets", [])}
+    if not isinstance(data, dict) or not isinstance(data.get("secrets"), list):
+        fail("Infisical secrets response is malformed (missing secrets list)")
+    found = {}
+    for item in data["secrets"]:
+        if (
+            not isinstance(item, dict)
+            or not isinstance(item.get("secretKey"), str)
+            or not (item.get("secretValue") is None or isinstance(item.get("secretValue"), str))
+        ):
+            fail(
+                "Infisical secrets response has a malformed entry - refusing to continue on partial data"
+            )
+        found[item["secretKey"]] = item.get("secretValue") or ""
     email, key = found.get(email_name, ""), found.get(key_name, "")
     if not email or not key:
         fail(
@@ -240,12 +325,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    entry = SEATS[args.seat]
-    if len(entry) == 5:
-        project, email_name, key_name, secret_name, email_var = entry
-    else:
-        prefix, secret_name, email_var = entry
-        project, email_name, key_name = INFISICAL_PROJECT, f"{prefix}_EMAIL", f"{prefix}_API_KEY"
+    # The kill switch needs only the Worker secret name and never reads
+    # Infisical, so the Fleet-OPS project id is resolved after it:  a malformed
+    # INFISICAL_FLEET_OPS_PROJECT_ID or id file never blocks removing a key.
+    _, email_name, key_name, secret_name, email_var = seat_entry(args.seat, resolve_project=False)
     vars_ = wrangler_vars()
     hosted = [s.strip() for s in str(vars_.get("HOSTED_SEATS", "")).split(",") if s.strip()]
 
@@ -254,6 +337,8 @@ def main() -> int:
         if not args.apply:
             return 0
         return wrangler(["secret", "delete", secret_name], "y\n", "")
+
+    project = seat_entry(args.seat)[0]
 
     if args.seat not in hosted:
         fail(

@@ -240,4 +240,56 @@ final class ManifestTargetTests: XCTestCase {
             )
         }
     }
+
+    /// A manifest that declares the fleet-wide compliance family is read,  and the
+    /// rules it declares are known to the model.
+    ///
+    /// The key is additive:  a manifest without it is read exactly as before,  and the
+    /// app does not have to know about the family to read the seats it already reads.
+    func test_the_fleet_wide_compliance_family_is_read_when_it_is_declared() throws {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("muster-manifest-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try """
+        {
+          "schemaVersion": 2,
+          "seats": {},
+          "complianceRules": [
+            {
+              "id": "compliance-secrets-hygiene",
+              "kind": "compliance",
+              "scope": ["mac"],
+              "ownerSeat": "CLAUDE",
+              "implemented": true,
+              "check": {"type": "secrets_hygiene", "target": "~/.secrets", "detail": ""}
+            },
+            {
+              "id": "compliance-backup-heartbeat",
+              "kind": "compliance",
+              "scope": ["mac"],
+              "ownerSeat": "CLAUDE",
+              "implemented": false,
+              "implementationReason": "No command reads the backup heartbeat yet.",
+              "check": {"type": "command", "target": "fleet-backup-heartbeat", "detail": ""}
+            }
+          ]
+        }
+        """.write(to: url, atomically: true, encoding: .utf8)
+        let manifest = try SeatManifest.read(at: url)
+        XCTAssertEqual(manifest.allComplianceRules.count, 2)
+        XCTAssertEqual(manifest.allComplianceRules.first?.ownerSeat, "CLAUDE")
+        XCTAssertEqual(manifest.allComplianceRules.first?.scope, ["mac"])
+        XCTAssertEqual(manifest.complianceRulesNotImplemented.count, 1)
+        XCTAssertEqual(manifest.complianceRulesNotImplemented.first?.id, "compliance-backup-heartbeat")
+    }
+
+    /// A manifest from before the compliance family is read exactly as before.
+    func test_a_manifest_without_the_compliance_family_is_read() throws {
+        let manifest = try JSONDecoder().decode(
+            SeatManifest.self,
+            from: Data(Fixtures.manifest.utf8)
+        )
+        XCTAssertTrue(manifest.allComplianceRules.isEmpty)
+        XCTAssertTrue(manifest.complianceRulesNotImplemented.isEmpty)
+    }
 }

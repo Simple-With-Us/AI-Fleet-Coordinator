@@ -538,9 +538,10 @@ the text as it is, never switch to the `&nbsp;` entity, and report the surface i
 **2026-10-23 update — one mechanism everywhere.**  The owner replaced every per-surface rule
 with one:  a real U+00A0 plus a normal space on every surface, never the `&nbsp;` entity, and
 never two plain ASCII spaces.  The one exception is the Claude Code Code tab and the MiniMax
-Code chat pane, which keep the entity because they normalize a raw U+00A0 away.  The entity
-rows (chat panes 2026-10-08 and 2026-10-18, GitHub 2026-10-22) and the two-ASCII-space rows
-(files, commits, terminals, untested surfaces) below are history only.
+Code chat pane, which keep the entity because they normalize a raw U+00A0 away.  The
+chat-pane entity entries below (the Code tab 2026-10-08, the MiniMax Code pane 2026-10-18)
+stay current for those two panes;  the GitHub entity row (2026-10-22) and the
+two-ASCII-space rows (files, commits, terminals, untested surfaces) are history only.
 
 **2026-09-04 update — desktop app superseded.**  The entity finding below for the desktop
 app (Code tab) was superseded by an owner-verified ruling on 2026-09-04: use **two literal
@@ -551,6 +552,16 @@ entity plus a space after each sentence (outside code spans); the renderer decod
 U+00A0 from the model arrives as a plain space (0 NBSPs in the verified reply), and two
 ASCII spaces collapse.  Owner-verified 2026-10-08 with a screenshot.  The 2026-09-04 ASCII
 ruling is withdrawn.
+
+**2026-10-20 update — MiniMax Code chat pane.**  Chat advice has now reversed three times
+(2026-08-19 entity → 2026-09-04 ASCII for the Code tab → 2026-10-08 entity for the Code tab).
+The MiniMax Code chat pane kept the entity:  the 2026-10-18 entity entry for that pane was
+briefly superseded by a 2026-10-20 note asking for a real U+00A0, but that note was an
+inference, it was never owner-verified, and the owner reversed it.  The entity plus a space
+stood there, owner-verified 2026-10-18 and reaffirmed 2026-10-20, and the 2026-10-23 ruling
+left it there:  the MiniMax Code pane is one of the two panes that take the `&nbsp;` entity
+plus a normal space, because it normalizes a raw U+00A0 away.
+Do not re-run these tests.
 
 **Terminal CLI — superseded 2026-10-23.**  Last checked 2026-08-19/20, when two literal ASCII
 spaces were the default there.  Under the 2026-10-23 ruling the terminal takes a real U+00A0
@@ -571,7 +582,8 @@ What was found 2026-08-19/20:
   auto-update.  Never attempt.
 - ✅ The literal entity text `&nbsp;` + a space rendered as a visibly wider gap, and does
   again on the desktop app (re-verified 2026-10-08, see above).  Not re-verified on the
-  terminal CLI since.  History only:  the 2026-10-23 ruling retired the entity on every surface.
+  terminal CLI since.  Still current for the Code tab and the MiniMax Code pane (owner ruling
+  2026-10-23);  retired on every other surface.
 - ✅ **Two literal ASCII spaces in files** — the 2026-08 finding.  History only:  since the
   2026-10-23 ruling, prose files take a real U+00A0 plus a normal space;  code and config never do.
 

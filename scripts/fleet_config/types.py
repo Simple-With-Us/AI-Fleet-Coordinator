@@ -16,7 +16,9 @@ from enum import Enum
 
 __all__ = [
     "CHECK_STATES",
+    "COMPLIANCE_SCOPES",
     "CONFIG_KINDS",
+    "SEAT_CONFIG_KINDS",
     "CheckResult",
     "CheckSpec",
     "CheckState",
@@ -26,6 +28,7 @@ __all__ = [
     "ExpectedState",
     "Manifest",
     "NotApplicable",
+    "NotImplementedRule",
     "ObservedState",
     "OverallVerdict",
     "ProofLevel",
@@ -34,6 +37,7 @@ __all__ = [
     "SeatManifest",
     "StatusReport",
     "StatusSummary",
+    "Threshold",
     "UncoveredSurface",
 ]
 
@@ -85,10 +89,18 @@ _PROOF_RANK: dict[ProofLevel, int] = {ProofLevel.L0: 0, ProofLevel.L1: 1, ProofL
 
 
 class ConfigKind(str, Enum):
-    """The six config kinds a seat is checked on.  No seventh kind is added here.
+    """The config kinds the engine checks.
 
-    A new kind is a design change to the plan document and to this enum together, never a
-    string invented inside one check module.
+    Six of them are per-seat config surfaces:  the instruction file,  the hook
+    registrations,  the MCP registrations,  the skills,  the sub-agents and the
+    permissions.  The seventh, ``compliance``, is a fleet-wide rule:  it is about the
+    fleet rather than about one seat's config surface (a certificate that expires,  a
+    backup that stopped,  a secret that ended up in a flat key file).  A compliance rule
+    lives in its own list in the manifest,  so it never takes part in a seat's coverage
+    tuple.
+
+    A new kind is a design change to the plan document and to this enum together, never
+    a string invented inside one check module.
     """
 
     INSTRUCTIONS = "instructions"
@@ -97,9 +109,23 @@ class ConfigKind(str, Enum):
     SKILLS = "skills"
     SUBAGENTS = "subagents"
     PERMISSIONS = "permissions"
+    COMPLIANCE = "compliance"
 
 
 CONFIG_KINDS: tuple[ConfigKind, ...] = tuple(ConfigKind)
+
+# The kinds a seat's own config surface is checked on.  The compliance kind is
+# fleet-wide,  so a seat that has no compliance rule is not uncovered:  coverage is a
+# property of a seat's config surface,  and the compliance family carries its own list.
+SEAT_CONFIG_KINDS: tuple[ConfigKind, ...] = tuple(
+    kind for kind in ConfigKind if kind is not ConfigKind.COMPLIANCE
+)
+
+# The host scopes a fleet-wide compliance rule can be about.  A scope says which host
+# the rule describes;  the collector says where the check runs.  They are usually the
+# same word today,  but they are not the same fact.  ``fleet`` is the scope for a rule
+# that is about the fleet wherever it runs,  such as a per-repo rule.
+COMPLIANCE_SCOPES: tuple[str, ...] = ("mac", "vm", "hetzner", "cloud", "fleet")
 
 
 class Collector(str, Enum):
@@ -126,6 +152,12 @@ class CheckType(str, Enum):
     ``fleet-secrets`` CLI for the KEY NAMES in one secret-store folder and reports which
     of the rule's names are there.  A key name is an identifier,  never a value,  so the
     check cannot carry a secret into a result even by accident.
+
+    The three compliance check types serve the fleet-wide family.  ``command`` runs one
+    allowlisted program and reads its exit code.  ``secrets_hygiene`` looks for a
+    credential written as a flat key file and for an internal identifier inside a
+    published file.  ``certificate_expiry`` reads the expiry of the Apple signing
+    certificates the fleet uses.  None of them ever prints a secret value.
     """
 
     MARKED_BLOCK_HASH = "marked_block_hash"
@@ -137,6 +169,9 @@ class CheckType(str, Enum):
     PERMISSIONS_MATCH = "permissions_match"
     CREDENTIAL_STAT = "credential_stat"
     CREDENTIAL_KEY_PRESENT = "credential_key_present"
+    COMMAND = "command"
+    SECRETS_HYGIENE = "secrets_hygiene"
+    CERTIFICATE_EXPIRY = "certificate_expiry"
 
 
 class ReasonCode(str, Enum):
@@ -221,8 +256,28 @@ class CheckSpec:
 
 
 @dataclass(frozen=True)
+class Threshold:
+    """A number a compliance rule reads from a fleet knob,  never from a literal.
+
+    ``knob`` is the name of a knob in ``scripts/fleet_knobs/registry.py``,  and the value
+    comes from Infisical through that registry.  A threshold in the manifest is a pointer
+    to a knob,  so the owner changes a number in one place and every rule that reads it
+    moves together.
+
+    ``minimum`` and ``maximum`` are the values the rule accepts.  A value outside them is
+    not a threshold,  so the rule reads ``UNKNOWN`` rather than deciding on a number
+    nobody meant.  ``unit`` names what the number counts,  such as days or findings.
+    """
+
+    knob: str
+    minimum: int
+    maximum: int
+    unit: str = ""
+
+
+@dataclass(frozen=True)
 class Rule:
-    """One desired-state rule for one seat, as loaded from the manifest.
+    """One desired-state rule, as loaded from the manifest.
 
     ``id`` is unique across the whole manifest.  ``owner_seat`` is the seat that owns the
     rule (it answers for drift), which may differ from the seat being checked;
@@ -233,6 +288,17 @@ class Rule:
     Zulip topic message id that cites the seat reply the rule came from (AFC-384
     requires the review to cite MM's answers and every other seat's reply).  It is
     free text and never affects the verdict.
+
+    A seat rule names the harness config surfaces it checks in ``platforms``.  A
+    compliance rule names the hosts it is about in ``scope`` instead,  because a
+    fleet-wide rule is not about one seat's config surface;  its ``seat`` is empty and
+    its ``kind`` is ``compliance``.
+
+    ``threshold`` is the knob a compliance rule reads its number from,  and is None for
+    a rule with no threshold.  ``implemented`` says whether the engine has a check for
+    this rule's check type:  a rule that is not implemented is a registry row that says
+    so,  and it reads ``UNSUPPORTED`` rather than a pass.  ``implementation_reason``
+    explains that,  and is required when ``implemented`` is false.
     """
 
     id: str
@@ -248,6 +314,10 @@ class Rule:
     ttl_seconds: int = 900
     description: str = ""
     source: str = ""
+    scope: tuple[str, ...] = ()
+    threshold: Threshold | None = None
+    implemented: bool = True
+    implementation_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -296,11 +366,17 @@ class SeatManifest:
 
 @dataclass(frozen=True)
 class Manifest:
-    """A whole loaded manifest.  ``seats`` is in manifest order, keyed by registry tag."""
+    """A whole loaded manifest.  ``seats`` is in manifest order, keyed by registry tag.
+
+    ``compliance_rules`` holds the fleet-wide family:  the rules that are about the
+    fleet rather than about one seat's config surface.  The list is empty for a manifest
+    that declares none,  which is what every manifest before this family looked like.
+    """
 
     schema_version: int
     seats: tuple[SeatManifest, ...]
     source_path: str | None = None
+    compliance_rules: tuple[Rule, ...] = ()
 
     def seat(self, tag: str) -> SeatManifest | None:
         """The entry for registry tag `tag`, or None.  Tags are compared exactly."""
@@ -349,6 +425,23 @@ class StatusSummary:
 
 
 @dataclass(frozen=True)
+class NotImplementedRule:
+    """A rule the registry declares and the engine cannot run yet.
+
+    It is named here so the report can say what is missing without producing a result for
+    it.  A rule that cannot run must not make the run's verdict unknown forever,  and it
+    must not disappear either:  the fleet has to see the gap.
+
+    ``owner_seat`` is the seat that answers for the gap,  and ``reason`` says why the
+    rule cannot run yet.
+    """
+
+    rule_id: str
+    owner_seat: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class StatusReport:
     """One whole status run, before the envelope builder renders it as JSON."""
 
@@ -359,3 +452,4 @@ class StatusReport:
     manifest_source: str | None = None
     notes: tuple[str, ...] = field(default_factory=tuple)
     uncovered: tuple[UncoveredSurface, ...] = field(default_factory=tuple)
+    not_implemented: tuple[NotImplementedRule, ...] = field(default_factory=tuple)

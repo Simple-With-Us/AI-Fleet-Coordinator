@@ -19,6 +19,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from agent_sync import adapters as A
+from agent_sync import chat_catalog as CC
 from agent_sync import daemon as D
 from agent_sync import heldback as HELD
 from agent_sync import host_load as HL
@@ -2453,6 +2454,467 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             )
         )
 
+    # ---- follow-ups to PR #885's review (AFC-412) ---------------------------------------
+
+    def _log_rows(self, event):
+        path = self.state_dir / "logs" / "listener.log"
+        if not path.exists():
+            return []
+        rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+        return [row for row in rows if row.get("event") == event]
+
+    @staticmethod
+    def _registration_marked(done, message_id):
+        return any(
+            isinstance(item, tuple)
+            and len(item) == 3
+            and item[0] == message_id
+            and item[1] == "register-location"
+            for item in done
+        )
+
+    def test_a_terminal_refusal_opens_no_new_question_on_later_passes(self):
+        # kody 4366099679, gap 1, pinned at the pass level:  after a terminal refusal the
+        # next passes open no new question for the session (one entry, one send).
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        rejected = {
+            "status": "refused",
+            "reason": "the Operator credential (operator-bot@example.com) was rejected (401)",
+            "delivery_status": D.OC.DELIVERY_REFUSED,
+            "code": "credential_rejected",
+        }
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=rejected) as send:
+            for _ in range(3):
+                daemon.maybe_ask_registrations(self._rows(), {})
+        self.assertEqual(send.call_count, 1)
+        entries = list(D.OREG.load(db)["entries"].values())
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["state"], D.OREG.STATE_DROPPED)
+        self.assertEqual(entries[0]["reason"], "refused:credential_rejected")
+        # Gap 3:  surfaced the way an expired question is - one drop line, written once.
+        drops = self._log_rows("operator-registration-drop")
+        self.assertEqual(
+            [(row["entry_id"], row["reason"]) for row in drops],
+            [(entries[0]["entry_id"], "refused:credential_rejected")],
+        )
+        # kody 4365989242:  the ask row carries the delivery class and the code.
+        asks = [
+            row for row in self._log_rows("operator-registration-ask")
+            if row.get("entry_id") == entries[0]["entry_id"]
+        ]
+        self.assertEqual(len(asks), 1)
+        self.assertEqual(asks[0]["delivery_status"], D.OC.DELIVERY_REFUSED)
+        self.assertEqual(asks[0]["code"], "credential_rejected")
+
+    def test_a_retryable_refusal_without_a_code_still_retries_on_the_next_pass(self):
+        # The other half of kody's pass-level test:  a missing credential is a config
+        # state the owner can fix, so it keeps its one asked entry and retries.
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        missing = {
+            "status": "refused",
+            "reason": "the Operator credential is missing: not installed",
+            "delivery_status": D.OC.DELIVERY_REFUSED,
+        }
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=missing) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+            daemon.maybe_ask_registrations(self._rows(), {})
+        self.assertEqual(send.call_count, 2)
+        pending = D.OREG.pending_entries(db)
+        self.assertEqual(len(pending), 1)
+        self.assertFalse(pending[0].get("notified_at"))
+        self.assertEqual(len(D.OREG.load(db)["entries"]), 1)
+        self.assertEqual(self._log_rows("operator-registration-drop"), [])
+
+    def test_every_readable_catalog_status_is_asked_and_no_unreadable_one(self):
+        # kody 4366081475:  the skip set is checked against the catalog's own rows, so a
+        # change to the catalog's readability rule cannot quietly stop the asks again.
+        catalog = CC.ChatCatalog(home=str(self.home), host="test-host")
+        daemon = self.daemon()
+        self._registry(daemon)
+        statuses = (
+            "available", "idle", "active", "busy", "unknown",
+            "stale", "metadata-only", "unavailable",
+        )
+        unreadable = set()
+        for status in statuses:
+            row = catalog._row(
+                "claude", "CLAUDE", "sess-aaaaaaaa",
+                cwd=None, title="t", updated_at=1.0, status=status,
+            )
+            readable = row["capabilities"]["read"]
+            if not readable:
+                unreadable.add(status)
+            with mock.patch.object(
+                D.OREG, "begin", return_value={"status": "already_registered"}
+            ) as begin:
+                daemon.maybe_ask_registrations([row], {})
+            self.assertEqual(begin.call_count, 1 if readable else 0, status)
+        self.assertEqual(set(D._REGISTRATION_SKIP_STATUSES), unreadable)
+
+    def test_a_failed_lease_read_on_one_row_does_not_stop_the_batch(self):
+        # kody 4366012641:  the lease read sat outside every per-row guard.
+        self.write_lease("L2", session_id="sess-bbbbbbbb", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        rows = self._rows() + self._rows(id="row-2", session_id="sess-bbbbbbbb")
+        real = daemon._registration_lease_topics
+
+        def flaky(row, lease_map):
+            if row.get("id") == "row-1":
+                raise RuntimeError("lease read failed")
+            return real(row, lease_map)
+
+        with mock.patch.object(daemon, "_registration_lease_topics", side_effect=flaky), \
+                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(rows, {})
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual([e["session_id"] for e in D.OREG.pending_entries(db)], ["sess-bbbbbbbb"])
+        errors = [
+            row for row in self._log_rows("operator-registration-ask")
+            if row.get("status") == "error"
+        ]
+        self.assertEqual([row["error"] for row in errors], ["RuntimeError"])
+        # kody 4368820879:  the error line names the row's session;  the lease read
+        # failed before begin(), so there is no entry to name yet.
+        self.assertEqual(errors[0]["session_id"], "sess-aaaaaaaa")
+        self.assertEqual(errors[0]["platform"], "claude")
+        self.assertIsNone(errors[0]["entry_id"])
+
+    def test_a_row_failing_after_begin_names_its_entry_and_session(self):
+        # kody 4368820879:  a step after begin() (here the missing-route line) fails, and
+        # the outer guard's error line names the entry begin() returned.
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        real_write = daemon.log.write
+
+        def flaky_write(event, **fields):
+            if event == "operator-registration-missing-route":
+                raise OSError("log unwritable")
+            return real_write(event, **fields)
+
+        with mock.patch.object(daemon.log, "write", side_effect=flaky_write), \
+                mock.patch.object(D.ORASK, "send_location_question") as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+        self.assertEqual(send.call_count, 0)
+        pending = D.OREG.pending_entries(db)
+        self.assertEqual(len(pending), 1)
+        errors = [
+            row for row in self._log_rows("operator-registration-ask")
+            if row.get("status") == "error"
+        ]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["error"], "OSError")
+        self.assertEqual(errors[0]["entry_id"], pending[0]["entry_id"])
+        self.assertEqual(errors[0]["session_id"], "sess-aaaaaaaa")
+
+    def test_a_failing_begin_writes_one_error_line_naming_the_session(self):
+        # kody 4369230758:  begin() failures reach the outer guard, so the row's one
+        # error line names its session like every other per-row failure.
+        self.write_lease("L2", session_id="sess-bbbbbbbb", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        rows = self._rows() + self._rows(id="row-2", session_id="sess-bbbbbbbb")
+        real = D.OREG.begin
+
+        def flaky(registry_db, **kwargs):
+            if kwargs.get("session_id") == "sess-aaaaaaaa":
+                raise ValueError("the queue file is unreadable")
+            return real(registry_db, **kwargs)
+
+        with mock.patch.object(D.OREG, "begin", side_effect=flaky), \
+                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(rows, {})
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual([e["session_id"] for e in D.OREG.pending_entries(db)], ["sess-bbbbbbbb"])
+        errors = [
+            row for row in self._log_rows("operator-registration-ask")
+            if row.get("status") == "error"
+        ]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["error"], "ValueError")
+        self.assertEqual(errors[0]["session_id"], "sess-aaaaaaaa")
+        self.assertIsNone(errors[0]["entry_id"])
+
+    def test_a_session_id_begin_would_refuse_is_left_out_of_the_error_line(self):
+        # The lease read comes before begin()'s session id checks, so the error line runs
+        # them itself:  a secret-shaped or malformed id is never written to the log.
+        daemon = self.daemon()
+        self._registry(daemon)
+        secret_shaped = "sk-" + "placeholder" * 2
+        rows = self._rows(session_id=secret_shaped) + self._rows(
+            id="row-2", session_id="not a session id"
+        )
+        with mock.patch.object(
+            daemon, "_registration_lease_topics", side_effect=RuntimeError("lease read failed")
+        ), mock.patch.object(D.ORASK, "send_location_question") as send:
+            daemon.maybe_ask_registrations(rows, {})
+        self.assertEqual(send.call_count, 0)
+        errors = [
+            row for row in self._log_rows("operator-registration-ask")
+            if row.get("status") == "error"
+        ]
+        self.assertEqual([row["session_id"] for row in errors], ["", ""])
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertNotIn(secret_shaped, log)
+        self.assertNotIn("not a session id", log)
+
+    def test_a_drop_line_that_raises_neither_costs_the_other_drops_nor_ends_the_pass(self):
+        # kody 4368820879:  sweep() has already saved its drops when their lines are
+        # written, so each drop line has its own guard.
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        long_ago = time.time() - 2 * D.OREG.DEFAULT_TIMEOUT_SECONDS
+        for session_id in ("sess-cccccccc", "sess-dddddddd"):
+            D.OREG.begin(
+                db, platform="claude", profile_scope="default", session_id=session_id,
+                seat="CLAUDE", requester="catalog", registrations=lambda pf, sid: [],
+                now=long_ago,
+            )
+        real_write = daemon.log.write
+        drop_calls = []
+
+        def flaky_write(event, **fields):
+            if event == "operator-registration-drop":
+                drop_calls.append(fields["entry_id"])
+                if len(drop_calls) == 1:
+                    raise OSError("log unwritable")
+            return real_write(event, **fields)
+
+        with mock.patch.object(daemon.log, "write", side_effect=flaky_write), \
+                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+        self.assertEqual(len(drop_calls), 2)
+        drops = self._log_rows("operator-registration-drop")
+        self.assertEqual([row["entry_id"] for row in drops], drop_calls[1:])
+        self.assertEqual(drops[0]["reason"], D.OREG.REASON_NO_REPLY)
+        # The pass went on:  the live row was still asked.
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(
+            [e["session_id"] for e in D.OREG.pending_entries(db)], ["sess-aaaaaaaa"]
+        )
+
+    def test_a_log_line_that_raises_on_one_row_does_not_stop_the_batch(self):
+        # kody 4366012641:  the logger itself failing - for the row's own line and then
+        # for its error line - still leaves the next row asked.
+        self.write_lease("L2", session_id="sess-bbbbbbbb", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        rows = self._rows() + self._rows(id="row-2", session_id="sess-bbbbbbbb")
+        real_write = daemon.log.write
+
+        def flaky_write(event, **fields):
+            # row-1 has no route, so its missing-route line is the step that raises.
+            if event == "operator-registration-missing-route" or (
+                event == "operator-registration-ask" and fields.get("status") == "error"
+            ):
+                raise OSError("log unwritable")
+            return real_write(event, **fields)
+
+        with mock.patch.object(daemon.log, "write", side_effect=flaky_write), \
+                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(rows, {})
+        self.assertEqual(send.call_count, 1)
+        notified = [e["session_id"] for e in D.OREG.pending_entries(db) if e.get("notified_at")]
+        self.assertEqual(notified, ["sess-bbbbbbbb"])
+
+    def test_a_refused_answer_records_no_registration_and_says_not_registered(self):
+        # kody 4365985885 and 4366258037 item 1:  the registry writer refuses, so the
+        # route ledger gets no register-location step and the chat is told "Not
+        # registered", never a "Registered:" line.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        db = daemon._registration_db()
+        refusing = {
+            "record_id": "r", "label": "", "generation": 0,
+            "created": False, "outcome": "resumed_closed",
+        }
+        message = {
+            "id": 43, "content": "mac %s" % entry["entry_id"],
+            "sender_id": 12, "client": "website",
+        }
+        done = set()
+        with mock.patch.object(D.OR, "register_session", return_value=refusing) as register, \
+                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                message, 2000.0, channel="agent-sync", topic="AFC Work", done=done
+            )
+        self.assertTrue(consumed)
+        self.assertEqual(register.call_count, 1)
+        self.assertFalse(self._registration_marked(done, 43))
+        posted = send.call_args.kwargs["question"]
+        self.assertTrue(posted.startswith("Not registered"), posted)
+        self.assertIn("resumed_closed", posted)
+        self.assertNotIn("Registered:", posted)
+        # kody 4368936156:  a reply that registered nothing is its own read-back
+        # marker too, so the question can never stand in for it.
+        self.assertEqual(send.call_args.kwargs["read_back_markers"], (posted,))
+        self.assertEqual(len(D.OREG.pending_entries(db)), 1)
+        # A reply to an answer that registered nothing is not retried by the route:  it
+        # returns consumed, records nothing, and the question stays open.
+        unsent = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
+        done = set()
+        with mock.patch.object(D.OR, "register_session", return_value=refusing), \
+                mock.patch.object(D.ORASK, "send_location_question", return_value=unsent):
+            consumed = daemon._maybe_registration_answer(
+                dict(message, id=44), 2001.0, channel="agent-sync", topic="AFC Work", done=done
+            )
+        self.assertTrue(consumed)
+        self.assertEqual(done, set())
+        self.assertEqual(len(D.OREG.pending_entries(db)), 1)
+
+    def test_a_returned_unsent_confirmation_stays_open_and_raises_for_the_route(self):
+        # kody 4366258037 item 2:  a confirmation send that RETURNS refused or unknown
+        # (rather than raising) is not recorded as done, on either path, and goes back
+        # to the route's retry loop.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        message = {
+            "id": 42, "content": "mac %s" % entry["entry_id"],
+            "sender_id": 12, "client": "website",
+        }
+        done = set()
+        retryable = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=retryable):
+            with self.assertRaises(D.RegistrationConfirmationPending):
+                daemon._maybe_registration_answer(
+                    message, 2000.0, channel="agent-sync", topic="AFC Work", done=done
+                )
+        self.assertTrue(self._registration_marked(done, 42))
+        self.assertNotIn((42, "send-confirmation"), done)
+        # The confirm-retry branch:  an unknown delivery returned again stays open too.
+        unknown = {"status": "refused", "reason": "unknown", "delivery_status": D.OC.DELIVERY_UNKNOWN}
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=unknown):
+            with self.assertRaises(D.RegistrationConfirmationPending):
+                daemon._maybe_registration_answer(
+                    message, 2001.0, channel="agent-sync", topic="AFC Work", done=done
+                )
+        self.assertNotIn((42, "send-confirmation"), done)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                message, 2002.0, channel="agent-sync", topic="AFC Work", done=done
+            )
+        self.assertTrue(consumed)
+        self.assertIn((42, "send-confirmation"), done)
+        self.assertIn("letter A", send.call_args.kwargs["question"])
+        # Sentry 4368820226:  the confirmation is its own read-back marker, so the
+        # question (same ref) is never read as the landed confirmation.
+        self.assertEqual(
+            send.call_args.kwargs["read_back_markers"], (send.call_args.kwargs["question"],)
+        )
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual(len(rows), 1)
+        # Each returned outcome wrote its own row with the delivery it returned.
+        deliveries = [row.get("delivery") for row in self._log_rows("operator-registration-answer")]
+        self.assertEqual(deliveries, ["refused", "refused", "sent"])
+
+    REJECTED = {
+        "status": "refused", "reason": "rejected",
+        "delivery_status": "refused", "code": "credential_rejected",
+    }
+    RATE_LIMITED = {
+        "status": "refused", "reason": "rate-limited", "delivery_status": "retryable",
+        "http_status": 429, "retry_after_seconds": 5.0,
+    }
+
+    def _assert_held_not_resent(self, outcome, message_id):
+        # kody 4368853431 and 4368853546:  a confirmation that cannot land in this
+        # routing call (a terminal refusal, a rate limit the client already waited out)
+        # is not resent, but the answer is never consumed with it missing either:  each
+        # attempt raises, and the attempts after the first skip the send.
+        daemon = self.daemon()
+        entry = self._pending_entry(daemon)
+        message = {
+            "id": message_id, "content": "mac %s" % entry["entry_id"],
+            "sender_id": 12, "client": "website",
+        }
+        done = set()
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=outcome) as send:
+            with self.assertRaises(D.RegistrationConfirmationPending):
+                daemon._maybe_registration_answer(
+                    message, 2000.0, channel="agent-sync", topic="AFC Work", done=done
+                )
+            # The confirm-retry branch skips the send.
+            with self.assertRaises(D.RegistrationConfirmationPending):
+                daemon._maybe_registration_answer(
+                    message, 2001.0, channel="agent-sync", topic="AFC Work", done=done
+                )
+        self.assertEqual(send.call_count, 1)
+        self.assertIn((message_id, D.CONFIRMATION_HELD), done)
+        self.assertTrue(self._registration_marked(done, message_id))
+        self.assertNotIn((message_id, "send-confirmation"), done)
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual(len(rows), 1)
+
+    def test_a_terminally_refused_confirmation_is_held_not_resent(self):
+        self._assert_held_not_resent(self.REJECTED, 45)
+
+    def test_a_rate_limited_confirmation_is_held_not_resent(self):
+        self._assert_held_not_resent(self.RATE_LIMITED, 46)
+
+    def test_the_route_quarantines_a_held_confirmation_after_one_send(self):
+        # Through _route_message:  one send, no resend, and the answer is surfaced in
+        # the seat inbox instead of being consumed silently (kody 4368853431).
+        daemon = self.started()
+        entry = self._pending_entry(daemon)
+        message = self._owner_answer(daemon, entry)
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=self.REJECTED) as send:
+            daemon.route_message(daemon.seats["CLAUDE"], message)
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(len(self._log_rows("quarantined")), 1)
+        self.assertTrue(any(item.get("quarantined") for item in self.inbox()))
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual(len(rows), 1)
+
+    def _owner_answer(self, daemon, entry):
+        owner = self.fake.user_by_id(12)
+        self.fake.add_message(
+            owner, "agent-sync", "AFC Work", "mac %s" % entry["entry_id"], deliver=False
+        )
+        return self.fake.messages[-1]
+
+    def test_the_route_retries_a_returned_unsent_confirmation(self):
+        # End to end through _route_message:  the first confirmation returns unsent,
+        # the route's retry resends the recorded reply once, and nothing registers twice.
+        daemon = self.started()
+        entry = self._pending_entry(daemon)
+        message = self._owner_answer(daemon, entry)
+        unsent = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
+        with mock.patch.object(
+            D.ORASK, "send_location_question", side_effect=[unsent, {"status": "sent"}]
+        ) as send:
+            daemon.route_message(daemon.seats["CLAUDE"], message)
+        self.assertEqual(send.call_count, 2)
+        first, second = (call.kwargs["question"] for call in send.call_args_list)
+        self.assertIn("letter A", first)
+        self.assertEqual(second, first)
+        # Both the fresh send and the retry read back by the confirmation's own text.
+        for call in send.call_args_list:
+            self.assertEqual(call.kwargs["read_back_markers"], (first,))
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(self._log_rows("route-error")), 1)
+        self.assertEqual(self._log_rows("quarantined"), [])
+
+    def test_the_route_stops_after_three_unsent_confirmations(self):
+        # The retry is bounded by the route's own loop:  three attempts, then the
+        # answer is quarantined to the seat inbox - the registration still stands.
+        daemon = self.started()
+        entry = self._pending_entry(daemon)
+        message = self._owner_answer(daemon, entry)
+        unsent = {"status": "refused", "reason": "offline", "delivery_status": D.OC.DELIVERY_RETRYABLE}
+        with mock.patch.object(D.ORASK, "send_location_question", return_value=unsent) as send:
+            daemon.route_message(daemon.seats["CLAUDE"], message)
+        self.assertEqual(send.call_count, 3)
+        self.assertEqual(len(self._log_rows("quarantined")), 1)
+        self.assertTrue(any(item.get("quarantined") for item in self.inbox()))
+        rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
+        self.assertEqual(len(rows), 1)
+
 
 class OperatorRegistrationRouteTests(DaemonHarness):
     """The route is the chat's ACTIVE topic, not the oldest one (review finding)."""
@@ -2581,6 +3043,35 @@ class OperatorRegistrationAnswerAuthorityTests(DaemonHarness):
         self.assertTrue(consumed)
         rows = D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa")
         self.assertEqual([row["verified_host"] for row in rows], ["mac"])
+
+    def test_an_uncorroborated_answer_records_no_registration_and_says_not_registered(self):
+        # kody 4366258037 item 1, the uncorroborated half:  a seat bot's word with no
+        # discovery evidence leaves no register-location step, and the chat is told
+        # "Not registered", never a "Registered:" line.
+        daemon = self.daemon()
+        with mock.patch.object(D.Daemon, "_registration_evidence", return_value=""):
+            entry = self._pending_entry(daemon)
+        daemon.seats["CLAUDE"].me = types.SimpleNamespace(user_id=4242, bot_owner_id=12)
+        done = set()
+        with mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            consumed = daemon._maybe_registration_answer(
+                {"id": 51, "content": "mac %s" % entry["entry_id"], "sender_id": 4242},
+                2000.0,
+                channel="agent-sync",
+                topic="AFC Work",
+                done=done,
+            )
+        self.assertTrue(consumed)
+        self.assertFalse(
+            any(isinstance(item, tuple) and item[1] == "register-location" for item in done)
+        )
+        posted = send.call_args.kwargs["question"]
+        self.assertTrue(posted.startswith("Not registered"), posted)
+        self.assertNotIn("Registered:", posted)
+        self.assertEqual(
+            D.OR.registrations_for_native_id(daemon._registration_db(), "claude", "sess-aaaaaaaa"),
+            [],
+        )
 
     def test_another_seats_bot_may_not_answer(self):
         # The bound bot is the ENTRY's seat bot:  a different seat's bot in the same
