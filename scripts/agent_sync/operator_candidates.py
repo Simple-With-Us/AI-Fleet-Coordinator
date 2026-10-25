@@ -636,7 +636,13 @@ def _send_candidate_list(
         )
 
     try:
-        result = client.post("messages", {"type": "direct", "to": [recipient_id], "content": body})
+        # The owner is in the conversation, so this is not a bot to bot direct message (AFC-469).
+        # The candidate list carries internal session ids and titles, and the owner is the one who
+        # configured the allowlist that named this recipient, so the owner takes part in it.
+        recipients = [recipient_id]
+        if owner_user_id > 0 and owner_user_id != recipient_id:
+            recipients.append(owner_user_id)
+        result = client.post("messages", {"type": "direct", "to": recipients, "content": body})
     except Z.NetworkError as exc:
         # A timeout or a post-send disconnect leaves the outcome unknown:  the message may already
         # exist, so the key is kept and replay is refused.  A failure that provably never reached

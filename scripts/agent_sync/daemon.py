@@ -752,6 +752,16 @@ class Daemon:
     def _apply_config(self) -> None:
         cfg = self.config
         self.notifier.banners = self.banners_allowed and cfg.notify_banners
+        # The owner id the direct-message guard checks (AFC-469).  A reload can change it, and the
+        # seat clients were built with the old one, so every connected runner is refreshed here.
+        # Without this, a reload that pins the owner leaves the clients refusing direct messages
+        # that the owner allows, and a reload that unpins it leaves them allowing messages that
+        # the owner does not.
+        owner_id = int(cfg.owner_user_id or 0)
+        for runner in self.seats.values():
+            client = getattr(runner, "client", None)
+            if client is not None:
+                client.owner_user_id = owner_id
         for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values()):
             # Routine secrets are hidden as soon as the config names them, before any wake.
             if seat_cfg.routine is None:

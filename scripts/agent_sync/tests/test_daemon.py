@@ -563,6 +563,21 @@ class WakeTests(DaemonHarness):
         self.assertEqual(self.ledger()[-1]["reason"], "owner_not_pinned")
         self.assertEqual(self.dumps(), [])
 
+    def test_a_reload_refreshes_the_owner_id_the_guard_checks(self) -> None:
+        #  The guard reads the owner id off the client, and a reload can change the id, so the
+        #  connected runners' clients have to be refreshed (AFC-469).  Without this, a reload that
+        #  pins the owner leaves the clients refusing messages the owner allows, and a reload that
+        #  unpins it leaves them allowing messages the owner does not.
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        self.assertEqual(runner.client.owner_user_id, 12)
+        self.write_config(owner=0)
+        daemon.reload()
+        self.assertEqual(runner.client.owner_user_id, 0, "an unpinned owner reaches the clients")
+        self.write_config(owner=12)
+        daemon.reload()
+        self.assertEqual(runner.client.owner_user_id, 12, "a pinned owner reaches the clients")
+
     def test_owner_wakes_are_bounded_by_count_not_by_dollars(self) -> None:
         """Owner 2026-10-13:  no dollar axis.  Eight finished owner wakes across eight topics are
         well inside every count cap, so the next one runs;  under the old `usd_per_day` this same
