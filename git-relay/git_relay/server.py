@@ -27,8 +27,8 @@ import os
 import re
 import shutil
 import tempfile
-import time
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .app_tokens import AppTokenError
@@ -517,8 +517,13 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 128
 
-    def __init__(self, *args, max_concurrent: int = MAX_CONCURRENT_REQUESTS,
-                 socket_timeout_s: int = REQUEST_SOCKET_TIMEOUT_S, **kwargs):
+    def __init__(
+        self,
+        *args,
+        max_concurrent: int = MAX_CONCURRENT_REQUESTS,
+        socket_timeout_s: int = REQUEST_SOCKET_TIMEOUT_S,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._slots = threading.BoundedSemaphore(max(1, max_concurrent))
         self._socket_timeout_s = max(1, socket_timeout_s)

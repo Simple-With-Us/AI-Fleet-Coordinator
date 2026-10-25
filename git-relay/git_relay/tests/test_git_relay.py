@@ -398,7 +398,9 @@ class TestBoundedServerResilience(unittest.TestCase):
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as resp:
             self.assertEqual(resp.status, 200)
         elapsed = time.time() - started
-        self.assertGreaterEqual(elapsed, 0.5, "served instantly: the stalls never pinned the slots?")
+        self.assertGreaterEqual(
+            elapsed, 0.5, "served instantly: the stalls never pinned the slots?"
+        )
         self.assertLess(elapsed, 8)
         server.shutdown()
 
