@@ -179,7 +179,19 @@ class FleetSecretsSource:
                 f"fleet-secrets lookup failed for {wanted[0]} (exit {result.returncode})"
             )
         raw = result.stdout.decode("utf-8", "replace").strip()
-        values = {wanted[0]: raw} if len(wanted) == 1 else json.loads(raw)
+        if len(wanted) == 1:
+            values = {wanted[0]: raw}
+        else:
+            # Several names print one JSON object.  Any other stdout (a stray
+            # banner, a format change) is a lookup failure like the rest -
+            # AppTokenError, so the relay answers 503 unavailable, not 400 -
+            # and its message names the variable, never the output.
+            try:
+                values = json.loads(raw)
+            except ValueError:
+                values = None
+            if not isinstance(values, dict):
+                raise AppTokenError(f"fleet-secrets returned unreadable output for {wanted[0]}")
         for name in wanted:
             value = str(values.get(name) or "").strip()
             if not value:
