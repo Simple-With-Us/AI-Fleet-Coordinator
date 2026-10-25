@@ -597,6 +597,27 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertFalse(SeatActivityQuota.reportsQuota("We are no longer out of credits."))
         XCTAssertTrue(SeatActivityQuota.reportsQuota("At quota until Monday."))
         XCTAssertTrue(SeatActivityQuota.reportsQuota("Usage limit reached, back at 9."))
+        XCTAssertFalse(SeatActivityQuota.reportsQuota("I am not yet at quota."))
+        XCTAssertFalse(SeatActivityQuota.reportsQuota("Still not  quite at quota."))
+        XCTAssertTrue(SeatActivityQuota.reportsQuota("Not today.  I am at quota now."))
+    }
+
+    /// A child that finishes on its own before the deadline keeps its output.
+    func test_a_child_that_finishes_in_time_keeps_its_output() async throws {
+        let script = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muster-quick-chat-\(UUID().uuidString)")
+        try "#!/bin/sh\necho '{\"ok\": true}'\n".write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        addTeardownBlock { try? FileManager.default.removeItem(at: script) }
+        let cli = ChatCLI(
+            location: { ChatLocation(command: script) },
+            seat: "CLAUDE",
+            home: FileManager.default.temporaryDirectory
+        )
+        let result = try await cli.run(ChatInvocation(["users", "--json"], timeout: 5))
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertFalse(result.timedOut)
+        XCTAssertTrue(result.stdout.contains("\"ok\""))
     }
 
     /// A record that holds a Unicode line separator is still one record.

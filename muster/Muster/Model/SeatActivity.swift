@@ -609,23 +609,45 @@ enum SeatActivityQuota {
         "usage limit reached",
     ]
 
-    /// The words that turn a marker around when they come just before it,  so "not at
-    /// quota" and "no longer out of credits" do not count.
-    static let negations = ["not", "no longer", "never", "isn't", "aren't", "wasn't", "weren't"]
+    /// The words that turn a marker around when they come shortly before it,  so "not
+    /// at quota",  "not yet at quota" and "no longer out of credits" do not count.
+    static let negations: Set<String> = [
+        "not", "never", "isn't", "aren't", "wasn't", "weren't", "no", "longer",
+    ]
 
-    /// The markers as whole-word patterns:  "that quota" does not hold "at quota",  and
-    /// a marker only counts when no negation sits right before it.
+    /// How many words before a marker are read for a negation.
+    static let negationWindow = 3
+
+    /// The markers as whole-word patterns:  "that quota" does not hold "at quota".
     private static let patterns: [NSRegularExpression] = markers.compactMap { marker in
-        let negation = negations
-            .map { NSRegularExpression.escapedPattern(for: $0) }
-            .joined(separator: "|")
-        let pattern = "(?<!\\b(?:\(negation)) )\\b\(NSRegularExpression.escapedPattern(for: marker))\\b"
+        let pattern = "\\b\(NSRegularExpression.escapedPattern(for: marker))\\b"
         return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     }
 
     /// Whether a message body reports the seat at quota.
+    ///
+    /// A marker counts unless one of the few words before it,  inside the same
+    /// sentence,  is a negation.
     static func reportsQuota(_ body: String) -> Bool {
         let range = NSRange(body.startIndex..., in: body)
-        return patterns.contains { $0.firstMatch(in: body, options: [], range: range) != nil }
+        for pattern in patterns {
+            for match in pattern.matches(in: body, options: [], range: range) {
+                guard let markerRange = Range(match.range, in: body) else { continue }
+                if !isNegated(before: body[..<markerRange.lowerBound]) { return true }
+            }
+        }
+        return false
+    }
+
+    /// Whether the words just before a marker negate it.
+    static func isNegated(before prefix: Substring) -> Bool {
+        // Only the current sentence or clause counts.
+        let clause = prefix.split(omittingEmptySubsequences: false, whereSeparator: { ".!?;\n".contains($0) })
+            .last ?? ""
+        let words = clause.lowercased()
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+            .split(whereSeparator: { !$0.isLetter && $0 != "'" })
+            .suffix(negationWindow)
+        return words.contains { negations.contains(String($0)) }
     }
 }

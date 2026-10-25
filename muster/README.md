@@ -4,8 +4,7 @@ Muster is a native SwiftUI macOS 14+ scaffold.  Its initial window explicitly re
 
 ## Scope
 
-- `Muster/` contains the app entry point, the fleet overview view, the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`), the Fleet Hosts panel (what the fleet tools doctor's own report says about each host, from `~/.local/state/fleet-tools/report.json`) and the Seat Activity panel (AFC-395:  open sessions, listener state, Zulip presence and the last Zulip post, per seat).
-- `Muster/` contains the app entry point, the fleet overview view, the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`), the Fleet Hosts panel (what the fleet tools doctor's own report says about each host, from `~/.local/state/fleet-tools/report.json`) and the Drift History panel (AFC-390:  every cell that turned red,  kept in `~/Library/Application Support/Muster/drift-history.json`).
+- `Muster/` contains the app entry point, the fleet overview view, the Fleet View (AFC-394:  lanes, open PRs and Linear claims per seat, from `scripts/fleet_view/`), the Fleet Hosts panel (what the fleet tools doctor's own report says about each host, from `~/.local/state/fleet-tools/report.json`), the Seat Activity panel (AFC-395:  open sessions, listener state, Zulip presence and the last Zulip post, per seat) and the Drift History panel (AFC-390:  every cell that turned red,  kept in `~/Library/Application Support/Muster/drift-history.json`).
 - `project.yml` is the XcodeGen source of truth.  The generated Xcode project is ignored.
 - `script/build_and_run.sh` owns local project generation, signing, installation, and launch.
 - The repository's `.codex/environments/environment.toml` exposes the same script through the Codex **Run** action.
@@ -20,7 +19,8 @@ The Seat Activity panel (AFC-395) shows one row per seat from the app's own rost
 
 Two sources, and no third:  the listener's own published state at `~/.agent-sync/listener/status.json`, and the fleet chat CLI (`simple-chat`).  The panel reads the CLI's `users`, `presence` and `search` verbs and nothing else;  `ChatCLI` refuses any other verb before a process exists,  so the panel cannot write to Zulip.  It never posts as Jay:  the CLI resolves the credential of the bot seat named by `MUSTER_ZULIP_SEAT` (default `CLAUDE`),  and the app never sees a key.
 
-A refresh makes at most one `users` call, one `presence` call per seat and one `search` call per seat,  so the ceiling is `1 + 2 * seats`;  the panel shows the count it made beside the ceiling.  A source that fails leaves its column UNKNOWN with the reason under the row:  a missing binary, a refused call, an unreadable file and a presence record that does not exist all read as unknown,  never as "no sessions" and never as "offline".
+A refresh makes at most one `users` call, one `presence` call per seat and one `search` call per seat,  so the ceiling is `1 + 2 * seats`;  the panel shows the count it made beside the ceiling.  A source that fails leaves its column Unknown with the reason under the row:  a missing binary, a refused call, an unreadable file, a listener state file more than 60 seconds old and a presence record that does not exist all read as unknown,  never as "no sessions" and never as "offline".
+
 ## Drift Alerts
 
 The app watches the paths the manifest names and says when a cell turns red.  It is idle between refreshes:  FSEvents is the only thing that wakes it,  and there is no poll of any file's contents.

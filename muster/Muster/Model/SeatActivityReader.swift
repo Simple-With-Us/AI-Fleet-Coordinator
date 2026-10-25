@@ -434,8 +434,9 @@ struct ChatCLI: ChatRunning {
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         timer.schedule(deadline: .now() + invocation.timeout)
         timer.setEventHandler {
-            flag.set()
+            // A child that already finished is not cut off,  whatever the clock says.
             guard process.isRunning else { return }
+            flag.set()
             process.terminate()
             DispatchQueue.global(qos: .utility).asyncAfter(
                 deadline: .now() + ChatInvocation.terminateGrace
@@ -449,7 +450,9 @@ struct ChatCLI: ChatRunning {
         try? stdoutHandle.close()
         try? stderrHandle.close()
 
-        if flag.isSet {
+        // Only a child the timer actually stopped is a timeout:  one that exited on its
+        // own at the deadline keeps its output.
+        if flag.isSet && process.terminationReason == .uncaughtSignal {
             throw ChatCLIError.timedOut(Int(invocation.timeout.rounded(.up)))
         }
         return ChatCLIResult(
