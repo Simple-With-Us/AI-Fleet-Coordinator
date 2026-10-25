@@ -317,7 +317,9 @@ def collect_claims(
             state="UNKNOWN", reason="Linear request budget spent (%d)" % budget.linear_max
         )
     try:
-        code, out = runner(["simple-board", "list", "--status", "in_progress", "--limit", "200", "--json"])
+        code, out = runner(
+            ["simple-board", "list", "--status", "in_progress", "--limit", "200", "--json"]
+        )
     except (TimeoutError, RuntimeError, ValueError) as exc:
         return Section(state="UNKNOWN", reason="simple-board failed: %s" % exc)
     if code != 0:
