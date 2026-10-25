@@ -129,7 +129,7 @@ enum FleetRegistryReader {
         "grok-bot": ("Grok Bot", nil),
         "grok": ("Grok", "grok"),
         "muse-code": ("Muse Code", "muse"),
-        "muse-assist": ("Muse Assist", "muse"),
+        "muse-assist": ("Muse Assist", nil),
         "muse": ("Muse", "muse"),
         "minimax-code": ("MiniMax Code", "mcode"),
         "fx": ("FX", "fx"),
@@ -140,14 +140,6 @@ enum FleetRegistryReader {
         "openai": ("OpenAI Dot", nil),
         "operator": ("The Operator", "simple-chat"),
         "botfleet": ("BotFleet Personas", nil),
-    ]
-
-    /// Default publish script names in `~/apps` for fleet apps without an explicit `publishScript` key.
-    private static let defaultPublishScripts: [String: String] = [
-        "ST": "trading-publish.sh",
-        "CT": "congress-publish.sh",
-        "UM": "usage-publish.sh",
-        "AR": "autorotate-publish.sh",
     ]
 
     /// Read `fleet-apps.json` at the repository root and build the combined summary.
@@ -212,17 +204,20 @@ enum FleetRegistryReader {
             let appClaims = claims.filter { $0.identifier.hasPrefix(prefix) }
             let expired = appClaims.filter(\.expired).count
 
-            let hasCode: Bool = {
+            let resolvedCodeDir: String? = {
                 let dir = app.codeDir ?? app.integrationDir ?? app.repo
-                guard !dir.isEmpty else { return false }
+                return dir.isEmpty ? nil : dir
+            }()
+            let hasCode: Bool = {
+                guard let dir = resolvedCodeDir else { return false }
                 return pathExists("\(codeRoot)/\(dir)")
             }()
             let resolvedPublish: String? = {
-                if let explicit = app.publishScript, !explicit.isEmpty { return explicit }
-                return defaultPublishScripts[app.acronym]
+                guard let explicit = app.publishScript, !explicit.isEmpty else { return nil }
+                return explicit
             }()
             let hasPublish: Bool = {
-                guard let script = resolvedPublish, !script.isEmpty else { return false }
+                guard let script = resolvedPublish else { return false }
                 return pathExists("\(appsRoot)/\(script)")
             }()
 
@@ -243,7 +238,7 @@ enum FleetRegistryReader {
                 title: app.title,
                 kind: app.kindLabel,
                 visibility: app.visibility ?? "unknown",
-                codeDir: app.codeDir ?? app.integrationDir,
+                codeDir: resolvedCodeDir,
                 publishScript: resolvedPublish,
                 hasCodeCheckout: hasCode,
                 hasPublishScript: hasPublish,

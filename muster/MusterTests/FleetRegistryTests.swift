@@ -13,6 +13,7 @@ final class FleetRegistryTests: XCTestCase {
           "acronym": "ST",
           "displayName": "Socratic Trade",
           "codeDir": "Socratic-Trade",
+          "publishScript": "trading-publish.sh",
           "kind": "product",
           "visibility": "private"
         },
