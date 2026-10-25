@@ -195,6 +195,9 @@ enum SeatListenerState: Equatable, Sendable {
     case disconnected
     /// The kill switch stops this seat.
     case paused
+    /// The kill switch stops this seat's wakes only.  The listener still runs the seat,
+    /// so it still says whether it is connected.
+    case wakesPaused(connected: Bool)
     /// The listener's configuration turned this seat off.
     case off
     /// The listener could not start this seat,  and says why.
@@ -208,6 +211,8 @@ enum SeatListenerState: Equatable, Sendable {
             return "Connected, \(jobs) jobs"
         case .disconnected: return "Disconnected"
         case .paused: return "Paused"
+        case .wakesPaused(let connected):
+            return connected ? "Connected, wakes paused" : "Disconnected, wakes paused"
         case .off: return "Off"
         case .skipped: return "Skipped"
         }
@@ -220,7 +225,7 @@ enum SeatListenerState: Equatable, Sendable {
     var isHealthy: Bool {
         switch self {
         case .connected: return true
-        case .disconnected, .paused, .off, .skipped: return false
+        case .disconnected, .paused, .wakesPaused, .off, .skipped: return false
         }
     }
 }
@@ -461,8 +466,11 @@ enum SeatActivityBuilder {
         guard let listener = sources.listener else {
             return .unknown(sources.listenerProblem ?? "The listener's state could not be read.")
         }
-        // The kill switch comes first:  a paused seat is paused whatever else it is.
-        if let scope = pauseScope(for: seat, listener: listener) {
+        // The kill switch comes first:  a paused seat is paused whatever else it is.  A
+        // wakes-only pause leaves the seat running and connected,  so it does not hide the
+        // connection state;  it only changes the label.
+        let pause = pauseKind(for: seat, listener: listener)
+        if pause == .full {
             return .known(.paused)
         }
         if listener.disabled?.contains(seat) == true {
@@ -475,6 +483,9 @@ enum SeatActivityBuilder {
             guard let connected = entry.connected else {
                 return .unknown("The listener's state for this seat does not say whether it is connected.")
             }
+            if pause == .wakesOnly {
+                return .known(.wakesPaused(connected: connected))
+            }
             return .known(connected ? .connected(jobs: entry.jobs ?? 0) : .disconnected)
         }
         if let problems = listener.skippedSeats?[seat], !problems.isEmpty {
@@ -483,13 +494,31 @@ enum SeatActivityBuilder {
         return .unknown("The listener publishes no state for this seat.")
     }
 
-    /// The kill switch scope that covers a seat,  when one does.
-    private static func pauseScope(for seat: String, listener: ListenerStateDocument) -> String? {
+    /// How far the kill switch covers a seat.
+    enum PauseKind: Equatable {
+        /// The seat is stopped.
+        case full
+        /// Only the seat's wakes are stopped.
+        case wakesOnly
+    }
+
+    /// The kill switch that covers a seat,  when one does.
+    ///
+    /// This is the listener's own rule (`live.paused`):  a scope covers the seat when it
+    /// names the seat or is `*`,  and an entry without `wakes_only` is a full pause.  A
+    /// full pause in either scope wins over a wakes-only one.
+    static func pauseKind(for seat: String, listener: ListenerStateDocument) -> PauseKind? {
         guard let pause = listener.pause else { return nil }
-        for scope in [seat, "*"] where pause[scope] != nil {
-            return scope
+        var found: PauseKind?
+        for scope in [seat, "*"] {
+            guard let entry = pause[scope] else { continue }
+            if entry.wakesOnly == true {
+                found = found ?? .wakesOnly
+            } else {
+                return .full
+            }
         }
-        return nil
+        return found
     }
 }
 
@@ -503,6 +532,39 @@ enum SeatActivityBuilder {
 enum SeatActivityText {
     /// The longest label the panel shows.
     static let maximumLabelLength = 48
+
+    /// The gap between two sentences on screen:  a real U+00A0,  then a normal space.
+    static let sentenceGap = "\u{00A0} "
+
+    /// Text written with the code's two-space gaps,  made right for the screen.
+    ///
+    /// A run of two or more spaces after a sentence end becomes the sentence gap,  and
+    /// any other run of spaces,  after a comma,  a colon or a word,  becomes one space.
+    /// Reasons and problems are written in the code's house style and some come from
+    /// the fleet chat tool's own messages,  so they pass through here before they are
+    /// shown.
+    static func display(_ text: String) -> String {
+        var result = ""
+        var pendingSpaces = 0
+        var previous: Character?
+        for character in text {
+            if character == " " {
+                pendingSpaces += 1
+                continue
+            }
+            if pendingSpaces > 0 {
+                if pendingSpaces >= 2, let previous, ".!?".contains(previous) {
+                    result += sentenceGap
+                } else {
+                    result += " "
+                }
+                pendingSpaces = 0
+            }
+            result.append(character)
+            previous = character
+        }
+        return result
+    }
 
     /// A label, safe to show:  one line,  no control characters,  cut short.
     static func label(_ text: String) -> String {
@@ -547,9 +609,23 @@ enum SeatActivityQuota {
         "usage limit reached",
     ]
 
+    /// The words that turn a marker around when they come just before it,  so "not at
+    /// quota" and "no longer out of credits" do not count.
+    static let negations = ["not", "no longer", "never", "isn't", "aren't", "wasn't", "weren't"]
+
+    /// The markers as whole-word patterns:  "that quota" does not hold "at quota",  and
+    /// a marker only counts when no negation sits right before it.
+    private static let patterns: [NSRegularExpression] = markers.compactMap { marker in
+        let negation = negations
+            .map { NSRegularExpression.escapedPattern(for: $0) }
+            .joined(separator: "|")
+        let pattern = "(?<!\\b(?:\(negation)) )\\b\(NSRegularExpression.escapedPattern(for: marker))\\b"
+        return try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    }
+
     /// Whether a message body reports the seat at quota.
     static func reportsQuota(_ body: String) -> Bool {
-        let haystack = body.lowercased()
-        return markers.contains { haystack.contains($0) }
+        let range = NSRange(body.startIndex..., in: body)
+        return patterns.contains { $0.firstMatch(in: body, options: [], range: range) != nil }
     }
 }

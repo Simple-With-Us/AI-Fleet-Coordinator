@@ -7,7 +7,7 @@ import SwiftUI
 /// is a bot seat.
 ///
 /// Every column names its own source,  and a source that could not be read shows
-/// UNKNOWN in that column  with the reason under the row.  A row never shows an empty
+/// Unknown in that column  with the reason under the row.  A row never shows an empty
 /// list or a zero  where a source failed:  an unknown column is unknown.
 struct SeatActivityView: View {
     @EnvironmentObject private var store: FleetStore
@@ -22,6 +22,13 @@ struct SeatActivityView: View {
     /// cadence for this kind of read (the doctor runs every fifteen, the fleet view every
     /// five),  and the panel reads again as soon as the app comes back to the front.
     static let refreshSeconds = 300
+
+    /// The youngest reading the panel replaces when the app comes back to the front.
+    ///
+    /// A refresh costs one Zulip lookup per seat,  so switching apps back and forth
+    /// does not start a new one each time.  The Refresh button and the slow timer are not
+    /// held to this.
+    static let foregroundMinimumSeconds: TimeInterval = 60
 
     private let seatWidth: CGFloat = 128
     private let sessionWidth: CGFloat = 84
@@ -48,7 +55,7 @@ struct SeatActivityView: View {
                         rowView(row)
                     }
                 } else {
-                    Text("No reading yet.  Refresh to read the fleet.")
+                    Text(ApplyCopy.join("No reading yet.", "Refresh to read the fleet."))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -70,6 +77,10 @@ struct SeatActivityView: View {
             // A read costs one question per seat,  so the panel does not read while the
             // app is in the background:  the reading on screen is still the last one.
             guard phase == .active else { return }
+            if let readAt = model?.readAt,
+               Date().timeIntervalSince(readAt) < SeatActivityView.foregroundMinimumSeconds {
+                return
+            }
             Task { await load() }
         }
     }
@@ -89,7 +100,7 @@ struct SeatActivityView: View {
                 }
                 .disabled(loading)
             }
-            Text("Which seats are live,  what the listener says about them,  and when each one last posted.")
+            Text("Which seats are live, what the listener says about them, and when each one last posted.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }
@@ -106,7 +117,7 @@ struct SeatActivityView: View {
             Text("\(model.requestsMade) of \(model.requestCeiling) calls")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .help("The fleet chat calls this refresh made,  and the ceiling it was held to.")
+                .help("The Zulip lookups this refresh made, and the most it may make.")
             let working = model.seatsWithSessions.count
             Text(working == 1 ? "1 seat with an open session" : "\(working) seats with an open session")
                 .font(.system(size: 11, design: .monospaced))
@@ -116,7 +127,7 @@ struct SeatActivityView: View {
                 Text("Read as \(model.readingSeat)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .help("The bot seat the fleet chat CLI read as.  The panel never reads as Jay.")
+                    .help(ApplyCopy.join("The bot seat the panel read Zulip as.", "The panel never reads as Jay."))
             }
             Spacer(minLength: 0)
         }
@@ -131,9 +142,11 @@ struct SeatActivityView: View {
             Text("Sources")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
-            Text("Open sessions and the listener state come from the listener's own state file, "
-                + "\(model.listenerPath.isEmpty ? "the listener's state file" : model.listenerPath).  "
-                + "Presence and the last post come from the fleet chat CLI's read-only verbs.")
+            Text(ApplyCopy.join(
+                "Open sessions and the listener state come from the listener's own state file, "
+                    + "\(model.listenerPath.isEmpty ? "the listener's state file" : model.listenerPath).",
+                "Presence and the last post come from Zulip, and the panel only reads them."
+            ))
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -148,7 +161,7 @@ struct SeatActivityView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                         .accessibilityHidden(true)
-                    Text(problem)
+                    Text(SeatActivityText.display(problem))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -207,7 +220,7 @@ struct SeatActivityView: View {
             if !row.unknowns.isEmpty {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(row.unknowns, id: \.column) { unknown in
-                        Text("\(unknown.column):  \(unknown.reason)")
+                        Text("\(unknown.column): \(SeatActivityText.display(unknown.reason))")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
@@ -228,11 +241,11 @@ struct SeatActivityView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(count > 0 ? Color.primary : Color.secondary)
             case .unknown:
-                unknownText("UNKNOWN")
+                unknownText("Unknown")
             }
         }
         .frame(width: sessionWidth, alignment: .leading)
-        .help("The leases the listener holds alive for this seat.")
+        .help("The sessions the listener is holding open for this seat.")
     }
 
     /// The listener's state.
@@ -244,7 +257,7 @@ struct SeatActivityView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(state.isHealthy ? Color.secondary : Color.orange)
             case .unknown:
-                unknownText("UNKNOWN")
+                unknownText("Unknown")
             }
         }
         .frame(width: listenerWidth, alignment: .leading)
@@ -260,7 +273,7 @@ struct SeatActivityView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(presence == .active ? Color.green : Color.secondary)
             case .unknown:
-                unknownText("UNKNOWN")
+                unknownText("Unknown")
             }
         }
         .frame(width: presenceWidth, alignment: .leading)
@@ -299,7 +312,7 @@ struct SeatActivityView: View {
                         .truncationMode(.tail)
                 }
             case .unknown:
-                unknownText("UNKNOWN")
+                unknownText("Unknown")
             }
         }
         .frame(width: postWidth, alignment: .leading)
@@ -319,11 +332,14 @@ struct SeatActivityView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
             case .unknown:
-                unknownText("UNKNOWN")
+                unknownText("Unknown")
             }
         }
         .frame(width: quotaWidth, alignment: .leading)
-        .help("Read out of the seat's last Zulip post.  A post that could not be read leaves this unknown.")
+        .help(ApplyCopy.join(
+            "Read from the seat's last Zulip post.",
+            "When that post could not be read, this shows Unknown."
+        ))
     }
 
     /// The unknown marker.
@@ -340,12 +356,13 @@ struct SeatActivityView: View {
             return "The search found no post for this seat."
         case .known(.post(let at, let channel, let label, let quota)):
             var text = "Last post in \(channel.isEmpty ? "Zulip" : channel)"
-            if !label.isEmpty { text += ":  \(label)" }
-            if let at { text += ",  at \(FleetTime.clock(at))" }
-            if quota { text += ".  It reports the seat at quota." }
+            if !label.isEmpty { text += ": \(label)" }
+            if let at { text += ", at \(FleetTime.clock(at))" }
+            text += "."
+            if quota { text = ApplyCopy.join(text, "It reports the seat at quota.") }
             return text
         case .unknown(let reason):
-            return "The last post could not be read:  \(reason)"
+            return "The last post could not be read: \(SeatActivityText.display(reason))"
         }
     }
 

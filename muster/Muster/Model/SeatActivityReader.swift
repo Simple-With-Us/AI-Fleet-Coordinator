@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 // Reading the Seat Activity panel's four sources.
 //
@@ -118,6 +123,9 @@ struct ChatInvocation: Equatable, Sendable {
     /// The calls this panel makes are short:  a lookup,  a presence check and a search.
     static let defaultTimeout: TimeInterval = 30
 
+    /// How long a child that was asked to stop may take before it is killed.
+    static let terminateGrace: TimeInterval = 2
+
     init(_ arguments: [String], timeout: TimeInterval = ChatInvocation.defaultTimeout) {
         self.arguments = arguments
         self.timeout = timeout
@@ -134,10 +142,14 @@ struct ChatInvocation: Equatable, Sendable {
     /// cannot make this panel write to Zulip by accident.
     static let readOnlyVerbs: Set<String> = ["users", "presence", "search"]
 
-    /// `users --json --limit N`:  every user in the realm,  which resolves every seat's
-    /// bot in one request.
+    /// `users --json --inactive --limit N`:  every user in the realm,  deactivated ones
+    /// included,  which resolves every seat's bot in one request.
+    ///
+    /// `--inactive` is what lets a deactivated bot read as deactivated:  without it the
+    /// CLI drops the account (`zulip_ops.find_users`),  and the seat would read as a seat
+    /// the realm knows no bot for.
     static func users(limit: Int = 500) -> ChatInvocation {
-        ChatInvocation(["users", "--json", "--limit", String(limit)])
+        ChatInvocation(["users", "--json", "--inactive", "--limit", String(limit)])
     }
 
     /// `presence --json NAME`:  whether one user is active,  idle or offline.
@@ -147,8 +159,8 @@ struct ChatInvocation: Equatable, Sendable {
 
     /// `search --json --sender NAME --limit 1`:  the seat's last post.
     ///
-    /// The CLI returns the newest message of a narrow first,  so a limit of one is the
-    /// last post and not the first one.
+    /// The CLI fetches the newest `limit` messages of a narrow (`anchor=newest`) and
+    /// prints them oldest first,  so a limit of one is the last post and not the first.
     static func lastPost(sender: String) throws -> ChatInvocation {
         ChatInvocation([
             "search", "--json", "--sender", try ChatInvocation.checked(sender), "--limit", "1",
@@ -377,6 +389,10 @@ struct ChatCLI: ChatRunning {
         seat: String,
         home: URL
     ) throws -> ChatCLIResult {
+        // The seat is joined to its flag as one argument,  and it is checked like any
+        // other value before anything exists:  a `MUSTER_ZULIP_SEAT` that starts with `-`
+        // can never be read as a flag of its own.
+        let seatArgument = "--as=" + (try ChatInvocation.checked(seat))
         let fileManager = FileManager.default
         // Output goes to files,  not pipes:  nothing can deadlock on a full pipe,  and a
         // child that outlives the app never takes a SIGPIPE when it prints its last line.
@@ -396,7 +412,7 @@ struct ChatCLI: ChatRunning {
 
         let process = Process()
         process.executableURL = command
-        process.arguments = ["--as", seat] + invocation.arguments
+        process.arguments = [seatArgument] + invocation.arguments
         process.currentDirectoryURL = scratch
         process.environment = childEnvironment(home: home)
         process.standardInput = FileHandle.nullDevice
@@ -410,12 +426,22 @@ struct ChatCLI: ChatRunning {
             throw ChatCLIError.launchFailed(error.localizedDescription)
         }
 
+        // The deadline is enforced,  not requested:  SIGTERM first,  and a child that is
+        // still running after the grace period is killed,  so `waitUntilExit` always
+        // returns and a stuck child can never stop the panel from reading again.
         let flag = TimeoutFlag()
+        let pid = process.processIdentifier
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         timer.schedule(deadline: .now() + invocation.timeout)
         timer.setEventHandler {
             flag.set()
-            if process.isRunning { process.terminate() }
+            guard process.isRunning else { return }
+            process.terminate()
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + ChatInvocation.terminateGrace
+            ) {
+                if process.isRunning { _ = kill(pid, SIGKILL) }
+            }
         }
         timer.resume()
         process.waitUntilExit()
@@ -423,6 +449,9 @@ struct ChatCLI: ChatRunning {
         try? stdoutHandle.close()
         try? stderrHandle.close()
 
+        if flag.isSet {
+            throw ChatCLIError.timedOut(Int(invocation.timeout.rounded(.up)))
+        }
         return ChatCLIResult(
             exitCode: process.terminationStatus,
             stdout: try read(stdoutURL),
@@ -495,6 +524,8 @@ struct SeatActivityReader {
     var now: () -> Date
     /// How many calls may run at once.
     var maximumConcurrentCalls: Int
+    /// The oldest listener state the panel still believes.
+    var maximumListenerAge: TimeInterval
     /// The seat the panel reads Zulip as,  which the panel shows.
     var readingSeat: String
 
@@ -503,14 +534,21 @@ struct SeatActivityReader {
         runner: ChatRunning? = nil,
         now: @escaping () -> Date = { Date() },
         maximumConcurrentCalls: Int = 8,
+        maximumListenerAge: TimeInterval = SeatActivityReader.defaultMaximumListenerAge,
         readingSeat: String = ChatLocator.readingSeat()
     ) {
         self.location = location
         self.runner = runner ?? ChatCLI(seat: readingSeat)
         self.now = now
         self.maximumConcurrentCalls = maximumConcurrentCalls
+        self.maximumListenerAge = maximumListenerAge
         self.readingSeat = readingSeat
     }
+
+    /// The listener rewrites its state every few seconds while it runs
+    /// (`daemon.write_status`),  so a file a minute old belongs to a listener that has
+    /// stopped or hung,  and what it says about seats is no longer true.
+    static let defaultMaximumListenerAge: TimeInterval = 60
 
     /// The ceiling for one refresh over a roster.
     ///
@@ -555,7 +593,13 @@ struct SeatActivityReader {
                 sources.requestsMade = requests
                 return SeatActivityBuilder.build(sources)
             }
-            bots = SeatActivityReader.decodeBots(result.stdout)
+            guard let decoded = SeatActivityReader.decodeBots(result.stdout) else {
+                sources.userProblem = "The user list could not be read:  "
+                    + "the fleet chat command line printed a line that is not a user record."
+                sources.requestsMade = requests
+                return SeatActivityBuilder.build(sources)
+            }
+            bots = decoded
         } catch {
             requests += 1
             sources.userProblem = "The user list could not be read:  \(error.localizedDescription)"
@@ -634,7 +678,34 @@ struct SeatActivityReader {
                 + "so the listener state and the open sessions of every seat are unknown."
             return
         }
+        // A listener that stopped leaves its last file behind,  and every lease in it
+        // still says alive.  The file is only believed while the listener is still
+        // writing it.
+        guard let published = document.publishedAt else {
+            sources.listenerProblem = "The listener's state at \(url.path) does not say when it was written,  "
+                + "so the listener state and the open sessions of every seat are unknown."
+            return
+        }
+        let age = now().timeIntervalSince(published)
+        guard abs(age) <= maximumListenerAge else {
+            sources.listenerProblem = "The listener's state at \(url.path) was last written "
+                + SeatActivityReader.ageText(age) + ",  so the listener may have stopped,  "
+                + "and the listener state and the open sessions of every seat are unknown."
+            return
+        }
         sources.listener = document
+    }
+
+    /// How old a file is,  in words.
+    static func ageText(_ age: TimeInterval) -> String {
+        if age < 0 { return "in the future by this Mac's clock" }
+        let seconds = Int(age)
+        if seconds < 120 { return "\(seconds) seconds ago" }
+        let minutes = seconds / 60
+        if minutes < 120 { return "\(minutes) minutes ago" }
+        let hours = minutes / 60
+        if hours < 48 { return "\(hours) hours ago" }
+        return "\(hours / 24) days ago"
     }
 
     /// One seat's two answers.
@@ -717,15 +788,46 @@ struct SeatActivityReader {
         }
     }
 
-    /// The users the realm knows,  by seat tag.
-    static func decodeBots(_ text: String) -> [String: ChatBot] {
+    /// The longest output line the panel decodes.
+    ///
+    /// One record is one line,  and a Zulip message is at most 10,000 characters,  so a
+    /// line longer than this is not a record the CLI meant to print.
+    static let maximumLineBytes = 256 * 1024
+
+    /// The output's records,  one per line.
+    ///
+    /// The CLI prints one JSON object per line with `ensure_ascii=False`,  so a string
+    /// inside a record may hold U+2028,  U+2029 or U+0085 unescaped.  Only a line feed
+    /// ends a record;  splitting on every Unicode newline would cut a record in two.
+    static func records(_ text: String) -> [Substring] {
+        text.split(separator: "\n", omittingEmptySubsequences: true)
+            .map { line in
+                line.hasSuffix("\r") ? line.dropLast() : line
+            }
+            .filter { !$0.allSatisfy { $0 == " " || $0 == "\t" } }
+    }
+
+    /// One record,  decoded,  or nil when the line is not one.
+    static func decodeRecord<T: Decodable>(_ type: T.Type, _ line: Substring) -> T? {
+        let trimmed = line.trimmingCharacters(in: CharacterSet(charactersIn: " \t"))
+        guard trimmed.hasPrefix("{"), trimmed.utf8.count <= maximumLineBytes,
+              let data = trimmed.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    /// The users the realm knows,  by seat tag,  or nil when a line is not a user record.
+    ///
+    /// A line that cannot be read fails the whole list:  dropping it would make that
+    /// seat read as a seat the realm knows no bot for,  which is a claim the panel did not
+    /// see.  When a seat has two accounts,  the active one wins over a deactivated one.
+    static func decodeBots(_ text: String) -> [String: ChatBot]? {
         var bots: [String: ChatBot] = [:]
-        for line in text.split(whereSeparator: \.isNewline) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty, trimmed.hasPrefix("{") else { continue }
-            guard let data = trimmed.data(using: .utf8),
-                  let bot = try? JSONDecoder().decode(ChatBot.self, from: data) else { continue }
+        for line in records(text) {
+            guard let bot = decodeRecord(ChatBot.self, line) else { return nil }
             guard let seat = bot.seat, !seat.isEmpty else { continue }
+            if let existing = bots[seat], existing.isActive != false, bot.isActive == false {
+                continue
+            }
             bots[seat] = bot
         }
         return bots
@@ -762,16 +864,25 @@ struct SeatActivityReader {
     /// where the post went  and when  and nothing else.  The body is read for one thing
     /// only,  which is whether it reports the seat at quota.
     static func decodeLastPost(_ text: String) -> SeatFact<SeatLastPost> {
-        let lines = text.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.hasPrefix("{") }
-        guard !lines.isEmpty else {
-            // The call succeeded and found nothing:  the seat has posted nothing the
+        let lines = records(text)
+        let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !lines.isEmpty, trimmedText != "[]" else {
+            // The call succeeded and printed nothing:  the seat has posted nothing the
             // search could see.  That is an answer,  not a failure.
             return .known(.none)
         }
-        guard let data = lines[lines.count - 1].data(using: .utf8),
-              let message = try? JSONDecoder().decode(ChatMessage.self, from: data) else {
+        // Every line must be a message.  Anything else is output the panel cannot read,
+        // and that is unknown,  never "no post".
+        var messages: [ChatMessage] = []
+        for line in lines {
+            guard let message = decodeRecord(ChatMessage.self, line) else {
+                return .unknown("The last post could not be read.")
+            }
+            messages.append(message)
+        }
+        // The CLI prints oldest first (`zulip_ops.search`,  `fetch` sorts by id),  so the
+        // last line is the newest post.
+        guard let message = messages.last else {
             return .unknown("The last post could not be read.")
         }
         let topic = SeatActivityText.label(message.topic ?? "")
