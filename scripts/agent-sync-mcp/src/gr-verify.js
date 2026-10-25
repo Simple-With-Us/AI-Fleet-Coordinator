@@ -29,6 +29,7 @@
 import { safeEqual } from "./policy.js";
 import { resolveSecret, prefetchFolder } from "./infisical.js";
 import { readBodyBytes, wakeSignature, WAKE_SIGNATURE_HEADER, WAKE_MAX_AGE_S, WAKE_MAX_SKEW_S, WAKE_MIN_KEY_LEN } from "./wake.js";
+import { z } from "zod";
 import { GB_IDENTITIES } from "./delegated-identities.js";
 import { KNOWN_SEATS } from "./config.js";
 
@@ -39,8 +40,20 @@ export const GR_VERIFY_KEY_VAR = "GR_BEARER_VERIFY_KEY";
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
 const IDENTITY_RE = /^[A-Z][A-Z0-9-]{0,31}$/;
-const isInt = (v) => Number.isSafeInteger(v);
 const KNOWN = new Set([...GB_IDENTITIES, ...KNOWN_SEATS]);
+
+// The signed payload's strict shape.  sent_at is an epoch-seconds integer.
+const GrVerifySchema = z
+  .object({
+    contract: z.literal(GR_VERIFY_CONTRACT),
+    identity: z.string().regex(IDENTITY_RE),
+    hash: z.string().regex(HEX64_RE),
+    sent_at: z.number().int(),
+  })
+  .strict();
+
+/** First-issue field -> the route's fixed 400 reason (unknown keys -> bad_json). */
+const GR_VERIFY_FIELD_REASONS = { contract: "bad_contract", identity: "bad_identity", hash: "bad_hash", sent_at: "bad_sent_at" };
 
 function jsonResponse(body, status) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" } });
@@ -66,16 +79,19 @@ export async function verifyGrRequest({ bytes, signature, key, now = Date.now() 
     return { ok: false, status: 400, reason: "bad_json" };
   }
   if (!query || typeof query !== "object" || Array.isArray(query)) return { ok: false, status: 400, reason: "bad_json" };
-  if (query.contract !== GR_VERIFY_CONTRACT) return { ok: false, status: 400, reason: "bad_contract" };
-  if (typeof query.identity !== "string" || !IDENTITY_RE.test(query.identity) || !KNOWN.has(query.identity)) {
-    return { ok: false, status: 400, reason: "bad_identity" };
+  // Strict zod boundary (kody 4372746402):  unknown keys are rejected and only
+  // parsed.data is read.  The first issue maps back to the field's fixed
+  // reason so callers and tests keep their distinct 400s.
+  const parsed = GrVerifySchema.safeParse(query);
+  if (!parsed.success) {
+    const field = parsed.error.issues[0]?.path?.[0];
+    return { ok: false, status: 400, reason: GR_VERIFY_FIELD_REASONS[field] ?? "bad_json" };
   }
-  if (typeof query.hash !== "string" || !HEX64_RE.test(query.hash)) return { ok: false, status: 400, reason: "bad_hash" };
-  if (!isInt(query.sent_at)) return { ok: false, status: 400, reason: "bad_sent_at" };
+  if (!KNOWN.has(parsed.data.identity)) return { ok: false, status: 400, reason: "bad_identity" };
   const nowS = Math.floor(now / 1000);
-  if (nowS - query.sent_at > WAKE_MAX_AGE_S) return { ok: false, status: 401, reason: "stale" };
-  if (query.sent_at - nowS > WAKE_MAX_SKEW_S) return { ok: false, status: 401, reason: "future" };
-  return { ok: true, query: { identity: query.identity, hash: query.hash } };
+  if (nowS - parsed.data.sent_at > WAKE_MAX_AGE_S) return { ok: false, status: 401, reason: "stale" };
+  if (parsed.data.sent_at - nowS > WAKE_MAX_SKEW_S) return { ok: false, status: 401, reason: "future" };
+  return { ok: true, query: { identity: parsed.data.identity, hash: parsed.data.hash } };
 }
 
 /**
@@ -113,7 +129,9 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
   const verdict = await identityGate.gbBearerCheck(hash);
   if (!verdict.ok) {
     if (verdict.reason === "expired") {
-      try { await identityGate.audit({ event: "gb_bearer_refused", reason: "expired", via: "gr-verify" }); } catch { /* a missing row is a gap, not a hole */ }
+      // The refusal audit is required:  if the write fails the route errors
+      // and the relay fails closed, so a missing row can never pass silently.
+      await identityGate.audit({ event: "gb_bearer_refused", reason: "expired", via: "gr-verify" });
     }
     return jsonResponse({ ok: false, reason: verdict.reason }, 200);
   }

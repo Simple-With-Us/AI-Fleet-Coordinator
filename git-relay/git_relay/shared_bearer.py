@@ -164,7 +164,11 @@ class SharedBearerVerifier:
         status, payload = self._transport(
             "POST",
             self._url,
-            {"Content-Type": "application/json", SIGNATURE_HEADER: signature},
+            {
+                "Content-Type": "application/json",
+                "User-Agent": "git-relay/1.0 (+ops)",
+                SIGNATURE_HEADER: signature,
+            },
             body,
             REQUEST_TIMEOUT_S,
         )

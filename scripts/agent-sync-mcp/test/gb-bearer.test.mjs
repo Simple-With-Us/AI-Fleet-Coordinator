@@ -197,6 +197,32 @@ test("checked mint: fresh form mints, resubmit refuses consumed, stale and futur
   assert.ok(auditRows.includes("audit"));
 });
 
+test("a same-form retry of a completed mint is acked from stored outcome metadata; a swapped hash is refused", async () => {
+  // Kody 4372748176:  the raw bearer never leaves the caller (the route stores
+  // only its hash), so a lost first response is acked from the tombstone's
+  // outcome metadata - same mint id AND same hash - with no new mint, no new
+  // reveal and no mutation.  The same id under a different hash is refused.
+  const store = S.memoryStore();
+  const a = await newGbBearer(ID);
+  const id = mintIdAt(NOW);
+  const ok = await S.gbBearerMintChecked(store, { mintId: id, hash: a.hash, by: "j", expiresAt: NOW + 1e9, mcpAccept: true }, NOW);
+  assert.equal(ok.minted, true);
+  const replay = await S.gbBearerMintChecked(store, { mintId: id, hash: a.hash, by: "j", expiresAt: NOW + 1e9, mcpAccept: true }, NOW + 1000);
+  assert.deepEqual(replay, {
+    minted: true,
+    replay: true,
+    created_at: ok.created_at,
+    expires_at: ok.expires_at,
+    mint_count: ok.mint_count,
+    mcp_accept: true,
+  });
+  assert.equal((await S.gbBearerStatus(store, NOW + 1005)).mint_count, 1, "the replay did not mint again");
+  assert.ok(JSON.stringify([...store.map.keys()]).includes("audit"), "the replay was audited");
+  const swapped = await S.gbBearerMintChecked(store, { mintId: id, hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 2e9 }, NOW + 2000);
+  assert.deepEqual(swapped, { minted: false, reason: "consumed" });
+  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 2005), { ok: true, mcp_accept: true }, "the original bearer survives");
+});
+
 test("replay rejection spans the whole validity window: 64+ mints, then the oldest form replays refused", async () => {
   const store = S.memoryStore();
   const firstId = mintIdAt(NOW, "0".repeat(20));
@@ -308,4 +334,23 @@ test("the admin section lists status and buttons and never a token or hash", asy
   assert.match(html, /Rotate \(Mint New\)/);
   assert.match(html, /No credentials loaded/);
   assert.ok(!/gbb_/.test(html));
+});
+
+test("mint id shape is enforced: malformed ids refuse as invalid before any timestamp math (kody 4372747948)", async () => {
+  const store = S.memoryStore();
+  for (const mintId of ["zz" + "a".repeat(30), "abcd", 123, null]) {
+    const r = await S.gbBearerMintChecked(store, { mintId, hash: "h", by: "j", expiresAt: NOW + 1e9 }, NOW);
+    assert.deepEqual(r, { minted: false, reason: "invalid" }, JSON.stringify(mintId));
+  }
+});
+
+test("an unexpected store failure leaves a gb_bearer_mint_error audit row and still throws (kody 4372747686)", async () => {
+  const store = S.memoryStore();
+  const failing = { ...store, transaction: async () => { throw new Error("storage on fire"); } };
+  await assert.rejects(
+    S.gbBearerMintChecked(failing, { mintId: mintIdAt(NOW), hash: "h", by: "j", expiresAt: NOW + 1e9 }, NOW),
+    /storage on fire/,
+  );
+  const rows = await store.get("audit");
+  assert.ok(rows.some((r) => r.event === "gb_bearer_mint_error" && r.by === "j"), JSON.stringify(rows));
 });

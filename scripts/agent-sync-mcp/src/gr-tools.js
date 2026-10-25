@@ -54,10 +54,12 @@ export function grUpstreamUrl(raw) {
   return url.origin;
 }
 
-/** The Access service-token pair, resolved through Infisical /tools like the
- * recall pair;  both absent reads as capability-off, never a throw. */
+/** The Access service-token pair, resolved from the Worker-only Fleet-OPS
+ * folder /gr-front (never /tools:  the relay host reads /tools for its own
+ * keys and must never gain this pair);  both absent reads as capability-off,
+ * never a throw. */
 export async function resolveGrSecrets(env) {
-  const read = async (name) => (await resolveSecret(env, { name, path: "/tools", envName: name, optional: true })).trim();
+  const read = async (name) => (await resolveSecret(env, { name, path: "/gr-front", envName: name, optional: true })).trim();
   const [accessId, accessSecret] = await Promise.all([read(GR_SECRETS.accessId), read(GR_SECRETS.accessSecret)]);
   return { accessId, accessSecret };
 }
@@ -116,6 +118,11 @@ export class GrRelayClient {
     } catch {
       return { status: 502, body: { error: "upstream_bad_json" } };
     }
+    // The relay always answers a JSON object;  anything else is malformed
+    // upstream data and must not reach the caller as a successful shape.
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return { status: 502, body: { error: "upstream_bad_shape" } };
+    }
     return { status: response.status, body };
   }
 }
@@ -147,7 +154,12 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_edit_pr",
     title: "Edit Pull Request",
     description: "Edit a pull request's title and/or body through git-relay, as your own GitHub App.  At least one of title or body is required.",
-    inputSchema: obj(["repo", "number"], { repo: REPO, number: NUMBER, title: { type: "string" }, body: { type: "string" } }),
+    inputSchema: {
+      ...obj(["repo", "number"], { repo: REPO, number: NUMBER, title: { type: "string" }, body: { type: "string" } }),
+      // An edit with neither field can only fail;  refuse it at the schema
+      // boundary (the relay's _validate_args refuses it too, as a 400).
+      anyOf: [{ required: ["title"] }, { required: ["body"] }],
+    },
   },
   {
     name: "gr_reply_thread",
@@ -177,7 +189,7 @@ export const GR_TOOLS = Object.freeze([
     name: "gr_resolve_thread",
     title: "Resolve Review Thread",
     description: "Resolve a pull request review thread through git-relay, as your own GitHub App.  thread_id is the PRRT_ review-thread id.",
-    inputSchema: obj(["thread_id"], { thread_id: { type: "string" } }),
+    inputSchema: obj(["repo", "thread_id"], { repo: REPO, thread_id: { type: "string" } }),
   },
 ]);
 export const GR_TOOL_NAMES = Object.freeze(GR_TOOLS.map((tool) => tool.name));

@@ -182,6 +182,18 @@ class SeatPolicy:
             return match
         if self._verifier is None:
             return None
+        # Refuse locally when no configured shared seat claims the identity the
+        # token names:  otherwise every wrong guess - even for a family the
+        # relay does not serve - costs a blocking Worker verify before any
+        # per-seat rate limit can apply.  A valid bearer always names a
+        # configured identity, so this can never false-refuse one.
+        named = self._verifier.parse_identity(token)
+        if named is None:
+            return None
+        if not any(
+            cfg["auth"] == "shared" and cfg["identity"] == named for cfg in self._seats.values()
+        ):
+            return None
         identity = self._verifier.resolve(token)
         if identity is None:
             return None

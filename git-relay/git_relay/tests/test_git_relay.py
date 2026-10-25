@@ -26,7 +26,7 @@ from http.server import ThreadingHTTPServer
 from git_relay.audit import AuditLog
 from git_relay.github_client import GitHubClient, RelayGitHubError
 from git_relay.policy import PolicyError, SeatPolicy
-from git_relay.server import MAX_REQUEST_BYTES, Relay, make_handler
+from git_relay.server import MAX_REQUEST_BYTES, BoundedThreadingHTTPServer, Relay, make_handler
 
 SEAT_TOKEN = "s" * 32
 OTHER_TOKEN = "o" * 32
@@ -304,6 +304,58 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestBoundedServer(unittest.TestCase):
+    def test_concurrency_is_capped_and_no_request_is_refused(self):
+        # Kody discussion_r4372744451:  the relay must bound in-flight work
+        # without refusing anyone - excess connections wait their turn.
+        from http.server import BaseHTTPRequestHandler
+
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        class Slow(BaseHTTPRequestHandler):
+            def do_GET(self):
+                nonlocal active, peak
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(0.05)
+                with lock:
+                    active -= 1
+                body = b"ok"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = BoundedThreadingHTTPServer(("127.0.0.1", 0), Slow, max_concurrent=3)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            port = server.server_address[1]
+            results = []
+
+            def hit():
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as resp:
+                        results.append(resp.status)
+                except Exception as exc:  # a refusal here fails the test
+                    results.append(repr(exc))
+
+            threads = [threading.Thread(target=hit) for _ in range(12)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(15)
+            self.assertEqual(results, [200] * 12)
+            self.assertLessEqual(peak, 3)
+        finally:
+            server.shutdown()
+
+
 class TestNonPrActionsRejected(unittest.TestCase):
     def test_push_and_admin_are_not_valid_actions(self):
         with self.assertRaises(PolicyError):
@@ -489,6 +541,18 @@ class TestAppActions(unittest.TestCase):
                 logged = fh.read()
             self.assertNotIn("MINTED-FAKE-TOKEN", logged)
             self.assertIn("token_sha256", logged)
+
+    def test_edit_pr_without_a_field_is_a_local_400(self):
+        # With neither title nor body, GitHub would answer 422 AFTER the call
+        # left the fleet;  _validate_args now refuses locally as a 400 and no
+        # token is minted or spent.
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, body = relay.handle(SEAT_TOKEN, "edit_pr", {"repo": "example/x", "number": 1})
+            self.assertEqual(status, 400)
+            self.assertIn("title or body is required", body["error"])
+            self.assertEqual(relay.app_minter.calls, [])
+            self.assertEqual(relay.client.calls, [])
 
     def test_mint_token_beyond_ceiling_is_denied(self):
         with tempfile.TemporaryDirectory() as tmp:

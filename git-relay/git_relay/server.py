@@ -28,6 +28,7 @@ import re
 import shutil
 import tempfile
 import time
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .app_tokens import AppTokenError
@@ -38,6 +39,16 @@ from .policy import PolicyError, SeatPolicy
 from .secret_scan import find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
+# Bounded inbound concurrency (Kody discussion_r4372744451):  the default one
+# thread per connection, with each authenticate able to block on a Worker
+# verify up to REQUEST_TIMEOUT_S, would let an unauthenticated spray of
+# unique wrong secrets fan out into unbounded threads AND unbounded
+# concurrent Worker calls.  A semaphore acquired BEFORE the handler thread is
+# spawned caps both;  excess connections wait in the TCP accept backlog and
+# are served in turn.  That is backpressure, never a refusal - so load can
+# never false-refuse a valid bearer.  (The per-token negative cache does not
+# help here:  each guess is unique by construction.)
+MAX_CONCURRENT_REQUESTS = int(os.environ.get("GIT_RELAY_MAX_CONCURRENT", "8"))
 MAX_TEXT_FIELD = 32 * 1024
 
 DEFAULT_HOST = "127.0.0.1"
@@ -93,6 +104,11 @@ def _validate_args(action: str, args: dict) -> dict:
             }
         )
     elif action == "edit_pr":
+        # An edit must change something:  with neither title nor body GitHub
+        # answers 422 after the call already left the fleet, which audits as a
+        # terminal refusal instead of the local 400 it should be.
+        if args.get("title") is None and args.get("body") is None:
+            raise ValueError("edit_pr: title or body is required")
         specs.update(
             {"number": ("number", True), "title": ("clean", False), "body": ("clean", False)}
         )
@@ -471,6 +487,37 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
 Relay._dispatch_app = _app_dispatch
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a hard cap on in-flight requests.
+
+    The semaphore is acquired in the accept loop (process_request), so once
+    the slots are taken the kernel backlog - not a growing thread pile -
+    absorbs the burst.  request_queue_size is raised so the backlog actually
+    holds it.  Slots release when the request's thread finishes.
+    """
+
+    daemon_threads = True
+    request_queue_size = 128
+
+    def __init__(self, *args, max_concurrent: int = MAX_CONCURRENT_REQUESTS, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._slots = threading.BoundedSemaphore(max_concurrent)
+
+    def process_request(self, request, client_address):
+        self._slots.acquire()
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 def make_handler(relay: Relay):
     class Handler(BaseHTTPRequestHandler):
         server_version = "swu-git-relay/1"
@@ -762,7 +809,7 @@ def main() -> None:
     relay = from_env()
     host = os.environ.get("GIT_RELAY_HOST", DEFAULT_HOST)
     port = int(os.environ.get("GIT_RELAY_PORT", str(DEFAULT_PORT)))
-    server = ThreadingHTTPServer((host, port), make_handler(relay))
+    server = BoundedThreadingHTTPServer((host, port), make_handler(relay))
     print(f"git-relay listening on {host}:{port}")
     server.serve_forever()
 

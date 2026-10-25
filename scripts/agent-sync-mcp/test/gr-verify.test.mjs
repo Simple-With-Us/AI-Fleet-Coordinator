@@ -64,7 +64,7 @@ test("bad signature, stale, future, and malformed bodies refuse with fixed codes
 test("the route resolves a live bearer, and refuses none/mismatch/expired/paused", async () => {
   const { token, hash } = await newGbBearer(ID);
   const store = memStore();
-  await S.gbBearerMint(store, { hash, by: "mail@jays.services", expiresAt: Date.now() + GB_BEARER_TTL_MS });
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS });
 
   const call = async (h, gates = fakeGates(store)) => {
     const { bytes, signature } = await signedBody({ contract: GR_VERIFY_CONTRACT, identity: ID, hash: h, sent_at: Math.floor(Date.now() / 1000) });
@@ -94,6 +94,24 @@ test("the route resolves a live bearer, and refuses none/mismatch/expired/paused
   assert.equal((await call(hash, fakeGates(store, { paused: true }))).body.reason, "paused");
 });
 
+test("a failed refusal audit propagates so the relay fails closed", async () => {
+  // Kody 4372746631:  the expired-refusal audit row is required.  When the
+  // write fails the route must error (relay fails closed) instead of
+  // answering with the audit silently missing.
+  const { hash } = await newGbBearer(ID);
+  const store = memStore();
+  await S.gbBearerMint(store, { hash, by: "t", expiresAt: Date.now() - 1000 });
+  const base = fakeGates(store);
+  const gates = (env, seat) => ({ ...base(env, seat), audit: async () => { throw new Error("store down"); } });
+  const { bytes, signature } = await signedBody({ contract: GR_VERIFY_CONTRACT, identity: ID, hash, sent_at: Math.floor(Date.now() / 1000) });
+  const req = new Request("https://x.test/internal/gr-bearer-verify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", [WAKE_SIGNATURE_HEADER]: signature },
+    body: bytes,
+  });
+  await assert.rejects(serveGrBearerVerify(req, {}, gates, { resolveKey: async () => KEY }), /store down/);
+});
+
 test("the route never echoes the query or the hash", async () => {
   const { hash } = await newGbBearer(ID);
   const { bytes, signature } = await signedBody({ contract: GR_VERIFY_CONTRACT, identity: ID, hash, sent_at: Math.floor(Date.now() / 1000) });
@@ -114,7 +132,7 @@ test("seat (sbt_) bearers verify through the same route and row", async () => {
   const store = memStore();
   // A seat mint WITHOUT the recorded owner opt-in still verifies for GR-MCP
   // (GR acceptance is GR's policy);  mcp_accept governs only /mcp itself.
-  await S.gbBearerMint(store, { hash, by: "mail@jays.services", expiresAt: Date.now() + GB_BEARER_TTL_MS, mcpAccept: false });
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + GB_BEARER_TTL_MS, mcpAccept: false });
   const { bytes, signature } = await signedBody({ contract: GR_VERIFY_CONTRACT, identity: "JET", hash, sent_at: Math.floor(Date.now() / 1000) });
   const req = new Request("https://x.test/internal/gr-bearer-verify", {
     method: "POST",
@@ -132,7 +150,7 @@ test("the recorded mcp_accept choice survives mint and reads back in status", as
   const { newSeatBearer } = await import("../src/gb-bearer.js");
   const { hash } = await newSeatBearer("ECHO");
   const store = memStore();
-  await S.gbBearerMint(store, { hash, by: "mail@jays.services", expiresAt: Date.now() + 1000, mcpAccept: true });
+  await S.gbBearerMint(store, { hash, by: "fixture@example.test", expiresAt: Date.now() + 1000, mcpAccept: true });
   const status = await S.gbBearerStatus(store);
   assert.equal(status.mcp_accept, true);
   // Rows minted before the flag read back as false, never as undefined-accepts.

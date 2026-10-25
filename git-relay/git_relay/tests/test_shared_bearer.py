@@ -119,6 +119,14 @@ class VerifierTest(unittest.TestCase):
             sys.setswitchinterval(old_interval)
         self.assertEqual(errors, [])
 
+    def test_verify_requests_identify_themselves(self):
+        # The Worker sees this User-Agent on every verify call so relay
+        # traffic is distinguishable in its logs.
+        v = verifier_for(ok_answer())
+        v.resolve(TOKEN)
+        (call,) = v._transport.calls
+        self.assertEqual(call["headers"]["User-Agent"], "git-relay/1.0 (+ops)")
+
     def test_resolves_a_live_bearer(self):
         v = verifier_for(ok_answer())
         self.assertEqual(v.resolve(TOKEN), IDENTITY)
@@ -240,6 +248,22 @@ class PolicySharedAuthTest(unittest.TestCase):
             verifier=v,
         )
         self.assertEqual(policy.authenticate(TOKEN), "swu-fixer")
+
+    def test_unknown_identity_family_never_reaches_the_worker(self):
+        # Wrong guesses naming families the relay does not serve are refused
+        # locally - zero Worker calls - while a configured family still
+        # verifies remotely (Kody 4372744451).
+        v = verifier_for(ok_answer())
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}),
+            verifier=v,
+        )
+        for i in range(5):
+            self.assertIsNone(policy.authenticate("gbb_oracle_" + ("%043x" % i)))
+        self.assertIsNone(policy.authenticate("not-a-bearer"))
+        self.assertEqual(v._transport.calls, [])
+        self.assertEqual(policy.authenticate(TOKEN), "swu-fixer")
+        self.assertEqual(len(v._transport.calls), 1)
 
     def test_shared_seat_without_verifier_is_unreachable(self):
         policy = SeatPolicy(

@@ -531,7 +531,7 @@ The owner-chosen host is the Hetzner box (Oct 21).  A read-only check on Oct 25 
 
 ### 2. Reachability from the hosted Worker (pending owner yes)
 
-The Worker reaches the relay through `GR_UPSTREAM_URL` with a Cloudflare Access service credential (`GR_ACCESS_CLIENT_ID` / `GR_ACCESS_CLIENT_SECRET`).  The proposal put to the owner on Oct 25:  a public hostname `git-relay.jays.services` fronted by a cloudflared tunnel on the Hetzner box, a DNS entry, and a dedicated Access service token;  the hostname is public but authentication-protected and the relay port stays private;  no paid changes.  This is unanswered as of this writing.  Seats on tailnet machines can instead run GR-MCP over stdio (`git-relay mcp`) against the tailnet address, matching the original tailnet-only design note;  the hosted Worker front needs the protected public URL.  Until `GR_UPSTREAM_URL` and the Access pair are set, the Worker's seven `gr_*` tools answer `not_configured` (fail closed, no fallback).
+The Worker reaches the relay through `GR_UPSTREAM_URL` with a Cloudflare Access service credential (`GR_ACCESS_CLIENT_ID` / `GR_ACCESS_CLIENT_SECRET`).  The owner accepted this specific backend domain and Access layout on Oct 25 (nothing broader):  a public hostname `git-relay.simplewithus.com` (like the other MCP surfaces) fronted by a dedicated cloudflared tunnel on the Hetzner box, a DNS entry, and a dedicated Access service token;  the hostname is public but authentication-protected and the relay port stays private;  no paid changes.  The Access pair lives in the Worker-only Fleet-OPS folder `/gr-front` (the relay host never reads it);  the tunnel token lives in the host-only folder `/gr-tunnel` (the Worker never reads it);  the verify key stays at `/tools`.  Seats on tailnet machines can instead run GR-MCP over stdio (`git-relay mcp`) against the tailnet address, matching the original tailnet-only design note;  the hosted Worker front needs the protected public URL.  Until `GR_UPSTREAM_URL` and the Access pair are set, the Worker's seven `gr_*` tools answer `not_configured` (fail closed, no fallback).
 
 ### 3. Runtime credentials (established patterns only)
 
@@ -546,7 +546,7 @@ The Worker reaches the relay through `GR_UPSTREAM_URL` with a Cloudflare Access 
 
 ### 5. Worker variables
 
-Set as ordinary Worker secrets when step 2 is answered:  `GR_UPSTREAM_URL`, `GR_ACCESS_CLIENT_ID`, `GR_ACCESS_CLIENT_SECRET`.  `GR_BEARER_VERIFY_KEY` is declared in the Infisical manifest, not put as a Worker secret.  After deploy, `/admin` shows the GR section configured and a `gr_*` call answers from the relay instead of `not_configured`.
+Set when step 2 lands:  `GR_UPSTREAM_URL` as a plain Worker var;  `GR_ACCESS_CLIENT_ID` / `GR_ACCESS_CLIENT_SECRET` are placed in Fleet-OPS `/gr-front` and read at runtime like the verify key - never put as Worker secrets, never at `/tools`.  `GR_BEARER_VERIFY_KEY` is read at runtime from `/tools`, not put as a Worker secret.  After deploy, `/admin` shows the GR section configured and a `gr_*` call answers from the relay instead of `not_configured`.
 
 ### 6. Smoke check
 

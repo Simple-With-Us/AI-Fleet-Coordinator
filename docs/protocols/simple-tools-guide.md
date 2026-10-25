@@ -216,9 +216,9 @@ A seat reaches these tools with its own bearer token.  ST-MCP shares the same be
 | Tool | Credential | Purpose |
 |---|---|---|
 | `open_pr` | owner PR-only token | Open a pull request |
-| `edit_pr` | owner PR-only token | Change a pull request's title or body |
-| `reply_thread` | owner PR-only token | Reply inline to a review thread |
-| `comment_pr` | owner PR-only token | Post a top-level pull request comment |
+| `edit_pr` | the seat's own GitHub App | Change a pull request's title or body |
+| `reply_thread` | the seat's own GitHub App | Reply inline to a review thread |
+| `comment_pr` | the seat's own GitHub App | Post a top-level pull request comment |
 | `merge_pr` | the seat's own GitHub App | Merge (squash, merge or rebase) |
 | `workflow_dispatch` | the seat's own GitHub App | Dispatch a workflow run |
 | `resolve_thread` | the seat's own GitHub App | Resolve a review thread |
@@ -227,7 +227,7 @@ PR-write authoring runs under the owner's scoped PR-only token on purpose:  a pu
 
 Per-seat policy is an allowlist layer over that credential:  allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every call, allowed or denied, is written to the audit log, and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
 
-**Status.**  git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**:  no seat is pointed at it and no daemon or launchd job has been verified.  The owner has chosen the Hetzner server as the host;  provisioning, the route and the approval to deploy are not settled, and a bounded read of that host found no relay in the places checked, which is not proof it is absent everywhere.  Until the owner decides the cutover, the relay is not an available route:  do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
+**Status.**  git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**:  no seat is pointed at it and no running service has been verified.  The owner has chosen the host and the rollout is staged;  until the owner decides the cutover, the relay is not an available route:  do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
 
 `mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP:  it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
 

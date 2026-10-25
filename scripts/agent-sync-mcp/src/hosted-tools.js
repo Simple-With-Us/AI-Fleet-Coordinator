@@ -2,6 +2,7 @@ import { WA_TOOLS } from "./wa/contract.js";
 import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
 import { callNamedLinear } from "./linear-named.js";
 import { z } from "zod";
+import { parseArgs } from "./args.js";
 import { LINEAR_MCP_BY_NAME } from "./linear-mcp-specs.js";
 import { callLinearMcp } from "./linear-mcp.js";
 import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
@@ -280,6 +281,22 @@ export function dmPeople(message) {
 const USERS_CACHE = new Map();
 // Team and state ids per seat, shared the same way.
 const LINEAR_WORKSPACE_CACHE = new Map();
+
+/** workflow_dispatch args bounded at the Worker boundary (kody 4372745946):
+ * flat inputs, <=32 keys, scalar values only, <=1024 chars per string, no
+ * unknown fields.  The relay re-checks the same caps;  an over-limit call
+ * refuses here instead of spending a parse, a stringify and an upstream call. */
+const GR_DISPATCH_ARGS = z
+  .object({
+    repo: z.string().min(3).max(200),
+    workflow: z.string().min(1).max(200),
+    ref: z.string().min(1).max(200),
+    inputs: z
+      .record(z.string().min(1).max(64), z.union([z.string().max(1024), z.number(), z.boolean()]))
+      .refine((value) => Object.keys(value).length <= 32, { message: "inputs is capped at 32 keys" })
+      .optional(),
+  })
+  .strict();
 
 export class HostedTools {
   /**
@@ -1288,9 +1305,29 @@ export class HostedTools {
   async grCall(action, args) {
     const { status, body } = await this.requireGr().call(action, args);
     if (status === 0) throw new ToolError("unavailable", "GR-MCP could not reach git-relay.  Try again shortly;  if it persists, the relay host is down.");
+    // The relay uses 502 for a write whose outcome is UNKNOWN (GitHub may have
+    // accepted;  replay is refused until resolved) - never misread it as an
+    // unreadable answer or a refusal.  The client's own 502s carry
+    // body.error "upstream_*" instead.
+    if (status === 502 && body && typeof body === "object" && body.outcome === "unknown") {
+      throw new ToolError(
+        "outcome_unknown",
+        "git-relay reports the call's outcome is unknown:  GitHub may have accepted it, and the relay refuses replay until the outcome resolves.  Do not retry blindly - check the pull request or workflow state first.",
+      );
+    }
     if (status === 502) throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
+    // 503 is the relay's retryable signal (app-token minting unavailable), not
+    // a refusal:  no side effect, the seat may try again shortly.
+    if (status === 503) throw new ToolError("unavailable", "git-relay cannot mint a GitHub App token right now (retryable).  Nothing was written;  try again shortly.");
+    // 4xx bodies are the relay's deliberate verdicts (allowlist, replay
+    // refusals, terminal GitHub refusals):  definite, no hidden side effect.
     if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
-    return body;
+    // A successful call still must answer with a plain JSON object;  anything
+    // else is a mis-answering upstream, not a result.
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
+    }
+    return okResult(JSON.stringify(body), body);
   }
 
   async tool_gr_open_pr(args) { return this.grCall("open_pr", args); }
@@ -1298,7 +1335,7 @@ export class HostedTools {
   async tool_gr_reply_thread(args) { return this.grCall("reply_thread", args); }
   async tool_gr_comment_pr(args) { return this.grCall("comment_pr", args); }
   async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
-  async tool_gr_workflow_dispatch(args) { return this.grCall("workflow_dispatch", args); }
+  async tool_gr_workflow_dispatch(args) { return this.grCall("workflow_dispatch", parseArgs(GR_DISPATCH_ARGS, args)); }
   async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */
