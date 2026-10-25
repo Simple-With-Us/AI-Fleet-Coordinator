@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:ee7f19754cf2343347840a10b0a7b7db423025036d5c6b968d82c276d5888123 -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:ea6e309460f8b59fa7d36d974ccedbf1d49eb539eb6df1277ea88d2e721c3a36 -->
 # AGENT-SYNC — Fleet Coordination Protocol
 
 This is the protocol every AI agent seat follows when it works on the owner's apps:  who each seat is, how work is claimed, landed, and closed out in Linear, how seats talk in Zulip, and the standing rules for secrets, delegation, owner-facing writing, and the Mac.  It exists so parallel seats never collide on, duplicate, or silently drop the same work.
@@ -520,7 +520,7 @@ Binding lane layout (owner 2026-10-07, revised by the owner 2026-10-09 as layout
 - At lane start, create a lane or a PR check with `~/apps/lane new <app> <slug>` (or `--review --pr <n>`).  `AGENT_SEAT` must be set to your seat tag.
 - `<seat>` in a lane path is the whole `worktreeSuffix` from `fleet-apps.json` (`antigravity`, `minimax`; never `ag` or `mm`), the Lane token column in [Active Seats](#active-seats).
 - Never create a checkout of a fleet repo in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.
-- On the server, `~/Code` is `/mnt/fleet-extra/Code` and `~/apps` is `/mnt/fleet-extra/apps`, so every lane there is in `/mnt/fleet-extra/apps/lanes/<Repo>/` and no fleet checkout lives anywhere else on it (Lane Map, Server Hosts).
+- On the server, the Code folder is `/mnt/fleet-extra/Code` and the apps folder is `/mnt/fleet-extra/apps`, so every lane there is in `/mnt/fleet-extra/apps/lanes/<Repo>/` and no fleet checkout lives anywhere else on it.  The root account has no `~/Code` or `~/apps` alias, and the lane tools read the roots from the environment (`FLEET_CODE_ROOT`, `FLEET_APPS_ROOT`, `FLEET_LANES_ROOT`), which the managed `lane` wrapper carries;  the `jay` account keeps the `~/` spellings as symlinks (Lane Map, Server Hosts).
 - Existing lanes in the old places under `~/apps/lanes/` (`<prefix>/`, `_managed`, `_review`) stay until the layout migration moves them (`docs/protocols/lanes-v2-migration.md`).  The flat `~/apps/<prefix>-<seat>[-<slug>]` lanes are not moved by it: they stay where they are and retire normally.  `lane ls` reports both as legacy.  Lane paths in older seat rows and docs may show those forms; new lanes always use the v2 form.
 
 ### Seat Lanes and Branches
@@ -1086,9 +1086,9 @@ Run this block under bash, whose ANSI-C quoting decodes the assertion patterns:
 
 ```sh
 # every surface: a real U+00A0 plus a space
-perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
-grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt    # must be 0, except a verified non-terminal abbreviation
-grep -nE $'[0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]' body.nbsp.txt    # inspect every hit: distinguish list markers from digit-ending sentences
+perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g' body.txt > body.nbsp.txt
+grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.nbsp.txt    # must be 0, except a verified non-terminal abbreviation
+grep -nE $'[0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.nbsp.txt    # inspect every hit: distinguish list markers from digit-ending sentences
 grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' body.nbsp.txt | wc -l # must be greater than 0 when the body contains a sentence gap
 ```
 
@@ -1097,6 +1097,8 @@ Both checks matter.  A positive count alone accepts a partly converted body.  Th
 The converter is the same for every surface:  the pattern, the markup group, the lookbehind that keeps a numbered list a list, and the lookahead are identical, and the replacement is always the real U+00A0 plus a space.  The count check accepts either gap form, so the same pair of assertions verifies a GitHub body, a Zulip body and a commit message, and the leftover check is unchanged for all of them because it looks for the gap that was not made:  a plain space where a gap belongs.  The entity converter is retired:  the `&nbsp;` entity is for the two chat panes that normalize a raw U+00A0 away, and a chat reply there is typed by hand, not converted.
 
 The shared closing suffix recognizes markup delimiters, straight and curly quotes, and a Markdown inline-link destination containing 1 through 255 characters with no whitespace or nested parentheses.  For example, `**Bold sentence.**  Next sentence.`, `'Quoted sentence.'  Next sentence.` and `[Linked sentence.](https://example.com)  Next sentence.` are converted and checked.  The older punctuation-only greps missed the markup form; the assertions above explicitly catch it.
+
+The follower set carries the opening square bracket as well.  A sentence that ends immediately before a markdown link is a sentence end, so `Merged.  [PR #314](https://example.com/pull/314)` takes its gap there, and the leftover assertion above sees that gap when the converter skips it.  Without the bracket in the follower set the converter and the assertion are blind to that shape together, and a body with the gap missing reads as converted.
 
 Use single quotes around the Perl expression.  Its literal backtick would start command substitution inside double quotes.  The assertions use `grep -oE` and `grep -cE`: their shared suffix is an extended regular expression with alternation, so plain `grep -o` is insufficient.
 
@@ -1119,7 +1121,7 @@ cmp body.nbsp.txt body.check.txt     # must be silent, the program is idempotent
 rm -f body.check.txt
 # the leftover check over the prose only: a code line is left alone by the converter
 FENCE=$(printf '\140\140\140')
-awk -v fence="$FENCE" 'BEGIN{f=0} {l=$0; sub(/^[ \t]*/,"",l)} index(l,fence)==1 || l ~ /^~~~/ {f=!f; next} !f' body.nbsp.txt | grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“]'    # must be 0
+awk -v fence="$FENCE" 'BEGIN{f=0} {l=$0; sub(/^[ \t]*/,"",l)} index(l,fence)==1 || l ~ /^~~~/ {f=!f; next} !f' body.nbsp.txt | grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]'    # must be 0
 ```
 
 The program holds the code regions aside before it makes the gap and puts them back byte for byte afterwards, so the gap reaches the prose and never the code.  The second run is the third check:  it is the one that sees a prose double space that survived, which no grep over the body can see.  A `cmp` that reports a difference means the run changed something, and that has to be fixed before the body is posted.
