@@ -1,5 +1,9 @@
 # Status
 
+## 2026-10-25 MM — the sentence-gap rule, restated with the one chat-pane exception
+
+Between sentences the gap is a real U+00A0 plus a normal space on every surface, with one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.  The two-spaces wording in the 2026-09-03 entry below records the ruling as it stood that day.
+
 ## 2026-10-23 CODEX — WhatsApp Wake Bridge Implementation (AFC-477)
 
 Adds default-off authenticated WhatsApp ingestion and private read/ack for Jet, automatic owner wakes with leading-👀 silent retention, a distinct signed Operator doorbell, and a durable sole poller.  Existing Jet identity and Zulip subscriptions are preserved.  Code and local fake-service tests only; deployment, verified owner binding, credentials, service activation and real-message/silent-prefix acceptance remain pending.  Reply/send outbox remains outside this wake-focused unit.
