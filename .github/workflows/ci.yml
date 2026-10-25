@@ -47,6 +47,17 @@ jobs:
       uses: actions/setup-python@v7
       with:
         python-version: '3.15'
+    # A repeated mapping key still loads in a Hash-backed YAML parser, and GitHub's
+    # workflow parser rejects it.  The file then registers under its path and every
+    # push gets a red suite with zero jobs (AFC-529).  Ruby's Psych AST keeps both
+    # keys, and Ruby is already on this runner, so the check adds no package.
+    - name: Workflow YAML rejects duplicate keys
+      # The suite bounds each checker call at 30 s and makes 8 of them, so the step
+      # budget must exceed 8 x 30 s or a wedged checker is cancelled mid-suite.
+      timeout-minutes: 6
+      run: |
+        timeout 60 ruby scripts/check-workflow-duplicate-keys.rb .github/workflows .github/pr-autofix-trusted.yml
+        cd scripts && python3 -m unittest test_workflow_duplicate_keys -v
     # AGENT-SYNC.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
     # handbook-sync/mirror.  The mirror must start with the GENERATED header, its body must hash to the header, and
     # only that branch may change it.  To change policy, open a PR to Fleet-OPS handbook/ (its README has the rules).

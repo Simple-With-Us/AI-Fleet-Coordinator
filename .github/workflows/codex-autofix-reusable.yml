@@ -332,12 +332,12 @@ jobs:
         uses: Simple-With-Us/AI-Fleet-Coordinator/.github/actions/autofix-diagnostics@070fdbfacadbd9e90cbb54098123df7d3fef737f
 
       - name: Extract Usage Counts
-        if: ${{ always() && steps.request_gate.outputs.skip != 'true' }}
         id: usage
         # Only the counters of Claude Code's final result message leave this job (UM-1593):  no prompt,
         # diff, or tool output.  The ingest credential is never present here, because the model runs
         # with Bash in this job and could rewrite any file on the runner, including a cached action.
-        if: ${{ always() }}
+        # Same guard as the diagnostics step above: a skipped request produced no usage file.
+        if: ${{ always() && steps.request_gate.outputs.skip != 'true' }}
         continue-on-error: true
         run: |
           f="$RUNNER_TEMP/claude-execution-output.json"
