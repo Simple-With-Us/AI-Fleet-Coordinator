@@ -63,7 +63,7 @@ class WorkflowDuplicateKeyTests(unittest.TestCase):
         self.assertEqual(self._scan(text), 1)
 
     def test_quoted_duplicate_fails(self):
-        text = "\"if\": one\nif: two\n"
+        text = '"if": one\nif: two\n'
         self.assertEqual(self._scan(text), 1)
 
     def test_extract_usage_counts_keeps_the_request_gate(self):
