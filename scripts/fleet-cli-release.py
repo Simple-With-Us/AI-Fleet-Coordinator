@@ -52,7 +52,7 @@ AFC331_FILES = (
     "scripts/agent_sync/mcp/notes-tools.json",
     "scripts/agent_sync/mcp/recall-tools.json",
     "scripts/linear-board/catalog/core-tools.json",
-    "docs/protocols/agent-sync-tools-guide.md",
+    "docs/protocols/simple-tools-guide.md",
 )
 EXACT = frozenset(
     {
