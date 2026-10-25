@@ -37,6 +37,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +94,9 @@ PAGE = 100
 PROSE_LETTERS = frozenset({"A", "I"})
 MAX_PAGES = 20
 RING_LIMIT = 5000
+#: The retry schedule of an inbox delivery that has to be tried again:  30s, 60s, 120s, 240s,
+#: 480s.  Five retries, then the delivery gives up and says so.
+INBOX_RETRY_BACKOFF = (30.0, 60.0, 120.0, 240.0, 480.0)
 CURSOR_FLUSH_SECONDS = 1.0
 GRACE_SECONDS = 600.0
 LIVE_DIR_KEEP = 86400.0
@@ -565,6 +569,25 @@ class RegistrationConfirmationPending(RuntimeError):
 CONFIRMATION_HELD = "confirmation-held"
 
 
+@dataclass
+class InboxPending:
+    """One message the native Zulip inbox delivery still owes the fleet.
+
+    `seats` holds the seats that are still pending;  None means every seat, because the
+    roster could not be read and the whole message waits for a later attempt.  `done` holds
+    the steps each seat already completed, so a retry runs only what is still missing and a
+    seat that already got the message never runs again.  `outcomes` holds every seat's last
+    outcome, so the final report names each seat exactly once."""
+
+    message: Mapping[str, Any]
+    seats: set[str] | None = None
+    done: dict[str, set[str]] = field(default_factory=dict)
+    outcomes: dict[str, str] = field(default_factory=dict)
+    attempts: int = 0
+    next_due: float = 0.0
+    in_flight: bool = False
+
+
 class Daemon:
     def __init__(
         self,
@@ -656,6 +679,9 @@ class Daemon:
         # The same ring for the native Zulip inbox delivery:  one delivery per message, whichever
         # seat saw it first.
         self._inbox_seen: collections.deque[int] = collections.deque(maxlen=RING_LIMIT)
+        # The retry queue of the native Zulip inbox delivery:  the messages that still owe a
+        # bot its unread copy, with the steps each bot already completed.
+        self._inbox_pending: dict[int, InboxPending] = {}
         # Owner `@all` wakes the fanout thread hands back;  only tick() (the event thread) drains it,
         # because the coalescer is not thread-safe.
         self._broadcast_wakes: queue.SimpleQueue[tuple[Mapping[str, Any], frozenset[str]]] = (
@@ -3198,18 +3224,26 @@ class Daemon:
     def start_inbox_delivery(self, message: Mapping[str, Any], c: R.Classes) -> None:
         """Put the owner's channel-wide note UNREAD in every fleet bot's own Zulip inbox.
 
-        One delivery per message, whichever seat saw it first.  The work is network IO, so it
-        runs off the event thread;  that thread never touches the coalescer, which only the
-        event thread owns.  The id stays in the seen ring only while a delivery owns it:  a
-        thread that never started owns nothing, so the id comes back out and a later retry is
-        not deduped away."""
+        One delivery per message, whichever seat saw it first:  the id stays in the seen ring
+        for as long as the delivery owns it, retries included, so a second seat's route of the
+        same message never starts a second delivery.  The work is network IO, so it runs off
+        the event thread;  that thread never touches the coalescer, which only the event thread
+        owns.  A thread that never started owns nothing, so the id comes back out and a later
+        route is not deduped away."""
         message_id = message.get("id")
         if not isinstance(message_id, int):
             return
         with self._fanout_lock:
             if message_id in self._inbox_seen:
                 return
+            if message_id in self._inbox_pending:
+                # The retry queue still owns this message:  a second seat's route of it must
+                # not start a second delivery.
+                return
             self._inbox_seen.append(message_id)
+            self._inbox_pending[message_id] = InboxPending(
+                message=message, seats=None, next_due=self.clock.time(), in_flight=True
+            )
         try:
             threading.Thread(
                 target=self._deliver_inbox,
@@ -3229,15 +3263,16 @@ class Daemon:
     def _forget_inbox(self, message_id: int) -> None:
         """Take a message id back out of the inbox delivery's seen ring.
 
-        The id only stays "seen" while a delivery owns it.  A delivery that may still be
-        completed by a later attempt (a retryable or an unknown outcome) owns nothing yet, so
-        the id comes back out and the next seat's route of the same message tries again.  The
-        ring is bounded, so the id may already be gone:  that is fine."""
+        Only a delivery that never ran at all gives the id back:  a delivery that may still be
+        completed by a later attempt keeps the id (one owner per message) and is driven by the
+        retry queue instead.  The ring is bounded, so the id may already be gone:  that is
+        fine."""
         with self._fanout_lock:
             try:
                 self._inbox_seen.remove(message_id)
             except ValueError:
                 pass
+            self._inbox_pending.pop(message_id, None)
 
     def _owner_email(self) -> str:
         """The owner's own account email, when a seat's realm user list knows it.
@@ -3252,31 +3287,45 @@ class Daemon:
                 return email
         return ""
 
-    def _deliver_inbox(self, message: Mapping[str, Any]) -> None:
+    def _deliver_inbox(
+        self,
+        message: Mapping[str, Any],
+        *,
+        only_seats: set[str] | None = None,
+    ) -> None:
         """The network part of the inbox delivery, off the event thread.
 
         The bot list and the credentials come from Infisical only.  When Infisical cannot be
-        read, this logs an explicit `inbox-delivery-failed` with the reason:  there is no
-        fallback and no pretend success.
+        read, this logs an explicit `inbox-delivery-failed` with the reason and puts the whole
+        message back on the retry queue:  there is no fallback and no pretend success.
 
-        A bot that ended `retryable` or `unknown` releases the inbox seen marker, so the next
-        seat that routes the same message tries it again.  Both writes are idempotent (a
-        subscription and a read flag), so that retry is safe."""
+        A bot that ended `retryable`, `unknown` or `missing-credentials` stays on the retry
+        queue with the steps it already completed, so a later attempt runs only what is
+        missing.  Every write is idempotent (a subscription and a read flag), so that retry is
+        safe."""
         message_id = message.get("id")
+        if not isinstance(message_id, int):
+            return
+        with self._fanout_lock:
+            state = self._inbox_pending.get(message_id)
+            done = state.done if state is not None else {}
         try:
             targets = IDEL.infisical_targets(env=self.env, home=Path(self.home), log=self.log.write)
         except IDEL.DeliveryError as exc:
             self.log.write("inbox-delivery-failed", id=message_id, reason=str(exc))
+            self._inbox_finish(message_id, outcomes={}, whole=True)
             return
         except Exception as exc:  # noqa: BLE001 - an unreadable Infisical is a logged failure
             self.log.write("inbox-delivery-failed", id=message_id, error=type(exc).__name__)
+            self._inbox_finish(message_id, outcomes={}, whole=True)
             return
-        for seat, missing in sorted(getattr(targets, "skipped", {}).items()):
+        if targets.skipped:
+            # One event for every seat without credentials, before any write:  a seat that
+            # cannot be addressed is named, never a silent gap.
             self.log.write(
-                "inbox-delivery-skipped-credentials",
-                seat=seat,
+                "inbox-delivery-missing-credentials",
                 id=message_id,
-                missing=missing,
+                seats={seat: targets.skipped[seat] for seat in sorted(targets.skipped)},
             )
         owner_email = self._owner_email()
         try:
@@ -3286,18 +3335,136 @@ class Daemon:
                 http_factory=IDEL.zulip_http,
                 log=self.log.write,
                 skip_emails=[owner_email] if owner_email else [],
+                realm=self.realm,
+                only_seats=only_seats,
+                done=done,
             )
         except Exception as exc:  # noqa: BLE001 - the delivery never breaks the router
-            self.log.write("inbox-delivery-failed", id=message_id, error=type(exc).__name__)
+            # The delivery itself broke:  every seat without a recorded outcome is unknown, and
+            # unknown is retried, so the message is never silently lost.
+            self.log.write(
+                "inbox-delivery-failed",
+                id=message_id,
+                error=type(exc).__name__,
+                outcome=IDEL.UNKNOWN,
+            )
+            seats = (
+                only_seats
+                if only_seats is not None
+                else {seat for seat, _ in targets.targets} | set(targets.skipped)
+            )
+            self._inbox_finish(message_id, outcomes={seat: IDEL.UNKNOWN for seat in seats})
             return
-        pending = sorted(
-            seat
-            for seat, outcome in (result.get("outcomes") or {}).items()
-            if outcome in ("retryable", "unknown")
-        )
-        if pending and isinstance(message_id, int):
-            self._forget_inbox(message_id)
-            self.log.write("inbox-delivery-retry-pending", id=message_id, seats=pending)
+        self._inbox_finish(message_id, outcomes=dict(result.get("outcomes") or {}))
+
+    def _inbox_finish(
+        self,
+        message_id: int,
+        *,
+        outcomes: Mapping[str, str],
+        whole: bool = False,
+    ) -> None:
+        """Record one attempt's outcomes and decide what happens next.
+
+        A seat that ended `retryable`, `unknown` or `missing-credentials` goes back on the
+        retry queue with the steps it already completed.  A seat that ended `terminal` is
+        reported once, in an `inbox-delivery-incomplete` event, so it is never silent.  When
+        the last retry fails, the queue gives up, says so, and drops the message."""
+        with self._fanout_lock:
+            state = self._inbox_pending.get(message_id)
+            if state is None:
+                return
+            was_pending = {
+                seat for seat, outcome in state.outcomes.items() if outcome in IDEL.PENDING_OUTCOMES
+            }
+            state.outcomes.update(outcomes)
+            if not whole:
+                # A seat that was pending and has no outcome at all is not in this attempt's
+                # roster any more:  its names are gone from Infisical, so it is a seat without
+                # credentials, not a silent gap.
+                for seat in sorted(was_pending - set(outcomes)):
+                    state.outcomes[seat] = IDEL.MISSING_CREDENTIALS
+            pending: set[str] | None = None
+            if whole:
+                pending = None  # every seat waits:  the roster could not be read
+            else:
+                pending = {
+                    seat
+                    for seat, outcome in state.outcomes.items()
+                    if outcome in IDEL.PENDING_OUTCOMES
+                }
+            state.in_flight = False
+            if pending is None:
+                pending = set()
+                whole = True
+            if pending or whole:
+                if state.attempts >= len(INBOX_RETRY_BACKOFF):
+                    gave_up = sorted(pending) if pending else sorted(state.outcomes)
+                    self.log.write(
+                        "inbox-delivery-gave-up",
+                        id=message_id,
+                        seats=gave_up,
+                        outcomes={seat: state.outcomes.get(seat, IDEL.UNKNOWN) for seat in gave_up},
+                    )
+                    del self._inbox_pending[message_id]
+                    return
+                state.attempts += 1
+                state.next_due = self.clock.time() + INBOX_RETRY_BACKOFF[state.attempts - 1]
+                state.seats = None if whole else set(pending)
+                self.log.write(
+                    "inbox-delivery-retry-pending",
+                    id=message_id,
+                    seats=sorted(pending) if pending else sorted(state.outcomes),
+                )
+                return
+            terminal = {
+                seat: outcome
+                for seat, outcome in state.outcomes.items()
+                if outcome == IDEL.TERMINAL
+            }
+            if terminal:
+                self.log.write("inbox-delivery-incomplete", id=message_id, outcomes=terminal)
+            del self._inbox_pending[message_id]
+
+    def _start_due_inbox_retries(self, now: float) -> None:
+        """Event thread only (tick):  start one retry thread per due message.
+
+        Two retries for the same message never run at once:  the state carries the flag, and
+        it is set under the same lock the seen ring uses."""
+        with self._fanout_lock:
+            due: list[int] = []
+            for message_id, state in sorted(self._inbox_pending.items()):
+                if state.in_flight or state.next_due > now:
+                    continue
+                state.in_flight = True
+                due.append(message_id)
+        for message_id in due:
+            with self._fanout_lock:
+                state = self._inbox_pending.get(message_id)
+                if state is None:
+                    continue
+                message = state.message
+                seats = None if state.seats is None else set(state.seats)
+            try:
+                threading.Thread(
+                    target=self._deliver_inbox,
+                    args=(message,),
+                    kwargs={"only_seats": seats},
+                    name="inbox-delivery-retry",
+                    daemon=True,
+                ).start()
+            except Exception as exc:  # noqa: BLE001 - a retry that never started owns nothing
+                with self._fanout_lock:
+                    state = self._inbox_pending.get(message_id)
+                    if state is not None:
+                        state.in_flight = False
+                        state.next_due = now + INBOX_RETRY_BACKOFF[0]
+                self.log.write(
+                    "inbox-delivery-failed",
+                    id=message_id,
+                    error=type(exc).__name__,
+                    reason="retry thread did not start",
+                )
 
     def fanout(
         self,
@@ -5856,6 +6023,7 @@ class Daemon:
             self.reload_requested = False
             self.reload()
         self._drain_broadcast_wakes()
+        self._start_due_inbox_retries(now)
         for pending in self.coalescer.take_due(now):
             self.finalize(pending)
         if now - self.last_tick["reap"] >= 10:

@@ -11,10 +11,21 @@ So every bot, with that bot's own credentials, is subscribed (quiet) to the mess
 channel and then has the message's read flag removed.  A private channel is never joined:
 it is skipped and logged.
 
-Credentials come from Infisical only (`zulip.infisical_seats`, `zulip.prefetch_infisical`,
+Credentials come from Infisical only (`zulip.infisical_roster`, `zulip.prefetch_infisical`,
 `zulip.infisical_credentials`).  There is no environment fallback, no zuliprc fallback and
 no config override:  when Infisical is unreachable or empty, the delivery fails loudly with
-an `inbox-delivery-failed` event instead of pretending to have delivered.
+an `inbox-delivery-failed` event instead of pretending to have delivered.  The roster, not
+the seat list, is the enumeration boundary:  a seat whose key is missing is named as
+`missing-credentials` instead of vanishing from the fleet without a word.
+
+A bot is only addressed on the realm the message came from:  a credential whose own site is
+another host is skipped (`inbox-delivery-skipped`, reason `other-realm`), so a key is never
+sent to a server it does not belong to.
+
+The delivery is a set of small steps per bot (`subscribe`, `quiet`, `unread`), each one
+idempotent.  The caller's `done` map says which steps a bot already completed, so a retry
+runs only the steps that are still missing:  a bot that already got the message never runs
+again, and a bot that failed half way does not repeat the half that worked.
 
 Every log line carries the seat tag, the message id, an error type and an outcome:  never an
 email, a key, or the message content.  A key may appear only as a masked preview (the first
@@ -40,8 +51,9 @@ Http = Callable[[str, str, Mapping[str, Any] | None], Mapping[str, Any]]
 #: The log:  log(event, **fields).
 Log = Callable[..., None]
 
-#: The transport factory:  credentials -> that bot's transport.
-HttpFactory = Callable[[Z.Credentials], Http]
+#: The transport factory:  credentials, source realm -> that bot's transport.  The realm is part
+#: of the call, so a bot is addressed on the server the message came from and never on another.
+HttpFactory = Callable[[Z.Credentials, str], Http]
 
 #: The outcome of one bot's delivery.
 DELIVERED = "delivered"
@@ -49,9 +61,19 @@ SKIPPED = "skipped"
 RETRYABLE = "retryable"
 TERMINAL = "terminal"
 UNKNOWN = "unknown"
+MISSING_CREDENTIALS = "missing-credentials"
 
 #: Every outcome, so the result always carries a count for each of them.
-OUTCOMES = (DELIVERED, SKIPPED, RETRYABLE, TERMINAL, UNKNOWN)
+OUTCOMES = (DELIVERED, SKIPPED, RETRYABLE, TERMINAL, UNKNOWN, MISSING_CREDENTIALS)
+
+#: The outcomes that a later attempt may still fix:  the seat stays on the retry queue.
+PENDING_OUTCOMES = (RETRYABLE, UNKNOWN, MISSING_CREDENTIALS)
+
+#: One bot's delivery, as steps:  subscribe to the channel, make the subscription quiet, then
+#: take the read flag off.  Every step is idempotent, so a step that may have been applied can
+#: be run again without harm.
+STEPS = ("subscribe", "quiet", "unread")
+
 
 #: A variable or secret name:  upper case, with at least one underscore.  A value never
 #: matches, so a message that quotes one cannot put it in the log.
@@ -67,8 +89,9 @@ class Targets:
     """The fleet bots the delivery may address, and the ones it may not.
 
     `targets` holds (seat tag, credentials) pairs.  `skipped` holds the seat tags whose
-    credentials are missing, mapped to the name of the variable or secret that is missing:
-    a name, never a value."""
+    credentials are missing, mapped to the names of the variables or secrets that are missing:
+    a name, never a value.  A skipped seat is not a silent gap:  the caller reports it and
+    keeps it on the retry queue, so a repaired key is picked up by a later attempt."""
 
     targets: list[tuple[str, Z.Credentials]] = field(default_factory=list)
     skipped: dict[str, str] = field(default_factory=dict)
@@ -98,6 +121,8 @@ def zulip_http(creds: Z.Credentials, realm: str | None = None) -> Http:
             return client.get(path, payload)
         return client.post(path, payload)
 
+    # The bound client, so a caller (and a test) can see which realm is addressed.
+    call.client = client  # type: ignore[attr-defined]
     return call
 
 
@@ -134,17 +159,29 @@ def infisical_targets(
 ) -> Targets:
     """Every fleet bot's seat tag and credentials, from Infisical only.
 
-    A seat whose keys are missing is skipped and logged:  one bot's missing key never stops
-    the others.  When no bot at all can be read, this raises:  the caller logs the failure
-    rather than delivering with the wrong identity.  The caller passes the daemon's own env and
-    home:  nothing here reads the process environment or guesses a default."""
-    seats = sorted(Z.infisical_seats(env, home))
-    if not seats:
+    The roster is the enumeration boundary:  a seat that has only some of its three names is
+    named and skipped, mapped to the names that are missing, so it never vanishes from the
+    fleet without a word.  A seat whose names are all there but whose credentials cannot be
+    read is skipped the same way.  One bot's missing key never stops the others.
+
+    When Infisical cannot be read at all, or holds no fleet bot names, this raises:  the
+    caller logs the failure and retries later rather than delivering with the wrong identity.
+    The caller passes the daemon's own env and home:  nothing here reads the process
+    environment or guesses a default."""
+    roster = Z.infisical_roster(env, home)
+    if not roster:
         raise DeliveryError("Infisical returned no fleet bot credentials")
-    Z.prefetch_infisical(seats, env, home)
-    targets: list[tuple[str, Z.Credentials]] = []
     skipped: dict[str, str] = {}
-    for seat in seats:
+    complete: list[str] = []
+    for seat, missing in sorted(roster.items()):
+        if missing:
+            skipped[seat] = ", ".join(missing)
+        else:
+            complete.append(seat)
+    if complete:
+        Z.prefetch_infisical(complete, env, home)
+    targets: list[tuple[str, Z.Credentials]] = []
+    for seat in complete:
         try:
             targets.append((seat, Z.infisical_credentials(seat, env=env, home=home)))
         except Z.CredentialError as exc:
@@ -157,8 +194,6 @@ def infisical_targets(
                     error=type(exc).__name__,
                     missing=missing,
                 )
-    if not targets:
-        raise DeliveryError("Infisical returned no fleet bot credentials")
     return Targets(targets=targets, skipped=skipped)
 
 
@@ -210,18 +245,21 @@ def channel_state(streams: Sequence[Mapping[str, Any]], channel: str) -> tuple[b
     return False, 0
 
 
-def ensure_subscribed(http: Http, channel: str, stream_id: int) -> None:
-    """Subscribe this bot to a public channel, quiet.
+def subscribe(http: Http, channel: str) -> None:
+    """Subscribe this bot to a public channel.
 
     The subscription is idempotent (Zulip answers `already_subscribed` for a bot that is
-    already there), and the quiet settings from `subscribe_all` are applied every time, so a
-    bot never starts notifying a phone because of this path.
-
-    The stream id is required:  the properties endpoint needs it, and a bot left un-quiet
-    would notify a phone the moment the owner's note arrived."""
+    already there), so a retry may run it again without a second copy of the channel."""
     answer = http("POST", "users/me/subscriptions", {"subscriptions": [{"name": channel}]})
     if not isinstance(answer, Mapping):
         raise DeliveryError("malformed subscribe answer")
+
+
+def quiet(http: Http, stream_id: int) -> None:
+    """Apply the quiet settings to the subscription, so the bot never notifies a phone.
+
+    The stream id is required:  the properties endpoint needs it, and a bot left un-quiet
+    would notify a phone the moment the owner's note arrived."""
     data = [
         {"stream_id": stream_id, "property": prop, "value": value}
         for prop, value in sorted(QUIET.items())
@@ -229,6 +267,15 @@ def ensure_subscribed(http: Http, channel: str, stream_id: int) -> None:
     answer = http("POST", "users/me/subscriptions/properties", {"subscription_data": data})
     if not isinstance(answer, Mapping):
         raise DeliveryError("malformed subscribe properties answer")
+
+
+def ensure_subscribed(http: Http, channel: str, stream_id: int) -> None:
+    """Subscribe this bot to a public channel, quiet.
+
+    The two writes are the `subscribe` and `quiet` steps;  a caller that retries one step at
+    a time calls them directly."""
+    subscribe(http, channel)
+    quiet(http, stream_id)
 
 
 def mark_unread(http: Http, message_id: int) -> None:
@@ -257,13 +304,19 @@ def deliver_to_bot(
     *,
     seat: str,
     log: Log,
+    done: set[str] | None = None,
 ) -> str:
     """One bot:  subscribe (quiet) to the channel, then make the message unread.
+
+    `done` holds the steps this bot already completed;  it is mutated in place, so a retry
+    runs only the steps that are still missing and a bot that already got the message runs
+    nothing at all.
 
     Returns the outcome:  `skipped` when the channel is private or unknown to this bot (the
     delivery never joins a private channel, and the skip is logged), `delivered` when the
     message is unread for the bot.  A failed write is raised as a `_Step`, so the caller can
     tell a write that may have been applied from one that certainly was not."""
+    completed = done if done is not None else set()
     public, stream_id = channel_state(streams, channel)
     if not public:
         log(
@@ -274,8 +327,15 @@ def deliver_to_bot(
         )
         return SKIPPED
     try:
-        ensure_subscribed(http, channel, stream_id)
-        mark_unread(http, message_id)
+        if "subscribe" not in completed:
+            subscribe(http, channel)
+            completed.add("subscribe")
+        if "quiet" not in completed:
+            quiet(http, stream_id)
+            completed.add("quiet")
+        if "unread" not in completed:
+            mark_unread(http, message_id)
+            completed.add("unread")
     except Exception as exc:  # noqa: BLE001 - the classifier decides what the failure means
         raise _Step(exc) from None
     return DELIVERED
@@ -341,6 +401,9 @@ def deliver(
     http_factory: HttpFactory,
     log: Log,
     skip_emails: Iterable[str] = (),
+    realm: str = "",
+    only_seats: Iterable[str] | None = None,
+    done: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
     """Put one message in every bot's own Zulip inbox, unread.
 
@@ -349,14 +412,27 @@ def deliver(
     sender are never targeted:  a bot does not mark its own message unread, and the owner reads
     the channel anyway.
 
+    `realm` is the realm the message came from:  a bot whose own credential site is another
+    host is skipped (`other-realm`), so a key is never sent to a server it does not belong to,
+    and the transport is addressed at that realm.
+
+    `only_seats` narrows the attempt to the seats that are still pending, and `done` says which
+    steps each seat already completed (it is mutated in place).  A retry therefore runs only
+    the pending seats and only their missing steps:  a delivered seat never runs again.
+
     The result carries the outcome of every bot:  `outcomes` maps a seat to `delivered`,
-    `skipped`, `retryable`, `terminal` or `unknown`, and `counts` counts each of them.  A
-    `retryable` or an `unknown` bot may still be delivered by a later attempt, so the caller
-    retries;  both writes are idempotent, so that retry is safe."""
+    `skipped`, `retryable`, `terminal`, `unknown` or `missing-credentials`, and `counts` counts
+    each of them.  A `retryable`, an `unknown` or a `missing-credentials` bot may still be
+    delivered by a later attempt, so the caller retries it;  every write is idempotent, so that
+    retry is safe."""
     if isinstance(targets, Targets):
         pairs = list(targets.targets)
+        missing_seats = dict(targets.skipped)
     else:
         pairs = list(targets)
+        missing_seats = {}
+    wanted = None if only_seats is None else {str(seat) for seat in only_seats}
+    steps = done if done is not None else {}
     message_id = message.get("id")
     channel = str(message.get("display_recipient") or "")
     sender_email = str(message.get("sender_email") or "").casefold()
@@ -370,35 +446,8 @@ def deliver(
     }
     if not isinstance(message_id, int) or not channel:
         return result
-    # The streams list is fetched once per realm, not once per bot:  only public streams
-    # matter here, so every bot on the same site shares one view of them.  The cache lives in
-    # this call only:  a later delivery fetches a fresh list, and a failed fetch is not
-    # cached, so the next bot on that site tries with its own key.
-    streams_by_site: dict[str, list[Mapping[str, Any]]] = {}
-    for seat, creds in pairs:
-        outcome = ""
-        try:
-            email = str(creds.email or "").casefold()
-            if email and email == sender_email:
-                outcome = SKIPPED
-                log("inbox-delivery-skipped", seat=seat, id=message_id, reason="sender")
-            elif email and email in skipped_emails:
-                outcome = SKIPPED
-                log("inbox-delivery-skipped", seat=seat, id=message_id, reason="owner")
-            else:
-                http = http_factory(creds)
-                site = str(creds.site or "")
-                if site not in streams_by_site:
-                    streams_by_site[site] = fetch_streams(http)
-                outcome = deliver_to_bot(
-                    http, message_id, channel, streams_by_site[site], seat=seat, log=log
-                )
-        except _Step as step:
-            outcome = classify(step.cause, write=True)
-            _log_failure(log, seat, message_id, outcome, step.cause, creds)
-        except Exception as exc:  # noqa: BLE001 - one bot must not stop the others
-            outcome = classify(exc, write=False)
-            _log_failure(log, seat, message_id, outcome, exc, creds)
+
+    def record(seat: str, outcome: str) -> None:
         result["outcomes"][seat] = outcome
         result["counts"][outcome] = result["counts"].get(outcome, 0) + 1
         if outcome == DELIVERED:
@@ -407,4 +456,107 @@ def deliver(
             result["skipped"] += 1
         else:
             result["failed"] += 1
+
+    # A seat without credentials is part of the result:  it is named, counted and never silent.
+    for seat in sorted(missing_seats):
+        if wanted is not None and seat not in wanted:
+            continue
+        record(seat, MISSING_CREDENTIALS)
+    # The streams list is fetched once per realm, not once per bot:  only public streams
+    # matter here, so every bot on the same site shares one view of them.  The cache lives in
+    # this call only:  a later delivery fetches a fresh list, and a failed fetch is not
+    # cached, so the next bot on that site tries with its own key.
+    streams_by_site: dict[str, list[Mapping[str, Any]]] = {}
+    for seat, creds in pairs:
+        if wanted is not None and seat not in wanted:
+            continue
+        outcome = ""
+        try:
+            if realm:
+                # The bot is addressed on the realm the message came from, and never on the
+                # server its key belongs to.
+                try:
+                    Z.verify_realm(creds, realm)
+                except Z.RealmMismatch:
+                    outcome = SKIPPED
+                    log("inbox-delivery-skipped", seat=seat, id=message_id, reason="other-realm")
+                else:
+                    outcome = _deliver_one(
+                        seat,
+                        creds,
+                        message_id,
+                        channel,
+                        streams_by_site,
+                        http_factory,
+                        log,
+                        realm,
+                        steps,
+                        sender_email,
+                        skipped_emails,
+                    )
+            else:
+                outcome = _deliver_one(
+                    seat,
+                    creds,
+                    message_id,
+                    channel,
+                    streams_by_site,
+                    http_factory,
+                    log,
+                    realm,
+                    steps,
+                    sender_email,
+                    skipped_emails,
+                )
+        except _Step as step:
+            outcome = classify(step.cause, write=True)
+            _log_failure(log, seat, message_id, outcome, step.cause, creds)
+        except Exception as exc:  # noqa: BLE001 - one bot must not stop the others
+            outcome = classify(exc, write=False)
+            _log_failure(log, seat, message_id, outcome, exc, creds)
+        record(seat, outcome)
     return result
+
+
+def _deliver_one(
+    seat: str,
+    creds: Z.Credentials,
+    message_id: int,
+    channel: str,
+    streams_by_site: dict[str, list[Mapping[str, Any]]],
+    http_factory: HttpFactory,
+    log: Log,
+    realm: str,
+    steps: dict[str, set[str]],
+    sender_email: str,
+    skipped_emails: set[str],
+) -> str:
+    """One bot's delivery, apart from the classification of its failure.
+
+    The sender and the owner are skipped by their email;  everybody else is subscribed (quiet)
+    and has the message's read flag taken off."""
+    email = str(creds.email or "").casefold()
+    if email and email == sender_email:
+        log("inbox-delivery-skipped", seat=seat, id=message_id, reason="sender")
+        return SKIPPED
+    if email and email in skipped_emails:
+        log("inbox-delivery-skipped", seat=seat, id=message_id, reason="owner")
+        return SKIPPED
+    completed = steps.setdefault(seat, set())
+    if all(step in completed for step in STEPS):
+        # Every step of this bot already worked:  it is delivered, and a retry does not even
+        # read the channel again for it.
+        return DELIVERED
+    http = http_factory(creds, realm)
+    site = str(creds.site or "")
+    if site not in streams_by_site:
+        streams_by_site[site] = fetch_streams(http)
+    return deliver_to_bot(
+        http,
+        message_id,
+        channel,
+        streams_by_site[site],
+        seat=seat,
+        log=log,
+        done=completed,
+    )
