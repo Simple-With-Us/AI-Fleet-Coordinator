@@ -4,11 +4,14 @@ Zulip sets the same wildcard flags for both tokens; only the raw message token m
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from agent_sync import chat_fanout as F
+from agent_sync import live as L
 from agent_sync import router as R
 from agent_sync.live import topic_key
 from agent_sync.tests.test_chat_fanout import FakeCatalog, cloud
+from agent_sync.tests.fake_zulip import FAKE_OWNER_ID
 from agent_sync.tests.test_daemon import DaemonHarness
 
 ST_URL = "https://github.com/example-org/Socratic-Trade"
@@ -164,15 +167,147 @@ class OwnerAllFanoutDedupTests(DaemonHarness):
         queue = daemon.chat_queue("CLAUDE")
 
         def settled() -> bool:
-            if not queue.snapshot()["items"]:
-                return False
-            wakes = [w for w in self.ledger() if w.get("message_id") == message_id]
-            return len(wakes) <= 1
+            daemon.tick()  # drains the fanout's hand-back on the event thread
+            return bool(queue.snapshot()["items"]) and daemon._broadcast_wakes.empty()
 
         self.pump_until(daemon, settled, rounds=40)
+        daemon.tick()
         self.assertEqual(len(queue.snapshot()["items"]), 1)
-        wakes = [w for w in self.ledger() if w.get("message_id") == message_id]
-        self.assertEqual(len(wakes), 0, "the chat nudge owns the wake; offer_wake must not double it")
+        self.assertEqual(
+            self.wakes_for(message_id), [], "the chat nudge owns the wake; offer_wake must not double it"
+        )
+
+    def owner_all(self) -> int:
+        return self.fake.add_message(
+            "Jay Wedgeworth", "work-in-progress", "fleet", "@**all** for ST: deploy"
+        )
+
+    def log_rows(self, daemon) -> list[dict]:
+        return L.read_jsonl(daemon.log.path)
+
+    def wakes_for(self, message_id: int) -> list[str]:
+        """Distinct wake ids in the seat ledger that carry this message (rows key it as trigger_ids)."""
+        ids = {
+            str(w.get("wake_id"))
+            for w in self.ledger()
+            if message_id in (w.get("trigger_ids") or [])
+        }
+        return sorted(ids)
+
+    def settle(self, daemon, message_id: int) -> None:
+        """Route the message, let the fanout thread hand back, and drain it on the event thread."""
+
+        def woke() -> bool:
+            daemon.tick()
+            return bool(self.wakes_for(message_id))
+
+        self.pump_until(daemon, woke, rounds=40)
+
+    def test_a_seat_with_no_chat_nudge_still_gets_one_wake(self) -> None:
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])  # no chat to nudge
+        message_id = self.owner_all()
+        self.settle(daemon, message_id)
+        daemon.tick()
+        self.assertEqual(len(self.wakes_for(message_id)), 1, "one wake for the un-nudged seat")
+
+    def test_a_catalog_failure_still_wakes_the_seat_once(self) -> None:
+        daemon = self.started()
+
+        class BrokenCatalog:
+            def discover(self, *args, **kwargs):
+                raise RuntimeError("synthetic discovery failure")
+
+        daemon._chat_catalog = BrokenCatalog()
+        message_id = self.owner_all()
+        self.settle(daemon, message_id)
+        daemon.tick()
+        self.assertEqual(len(self.wakes_for(message_id)), 1, "discovery failure must not lose the wake")
+        events = [e.get("event") for e in self.log_rows(daemon)]
+        self.assertIn("fanout-error", events)
+
+    def test_the_fanout_thread_never_offers_a_wake_itself(self) -> None:
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message = {
+            "id": 990001,
+            "sender_id": FAKE_OWNER_ID,
+            "content": "@**all** deploy",
+            "client": "website",
+            "type": "stream",
+            "display_recipient": "work-in-progress",
+            "subject": "fleet",
+            "timestamp": int(self.clock.time()),
+            "flags": ["stream_wildcard_mentioned"],
+        }
+        daemon.fanout(990001, "work-in-progress", "fleet", F.Scope(), F.ChatPlaces(), message)
+        self.assertEqual(daemon.coalescer.pending, {}, "only the event thread may touch the coalescer")
+        self.assertEqual(self.wakes_for(990001), [])
+        daemon.tick()
+        self.assertEqual(len(self.wakes_for(990001)), 1)
+
+    def test_one_seat_failure_does_not_stop_the_broadcast_wake(self) -> None:
+        from types import SimpleNamespace
+
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.owner_all()
+        self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
+        message = next(m for m in self.fake.messages if m["id"] == message_id)
+        broken = SimpleNamespace(cfg=SimpleNamespace(enabled=True), me=object(), seat="BROKEN")
+        real = daemon.seats
+        daemon.seats = {"BROKEN": broken, **real}
+        try:
+            daemon._broadcast_wake_after_fanout(dict(message, flags=["stream_wildcard_mentioned"]), set())
+        finally:
+            daemon.seats = real
+        rows = [e for e in self.log_rows(daemon) if e.get("event") == "broadcast-wake-failed"]
+        self.assertEqual([r.get("seat") for r in rows], ["BROKEN"])
+        self.assertGreaterEqual(len(self.wakes_for(message_id)), 1, "CLAUDE still woke after BROKEN failed")
+
+
+class NonOwnerAllChatNudgeTests(DaemonHarness):
+    """Only the owner broadcast hands its wake to the fanout;  a peer's direct mention that also
+    carries `@all` keeps the working chat's nudge (Kody 4368578511)."""
+
+    def routed(self, *, owner: bool) -> tuple[mock.MagicMock, mock.MagicMock]:
+        daemon = self.started()
+        runner = daemon.seats["CLAUDE"]
+        runner.seat = "GROK"
+        c = R.Classes()
+        c.owner, c.broadcast_all, c.eligible, c.direct = owner, True, True, not owner
+        c.channel, c.topic, c.key = "work-in-progress", "t", topic_key("work-in-progress", "t")
+        d = R.Decision()
+        d.seat_inbox, d.wake = True, "owner" if owner else "peer"
+        queue = mock.MagicMock()
+        queue.enqueue.return_value = True
+        message = {
+            "id": 880001,
+            "type": "stream",
+            "display_recipient": "work-in-progress",
+            "subject": "t",
+            "content": "@**GB Engineer** @all",
+            "sender_id": 11,
+            "timestamp": int(self.clock.time()),
+        }
+        with (
+            mock.patch.object(R, "route", return_value=(c, d)),
+            mock.patch.object(daemon, "chat_queue", return_value=queue),
+            mock.patch.object(daemon, "offer_wake") as offer,
+            mock.patch.object(daemon, "start_fanout"),
+        ):
+            daemon._route(runner, message)
+        return queue, offer
+
+    def test_peer_direct_mention_with_at_all_keeps_the_chat_nudge(self) -> None:
+        queue, offer = self.routed(owner=False)
+        queue.enqueue.assert_called_once()
+        offer.assert_not_called()
+
+    def test_owner_at_all_is_handed_to_the_fanout(self) -> None:
+        queue, offer = self.routed(owner=True)
+        queue.enqueue.assert_not_called()
+        offer.assert_not_called()
 
 
 class RouteModeMuseTests(unittest.TestCase):

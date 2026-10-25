@@ -87,6 +87,8 @@ _ACRONYM_RE = re.compile(
 )
 
 
+# The scope parsers are token-agnostic on purpose:  they read the repo names next to any channel-wide mention.
+# Which token starts a fanout is the daemon's call, and only the owner's `@all` does (Jay, 2026-10-24).
 _SCOPE_RE = re.compile(
     r"(?<![\w])@\*{0,2}(?:all|everyone|channel|stream)\*{0,2}\s+for\s+([^\n]{1,120}?):(?=\s|$)",
     re.IGNORECASE,

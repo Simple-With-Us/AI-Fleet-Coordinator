@@ -419,7 +419,7 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     visible = outside_code(content)
     names = ("@**%s**" % me.full_name, "@**%s|%d**" % (me.full_name, me.user_id))
     c.direct = "mentioned" in flags and any(n in visible for n in names)
-    tokens = broadcast_tokens(content)
+    tokens = _broadcast_tokens_visible(visible)  # `visible` is already outside_code(content)
     c.broadcast_all = "all" in tokens
     c.everyone_inert = "everyone" in tokens and not c.broadcast_all
     c.fleet = c.key == FLEET_WAKE_KEY and c.broadcast_all
