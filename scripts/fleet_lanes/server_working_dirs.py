@@ -822,6 +822,54 @@ def apply_claude_settings(path: Path, root: Path) -> bool:
     return True
 
 
+def environment_assignments(line: str) -> list[tuple[str, str]]:
+    """The variables an `Environment=` line sets, each with its original text.
+
+    systemd reads the payload as space-separated assignments, and a value may be
+    quoted, so the payload is split on the whitespace that is outside quotes.
+    The original text of every assignment is kept, so a line that is carried
+    over keeps the quoting the operator wrote.
+    """
+    payload = line.strip()[len("Environment="):]
+    segments: list[str] = []
+    current = ""
+    quote = ""
+    index = 0
+    while index < len(payload):
+        char = payload[index]
+        if quote:
+            current += char
+            if char == "\\" and quote == '"' and index + 1 < len(payload):
+                current += payload[index + 1]
+                index += 2
+                continue
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+            current += char
+        elif char.isspace():
+            if current:
+                segments.append(current)
+                current = ""
+        else:
+            current += char
+        index += 1
+    if current:
+        segments.append(current)
+    assignments: list[tuple[str, str]] = []
+    for segment in segments:
+        name = segment
+        if name[:1] in "\"'":
+            name = name[1:]
+        if name.endswith('"') and not name.endswith('\\"'):
+            name = name[:-1]
+        name = name.split("=", 1)[0].strip()
+        if name:
+            assignments.append((name, segment))
+    return assignments
+
+
 def carried_directives(text: str, body: str) -> list[str]:
     """The unit directives this script does not own, taken from the unit it replaces.
 
@@ -829,15 +877,41 @@ def carried_directives(text: str, body: str) -> list[str]:
     the restart policy.  An `EnvironmentFile=` the operator added, and an
     `Environment=` the template does not set, belong to the operator, so they are
     carried over instead of silently dropped by the rewrite.
+
+    A variable the template sets is the template's:  systemd takes the last
+    assignment for a variable, and the carried line lands after the template's,
+    so a line that still sets it would run the unit with the older value.  That
+    assignment is dropped, and the rest of the line is carried over.
     """
     if not text:
         return []
-    return [
-        line.strip()
-        for line in text.splitlines()
-        if line.strip().startswith("EnvironmentFile=")
-        or (line.strip().startswith("Environment=") and line.strip() not in body)
-    ]
+    owned: set[str] = set()
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Environment="):
+            owned.update(name for name, _ in environment_assignments(stripped))
+    carried: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("EnvironmentFile="):
+            carried.append(stripped)
+            continue
+        if not stripped.startswith("Environment=") or stripped in body:
+            continue
+        assignments = environment_assignments(stripped)
+        if not assignments:
+            carried.append(stripped)
+            continue
+        keep = [(name, raw) for name, raw in assignments if name not in owned]
+        if not keep:
+            continue
+        if len(keep) == len(assignments):
+            carried.append(stripped)
+            continue
+        carried.append("Environment=" + " ".join(raw for _, raw in keep))
+    return carried
 
 
 def apply_unit(path: Path, body: str) -> bool:

@@ -289,7 +289,7 @@ class ServerWorkingDirsTest(unittest.TestCase):
         self.apply()
         self.write_config("{}\n")
         unit = self.systemd / "opencode-server.service"
-        unit.write_text(unit.read_text().replace(str(self.home), "/mnt/fleet-extra/home"))
+        unit.write_text(unit.read_text().replace(str(self.home), "/srv/checkout-volume/home"))
         before = unit.read_text()
         self.apply()
         self.assertIn("--hostname example.test", before)
@@ -330,6 +330,51 @@ class ServerWorkingDirsTest(unittest.TestCase):
         self.assertIn("Environment=EXTRA=1", text)
         self.assertIn(f"WorkingDirectory={self.lanes}", text)
         self.assertEqual(self.verify(), 0)
+
+    def test_a_stale_root_in_the_unit_is_not_carried_over(self) -> None:
+        """A unit that already names an old root must not keep it after the rewrite.
+
+        systemd takes the last assignment for a variable, and the carried line
+        lands after the template's, so carrying the old value would run the
+        unit with a root that is no longer there.
+        """
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            'Environment="FLEET_CODE_ROOT=/srv/old-volume/Code"\n'
+            "ExecStart=/root/.opencode/bin/opencode serve --service --hostname keepme --port 62306\n"
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertNotIn("/srv/old-volume/Code", text)
+        self.assertIn(f'Environment="FLEET_CODE_ROOT={self.home / "Code"}"', text)
+        self.assertEqual(text.count("FLEET_CODE_ROOT="), 1)
+        self.assertEqual(self.verify(), 0)
+
+    def test_a_carried_line_keeps_the_variables_the_template_does_not_own(self) -> None:
+        """One line can set both:  the template's root and the operator's own."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            'Environment="FLEET_CODE_ROOT=/srv/old-volume/Code" EXTRA=1\n'
+            "ExecStart=/root/.opencode/bin/opencode serve --service --hostname keepme --port 62306\n"
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertNotIn("/srv/old-volume/Code", text)
+        self.assertIn("EXTRA=1", text)
+        self.assertIn(f'Environment="FLEET_CODE_ROOT={self.home / "Code"}"', text)
+        self.assertEqual(self.verify(), 0)
+
+    def test_a_quoted_value_with_a_space_is_read_as_one_variable(self) -> None:
+        """systemd splits on the whitespace that is outside quotes, and so do we."""
+        assignments = swd.environment_assignments(
+            'Environment="FLEET_CODE_ROOT=/mnt/a volume/Code" EXTRA=1'
+        )
+        self.assertEqual(
+            assignments,
+            [("FLEET_CODE_ROOT", '"FLEET_CODE_ROOT=/mnt/a volume/Code"'), ("EXTRA", "EXTRA=1")],
+        )
 
     # -- the bashrc knob follows the resolved root (kody: medium) ---------- #
 
