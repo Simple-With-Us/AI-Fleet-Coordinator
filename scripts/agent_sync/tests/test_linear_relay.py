@@ -36,7 +36,22 @@ from pathlib import Path
 from unittest import mock
 
 from agent_sync import linear_relay as lr
-from agent_sync.zulip import _NoRedirect
+from agent_sync.zulip import ApiError, NetworkError, _NoRedirect
+
+
+class StreamsZulip:
+    """A Zulip client for `check`: it answers the streams call, or raises what it is given."""
+
+    def __init__(self, answer=None) -> None:
+        self.answer = answer if answer is not None else {"streams": [
+            {"stream_id": 5, "name": "builds", "invite_only": False},
+            {"stream_id": 9, "name": "secret", "invite_only": True},
+        ]}
+
+    def get(self, path, params=None):
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
 
 
 class FakeLinear:
@@ -510,10 +525,12 @@ class RelayTests(unittest.TestCase):
         env = {"LINEAR_RELAY_STATE": "/tmp/fixture/linear-relay.json"}
         self.assertEqual(lr.state_path(env, False), Path("/tmp/fixture/linear-relay.json"))
         self.assertEqual(lr.state_path(env, True), Path("/tmp/fixture/linear-relay.dry-run.json"))
-        # A path with no file name is refused by name, not with a traceback.
-        for bad in ("/", "."):
-            with self.assertRaises(SystemExit):
-                lr.state_path({"LINEAR_RELAY_STATE": bad}, True)
+        # A path with no file name is refused by name, not with a traceback, live and dry alike.
+        for bad in ("/", ".", ".."):
+            for dry in (False, True):
+                with self.subTest(path=bad, dry_run=dry):
+                    with self.assertRaisesRegex(SystemExit, "LINEAR_RELAY_STATE must name"):
+                        lr.state_path({"LINEAR_RELAY_STATE": bad}, dry)
 
     def test_one_failing_entry_does_not_stop_the_tick(self) -> None:
         self.w.handle_event(message(1, "AFC-1 a", "hello"))
@@ -763,20 +780,35 @@ class RelayTests(unittest.TestCase):
 
         env = {"LINEAR_RELAY_CHECK_ISSUE": "AFC-9"}
         with redirect_stdout(io.StringIO()):
-            code = lr.run_check(None, CheckLinear(lr.LinearNotFound("AFC-9")), env,
+            code = lr.run_check(StreamsZulip(), CheckLinear(lr.LinearNotFound("AFC-9")), env,
                                 "https://z.example")
         self.assertEqual(code, 0)
         with redirect_stdout(io.StringIO()):
-            code = lr.run_check(None, CheckLinear(lr.LinearAuthError("no token")), env,
+            code = lr.run_check(StreamsZulip(), CheckLinear(lr.LinearAuthError("no token")), env,
                                 "https://z.example")
         self.assertEqual(code, 1)
         # A malformed id Linear refuses as invalid input is an issue problem, not an auth one.
         out = io.StringIO()
         with redirect_stdout(out):
-            code = lr.run_check(None, CheckLinear(lr.LinearPermanentError("INVALID_INPUT")), env,
-                                "https://z.example")
+            code = lr.run_check(StreamsZulip(), CheckLinear(lr.LinearPermanentError("INVALID_INPUT")),
+                                env, "https://z.example")
         self.assertEqual(code, 0)
         self.assertIn("the token works", out.getvalue())
+        self.assertIn("public-stream set ok: 1 public stream(s)", out.getvalue())
+
+    def test_check_fails_when_the_public_stream_set_cannot_load(self) -> None:
+        # run() relays nothing until the set loads, so check tries the same load and fails on it,
+        # before it asks Linear anything.
+        class NoLinear:
+            def viewer(self):
+                raise AssertionError("linear must not be asked")
+
+        for answer in (ApiError("denied"), NetworkError("down"), {"no": "streams"}):
+            out = io.StringIO()
+            with self.subTest(answer=type(answer).__name__), redirect_stdout(out):
+                code = lr.run_check(StreamsZulip(answer), NoLinear(), {}, "https://z.example")
+            self.assertEqual(code, 1)
+            self.assertIn("public-stream set failed to load", out.getvalue())
 
     def test_linear_error_codes_are_sorted_by_what_waiting_can_change(self) -> None:
         def classify(code: str) -> lr.LinearError:
@@ -938,6 +970,17 @@ class RelayTests(unittest.TestCase):
     def test_a_stream_event_routed_to_the_worker_is_logged(self) -> None:
         self.w.handle_event({"type": "stream", "op": "update", "stream_id": 5})
         self.assertTrue(any("set_public_streams" in line for line in self.logs))
+
+    def test_the_stream_event_log_matches_the_ops_run_reloads_on(self) -> None:
+        # run() reloads the set only on these ops, so the worker's advice names only these too.
+        self.assertEqual(lr.STREAM_RELOAD_OPS, ("create", "update", "delete"))
+        for op in lr.STREAM_RELOAD_OPS:
+            self.logs.clear()
+            self.w.handle_event({"type": "stream", "op": op, "stream_id": 5})
+            self.assertEqual(len(self.logs), 1, op)
+        self.logs.clear()
+        self.w.handle_event({"type": "stream", "op": "some_other_op", "stream_id": 5})
+        self.assertEqual(self.logs, [])
 
     def test_the_marker_matches_a_whole_line_only(self) -> None:
         # The marker of root 100 is a prefix of the marker of root 1000.

@@ -76,9 +76,11 @@ relay's wider rows (long hex and base64 runs, and a keyword such as `password` o
 by `:` or `=` and a value).  The Zulip-shaped row also withholds an opaque 32-character id, a cost
 accepted because a Zulip key is the credential most likely to be pasted into Zulip.  A keyword in
 plain prose, such as "token refresh", is not a hit.  A field with a hit is withheld whole: it shows as "(withheld: it
-looked like it carried a credential)", and the log names only the message id and the field.  It is
-never partly redacted, because a pattern can find where a credential starts but not always where it
-ends.  The message itself is still mirrored as a link, which carries no Zulip text.  A clean field is
+looked like it carried a credential)", and the log names only the message id and the field.  Neither
+the comment nor the log says which row matched, so a reader cannot tell from Linear why one id was
+withheld and another was not; the rows above are the whole list.  It is never partly
+redacted, because a pattern can find where a credential starts but not always where it ends.  The
+message itself is still mirrored as a link, which carries no Zulip text.  A clean field is
 trimmed and escaped so it cannot open a link, start a code span or close the quoted string.  An @ is
 kept but followed by a zero-width space, so a mention never becomes a live mention.  The relay's log
 names an entry by its issue and its first message id, never by its topic.  A message that came in
@@ -110,11 +112,13 @@ both variables.
 Commands:
 
     python3 -m agent_sync.linear_relay run        # the long-running loop
-    python3 -m agent_sync.linear_relay check      # credentials and Linear auth, no writes
+    python3 -m agent_sync.linear_relay check      # credentials, public streams, Linear auth; no writes
 
-`check` proves the Zulip bot is a member and not an admin, and that the Linear token works.  A
-missing issue, or an id Linear refuses as malformed, is reported as an issue problem, not as an
-auth failure: those are different problems and the operator needs to know which one it is.
+`check` proves the Zulip bot is a member and not an admin, that the public-stream set loads, and
+that the Linear token works.  A set that cannot load fails `check`, because `run` relays nothing
+until it loads.  A missing issue, or an id Linear refuses as malformed, is reported as an issue
+problem, not as an auth failure: those are different problems and the operator needs to know which
+one it is.
 
 ## Talking to Linear
 
@@ -131,7 +135,7 @@ Zulip poll loop keeps polling.
 Errors carry only allow-listed fields: an HTTP status, Linear's error codes, and a fixed
 description.  The response body never reaches an exception or the log, and neither does the token.
 A refused token names only the variable to check, for example
-"linear refused LINEAR_RELAY_TOKEN (http 401)".  No key value, prefix, suffix or masked
+"linear refused LINEAR_RELAY_TOKEN (http 401)".  No key value, prefix, suffix or masked
 preview is included in the error, log or stop message.
 
 Failures are sorted by what waiting can change:
@@ -143,7 +147,9 @@ Failures are sorted by what waiting can change:
   not retried until a new message in the topic gives it new content.  An issue id Linear does not
   have is looked up again after an hour, so an id named before its issue exists is not lost.  The
   log says which it was, a missing issue or a refused lookup, so a scope problem never looks like a
-  quiet relay.
+  quiet relay.  A refused lookup waits the same hour before it is asked again, because waiting
+  cannot fix a refusal; the topic's messages are still recorded meanwhile, so the comment made once
+  a later lookup succeeds lists them.
 - A rate limit is a definite "not done": reads, edits and creates are all retried later.
 - A 5xx, a timeout or a network error is transient for a read or an edit, which retry with backoff
   inside the call's deadline before the worker backs the entry off.  For a create it is an unknown
@@ -186,7 +192,9 @@ comment for one topic:
 
 A fourth leaves an old comment behind without adding one: when a topic is renamed onto a topic that
 already has its own comment, the two conversations merge into the surviving comment, and the moved
-topic's older comment is left as it was, because the app cannot delete comments.
+topic's older comment is left as it was and is no longer updated, because the app cannot delete
+comments.  Retiring it with an edit that points at the surviving comment waits for the sandbox run
+to show that an edit works under `read` and `comments:create`.
 
 The relay narrows the third one, and it tracks the outcome of every create explicitly in the
 file-backed ledger:
@@ -241,6 +249,17 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
    `-m agent_sync.linear_relay run`, with `PYTHONPATH` set to the image's `scripts` folder.  And the
    image's healthcheck watches the daemon's status file, which the relay never writes, so the service
    turns that healthcheck off; restart always still brings the relay back if it exits.
+
+   Coolify's health-check setting cannot turn it off for a Dockerfile application, which is how the
+   daemon is deployed.  In Coolify 4.5, the version on the server, switching Coolify's own check off
+   makes it read the Dockerfile's `HEALTHCHECK` and wait for that check during a rolling deploy, so a
+   relay deploy would be marked unhealthy and rolled back; switching it on only puts Coolify's own
+   probe in its place (an HTTP request by default, which the relay cannot answer); and its custom
+   Docker options drop `--no-healthcheck`.  So the relay service uses Coolify's Docker Compose build
+   pack: a compose file that builds the same Dockerfile from the repo root and gives the relay
+   service `healthcheck: { disable: true }` beside its entrypoint, command, volume and
+   `restart: always`.  A Compose deploy does not wait for a health status.  Coolify reads that file
+   from the repo, so it is committed with the service when Jay approves this gate.
 
 The relay runs on the Coolify server instance, the same image as the simple-chat daemon.  No new
 Cloudflare Worker is involved.
