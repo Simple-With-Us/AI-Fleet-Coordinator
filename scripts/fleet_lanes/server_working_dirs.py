@@ -90,6 +90,21 @@ def apps_root() -> Path:
     return HOME / "apps"
 
 
+def code_root() -> Path:
+    """Where the integration trees live:  FLEET_CODE_ROOT, then ~/Code, then the volume."""
+    for candidate in (
+        os.environ.get("FLEET_CODE_ROOT"),
+        str(HOME / "Code"),
+        "/mnt/fleet-extra/Code",
+    ):
+        if not candidate:
+            continue
+        path = _resolve(candidate)
+        if path.is_dir():
+            return path
+    return HOME / "Code"
+
+
 def stamp() -> str:
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
@@ -145,6 +160,12 @@ BASHRC_BLOCK = """
 {begin} (owner policy, Oct 22 2026) ----------------
 # Every agent tool session on this host starts in the lanes root, so work lands in
 # a lane ({lanes}/<Repo>/<seat>-<slug>) and never in an integration tree.
+# The roots come from the environment because they live on a volume, not in the
+# home directory:  a lane tool that resolved ~/Code or ~/apps would look in a
+# folder that is not there and would find no integration tree and no repo.
+export FLEET_CODE_ROOT="{code}"
+export FLEET_APPS_ROOT="{apps}"
+export FLEET_LANES_ROOT="{lanes}"
 if [ -d "{lanes}" ] && [ "$PWD" = "$HOME" ]; then
   cd "{lanes}"
 fi
@@ -454,9 +475,20 @@ def knob_bashrc(root: Path) -> tuple[bool, str]:
         return True, "not installed (no .bashrc)"
     block = bashrc_block(read(path))
     target = re.search(r'^\s*cd\s+"([^"]+)"', block, flags=re.MULTILINE)
-    if target and same_dir(target.group(1), root):
-        return True, f"interactive shells start in {target.group(1)}"
-    return False, f"interactive shells start in {target.group(1) if target else 'nowhere'}, not {root}"
+    if not (target and same_dir(target.group(1), root)):
+        return False, f"interactive shells start in {target.group(1) if target else 'nowhere'}, not {root}"
+    missing = []
+    for var, want in (("FLEET_CODE_ROOT", code_root()),
+                      ("FLEET_APPS_ROOT", apps_root()),
+                      ("FLEET_LANES_ROOT", root)):
+        found = re.search(rf'^\s*export\s+{var}="([^"]+)"', block, flags=re.MULTILINE)
+        if not found:
+            missing.append(var)
+        elif not same_dir(found.group(1), want):
+            missing.append(f"{var}={found.group(1)}")
+    if missing:
+        return False, "the bashrc block does not set " + ", ".join(missing)
+    return True, f"interactive shells start in {target.group(1)}"
 
 
 def claude_settings(path: Path) -> dict | None:
@@ -608,11 +640,21 @@ def apply_acp(path: Path, root: Path) -> bool:
 def apply_bashrc(root: Path) -> bool:
     path = HOME / ".bashrc"
     text = read(path)
-    if bashrc_block(text):
+    if bashrc_block(text) and knob_bashrc(root)[0]:
         return False
     backup(path)
-    with path.open("a") as handle:
-        handle.write(BASHRC_BLOCK.format(begin=BASHRC_BEGIN, end=BASHRC_END, lanes=root, lanes_root=root))
+    new_block = BASHRC_BLOCK.format(
+        begin=BASHRC_BEGIN, end=BASHRC_END, lanes=root, lanes_root=root,
+        code=code_root(), apps=apps_root(),
+    ).strip("\n")
+    if bashrc_block(text):
+        start = text.index(BASHRC_BEGIN)
+        end = text.index(BASHRC_END) + len(BASHRC_END)
+        new_text = text[:start] + new_block + text[end:]
+    else:
+        new_text = text.rstrip("\n") + "\n\n" + new_block + "\n"
+    with path.open("w") as handle:
+        handle.write(new_text)
     return True
 
 

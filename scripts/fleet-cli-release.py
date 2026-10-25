@@ -294,6 +294,42 @@ def smoke(release: Path, home: Path) -> None:
 
 
 BASH_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane", "scripts/fleet-mode"})
+# Where a host keeps its integration trees and its apps folder when the home directory holds no
+# alias for them.  The server keeps both on the fleet-extra volume and links no ~/Code or ~/apps
+# into the home, so a tool that resolves only the home finds no tree and no repo.  The managed
+# wrappers carry the roots, so every shell that calls them resolves the same directories, with or
+# without an interactive login (owner 2026-10-25).
+SERVER_VOLUME = "/mnt/fleet-extra"
+ROOTED_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane"})
+
+
+def host_root(home: Path, name: str) -> str:
+    """The host's folder for `name` ("Code" or "apps").
+
+    The copy under the home wins when it is there; the fleet-extra volume is where the server
+    keeps these folders, and it holds the real trees when the home holds no alias for them.
+    """
+    local = home / name
+    if local.is_dir():
+        return str(local)
+    volume = Path(SERVER_VOLUME) / name
+    if volume.is_dir():
+        return str(volume)
+    return str(local)
+
+
+def root_exports(home: Path) -> str:
+    """The root exports a wrapper sets when the caller has not set them itself."""
+    code = host_root(home, "Code")
+    apps = host_root(home, "apps")
+    lanes = os.path.join(apps, "lanes")
+    if not os.path.isdir(lanes):
+        lanes = ""
+    return (
+        f"os.environ.setdefault('FLEET_CODE_ROOT', {code!r})\n"
+        f"os.environ.setdefault('FLEET_APPS_ROOT', {apps!r})\n"
+        + (f"os.environ.setdefault('FLEET_LANES_ROOT', {lanes!r})\n" if lanes else "")
+    )
 
 
 def wrapper(
@@ -312,10 +348,12 @@ for key in ("AGENT_LAUNCH_SEAT", "AGENT_SEAT"):
 """
     # Python tools run isolated;  the two bash tools run under bash with the caller's environment.
     interpreter = ["/bin/bash"] if script in BASH_SCRIPTS else ["/usr/bin/python3", "-I", "-B"]
+    roots = root_exports(home) if script in ROOTED_SCRIPTS else ""
     return (
         f"#!/usr/bin/python3 -I\n{MARKER}\nimport os, sys\nfrom pathlib import Path\n"
         + guard
         + f"release = Path({str(home / '.local/share/fleet-cli/current')!r}).resolve(strict=True)\n"
+        + roots
         + f"argv = {repr(interpreter)[:-1]}, str(release / {script!r})] + {extra or []!r}\n"
         + ("" if codex_only else "argv += sys.argv[1:]\n")
         + "os.execv(argv[0], argv)\n"

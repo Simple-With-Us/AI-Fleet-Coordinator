@@ -344,6 +344,32 @@ class ServerWorkingDirsTest(unittest.TestCase):
         ok, note = swd.knob_bashrc(self.lanes)
         self.assertFalse(ok, note)
 
+    def test_the_bashrc_block_exports_the_roots(self) -> None:
+        """A host that keeps its trees on a volume needs the roots in the environment."""
+        self.apply()
+        text = self.read(".bashrc")
+        self.assertIn(f'export FLEET_LANES_ROOT="{self.lanes}"', text)
+        self.assertIn(f'export FLEET_APPS_ROOT="{self.apps}"', text)
+        self.assertIn(f'export FLEET_CODE_ROOT="{self.home / "Code"}"', text)
+
+    def test_a_bashrc_block_without_the_exports_fails_the_knob(self) -> None:
+        self.apply()
+        path = self.home / ".bashrc"
+        path.write_text(path.read_text().replace('export FLEET_CODE_ROOT="', 'export UNUSED_CODE_ROOT="'))
+        ok, note = swd.knob_bashrc(self.lanes)
+        self.assertFalse(ok, note)
+        self.assertIn("FLEET_CODE_ROOT", note)
+
+    def test_apply_upgrades_a_block_that_lacks_the_exports(self) -> None:
+        self.apply()
+        path = self.home / ".bashrc"
+        path.write_text(path.read_text().replace(f'export FLEET_CODE_ROOT="{self.home / "Code"}"\n', ""))
+        ok, _ = swd.knob_bashrc(self.lanes)
+        self.assertFalse(ok)
+        self.apply()
+        self.assertTrue(swd.knob_bashrc(self.lanes)[0])
+        self.assertEqual(self.verify(), 0)
+
     def test_a_marker_without_the_fleet_block_is_not_a_pass(self) -> None:
         (self.home / ".bashrc").write_text("# fleet: agent working directory\n# nothing else\n")
         ok, _ = swd.knob_bashrc(self.lanes)

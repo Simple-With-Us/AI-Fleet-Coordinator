@@ -278,6 +278,46 @@ class ReleaseTests(unittest.TestCase):
         shim = (Path(__file__).resolve().parent / "fleet_lanes/bin/lane").read_text()
         self.assertIn("-I -B -c", shim)
 
+    def test_the_lane_wrapper_carries_the_roots(self):
+        # A server host keeps its trees on a volume and links no ~/Code or ~/apps into the home,
+        # so a wrapper that resolved only the home would find no tree and no repo.
+        self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertIn("os.environ.setdefault('FLEET_CODE_ROOT'", text)
+        self.assertIn("os.environ.setdefault('FLEET_APPS_ROOT'", text)
+
+    def test_the_roots_follow_the_home_when_it_has_them(self):
+        (self.home / "Code").mkdir(parents=True, exist_ok=True)
+        (self.home / "apps").mkdir(parents=True, exist_ok=True)
+        self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertIn(f"os.environ.setdefault('FLEET_CODE_ROOT', {str(self.home / 'Code')!r})", text)
+        self.assertIn(f"os.environ.setdefault('FLEET_APPS_ROOT', {str(self.home / 'apps')!r})", text)
+
+    def test_only_the_lane_wrapper_carries_the_roots(self):
+        self.receive()
+        for name in ("simple-board", "simple-chat", "simple-notes", "recall", "fleet-mode"):
+            self.assertNotIn("FLEET_CODE_ROOT", (self.home / ".local/bin" / name).read_text(), name)
+
+    def test_the_wrapper_lets_the_caller_win(self):
+        # setdefault, never an assignment:  an agent that exports the roots itself keeps them.
+        body = b'#!/bin/bash\necho "${FLEET_CODE_ROOT:-unset}"\n'
+        bundle = make_bundle()
+        bundle["files"]["scripts/fleet_lanes/bin/lane"] = {
+            "mode": 0o755,
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "data": base64.b64encode(body).decode(),
+        }
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        self.receive(bundle)
+        wrapper = self.home / ".local/bin/lane"
+        out = subprocess.run(
+            [str(wrapper)], capture_output=True, text=True,
+            env={**os.environ, "FLEET_CODE_ROOT": "/from/the/caller"},
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), "/from/the/caller")
+
     def old_bundle(self):
         """A release as installed before AFC-331:  only the base files."""
         bundle = make_bundle("old")

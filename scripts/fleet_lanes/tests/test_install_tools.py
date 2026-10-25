@@ -477,6 +477,54 @@ class ProbeTests(unittest.TestCase):
 # --------------------------------------------------------------------------- merge (pure)
 
 
+class PathsTests(unittest.TestCase):
+    def test_the_apps_folder_defaults_under_the_home(self) -> None:
+        p = T.make_paths("/h", env={})
+        self.assertEqual(p.apps_dir, "/h/apps")
+        self.assertEqual(p.stable, "/h/apps/lane-tools")
+        self.assertEqual(p.lane_shim, "/h/apps/lane")
+
+    def test_the_apps_root_from_the_environment(self) -> None:
+        """A server host keeps the apps folder on a volume and links no ~/apps into the home."""
+        p = T.make_paths("/h", env={"FLEET_APPS_ROOT": "/mnt/fleet-extra/apps"})
+        self.assertEqual(p.apps_dir, "/mnt/fleet-extra/apps")
+        self.assertEqual(p.stable, "/mnt/fleet-extra/apps/lane-tools")
+        self.assertEqual(p.lane_shim, "/mnt/fleet-extra/apps/lane")
+
+    def test_a_tilde_apps_root_expands_against_the_home(self) -> None:
+        self.assertEqual(T.make_paths("/h", env={"FLEET_APPS_ROOT": "~/v/apps"}).apps_dir, "/h/v/apps")
+        self.assertEqual(T.make_paths("/h", env={"FLEET_APPS_ROOT": "rel/apps"}).apps_dir, "/h/rel/apps")
+
+    def test_an_explicit_stable_dir_still_wins(self) -> None:
+        p = T.make_paths("/h", "/srv/lane-tools", env={"FLEET_APPS_ROOT": "/mnt/fleet-extra/apps"})
+        self.assertEqual(p.stable, "/srv/lane-tools")
+
+    def test_the_host_apps_root_follows_the_home_when_it_has_one(self) -> None:
+        """A host that keeps its apps folder in the home keeps it there."""
+        with tempfile.TemporaryDirectory() as home:
+            os.mkdir(os.path.join(home, "apps"))
+            p = T.host_paths(home, env={})
+            self.assertEqual(p.apps_dir, os.path.join(home, "apps"))
+            self.assertEqual(p.stable, os.path.join(home, "apps", "lane-tools"))
+
+    def test_the_host_apps_root_falls_back_to_the_canonical_root(self) -> None:
+        """A server host keeps the apps folder on a volume and links no ~/apps into the home.
+
+        An install there must write to the volume, not create a second apps folder under
+        the home:  the owner asked for the /root alias to be gone for good.
+        """
+        with tempfile.TemporaryDirectory() as home:
+            with mock.patch.object(T.os.path, "isdir", side_effect=lambda p: p == T.CANONICAL_APPS_ROOT):
+                p = T.host_paths(home, env={})
+            self.assertEqual(p.apps_dir, T.CANONICAL_APPS_ROOT)
+            self.assertEqual(p.stable, os.path.join(T.CANONICAL_APPS_ROOT, "lane-tools"))
+
+    def test_a_configured_apps_root_wins_over_the_canonical_root(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            p = T.host_paths(home, env={"FLEET_APPS_ROOT": "/mnt/fleet-extra/apps"})
+            self.assertEqual(p.apps_dir, "/mnt/fleet-extra/apps")
+
+
 class MergeTests(unittest.TestCase):
     P = T.make_paths("/h")
 
