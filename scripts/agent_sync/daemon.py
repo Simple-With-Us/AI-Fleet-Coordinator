@@ -3777,30 +3777,43 @@ class Daemon:
                 return
             db = self._registration_db()
             for entry in OREG.sweep(db):
-                self.log.write(
-                    "operator-registration-drop",
-                    entry_id=entry.get("entry_id"),
-                    platform=entry.get("platform"),
-                    reason=entry.get("reason"),
-                )
+                # Each drop line has its own guard (kody 4368820879):  sweep() has already
+                # saved these drops, so a log write that raises must neither cost the
+                # other drops their line nor end the pass before any row is asked.
+                try:
+                    self.log.write(
+                        "operator-registration-drop",
+                        entry_id=entry.get("entry_id"),
+                        platform=entry.get("platform"),
+                        reason=entry.get("reason"),
+                    )
+                except Exception:
+                    pass
             lease_maps: dict[str, dict[str, list[dict[str, Any]]]] = {}
             for row in rows:
                 # The whole per-row body sits inside one guard (kody 4366012641):  a
                 # failure anywhere in it - the lease read, a stamp, a drop, or a log line
                 # - is logged by exception type and the batch goes on with the next row.
-                # The error log write has its own guard, so a logger that raises cannot
-                # end the batch either.
+                # The guard catches Exception only, so KeyboardInterrupt and SystemExit
+                # still end the pass (kody 4368820879).  The error line names the row's
+                # session, and its entry once begin() has returned one, so a failed lease
+                # read is as traceable as a failed send.  The error log write has its own
+                # guard, so a logger that raises cannot end the batch either.
+                trace: dict[str, str] = {}
                 try:
                     self._ask_registration_row(
-                        row, labels, db=db, owner=owner, lease_maps=lease_maps
+                        row, labels, db=db, owner=owner, lease_maps=lease_maps, trace=trace
                     )
                 except Exception as exc:
                     try:
+                        mapping = isinstance(row, Mapping)
                         self.log.write(
                             "operator-registration-ask",
-                            platform=str(row.get("platform") or "")
-                            if isinstance(row, Mapping)
-                            else "",
+                            entry_id=trace.get("entry_id") or None,
+                            platform=str(row.get("platform") or "") if mapping else "",
+                            session_id=self._loggable_session_id(
+                                row.get("session_id") if mapping else None
+                            ),
                             status="error",
                             error=type(exc).__name__,
                         )
@@ -3808,6 +3821,20 @@ class Daemon:
                         pass
         except Exception as exc:
             self.log.write("operator-registration-ask", status="error", error=type(exc).__name__)
+
+    @staticmethod
+    def _loggable_session_id(value: Any) -> str:
+        """A catalog row's session id as a per-row error line may carry it, or "".
+
+        A row can fail before begin() has checked its session id (the lease read comes
+        first), so the id gets begin()'s own checks here:  a valid session id with no
+        secret shape is logged, and anything else is left out of the line.
+        """
+        try:
+            native = SI.check(value, "the native session id")
+        except ValueError:
+            return ""
+        return "" if secretscan.scan(native) else native
 
     def _ask_registration_row(
         self,
@@ -3817,8 +3844,13 @@ class Daemon:
         db: str,
         owner: int,
         lease_maps: dict[str, dict[str, list[dict[str, Any]]]],
+        trace: dict[str, str] | None = None,
     ) -> None:
-        """One catalog row of maybe_ask_registrations;  its caller isolates any failure."""
+        """One catalog row of maybe_ask_registrations;  its caller isolates any failure.
+
+        ``trace`` receives the row's entry id once begin() returns one, so the caller's
+        error line can name the entry a later step failed on.
+        """
         if labels.get(str(row.get("id") or ""), ("", ""))[0]:
             return
         # Ask the rows the catalog calls readable:  its vocabulary is
@@ -3863,6 +3895,8 @@ class Daemon:
         if out.get("status") not in ("ask", "pending"):
             return
         entry = out["entry"]
+        if trace is not None:
+            trace["entry_id"] = str(entry.get("entry_id") or "")
         if out.get("route_change") == "lost":
             self.log.write(
                 "operator-registration-route-lost",

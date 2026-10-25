@@ -2578,6 +2578,97 @@ class OperatorRegistrationWiringTests(DaemonHarness):
             if row.get("status") == "error"
         ]
         self.assertEqual([row["error"] for row in errors], ["RuntimeError"])
+        # kody 4368820879:  the error line names the row's session;  the lease read
+        # failed before begin(), so there is no entry to name yet.
+        self.assertEqual(errors[0]["session_id"], "sess-aaaaaaaa")
+        self.assertEqual(errors[0]["platform"], "claude")
+        self.assertIsNone(errors[0]["entry_id"])
+
+    def test_a_row_failing_after_begin_names_its_entry_and_session(self):
+        # kody 4368820879:  a step after begin() (here the missing-route line) fails, and
+        # the outer guard's error line names the entry begin() returned.
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        real_write = daemon.log.write
+
+        def flaky_write(event, **fields):
+            if event == "operator-registration-missing-route":
+                raise OSError("log unwritable")
+            return real_write(event, **fields)
+
+        with mock.patch.object(daemon.log, "write", side_effect=flaky_write), \
+                mock.patch.object(D.ORASK, "send_location_question") as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+        self.assertEqual(send.call_count, 0)
+        pending = D.OREG.pending_entries(db)
+        self.assertEqual(len(pending), 1)
+        errors = [
+            row for row in self._log_rows("operator-registration-ask")
+            if row.get("status") == "error"
+        ]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["error"], "OSError")
+        self.assertEqual(errors[0]["entry_id"], pending[0]["entry_id"])
+        self.assertEqual(errors[0]["session_id"], "sess-aaaaaaaa")
+
+    def test_a_session_id_begin_would_refuse_is_left_out_of_the_error_line(self):
+        # The lease read comes before begin()'s session id checks, so the error line runs
+        # them itself:  a secret-shaped or malformed id is never written to the log.
+        daemon = self.daemon()
+        self._registry(daemon)
+        secret_shaped = "sk-" + "placeholder" * 2
+        rows = self._rows(session_id=secret_shaped) + self._rows(
+            id="row-2", session_id="not a session id"
+        )
+        with mock.patch.object(
+            daemon, "_registration_lease_topics", side_effect=RuntimeError("lease read failed")
+        ), mock.patch.object(D.ORASK, "send_location_question") as send:
+            daemon.maybe_ask_registrations(rows, {})
+        self.assertEqual(send.call_count, 0)
+        errors = [
+            row for row in self._log_rows("operator-registration-ask")
+            if row.get("status") == "error"
+        ]
+        self.assertEqual([row["session_id"] for row in errors], ["", ""])
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertNotIn(secret_shaped, log)
+        self.assertNotIn("not a session id", log)
+
+    def test_a_drop_line_that_raises_neither_costs_the_other_drops_nor_ends_the_pass(self):
+        # kody 4368820879:  sweep() has already saved its drops when their lines are
+        # written, so each drop line has its own guard.
+        self.write_lease("L1", session_id="sess-aaaaaaaa", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        long_ago = time.time() - 2 * D.OREG.DEFAULT_TIMEOUT_SECONDS
+        for session_id in ("sess-cccccccc", "sess-dddddddd"):
+            D.OREG.begin(
+                db, platform="claude", profile_scope="default", session_id=session_id,
+                seat="CLAUDE", requester="catalog", registrations=lambda pf, sid: [],
+                now=long_ago,
+            )
+        real_write = daemon.log.write
+        drop_calls = []
+
+        def flaky_write(event, **fields):
+            if event == "operator-registration-drop":
+                drop_calls.append(fields["entry_id"])
+                if len(drop_calls) == 1:
+                    raise OSError("log unwritable")
+            return real_write(event, **fields)
+
+        with mock.patch.object(daemon.log, "write", side_effect=flaky_write), \
+                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(self._rows(), {})
+        self.assertEqual(len(drop_calls), 2)
+        drops = self._log_rows("operator-registration-drop")
+        self.assertEqual([row["entry_id"] for row in drops], drop_calls[1:])
+        self.assertEqual(drops[0]["reason"], D.OREG.REASON_NO_REPLY)
+        # The pass went on:  the live row was still asked.
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(
+            [e["session_id"] for e in D.OREG.pending_entries(db)], ["sess-aaaaaaaa"]
+        )
 
     def test_a_log_line_that_raises_on_one_row_does_not_stop_the_batch(self):
         # kody 4366012641:  the logger itself failing - for the row's own line and then
