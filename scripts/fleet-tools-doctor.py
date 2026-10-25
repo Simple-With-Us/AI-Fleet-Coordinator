@@ -29,7 +29,7 @@ Muster reads (`-` prints it).  docs/protocols/fleet-tool-parity.md has both owne
 Checks:
   runtime     the installed fleet-cli release (simple-chat, simple-notes, simple-board, recall, lane,
               fleet-mode) was built from AI-Fleet-Coordinator origin/main
-  checkout    each /root/Code (or ~/Code) checkout that ships a CLI is on
+  checkout    each canonical Code checkout that ships a CLI is on
               origin/main:  AI-Fleet-Coordinator, FleetLink
   commands    the fleet tools (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode)
               and fleetlink are on PATH (the Mac also keeps lane and fleet-mode
@@ -72,7 +72,11 @@ from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 RUNTIME = HOME / ".local/share/fleet-cli"
-CODE_ROOTS = [Path("/root/Code"), Path("/home/jay/Code"), HOME / "Code"]
+# The server paths that carry the integration trees today.  The owner removed the
+# /root aliases on 2026-10-25, so a host resolves its trees from the environment
+# and keeps these only as the last resort.  The volume a host keeps its trees on
+# is named by FLEET_SERVER_VOLUME, never written here.
+SERVER_CODE_ROOTS = (Path("/root/Code"), Path("/home/jay/Code"))
 REPOS = ("AI-Fleet-Coordinator", "FleetLink")
 # The tools both hosts carry (docs/protocols/fleet-tool-parity.md), then FleetLink's CLI.
 FLEET_TOOLS = ("simple-chat", "simple-notes", "simple-board", "recall", "lane", "fleet-mode")
@@ -588,8 +592,65 @@ def commits_between(
     return int(out) if out and out.isdigit() else None
 
 
-def find_repo(name: str) -> Path | None:
-    for root in CODE_ROOTS:
+def _resolve_root(candidate: str) -> Path:
+    """A root named in the environment, read the way the fleet reads one.
+
+    `~` is expanded against the doctor's home and a relative path is joined onto
+    it, never onto the working directory, so a host that names a root resolves it
+    the same way `fleet_lanes/server_working_dirs.py` and `fleet_lanes/layout.py`
+    resolve one.
+    """
+    raw = candidate.strip()
+    if raw == "~":
+        return HOME
+    if raw.startswith("~/"):
+        return HOME / raw[2:]
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else HOME / path
+
+
+def code_roots() -> list[Path]:
+    """Where the integration checkouts live, most specific first.
+
+    A root the caller configured wins, because that is the root the rest of the
+    fleet resolves.  Then the volume the host names, then the server paths that
+    carry the trees today, and the copy under the home last.  The owner removed
+    the /root aliases on 2026-10-25, so a host that names no root and keeps no
+    alias has no tree, and the doctor says so instead of reporting a checkout
+    it never found.
+
+    Every candidate is returned, safe or not, because the "no checkout" warning
+    has to name the roots that were searched.  `find_repo` is where a root
+    another user can write is dropped before anything is run from it.
+    """
+    roots: list[Path] = []
+    configured = (os.environ.get("FLEET_CODE_ROOT") or "").strip()
+    if configured:
+        roots.append(_resolve_root(configured))
+    volume = (os.environ.get("FLEET_SERVER_VOLUME") or "").strip()
+    if volume:
+        roots.append(_resolve_root(volume) / "Code")
+    roots.extend(SERVER_CODE_ROOTS)
+    roots.append(HOME / "Code")
+    ordered: list[Path] = []
+    for root in roots:
+        if root not in ordered:
+            ordered.append(root)
+    return ordered
+
+
+def find_repo(name: str, euid: int | None = None) -> Path | None:
+    """The checkout of `name` under the first root that holds one.
+
+    Run as root, a root another user can write is skipped (see `dir_is_root_safe`),
+    so the doctor never runs a git command or a checkout's code as root out of a
+    tree it does not trust.  Every checkout the doctor reads reaches it through
+    here, so the check covers `release_policy` and `check_checkouts` alike.
+    """
+    as_root = (os.geteuid() if euid is None else euid) == 0
+    for root in code_roots():
+        if as_root and not dir_is_root_safe(str(root)):
+            continue
         if (root / name / ".git").exists():
             return root / name
     return None
@@ -1093,7 +1154,7 @@ def check_checkouts(
         check = f"checkout:{name}"
         repo = find_repo(name)
         if not repo:
-            why = "no checkout under /root/Code or ~/Code"
+            why = "no checkout under " + ", ".join(str(root) for root in code_roots())
             report.add(check, "WARN", why, state="unknown", category=category, reason=why)
             states[name] = "unknown"
             continue
