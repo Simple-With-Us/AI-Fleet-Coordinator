@@ -8,7 +8,7 @@ import {
   parseGbBearer, newGbBearer, sha256Hex, gbBearerFromRequest, roleOf, GB_BEARER_TTL_MS,
 } from "../src/gb-bearer.js";
 import { IdentityRouter, GB_IDENTITIES, allowedIdentities } from "../src/delegated-identities.js";
-import { gbBearerRevealPage, gbBearerMintRefusedPage, adminPage } from "../src/pages.js";
+import { gbBearerMintCompletedPage,  gbBearerRevealPage, gbBearerMintRefusedPage, adminPage } from "../src/pages.js";
 import { AdminForm } from "../src/forms.js";
 import { okResult } from "../src/contract.js";
 
@@ -138,10 +138,25 @@ test("the reveal page shows the token once, escaped, single-use form, and is not
   const res = gbBearerRevealPage({ identity: ID, token: "gbb_fixer_<script>x", expiresAt: NOW, kind: "persona", mcpAccept: true });
   const html = await res.text();
   assert.match(html, /only time it is shown/);
-  assert.match(html, /resubmit is refused and the bearer stays exactly as it is/);
+  assert.match(html, /resubmit only shows this bearer/);
   assert.ok(html.includes("gbb_fixer_&#60;script&#62;x"));
   assert.ok(!html.includes("<script>x"));
   assert.match(res.headers.get("cache-control"), /no-store/);
+});
+
+test("the completed-ack page shows outcome metadata, never a token, and is not cacheable", async () => {
+  const res = gbBearerMintCompletedPage({ identity: ID, result: { created_at: NOW, expires_at: NOW + 1e9, mint_count: 3, mcp_accept: false } });
+  const html = await res.text();
+  assert.match(html, /Already Minted/);
+  assert.match(html, /never shown again/);
+  assert.match(html, /mint #3/);
+  assert.match(html, /GR-MCP only/);
+  assert.ok(html.includes("identity&#39;s"), "single-escaped apostrophe");
+  assert.ok(!html.includes("&#38;"), "no double-escaping");
+  assert.ok(!html.includes('<code id="gb-bearer-token">'), "no token element");
+  assert.match(res.headers.get("cache-control"), /no-store/);
+  const bare = await gbBearerMintCompletedPage({ identity: ID, result: null }).text();
+  assert.match(bare, /Already Minted/);
 });
 
 test("the reveal send line matches what the minted bearer can actually do", async () => {
@@ -170,17 +185,24 @@ test("the refused mint page never shows a token and states nothing changed", asy
 
 const mintIdAt = (ms, tail = "a".repeat(20)) => ms.toString(16).padStart(12, "0") + tail;
 
-test("checked mint: fresh form mints, resubmit refuses consumed, stale and future refuse, nothing mutates", async () => {
+test("checked mint: fresh form mints, resubmit is acked from the stored outcome, stale and future refuse, nothing mutates", async () => {
   const store = S.memoryStore();
   const a = await newGbBearer(ID);
   const ok = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW), hash: a.hash, by: "j", expiresAt: NOW + 1e9, mcpAccept: true }, NOW);
   assert.equal(ok.minted, true);
   assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 5), { ok: true, mcp_accept: true });
-  // Same form again: refused, bearer untouched.
+  // Same form again - a real HTTP resubmit carries a FRESH hash (the route
+  // generates a new raw token per POST):  acked from the stored outcome, and
+  // the bearer is untouched.
   const again = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW), hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 2e9, mcpAccept: false }, NOW + 1000);
-  assert.deepEqual(again, { minted: false, reason: "consumed" });
+  assert.deepEqual(again, {
+    minted: false,
+    reason: "completed",
+    result: { created_at: NOW, expires_at: NOW + 1e9, mint_count: 1, mcp_accept: true },
+  });
   assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 1005), { ok: true, mcp_accept: true }, "the first bearer survives the replay");
-  assert.equal((await S.gbBearerStatus(store, NOW + 1005)).expires_at, NOW + 1e9, "no state mutation on refusal");
+  assert.equal((await S.gbBearerStatus(store, NOW + 1005)).expires_at, NOW + 1e9, "no state mutation on the ack");
+  assert.ok(!JSON.stringify(again).includes(a.hash), "the ack carries metadata only");
   // Stale form (older than the TTL): refused, nothing minted.
   const stale = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW - S.GB_MINT_FORM_TTL_MS - 1000, "b".repeat(20)), hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW);
   assert.deepEqual(stale, { minted: false, reason: "stale" });
@@ -197,33 +219,24 @@ test("checked mint: fresh form mints, resubmit refuses consumed, stale and futur
   assert.ok(auditRows.includes("audit"));
 });
 
-test("a same-form retry of a completed mint is acked from stored outcome metadata; a swapped hash is refused", async () => {
-  // Kody 4372748176:  the raw bearer never leaves the caller (the route stores
-  // only its hash), so a lost first response is acked from the tombstone's
-  // outcome metadata - same mint id AND same hash - with no new mint, no new
-  // reveal and no mutation.  The same id under a different hash is refused.
+test("a resubmitted form acks only /admin-visible metadata, whatever hash the retry carries", async () => {
+  // Kody discussion_r4372748176:  the raw token is never stored, so the ack
+  // can only confirm the completed outcome - the caller recovers nothing
+  // secret and mints nothing new.  An owner who lost the token rotates.
   const store = S.memoryStore();
   const a = await newGbBearer(ID);
   const id = mintIdAt(NOW);
-  const ok = await S.gbBearerMintChecked(store, { mintId: id, hash: a.hash, by: "j", expiresAt: NOW + 1e9, mcpAccept: true }, NOW);
-  assert.equal(ok.minted, true);
-  const replay = await S.gbBearerMintChecked(store, { mintId: id, hash: a.hash, by: "j", expiresAt: NOW + 1e9, mcpAccept: true }, NOW + 1000);
-  assert.deepEqual(replay, {
-    minted: true,
-    replay: true,
-    created_at: ok.created_at,
-    expires_at: ok.expires_at,
-    mint_count: ok.mint_count,
-    mcp_accept: true,
-  });
-  assert.equal((await S.gbBearerStatus(store, NOW + 1005)).mint_count, 1, "the replay did not mint again");
+  await S.gbBearerMintChecked(store, { mintId: id, hash: a.hash, by: "j", expiresAt: NOW + 1e9, mcpAccept: false }, NOW);
+  const replay = await S.gbBearerMintChecked(store, { mintId: id, hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 2e9, mcpAccept: true }, NOW + 1000);
+  assert.equal(replay.reason, "completed");
+  assert.equal(replay.result.mcp_accept, false, "the ORIGINAL mint's acceptance, not the retry's");
+  assert.equal(replay.result.mint_count, 1);
+  assert.ok(!("minted" in replay) || replay.minted === false);
+  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 1005), { ok: true, mcp_accept: false }, "the original bearer survives with its original acceptance");
   assert.ok(JSON.stringify([...store.map.keys()]).includes("audit"), "the replay was audited");
-  const swapped = await S.gbBearerMintChecked(store, { mintId: id, hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 2e9 }, NOW + 2000);
-  assert.deepEqual(swapped, { minted: false, reason: "consumed" });
-  assert.deepEqual(await S.gbBearerCheck(store, a.hash, NOW + 2005), { ok: true, mcp_accept: true }, "the original bearer survives");
 });
 
-test("replay rejection spans the whole validity window: 64+ mints, then the oldest form replays refused", async () => {
+test("replay handling spans the whole validity window: 64+ mints, then the oldest form replays without minting", async () => {
   const store = S.memoryStore();
   const firstId = mintIdAt(NOW, "0".repeat(20));
   for (let i = 0; i < 64; i++) {
@@ -232,9 +245,13 @@ test("replay rejection spans the whole validity window: 64+ mints, then the olde
     assert.equal(r.minted, true, `mint ${i}`);
   }
   // The 64-record window is full of still-fresh forms: the oldest form's
-  // tombstone was NOT evicted, its replay still refuses...
+  // tombstone was NOT evicted, so its replay is acked as completed and
+  // absolutely does not mint...
   const replay = await S.gbBearerMintChecked(store, { mintId: firstId, hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 2e9 }, NOW + 64_000);
-  assert.deepEqual(replay, { minted: false, reason: "consumed" });
+  assert.equal(replay.minted, false);
+  assert.equal(replay.reason, "completed");
+  assert.equal(replay.result.mint_count, 1, "the ack reports the ORIGINAL mint");
+  assert.equal((await S.gbBearerStatus(store, NOW + 64_000)).mint_count, 64, "the replay minted nothing");
   // ... and a 65th fresh form refuses fail-closed instead of evicting it.
   const sixtyFive = await S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW + 64_000, "f".repeat(20)), hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 1e9 }, NOW + 64_000);
   assert.deepEqual(sixtyFive, { minted: false, reason: "busy" });
@@ -258,9 +275,11 @@ test("a future-dated (max-skew) form cannot replay after a consumption-timed tom
   assert.equal(first.minted, true, "a form dated within the future skew is accepted");
   // One hour plus 1ms after CONSUMPTION:  a consumption-timed tombstone would
   // already have dropped, but the form itself stays fresh for ~60s more.  The
-  // replay must still refuse - retention follows the form's own validity.
+  // replay must still not mint - retention follows the form's own validity,
+  // and the still-fresh form is acked as completed.
   const replay = await S.gbBearerMintChecked(store, { mintId, hash: (await newGbBearer(ID)).hash, by: "j", expiresAt: NOW + 2e9 }, NOW + S.GB_MINT_FORM_TTL_MS + 1);
-  assert.deepEqual(replay, { minted: false, reason: "consumed" });
+  assert.equal(replay.minted, false);
+  assert.equal(replay.reason, "completed");
   assert.equal((await S.gbBearerStatus(store, NOW + S.GB_MINT_FORM_TTL_MS + 1)).mint_count, 1, "no second mint");
   // Once the form's own validity ends, the same id refuses as stale, never mints.
   const expired = await S.gbBearerMintChecked(store, { mintId, hash: a.hash, by: "j", expiresAt: NOW + 3e9 }, NOW + S.GB_MINT_FORM_TTL_MS + 60_001);

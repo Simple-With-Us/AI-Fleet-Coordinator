@@ -221,7 +221,8 @@ function actionButton(csrf, action, label, fields = {}) {
  * Worker stores only the hash, so this is the single showing:  there is no
  * server-side copy to re-render.  The mint form that produced it was consumed
  * atomically with the mint (src/seat-state.js gbBearerMintChecked), so an
- * accidental refresh or resubmit is refused without touching the bearer.  The
+ * accidental refresh or resubmit cannot touch the bearer - it is acked from
+ * the stored outcome instead (gbBearerMintCompletedPage).  The
  * send line states what THIS minted bearer can actually do:  a persona bearer
  * and a seat bearer minted with the acceptance reach ST-MCP's /mcp and GR-MCP;
  * a seat bearer minted without it is GR-MCP only.
@@ -232,18 +233,29 @@ export function gbBearerRevealPage({ identity, token, expiresAt, kind = "persona
     ? "Send it as an Authorization: Bearer header to ST-MCP's /mcp URL and to GR-MCP;  it acts only as this identity."
     : "Send it as an Authorization: Bearer header to GR-MCP (git-relay) only;  it acts only as this identity.  ST-MCP's /mcp refuses this bearer because it was minted without /mcp acceptance.  If this seat should act on /mcp too, mint a new one with the box ticked.";
   const body = `<h1>Bearer For ${escapeHtml(identity)}</h1>
-<p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only its hash, so it cannot show it again.", "Refreshing or resubmitting cannot mint a replacement by accident:  this form was single-use, so a resubmit is refused and the bearer stays exactly as it is.", "To replace it on purpose, mint a new one from the admin page.")}</p>
+<p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only its hash, so it cannot show it again.", "Refreshing or resubmitting cannot mint a replacement by accident:  this form was single-use, so a resubmit only shows this bearer's details again (never the token) and the bearer stays exactly as it is.", "To replace it on purpose, mint a new one from the admin page.")}</p>
 <p><code id="gb-bearer-token">${escapeHtml(token)}</code></p>
 <p>${sentences(`Expires ${ownerTime(expiresAt)}.`, send)}</p>
 <p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
   return htmlResponse(`Bearer For ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
-/** A mint form that arrived stale, already used, or into a full window:  refused, nothing changed. */
+/** A form whose mint already completed:  the stored outcome, never the token. */
+export function gbBearerMintCompletedPage({ identity, result = null }) {
+  const detail = result
+    ? [`That form already minted this identity's bearer ${ownerTime(result.created_at)}.`, `It expires ${ownerTime(result.expires_at)}.`, `This is mint #${Number(result.mint_count) || 1} for the identity.`, result.mcp_accept ? "It was minted with /mcp acceptance." : "It was minted for GR-MCP only (no /mcp acceptance)."]
+    : ["That form already minted this identity's bearer."];
+  const body = `<h1>Already Minted</h1>
+<p>${sentences(...detail, "The token itself is never shown again - the server keeps only its hash.", "If you lost it, mint a new one from the admin page (that replaces it).")}</p>
+<p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
+  return htmlResponse(`Already Minted - ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
+}
+
+/** A mint form that arrived stale, malformed, or into a full window:  refused, nothing changed. */
 export function gbBearerMintRefusedPage({ identity, reason = "stale" }) {
   const why = reason === "busy"
     ? "Too many bearers were minted in a short window, so this mint was refused to protect the current one."
-    : "That mint form had expired or was already used, so it was refused.";
+    : "That mint form had expired, so it was refused.";
   const next = reason === "busy"
     ? "Wait for the earlier forms to expire (one hour), then reload the admin page."
     : "Reload the admin page and mint again from the fresh form.";

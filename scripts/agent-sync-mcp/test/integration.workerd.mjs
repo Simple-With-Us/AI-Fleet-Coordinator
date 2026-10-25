@@ -1834,7 +1834,7 @@ try {
     assert.equal((await mcp(bearer, "tools/list")).status, 401, "a revoked wake-only bearer is dead");
   });
 
-  await step("a resubmitted or stale mint form is refused without mutation; a fresh deliberate mint still works", async () => {
+  await step("a resubmitted mint form is acked without mutation and a stale one refused; a fresh deliberate mint still works", async () => {
     const page = await browser("/admin");
     const pageText = await page.text();
     const csrf = pageText.match(/name="csrf" value="([0-9a-f]{64})"/)[1];
@@ -1843,12 +1843,15 @@ try {
     const first = await browser("/admin/action", { method: "POST", form });
     assert.equal(first.status, 200);
     const bearer = (await first.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
-    // The exact resubmit (a refresh or double-click): refused, no mutation.
+    // The exact resubmit (a refresh or double-click):  acked from the stored
+    // outcome (kody discussion_r4372748176), no mutation, no new reveal.
     const second = await browser("/admin/action", { method: "POST", form });
     assert.equal(second.status, 200);
     const secondHtml = await second.text();
-    assert.match(secondHtml, /Nothing Was Minted/);
-    assert.ok(!/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/.test(secondHtml), "no token on the refusal page");
+    assert.match(secondHtml, /Already Minted/);
+    assert.ok(!secondHtml.includes("Nothing Was Minted"), "the resubmit is not the refusal page");
+    assert.ok(!secondHtml.includes('id="gb-bearer-token"'), "no token element on the ack page");
+    assert.ok(!secondHtml.includes(bearer), "the original token is never echoed");
     const who = (await call(bearer, "whoami")).json.result;
     assert.equal(who.structuredContent.seat, PERSONA, "the original bearer survived the resubmit");
     // A stale form (rendered over an hour ago, never used): refused, no mutation.

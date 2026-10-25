@@ -60,7 +60,7 @@ import {
   safeEqual,
 } from "./policy.js";
 import { verifyAccessJwt } from "./access.js";
-import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
+import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerMintCompletedPage, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
@@ -1258,6 +1258,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         // days-later replay can rotate it.  The only response that ever carries
         // the token:  no redirect, no log line, nothing stored.
         const minted = await gate(env, identity).gbBearerMintChecked({ mintId, hash: await sha256Hex(token), by: email, expiresAt, mcpAccept });
+        if (!minted.minted && minted.reason === "completed") return gbBearerMintCompletedPage({ identity, result: minted.result });
         if (!minted.minted) return gbBearerMintRefusedPage({ identity, reason: minted.reason });
         return gbBearerRevealPage({ identity, token, expiresAt, kind, mcpAccept });
       }

@@ -39,16 +39,34 @@ from .policy import PolicyError, SeatPolicy
 from .secret_scan import find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
+
+
+def _positive_int(raw: str, default: int) -> int:
+    """An operator-tunable bound:  garbage, zero and negatives fall back."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 1 else default
+
+
 # Bounded inbound concurrency (Kody discussion_r4372744451):  the default one
 # thread per connection, with each authenticate able to block on a Worker
 # verify up to REQUEST_TIMEOUT_S, would let an unauthenticated spray of
 # unique wrong secrets fan out into unbounded threads AND unbounded
 # concurrent Worker calls.  A semaphore acquired BEFORE the handler thread is
 # spawned caps both;  excess connections wait in the TCP accept backlog and
-# are served in turn.  That is backpressure, never a refusal - so load can
-# never false-refuse a valid bearer.  (The per-token negative cache does not
-# help here:  each guess is unique by construction.)
-MAX_CONCURRENT_REQUESTS = int(os.environ.get("GIT_RELAY_MAX_CONCURRENT", "8"))
+# are served in turn.  This bounds relay resources without an
+# application-level refusal - but it is not magic:  under a flood that
+# overruns the finite backlog the kernel turns new connections away, and a
+# queued client may give up waiting.  That is degraded availability under an
+# active flood, never an auth verdict on a bearer;  per-source fairness under
+# such a flood is an edge property (the relay listens on loopback behind
+# cloudflared).  The per-connection socket timeout below frees slots held by
+# clients that connect and then stall, so a slow-incomplete-client set cannot
+# pin every slot forever - and shutdown() returns within about one timeout.
+MAX_CONCURRENT_REQUESTS = _positive_int(os.environ.get("GIT_RELAY_MAX_CONCURRENT", ""), 8)
+REQUEST_SOCKET_TIMEOUT_S = _positive_int(os.environ.get("GIT_RELAY_SOCKET_TIMEOUT_S", ""), 30)
 MAX_TEXT_FIELD = 32 * 1024
 
 DEFAULT_HOST = "127.0.0.1"
@@ -499,9 +517,11 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = 128
 
-    def __init__(self, *args, max_concurrent: int = MAX_CONCURRENT_REQUESTS, **kwargs):
+    def __init__(self, *args, max_concurrent: int = MAX_CONCURRENT_REQUESTS,
+                 socket_timeout_s: int = REQUEST_SOCKET_TIMEOUT_S, **kwargs):
         super().__init__(*args, **kwargs)
-        self._slots = threading.BoundedSemaphore(max_concurrent)
+        self._slots = threading.BoundedSemaphore(max(1, max_concurrent))
+        self._socket_timeout_s = max(1, socket_timeout_s)
 
     def process_request(self, request, client_address):
         self._slots.acquire()
@@ -512,8 +532,13 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             raise
 
     def process_request_thread(self, request, client_address):
+        # A stalled or half-sent request must not hold its slot forever.
+        request.settimeout(self._socket_timeout_s)
         try:
             super().process_request_thread(request, client_address)
+        except (TimeoutError, OSError):
+            # socket.timeout subclasses OSError:  a stalled client is dropped.
+            pass
         finally:
             self._slots.release()
 

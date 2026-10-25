@@ -356,6 +356,81 @@ class TestBoundedServer(unittest.TestCase):
             server.shutdown()
 
 
+class TestBoundedServerResilience(unittest.TestCase):
+    """E2E for the bound (Kody discussion_r4372744451):  stalled clients lose
+    their slots to the socket timeout, a queued valid request is then served,
+    and shutdown returns even with every slot pinned."""
+
+    def _server(self, **kwargs):
+        from http.server import BaseHTTPRequestHandler
+
+        class Ok(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"ok"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = BoundedThreadingHTTPServer(("127.0.0.1", 0), Ok, **kwargs)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        return server
+
+    @staticmethod
+    def _stall(port):
+        import socket
+
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.sendall(b"GET / HTTP/1.0\r\n")  # half-sent:  no terminating blank line
+        return sock
+
+    def test_stalled_clients_time_out_and_a_queued_valid_request_is_served(self):
+        server = self._server(max_concurrent=2, socket_timeout_s=1)
+        port = server.server_address[1]
+        stalled = [self._stall(port), self._stall(port)]
+        self.addCleanup(lambda: [s.close() for s in stalled])
+        time.sleep(0.3)  # both stalls accepted, both slots pinned
+        started = time.time()
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+        elapsed = time.time() - started
+        self.assertGreaterEqual(elapsed, 0.5, "served instantly: the stalls never pinned the slots?")
+        self.assertLess(elapsed, 8)
+        server.shutdown()
+
+    def test_shutdown_returns_while_every_slot_is_pinned(self):
+        server = self._server(max_concurrent=2, socket_timeout_s=1)
+        port = server.server_address[1]
+        stalled = [self._stall(port), self._stall(port)]
+        self.addCleanup(lambda: [s.close() for s in stalled])
+        time.sleep(0.3)
+        done = threading.Event()
+
+        def stop():
+            server.shutdown()
+            done.set()
+
+        threading.Thread(target=stop, daemon=True).start()
+        self.assertTrue(done.wait(10), "shutdown() stuck behind pinned slots")
+
+    def test_nonpositive_concurrency_is_clamped_and_env_parse_is_strict(self):
+        from git_relay.server import _positive_int
+
+        self.assertEqual(_positive_int("junk", 8), 8)
+        self.assertEqual(_positive_int("0", 8), 8)
+        self.assertEqual(_positive_int("-3", 8), 8)
+        self.assertEqual(_positive_int("5", 8), 5)
+        server = self._server(max_concurrent=0, socket_timeout_s=5)  # clamped to 1, not a deadlock
+        port = server.server_address[1]
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+        server.shutdown()
+
+
 class TestNonPrActionsRejected(unittest.TestCase):
     def test_push_and_admin_are_not_valid_actions(self):
         with self.assertRaises(PolicyError):
