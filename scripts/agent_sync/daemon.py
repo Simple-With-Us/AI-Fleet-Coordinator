@@ -648,6 +648,11 @@ class Daemon:
         self._fanout_lock = threading.Lock()
         # Bounded:  the ids only have to outlive one message's routing, so the daemon never grows without limit.
         self._fanout_seen: collections.deque[int] = collections.deque(maxlen=RING_LIMIT)
+        # Owner `@all` wakes the fanout thread hands back;  only tick() (the event thread) drains it,
+        # because the coalescer is not thread-safe.
+        self._broadcast_wakes: queue.SimpleQueue[tuple[Mapping[str, Any], frozenset[str]]] = (
+            queue.SimpleQueue()
+        )
         self.coalescer = W.Coalescer(
             window=self.config.coalesce_seconds,
             max_window=self.config.coalesce_max_seconds,
@@ -1689,8 +1694,23 @@ class Daemon:
         )
         # A marker message wakes nobody, and the owner typing `@**all**` is exactly the case
         # where the fanout would wake every seat, so the fanout checks the marker too (AFC-468).
-        if c.owner and c.everyone and not c.dm and not c.stale and not c.no_wake:
+        if self._owner_broadcast(c):
             self.start_fanout(message, c)
+        if (
+            first_seen
+            and c.owner
+            and c.broadcast_all
+            and not c.no_wake
+            and not c.dm
+            and not c.stale
+            and not c.owner_topic
+        ):
+            threading.Thread(
+                target=self._log_broadcast_wake_unsupported,
+                args=(int(message["id"]),),
+                name="broadcast-wake-unsupported",
+                daemon=True,
+            ).start()
         if (
             c.owner
             and c.dm
@@ -1753,19 +1773,29 @@ class Daemon:
                 # adapter configured, but never start it in parallel with a bridge decision.
                 done.add("wake")
             if d.wake and not d.delivered_to and "wake" not in done:
-                matched = False
-                if runner.seat in ("GROK", "CURSOR", "CODEX") and not c.dm:
-                    matched = self.chat_queue(runner.seat).enqueue(
-                        c.channel,
-                        c.topic,
-                        message["id"],
-                        now,
-                        owner=d.wake == "owner",
-                        stale=c.stale,
-                    )
-                if not matched:
-                    self.offer_wake(runner, row, owner=d.wake == "owner")
-                done.add("wake")
+                if self._owner_broadcast(c):
+                    # Handed off, not delivered:  start_fanout (above, same gate) owns this wake.  The
+                    # fanout always hands every seat it did not nudge back to the event thread, even
+                    # when catalog discovery fails, and tick() offers it there through offer_wake like
+                    # any other wake.  A retry of this route must not offer a second copy, so the
+                    # hand-off is what `done` records.
+                    done.add("wake")
+                else:
+                    matched = False
+                    # The owner broadcast never reaches this branch, so a non-owner (or stale) message
+                    # that also carries `@all` keeps its chat nudge.
+                    if runner.seat in ("GROK", "CURSOR", "CODEX") and not c.dm:
+                        matched = self.chat_queue(runner.seat).enqueue(
+                            c.channel,
+                            c.topic,
+                            message["id"],
+                            now,
+                            owner=d.wake == "owner",
+                            stale=c.stale,
+                        )
+                    if not matched:
+                        self.offer_wake(runner, row, owner=d.wake == "owner")
+                    done.add("wake")
 
     def _append_seat_inbox(self, runner: SeatRunner, rows: list[dict[str, Any]]) -> None:
         paths = runner.paths
@@ -3062,6 +3092,26 @@ class Daemon:
             return
         self._surface(runner, pending, listed, lost, finished)
 
+    @staticmethod
+    def _owner_broadcast(c: R.Classes) -> bool:
+        """The owner's `@all` that start_fanout handles:  one gate for the fanout and for the
+        route's hand-off, so the two can never disagree about who owns the wake."""
+        return bool(c.owner and c.broadcast_all and not c.dm and not c.stale and not c.no_wake)
+
+    def _log_broadcast_wake_unsupported(self, message_id: int) -> None:
+        """Seats this listener holds that cannot take a routine/headless wake (for owner `@all`).
+
+        Runs off the event thread:  route_mode walks lease files per seat."""
+        blocked: dict[str, str] = {}
+        for seat in sorted(self.config.seats):
+            mode, why = self.route_mode(seat)
+            if why:
+                blocked[seat] = why
+            elif mode == "inbox only":
+                blocked[seat] = "inbox_only"
+        if blocked:
+            self.log.write("broadcast-wake-unsupported", id=message_id, seats=blocked)
+
     def start_fanout(self, message: Mapping[str, Any], c: R.Classes) -> None:
         """The owner's channel-wide mention reaches the recently active chats (chat_fanout), once per message
         whichever seat saw it first.  The catalog walk can take seconds, so it runs off the event thread."""
@@ -3075,15 +3125,42 @@ class Daemon:
         where = FAN.scope(R.outside_code(str(message.get("content") or "")), c.topic)
         threading.Thread(
             target=self.fanout,
-            args=(message_id, c.channel, c.topic, where),
+            args=(message_id, c.channel, c.topic, where, FAN.ChatPlaces(), message),
             name="chat-fanout",
             daemon=True,
         ).start()
 
     def fanout(
-        self, message_id: int, channel: str, topic: str, where: FAN.Scope, places: Any = None
+        self,
+        message_id: int,
+        channel: str,
+        topic: str,
+        where: FAN.Scope,
+        places: Any = None,
+        message: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform."""
+        """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform.
+
+        When `message` is set (owner `@all`), every seat that got no chat nudge is handed back to the
+        event thread for one headless/routine wake (tick drains `_broadcast_wakes`).  The hand-off
+        runs whatever happens here, a catalog failure included, so the route's deferred wake is
+        never lost;  and this thread never touches the coalescer, which only the event thread owns."""
+        nudged_seats: set[str] = set()
+        try:
+            return self._fanout_chats(message_id, channel, topic, where, places, nudged_seats)
+        finally:
+            if message is not None:
+                self._broadcast_wakes.put((message, frozenset(nudged_seats)))
+
+    def _fanout_chats(
+        self,
+        message_id: int,
+        channel: str,
+        topic: str,
+        where: FAN.Scope,
+        places: Any,
+        nudged_seats: set[str],
+    ) -> dict[str, Any]:
         result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}}
         try:
             # The catalog's own TTL decides when a rescan is due:  a burst of alerts reuses one walk instead of each
@@ -3137,6 +3214,7 @@ class Daemon:
                 )
                 continue
             result["queued" if added else "already"] += 1
+            nudged_seats.add(str(row.get("seat") or ""))
         self.log.write(
             "fanout",
             id=message_id,
@@ -3146,6 +3224,37 @@ class Daemon:
             **{k: v for k, v in result.items() if v},
         )
         return result
+
+    def _drain_broadcast_wakes(self) -> None:
+        """Event thread only (tick):  the owner `@all` wakes the fanout handed back."""
+        while True:
+            try:
+                message, nudged_seats = self._broadcast_wakes.get_nowait()
+            except queue.Empty:
+                return
+            self._broadcast_wake_after_fanout(message, nudged_seats)
+
+    def _broadcast_wake_after_fanout(
+        self, message: Mapping[str, Any], nudged_seats: frozenset[str] | set[str]
+    ) -> None:
+        """One wake per seat the fanout did not nudge.  Each seat is isolated:  one seat's failure
+        is logged (seat, id and error type only) and the rest of the fleet still gets its wake."""
+        for seat, runner in list(self.seats.items()):
+            if seat in nudged_seats or not runner.cfg.enabled or runner.me is None:
+                continue
+            try:
+                c, d = R.route(message, runner.me, self.context(runner), self.lease_views(runner))
+                if not d.wake or d.delivered_to or MB.enabled(self.config, seat):
+                    continue
+                item = self.make_item(runner, message, c, d)
+                self.offer_wake(runner, item, owner=d.wake == "owner")
+            except Exception as exc:  # noqa: BLE001 - one seat must not stop the broadcast
+                self.log.write(
+                    "broadcast-wake-failed",
+                    seat=seat,
+                    id=message.get("id"),
+                    error=type(exc).__name__,
+                )
 
     def chat_catalog(self) -> Any:
         # Fanout threads race here, so the check and the construction are one guarded step.
@@ -4746,9 +4855,11 @@ class Daemon:
             target = self.seats.get(seat)
             if target is not None and self.lease_views(target):
                 return "live session", None
-            return {"claude": "headless wake", "http": "routine wake"}.get(
-                cfg.wake, "inbox only"
-            ), None
+            return {
+                "claude": "headless wake",
+                "http": "routine wake",
+                "muse": "headless wake",
+            }.get(cfg.wake, "inbox only"), None
         assigned = self.partition.get(seat)
         if assigned in C.INSTANCES and assigned != self.config.instance:
             return "%s listener" % assigned, None
@@ -4813,12 +4924,15 @@ class Daemon:
         if any(i not in triggers for i in pending.trigger_ids):
             return "trigger_unreadable", None, None
         bot_ids = {int(b["user_id"]) for b in bots}
+        visible_by_content: dict[str, str] = {}
         for message in triggers.values():
             if message.get("sender_id") in bot_ids:
                 return "sender", None, None
-            visible = R.outside_code(
-                str(message.get("content") or "")
-            ).casefold()  # Zulip matches names without case
+            raw = str(message.get("content") or "")
+            visible = visible_by_content.get(raw)
+            if visible is None:
+                visible = R.outside_code(raw).casefold()  # Zulip matches names without case
+                visible_by_content[raw] = visible
             for bot in bots:
                 name = str(bot.get("full_name") or "").casefold()
                 if name and (
@@ -5559,6 +5673,7 @@ class Daemon:
         if self.reload_requested:
             self.reload_requested = False
             self.reload()
+        self._drain_broadcast_wakes()
         for pending in self.coalescer.take_due(now):
             self.finalize(pending)
         if now - self.last_tick["reap"] >= 10:

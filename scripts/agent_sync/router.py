@@ -64,8 +64,10 @@ WILDCARD_FLAGS = ("wildcard_mentioned", "stream_wildcard_mentioned", "topic_wild
 FLEET_WAKE_CHANNEL = DEFAULT_CHANNEL
 FLEET_WAKE_TOPIC = "fleet"
 FLEET_WAKE_KEY = topic_key(FLEET_WAKE_CHANNEL, FLEET_WAKE_TOPIC)
-_PLAIN_ALL_RE = re.compile(r"(?<![\w*])@(?:all|everyone)\b(?!-)", re.IGNORECASE)
-_FLEET_WAKE_RE = re.compile(r"(?<![\\\w])@\*\*(?:all|everyone|channel|stream)\*\*")
+_BROADCAST_TOKEN_RE = re.compile(
+    r"(?<![\\\w*])@(?:\*\*(all|everyone)\*\*|(all|everyone)\b(?![-\w*]))",
+    re.IGNORECASE,
+)
 _WAKE_TAG_RE = re.compile(r"^\s*\[[A-Za-z0-9_-]+·wake\b")
 # A route post (`[CLAUDE·route→CODEX] re=N`):  a wake seat paged another seat on the owner's behalf.  It
 # counts on the loop guard like a wake reply, but it never blocks the wake of the seat it mentions.
@@ -136,16 +138,27 @@ def strip_no_wake(content: str, seat: str | None = None) -> tuple[str, bool]:
     return text, False
 
 
+def _broadcast_tokens_visible(visible: str) -> frozenset[str]:
+    return frozenset(
+        (match.group(1) or match.group(2)).casefold()
+        for match in _BROADCAST_TOKEN_RE.finditer(visible)
+    )
+
+
+def broadcast_tokens(content: str) -> frozenset[str]:
+    """Raw `@all` / `@everyone` tokens outside code, quotes and escapes.
+
+    Zulip sets the same wildcard flags for both tokens, so wake routing must read the raw token,
+    not `wildcard_mentioned` or `stream_wildcard_mentioned`.  `@channel`, `@stream` and `@topic`
+    are out of scope here."""
+    return _broadcast_tokens_visible(outside_code(content))
+
+
 def fleet_wake_mention(content_outside_code: str, flags: Iterable[str]) -> bool:
-    """True when the message carries a stream-wide wildcard:  Zulip's `stream_wildcard_mentioned` flag
-    (or the legacy `wildcard_mentioned` without a topic-only flag), or a literal `@**all**` outside
-    code and quotes.  `@**topic**` reaches only the topic's participants, so it never counts."""
-    flag_set = set(flags)
-    if "stream_wildcard_mentioned" in flag_set:
-        return True
-    if "wildcard_mentioned" in flag_set and "topic_wildcard_mentioned" not in flag_set:
-        return True
-    return bool(_FLEET_WAKE_RE.search(content_outside_code))
+    """True when the visible content carries a raw `@all` token (not `@everyone` alone).
+
+    Wildcard flags are ignored:  they cannot distinguish `@all` from `@everyone`."""
+    return "all" in _broadcast_tokens_visible(content_outside_code)
 
 
 def is_owner_topic(topic: str) -> bool:
@@ -312,7 +325,8 @@ class LeaseView:
 class Classes:
     def __init__(self) -> None:
         self.own = self.owner = self.owner_api = self.eligible = self.direct = False
-        self.everyone = False
+        self.broadcast_all = False
+        self.everyone_inert = False
         self.fleet = self.wildcard = self.dm = self.wake_tag = self.stale = self.sender_is_bot = (
             False
         )
@@ -334,7 +348,8 @@ class Classes:
                 "eligible",
                 "direct",
                 "fleet",
-                "everyone",
+                "broadcast_all",
+                "everyone_inert",
                 "wildcard",
                 "dm",
                 "wake_tag",
@@ -404,9 +419,10 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     visible = outside_code(content)
     names = ("@**%s**" % me.full_name, "@**%s|%d**" % (me.full_name, me.user_id))
     c.direct = "mentioned" in flags and any(n in visible for n in names)
-    # Channel-wide, in any topic;  a typed `@ALL` counts too (chat_fanout, owner 2026-10-19).
-    c.everyone = fleet_wake_mention(visible, flags) or _PLAIN_ALL_RE.search(visible) is not None
-    c.fleet = c.key == FLEET_WAKE_KEY and fleet_wake_mention(visible, flags)
+    tokens = _broadcast_tokens_visible(visible)  # `visible` is already outside_code(content)
+    c.broadcast_all = "all" in tokens
+    c.everyone_inert = "everyone" in tokens and not c.broadcast_all
+    c.fleet = c.key == FLEET_WAKE_KEY and c.broadcast_all
     c.wildcard = any(f in flags for f in WILDCARD_FLAGS)
     c.wake_tag = bool(_WAKE_TAG_RE.match(content))
     c.route_tag = bool(_ROUTE_TAG_RE.match(content))
@@ -451,7 +467,8 @@ def prefilter(c: Classes) -> tuple[str | None, str | None]:
         )
     if c.wake_tag:
         return None, "wake_tag"
-    if c.owner and (c.direct or c.dm or c.fleet):
+    owner_broadcast = (c.fleet or c.broadcast_all) and not c.owner_topic
+    if c.owner and (c.direct or c.dm or owner_broadcast):
         return "owner", None
     if c.direct or c.dm:
         # An eligible bot's DM wakes like a direct mention (owner 2026-10-09).
@@ -490,7 +507,9 @@ def route(
         presence = is_presence(c.channel, c.topic, ctx.presence)
         for lease in on_topic:
             wants = c.eligible and (
-                c.owner or c.direct or (c.reply_to is not None and c.reply_to in lease.posted)
+                (c.owner and not c.everyone_inert)
+                or c.direct
+                or (not c.everyone_inert and c.reply_to is not None and c.reply_to in lease.posted)
             )
             klass = PASSIVE
             if wants and not presence:
@@ -501,7 +520,12 @@ def route(
                     d.throttled.append((lease.lease_id, reason))
             d.lease_items.append((lease.lease_id, klass, "message"))
         return c, d
-    mention_class = c.eligible and (c.direct or c.dm or (c.owner and c.fleet))
+    mention_class = c.eligible and (
+        c.direct
+        or c.dm
+        or (c.owner and c.fleet)
+        or (c.owner and c.broadcast_all and not c.owner_topic)
+    )
     if mention_class:
         candidates = [
             l
@@ -518,7 +542,15 @@ def route(
             d.delivered_to = chosen.lease_id
             d.wake_block = "delivered_to_lease"
             return c, d
-    if c.direct or c.dm or c.fleet or c.owner or c.wildcard or c.key in ctx.followed:
+    if (
+        c.direct
+        or c.dm
+        or c.fleet
+        or c.broadcast_all
+        or c.owner
+        or c.wildcard
+        or c.key in ctx.followed
+    ):
         d.seat_inbox = True
         d.wake, d.wake_block = kind, block
         return c, d
