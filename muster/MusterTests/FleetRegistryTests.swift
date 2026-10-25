@@ -12,8 +12,7 @@ final class FleetRegistryTests: XCTestCase {
           "repo": "Socratic-Trade",
           "acronym": "ST",
           "displayName": "Socratic Trade",
-          "integrationDir": "Socratic-Trade",
-          "publishScript": "trading-publish.sh",
+          "codeDir": "Socratic-Trade",
           "kind": "product",
           "visibility": "private"
         },
@@ -21,7 +20,7 @@ final class FleetRegistryTests: XCTestCase {
           "repo": "AI-Fleet-Coordinator",
           "acronym": "AFC",
           "displayName": "AI Fleet Coordinator",
-          "integrationDir": "AI-Fleet-Coordinator",
+          "codeDir": "AI-Fleet-Coordinator",
           "kind": "infra",
           "visibility": "public"
         }
@@ -29,17 +28,17 @@ final class FleetRegistryTests: XCTestCase {
       "seats": [
         { "tag": "AG", "notesName": "AG", "worktreeSuffix": "antigravity", "branchPrefixes": ["ag/"] },
         { "tag": "MC", "notesName": "MC", "worktreeSuffix": "muse-code", "branchPrefixes": ["muse-code/"] },
-        { "tag": "MA", "notesName": "MA", "worktreeSuffix": "muse", "branchPrefixes": ["muse/"] },
+        { "tag": "GROK", "notesName": "Grok", "worktreeSuffix": "grok", "branchPrefixes": ["grok/"] },
         { "tag": "MONET", "notesName": "Monet", "worktreeSuffix": "monet", "retired": true, "aliasOf": "MC" }
       ],
       "seatApps": {
         "bySeat": {
           "AG": "antigravity",
-          "MC": "muse",
-          "MA": "muse"
+          "MC": "muse-code",
+          "GROK": "grok-terminal"
         },
         "extraSeats": {
-          "JET": "openai"
+          "JET": "chatgpt"
         }
       }
     }
@@ -86,7 +85,7 @@ final class FleetRegistryTests: XCTestCase {
     func test_production_and_coding_apps_are_built_from_registry_and_activity() throws {
         let envelope = try JSONDecoder().decode(FleetViewEnvelope.self, from: Data(sampleEnvelopeJSON.utf8))
         let existingPaths: Set<String> = [
-            "/Users/jay/apps/Socratic-Trade",
+            "/Users/jay/Code/Socratic-Trade",
             "/Users/jay/apps/trading-publish.sh",
         ]
         let summary = FleetRegistryReader.build(
@@ -102,6 +101,7 @@ final class FleetRegistryTests: XCTestCase {
 
         let st = summary.apps[0]
         XCTAssertEqual(st.acronym, "ST")
+        XCTAssertTrue(st.hasCodeCheckout)
         XCTAssertTrue(st.hasIntegrationCheckout)
         XCTAssertTrue(st.hasPublishScript)
         XCTAssertEqual(st.activeLanes, 1)
@@ -113,6 +113,7 @@ final class FleetRegistryTests: XCTestCase {
 
         let afc = summary.apps[1]
         XCTAssertEqual(afc.acronym, "AFC")
+        XCTAssertFalse(afc.hasCodeCheckout)
         XCTAssertFalse(afc.hasIntegrationCheckout)
         XCTAssertEqual(afc.activeLanes, 1)
         XCTAssertEqual(afc.dirtyLanes, 1)
@@ -121,9 +122,10 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertEqual(afc.activeClaims, 1)
         XCTAssertEqual(afc.state, .drift)
 
-        // Coding apps group live seats (MC and MA under muse; MONET retired is excluded) plus extraSeats.
-        XCTAssertEqual(summary.codingApps.map(\.appSlug), ["antigravity", "muse", "openai"])
+        // Coding apps group live seats (AG, MC, GROK; MONET retired is excluded) plus extraSeats (JET).
+        XCTAssertEqual(summary.codingApps.map(\.appSlug), ["antigravity", "muse-code", "grok-terminal", "chatgpt"])
         let ag = summary.codingApps[0]
+        XCTAssertEqual(ag.displayName, "Antigravity")
         XCTAssertEqual(ag.seats, ["AG"])
         XCTAssertEqual(ag.cliTool, "agy")
         XCTAssertEqual(ag.activeLanes, 1)
@@ -131,10 +133,21 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertEqual(ag.activeClaims, 2)
 
         let muse = summary.codingApps[1]
-        XCTAssertEqual(muse.seats, ["MC", "MA"])
+        XCTAssertEqual(muse.displayName, "Muse Code")
+        XCTAssertEqual(muse.seats, ["MC"])
         XCTAssertEqual(muse.cliTool, "muse")
         XCTAssertEqual(muse.activeLanes, 1)
         XCTAssertEqual(muse.openPullRequests, 1)
         XCTAssertEqual(muse.activeClaims, 0)
+
+        let grok = summary.codingApps[2]
+        XCTAssertEqual(grok.displayName, "Grok Terminal")
+        XCTAssertEqual(grok.seats, ["GROK"])
+        XCTAssertEqual(grok.cliTool, "grok")
+
+        let jet = summary.codingApps[3]
+        XCTAssertEqual(jet.displayName, "ChatGPT")
+        XCTAssertEqual(jet.seats, ["JET"])
+        XCTAssertNil(jet.cliTool)
     }
 }

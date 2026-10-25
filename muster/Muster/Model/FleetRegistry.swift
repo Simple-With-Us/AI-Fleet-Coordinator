@@ -73,9 +73,9 @@ struct FleetAppStatus: Identifiable, Equatable {
     let title: String
     let kind: String
     let visibility: String
-    let integrationDir: String?
+    let codeDir: String?
     let publishScript: String?
-    let hasIntegrationCheckout: Bool
+    let hasCodeCheckout: Bool
     let hasPublishScript: Bool
     let activeLanes: Int
     let dirtyLanes: Int
@@ -86,6 +86,8 @@ struct FleetAppStatus: Identifiable, Equatable {
     let state: CellState
 
     var id: String { acronym }
+
+    var hasIntegrationCheckout: Bool { hasCodeCheckout }
 
     var hasActivity: Bool {
         activeLanes > 0 || openPullRequests > 0 || activeClaims > 0
@@ -122,15 +124,30 @@ enum FleetRegistryReader {
         "codex": ("Codex", "codex"),
         "cursor": ("Cursor", "cursor-agent"),
         "antigravity": ("Antigravity", "agy"),
+        "grok-terminal": ("Grok Terminal", "grok"),
+        "grok-web": ("Grok Web", nil),
+        "grok-bot": ("Grok Bot", nil),
         "grok": ("Grok", "grok"),
+        "muse-code": ("Muse Code", "muse"),
+        "muse-assist": ("Muse Assist", "muse"),
         "muse": ("Muse", "muse"),
         "minimax-code": ("MiniMax Code", "mcode"),
         "fx": ("FX", "fx"),
         "opencode": ("OpenCode", "opencode"),
         "clutch": ("Clutch", "clutch"),
         "instinct": ("Instinct (Hosted ST-MCP)", nil),
+        "chatgpt": ("ChatGPT", nil),
         "openai": ("OpenAI Dot", nil),
+        "operator": ("The Operator", "simple-chat"),
         "botfleet": ("BotFleet Personas", nil),
+    ]
+
+    /// Default publish script names in `~/apps` for fleet apps without an explicit `publishScript` key.
+    private static let defaultPublishScripts: [String: String] = [
+        "ST": "trading-publish.sh",
+        "CT": "congress-publish.sh",
+        "UM": "usage-publish.sh",
+        "AR": "autorotate-publish.sh",
     ]
 
     /// Read `fleet-apps.json` at the repository root and build the combined summary.
@@ -175,6 +192,7 @@ enum FleetRegistryReader {
 
         let owner = document.owner ?? "Simple-With-Us"
         let appsRoot = document.appsRoot ?? "/Users/jay/apps"
+        let codeRoot = document.codeRoot ?? "/Users/jay/Code"
         let lanes = viewOutput?.sections.lanes.items ?? []
         let prs = viewOutput?.sections.pullRequests.items ?? []
         let claims = viewOutput?.sections.claims.items ?? []
@@ -194,12 +212,17 @@ enum FleetRegistryReader {
             let appClaims = claims.filter { $0.identifier.hasPrefix(prefix) }
             let expired = appClaims.filter(\.expired).count
 
-            let hasIntegration: Bool = {
-                guard let dir = app.integrationDir, !dir.isEmpty else { return false }
-                return pathExists("\(appsRoot)/\(dir)")
+            let hasCode: Bool = {
+                let dir = app.codeDir ?? app.integrationDir ?? app.repo
+                guard !dir.isEmpty else { return false }
+                return pathExists("\(codeRoot)/\(dir)")
+            }()
+            let resolvedPublish: String? = {
+                if let explicit = app.publishScript, !explicit.isEmpty { return explicit }
+                return defaultPublishScripts[app.acronym]
             }()
             let hasPublish: Bool = {
-                guard let script = app.publishScript, !script.isEmpty else { return false }
+                guard let script = resolvedPublish, !script.isEmpty else { return false }
                 return pathExists("\(appsRoot)/\(script)")
             }()
 
@@ -220,9 +243,9 @@ enum FleetRegistryReader {
                 title: app.title,
                 kind: app.kindLabel,
                 visibility: app.visibility ?? "unknown",
-                integrationDir: app.integrationDir,
-                publishScript: app.publishScript,
-                hasIntegrationCheckout: hasIntegration,
+                codeDir: app.codeDir ?? app.integrationDir,
+                publishScript: resolvedPublish,
+                hasCodeCheckout: hasCode,
                 hasPublishScript: hasPublish,
                 activeLanes: repoLanes.count,
                 dirtyLanes: dirty,
