@@ -245,6 +245,11 @@ class Agent:
             timeout=rt.timeout,
             events_timeout=rt.events_timeout,
             sleep=rt.sleep,
+            # The owner id the guard needs (AFC-469):  a direct message may go out only when the
+            # owner is in the conversation.  The id is pinned in the installed listener.toml, the
+            # same file `dm --owner` and `whoami` read.  With no id pinned the client keeps 0 and
+            # the guard fails closed, so a direct message is refused rather than sent unchecked.
+            owner_user_id=pinned_owner_id(self) or 0,
         )
         self._verified = False
         self._gate_client()

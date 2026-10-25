@@ -294,6 +294,10 @@ class SeatRunner:
             timeout=self.daemon.http_timeout,
             events_timeout=self.daemon.events_timeout,
             sleep=self.daemon.clock.sleep,
+            # The owner id the guard needs (AFC-469):  a direct message may go out only when the
+            # owner is in the conversation.  With no owner pinned the client keeps 0 and the guard
+            # fails closed, so the daemon sends no direct message it cannot check.
+            owner_user_id=int(self.daemon.config.owner_user_id or 0),
         )
 
     def connect(self) -> list[dict[str, Any]]:
@@ -4433,6 +4437,19 @@ class Daemon:
                         "content": text,
                     },
                 )
+        except Z.DmGuardRefused as exc:
+            # A wake reply into a direct message with no owner in it is refused by the
+            # owner-in-the-conversation guard (AFC-469):  that thread has no owner taking part, so
+            # the answer belongs in a channel.  The refusal is recorded and the daemon keeps
+            # running:  a wake is not worth losing the seat over.
+            self.log.write(
+                "post-refused-dm",
+                seat=runner.seat,
+                wake_id=pending.wake_id,
+                reason=exc.code,
+                error=self.scrub(str(exc)),
+            )
+            return None
         except Z.AgentSyncError as exc:
             self.log.write(
                 "post-failed", seat=runner.seat, wake_id=pending.wake_id, error=self.scrub(str(exc))

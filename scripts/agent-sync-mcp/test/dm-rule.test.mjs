@@ -58,7 +58,7 @@ function harness({ seat = "GROK-WEB" } = {}) {
     grantRef: "abcdef012345",
     paused: false,
     config,
-    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
+    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, ownerUserId: config.ownerUserId, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
     key: fake.key,
     gate: memoryGate(clock),
     cf: { asn: 13335, country: "US" },
@@ -104,29 +104,31 @@ test("(f4) a seat's ping to Jay is refused and points at Pending-for-Jay", async
 });
 
 test("a reply inside a DM Operator opened stays allowed", async () => {
-  const { tools, fake, operator } = harness();
+  const { tools, fake, operator, jay } = harness();
   // Operator opened it:  the oldest message in that conversation came from Operator's user id.
-  fake.addDm(operator, [], "which seat is this for?");
-  const result = await tools.call("zulip_dm_send", { user_ids: [operator.user_id], text: "CODEX" });
+  // Jay is in the conversation too (AFC-469):  a direct message goes out only when the owner
+  // takes part in it.
+  fake.addDm(operator, [fake.me, jay], "which seat is this for?");
+  const result = await tools.call("zulip_dm_send", { user_ids: [operator.user_id, jay.user_id], text: "CODEX" });
   assert.notEqual(result.isError, true, JSON.stringify(result));
   assert.ok(directMessages(fake).some((m) => m.sender_id === fake.me.user_id), "the seat answered in the conversation");
 });
 
 test("a reply inside a long DM Operator opened stays allowed (more than 50 messages)", async () => {
-  const { tools, fake, operator } = harness();
+  const { tools, fake, operator, jay } = harness();
   // Operator opens the conversation;  the seat then keeps answering in it until the thread is long
   // enough that Operator's opener has scrolled out of the newest-50 window the rule used to read.
   // Read that way the lowest id left is one this seat sent, so the reply was refused as though the
   // seat had opened the DM.  Only anchoring at the oldest message still finds the true opener.
-  fake.addDm(operator, [], "which seat is this for?");
-  for (let i = 0; i < 60; i += 1) fake.addDm(fake.me, [operator], `answer ${i}`);
-  const result = await tools.call("zulip_dm_send", { user_ids: [operator.user_id], text: "CODEX" });
+  fake.addDm(operator, [fake.me, jay], "which seat is this for?");
+  for (let i = 0; i < 60; i += 1) fake.addDm(fake.me, [operator, jay], `answer ${i}`);
+  const result = await tools.call("zulip_dm_send", { user_ids: [operator.user_id, jay.user_id], text: "CODEX" });
   assert.notEqual(result.isError, true, JSON.stringify(result));
   assert.ok(directMessages(fake).some((m) => m.sender_id === fake.me.user_id), "the seat answered in the conversation");
 });
 
 test("a group DM whose 1:1 threads are older still finds the opener (union narrow)", async () => {
-  const { tools, fake, codex, operator } = harness();
+  const { tools, fake, codex, operator, jay } = harness();
   // Real Zulip answers a `dm:[...]` narrow with a **union**:  for a group conversation it also
   // returns the 1:1 threads the caller has with each named person, oldest first.  FakeZulip's own
   // narrow is an exact participant match, so this one read is answered here instead, the way the
@@ -137,7 +139,7 @@ test("a group DM whose 1:1 threads are older still finds the opener (union narro
   // 1:1 message, the exact-participant filter threw it away, and dmRuleCheck then refused a reply
   // inside a conversation Operator had opened.  Reading a window finds the real opener.
   fake.addDm(codex, [], "earlier, just the two of us");
-  fake.addDm(operator, [fake.me, codex], "which seat is this for?");
+  fake.addDm(operator, [fake.me, codex, jay], "which seat is this for?");
   fake.failNext("GET", "messages", (entry) => {
     const operand = (JSON.parse(entry.params.narrow)[0].operand ?? []).map(Number);
     const union = fake.messages.filter(
@@ -146,7 +148,7 @@ test("a group DM whose 1:1 threads are older still finds the opener (union narro
     const after = Number(entry.params.num_after);
     return fake.ok({ messages: union.slice(0, Math.max(after, 1)) });
   });
-  const result = await tools.call("zulip_dm_send", { user_ids: [codex.user_id, operator.user_id], text: "CODEX" });
+  const result = await tools.call("zulip_dm_send", { user_ids: [codex.user_id, operator.user_id, jay.user_id], text: "CODEX" });
   assert.notEqual(result.isError, true, JSON.stringify(result));
   assert.ok(directMessages(fake).some((m) => m.sender_id === fake.me.user_id), "the seat answered in the conversation");
 });
@@ -170,21 +172,21 @@ test("no hosted seat can act as Operator to reach the clarifying-question allowa
 });
 
 test("the DM-rule check is metered as a read, and a cached send does not pay for it twice", async () => {
-  const { tools, fake, operator } = harness();
-  fake.addDm(operator, [], "which seat is this for?");
+  const { tools, fake, operator, jay } = harness();
+  fake.addDm(operator, [fake.me, jay], "which seat is this for?");
   const kinds = [];
   const reserve = tools.gate.reserve;
   tools.gate.reserve = (options) => { kinds.push(options.kind); return reserve(options); };
   const openerReads = () => fake.requestsTo("GET", "/messages").length;
 
-  const first = await tools.call("zulip_dm_send", { user_ids: [operator.user_id], text: "CODEX", idempotency_key: "cached-key-1" });
+  const first = await tools.call("zulip_dm_send", { user_ids: [operator.user_id, jay.user_id], text: "CODEX", idempotency_key: "cached-key-1" });
   assert.notEqual(first.isError, true, JSON.stringify(first));
   assert.ok(kinds.includes("read"), `the rule's Zulip read must be charged to the budget, saw ${JSON.stringify(kinds)}`);
   const readsAfterFirst = openerReads();
 
   // The retry sends nothing, so it must not repeat the DM-rule lookup either.
   kinds.length = 0;
-  const again = await tools.call("zulip_dm_send", { user_ids: [operator.user_id], text: "CODEX", idempotency_key: "cached-key-1" });
+  const again = await tools.call("zulip_dm_send", { user_ids: [operator.user_id, jay.user_id], text: "CODEX", idempotency_key: "cached-key-1" });
   assert.notEqual(again.isError, true, JSON.stringify(again));
   assert.equal(again.structuredContent.duplicate, true, "the cached row answers the retry");
   assert.deepEqual(kinds, [], "a cached send reserves nothing");
@@ -215,17 +217,18 @@ test("a 429 on the DM-rule read stays a rate limit with its retry hint", async (
   assert.deepEqual(directMessages(fake), [], "nothing was sent while the rule could not decide");
 });
 
-test("AGENT_SYNC_DM_RULE=off restores today's behaviour", async () => {
+test("AGENT_SYNC_DM_RULE=off restores the pre-rule behaviour, and the owner-in-the-conversation guard still holds", async () => {
   const fake = new FakeZulip();
   const clock = { now: Date.parse("2026-10-22T10:00:00Z") };
+  const ruleOff = loadConfig(testEnv({ AGENT_SYNC_DM_RULE: "off" }));
   const tools = new HostedTools({
     seat: "GROK-WEB",
     scopes: ["zulip:read", "zulip:write"],
     clientId: "https://grok.com/oauth/mcp-client.json",
     grantRef: "abcdef012345",
     paused: false,
-    config: loadConfig(testEnv({ AGENT_SYNC_DM_RULE: "off" })),
-    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
+    config: ruleOff,
+    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, ownerUserId: ruleOff.ownerUserId, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
     key: fake.key,
     gate: memoryGate(clock),
     cf: { asn: 13335, country: "US" },
@@ -236,6 +239,12 @@ test("AGENT_SYNC_DM_RULE=off restores today's behaviour", async () => {
     channelsCache: new Map(),
   });
   const codex = fake.users.find((u) => u.full_name === "Codex");
-  const result = await tools.call("zulip_dm_send", { user_ids: [codex.user_id], text: "hello" });
+  const jay = fake.users.find((u) => u.full_name === "Jay Wedgeworth");
+  const result = await tools.call("zulip_dm_send", { user_ids: [codex.user_id, jay.user_id], text: "hello" });
   assert.notEqual(result.isError, true, JSON.stringify(result));
+  //  The older seat DM rule is off, but the owner-in-the-conversation guard (AFC-469) is not:  a
+  //  direct message with nobody from the owner's side in it still goes out nowhere.
+  const refused = await tools.call("zulip_dm_send", { user_ids: [codex.user_id], text: "hello" });
+  assert.equal(refused.isError, true, JSON.stringify(refused));
+  assert.equal(JSON.parse(refused.content[0].text).code, "dm_owner_not_participant");
 });

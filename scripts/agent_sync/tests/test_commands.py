@@ -316,18 +316,27 @@ class DmTests(Harness):
         self.fake.add_user("twin-b@zulip.test", "Twin", is_bot=False)
 
     def test_dm_to_a_peer_by_name_tag_email_or_user_id(self) -> None:
+        self.pin_owner()
         for raw, uid in (("Codex", 11), ("CODEX", 11), ("codex-bot@zulip.test", 11), ("11", 11), ("Cursor", 13)):
             with self.subTest(raw=raw):
                 before = len(self.fake.requests_to("POST", "messages"))
-                result = self.run_cli("dm", "--to", raw, "--", "Review is up.  Please look.")
+                result = self.run_cli("dm", "--owner", "--to", raw, "--", "Review is up.  Please look.")
                 self.assertEqual(result.code, 0, result.err)
                 form = self.fake.requests_to("POST", "messages")[-1].form
                 self.assertEqual(len(self.fake.requests_to("POST", "messages")), before + 1)
-                self.assertEqual((form["type"], json.loads(form["to"])), ("direct", [uid]))
-                label = "CODEX" if uid == 11 else "CURSOR"
+                self.assertEqual((form["type"], json.loads(form["to"])), ("direct", [self.OWNER_ID, uid]))
+                label = "OWNER,CODEX" if uid == 11 else "OWNER,CURSOR"
                 self.assertEqual(form["content"], "[CLAUDE\u00b7%s\u2192%s] Review is up.\u00a0 Please look." % (TAG, label))
                 self.assertIn("sent id", result.out)
-                self.assertNotIn("the owner", result.out)
+
+    def test_dm_to_a_peer_alone_is_refused_because_the_owner_is_not_in_it(self) -> None:
+        #  AFC-469:  a direct message goes out only when the owner is in the conversation, and
+        #  participation is the authenticated user id, never the display name.
+        self.pin_owner()
+        result = self.run_cli("dm", "--to", "Codex", "--", "Review is up.")
+        self.assertEqual(result.code, 3, result.err)
+        self.assertIn("dm_owner_not_participant", result.err)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
 
     def test_dm_to_outgoing_seat_requires_allowlist_and_owner(self) -> None:
         self.pin_owner()
@@ -335,23 +344,35 @@ class DmTests(Harness):
         path.write_text(path.read_text() + 'outgoing_webhook_seats = ["JET"]\n')
         bot = self.fake.add_user("openai-dot-bot@zulip.test", "Jet", is_bot=True)
         bot.update(bot_type=3, bot_owner_id=self.OWNER_ID)
-        self.assertEqual(self.run_cli("dm", "--to", "Jet", "hello").code, 0)
+        self.assertEqual(self.run_cli("dm", "--owner", "--to", "Jet", "hello").code, 0)
         bot["bot_owner_id"] = 999
-        self.assertEqual(self.run_cli("dm", "--to", "Jet", "hello").code, 2)
+        self.assertEqual(self.run_cli("dm", "--owner", "--to", "Jet", "hello").code, 2)
         bot["bot_owner_id"] = self.OWNER_ID
         self.pin_owner()
-        self.assertEqual(self.run_cli("dm", "--to", "Jet", "hello").code, 2)
+        self.assertEqual(self.run_cli("dm", "--owner", "--to", "Jet", "hello").code, 2)
+        #  Without the owner in the conversation the guard refuses it (AFC-469), whatever the
+        #  allowlist says.
+        path.write_text(path.read_text() + 'outgoing_webhook_seats = ["JET"]\n')
+        self.assertEqual(self.run_cli("dm", "--to", "Jet", "hello").code, 3)
 
-    def test_dm_to_a_peer_needs_no_pinned_owner(self) -> None:
-        self.assertEqual(self.run_cli("dm", "--to", "Codex", "hi").code, 0)
-        self.assertEqual(json.loads(self.last_post().form["to"]), [11])
+    def test_dm_to_a_peer_needs_a_pinned_owner(self) -> None:
+        #  AFC-469:  the guard fails closed.  With no owner id pinned it cannot check the
+        #  recipients, so every direct message is refused rather than sent unchecked.
+        result = self.run_cli("dm", "--to", "Codex", "hi")
+        self.assertEqual(result.code, 3, result.err)
+        self.assertIn("dm_owner_not_pinned", result.err)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+        self.pin_owner()
+        self.assertEqual(self.run_cli("dm", "--owner", "--to", "Codex", "hi").code, 0)
+        self.assertEqual(json.loads(self.last_post().form["to"]), [self.OWNER_ID, 11])
 
     def test_dm_group_is_one_conversation_with_every_label(self) -> None:
-        result = self.run_cli("dm", "--to", "Codex", "--to", "Grok", "--to", "codex-bot@zulip.test", "--json", "sync up")
+        self.pin_owner()
+        result = self.run_cli("dm", "--owner", "--to", "Codex", "--to", "Grok", "--to", "codex-bot@zulip.test", "--json", "sync up")
         self.assertEqual(result.code, 0, result.err)
         out = json.loads(result.out)
-        self.assertEqual(out["to"], [11, 14], "a repeated recipient is sent once")
-        self.assertEqual(self.last_post().form["content"], "[CLAUDE\u00b7%s\u2192CODEX,GROK] sync up" % TAG)
+        self.assertEqual(out["to"], [self.OWNER_ID, 11, 14], "a repeated recipient is sent once")
+        self.assertEqual(self.last_post().form["content"], "[CLAUDE\u00b7%s\u2192OWNER,CODEX,GROK] sync up" % TAG)
         self.assertEqual(len([m for m in self.fake.messages if m["type"] == "private"]), 1)
 
     def test_dm_owner_plus_peers_makes_a_group_with_the_owner_label(self) -> None:
@@ -382,14 +403,18 @@ class DmTests(Harness):
             self.fake.add_user("peer%d-bot@zulip.test" % n, "Peer %d" % n, is_bot=True)
         names = ["Peer %d" % n for n in range(9)]
         args = [x for n in names[:8] for x in ("--to", n)]
-        ok = self.run_cli("dm", *args, "eight is fine")
+        #  Eight peers and no owner:  the cap is fine, but the guard refuses the send (AFC-469).
+        refused = self.run_cli("dm", *args, "eight is fine")
+        self.assertEqual(refused.code, 3, refused.err)
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+        self.pin_owner()
+        ok = self.run_cli("dm", "--owner", *[x for n in names[:7] for x in ("--to", n)], "eight is fine")
         self.assertEqual(ok.code, 0, ok.err)
         self.assertEqual(len(json.loads(self.last_post().form["to"])), 8)
-        over = self.run_cli("dm", *[x for n in names for x in ("--to", n)], "nine is not")
+        over = self.run_cli("dm", "--owner", *[x for n in names for x in ("--to", n)], "nine is not")
         self.assertEqual(over.code, 2)
         self.assertIn("at most 8", over.err)
         self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)
-        self.pin_owner()
         over_with_owner = self.run_cli("dm", "--owner", *args, "owner makes nine")
         self.assertEqual(over_with_owner.code, 2)
         self.assertEqual(len(self.fake.requests_to("POST", "messages")), 1)
@@ -401,7 +426,10 @@ class DmTests(Harness):
         self.assertNotIn(leaked, refused.err)
         self.assertEqual(self.fake.requests_to("POST", "messages"), [])
         self.fake.inject("POST", "messages", status=502, body={"result": "error", "msg": "bad gateway"})
-        result = self.run_cli("dm", "--to", "Codex", "hello")
+        #  The owner is in the conversation (AFC-469), so the request goes out and the gateway
+        #  error is what the caller sees.
+        self.pin_owner()
+        result = self.run_cli("dm", "--owner", "--to", "Codex", "hello")
         self.assertEqual(result.code, 5)
         self.assertIn("not retried", result.err)
         self.assertIn("dm-read", result.err)
@@ -456,18 +484,26 @@ class DmReadAndInboxTests(Harness):
         self.codex = self.fake.user_named("Codex")
         self.grok = self.fake.user_named("Grok")
 
+    def pin_owner(self, user_id: int = 12) -> None:
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
+
     def test_dm_read_shows_the_one_to_one_conversation_with_untrusted_bodies(self) -> None:
-        first = self.fake.add_direct_message("Codex", "can you take AFC 1234?")
-        self.assertEqual(self.run_cli("dm", "--to", "Codex", "yes").code, 0)
+        #  The owner is in the conversation (AFC-469):  a direct message goes out only when the
+        #  owner takes part in it.
+        self.pin_owner()
+        jay = self.fake.user_named("Jay Wedgeworth")
+        first = self.fake.add_direct_message("Codex", "can you take AFC 1234?", recipients=[self.fake.me, jay])
+        self.assertEqual(self.run_cli("dm", "--owner", "--to", "Codex", "yes").code, 0)
         mine = self.fake.messages[-1]["id"]
         self.fake.add_direct_message("Cursor", "unrelated")
         self.fake.add_direct_message("Codex", "group", recipients=[self.fake.me, self.grok])
-        result = self.run_cli("dm-read", "--with", "Codex", "--json")
+        result = self.run_cli("dm-read", "--with", "Codex", "--with", "Jay Wedgeworth", "--json")
         self.assertEqual(result.code, 0, result.err)
         rows = [json.loads(line) for line in result.out.splitlines()]
         self.assertEqual([r["id"] for r in rows if r["content"].endswith(("AFC 1234?", "] yes"))], [first, mine])
         self.assertTrue(all(r["dm"] for r in rows))
-        text = self.run_cli("dm-read", "--with", "Codex", "--exclude-self")
+        text = self.run_cli("dm-read", "--with", "Codex", "--with", "Jay Wedgeworth", "--exclude-self")
         self.assertIn("DM with Codex", text.out)
         self.assertNotIn("] yes", text.out)
 

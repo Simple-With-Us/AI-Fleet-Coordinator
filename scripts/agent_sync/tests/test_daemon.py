@@ -501,6 +501,30 @@ class WakeTests(DaemonHarness):
         self.assertIn("direct message thread", self.dumps()[0]["stdin"])
         self.assertTrue(self.ledger()[0]["owner"])
 
+    def test_a_bot_to_bot_dm_wake_reply_is_refused_and_the_daemon_stays_alive(self) -> None:
+        """AFC-469:  a direct message may go out only when the owner is in the conversation.  A
+        wake reply to a peer's DM has no owner in it, so it is refused:  the answer belongs in a
+        channel.  The refusal is recorded and the daemon keeps running."""
+        daemon = self.started()
+        self.fake.add_direct_message("Codex", "status of the cutover?", deliver=True)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.wake_cycle(daemon)
+        self.assertEqual(self.bot_posts(), [])
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
+        row = self.terminal_wakes()[-1]
+        self.assertEqual(row["state"], "failed", row)
+        self.assertIsNone(row.get("posted_id"))
+        log = (self.state_dir / "logs" / "listener.log").read_text()
+        self.assertIn("post-refused-dm", log)
+        self.assertIn("dm_owner_not_participant", log)
+        #  The daemon is still alive:  the next wake runs and its reply lands.
+        before = len(self.ledger())
+        self.fake.add_message("Codex", "agent-sync", "t", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) > before)
+        self.wake_cycle(daemon)
+        self.assertEqual(len(self.bot_posts()), 1)
+        self.assertEqual(self.bot_posts()[0]["type"], "stream")
+
     def test_a_channel_wake_reply_reaches_the_server_with_the_sentence_gap(self) -> None:
         daemon = self.started()
         mid = self.fake.add_message("Codex", "agent-sync", "t", MENTION)

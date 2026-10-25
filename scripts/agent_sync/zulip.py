@@ -57,13 +57,18 @@ __all__ = [
     "ApiError",
     "CredentialError",
     "Credentials",
+    "DM_GUARD_PATHS",
+    "DM_GUARD_TYPES",
+    "DmGuardRefused",
     "EventQueue",
     "NetworkError",
     "QueueExpired",
     "UsageError",
     "ZulipClient",
+    "check_dm_guard",
     "credential_file_name",
     "default_rc_path",
+    "direct_recipients",
     "env_credentials",
     "fleet_secrets_bin",
     "infisical_credentials",
@@ -297,6 +302,28 @@ class NetworkError(AgentSyncError):
         super().__init__(msg)
         self.timeout = timeout
         self.maybe_sent = maybe_sent
+
+
+class DmGuardRefused(AgentSyncError):
+    """A direct message the owner-in-the-conversation guard refused (AFC-469).
+
+    The rule (owner, Oct 23 2026):  a bot may send a direct message only when Jay is an actual
+    participant in the conversation.  Participation is the authenticated Zulip **user id**:  a
+    display name that looks like the owner is not participation, and mentioning Jay in the message
+    text is not participation either.
+
+    An AgentSyncError, so the CLI exits 3 (a refusal) and not 2 (a malformed command):  a caller can
+    tell "the guard said no" from "you typed it wrong".  `code` is the machine-readable reason, the
+    same shape dm_policy.DmRefused and ApiError use, and it rides in the message text so a caller
+    that only prints the error still sees it."""
+
+    exit_code = 3
+    code = "dm_owner_not_participant"
+
+    def __init__(self, msg: str, *, code: str | None = None) -> None:
+        self.code = code or type(self).code
+        super().__init__("%s [%s]" % (msg, self.code))
+        self.msg = msg
 
 
 class QueueExpired(Exception):
@@ -1033,6 +1060,119 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# --------------------------------------------------------------------------------------------
+# The owner-in-the-conversation guard (AFC-469)
+# --------------------------------------------------------------------------------------------
+
+#: The POST paths whose body can carry a direct message.  The guard sits on the client, so one
+#: check covers the CLI, the stdio MCP, the listener and the hosted Worker together.
+DM_GUARD_PATHS = frozenset({"messages", "scheduled_messages", "drafts"})
+
+#: The message types that make a send a direct message.  Zulip has used both names for it.
+DM_GUARD_TYPES = frozenset({"direct", "private"})
+
+
+def _recipient_ids(value: Any) -> list[int]:
+    """The user ids in a `to` value, or an empty list when it names no user id.
+
+    A list of ids is the normal shape.  A JSON string is the same list after encoding, and a
+    string that is not JSON names a stream, not a person.  Anything unreadable is an empty list,
+    which fails the guard closed:  a recipient set nobody can read is a recipient set nobody may
+    claim to include the owner."""
+    if isinstance(value, (list, tuple)):
+        ids: list[int] = []
+        for item in value:
+            if isinstance(item, bool) or not isinstance(item, int):
+                try:
+                    item = int(str(item).strip())
+                except (TypeError, ValueError):
+                    return []
+            ids.append(int(item))
+        return ids
+    if isinstance(value, str):
+        text = value.strip()
+        if not text.startswith("["):
+            return []
+        try:
+            parsed = json.loads(text)
+        except ValueError:
+            return []
+        if isinstance(parsed, list):
+            return _recipient_ids(parsed)
+    return []
+
+
+def direct_recipients(params: Mapping[str, Any] | None) -> list[int] | None:
+    """The user ids a request would deliver a direct message to, or None when it is not one.
+
+    Three shapes carry a direct message:
+
+    * ``{"type": "direct", "to": [id, ...]}``  (messages, scheduled_messages)
+    * ``{"type": "private", "to": [id, ...]}``  (the older name for the same thing)
+    * ``{"drafts": [{"type": "private", "to": [id, ...]}, ...]}``  (the drafts endpoint)
+
+    A channel send names a stream, not a user, so it is never a direct message and never one of
+    this guard's business."""
+    if not isinstance(params, Mapping):
+        return None
+    drafts = params.get("drafts")
+    if isinstance(drafts, list):
+        found: list[int] = []
+        direct = False
+        for draft in drafts:
+            if not isinstance(draft, Mapping):
+                continue
+            if str(draft.get("type") or "").strip().lower() in DM_GUARD_TYPES:
+                direct = True
+                found.extend(_recipient_ids(draft.get("to")))
+        #  A drafts list with no direct draft in it is not a direct message at all.
+        return found if direct else None
+    if str(params.get("type") or "").strip().lower() in DM_GUARD_TYPES:
+        return _recipient_ids(params.get("to"))
+    return None
+
+
+def check_dm_guard(
+    path: str,
+    params: Mapping[str, Any] | None,
+    owner_user_id: Any,
+) -> None:
+    """Raise DmGuardRefused unless a direct send has the owner in its recipient list.
+
+    The rule (owner, Oct 23 2026):  a bot may send a direct message only when Jay is an actual
+    participant in the conversation.  Participation is the authenticated Zulip **user id**, never a
+    display name:  a recipient whose name looks like the owner is not the owner, and mentioning
+    Jay in the message text is not participation either.
+
+    It **fails closed**:  with no owner id pinned (0, unset, or unreadable) a direct send is
+    refused, because a send nobody can check is a send nobody may make.  A channel post is never
+    touched by this guard."""
+    if str(path or "").strip("/") not in DM_GUARD_PATHS:
+        return
+    recipients = direct_recipients(params)
+    if recipients is None:
+        return  # not a direct send:  a channel message is none of this guard's business
+    try:
+        owner = int(owner_user_id)
+    except (TypeError, ValueError):
+        owner = 0
+    if owner <= 0:
+        raise DmGuardRefused(
+            "the owner's Zulip user id is not pinned, so this direct message cannot be checked "
+            "against it:  pin daemon.owner_user_id in listener.toml (or set OWNER_USER_ID) and try "
+            "again",
+            code="dm_owner_not_pinned",
+        )
+    if owner in recipients:
+        return
+    raise DmGuardRefused(
+        "a direct message may go out only when the owner is in the conversation:  add the owner "
+        "to the recipients (the `dm --owner` flag, or the owner's user id), or post in a channel "
+        "instead",
+        code="dm_owner_not_participant",
+    )
+
+
 class ZulipClient:
     """Minimal Zulip REST client.  Thread-safe: each request builds its own urllib objects."""
 
@@ -1044,6 +1184,7 @@ class ZulipClient:
         timeout: float = 30.0,
         events_timeout: float = 100.0,
         sleep: Callable[[float], None] = time.sleep,
+        owner_user_id: int = 0,
     ) -> None:
         self.creds = creds
         self.realm = realm.rstrip("/")
@@ -1051,6 +1192,12 @@ class ZulipClient:
         self.timeout = timeout
         self.events_timeout = events_timeout
         self.sleep = sleep
+        # The owner's Zulip user id, for the owner-in-the-conversation guard (AFC-469).  0 means
+        # "not pinned", and the guard then refuses every direct send:  it fails closed.
+        try:
+            self.owner_user_id = int(owner_user_id)
+        except (TypeError, ValueError):
+            self.owner_user_id = 0
         token = base64.b64encode(("%s:%s" % (creds.email, creds.key)).encode("utf-8")).decode(
             "ascii"
         )
@@ -1085,8 +1232,14 @@ class ZulipClient:
         """One API call.  429 is retried (Retry-After, at most 3 times).  GET also retries
         network failures and a 502, 503 or 504 twice (1s, then 3s); a long poll does not retry a
         timeout, because a quiet queue is normal.  Non-GET requests are never retried on a
-        network failure or a gateway error: a POST /messages that timed out may have posted."""
+        network failure or a gateway error: a POST /messages that timed out may have posted.
+
+        A POST that would deliver a direct message is checked before anything is sent:  the owner
+        has to be in the recipient list (AFC-469).  The check raises DmGuardRefused and sends
+        nothing."""
         method = method.upper()
+        if method == "POST":
+            check_dm_guard(path, params, self.owner_user_id)
         query = encode_params(outbound_params(method, path, params))
         url = self.base + path.lstrip("/")
         data: bytes | None = None
