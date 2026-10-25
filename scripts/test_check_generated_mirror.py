@@ -81,13 +81,19 @@ class RepoCase(unittest.TestCase):
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_SYSTEM": os.devnull,
         }
-        done = subprocess.run(
-            ["git", "-C", str(self.root), *args],
-            capture_output=True,
-            text=True,
-            env=env,
-            check=True,
-        )
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(self.root), *args],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            sys.exit(124)
+        except FileNotFoundError:
+            sys.exit(127)
         return done.stdout.strip()
 
     def write(self, text: str, path: str | None = None) -> None:
