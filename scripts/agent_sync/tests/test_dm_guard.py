@@ -33,30 +33,52 @@ class GuardShapeTests(unittest.TestCase):
     """What counts as a direct send, and who counts as a recipient."""
 
     def test_a_channel_send_is_not_a_direct_message(self) -> None:
-        self.assertIsNone(Z.direct_recipients({"type": "stream", "to": "agent-sync", "topic": "t"}))
-        self.assertIsNone(Z.direct_recipients({"type": "stream", "to": 7, "topic": "t"}))
-        self.assertIsNone(Z.direct_recipients({}))
-        self.assertIsNone(Z.direct_recipients(None))
+        self.assertIsNone(Z.direct_recipient_sets({"type": "stream", "to": "agent-sync", "topic": "t"}))
+        self.assertIsNone(Z.direct_recipient_sets({"type": "stream", "to": 7, "topic": "t"}))
+        self.assertIsNone(Z.direct_recipient_sets({}))
+        self.assertIsNone(Z.direct_recipient_sets(None))
 
     def test_a_direct_send_names_its_recipients(self) -> None:
-        self.assertEqual(Z.direct_recipients({"type": "direct", "to": [CODEX_ID, OWNER_ID]}), [CODEX_ID, OWNER_ID])
-        self.assertEqual(Z.direct_recipients({"type": "private", "to": [CODEX_ID]}), [CODEX_ID])
-        self.assertEqual(Z.direct_recipients({"type": "direct", "to": "[11, 12]"}), [CODEX_ID, OWNER_ID])
+        self.assertEqual(Z.direct_recipient_sets({"type": "direct", "to": [CODEX_ID, OWNER_ID]}), [[CODEX_ID, OWNER_ID]])
+        self.assertEqual(Z.direct_recipient_sets({"type": "private", "to": [CODEX_ID]}), [[CODEX_ID]])
+        self.assertEqual(Z.direct_recipient_sets({"type": "direct", "to": "[11, 12]"}), [[CODEX_ID, OWNER_ID]])
 
     def test_a_draft_names_its_recipients_inside_the_drafts_list(self) -> None:
         self.assertEqual(
-            Z.direct_recipients({"drafts": [{"type": "private", "to": [CODEX_ID, OWNER_ID]}]}),
-            [CODEX_ID, OWNER_ID],
+            Z.direct_recipient_sets({"drafts": [{"type": "private", "to": [CODEX_ID, OWNER_ID]}]}),
+            [[CODEX_ID, OWNER_ID]],
         )
+
+    def test_a_batch_names_a_recipient_set_for_every_direct_draft(self) -> None:
+        #  One set per conversation:  a union would let one owner-addressed draft authorise the
+        #  bot to bot draft beside it (AFC-469).
+        self.assertEqual(
+            Z.direct_recipient_sets(
+                {
+                    "drafts": [
+                        {"type": "private", "to": [CODEX_ID, OWNER_ID]},
+                        {"type": "private", "to": [CODEX_ID]},
+                    ]
+                }
+            ),
+            [[CODEX_ID, OWNER_ID], [CODEX_ID]],
+        )
+
+    def test_a_malformed_draft_is_refused_with_its_index(self) -> None:
+        #  A draft nobody can read is not skipped:  an unreadable draft could reach the request
+        #  builder while another owner-addressed draft satisfied the guard.
+        with self.assertRaises(ValueError) as caught:
+            Z.direct_recipient_sets({"drafts": [{"type": "private", "to": [CODEX_ID, OWNER_ID]}, "nope"]})
+        self.assertIn("drafts[1]", str(caught.exception))
         #  A drafts list with no direct draft in it is not a direct message at all.
-        self.assertIsNone(Z.direct_recipients({"drafts": [{"type": "stream", "to": [7], "topic": "t"}]}))
-        self.assertIsNone(Z.direct_recipients({"drafts": []}))
+        self.assertIsNone(Z.direct_recipient_sets({"drafts": [{"type": "stream", "to": [7], "topic": "t"}]}))
+        self.assertIsNone(Z.direct_recipient_sets({"drafts": []}))
 
     def test_an_unreadable_recipient_set_is_an_empty_one(self) -> None:
         #  A `to` nobody can read fails the guard closed:  a recipient set nobody can read is a
         #  recipient set nobody may claim to include the owner.
-        self.assertEqual(Z.direct_recipients({"type": "direct", "to": "agent-sync"}), [])
-        self.assertEqual(Z.direct_recipients({"type": "direct", "to": ["x"]}), [])
+        self.assertEqual(Z.direct_recipient_sets({"type": "direct", "to": "agent-sync"}), [[]])
+        self.assertEqual(Z.direct_recipient_sets({"type": "direct", "to": ["x"]}), [[]])
 
 
 class GuardDecisionTests(unittest.TestCase):
@@ -145,6 +167,33 @@ class ClientGuardTests(Harness):
         self.assertEqual(caught.exception.code, "dm_owner_not_participant")
         self.assertEqual(self.fake.requests_to("POST", "scheduled_messages"), [])
 
+    def test_a_batched_draft_cannot_borrow_the_owners_participation(self) -> None:
+        #  One owner-addressed draft beside a bot to bot draft does not authorise the second one
+        #  (AFC-469):  every direct conversation in the batch has to carry the owner.
+        client = self.client(OWNER_ID)
+        with self.assertRaises(Z.DmGuardRefused) as caught:
+            client.post(
+                "drafts",
+                {
+                    "drafts": [
+                        {"type": "private", "to": [CODEX_ID, OWNER_ID], "topic": "", "content": "ok"},
+                        {"type": "private", "to": [CODEX_ID], "topic": "", "content": "not ok"},
+                    ]
+                },
+            )
+        self.assertEqual(caught.exception.code, "dm_owner_not_participant")
+        self.assertEqual(self.fake.requests_to("POST", "drafts"), [])
+
+    def test_a_malformed_draft_entry_is_refused(self) -> None:
+        client = self.client(OWNER_ID)
+        with self.assertRaises(ValueError) as caught:
+            client.post(
+                "drafts",
+                {"drafts": [{"type": "private", "to": [CODEX_ID, OWNER_ID], "topic": "", "content": "ok"}, "nope"]},
+            )
+        self.assertIn("drafts[1]", str(caught.exception))
+        self.assertEqual(self.fake.requests_to("POST", "drafts"), [])
+
     def test_a_direct_draft_is_guarded_too(self) -> None:
         client = self.client(OWNER_ID)
         with self.assertRaises(Z.DmGuardRefused) as caught:
@@ -184,10 +233,6 @@ class ClientGuardTests(Harness):
 
 class CliGuardTests(Harness):
     """`agent-sync dm`:  the guard on the recipient set the CLI resolves."""
-
-    def pin_owner(self, user_id: int = OWNER_ID) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
 
     def test_cmd_dm_refuses_a_bot_only_recipient_set(self) -> None:
         self.pin_owner()

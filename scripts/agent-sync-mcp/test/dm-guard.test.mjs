@@ -12,7 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { ZulipClient } from "../src/zulip.js";
-import { DmGuardRefused } from "../src/contract.js";
+import { DmGuardRefused, UsageError } from "../src/contract.js";
 import { FakeZulip, BOT_EMAIL, OWNER_ID } from "./fake-zulip.mjs";
 
 const CODEX_ID = 1212001;
@@ -147,4 +147,34 @@ test("editing a direct draft with the owner in it goes out", async () => {
   fake.failNext("PATCH", /drafts/, () => fake.ok({}));
   await c.patch("drafts/42", { draft: { type: "private", to: [CODEX_ID, OWNER_ID], topic: "", content: "hello" } });
   assert.equal(fake.requestsTo("PATCH", "drafts/42").length, 1, "the edit went out");
+});
+
+test("a batched draft cannot borrow the owner's participation", async () => {
+  //  One owner-addressed draft beside a bot to bot draft does not authorise the second one
+  //  (AFC-469):  every direct conversation in the batch has to carry the owner.
+  const { c, fake } = harness({ ownerUserId: OWNER_ID });
+  await assert.rejects(
+    c.post("drafts", {
+      drafts: [
+        { type: "private", to: [CODEX_ID, OWNER_ID], topic: "", content: "ok" },
+        { type: "private", to: [CODEX_ID], topic: "", content: "not ok" },
+      ],
+    }),
+    (e) => e instanceof DmGuardRefused && e.code === "dm_owner_not_participant",
+  );
+  assert.equal(fake.drafts.size, 0, "nothing was sent");
+});
+
+test("a malformed draft entry is refused with its index", async () => {
+  const { c, fake } = harness({ ownerUserId: OWNER_ID });
+  await assert.rejects(
+    c.post("drafts", {
+      drafts: [
+        { type: "private", to: [CODEX_ID, OWNER_ID], topic: "", content: "ok" },
+        "nope",
+      ],
+    }),
+    (e) => e instanceof UsageError && String(e.message).includes("drafts[1]"),
+  );
+  assert.equal(fake.drafts.size, 0, "nothing was sent");
 });

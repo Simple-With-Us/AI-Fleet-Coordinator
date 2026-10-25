@@ -8,7 +8,7 @@
 // Pure module:  the caller hands in `fetch` and `sleep`, so node tests run it
 // against a fake Zulip.
 
-import { ApiError, DmGuardRefused, MAX_CONTENT_LENGTH, NetworkError } from "./contract.js";
+import { ApiError, DmGuardRefused, MAX_CONTENT_LENGTH, NetworkError, UsageError } from "./contract.js";
 import { fixOutbound } from "./textfmt.js";
 
 export const REALM = "https://simplewithus.zulipchat.com";
@@ -88,33 +88,36 @@ function recipientIds(value) {
  * and the drafts endpoint's {drafts: [{type: "private", to: [ids]}]}.  A channel send names a
  * stream, not a user, so it is never a direct message.
  */
-export function directRecipients(params) {
+export function directRecipientSets(params) {
   if (!params || typeof params !== "object") return null;
   if (Array.isArray(params.drafts)) {
-    const found = [];
-    let direct = false;
-    for (const draft of params.drafts) {
-      if (!draft || typeof draft !== "object") continue;
-      if (DM_GUARD_TYPES.includes(String(draft.type ?? "").trim().toLowerCase())) {
-        direct = true;
-        found.push(...recipientIds(draft.to));
+    const sets = [];
+    params.drafts.forEach((draft, index) => {
+      if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
+        throw new UsageError(`drafts[${index}] is not a draft object`);
       }
-    }
+      if (DM_GUARD_TYPES.includes(String(draft.type ?? "").trim().toLowerCase())) {
+        sets.push(recipientIds(draft.to));
+      }
+    });
     //  A drafts list with no direct draft in it is not a direct message at all.
-    return direct ? found : null;
+    return sets.length ? sets : null;
   }
   //  One draft being rewritten:  PATCH drafts/<id> carries {draft: {type, to}}, the same shape a
   //  created draft has, so a draft's recipient set is checked when it is rewritten and not only
   //  when it is created.
-  if (params.draft && typeof params.draft === "object" && !Array.isArray(params.draft)) {
+  if (Object.prototype.hasOwnProperty.call(params, "draft")) {
     const one = params.draft;
+    if (!one || typeof one !== "object" || Array.isArray(one)) {
+      throw new UsageError("draft is not a draft object");
+    }
     if (DM_GUARD_TYPES.includes(String(one.type ?? "").trim().toLowerCase())) {
-      return recipientIds(one.to);
+      return [recipientIds(one.to)];
     }
     return null;
   }
   if (DM_GUARD_TYPES.includes(String(params.type ?? "").trim().toLowerCase())) {
-    return recipientIds(params.to);
+    return [recipientIds(params.to)];
   }
   return null;
 }
@@ -132,8 +135,8 @@ export function checkDmGuard(path, params, ownerUserId) {
   //  draft's recipient set is rewritten by a PATCH.
   const endpoint = String(path ?? "").replace(/^\/+|\/+$/g, "").split("/")[0];
   if (!DM_GUARD_PATHS.includes(endpoint)) return;
-  const recipients = directRecipients(params);
-  if (recipients === null) return;
+  const sets = directRecipientSets(params);
+  if (sets === null) return;
   const owner = Number(ownerUserId);
   if (!Number.isSafeInteger(owner) || owner <= 0) {
     throw new DmGuardRefused(
@@ -142,12 +145,16 @@ export function checkDmGuard(path, params, ownerUserId) {
       { code: "dm_owner_not_pinned" },
     );
   }
-  if (recipients.includes(owner)) return;
-  throw new DmGuardRefused(
-    "a direct message may go out only when the owner is in the conversation:  add the owner to the " +
-      "recipients, or post in a channel instead",
-    { code: "dm_owner_not_participant" },
-  );
+  //  Every direct conversation the request carries has to have the owner in it.  Checking the
+  //  union instead would let one owner-addressed conversation authorise another beside it.
+  for (const recipients of sets) {
+    if (recipients.includes(owner)) continue;
+    throw new DmGuardRefused(
+      "a direct message may go out only when the owner is in the conversation:  add the owner to the " +
+        "recipients, or post in a channel instead",
+      { code: "dm_owner_not_participant" },
+    );
+  }
 }
 
 function basicHeader(email, key) {

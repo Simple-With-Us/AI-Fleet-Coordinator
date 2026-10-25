@@ -267,10 +267,6 @@ class DmTests(Harness):
 
     OWNER_ID = 12  # Jay Wedgeworth in the fake realm
 
-    def pin_owner(self, user_id: int = OWNER_ID) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
-
     def last_post(self):
         return self.fake.requests_to("POST", "messages")[-1]
 
@@ -483,10 +479,6 @@ class DmReadAndInboxTests(Harness):
         super().setUp()
         self.codex = self.fake.user_named("Codex")
         self.grok = self.fake.user_named("Grok")
-
-    def pin_owner(self, user_id: int = 12) -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
 
     def test_dm_read_shows_the_one_to_one_conversation_with_untrusted_bodies(self) -> None:
         #  The owner is in the conversation (AFC-469):  a direct message goes out only when the

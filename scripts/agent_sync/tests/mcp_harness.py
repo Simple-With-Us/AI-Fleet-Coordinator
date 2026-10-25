@@ -25,6 +25,7 @@ from typing import Any
 
 from agent_sync import cli
 from agent_sync import identity as I
+from agent_sync import live as L
 from agent_sync.mcp import identity_router as R
 from agent_sync.mcp import stdio as S
 from agent_sync.mcp import tools as T
@@ -262,8 +263,14 @@ class McpHarness(Harness):
 
         The owner-in-the-conversation guard (AFC-469) fails closed:  with no owner pinned a direct
         message is refused, so a test that sends one has to pin the owner first.
+
+        The directory is the fleet's own private one, mode 700, and a symlinked state directory is
+        refused rather than followed:  a test that writes through a link would write outside its
+        own tree, and the file it pins would not be the one the listener reads.
         """
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        if self.state_dir.is_symlink():
+            raise AssertionError("the state directory is a symlink:  %s" % self.state_dir)
+        L.private_dir(str(self.state_dir))
         (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
 
     def mcp_env(self, **overrides: str | None) -> dict[str, str]:

@@ -68,7 +68,7 @@ __all__ = [
     "check_dm_guard",
     "credential_file_name",
     "default_rc_path",
-    "direct_recipients",
+    "direct_recipient_sets",
     "env_credentials",
     "fleet_secrets_bin",
     "infisical_credentials",
@@ -1110,8 +1110,9 @@ def _recipient_ids(value: Any) -> list[int]:
     return []
 
 
-def direct_recipients(params: Mapping[str, Any] | None) -> list[int] | None:
-    """The user ids a request would deliver a direct message to, or None when it is not one.
+def direct_recipient_sets(params: Mapping[str, Any] | None) -> list[list[int]] | None:
+    """The recipient set of every direct conversation a request would deliver, or None when the
+    request carries no direct conversation at all.
 
     Four shapes carry a direct message:
 
@@ -1123,30 +1124,32 @@ def direct_recipients(params: Mapping[str, Any] | None) -> list[int] | None:
     The last one is the body of ``PATCH drafts/<id>``, so a draft's recipient set is checked when
     it is rewritten and not only when it is created.
 
+    A batch carries one set per direct conversation and every one of them has to carry the owner:
+    a union would let one owner-addressed draft authorise an unrelated bot to bot draft beside it.
+
     A channel send names a stream, not a user, so it is never a direct message and never one of
     this guard's business."""
     if not isinstance(params, Mapping):
         return None
     drafts = params.get("drafts")
     if isinstance(drafts, list):
-        found: list[int] = []
-        direct = False
-        for draft in drafts:
+        sets: list[list[int]] = []
+        for index, draft in enumerate(drafts):
             if not isinstance(draft, Mapping):
-                continue
+                raise ValueError("drafts[%d] is not a draft object:  %r" % (index, draft))
             if str(draft.get("type") or "").strip().lower() in DM_GUARD_TYPES:
-                direct = True
-                found.extend(_recipient_ids(draft.get("to")))
+                sets.append(_recipient_ids(draft.get("to")))
         #  A drafts list with no direct draft in it is not a direct message at all.
-        return found if direct else None
-    draft = params.get("draft")
-    if isinstance(draft, Mapping):
-        #  One draft being rewritten:  the body carries the whole draft, not the list.
+        return sets or None
+    if "draft" in params:
+        draft = params.get("draft")
+        if not isinstance(draft, Mapping):
+            raise ValueError("draft is not a draft object:  %r" % (draft,))
         if str(draft.get("type") or "").strip().lower() in DM_GUARD_TYPES:
-            return _recipient_ids(draft.get("to"))
+            return [_recipient_ids(draft.get("to"))]
         return None
     if str(params.get("type") or "").strip().lower() in DM_GUARD_TYPES:
-        return _recipient_ids(params.get("to"))
+        return [_recipient_ids(params.get("to"))]
     return None
 
 
@@ -1167,8 +1170,8 @@ def check_dm_guard(
     touched by this guard."""
     if _guard_endpoint(path) not in DM_GUARD_PATHS:
         return
-    recipients = direct_recipients(params)
-    if recipients is None:
+    sets = direct_recipient_sets(params)
+    if sets is None:
         return  # not a direct send:  a channel message is none of this guard's business
     try:
         owner = int(owner_user_id)
@@ -1181,14 +1184,17 @@ def check_dm_guard(
             "again",
             code="dm_owner_not_pinned",
         )
-    if owner in recipients:
-        return
-    raise DmGuardRefused(
-        "a direct message may go out only when the owner is in the conversation:  add the owner "
-        "to the recipients (the `dm --owner` flag, or the owner's user id), or post in a channel "
-        "instead",
-        code="dm_owner_not_participant",
-    )
+    #  Every direct conversation the request carries has to have the owner in it.  Checking the
+    #  union instead would let one owner-addressed conversation authorise another beside it.
+    for recipients in sets:
+        if owner in recipients:
+            continue
+        raise DmGuardRefused(
+            "a direct message may go out only when the owner is in the conversation:  add the owner "
+            "to the recipients (the `dm --owner` flag, or the owner's user id), or post in a channel "
+            "instead",
+            code="dm_owner_not_participant",
+        )
 
 
 class ZulipClient:

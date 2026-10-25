@@ -25,6 +25,7 @@ from typing import Any
 from unittest import mock
 
 from agent_sync import cli
+from agent_sync import live as L
 from agent_sync import zulip as Z
 from agent_sync.tests.fake_zulip import BOT_EMAIL, FakeZulip
 
@@ -96,14 +97,20 @@ class Harness(unittest.TestCase):
         self.transcript: list[str] = []
         self._transcript_lock = threading.Lock()
 
-    def pin_owner(self, user_id: int = 12) -> None:
+    def pin_owner(self, user_id: int = 12, extra: str = "") -> None:
         """Pin the owner in the installed listener.toml, the way a host does.
 
         The owner-in-the-conversation guard (AFC-469) fails closed:  with no owner pinned a direct
         message is refused, so a test that sends one has to pin the owner first.
+
+        The directory is the fleet's own private one, mode 700, and a symlinked state directory is
+        refused rather than followed:  a test that writes through a link would write outside its
+        own tree, and the file it pins would not be the one the listener reads.
         """
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
+        if self.state_dir.is_symlink():
+            raise AssertionError("the state directory is a symlink:  %s" % self.state_dir)
+        L.private_dir(str(self.state_dir))
+        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n%s" % (user_id, extra))
 
     def tearDown(self) -> None:
         token = base64.b64encode(("%s:%s" % (BOT_EMAIL, self.key)).encode()).decode()

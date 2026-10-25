@@ -184,9 +184,12 @@ class UploadScheduledDraftsTypingTests(Harness):
         self.assertNotIn(sid, self.fake.scheduled)
 
     def test_drafts_and_typing(self) -> None:
+        #  The owner is in the conversation, so the direct draft edit is not a bot to bot one
+        #  (AFC-469).
+        self.pin_owner()
         made = json.loads(self.run_cli("drafts", "create", "--topic", "d", "draft text", "--json").out)
         self.assertEqual(self.fake.drafts[made["id"]]["content"], "draft text")
-        self.assertEqual(self.run_cli("drafts", "edit", "--id", str(made["id"]), "--to", "Codex", "new").code, 0)
+        self.assertEqual(self.run_cli("drafts", "edit", "--id", str(made["id"]), "--to", "Codex", "--to", "Jay Wedgeworth", "new").code, 0)
         self.assertEqual(self.fake.drafts[made["id"]]["type"], "private")
         self.assertIn("new", self.run_cli("drafts", "list").out)
         self.assertEqual(self.run_cli("drafts", "delete", "--id", str(made["id"])).code, 0)

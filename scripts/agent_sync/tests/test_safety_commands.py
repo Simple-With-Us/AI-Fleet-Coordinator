@@ -19,10 +19,6 @@ AT = "@"
 
 
 class OwnerHarness(Harness):
-    def pin_owner(self, user_id: int = OWNER_ID, extra: str = "") -> None:
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n%s" % (user_id, extra))
-
     def last_post(self):
         return self.fake.requests_to("POST", "messages")[-1]
 
