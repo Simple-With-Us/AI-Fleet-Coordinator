@@ -81,7 +81,11 @@ class VerifierTest(unittest.TestCase):
             time.sleep(0.0002)  # yield the GIL so cache sections interleave
             if json.loads(body)["hash"] == good:
                 return 200, json.dumps(
-                    {"ok": True, "identity": IDENTITY, "expires_at": int((time.time() + 3600) * 1000)}
+                    {
+                        "ok": True,
+                        "identity": IDENTITY,
+                        "expires_at": int((time.time() + 3600) * 1000),
+                    }
                 ).encode()
             return 200, json.dumps({"ok": False, "reason": "mismatch"}).encode()
 
@@ -93,6 +97,7 @@ class VerifierTest(unittest.TestCase):
         sb.CACHE_MAX_ENTRIES = 8
         sys.setswitchinterval(0.00001)  # force preemption inside min()+del
         try:
+
             def hammer(n):
                 try:
                     for i in range(300):

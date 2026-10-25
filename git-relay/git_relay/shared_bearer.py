@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import threading
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
