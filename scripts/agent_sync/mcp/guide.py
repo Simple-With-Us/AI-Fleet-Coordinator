@@ -1,5 +1,5 @@
 """The `guide` tool (AFC-331, docs/protocols/per-call-identity.md section 7):  the Agent-Sync tools guide,
-whole or one `##` section.  The text is docs/protocols/agent-sync-tools-guide.md, read from beside the
+whole or one `##` section.  The text is docs/protocols/simple-tools-guide.md, read from beside the
 package (the repo root, or the server mirror's copy of it).  The hosted Worker bundles the same file at
 build time and applies the same section rule (src/guide.js).
 
@@ -11,10 +11,10 @@ import os
 from pathlib import Path
 from typing import Mapping
 
-GUIDE_RELPATH = ("docs", "protocols", "agent-sync-tools-guide.md")
+GUIDE_RELPATH = ("docs", "protocols", "simple-tools-guide.md")
 GUIDE_PATH = Path(__file__).resolve().parents[3].joinpath(*GUIDE_RELPATH)
 ENV_GUIDE = "AGENT_SYNC_GUIDE"
-GUIDE_URL = "https://fleetlink.online/agent-sync-tools-guide/"
+GUIDE_URL = "https://fleetlink.online/simple-tools-guide/"
 
 
 class GuideError(Exception):
