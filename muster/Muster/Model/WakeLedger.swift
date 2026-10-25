@@ -15,6 +15,10 @@ enum WakeLedger {
         var topicKey: String?
         /// When it was accepted,  or when it was started when it never was.
         var at: Date?
+        /// When its latest ledger row was recorded.
+        var lastAt: Date? = nil
+        /// Why it was held back,  dropped,  skipped,  or failed.
+        var reason: String? = nil
     }
 
     /// One row of the ledger.
@@ -26,6 +30,8 @@ enum WakeLedger {
         var topic_key: String?
         var topic: String?
         var channel: String?
+        var why: String?
+        var reason: String?
     }
 
     /// One wake,  as the panel shows it.
@@ -38,8 +44,10 @@ enum WakeLedger {
         let topic: String?
         /// Whether the owner asked for it.
         let owner: Bool
-        /// When it was accepted.
+        /// When it was accepted or last updated.
         let at: Date?
+        /// The reason recorded for a deferred,  skipped,  dropped,  or failed wake.
+        var reason: String? = nil
     }
 
     /// The states a budget counts.
@@ -71,6 +79,7 @@ enum WakeLedger {
         var owners: [String: Bool] = [:]
         var topicKeys: [String: String?] = [:]
         var topics: [String: String?] = [:]
+        var reasons: [String: String] = [:]
         var times: [String: [String: Double]] = [:]
         var lastAt: [String: Double] = [:]
         var order: [String] = []
@@ -96,6 +105,7 @@ enum WakeLedger {
             if let owner = row.owner { owners[identifier] = owner }
             if row.topic_key != nil { topicKeys[identifier] = row.topic_key }
             if row.topic != nil { topics[identifier] = row.topic }
+            if let r = row.why ?? row.reason, !r.isEmpty { reasons[identifier] = r }
             lastAt[identifier] = ts
         }
 
@@ -103,18 +113,22 @@ enum WakeLedger {
         parsed.malformed = malformed
         for identifier in order {
             let accepted = times[identifier]?["accepted"] ?? times[identifier]?["started"]
+            let latest = lastAt[identifier].map { Date(timeIntervalSince1970: $0) }
             parsed.wakes.append(Wake(
                 state: states[identifier] ?? "",
                 owner: owners[identifier] ?? false,
                 topicKey: topicKeys[identifier] ?? nil,
-                at: accepted.map { Date(timeIntervalSince1970: $0) }
+                at: accepted.map { Date(timeIntervalSince1970: $0) },
+                lastAt: latest,
+                reason: reasons[identifier]
             ))
             parsed.outcomes.append(Outcome(
                 id: identifier,
                 state: states[identifier] ?? "",
                 topic: topics[identifier] ?? nil,
                 owner: owners[identifier] ?? false,
-                at: lastAt[identifier].map { Date(timeIntervalSince1970: $0) }
+                at: latest,
+                reason: reasons[identifier]
             ))
         }
         parsed.outcomes.sort { ($0.at ?? .distantPast) > ($1.at ?? .distantPast) }
@@ -171,6 +185,19 @@ enum WakeLedger {
         usage.ownerThisDay = owner.count
         usage.worstTopicThisHour = busiest(ordinary.filter { within($0, hour) })
         usage.worstOwnerTopicThisHour = busiest(owner.filter { within($0, hour) })
+
+        for wake in wakes {
+            let stamp = wake.lastAt ?? wake.at
+            guard let stamp, now.timeIntervalSince(stamp) < day else { continue }
+            switch wake.state {
+            case "held_back": usage.heldBackThisDay += 1
+            case "dropped": usage.droppedThisDay += 1
+            case "skipped": usage.skippedThisDay += 1
+            case "failed": usage.failedThisDay += 1
+            case "expired": usage.expiredThisDay += 1
+            default: break
+            }
+        }
         return usage
     }
 

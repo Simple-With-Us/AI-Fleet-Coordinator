@@ -400,4 +400,101 @@ final class WakeSettingsTests: XCTestCase {
             ["daemon", "test-wake", "--seat", "MM", "--pin"]
         )
     }
+
+    /// The CLI executable and commandLine use `simple-chat` (never the retired `agent-sync` binary).
+    func test_the_command_line_uses_simple_chat() {
+        let root = URL(fileURLWithPath: "/tmp/fake-repo", isDirectory: true)
+        let interpreter = URL(fileURLWithPath: "/usr/bin/python3")
+        let location = EngineLocation(root: root, interpreter: interpreter)
+        XCTAssertEqual(
+            AgentSyncCLI.commandURL(at: location).path,
+            "/tmp/fake-repo/scripts/simple-chat"
+        )
+        XCTAssertEqual(
+            AgentSyncInvocation.status().commandLine,
+            "simple-chat daemon status --json"
+        )
+        XCTAssertTrue(
+            AgentSyncError.commandNotFound("/tmp/fake-repo/scripts/simple-chat")
+                .errorDescription?
+                .contains("simple-chat") == true
+        )
+    }
+
+    /// Deferred, dropped, skipped, failed, and expired wakes are counted in 24h usage, and reasons are preserved.
+    func test_deferred_and_failed_wakes_are_counted_and_reasons_preserved() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let ledger = """
+        {"ts": 999900.0, "wake_id": "w1", "state": "held_back", "reason": "host_busy", "owner": false, "topic": "AFC-536"}
+        {"ts": 999910.0, "wake_id": "w2", "state": "skipped", "reason": "leased", "owner": false, "topic": "AFC-536"}
+        {"ts": 999920.0, "wake_id": "w3", "state": "dropped", "why": "budget", "owner": false, "topic": "AFC-536"}
+        {"ts": 999930.0, "wake_id": "w4", "state": "accepted", "owner": false, "topic": "AFC-536"}
+        {"ts": 999940.0, "wake_id": "w4", "state": "failed", "reason": "exit_1", "owner": false, "topic": "AFC-536"}
+        """
+        let parsed = WakeLedger.parse(ledger)
+        let usage = WakeLedger.usage(from: parsed, now: now)
+        XCTAssertEqual(usage.heldBackThisDay, 1)
+        XCTAssertEqual(usage.skippedThisDay, 1)
+        XCTAssertEqual(usage.droppedThisDay, 1)
+        XCTAssertEqual(usage.failedThisDay, 1)
+        XCTAssertEqual(usage.deferredTotalThisDay, 3)
+
+        let byID = Dictionary(uniqueKeysWithValues: parsed.outcomes.map { ($0.id, $0) })
+        XCTAssertEqual(byID["w1"]?.reason, "host_busy")
+        XCTAssertEqual(byID["w2"]?.reason, "leased")
+        XCTAssertEqual(byID["w3"]?.reason, "budget")
+        XCTAssertEqual(byID["w4"]?.reason, "exit_1")
+    }
+
+    /// Operator red warnings, held-back queue totals, chat nudges, and quota are decoded into WakeSeat.
+    func test_operator_telemetry_populates_wake_seat() {
+        let richStatus = """
+        {
+          "running": true,
+          "pid": 59735,
+          "status": {
+            "seats": {
+              "MM": {
+                "bot": "MM",
+                "wake": "muse",
+                "connected": true,
+                "paused": false,
+                "wakes_paused": false,
+                "red": ["wake pin is stale"],
+                "held_back": {
+                  "count": 2,
+                  "totals": { "held": 15, "surfaced": 13, "expired": 0, "evicted": 0, "overflowed": 0 }
+                },
+                "chat_nudges": {
+                  "accepted": 3,
+                  "pending": 4,
+                  "blocked": 1
+                },
+                "quota": {
+                  "known": true,
+                  "exhausted": false,
+                  "remaining": 85.0,
+                  "source": "codecaps"
+                }
+              }
+            }
+          }
+        }
+        """
+        let model = WakeSettingsBuilder.build(sources(status: richStatus))
+        guard let seat = model.seats.first else {
+            XCTFail("expected MM seat")
+            return
+        }
+        XCTAssertEqual(seat.redWarnings, ["wake pin is stale"])
+        XCTAssertEqual(seat.heldBackQueueCount, 2)
+        XCTAssertEqual(seat.heldBackTotalCount, 15)
+        XCTAssertEqual(seat.heldBackSurfacedCount, 13)
+        XCTAssertEqual(seat.chatNudgesAccepted, 3)
+        XCTAssertEqual(seat.chatNudgesPending, 4)
+        XCTAssertEqual(seat.chatNudgesBlocked, 1)
+        XCTAssertEqual(seat.quotaRemaining, 85.0)
+        XCTAssertFalse(seat.quotaExhausted)
+        XCTAssertEqual(seat.quotaSource, "codecaps")
+    }
 }

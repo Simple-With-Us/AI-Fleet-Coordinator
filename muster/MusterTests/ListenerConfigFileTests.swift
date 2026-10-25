@@ -5,7 +5,7 @@ final class ListenerConfigFileTests: XCTestCase {
     /// A file like the listener's own.
     private let sample = """
     [daemon]
-    owner_user_id = 1211974  # pinned by `agent-sync daemon init`
+    owner_user_id = 1211974  # pinned by `simple-chat daemon init`
     host_wake_load_per_core = 0
     outgoing_webhook_seats = ["BF-BUILDER", "BF-COMPILER"]
 
@@ -101,7 +101,7 @@ final class ListenerConfigFileTests: XCTestCase {
             key: "owner_user_id",
             to: .number(999)
         )
-        XCTAssertTrue(written.contains("owner_user_id = 999  # pinned by `agent-sync daemon init`"))
+        XCTAssertTrue(written.contains("owner_user_id = 999  # pinned by `simple-chat daemon init`"))
         XCTAssertTrue(written.contains("host_wake_load_per_core = 0"))
         XCTAssertTrue(written.contains("wake = \"muse\""))
     }

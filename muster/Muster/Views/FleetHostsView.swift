@@ -13,6 +13,10 @@ struct FleetHostsView: View {
     @State private var loading = false
     /// The host whose rows are open.
     @State private var expandedHost: String?
+    /// Which category of checks to display inside an expanded host.
+    @State private var categoryFilter: FleetHostCategoryFilter = .notable
+    /// Search text to filter check rows inside an expanded host.
+    @State private var searchText: String = ""
 
     private let hostWidth: CGFloat = 108
     private let reachWidth: CGFloat = 92
@@ -119,9 +123,22 @@ struct FleetHostsView: View {
     // MARK: The hosts
 
     private func hostsSection(_ reading: FleetToolsReading) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Hosts")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Text("Hosts")
+                    .font(.headline)
+                Picker("Category", selection: $categoryFilter) {
+                    ForEach(FleetHostCategoryFilter.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .frame(maxWidth: 260)
+                TextField("Filter checks by tool, category, or detail…", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(maxWidth: 260)
+                Spacer()
+            }
             if reading.hosts.isEmpty {
                 Text("The report names no hosts.")
                     .font(.callout)
@@ -146,6 +163,8 @@ struct FleetHostsView: View {
             Text("Unknown")
                 .frame(width: countWidth, alignment: .leading)
             Text("Stale")
+                .frame(width: countWidth, alignment: .leading)
+            Text("Current")
                 .frame(width: countWidth, alignment: .leading)
             Text("State")
                 .frame(width: stateWidth, alignment: .leading)
@@ -181,6 +200,8 @@ struct FleetHostsView: View {
                     Text(host.reachable ? "\(host.unknown)" : "—")
                         .frame(width: countWidth, alignment: .leading)
                     Text(host.reachable ? "\(host.stale)" : "—")
+                        .frame(width: countWidth, alignment: .leading)
+                    Text(host.reachable ? "\(host.current)" : "—")
                         .frame(width: countWidth, alignment: .leading)
 
                     FleetToolsStateBadge(state: host.state, width: stateWidth)
@@ -230,27 +251,47 @@ struct FleetHostsView: View {
         }
     }
 
-    /// The rows behind the counts,  worst first.
+    /// The rows behind the counts,  filtered by category and search,  worst first.
     private func rows(_ host: FleetToolsHostVerdict) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            if host.notableRows.isEmpty {
-                Text(host.reachable ? "Every tool row on this host is current." : "The doctor read no row on this host.")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
+        let displayed = host.rows(matching: categoryFilter, search: searchText)
+        return VStack(alignment: .leading, spacing: 3) {
+            if displayed.isEmpty {
+                Text(
+                    host.reachable
+                        ? (categoryFilter == .notable && searchText.isEmpty
+                            ? "Every tool row on this host is current."
+                            : "No check rows match \(categoryFilter.rawValue).")
+                        : "The doctor read no row on this host."
+                )
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
             } else {
-                ForEach(Array(host.notableRows.enumerated()), id: \.offset) { _, row in
+                ForEach(Array(displayed.enumerated()), id: \.offset) { _, row in
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 8) {
                             Text(row.check)
                                 .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            if let tool = row.tool, !tool.isEmpty {
-                                Text(tool)
+                            if let category = row.category, !category.isEmpty {
+                                Text(category)
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.secondary.opacity(0.12), in: Capsule())
+                            }
+                            if let installed = row.installed, !installed.isEmpty {
+                                Text(installed.count > 12 ? String(installed.prefix(7)) : installed)
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundStyle(.secondary)
                             }
                             Text(row.rowState.rawValue)
                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                                 .foregroundStyle(tint(for: row.outcome))
+                            if !row.countsInVerdict {
+                                Text("excluded from host verdict")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.secondary)
+                            }
                             Spacer(minLength: 0)
                         }
                         Text(row.summary)
@@ -271,7 +312,9 @@ struct FleetHostsView: View {
         switch outcome {
         case .failing: return .red
         case .stale: return .orange
-        default: return .secondary
+        case .unknown: return .indigo
+        case .passing: return .green
+        case .absent: return .secondary
         }
     }
 
@@ -286,6 +329,9 @@ struct FleetHostsView: View {
             FleetToolsReportReader.read(at: url)
         }.value
         reading = result
+        if expandedHost == nil {
+            expandedHost = result.hosts.first?.host
+        }
     }
 }
 

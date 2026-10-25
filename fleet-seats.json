@@ -1212,27 +1212,27 @@
         {
           "kind": "instructions",
           "platforms": [],
-          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no rules file for it."
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no rules file for it."
         },
         {
           "kind": "hooks",
           "platforms": [],
-          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no hook config for it."
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no hook config for it."
         },
         {
           "kind": "mcp",
           "platforms": [],
-          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no MCP config for it."
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no MCP config for it."
         },
         {
           "kind": "skills",
           "platforms": [],
-          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no skills home for it."
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no skills home for it."
         },
         {
           "kind": "subagents",
           "platforms": [],
-          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no sub-agent definitions for it."
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no sub-agent definitions for it."
         },
         {
           "kind": "permissions",
@@ -2409,27 +2409,27 @@
         {
           "kind": "instructions",
           "platforms": [],
-          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no rules file for it."
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no rules file for it."
         },
         {
           "kind": "hooks",
           "platforms": [],
-          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no hook config for it."
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no hook config for it."
         },
         {
           "kind": "mcp",
           "platforms": [],
-          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no MCP config for it."
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no MCP config for it."
         },
         {
           "kind": "skills",
           "platforms": [],
-          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no skills home for it."
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no skills home for it."
         },
         {
           "kind": "subagents",
           "platforms": [],
-          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no sub-agent definitions for it."
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no sub-agent definitions for it."
         },
         {
           "kind": "permissions",

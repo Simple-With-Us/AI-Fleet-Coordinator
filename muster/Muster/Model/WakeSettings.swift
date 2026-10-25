@@ -238,7 +238,7 @@ struct PinEvidence: Equatable {
     }
 }
 
-/// How much of a seat's budget it has used.
+/// How much of a seat's budget it has used,  plus deferred and failed wakes in the last day.
 struct WakeUsage: Equatable {
     /// Wakes counted in the last hour,  not from the owner.
     var wakesThisHour: Int = 0
@@ -250,17 +250,32 @@ struct WakeUsage: Equatable {
     var worstTopicThisHour: Int = 0
     /// The busiest owner topic's wakes in the last hour.
     var worstOwnerTopicThisHour: Int = 0
+    /// Wakes held back in the last day.
+    var heldBackThisDay: Int = 0
+    /// Wakes dropped in the last day.
+    var droppedThisDay: Int = 0
+    /// Wakes skipped in the last day.
+    var skippedThisDay: Int = 0
+    /// Wakes that failed in the last day.
+    var failedThisDay: Int = 0
+    /// Wakes that expired in the last day.
+    var expiredThisDay: Int = 0
+
+    /// Total deferred / suppressed wakes in the last day.
+    var deferredTotalThisDay: Int {
+        heldBackThisDay + droppedThisDay + skippedThisDay + expiredThisDay
+    }
 }
 
 /// One seat's wake settings.
 struct WakeSeat: Identifiable, Equatable {
     /// The seat tag,  like "MM".
     let seat: String
-    /// The seat's name as the listener knows it.
+    /// The seat's name as the Operator knows it.
     let bot: String?
     /// The wake type the configuration file holds.
     let configuredWake: WakeType?
-    /// The wake type the listener is running.
+    /// The wake type the Operator is running.
     let liveWake: WakeType?
     /// The settings,  in the order the panel shows them.
     let settings: [WakeSetting]
@@ -278,8 +293,28 @@ struct WakeSeat: Identifiable, Equatable {
     let wakesPaused: Bool
     /// The scope the pause names.
     let pauseScope: String?
-    /// Whether the listener is connected for this seat.
+    /// Whether the Operator is connected for this seat.
     let connected: Bool?
+    /// Active red warnings the Operator reports for this seat.
+    var redWarnings: [String] = []
+    /// Currently queued held-back wakes in the Operator.
+    var heldBackQueueCount: Int = 0
+    /// Lifetime held-back wakes recorded by the Operator since start.
+    var heldBackTotalCount: Int = 0
+    /// Lifetime held-back wakes surfaced by the Operator since start.
+    var heldBackSurfacedCount: Int = 0
+    /// Pending chat nudges queued for this seat.
+    var chatNudgesPending: Int = 0
+    /// Blocked chat nudges for this seat.
+    var chatNudgesBlocked: Int = 0
+    /// Accepted chat nudges for this seat.
+    var chatNudgesAccepted: Int = 0
+    /// Quota remaining percentage when reported by CodeCaps or provider.
+    var quotaRemaining: Double? = nil
+    /// Whether the seat's quota is exhausted.
+    var quotaExhausted: Bool = false
+    /// Source of the quota reading (e.g. "codecaps").
+    var quotaSource: String? = nil
 
     var id: String { seat }
 
@@ -377,7 +412,17 @@ enum WakeSettingsBuilder {
             paused: live?.paused ?? false,
             wakesPaused: live?.wakesPaused ?? false,
             pauseScope: pauseScope(seat: tag, status: sources.status),
-            connected: live?.connected
+            connected: live?.connected,
+            redWarnings: live?.red ?? [],
+            heldBackQueueCount: live?.heldBack?.count ?? 0,
+            heldBackTotalCount: live?.heldBack?.totals?.held ?? 0,
+            heldBackSurfacedCount: live?.heldBack?.totals?.surfaced ?? 0,
+            chatNudgesPending: live?.chatNudges?.pending ?? 0,
+            chatNudgesBlocked: live?.chatNudges?.blocked ?? 0,
+            chatNudgesAccepted: live?.chatNudges?.accepted ?? 0,
+            quotaRemaining: (live?.quota?.known == true) ? live?.quota?.remaining : nil,
+            quotaExhausted: live?.quota?.exhausted ?? false,
+            quotaSource: live?.quota?.source
         )
     }
 
