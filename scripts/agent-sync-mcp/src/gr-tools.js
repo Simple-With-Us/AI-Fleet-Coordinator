@@ -16,7 +16,20 @@
 // unreachable or mis-answering relay - the tools answer not_configured or the
 // relay's own error body;  no fallback, no retry storm, secrets never logged.
 
+import { z } from "zod";
 import { resolveSecret } from "./infisical.js";
+
+/** The relay's response envelope (kody discussion_r4372745180):  every body
+ * is decoded as UNKNOWN and validated with RelayResponseSchema.parse before
+ * any field is read, so malformed upstream data can never reach a caller
+ * dressed as a successful response.  The envelope is a JSON object whose
+ * error fields, when present, have these types;  success bodies carry
+ * action-specific payloads alongside. */
+export const RelayResponseSchema = z.looseObject({
+  error: z.string().max(1000).optional(),
+  outcome: z.literal("unknown").optional(),
+  retryable: z.boolean().optional(),
+});
 
 export const GR_TIMEOUT_MS = 15_000;
 export const GR_RESPONSE_LIMIT = 262_144; // bytes:  a relay answer is small JSON
@@ -111,19 +124,28 @@ export class GrRelayClient {
     } catch {
       return { status: 0, body: { error: "upstream_unreachable" } };
     }
-    if (text.length > GR_RESPONSE_LIMIT) return { status: 502, body: { error: "upstream_oversize" } };
-    let body;
+    // A REAL 5xx (relay crash, edge error) can follow an accepted write, so
+    // an unreadable 5xx body stays outcome-unknown rather than "unreadable
+    // answer" (kody discussion_r4372747157);  the caller's own synthetic 502s
+    // for sub-5xx statuses keep the plain unreadable mapping.
+    const realServerError = response.status >= 500;
+    if (text.length > GR_RESPONSE_LIMIT) {
+      return { status: 502, body: realServerError ? { error: "upstream_oversize", outcome: "unknown" } : { error: "upstream_oversize" } };
+    }
+    let parsed;
     try {
-      body = JSON.parse(text);
+      parsed = JSON.parse(text);
     } catch {
-      return { status: 502, body: { error: "upstream_bad_json" } };
+      return { status: 502, body: realServerError ? { error: "upstream_bad_json", outcome: "unknown" } : { error: "upstream_bad_json" } };
     }
-    // The relay always answers a JSON object;  anything else is malformed
-    // upstream data and must not reach the caller as a successful shape.
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      return { status: 502, body: { error: "upstream_bad_shape" } };
+    // The relay always answers the RelayResponseSchema envelope;  anything
+    // else is malformed upstream data and must not reach the caller as a
+    // successful shape.
+    const result = RelayResponseSchema.safeParse(parsed);
+    if (!result.success) {
+      return { status: 502, body: realServerError ? { error: "upstream_bad_shape", outcome: "unknown" } : { error: "upstream_bad_shape" } };
     }
-    return { status: response.status, body };
+    return { status: response.status, body: result.data };
   }
 }
 

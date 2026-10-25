@@ -22,7 +22,14 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     const html = await response.text();
     await page.route('https://visual-tests.invalid/admin', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));
     await page.goto('/admin');
-    await expect(page.getByRole('heading', { name: 'ST-MCP Admin', exact: true })).toBeVisible();
+    // The page answers to BOTH servers now (AFC-347):  the renamed title is
+    // asserted as the document title, the visible h1, and its own screenshot
+    // baseline so a rename regression is caught by name and by pixels
+    // (kody 4372747419).
+    await expect(page).toHaveTitle('ST-MCP + GR-MCP Admin');
+    const heading = page.getByRole('heading', { name: 'ST-MCP + GR-MCP Admin', exact: true });
+    await expect(heading).toBeVisible();
+    await expect(heading).toHaveScreenshot(`agent-sync-admin-title-${viewport.width}.png`, { animations: 'disabled', maxDiffPixels: 0 });
     // The status overview folds by default (AFC-347); open it before asserting on its cards.
     await page.locator('details#status-overview > summary').click();
     await expect(page.locator('.error-card').filter({ hasText: 'The hourly Linear read budget is exhausted.' }).first()).toBeVisible();

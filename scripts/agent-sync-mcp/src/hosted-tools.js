@@ -1310,17 +1310,33 @@ export class HostedTools {
     // unreadable answer or a refusal.  The client's own 502s carry
     // body.error "upstream_*" instead.
     if (status === 502 && body && typeof body === "object" && body.outcome === "unknown") {
+      const unreadable = typeof body.error === "string" && body.error.startsWith("upstream_");
       throw new ToolError(
         "outcome_unknown",
-        "git-relay reports the call's outcome is unknown:  GitHub may have accepted it, and the relay refuses replay until the outcome resolves.  Do not retry blindly - check the pull request or workflow state first.",
+        unreadable
+          ? "git-relay's server-error answer could not be read, so the call's outcome is unknown:  it may have reached GitHub and been accepted.  Do not retry blindly - check the pull request or workflow state first."
+          : "git-relay reports the call's outcome is unknown:  GitHub may have accepted it, and the relay refuses replay until the outcome resolves.  Do not retry blindly - check the pull request or workflow state first.",
       );
     }
     if (status === 502) throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
-    // 503 is the relay's retryable signal (app-token minting unavailable), not
-    // a refusal:  no side effect, the seat may try again shortly.
-    if (status === 503) throw new ToolError("unavailable", "git-relay cannot mint a GitHub App token right now (retryable).  Nothing was written;  try again shortly.");
-    // 4xx bodies are the relay's deliberate verdicts (allowlist, replay
-    // refusals, terminal GitHub refusals):  definite, no hidden side effect.
+    // Every other 5xx is outcome_unknown (kody discussion_r4372747157):  a
+    // relay crash or edge error can follow an ACCEPTED mutation, so calling
+    // it a refusal (definite, no side effect) is wrong - retry only after a
+    // write-outcome check.  The one source-qualified exception is the relay's
+    // own pre-write app-token outage, which it marks retryable:  only that
+    // marker keeps "nothing was written".
+    if (status >= 500) {
+      if (body && typeof body === "object" && body.retryable === true) {
+        throw new ToolError("unavailable", "git-relay cannot mint a GitHub App token right now (retryable).  Nothing was written;  try again shortly.");
+      }
+      throw new ToolError(
+        "outcome_unknown",
+        "git-relay answered with a server error, so the call's outcome is unknown:  it may have reached GitHub and been accepted.  Do not retry blindly - check the pull request or workflow state first.",
+      );
+    }
+    // relay_refused is reserved for 4xx (kody discussion_r4372747157):  the
+    // relay's deliberate verdicts (allowlist, replay refusals, terminal
+    // GitHub refusals) - definite, no hidden side effect.
     if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
     // A successful call still must answer with a plain JSON object;  anything
     // else is a mis-answering upstream, not a result.

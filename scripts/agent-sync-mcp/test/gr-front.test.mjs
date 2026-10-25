@@ -257,6 +257,33 @@ test("grCall maps relay outcomes precisely and answers in the MCP result shape",
   assert.equal(busyRes.isError, true);
   assert.match(busyRes.content[0].text, /try again shortly/i);
   assert.doesNotMatch(busyRes.content[0].text, /refused/i);
+  // Any other 5xx is outcome_unknown, never a refusal:  it can follow an
+  // accepted mutation (kody 4372747157)
+  for (const [status, body] of [
+    [500, JSON.stringify({ error: "internal error" })],
+    [504, JSON.stringify({ error: "gateway timeout" })],
+  ]) {
+    const t = mk(new Response(body, { status }));
+    const r = await t.call("gr_merge_pr", { repo: "a/b", number: 1 });
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, /outcome is unknown/, `status ${status}`);
+    assert.match(r.content[0].text, /Do not retry/, `status ${status}`);
+    assert.doesNotMatch(r.content[0].text, /refused/i, `status ${status}`);
+  }
+  // A real 5xx whose body cannot be read (edge HTML page) is likewise outcome
+  // unknown - it may have followed an accepted write
+  const edgeTools = mk(new Response("<html>Bad Gateway</html>", { status: 503 }));
+  const edgeRes = await edgeTools.call("gr_comment_pr", { repo: "a/b", number: 1, body: "b" });
+  assert.equal(edgeRes.isError, true);
+  assert.match(edgeRes.content[0].text, /outcome is unknown/);
+  // A body outside the response envelope schema is a mis-answering upstream,
+  // not a result (kody 4372745180)
+  for (const raw of [JSON.stringify({ error: 42 }), JSON.stringify("just a string")]) {
+    const t = mk(new Response(raw, { status: 200 }));
+    const r = await t.call("gr_comment_pr", { repo: "a/b", number: 1, body: "b" });
+    assert.equal(r.isError, true);
+    assert.match(r.content[0].text, /could not read/, raw);
+  }
   // A non-object success body is a mis-answering upstream, not a result
   const arrayTools = mk(new Response(JSON.stringify([1, 2]), { status: 200 }));
   const arrayRes = await arrayTools.call("gr_comment_pr", { repo: "a/b", number: 1, body: "b" });

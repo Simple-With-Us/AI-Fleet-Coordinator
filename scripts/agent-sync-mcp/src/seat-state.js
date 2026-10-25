@@ -1128,10 +1128,18 @@ const GB_MINT_ID_RE = /^[0-9a-f]{32}$/;
 
 export async function gbBearerMintChecked(store, { mintId, hash, by, expiresAt, mcpAccept }, now = Date.now()) {
   if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
+  // Exactly one outcome-bearing audit row per mint ATTEMPT, written from the
+  // central finally below - never from a branch (kody discussion_r4372747686):
+  // the transaction body only TRACKS the outcome, so an unexpected failure is
+  // recorded by the same single write as minted, refused and replayed.  The
+  // finally write is best-effort (the store may be why we are here) and lands
+  // right after commit on the same store;  the unexpected-failure row is the
+  // only record of an aborted attempt, so the error still propagates.
+  let outcome = null;
   try {
     return await store.transaction(async (txn) => {
-    const refuse = async (reason) => {
-      await audit(txn, { event: "gb_bearer_mint_refused", by: String(by ?? ""), reason }, now);
+    const refuse = (reason) => {
+      outcome = { event: "gb_bearer_mint_refused", by: String(by ?? ""), reason };
       return { minted: false, reason };
     };
     // Strict shape before any timestamp math:  a mint id is exactly the
@@ -1159,7 +1167,7 @@ export async function gbBearerMintChecked(store, { mintId, hash, by, expiresAt, 
       // already shows:  times, count, acceptance.  No new mint, no mutation,
       // and the raw token is not stored anywhere, so there is nothing new to
       // reveal;  an owner who lost it rotates from a fresh form.
-      await audit(txn, { event: "gb_bearer_mint_replay", by: String(by ?? "") }, now);
+      outcome = { event: "gb_bearer_mint_replay", by: String(by ?? "") };
       return { minted: false, reason: "completed", result: consumed.result ?? null };
     }
     const ts = mintFormTs(mintId);
@@ -1176,22 +1184,30 @@ export async function gbBearerMintChecked(store, { mintId, hash, by, expiresAt, 
       mcp_accept: mcpAccept === true,
     };
     // Write order inside the one transaction:  bearer row, then the consumed
-    // marker, then the audit.  A real Durable Object transaction aborts as a
-    // unit on any throw;  even under a non-transactional store every partial
-    // is fail-safe (an unseen bearer nobody can use, or a dead form).
+    // marker (the outcome audit is written once, by the finally below).  A
+    // real Durable Object transaction aborts as a unit on any throw;  even
+    // under a non-transactional store every partial is fail-safe (an unseen
+    // bearer nobody can use, or a dead form).
     await txn.put(GB_BEARER_KEY, row);
     const result = { created_at: row.created_at, expires_at: row.expires_at, mint_count: row.mint_count, mcp_accept: row.mcp_accept };
     await txn.put(GB_MINT_FORMS_KEY, { consumed: [...forms.consumed, { mint_id: String(mintId), at: now, result }] });
-    await audit(txn, { event: "gb_bearer_minted", by: row.created_by, expires_at: row.expires_at, replaced: Boolean(prev), mcp_accept: row.mcp_accept }, now);
+    outcome = { event: "gb_bearer_minted", by: row.created_by, expires_at: row.expires_at, replaced: Boolean(prev), mcp_accept: row.mcp_accept };
     return { minted: true, created_at: row.created_at, expires_at: row.expires_at, mint_count: row.mint_count, mcp_accept: row.mcp_accept };
     });
   } catch (err) {
-    // Every mint ATTEMPT leaves an outcome-bearing audit row, including an
-    // unexpected failure:  the transaction aborted (no bearer row, no
-    // tombstone), so this row is the only record of the attempt.  Best-effort
-    // - the store may be why we are here - and the error still propagates.
-    try { await audit(store, { event: "gb_bearer_mint_error", by: String(by ?? ""), error: err instanceof Error ? err.name : "unknown" }, now); } catch { /* the store is the failure */ }
+    // A throw AFTER the transaction body means the commit itself failed, so a
+    // tracked "minted" never landed:  the attempt's only true row is the
+    // error row.  Refusal and replay outcomes mutate nothing, so their row
+    // stays true even when the commit died.
+    if (!outcome || outcome.event === "gb_bearer_minted") {
+      outcome = { event: "gb_bearer_mint_error", by: String(by ?? ""), error: err instanceof Error ? err.name : "unknown" };
+    }
     throw err;
+  } finally {
+    // The one outcome row for this attempt (see the header comment).
+    if (outcome) {
+      try { await audit(store, outcome, now); } catch { /* the store is the failure */ }
+    }
   }
 }
 

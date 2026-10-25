@@ -25,7 +25,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await page.goto('/authorize');
     // The consent heading names the seat by its admin display label (adminSeatLabel).
     await expect(page.getByRole('heading', { name: 'Connect Example Desktop as Cursor & Grok Bots?', exact: true })).toBeVisible();
-    await expect(page.getByText('Registered by hand in ST-MCP Admin.')).toBeVisible();
+    await expect(page.getByText('Registered by hand in ST-MCP + GR-MCP Admin.')).toBeVisible();
     await expect(page.locator('body')).toHaveScreenshot(`agent-sync-consent-manual-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });

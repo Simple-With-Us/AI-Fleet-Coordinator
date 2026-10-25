@@ -373,3 +373,32 @@ test("an unexpected store failure leaves a gb_bearer_mint_error audit row and st
   const rows = await store.get("audit");
   assert.ok(rows.some((r) => r.event === "gb_bearer_mint_error" && r.by === "j"), JSON.stringify(rows));
 });
+
+test("every mint attempt writes exactly one outcome audit row from the central finally (kody 4372747686)", async () => {
+  const store = S.memoryStore();
+  const a = await newGbBearer(ID);
+  const mintId = mintIdAt(NOW);
+  await S.gbBearerMintChecked(store, { mintId, hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW);
+  await S.gbBearerMintChecked(store, { mintId, hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW + 100);
+  await S.gbBearerMintChecked(store, { mintId: "not-a-form", hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW + 200);
+  const rows = (await store.get("audit")) ?? [];
+  const count = (event) => rows.filter((r) => r.event === event).length;
+  assert.equal(count("gb_bearer_minted"), 1, JSON.stringify(rows));
+  assert.equal(count("gb_bearer_mint_replay"), 1, JSON.stringify(rows));
+  assert.equal(count("gb_bearer_mint_refused"), 1, JSON.stringify(rows));
+  assert.equal(count("gb_bearer_mint_error"), 0, JSON.stringify(rows));
+  assert.equal(rows.length, 3, "three attempts, three rows, exactly one each");
+});
+
+test("a commit failure after the mint body leaves only the error row, never a false minted row (kody 4372747686)", async () => {
+  const base = S.memoryStore();
+  const store = Object.create(base);
+  store.transaction = async (cb) => { await cb(base); throw new Error("commit lost"); };
+  await assert.rejects(
+    S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW), hash: "h", by: "j", expiresAt: NOW + 1e9 }, NOW),
+    /commit lost/,
+  );
+  const rows = (await base.get("audit")) ?? [];
+  assert.equal(rows.filter((r) => r.event === "gb_bearer_minted").length, 0, "no false minted row: " + JSON.stringify(rows));
+  assert.equal(rows.filter((r) => r.event === "gb_bearer_mint_error").length, 1, JSON.stringify(rows));
+});
