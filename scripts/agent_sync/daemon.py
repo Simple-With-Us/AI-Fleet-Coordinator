@@ -3797,8 +3797,8 @@ class Daemon:
                 # The guard catches Exception only, so KeyboardInterrupt and SystemExit
                 # still end the pass (kody 4368820879).  The error line names the row's
                 # session, and its entry once begin() has returned one, so a failed lease
-                # read is as traceable as a failed send.  The error log write has its own
-                # guard, so a logger that raises cannot end the batch either.
+                # read or begin() is as traceable as a failed send.  The error log write
+                # has its own guard, so a logger that raises cannot end the batch either.
                 trace: dict[str, str] = {}
                 try:
                     self._ask_registration_row(
@@ -3869,27 +3869,21 @@ class Daemon:
         if seat not in lease_maps:
             lease_maps[seat] = self._registration_seat_lease_map(seat)
         topics = self._registration_lease_topics(row, lease_maps[seat])
-        try:
-            out = OREG.begin(
-                db,
-                platform=platform,
-                profile_scope=scope,
-                session_id=session_id,
-                seat=seat,
-                requester="catalog",
-                evidence_location=self._registration_evidence(platform),
-                route=self._registration_route(row, topics),
-                route_topics=topics,
-                registrations=lambda pf, sid: self._registrations(db, pf, sid),
-            )
-        except Exception as exc:
-            self.log.write(
-                "operator-registration-ask",
-                platform=platform,
-                status="error",
-                error=type(exc).__name__,
-            )
-            return
+        # A begin() failure (an unreadable queue or registry, a refused field) is not
+        # caught here:  it reaches the caller's per-row guard, whose error line is the
+        # row's one error line and names its session (kody 4369230758).
+        out = OREG.begin(
+            db,
+            platform=platform,
+            profile_scope=scope,
+            session_id=session_id,
+            seat=seat,
+            requester="catalog",
+            evidence_location=self._registration_evidence(platform),
+            route=self._registration_route(row, topics),
+            route_topics=topics,
+            registrations=lambda pf, sid: self._registrations(db, pf, sid),
+        )
         # "refused" is a session a terminal refusal still holds:  nothing to ask, and
         # its drop was logged once when it happened.
         if out.get("status") not in ("ask", "pending"):

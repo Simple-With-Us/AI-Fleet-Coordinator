@@ -12,6 +12,7 @@ and the real service_identity checks.
 from __future__ import annotations
 
 import base64
+import html
 import secrets
 import shutil
 import tempfile
@@ -378,6 +379,49 @@ class LocationQuestionDeliveryTests(_LocationQuestionFixture, unittest.TestCase)
         )
         self.assertEqual(again["message_id"], 45)
         self.assertEqual(landed.posts, [])
+
+    def test_a_marker_with_markup_characters_matches_its_rendered_copy(self) -> None:
+        # kody 4369230896:  the marker is the raw posted text, and the landed copy is
+        # HTML where a literal < or & arrives as an entity.  Only the rendered side is
+        # tag-stripped and decoded, so the two still meet.
+        reply = "Not registered:  the registry refused <A> & <B> (ref %s)." % ENTRY["entry_id"]
+        markers = (reply,)
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.send(question=reply, client=failing, read_back_markers=markers)
+        rendered = "<p>%s</p>" % html.escape(" ".join(reply.split()), quote=True)
+        landed = _StubClient(
+            messages=[
+                {"id": 42, "content": QUESTION, "sender_id": OPERATOR_ID},
+                {"id": 46, "content": rendered, "sender_id": OPERATOR_ID},
+            ]
+        )
+        again = self.send(question=reply, client=landed, now=1001.0, read_back_markers=markers)
+        self.assertEqual(again["message_id"], 46)
+        self.assertEqual(landed.posts, [])
+
+    def test_a_blank_marker_never_lets_the_question_stand_in_for_a_reply(self) -> None:
+        # kody 4369230896:  a marker that folds to nothing would be "in" every post, so
+        # it is a non-match, never dropped:  with only the question in the topic the
+        # reply is proven absent and posted.
+        reply = OREG.answer_reply(
+            {"status": "refused", "reason": "resumed_closed", "entry_id": ENTRY["entry_id"]}
+        )
+        markers = ("   ",)
+        failing = _StubClient(
+            post_error=Z.NetworkError("timed out", timeout=True, maybe_sent=True)
+        )
+        self.send(question=reply, client=failing, read_back_markers=markers)
+        question_only = _StubClient(
+            messages=[{"id": 42, "content": QUESTION, "sender_id": OPERATOR_ID}]
+        )
+        again = self.send(
+            question=reply, client=question_only, now=1001.0, read_back_markers=markers
+        )
+        self.assertEqual(again["status"], "sent", again["reason"])
+        self.assertEqual(len(question_only.posts), 1)
+        self.assertNotEqual(again["message_id"], 42)
 
     def test_a_ref_quoted_by_another_sender_is_not_the_landed_question(self) -> None:
         failing = _StubClient(

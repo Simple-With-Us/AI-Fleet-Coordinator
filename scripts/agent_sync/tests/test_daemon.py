@@ -2611,6 +2611,34 @@ class OperatorRegistrationWiringTests(DaemonHarness):
         self.assertEqual(errors[0]["entry_id"], pending[0]["entry_id"])
         self.assertEqual(errors[0]["session_id"], "sess-aaaaaaaa")
 
+    def test_a_failing_begin_writes_one_error_line_naming_the_session(self):
+        # kody 4369230758:  begin() failures reach the outer guard, so the row's one
+        # error line names its session like every other per-row failure.
+        self.write_lease("L2", session_id="sess-bbbbbbbb", topics=[("agent-sync", "AFC Work")])
+        daemon = self.daemon()
+        db = self._registry(daemon)
+        rows = self._rows() + self._rows(id="row-2", session_id="sess-bbbbbbbb")
+        real = D.OREG.begin
+
+        def flaky(registry_db, **kwargs):
+            if kwargs.get("session_id") == "sess-aaaaaaaa":
+                raise ValueError("the queue file is unreadable")
+            return real(registry_db, **kwargs)
+
+        with mock.patch.object(D.OREG, "begin", side_effect=flaky), \
+                mock.patch.object(D.ORASK, "send_location_question", return_value={"status": "sent"}) as send:
+            daemon.maybe_ask_registrations(rows, {})
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual([e["session_id"] for e in D.OREG.pending_entries(db)], ["sess-bbbbbbbb"])
+        errors = [
+            row for row in self._log_rows("operator-registration-ask")
+            if row.get("status") == "error"
+        ]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["error"], "ValueError")
+        self.assertEqual(errors[0]["session_id"], "sess-aaaaaaaa")
+        self.assertIsNone(errors[0]["entry_id"])
+
     def test_a_session_id_begin_would_refuse_is_left_out_of_the_error_line(self):
         # The lease read comes before begin()'s session id checks, so the error line runs
         # them itself:  a secret-shaped or malformed id is never written to the log.

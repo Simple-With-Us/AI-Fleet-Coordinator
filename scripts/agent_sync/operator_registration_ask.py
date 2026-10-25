@@ -69,15 +69,23 @@ def _retry_after_seconds(exc: BaseException) -> float | None:
 _TAG_RE = re.compile(r"<[^>]*>")
 
 
+def _folded(value: str) -> str:
+    """Text with U+00A0 and every run of whitespace folded to one space, trimmed."""
+    return " ".join(str(value or "").replace(chr(0xA0), " ").split())
+
+
 def _plain(value: str) -> str:
-    """Text as a read-back compares it:  tags dropped, entities decoded, whitespace folded.
+    """Rendered content as a read-back compares it:  tags dropped, entities decoded, folded.
 
     A read-back sees Zulip's rendered content, where the posted text sits inside HTML
-    and its sentence gaps carry U+00A0, so an extra marker is compared in this folded
-    form on both sides, never byte for byte.
+    and its sentence gaps carry U+00A0.  An extra marker is the raw text that was
+    posted, not HTML, so it is only _folded, never tag-stripped or entity-decoded
+    (kody 4369230896):  a literal `<` or `&` in it reaches the rendered content as an
+    entity, which this decodes back, so both sides meet in the same plain text.  The
+    daemon's replies are plain text with no Markdown, so their rendered form is the
+    text itself.
     """
-    text = html.unescape(_TAG_RE.sub(" ", str(value or "")))
-    return " ".join(text.replace(chr(0xA0), " ").split())
+    return _folded(html.unescape(_TAG_RE.sub(" ", str(value or ""))))
 
 
 def _fingerprint(channel: str, topic: str, body: str) -> str:
@@ -110,10 +118,12 @@ def _question_message_id(
     """(the landed question's id, error kind, proven-absent) for one topic read-back.
 
     A match is the Operator bot's OWN post carrying the question's unique ref (and every
-    one of ``extra_markers``, compared in _plain form):  an answer quoting the ref, or
-    anyone else's message, never counts.  A reply carries the same ref as the question
-    it answers, so it passes its own text as an extra marker and neither the question
-    nor a different reply is ever taken for it (Sentry 4368820226, kody 4368936156).
+    one of ``extra_markers``, each _folded and found in the post's _plain form):  an
+    answer quoting the ref, or anyone else's message, never counts.  A reply carries the
+    same ref as the question it answers, so it passes its own text as an extra marker
+    and neither the question nor a different reply is ever taken for it (Sentry
+    4368820226, kody 4368936156).  A marker that folds to nothing matches no post, never
+    every post (kody 4369230896).
     Absence is proven
     only when the topic's history is exhausted;  an unreadable topic or a hit page cap
     is "could not check", never "not there".
@@ -130,6 +140,7 @@ def _question_message_id(
             {"operator": "topic", "operand": topic},
         ]
     )
+    folded_markers = [_folded(extra) for extra in extra_markers]
     anchor = "newest"
     deadline = time.monotonic() + READ_BACK_DEADLINE_SECONDS
     for _page in range(READ_BACK_MAX_PAGES):
@@ -178,9 +189,11 @@ def _question_message_id(
             content = str(message.get("content") or "")
             if marker not in content:
                 continue
-            if extra_markers:
+            if folded_markers:
                 plain = _plain(content)
-                if any(_plain(extra) not in plain for extra in extra_markers):
+                # An empty marker would be "in" every post, the question included:  it
+                # proves nothing, so it is a non-match.
+                if any(not extra or extra not in plain for extra in folded_markers):
                     continue
             message_id = message.get("id")
             if isinstance(message_id, int) and not isinstance(message_id, bool) and message_id > 0:
@@ -372,12 +385,10 @@ def send_location_question(
             entry_id,
             me.get("user_id"),
             # The markers get the same mention neutralizing the posted body got, so a
-            # reply passed as its own marker still matches its landed copy.
-            tuple(
-                W.neutralize_mentions(str(extra))
-                for extra in read_back_markers
-                if str(extra or "").strip()
-            ),
+            # reply passed as its own marker still matches its landed copy.  A blank
+            # marker is kept, not dropped:  dropping it would let the bare ref, which
+            # the question carries too, prove the reply landed (kody 4369230896).
+            tuple(W.neutralize_mentions(str(extra or "")) for extra in read_back_markers),
         )
         if read_error is not None:
             return _outcome(
