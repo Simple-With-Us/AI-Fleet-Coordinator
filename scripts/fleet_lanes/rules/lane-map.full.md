@@ -7,7 +7,7 @@ Full text: docs/protocols/lane-map.md in AI-Fleet-Coordinator.  <Repo> is the re
 - ~/apps/lanes/<Repo>/review-pr-<n> is a read-only check of someone else's PR (review-pr-<n>-<seat> when another seat already has that PR).
 - A tool that names its own worktrees files them in the same tree: Claude desktop at ~/apps/lanes/<Repo>/<slug>-<hex>, Codex desktop at ~/apps/lanes/_codex/<slug>/<Repo>.  Their worktree location settings point at ~/apps/lanes and ~/apps/lanes/_codex.
 
-On the server, ~/Code is /mnt/fleet-extra/Code and ~/apps is /mnt/fleet-extra/apps (the same folders, reached through symlinks), so every lane there lives in /mnt/fleet-extra/apps/lanes/<Repo>/ and git prints it that way.  No fleet checkout on the server lives anywhere else:  not in /tmp, a scratchpad, ~/.local/state or <repo>/.claude/worktrees.
+On the server, the Code folder is /mnt/fleet-extra/Code and the apps folder is /mnt/fleet-extra/apps, so every lane there lives in /mnt/fleet-extra/apps/lanes/<Repo>/ and git prints it that way.  The root account has no ~/Code or ~/apps alias:  the lane tools read the roots from the environment (FLEET_CODE_ROOT, FLEET_APPS_ROOT, FLEET_LANES_ROOT) and the managed lane wrapper carries them, so a tool finds the trees whichever account it runs as.  No fleet checkout on the server lives anywhere else:  not in /tmp, a scratchpad, ~/.local/state or <repo>/.claude/worktrees.
 
 Never clone a fleet repo, or add a worktree of one, in /tmp, /private/tmp, /var/tmp, $TMPDIR or /var/folders.  Scratch files and throwaway test repos there are fine.
 

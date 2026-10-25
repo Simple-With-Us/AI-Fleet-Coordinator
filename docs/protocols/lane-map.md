@@ -101,20 +101,20 @@ A server host (the Hetzner VPS) keeps the project mirrors and the lanes on their
 
 **Where things live on the server (owner, Fri, Oct 23, 2026).**  The Code folder is `/mnt/fleet-extra/Code`, the apps folder is `/mnt/fleet-extra/apps`, and every lane is in `/mnt/fleet-extra/apps/lanes/<Repo>/`.  No fleet checkout on the server lives anywhere else:  not in `/tmp`, a harness scratchpad, `~/.local/state`, a tool's own state folder, or `<repo>/.claude/worktrees`.  A checkout found in one of those places is copied into the lanes root under its seat's name (Stray Checkouts below), and the copy is where its seat works from then on.
 
-**The layout.**  The volume is `/mnt/fleet-extra`: `Code/` holds the project mirrors (the GitHub checkouts a seat picks to work in) and `apps/` holds the apps, `lanes/` among them.  `~/Code` and `~/apps` resolve to them, so the policy path an agent uses is unchanged: `~/apps/lanes/<Repo>/<seat>-<slug>`, and `~/Code/<Repo>` is the integration tree.  The lanes root has two spellings on that host, `~/apps/lanes` and `/mnt/fleet-extra/apps/lanes`, and they are the same directory, so a config may name either one.
+**The layout.**  The volume is `/mnt/fleet-extra`: `Code/` holds the project mirrors (the GitHub checkouts a seat picks to work in) and `apps/` holds the apps, `lanes/` among them.  On the server the root account has no `~/Code` or `~/apps` alias, so the tools take the roots from the environment (`FLEET_CODE_ROOT`, `FLEET_APPS_ROOT`, `FLEET_LANES_ROOT`):  the managed `lane` wrapper carries them, and the bashrc block the server configurator manages exports them, so every shell on that host resolves the same directories.  The `jay` account keeps the `~/` spellings as symlinks into the volume, so `~/apps/lanes/<Repo>/<seat>-<slug>` and `/mnt/fleet-extra/apps/lanes/<Repo>/<seat>-<slug>` are one directory there.
 
-**What is on the volume.**  Everything the host owns that used to sit on its main disk lives on that volume now, and the old paths are symlinks into it, so a path an agent uses never changes:
+**What is on the volume.**  Everything the host owns that used to sit on its main disk lives on that volume now.  The root account reaches it only by its canonical path, and the `jay` account through symlinks, so a path an agent uses names the same tree either way:
 
 | On the volume | Reached as | What it is |
 |---|---|---|
-| `/mnt/fleet-extra/Code` | `~/Code` | the project mirrors.  `~/Code/<Repo>` is the integration tree. |
-| `/mnt/fleet-extra/apps` | `~/apps` | the apps, `lanes/` among them. |
-| `/mnt/fleet-extra/apps/lanes` | `~/apps/lanes` | the lanes root, the directory every server tool session starts in. |
-| `/mnt/fleet-extra/ops-salvage` | `~/ops-salvage` | the old tree archive: the git bundles of the uncommitted branches that were salvaged when the trees moved, with a `MANIFEST.sha256` beside them. |
+| `/mnt/fleet-extra/Code` | `/mnt/fleet-extra/Code`, and `~/Code` for the `jay` account | the project mirrors.  `<Repo>` under it is the integration tree. |
+| `/mnt/fleet-extra/apps` | `/mnt/fleet-extra/apps`, and `~/apps` for the `jay` account | the apps, `lanes/` among them. |
+| `/mnt/fleet-extra/apps/lanes` | `/mnt/fleet-extra/apps/lanes`, and `~/apps/lanes` for the `jay` account | the lanes root, the directory every server tool session starts in. |
+| `/mnt/fleet-extra/ops-salvage` | `/mnt/fleet-extra/ops-salvage`, and `~/ops-salvage` for the `jay` account | the old tree archive: the git bundles of the uncommitted branches that were salvaged when the trees moved, with a `MANIFEST.sha256` beside them. |
 
 `/fleet-extra` is a second symlink for the volume itself, so `/fleet-extra/apps/lanes` and `/mnt/fleet-extra/apps/lanes` are the same directory too.
 
-**A symlinked root is one place, not a variation.**  `git`, `lsof` and `os.path.realpath` report the real path, so a lane on that host prints as `/mnt/fleet-extra/apps/lanes/<Repo>/<name>`.  The lane tools resolve the roots before they judge a path: `make_roots` in `scripts/fleet_lanes/layout.py` takes the real path of `~/Code`, `~/apps` and the lanes root, so the volume spelling and the `~/` spelling are one place for the doctor, the guard and the janitor.  A host whose roots are symlinks into a volume is a sanctioned layout, not a deviation, and no tool may report such a path as outside the map.
+**A symlinked root is one place, not a variation.**  `git`, `lsof` and `os.path.realpath` report the real path, so a lane on that host prints as `/mnt/fleet-extra/apps/lanes/<Repo>/<name>`.  The lane tools resolve the roots before they judge a path: `make_roots` in `scripts/fleet_lanes/layout.py` reads `FLEET_CODE_ROOT`, `FLEET_APPS_ROOT` and `FLEET_LANES_ROOT` and falls back to the copies under the home, then takes the real path of each, so the volume spelling and the `~/` spelling are one place for the doctor, the guard and the janitor.  A host whose roots are symlinks into a volume is a sanctioned layout, not a deviation, and no tool may report such a path as outside the map.
 
 **The rule.**  A tool session starts in the lanes root, not in a project.  The agent then runs `lane new <app> <slug>` and works in the lane it made.  This is the same policy the Mac follows, where the OpenCode session directory is `~/apps/lanes`.
 
