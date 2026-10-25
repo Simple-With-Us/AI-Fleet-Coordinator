@@ -61,7 +61,7 @@ import {
   RECALL_MARKER_BEGIN,
   RECALL_MARKER_END,
 } from "./recall.js";
-import { GR_SECRETS } from "./gr-tools.js";
+import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES } from "./gr-tools.js";
 import {
   FLEETLINK_TOOLS,
   FLEETLINK_READ_TOOLS,
@@ -160,7 +160,7 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
 // (every tools.json tool after the first ten, as zulip_<name>) and the read-only listener tools
 // after those, so every earlier tool keeps its place.
-export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS]);
+export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS]);
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
 export const HOSTED_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])));
 // Every hosted tool is classified here, explicitly, as a read or a write (AFC-331:  a write must name its
@@ -174,7 +174,7 @@ const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
 const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read"]));
-export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS]));
+export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES]));
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
 // a seat inside Linear's request budget, short enough that a team rename or a
@@ -1282,14 +1282,24 @@ export class HostedTools {
 
   /** One git-relay call:  the relay's own answer is data (its allowlist
    * verdicts are 4xx bodies meant for the caller);  only an unreachable or
-   * mis-answering upstream becomes a ToolError. */
+   * mis-answering upstream becomes a ToolError.  The relay's error string is
+   * capped:  it is meant for the caller, but it is still another service's
+   * text. */
   async grCall(action, args) {
     const { status, body } = await this.requireGr().call(action, args);
     if (status === 0) throw new ToolError("unavailable", "GR-MCP could not reach git-relay.  Try again shortly;  if it persists, the relay host is down.");
     if (status === 502) throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
-    if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error : "refused");
+    if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
     return body;
   }
+
+  async tool_gr_open_pr(args) { return this.grCall("open_pr", args); }
+  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", args); }
+  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", args); }
+  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", args); }
+  async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
+  async tool_gr_workflow_dispatch(args) { return this.grCall("workflow_dispatch", args); }
+  async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */
   async recallCall(fn, { write = false } = {}) {

@@ -31,7 +31,10 @@ const TOOLS = CONTRACT.tools;
 // the FleetLink tools (AFC-328), the rest of tools.json and the listener tools (AFC-330).
 const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
   // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only listener tools.
-  ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log"];
+  ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log",
+  // The GR-MCP front (gr-tools.js):  listed like every other family;  without
+  // GR_UPSTREAM_URL the calls answer not_configured.
+  "gr_open_pr", "gr_edit_pr", "gr_reply_thread", "gr_comment_pr", "gr_merge_pr", "gr_workflow_dispatch", "gr_resolve_thread"];
 const JET_KEY = zulipShapedKey(11);
 // Jet's bot login comes from the committed var, never a literal copy:  it is not a secret, and the bot-email check, the
 // openai-dot tag mapping and seatProblem accept no other address, so a synthetic one cannot stand in (kody, PR 889).

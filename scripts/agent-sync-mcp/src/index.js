@@ -63,6 +63,7 @@ import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
+import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
 import { IdentityRouter, resolveDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
@@ -449,6 +450,7 @@ async function serveGbBearerMcp(request, env, token) {
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
   const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
   const recallSecrets = await resolveRecallSecrets(env);
+  const grSecrets = await resolveGrSecrets(env);
   const tools = new HostedTools({
     seat: identity,
     callerSeat: identity,
@@ -459,6 +461,9 @@ async function serveGbBearerMcp(request, env, token) {
     grantRef,
     paused: false,
     gate: identityGate,
+    // The GR front authenticates to the relay with this same bearer:  the
+    // relay resolves it to the identity and applies its own allowlist.
+    gr: grClientFromResolved(grSecrets, env, { bearer: token }),
     cf: { asn: request.cf?.asn, country: request.cf?.country },
     recall: recallClientFromResolved(recallSecrets, env),
     fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
@@ -530,6 +535,7 @@ async function serveSbtBearerMcp(request, env, token) {
   const listenerWakeKey = Object.hasOwn(WAKE_SECRETS, seat)
     ? await resolveSecret(env, { name: WAKE_SECRETS[seat], path: "/wake", envName: WAKE_SECRETS[seat], optional: true })
     : "";
+  const grSecrets = await resolveGrSecrets(env);
   const tools = new HostedTools({
     seat,
     callerSeat: seat,
@@ -540,6 +546,9 @@ async function serveSbtBearerMcp(request, env, token) {
     grantRef,
     paused: false,
     config,
+    // Same pass-through as the persona path:  the relay authenticates this
+    // bearer and enforces the seat's own allowlist.
+    gr: grClientFromResolved(grSecrets, env, { bearer: token }),
     zulip: new ZulipClient({ email, key }),
     key,
     gate: seatGate,

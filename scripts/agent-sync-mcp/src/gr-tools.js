@@ -123,3 +123,56 @@ export function grClientFromResolved({ accessId, accessSecret }, env, { bearer }
   if (!baseUrl || !accessId || !accessSecret || typeof bearer !== "string" || !bearer) return null;
   return new GrRelayClient({ baseUrl, accessId, accessSecret, bearer });
 }
+
+const REPO = { type: "string", description: "owner/name" };
+const NUMBER = { type: "integer", description: "pull request number" };
+const obj = (required, properties) => ({ type: "object", additionalProperties: false, required, properties });
+
+/** The hosted GR tool specs (names gr_<action>).  Descriptions name the
+ * identity the action runs as;  the relay's per-seat allowlist is the real
+ * policy boundary, this server only fronts it. */
+export const GR_TOOLS = Object.freeze([
+  {
+    name: "gr_open_pr",
+    title: "Open Pull Request",
+    description: "Open a pull request through git-relay.  Runs under the owner's scoped PR-only token (the only action that token performs);  the title and body are scanned for credential-shaped text before anything is sent.",
+    inputSchema: obj(["repo", "base", "head", "title", "body"], { repo: REPO, base: { type: "string" }, head: { type: "string" }, title: { type: "string" }, body: { type: "string" } }),
+  },
+  {
+    name: "gr_edit_pr",
+    title: "Edit Pull Request",
+    description: "Edit a pull request's title and/or body through git-relay, as your own GitHub App.  At least one of title or body is required.",
+    inputSchema: obj(["repo", "number"], { repo: REPO, number: NUMBER, title: { type: "string" }, body: { type: "string" } }),
+  },
+  {
+    name: "gr_reply_thread",
+    title: "Reply to Review Comment",
+    description: "Reply to a pull request review comment through git-relay, as your own GitHub App.",
+    inputSchema: obj(["repo", "number", "comment_id", "body"], { repo: REPO, number: NUMBER, comment_id: { type: "integer" }, body: { type: "string" } }),
+  },
+  {
+    name: "gr_comment_pr",
+    title: "Comment on Pull Request",
+    description: "Add a conversation comment to a pull request through git-relay, as your own GitHub App.",
+    inputSchema: obj(["repo", "number", "body"], { repo: REPO, number: NUMBER, body: { type: "string" } }),
+  },
+  {
+    name: "gr_merge_pr",
+    title: "Merge Pull Request",
+    description: "Merge a pull request through git-relay, as your own GitHub App, when your seat's allowlist covers it.  method is squash (default), merge or rebase.",
+    inputSchema: obj(["repo", "number"], { repo: REPO, number: NUMBER, method: { type: "string", enum: ["squash", "merge", "rebase"] } }),
+  },
+  {
+    name: "gr_workflow_dispatch",
+    title: "Dispatch Workflow",
+    description: "Trigger a workflow_dispatch run through git-relay, as your own GitHub App.  inputs is a flat object of scalar values.",
+    inputSchema: obj(["repo", "workflow", "ref"], { repo: REPO, workflow: { type: "string" }, ref: { type: "string" }, inputs: { type: "object" } }),
+  },
+  {
+    name: "gr_resolve_thread",
+    title: "Resolve Review Thread",
+    description: "Resolve a pull request review thread through git-relay, as your own GitHub App.  thread_id is the PRRT_ review-thread id.",
+    inputSchema: obj(["thread_id"], { thread_id: { type: "string" } }),
+  },
+]);
+export const GR_TOOL_NAMES = Object.freeze(GR_TOOLS.map((tool) => tool.name));
