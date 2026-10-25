@@ -608,6 +608,28 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertTrue(SeatActivityQuota.reportsQuota(long))
     }
 
+    /// A child that catches SIGTERM and exits with a status (the CLI exits 130) is still
+    /// reported as a timeout.
+    func test_a_child_that_exits_130_on_sigterm_is_reported_as_a_timeout() async throws {
+        let script = FileManager.default.temporaryDirectory
+            .appendingPathComponent("muster-term-chat-\(UUID().uuidString)")
+        try "#!/bin/sh\ntrap 'exit 130' TERM\nwhile :; do sleep 0.2; done\n"
+            .write(to: script, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
+        addTeardownBlock { try? FileManager.default.removeItem(at: script) }
+        let cli = ChatCLI(
+            location: { ChatLocation(command: script) },
+            seat: "CLAUDE",
+            home: FileManager.default.temporaryDirectory
+        )
+        do {
+            _ = try await cli.run(ChatInvocation(["users", "--json"], timeout: 1))
+            XCTFail("a child stopped by the timer must report the timeout")
+        } catch let error as ChatCLIError {
+            XCTAssertEqual(error, .timedOut(1))
+        }
+    }
+
     /// A child that finishes on its own before the deadline keeps its output.
     func test_a_child_that_finishes_in_time_keeps_its_output() async throws {
         let script = FileManager.default.temporaryDirectory

@@ -450,9 +450,11 @@ struct ChatCLI: ChatRunning {
         try? stdoutHandle.close()
         try? stderrHandle.close()
 
-        // Only a child the timer actually stopped is a timeout:  one that exited on its
-        // own at the deadline keeps its output.
-        if flag.isSet && process.terminationReason == .uncaughtSignal {
+        // Only a child the timer actually stopped is a timeout:  the flag is set only
+        // when the child was still running at the deadline,  and one that exited on its
+        // own keeps its output.  The exit status cannot tell the two apart,  because the
+        // fleet chat CLI catches SIGTERM and exits 130 rather than dying on the signal.
+        if flag.isSet {
             throw ChatCLIError.timedOut(Int(invocation.timeout.rounded(.up)))
         }
         return ChatCLIResult(
@@ -460,7 +462,7 @@ struct ChatCLI: ChatRunning {
             stdout: try read(stdoutURL),
             stderr: try read(stderrURL),
             // Same rule as the throw above:  only a child the timer stopped was cut off.
-            timedOut: flag.isSet && process.terminationReason == .uncaughtSignal
+            timedOut: flag.isSet
         )
     }
 
