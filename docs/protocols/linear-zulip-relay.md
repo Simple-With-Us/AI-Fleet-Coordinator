@@ -251,15 +251,17 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
    turns that healthcheck off; restart always still brings the relay back if it exits.
 
    Coolify's health-check setting cannot turn it off for a Dockerfile application, which is how the
-   daemon is deployed.  In Coolify 4.5, the version on the server, switching Coolify's own check off
-   makes it read the Dockerfile's `HEALTHCHECK` and wait for that check during a rolling deploy, so a
-   relay deploy would be marked unhealthy and rolled back; switching it on only puts Coolify's own
-   probe in its place (an HTTP request by default, which the relay cannot answer); and its custom
-   Docker options drop `--no-healthcheck`.  So the relay service uses Coolify's Docker Compose build
-   pack: a compose file that builds the same Dockerfile from the repo root and gives the relay
-   service `healthcheck: { disable: true }` beside its entrypoint, command, volume and
-   `restart: always`.  A Compose deploy does not wait for a health status.  Coolify reads that file
-   from the repo, so it is committed with the service when Jay approves this gate.
+   daemon is deployed.  In Coolify 4.5, the version on the server, such an application always ends
+   up with a check: with Coolify's own check off, Coolify reads the Dockerfile's `HEALTHCHECK` and
+   waits for it during a rolling deploy, so a relay deploy would be marked unhealthy and rolled
+   back; with it on, Coolify runs its own probe instead, an HTTP request by default that the relay
+   cannot answer (a command that always passes works only until one deploy runs with the check off,
+   after which Coolify keeps the image's check); and its custom Docker options drop
+   `--no-healthcheck`.  So the relay service uses Coolify's Docker Compose build pack: a compose
+   file that builds the same Dockerfile from the repo root and gives the relay service
+   `healthcheck: { disable: true }` beside its entrypoint, command, volume and `restart: always`.  A
+   Compose deploy does not wait for a health status.  Coolify reads that file from the repo, so it
+   is committed with the service when Jay approves this gate.
 
 The relay runs on the Coolify server instance, the same image as the simple-chat daemon.  No new
 Cloudflare Worker is involved.
