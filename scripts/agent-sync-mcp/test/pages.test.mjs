@@ -63,6 +63,8 @@ test("a quoted sentence opener keeps its gap after escaping", () => {
   // Still escaped exactly once, and still left alone where the lookahead says so:
   // `'` is not an admitted opener, and `e.g.` is not a sentence boundary.
   assert.equal(gapped("Done. 'Next'"), "Done. &#39;Next&#39;");
+  // A sentence that ends right before a markdown link is a sentence end (AFC-539).
+  assert.equal(gapped("Merged. [PR #314](https://example.com/pull/314)"), `Merged.${SENTENCE_GAP}[PR #314](https://example.com/pull/314)`);
   assert.equal(gapped("e.g. tools"), "e.g. tools");
 });
 

@@ -36,6 +36,8 @@ struct FleetOverviewView: View {
                     .tabItem { Label("Controls", systemImage: "slider.horizontal.3") }
                 WakeSettingsView()
                     .tabItem { Label("Wake Settings", systemImage: "bell.badge") }
+                SeatActivityView()
+                    .tabItem { Label("Seat Activity", systemImage: "person.2.badge.gearshape") }
                 DriftHistoryView()
                     .tabItem { Label("Drift History", systemImage: "exclamationmark.triangle") }
             }

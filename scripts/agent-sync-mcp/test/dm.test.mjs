@@ -49,7 +49,7 @@ function harness({ scopes = ["zulip:read", "zulip:write"], paused = false } = {}
     grantRef: "abcdef012345",
     paused,
     config,
-    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
+    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, ownerUserId: config.ownerUserId, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
     key: fake.key,
     gate,
     cf: { asn: 13335, country: "US" },
@@ -338,8 +338,9 @@ test("dm_send:  recipients must be active realm users, not just the bot, and at 
   const tooMany = toolError(await tools.call("zulip_dm_send", { user_ids: others.slice(0, 6).map((u) => u.user_id), emails: others.slice(6).map((u) => u.email), text: "x" }), "invalid_argument");
   assert.match(tooMany.message, /at most 8 other people/);
   assert.equal(dmPosts(fake).length, before, "nothing was sent");
-  // Exactly eight is fine.
-  const eight = ok(await tools.call("zulip_dm_send", { user_ids: others.slice(0, 8).map((u) => u.user_id), text: "eight" }), "zulip_dm_send");
+  // Exactly eight is fine.  Jay is one of them (AFC-469):  a direct message goes out only when
+  // the owner takes part in it.
+  const eight = ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id, ...others.slice(0, 7).map((u) => u.user_id)], text: "eight" }), "zulip_dm_send");
   assert.equal(eight.user_ids.length, 8);
 });
 
@@ -386,8 +387,9 @@ test("dm_send:  an explicit key and the implicit 10-minute key never send twice,
   assert.deepEqual(again, { ...one, duplicate: true });
   const two = ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "two" }), "zulip_dm_send");
   assert.deepEqual(ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id], text: "two" }), "zulip_dm_send"), { ...two, duplicate: true });
-  // The same text to someone else is a different message.
-  assert.equal(ok(await tools.call("zulip_dm_send", { user_ids: [codex.user_id], text: "two" }), "zulip_dm_send").duplicate, false);
+  // The same text to someone else is a different message.  Jay is in the group (AFC-469):  a
+  // direct message goes out only when the owner takes part in it.
+  assert.equal(ok(await tools.call("zulip_dm_send", { user_ids: [jay.user_id, codex.user_id], text: "two" }), "zulip_dm_send").duplicate, false);
   assert.equal(dmPosts(fake).length, 3);
   // The same explicit key on a channel post is its own write.
   const post = ok(await tools.call("zulip_post", { channel: "sandbox", topic: "idem", text: "one", idempotency_key: "key-0001" }), "zulip_post");

@@ -303,6 +303,10 @@ class SeatRunner:
             timeout=self.daemon.http_timeout,
             events_timeout=self.daemon.events_timeout,
             sleep=self.daemon.clock.sleep,
+            # The owner id the guard needs (AFC-469):  a direct message may go out only when the
+            # owner is in the conversation.  With no owner pinned the client keeps 0 and the guard
+            # fails closed, so the daemon sends no direct message it cannot check.
+            owner_user_id=int(self.daemon.config.owner_user_id or 0),
         )
 
     def connect(self) -> list[dict[str, Any]]:
@@ -797,6 +801,16 @@ class Daemon:
         cfg = self.config
         self.loopguard.enabled = cfg.wake_loop_prevention
         self.notifier.banners = self.banners_allowed and cfg.notify_banners
+        # The owner id the direct-message guard checks (AFC-469).  A reload can change it, and the
+        # seat clients were built with the old one, so every connected runner is refreshed here.
+        # Without this, a reload that pins the owner leaves the clients refusing direct messages
+        # that the owner allows, and a reload that unpins it leaves them allowing messages that
+        # the owner does not.
+        owner_id = int(cfg.owner_user_id or 0)
+        for runner in self.seats.values():
+            client = getattr(runner, "client", None)
+            if client is not None:
+                client.owner_user_id = owner_id
         for seat_cfg in list(cfg.seats.values()) + list(cfg.disabled.values()):
             # Routine secrets are hidden as soon as the config names them, before any wake.
             if seat_cfg.routine is None:
@@ -2276,6 +2290,22 @@ class Daemon:
         sender = pending.sender_id
         if not isinstance(sender, int) or sender == runner.me.user_id:
             return
+        # A direct message may go out only when the owner is in the conversation (AFC-469), so the
+        # quota hold goes to the owner as well as to the sender when the sender is not the owner.
+        # A quota hold is the owner's own spend, so the owner is the party who has to see it, and
+        # with the owner in the conversation the message is a legitimate group direct message
+        # rather than a bot to bot one.
+        owner_id = int(self.config.owner_user_id or 0)
+        if owner_id <= 0:
+            self.log.write(
+                "wake-quota-hold-tell-refused",
+                seat=runner.seat,
+                wake_id=pending.wake_id,
+                sender_id=sender,
+                reason="owner_not_pinned",
+            )
+            return
+        recipients = [sender] if sender == owner_id else [sender, owner_id]
         key = "quota-hold:%s:%s" % (runner.seat, sender)
         try:
             if not self.notifier.notify(
@@ -2291,7 +2321,7 @@ class Daemon:
             ):
                 return  # already told this sender recently
             result = runner.client.post(
-                "messages", {"type": "direct", "to": [sender], "content": text}
+                "messages", {"type": "direct", "to": recipients, "content": text}
             )
             if result.get("id"):
                 self.log.write(
@@ -5443,6 +5473,19 @@ class Daemon:
                         "content": text,
                     },
                 )
+        except Z.DmGuardRefused as exc:
+            # A wake reply into a direct message with no owner in it is refused by the
+            # owner-in-the-conversation guard (AFC-469):  that thread has no owner taking part, so
+            # the answer belongs in a channel.  The refusal is recorded and the daemon keeps
+            # running:  a wake is not worth losing the seat over.
+            self.log.write(
+                "post-refused-dm",
+                seat=runner.seat,
+                wake_id=pending.wake_id,
+                reason=exc.code,
+                error=self.scrub(str(exc)),
+            )
+            return None
         except Z.AgentSyncError as exc:
             self.log.write(
                 "post-failed", seat=runner.seat, wake_id=pending.wake_id, error=self.scrub(str(exc))
