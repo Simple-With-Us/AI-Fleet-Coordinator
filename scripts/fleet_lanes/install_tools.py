@@ -559,9 +559,9 @@ def host_paths(home: str, stable_dir: str | None = None,
     """The paths for a real install on this host.
 
     The apps folder is the one the host already keeps:  the copy under the home when it is
-    there, and otherwise the fleet-extra volume, where a server host keeps it and links no
-    ~/apps into the home.  Without this an install on such a host would write a second apps
-    folder under the home, the one the owner asked to be rid of.
+    there, and otherwise the volume the host names in FLEET_SERVER_VOLUME, where a server host
+    keeps it and links no ~/apps into the home.  Without this an install on such a host would
+    write a second apps folder under the home, the one the owner asked to be rid of.
     """
     env = dict(os.environ if env is None else env)
     env["FLEET_APPS_ROOT"] = _host_apps_root(home, env)
