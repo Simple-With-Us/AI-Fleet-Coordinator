@@ -3171,25 +3171,13 @@ class Daemon:
         try:
             thread.start()
         except Exception as exc:  # noqa: BLE001 - a fanout that never started owns nothing
-            # The thread never ran, so nobody owns the delivery:  the id must not stay "seen"
-            # (a retry would be deduped away) and the wake must not be lost.  The message goes
-            # straight to the event thread with an empty nudged set, so tick() still wakes every
-            # seat.  The log carries the id and the error type only:  never the content.
-            self._forget_fanout(message_id)
+            # The thread never ran, so the catalog walk never happened:  the wake is handed to
+            # the event thread with an empty nudged set, so tick() still wakes every seat.  The
+            # id stays in the seen ring:  the hand-off owns that wake now, and forgetting the id
+            # would let the next seat's route of the same message fan out again and wake twice.
+            # The log carries the id and the error type only:  never the content.
             self._broadcast_wakes.put((message, frozenset()))
             self.log.write("fanout-start-failed", id=message_id, error=type(exc).__name__)
-
-    def _forget_fanout(self, message_id: int) -> None:
-        """Take a message id back out of the fanout's seen ring.
-
-        The id only stays "seen" while a delivery owns it.  A fanout that never started owns
-        nothing, so the id comes back out and a later retry of the same message is not deduped
-        away.  The ring is bounded, so the id may already be gone:  that is fine."""
-        with self._fanout_lock:
-            try:
-                self._fanout_seen.remove(message_id)
-            except ValueError:
-                pass
 
     @staticmethod
     def _owner_inbox_broadcast(c: R.Classes) -> bool:
@@ -3239,7 +3227,12 @@ class Daemon:
             )
 
     def _forget_inbox(self, message_id: int) -> None:
-        """Take a message id back out of the inbox delivery's seen ring (see `_forget_fanout`)."""
+        """Take a message id back out of the inbox delivery's seen ring.
+
+        The id only stays "seen" while a delivery owns it.  A delivery that may still be
+        completed by a later attempt (a retryable or an unknown outcome) owns nothing yet, so
+        the id comes back out and the next seat's route of the same message tries again.  The
+        ring is bounded, so the id may already be gone:  that is fine."""
         with self._fanout_lock:
             try:
                 self._inbox_seen.remove(message_id)
@@ -3262,9 +3255,13 @@ class Daemon:
     def _deliver_inbox(self, message: Mapping[str, Any]) -> None:
         """The network part of the inbox delivery, off the event thread.
 
-        The bot list and the credentials come from Infisical only.  When Infisical cannot be
-        read, this logs an explicit `inbox-delivery-failed` with the reason:  there is no
-        fallback and no pretend success."""
+        The bot list and the credentials come from Infisical only.  When Infisical cannot be
+        read, this logs an explicit `inbox-delivery-failed` with the reason:  there is no
+        fallback and no pretend success.
+
+        A bot that ended `retryable` or `unknown` releases the inbox seen marker, so the next
+        seat that routes the same message tries it again.  Both writes are idempotent (a
+        subscription and a read flag), so that retry is safe."""
         message_id = message.get("id")
         try:
             targets = IDEL.infisical_targets(env=self.env, home=Path(self.home), log=self.log.write)
@@ -3274,9 +3271,16 @@ class Daemon:
         except Exception as exc:  # noqa: BLE001 - an unreadable Infisical is a logged failure
             self.log.write("inbox-delivery-failed", id=message_id, error=type(exc).__name__)
             return
+        for seat, missing in sorted(getattr(targets, "skipped", {}).items()):
+            self.log.write(
+                "inbox-delivery-skipped-credentials",
+                seat=seat,
+                id=message_id,
+                missing=missing,
+            )
         owner_email = self._owner_email()
         try:
-            IDEL.deliver(
+            result = IDEL.deliver(
                 message,
                 targets=targets,
                 http_factory=IDEL.zulip_http,
@@ -3285,6 +3289,15 @@ class Daemon:
             )
         except Exception as exc:  # noqa: BLE001 - the delivery never breaks the router
             self.log.write("inbox-delivery-failed", id=message_id, error=type(exc).__name__)
+            return
+        pending = sorted(
+            seat
+            for seat, outcome in (result.get("outcomes") or {}).items()
+            if outcome in ("retryable", "unknown")
+        )
+        if pending and isinstance(message_id, int):
+            self._forget_inbox(message_id)
+            self.log.write("inbox-delivery-retry-pending", id=message_id, seats=pending)
 
     def fanout(
         self,
