@@ -8,7 +8,7 @@
 // Pure module:  the caller hands in `fetch` and `sleep`, so node tests run it
 // against a fake Zulip.
 
-import { ApiError, MAX_CONTENT_LENGTH, NetworkError } from "./contract.js";
+import { ApiError, DmGuardRefused, MAX_CONTENT_LENGTH, NetworkError, UsageError } from "./contract.js";
 import { fixOutbound } from "./textfmt.js";
 
 export const REALM = "https://simplewithus.zulipchat.com";
@@ -52,6 +52,112 @@ export function encodeParams(params) {
   return out.toString();
 }
 
+// The owner-in-the-conversation guard (AFC-469).  Mirrors scripts/agent_sync/zulip.py:  the POST
+// paths whose body can carry a direct message, and the message types that make one.
+export const DM_GUARD_PATHS = Object.freeze(["messages", "scheduled_messages", "drafts"]);
+const DM_GUARD_TYPES = Object.freeze(["direct", "private"]);
+
+/** The user ids in a `to` value, or an empty list when it names no user id. */
+function recipientIds(value) {
+  if (Array.isArray(value)) {
+    const ids = [];
+    for (const item of value) {
+      const id = Number(item);
+      if (!Number.isSafeInteger(id)) return [];
+      ids.push(id);
+    }
+    return ids;
+  }
+  if (typeof value === "string") {
+    const text = value.trim();
+    if (!text.startsWith("[")) return [];
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? recipientIds(parsed) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+/**
+ * The user ids a request would deliver a direct message to, or null when it is not one.
+ *
+ * Three shapes carry a direct message:  {type: "direct", to: [ids]}, {type: "private", to: [ids]}
+ * and the drafts endpoint's {drafts: [{type: "private", to: [ids]}]}.  A channel send names a
+ * stream, not a user, so it is never a direct message.
+ */
+export function directRecipientSets(params) {
+  if (!params || typeof params !== "object") return null;
+  const sets = [];
+  if (Array.isArray(params.drafts)) {
+    params.drafts.forEach((draft, index) => {
+      if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
+        throw new UsageError(`drafts[${index}] is not a draft object`);
+      }
+      if (DM_GUARD_TYPES.includes(String(draft.type ?? "").trim().toLowerCase())) {
+        sets.push(recipientIds(draft.to));
+      }
+    });
+  }
+  //  One draft being rewritten:  PATCH drafts/<id> carries {draft: {type, to}}, the same shape a
+  //  created draft has, so a draft's recipient set is checked when it is rewritten and not only
+  //  when it is created.
+  if (Object.prototype.hasOwnProperty.call(params, "draft")) {
+    const one = params.draft;
+    if (!one || typeof one !== "object" || Array.isArray(one)) {
+      throw new UsageError("draft is not a draft object");
+    }
+    if (DM_GUARD_TYPES.includes(String(one.type ?? "").trim().toLowerCase())) {
+      sets.push(recipientIds(one.to));
+    }
+  }
+  //  Every shape the body carries contributes its own set and none of them short-circuits another:
+  //  a body that names a direct message at the top level and also carries a draft key is two
+  //  conversations, and both of them are checked.
+  if (DM_GUARD_TYPES.includes(String(params.type ?? "").trim().toLowerCase())) {
+    sets.push(recipientIds(params.to));
+  }
+  //  A body with no direct conversation in it is not a direct message at all.
+  return sets.length ? sets : null;
+}
+
+/**
+ * Throw DmGuardRefused unless a direct send has the owner in its recipient list.
+ *
+ * The rule (owner, Oct 23 2026):  a bot may send a direct message only when Jay is an actual
+ * participant in the conversation.  Participation is the authenticated Zulip user id, never a
+ * display name, and a mention of Jay in the message text is not participation.  It fails closed:
+ *  with no owner id pinned a direct send is refused.
+ */
+export function checkDmGuard(path, params, ownerUserId) {
+  //  The endpoint is the path's first segment:  drafts/123 is the same endpoint as drafts, and a
+  //  draft's recipient set is rewritten by a PATCH.
+  const endpoint = String(path ?? "").replace(/^\/+|\/+$/g, "").split("/")[0];
+  if (!DM_GUARD_PATHS.includes(endpoint)) return;
+  const sets = directRecipientSets(params);
+  if (sets === null) return;
+  const owner = Number(ownerUserId);
+  if (!Number.isSafeInteger(owner) || owner <= 0) {
+    throw new DmGuardRefused(
+      "the owner's Zulip user id is not pinned, so this direct message cannot be checked against it:  " +
+        "set OWNER_USER_ID and try again",
+      { code: "dm_owner_not_pinned" },
+    );
+  }
+  //  Every direct conversation the request carries has to have the owner in it.  Checking the
+  //  union instead would let one owner-addressed conversation authorise another beside it.
+  for (const recipients of sets) {
+    if (recipients.includes(owner)) continue;
+    throw new DmGuardRefused(
+      "a direct message may go out only when the owner is in the conversation:  add the owner to the " +
+        "recipients, or post in a channel instead",
+      { code: "dm_owner_not_participant" },
+    );
+  }
+}
+
 function basicHeader(email, key) {
   const bytes = new TextEncoder().encode(`${email}:${key}`);
   return `Basic ${btoa(String.fromCharCode(...bytes))}`;
@@ -68,11 +174,15 @@ function retryAfterMs(response, data) {
 
 export class ZulipClient {
   /**
-   * @param {{email: string, key: string, fetch?: typeof fetch, sleep?: (ms: number) => Promise<void>, now?: () => number}} options
+   * @param {{email: string, key: string, ownerUserId?: number, fetch?: typeof fetch, sleep?: (ms: number) => Promise<void>, now?: () => number}} options
    */
-  constructor({ email, key, fetch: fetchImpl = globalThis.fetch.bind(globalThis), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now }) {
+  constructor({ email, key, ownerUserId = 0, fetch: fetchImpl = globalThis.fetch.bind(globalThis), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), now = Date.now }) {
     this.email = email;
     this.#key = key;
+    // The owner's Zulip user id, for the owner-in-the-conversation guard (AFC-469).  0 means "not
+    // pinned", and the guard then refuses every direct send:  it fails closed.
+    this.ownerUserId = Number(ownerUserId);
+    if (!Number.isSafeInteger(this.ownerUserId)) this.ownerUserId = 0;
     this.fetch = fetchImpl;
     this.sleep = sleep;
     this.now = now;
@@ -107,6 +217,11 @@ export class ZulipClient {
   /** One API call.  Returns the parsed JSON on result "success";  throws ApiError or NetworkError. */
   async request(method, path, params, { form = null } = {}) {
     if (!pathAllowed(method, path)) throw new ApiError("bad API path", { status: 0, code: "BAD_PATH" });
+    // A POST or a PATCH that would deliver a direct message is checked before anything is sent:
+    // the owner has to be in the recipient list (AFC-469).  A PATCH matters because editing a
+    // draft rewrites its recipient set, and a draft is a message nobody has sent yet.  The check
+    // throws and sends nothing.
+    if (method === "POST" || method === "PATCH") checkDmGuard(path, params, this.ownerUserId);
     let sendParams = params ?? {};
     if ((method === "POST" || method === "PATCH") && typeof sendParams.content === "string" && OUTBOUND_TEXT_PATH.test(path)) {
       sendParams = { ...sendParams, content: fixOutbound(sendParams.content, { limit: MAX_CONTENT_LENGTH })[0] };

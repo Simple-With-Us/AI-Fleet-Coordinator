@@ -146,6 +146,9 @@ class FullZulipToolTests(McpHarness):
         self.assert_tool_error(session.call("zulip_upload", {"filename": "x.bin", "content_base64": "!!!!"}), "invalid_argument")
 
     def test_scheduled_drafts_typing(self):
+        #  The owner is in the conversation, so the scheduled message and the draft are not bot to
+        #  bot ones (AFC-469).
+        self.pin_owner()
         session = self.session()
         when = int(time.time()) + 3600
         made = self.assert_structured("zulip_scheduled_create", session.call("zulip_scheduled_create", {
@@ -156,8 +159,8 @@ class FullZulipToolTests(McpHarness):
             "topic": "later", "text": "ping @**Codex**", "deliver_at": when}))
         self.assertEqual((again["id"], again["duplicate"]), (made["id"], True))
         dm = self.assert_structured("zulip_scheduled_create", session.call("zulip_scheduled_create", {
-            "user_ids": [11], "text": "hi", "deliver_at": when}))
-        self.assertEqual(self.fake.scheduled[dm["id"]]["to"], [11])
+            "user_ids": [11, 12], "text": "hi", "deliver_at": when}))
+        self.assertEqual(self.fake.scheduled[dm["id"]]["to"], [11, 12])
         self.assert_tool_error(session.call("zulip_scheduled_create", {"user_ids": [11], "topic": "x", "text": "hi",
                                                                  "deliver_at": when}), "invalid_argument")
         self.assert_tool_error(session.call("zulip_scheduled_create", {"topic": "x", "text": "hi", "deliver_at": 1000}),
@@ -171,8 +174,8 @@ class FullZulipToolTests(McpHarness):
         self.assert_tool_error(session.call("zulip_scheduled_edit", {"scheduled_message_id": made["id"]}), "invalid_argument")
         self.assert_structured("zulip_scheduled_delete", session.call("zulip_scheduled_delete", {"scheduled_message_id": made["id"]}))
         draft = self.assert_structured("zulip_draft_create", session.call("zulip_draft_create", {"topic": "d", "text": "note"}))
-        self.assert_structured("zulip_draft_edit", session.call("zulip_draft_edit", {"draft_id": draft["id"], "user_ids": [11], "text": "n2"}))
-        self.assertEqual(self.fake.drafts[draft["id"]]["to"], [11])
+        self.assert_structured("zulip_draft_edit", session.call("zulip_draft_edit", {"draft_id": draft["id"], "user_ids": [11, 12], "text": "n2"}))
+        self.assertEqual(self.fake.drafts[draft["id"]]["to"], [11, 12])
         self.assertEqual(self.assert_structured("zulip_drafts_list", session.call("zulip_drafts_list", {}))["ids"], [draft["id"]])
         self.assert_structured("zulip_draft_delete", session.call("zulip_draft_delete", {"draft_id": draft["id"]}))
         self.assert_structured("zulip_typing", session.call("zulip_typing", {"op": "start", "topic": "t"}))
@@ -180,22 +183,31 @@ class FullZulipToolTests(McpHarness):
         self.assert_tool_error(session.call("zulip_typing", {"op": "start"}), "invalid_argument")
 
     def test_dm_tools_on_stdio(self):
+        #  The owner is in the conversation, so these direct messages are not bot to bot ones
+        #  (AFC-469).
+        self.pin_owner()
         session = self.session()
         first = self.fake.add_direct_message("Codex", "hello bot")
         listed = self.assert_structured("zulip_dm_list", session.call("zulip_dm_list", {}))
         self.assertEqual((listed["ids"], listed["unread_total"]), ([first], 1))
-        sent = self.assert_structured("zulip_dm_send", session.call("zulip_dm_send", {"user_ids": [11], "text": "hi @**Jay Wedgeworth**",
+        sent = self.assert_structured("zulip_dm_send", session.call("zulip_dm_send", {"user_ids": [11, 12],
+                                                                          "text": "hi @**Jay Wedgeworth**",
                                                                           "idempotency_key": "dm-key-0001"}))
-        self.assertEqual(sent["user_ids"], [11])
-        self.assertEqual(self.fake._find(sent["id"])["content"], "[CLAUDE·%s→CODEX] hi @_**Jay Wedgeworth**" % TAG)
-        again = self.assert_structured("zulip_dm_send", session.call("zulip_dm_send", {"user_ids": [11], "text": "different",
+        self.assertEqual(sent["user_ids"], [11, 12])
+        self.assertEqual(self.fake._find(sent["id"])["content"], "[CLAUDE·%s→CODEX,JAY] hi @_**Jay Wedgeworth**" % TAG)
+        again = self.assert_structured("zulip_dm_send", session.call("zulip_dm_send", {"user_ids": [11, 12], "text": "different",
                                                                            "idempotency_key": "dm-key-0001"}))
         self.assertEqual((again["id"], again["duplicate"]), (sent["id"], True))
         read = session.call("zulip_dm_read", {"emails": ["codex-bot@zulip.test"]})
         data = self.assert_structured("zulip_dm_read", read)
-        self.assertEqual(data["ids"], [first, sent["id"]])
-        items = self.assert_fence(read["content"][0]["text"])
-        self.assertEqual((items[0]["dm"], items[0]["dm_user_ids"]), (True, [11]))
+        #  The one-to-one conversation with Codex:  the group one is a different conversation, and
+        #  the read matches the exact set of participants.
+        self.assertEqual(data["ids"], [first])
+        group = session.call("zulip_dm_read", {"emails": ["codex-bot@zulip.test", "jay@zulip.test"]})
+        group_data = self.assert_structured("zulip_dm_read", group)
+        self.assertEqual(group_data["ids"], [sent["id"]])
+        items = self.assert_fence(group["content"][0]["text"])
+        self.assertEqual((items[0]["dm"], items[0]["dm_user_ids"]), (True, [11, 12]))
         self.assert_tool_error(session.call("zulip_dm_send", {"user_ids": [10], "text": "me"}), "invalid_argument")
         self.assert_tool_error(session.call("zulip_dm_send", {"emails": ["nobody@zulip.test"], "text": "x"}), "invalid_argument")
         self.assert_tool_error(session.call("zulip_dm_read", {}), "invalid_argument")

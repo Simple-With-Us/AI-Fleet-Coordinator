@@ -156,6 +156,19 @@ class CandidateListTests(unittest.TestCase):
             self.assertEqual(request.headers.get("Authorization"), operator_auth)
             self.assertNotEqual(request.headers.get("Authorization"), seat_auth)
 
+    def test_a_non_owner_recipient_gets_the_list_with_the_owner_in_the_conversation(self) -> None:
+        #  The candidate list carries internal session ids and titles, and the owner is the one who
+        #  configured the allowlist that named this recipient, so the owner takes part in it and
+        #  the message is not a bot to bot direct message (AFC-469).
+        out = self.send(recipient=11)
+        self.assertEqual(out["status"], "sent", out["reason"])
+        messages = self.direct_messages()
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(
+            sorted(r["id"] for r in messages[0]["display_recipient"]),
+            sorted([OPERATOR_ID, 11, OWNER_ID]),
+        )
+
     # ---- refusals -----------------------------------------------------------------------
 
     def test_a_missing_operator_credential_is_a_clean_refusal(self) -> None:
