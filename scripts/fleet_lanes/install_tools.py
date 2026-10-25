@@ -7342,7 +7342,10 @@ def self_test(
         home = os.path.join(tmp, "home")
         os.makedirs(home)
         _seed_fake_home(home)
-        paths = host_paths(home)
+        # The fake home, not the host:  make_paths with an empty env keeps the self-test inside
+        # its temp home, where host_paths would follow the host's apps folder (the production
+        # one on a server) and the test would write into it.
+        paths = make_paths(home, env={})
         emit(f"self-test: fake home {home}")
         res = apply_tools(src, paths, timeout=timeout, minimal_path=minimal_path, emit=emit)
         emit(res.line())

@@ -1666,6 +1666,22 @@ class CliTests(World):
         self.assertIn("FAIL  claude", text)  # the failures it provoked are printed
         self.assertNotIn("self-test FAIL", text)
 
+    def test_the_self_test_stays_inside_its_fake_home(self) -> None:
+        # A server host keeps the apps folder on a volume, and the self-test must never touch it:
+        # it writes a whole install, so a path that resolved to the host's apps folder would
+        # write into production (Sentry's finding on AFC-541).
+        with tempfile.TemporaryDirectory() as outside:
+            marker = os.path.join(outside, "lane-tools")
+            os.makedirs(marker)
+            with mock.patch.object(T, "CANONICAL_APPS_ROOT", outside):
+                lines: list[str] = []
+                rc = T.self_test(lines.append, timeout=TIMEOUT, minimal_path=False, source=self.source)
+            text = "\n".join(lines)
+            self.assertEqual(rc, 0, text)
+            self.assertIn("self-test PASS", text)
+            self.assertEqual(os.listdir(outside), ["lane-tools"],
+                             "the self-test wrote into the host's apps folder")
+
     def test_self_test_reports_a_verify_that_cannot_fail(self) -> None:
         # if verify never failed, the self-test must say so instead of passing
         lines: list[str] = []
