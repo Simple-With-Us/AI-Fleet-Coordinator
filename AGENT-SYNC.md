@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:d570ddf98b376a7eb23e03afd9c9a47a4b44dd13b7d81f984fea4607f3450888 -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:dba84ce537abc5a901eb937d82249305e1da299fafef4fb2526553022c4b0582 -->
 # AGENT-SYNC — Fleet Coordination Protocol
 
 This is the protocol every AI agent seat follows when it works on the owner's apps:  who each seat is, how work is claimed, landed, and closed out in Linear, how seats talk in Zulip, and the standing rules for secrets, delegation, owner-facing writing, and the Mac.  It exists so parallel seats never collide on, duplicate, or silently drop the same work.
@@ -502,6 +502,7 @@ Binding lane layout (owner 2026-10-07, revised by the owner 2026-10-09 as layout
 - At lane start, create a lane or a PR check with `~/apps/lane new <app> <slug>` (or `--review --pr <n>`).  `AGENT_SEAT` must be set to your seat tag.
 - `<seat>` in a lane path is the whole `worktreeSuffix` from `fleet-apps.json` (`antigravity`, `minimax`; never `ag` or `mm`), the Lane token column in [Active Seats](#active-seats).
 - Never create a checkout of a fleet repo in `/tmp`, `/private/tmp`, `/var/tmp`, `$TMPDIR`, or `/var/folders`.
+- On the server, `~/Code` is `/mnt/fleet-extra/Code` and `~/apps` is `/mnt/fleet-extra/apps`, so every lane there is in `/mnt/fleet-extra/apps/lanes/<Repo>/` and no fleet checkout lives anywhere else on it (Lane Map, Server Hosts).
 - Existing lanes in the old places under `~/apps/lanes/` (`<prefix>/`, `_managed`, `_review`) stay until the layout migration moves them (`docs/protocols/lanes-v2-migration.md`).  The flat `~/apps/<prefix>-<seat>[-<slug>]` lanes are not moved by it: they stay where they are and retire normally.  `lane ls` reports both as legacy.  Lane paths in older seat rows and docs may show those forms; new lanes always use the v2 form.
 
 ### Seat Lanes and Branches
