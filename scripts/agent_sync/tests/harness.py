@@ -96,6 +96,15 @@ class Harness(unittest.TestCase):
         self.transcript: list[str] = []
         self._transcript_lock = threading.Lock()
 
+    def pin_owner(self, user_id: int = 12) -> None:
+        """Pin the owner in the installed listener.toml, the way a host does.
+
+        The owner-in-the-conversation guard (AFC-469) fails closed:  with no owner pinned a direct
+        message is refused, so a test that sends one has to pin the owner first.
+        """
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
+
     def tearDown(self) -> None:
         token = base64.b64encode(("%s:%s" % (BOT_EMAIL, self.key)).encode()).decode()
         everything = "\n".join(self.transcript)

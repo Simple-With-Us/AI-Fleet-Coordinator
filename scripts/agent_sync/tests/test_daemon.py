@@ -1000,7 +1000,8 @@ provider = "Claude Code"
             daemon._drop(daemon.seats["CLAUDE"], pending, reason, now)
         dms = [m for m in self.fake.messages if m["type"] == "private" and m["sender_id"] == 10]
         self.assertEqual(len(dms), 1, "one DM per sender per window, and the call must not raise")
-        self.assertEqual(sorted(r["id"] for r in dms[0]["display_recipient"]), [10, 11])
+        #  The owner is in the conversation, so this is not a bot to bot direct message (AFC-469).
+        self.assertEqual(sorted(r["id"] for r in dms[0]["display_recipient"]), [10, 11, 12])
         self.assertIn("cannot answer right now", dms[0]["content"])
         self.assertIn("Claude Code", dms[0]["content"])
         self.assertEqual([m for m in self.bot_posts() if m["type"] == "stream"], [])

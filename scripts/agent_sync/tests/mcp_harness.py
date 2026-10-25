@@ -28,7 +28,7 @@ from agent_sync import identity as I
 from agent_sync.mcp import identity_router as R
 from agent_sync.mcp import stdio as S
 from agent_sync.mcp import tools as T
-from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH, FAKE_CHANNEL
+from agent_sync.tests.fake_zulip import BOT_EMAIL, EPOCH, FAKE_CHANNEL, FAKE_OWNER_ID
 from agent_sync.tests.harness import SESSION, Harness, write_rc
 
 SCRIPT = Path(__file__).resolve().parents[2] / "simple-chat"
@@ -256,6 +256,15 @@ class McpHarness(Harness):
         everything = "\n".join(self.transcript)
         for value in self.extra_secrets:
             self.assertNotIn(value, everything, "another bot's key reached the output")
+
+    def pin_owner(self, user_id: int = FAKE_OWNER_ID) -> None:
+        """Pin the owner in the installed listener.toml, the way a host does.
+
+        The owner-in-the-conversation guard (AFC-469) fails closed:  with no owner pinned a direct
+        message is refused, so a test that sends one has to pin the owner first.
+        """
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "listener.toml").write_text("[daemon]\nowner_user_id = %d\n" % user_id)
 
     def mcp_env(self, **overrides: str | None) -> dict[str, str]:
         base = {

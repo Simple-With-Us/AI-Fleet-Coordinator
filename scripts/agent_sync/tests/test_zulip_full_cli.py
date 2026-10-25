@@ -162,6 +162,9 @@ class UploadScheduledDraftsTypingTests(Harness):
         self.assertEqual(self.run_cli("upload", str(self.tmp)).code, 2)  # not a regular file
 
     def test_scheduled_messages(self) -> None:
+        #  The owner is in the conversation, so the scheduled direct message is not a bot to bot
+        #  one (AFC-469).
+        self.pin_owner()
         when = str(int(time.time()) + 3600)
         created = self.run_cli("scheduled", "create", "--topic", "later", "--at", when, "ping", "--json")
         self.assertEqual(created.code, 0, created.err)
@@ -171,11 +174,11 @@ class UploadScheduledDraftsTypingTests(Harness):
         self.assertIn("pong", self.fake.scheduled[sid]["content"])
         listed = [json.loads(line) for line in self.run_cli("scheduled", "list", "--json").out.splitlines()]
         self.assertEqual([r["id"] for r in listed], [sid])
-        dm = self.run_cli("scheduled", "create", "--to", "Codex", "--at", when, "hi")
+        dm = self.run_cli("scheduled", "create", "--to", "Codex", "--to", "Jay Wedgeworth", "--at", when, "hi")
         self.assertEqual(dm.code, 0, dm.err)
         past = self.run_cli("scheduled", "create", "--topic", "x", "--at", "1000", "late")
         self.assertEqual(past.code, 2)
-        both = self.run_cli("scheduled", "create", "--to", "Codex", "--topic", "x", "--at", when, "hi")
+        both = self.run_cli("scheduled", "create", "--to", "Codex", "--to", "Jay Wedgeworth", "--topic", "x", "--at", when, "hi")
         self.assertEqual(both.code, 2)
         self.assertEqual(self.run_cli("scheduled", "delete", "--id", str(sid)).code, 0)
         self.assertNotIn(sid, self.fake.scheduled)

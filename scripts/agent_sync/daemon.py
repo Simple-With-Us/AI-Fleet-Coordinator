@@ -2174,6 +2174,22 @@ class Daemon:
         sender = pending.sender_id
         if not isinstance(sender, int) or sender == runner.me.user_id:
             return
+        # A direct message may go out only when the owner is in the conversation (AFC-469), so the
+        # quota hold goes to the owner as well as to the sender when the sender is not the owner.
+        # A quota hold is the owner's own spend, so the owner is the party who has to see it, and
+        # with the owner in the conversation the message is a legitimate group direct message
+        # rather than a bot to bot one.
+        owner_id = int(self.config.owner_user_id or 0)
+        if owner_id <= 0:
+            self.log.write(
+                "wake-quota-hold-tell-refused",
+                seat=runner.seat,
+                wake_id=pending.wake_id,
+                sender_id=sender,
+                reason="owner_not_pinned",
+            )
+            return
+        recipients = [sender] if sender == owner_id else [sender, owner_id]
         key = "quota-hold:%s:%s" % (runner.seat, sender)
         try:
             if not self.notifier.notify(
@@ -2189,7 +2205,7 @@ class Daemon:
             ):
                 return  # already told this sender recently
             result = runner.client.post(
-                "messages", {"type": "direct", "to": [sender], "content": text}
+                "messages", {"type": "direct", "to": recipients, "content": text}
             )
             if result.get("id"):
                 self.log.write(

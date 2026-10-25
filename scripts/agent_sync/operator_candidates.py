@@ -395,8 +395,10 @@ def _outcome(status: str, reason: str, **extra: Any) -> dict[str, Any]:
     return out
 
 
-def _operator_client(creds: Any, realm: str | None) -> Any:
-    return Z.ZulipClient(creds, realm or creds.site)
+def _operator_client(creds: Any, realm: str | None, owner_user_id: int = 0) -> Any:
+    # The owner's id goes with the client so the owner-in-the-conversation guard can check this
+    # direct message:  the list goes to the owner, so the owner is in the conversation (AFC-469).
+    return Z.ZulipClient(creds, realm or creds.site, owner_user_id=owner_user_id)
 
 
 def send_candidate_list(
@@ -520,7 +522,7 @@ def _send_candidate_list(
 
     if client is None:
         try:
-            client = _operator_client(creds, realm)
+            client = _operator_client(creds, realm, owner_user_id)
         except Exception as exc:
             return _outcome(
                 "refused", "the Operator client could not be built: %s" % type(exc).__name__

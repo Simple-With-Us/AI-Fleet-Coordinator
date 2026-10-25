@@ -203,7 +203,9 @@ class CliAliasTests(Harness):
                 self.assertEqual(len(self.fake.messages), before)
 
     def test_dm_to_takes_the_alias_too(self) -> None:
-        result = self.run_cli("dm", "--to", "Grok-Build", "--json", "ping")
+        #  The owner is in the conversation, so this is not a bot to bot direct message (AFC-469).
+        self.pin_owner()
+        result = self.run_cli("dm", "--owner", "--to", "Grok-Build", "--json", "ping")
         self.assertEqual(result.code, 0, result.err)
         self.assertEqual(self.fake.messages[-1]["type"], "private")
 
