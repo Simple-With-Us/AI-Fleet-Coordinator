@@ -459,7 +459,8 @@ struct ChatCLI: ChatRunning {
             exitCode: process.terminationStatus,
             stdout: try read(stdoutURL),
             stderr: try read(stderrURL),
-            timedOut: flag.isSet
+            // Same rule as the throw above:  only a child the timer stopped was cut off.
+            timedOut: flag.isSet && process.terminationReason == .uncaughtSignal
         )
     }
 

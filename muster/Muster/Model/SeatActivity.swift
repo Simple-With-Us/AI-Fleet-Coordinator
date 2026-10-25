@@ -612,8 +612,16 @@ enum SeatActivityQuota {
     /// The words that turn a marker around when they come shortly before it,  so "not
     /// at quota",  "not yet at quota" and "no longer out of credits" do not count.
     static let negations: Set<String> = [
-        "not", "never", "isn't", "aren't", "wasn't", "weren't", "no", "longer",
+        "not", "never", "isn't", "aren't", "wasn't", "weren't",
     ]
+
+    /// The two-word negations,  matched only as a pair:  a bare "no" or "longer" is not
+    /// a negation.
+    static let negationPhrases: Set<String> = ["no longer"]
+
+    /// How much text before a marker is read,  so each marker costs the same however
+    /// long the post is.
+    static let negationLookback = 120
 
     /// How many words before a marker are read for a negation.
     static let negationWindow = 3
@@ -641,13 +649,21 @@ enum SeatActivityQuota {
 
     /// Whether the words just before a marker negate it.
     static func isNegated(before prefix: Substring) -> Bool {
-        // Only the current sentence or clause counts.
-        let clause = prefix.split(omittingEmptySubsequences: false, whereSeparator: { ".!?;\n".contains($0) })
+        // A bounded tail,  then only the current clause:  a negation behind a comma,
+        // a semicolon or a sentence end belongs to another clause.
+        let tail = prefix.suffix(negationLookback)
+        let clause = tail.split(omittingEmptySubsequences: false, whereSeparator: { ".!?;,\n".contains($0) })
             .last ?? ""
         let words = clause.lowercased()
             .replacingOccurrences(of: "\u{2019}", with: "'")
             .split(whereSeparator: { !$0.isLetter && $0 != "'" })
-            .suffix(negationWindow)
-        return words.contains { negations.contains(String($0)) }
+            .map(String.init)
+        let window = Array(words.suffix(negationWindow + 1))
+        let singles = window.suffix(negationWindow)
+        if singles.contains(where: { negations.contains($0) }) { return true }
+        for index in window.indices.dropLast() {
+            if negationPhrases.contains(window[index] + " " + window[index + 1]) { return true }
+        }
+        return false
     }
 }

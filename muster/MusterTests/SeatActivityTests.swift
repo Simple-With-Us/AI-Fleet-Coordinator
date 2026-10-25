@@ -600,6 +600,12 @@ final class SeatActivityTests: XCTestCase {
         XCTAssertFalse(SeatActivityQuota.reportsQuota("I am not yet at quota."))
         XCTAssertFalse(SeatActivityQuota.reportsQuota("Still not  quite at quota."))
         XCTAssertTrue(SeatActivityQuota.reportsQuota("Not today.  I am at quota now."))
+        XCTAssertTrue(SeatActivityQuota.reportsQuota("No joke, I am at quota."))
+        XCTAssertTrue(SeatActivityQuota.reportsQuota("No: at quota until Monday."))
+        XCTAssertTrue(SeatActivityQuota.reportsQuota("I could not post, at quota until Monday."))
+        XCTAssertFalse(SeatActivityQuota.reportsQuota("We are no longer at quota."))
+        let long = String(repeating: "status line ok ", count: 20_000) + "at quota"
+        XCTAssertTrue(SeatActivityQuota.reportsQuota(long))
     }
 
     /// A child that finishes on its own before the deadline keeps its output.
