@@ -32,7 +32,15 @@ def _load():
 
 
 mod = _load()
-AGENT_SYNC = (SCRIPTS.parent / "AGENT-SYNC.md").read_text()
+# The protocol document is being renamed:  read whichever name the mirror holds.  Remove the old name when the rename is complete.
+AGENT_SYNC = next(
+    (
+        SCRIPTS.parent / n
+        for n in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md")
+        if (SCRIPTS.parent / n).is_file()
+    ),
+    SCRIPTS.parent / "FLEET-PROTOCOL.md",
+).read_text()
 
 
 class PolicyBan(unittest.TestCase):

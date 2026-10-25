@@ -77,7 +77,9 @@ DATED_RECORDS = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
 # The mirror is still the file every seat reads first, so it does not stay a blind
 # exemption:  GeneratedMirrorTests below asserts every mirror this registry names, so a
 # mirror added here is asserted too and not silently left unchecked.
-GENERATED_MIRRORS = ("AGENT-SYNC.md",)
+# The document is being renamed:  both names are generated mirrors, and exactly one exists at a time.
+# Remove the old name when the rename is complete.
+GENERATED_MIRRORS = ("AGENT-SYNC.md", "FLEET-PROTOCOL.md")
 
 # This file holds the checks themselves, so the sweep below finds its own command
 # templates.  A checker is not guidance.
@@ -778,7 +780,7 @@ class GeneratedMirrorTests(unittest.TestCase):
 
     # The mirrors come from the registry, so a mirror added to it is asserted here too
     # and not silently left unchecked.
-    MIRRORS = tuple(ROOT / rel for rel in GENERATED_MIRRORS)
+    MIRRORS = tuple(ROOT / rel for rel in GENERATED_MIRRORS if (ROOT / rel).is_file())
 
     # The converter the mirror ships until the upstream sync rewrites it.  The mirror is
     # built from the Fleet-OPS handbook, so it lags the one home by one sync:  this is the
