@@ -24,6 +24,10 @@ GUARDED_IF = "if: ${{ always() && steps.request_gate.outputs.skip != 'true' }}"
 
 
 def run(args):
+    #  A wedged checker must fail the test in 30 seconds, not hold the required
+    #  `test` check open for the job timeout.  The failure is raised as an
+    #  AssertionError, because unittest catches SystemExit and would turn both
+    #  of these into an opaque exit 1.
     try:
         return subprocess.run(
             ["ruby", CHECKER, *args],
@@ -32,9 +36,9 @@ def run(args):
             timeout=30,
         )
     except subprocess.TimeoutExpired as exc:
-        raise SystemExit(124) from exc
+        raise AssertionError(f"ruby checker timed out after 30s: {CHECKER}") from exc
     except FileNotFoundError as exc:
-        raise SystemExit(127) from exc
+        raise AssertionError(f"ruby executable not found: {CHECKER}") from exc
 
 
 class WorkflowDuplicateKeyTests(unittest.TestCase):

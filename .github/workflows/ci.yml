@@ -52,6 +52,7 @@ jobs:
     # push gets a red suite with zero jobs (AFC-529).  Ruby's Psych AST keeps both
     # keys, and Ruby is already on this runner, so the check adds no package.
     - name: Workflow YAML rejects duplicate keys
+      timeout-minutes: 2
       run: |
         ruby scripts/check-workflow-duplicate-keys.rb .github/workflows .github/pr-autofix-trusted.yml
         cd scripts && python3 -m unittest test_workflow_duplicate_keys -v
