@@ -85,7 +85,7 @@ output holds a U+00A0 before `gh pr create --body-file` or `simple-chat post`.
 > A body with it passed both checks and reached GitHub with no gap.  The live pattern carries the
 > three closing quotes in the group and the three opening ones in the lookahead, which is the same
 > set the fleet's own outbound converter already used:
-> ``perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g' body.txt > body.nbsp.txt``.
+> ``perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g' body.txt > body.nbsp.txt``.
 > The two checks carry the same class, and the leftover check moved to bash's `$'...'` so the class
 > can hold a straight quote at all —  in single quotes it cannot.  The follower class carries the
 > opening quotes too, because a gap missed before a quoted sentence reads `Second. 'Quoted`:

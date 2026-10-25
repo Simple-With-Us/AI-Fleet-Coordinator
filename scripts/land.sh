@@ -232,7 +232,7 @@ EOF
 # a real U+00A0 plus a space (owner ruling 2026-10-23).  Without perl the title is
 # passed through unchanged.
 if command -v perl >/dev/null 2>&1; then
-  PR_TITLE="$(printf '%s' "$PR_TITLE" | perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g')"
+  PR_TITLE="$(printf '%s' "$PR_TITLE" | perl -CSDA -pe 's/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g')"
 fi
 
 # A GitHub PR body takes a real U+00A0 plus a normal space, the same form as the

@@ -194,6 +194,7 @@ SHAPES = (
     ("“Curly quoted sentence.”  Next sentence.", True),
     ("‘Curly single quoted sentence.’  Next sentence.", True),
     ("First.  Second.  'Quoted sentence.'", True),
+    ("Merged.  [PR #314](https://example.com/pull/314)  Next sentence.", True),
     ("1. Numbered marker stays a marker.", False),
     ("The answer is 42. Next thing.", False),
     ("e.g. this keeps its plain space.", False),
@@ -393,6 +394,17 @@ class ConverterBehaviourTests(unittest.TestCase):
                     convert(self.pattern, body),
                     "First." + NBSP + " Second." + NBSP + " " + quote + "Quoted sentence.",
                 )
+
+    def test_a_sentence_before_a_link_opener_gets_its_gap(self) -> None:
+        """A sentence that ends immediately before a markdown link is a sentence end.
+
+        The owner's rule is that every pull request number and every issue number in a
+        message is an explicit link, so the natural shape is a link at the head of the next
+        sentence.  The follower class carries the opening square bracket, so the gap is made
+        there and the leftover check can see it when it is missing.
+        """
+        out = convert(self.pattern, "Merged.  [PR #314](https://example.com/pull/314)  Then.\n")
+        self.assertIn("Merged." + NBSP + " [PR #314]", out)
 
     def test_the_gap_keeps_the_markup_span_intact(self) -> None:
         out = convert(self.pattern, "**Bold sentence.**  Next sentence.\n")
@@ -767,11 +779,14 @@ class GeneratedMirrorTests(unittest.TestCase):
     # and not silently left unchecked.
     MIRRORS = tuple(ROOT / rel for rel in GENERATED_MIRRORS)
 
-    # The converter the mirror ships until the upstream sync rewrites it.  It is the one
-    # home's converter without the markup group, so it is the state the pointer is about.
+    # The converter the mirror ships until the upstream sync rewrites it.  The mirror is
+    # built from the Fleet-OPS handbook, so it lags the one home by one sync:  this is the
+    # one home's converter before the opening square bracket joined the follower class, and
+    # it is the state the pointer is about.  The mirror holds exactly one converter command,
+    # so this is the whole set it may hold while it waits.
     PRE_SYNC_CONVERTERS = (
-        's/([.!?]) +(?=[A-Z0-9"*`#@])/$1\\x{a0} /g',
-        's/(?<![0-9])([.!?]) +(?=[A-Z0-9"*`#@])/$1\\x{a0} /g',
+        's/(?<![0-9])([.!?])((?:\\]\\([^()\\s]{1,255}\\)|[*_`~)\\]"\\x{27}\\x{2019}\\x{201D}])*)'
+        ' +(?=[A-Z0-9"*`#@\\x{27}\\x{2018}\\x{201C}])/$1$2\\x{a0} /g',
     )
 
     POINTER = (
