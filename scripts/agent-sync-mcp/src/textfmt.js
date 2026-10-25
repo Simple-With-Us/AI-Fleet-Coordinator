@@ -127,7 +127,7 @@ export function sentenceGap(text) {
 //
 // sentenceGap only widens a gap the author typed as two spaces.  Agents often type one (and some tools collapse
 // two into one before the text reaches the client), so singleGaps also widens ONE space after a sentence when a
-// capital letter, digit, quote, `*`, `#`, `(`, code or a mention follows.  It is a heuristic:  a list marker
+// capital letter, digit, quote, `*`, `#`, `(`, `[` (a markdown link opener), code or a mention follows.  It is a heuristic:  a list marker
 // (`1. Item`) is skipped, and so are known abbreviations, dotted words and single-letter initials (`Dr. Smith`,
 // `U.S. Army`, `J. Doe`).  A missed gap is the old behaviour;  a wrong one is a slightly wider space, never changed
 // words.
