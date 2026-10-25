@@ -39,7 +39,9 @@ DEFAULT_POLICY = next(
     _ROOT / "FLEET-PROTOCOL.md",
 )
 
-RUNNER_ROW_RE = re.compile(r"actions\.runner|self-hosted runner|mac-xcode|trading-live-mac", re.IGNORECASE)
+RUNNER_ROW_RE = re.compile(
+    r"actions\.runner|self-hosted runner|mac-xcode|trading-live-mac", re.IGNORECASE
+)
 LIVE_STATUS_RE = re.compile(r"\b(Always-on|Up|Running|Enabled)\b", re.IGNORECASE)
 DEAD_STATUS_RE = re.compile(
     r"Retired|Disabled|Uninstalled|Banned|de-registered|deregistered|Old Mac CI label",
