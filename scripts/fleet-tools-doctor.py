@@ -29,7 +29,7 @@ Muster reads (`-` prints it).  docs/protocols/fleet-tool-parity.md has both owne
 Checks:
   runtime     the installed fleet-cli release (simple-chat, simple-notes, simple-board, recall, lane,
               fleet-mode) was built from AI-Fleet-Coordinator origin/main
-  checkout    each /root/Code (or ~/Code) checkout that ships a CLI is on
+  checkout    each canonical Code checkout that ships a CLI is on
               origin/main:  AI-Fleet-Coordinator, FleetLink
   commands    the fleet tools (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode)
               and fleetlink are on PATH (the Mac also keeps lane and fleet-mode
@@ -72,7 +72,10 @@ from pathlib import Path
 
 HOME = Path(os.environ.get("HOME", str(Path.home())))
 RUNTIME = HOME / ".local/share/fleet-cli"
-CODE_ROOTS = [Path("/root/Code"), Path("/home/jay/Code"), HOME / "Code"]
+# The server paths that carry the integration trees today.  The owner removed the
+# /root aliases on 2026-10-25, so a host resolves its trees from the environment
+# and keeps these only as the last resort.
+SERVER_CODE_ROOTS = (Path("/root/Code"), Path("/home/jay/Code"))
 REPOS = ("AI-Fleet-Coordinator", "FleetLink")
 # The tools both hosts carry (docs/protocols/fleet-tool-parity.md), then FleetLink's CLI.
 FLEET_TOOLS = ("simple-chat", "simple-notes", "simple-board", "recall", "lane", "fleet-mode")
@@ -588,8 +591,34 @@ def commits_between(
     return int(out) if out and out.isdigit() else None
 
 
+def code_roots() -> list[Path]:
+    """Where the integration checkouts live, most specific first.
+
+    A root the caller configured wins, because that is the root the rest of the
+    fleet resolves.  Then the volume the host names, then the server paths that
+    carry the trees today, and the copy under the home last.  The owner removed
+    the /root aliases on 2026-10-25, so a host that names no root and keeps no
+    alias has no tree, and the doctor says so instead of reporting a checkout
+    it never found.
+    """
+    roots: list[Path] = []
+    configured = (os.environ.get("FLEET_CODE_ROOT") or "").strip()
+    if configured:
+        roots.append(Path(configured))
+    volume = (os.environ.get("FLEET_SERVER_VOLUME") or "").strip()
+    if volume:
+        roots.append(Path(volume) / "Code")
+    roots.extend(SERVER_CODE_ROOTS)
+    roots.append(HOME / "Code")
+    ordered: list[Path] = []
+    for root in roots:
+        if root not in ordered:
+            ordered.append(root)
+    return ordered
+
+
 def find_repo(name: str) -> Path | None:
-    for root in CODE_ROOTS:
+    for root in code_roots():
         if (root / name / ".git").exists():
             return root / name
     return None
@@ -1093,7 +1122,7 @@ def check_checkouts(
         check = f"checkout:{name}"
         repo = find_repo(name)
         if not repo:
-            why = "no checkout under /root/Code or ~/Code"
+            why = "no checkout under the canonical Code root"
             report.add(check, "WARN", why, state="unknown", category=category, reason=why)
             states[name] = "unknown"
             continue

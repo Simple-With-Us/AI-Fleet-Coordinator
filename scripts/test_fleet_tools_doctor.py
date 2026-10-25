@@ -1605,5 +1605,78 @@ class NotesServiceTests(unittest.TestCase):
         self.assertEqual(self.rows("server", network=False)["notes:queue"]["state"], "unknown")
 
 
+class CodeRootTests(unittest.TestCase):
+    """The doctor finds the integration checkouts through the canonical roots.
+
+    The owner removed the /root aliases on 2026-10-25, so the doctor reads the
+    roots the fleet names in the environment and keeps the copy under the home
+    as the fallback.
+    """
+
+    def make_repo(self, root: Path, name: str) -> Path:
+        repo = root / name
+        (repo / ".git").mkdir(parents=True)
+        return repo
+
+    def test_a_configured_root_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "configured"
+            repo = self.make_repo(root, "AI-Fleet-Coordinator")
+            with mock.patch.dict(
+                os.environ, {"FLEET_CODE_ROOT": str(root), "FLEET_SERVER_VOLUME": ""}
+            ):
+                self.assertEqual(doctor.find_repo("AI-Fleet-Coordinator"), repo)
+
+    def test_the_volume_the_host_names_is_used_next(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            volume = Path(tmp) / "volume"
+            repo = self.make_repo(volume / "Code", "FleetLink")
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": str(volume)}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", Path(tmp) / "home"),
+            ):
+                self.assertEqual(doctor.find_repo("FleetLink"), repo)
+
+    def test_the_copy_under_the_home_is_the_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "Code", "AI-Fleet-Coordinator")
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("AI-Fleet-Coordinator"), repo)
+
+    def test_a_host_with_no_root_and_no_alias_finds_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", Path(tmp) / "home"),
+            ):
+                self.assertIsNone(doctor.find_repo("AI-Fleet-Coordinator"))
+
+    def test_the_roots_are_reported_once_each(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": str(home), "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                roots = doctor.code_roots()
+            self.assertEqual(len(roots), len(set(roots)))
+
+
 if __name__ == "__main__":
     unittest.main()
