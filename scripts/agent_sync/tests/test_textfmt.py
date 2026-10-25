@@ -276,6 +276,14 @@ SINGLE_GAPPED = (
     ("4 tests failed. Next.", "4 tests failed.%sNext." % G),
     # "no" is not an abbreviation:  this is a sentence end, and widening it costs a space, never a word.
     ("I said no. Then we stop.", "I said no.%sThen we stop." % G),
+    # A link opener is a sentence follower:  the owner's rule that every pull request and issue
+    # number is a link makes this the most common shape there is, and a gap missed before it
+    # reads as no gap at all.  The same class carries the opening square bracket in the
+    # documented converter, and a missed class belongs in every converter.
+    (
+        "Merged. [PR #314](https://example.com/pull/314) Next sentence.",
+        "Merged.%s[PR #314](https://example.com/pull/314) Next sentence." % G,
+    ),
 )
 SINGLE_UNCHANGED = (
     "Ask Dr. Smith.",

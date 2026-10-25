@@ -181,7 +181,7 @@ _ABBREVIATIONS = frozenset(
         "sq",
     ]
 )
-_SINGLE_GAP_RE = re.compile(r"(?P<end>[.!?][\"'”’)\]*_]*)(?P<space>[ ])(?=[A-Z0-9\"“(*#])")
+_SINGLE_GAP_RE = re.compile(r"(?P<end>[.!?][\"'”’)\]*_]*)(?P<space>[ ])(?=[A-Z0-9\"“(*#\[])")
 _WORD_BEFORE_RE = re.compile(r"([A-Za-z][A-Za-z.]*)$")
 
 # The same rules as the Apple Notes script's date rewrite.  A date is a token of its own:  a name or a query string
