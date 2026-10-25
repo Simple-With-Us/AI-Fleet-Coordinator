@@ -1645,9 +1645,7 @@ class CodeRootTests(unittest.TestCase):
             home = Path(tmp) / "home"
             repo = self.make_repo(home / "Code", "AI-Fleet-Coordinator")
             with (
-                mock.patch.dict(
-                    os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": ""}
-                ),
+                mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": ""}),
                 mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
                 mock.patch.object(doctor, "HOME", home),
             ):
@@ -1656,9 +1654,7 @@ class CodeRootTests(unittest.TestCase):
     def test_a_host_with_no_root_and_no_alias_finds_nothing(self):
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                mock.patch.dict(
-                    os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": ""}
-                ),
+                mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": ""}),
                 mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
                 mock.patch.object(doctor, "HOME", Path(tmp) / "home"),
             ):
