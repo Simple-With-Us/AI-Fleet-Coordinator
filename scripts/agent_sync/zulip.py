@@ -49,6 +49,8 @@ from .textfmt import fix_outbound
 
 __all__ = [
     "DEFAULT_CHANNEL",
+    "DM_GUARD_PATHS",
+    "DM_GUARD_TYPES",
     "MAX_TOPIC_LENGTH",
     "REALM",
     "RETIRED_CHANNEL_NAMES",
@@ -57,8 +59,6 @@ __all__ = [
     "ApiError",
     "CredentialError",
     "Credentials",
-    "DM_GUARD_PATHS",
-    "DM_GUARD_TYPES",
     "DmGuardRefused",
     "EventQueue",
     "NetworkError",
