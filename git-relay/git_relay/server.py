@@ -659,11 +659,39 @@ def adopt_legacy_state(default_path: str) -> str:
     return default_path
 
 
+def _build_shared_verifier():
+    """The ST-MCP shared-bearer verifier, or None when not configured.
+
+    Set GIT_RELAY_VERIFY_URL to resolve admin-minted per-identity bearers
+    through the Worker's verify route.  The route key is a fleet-secrets read
+    like every other credential here;  a configured URL with an unreadable or
+    short key is a startup error, never silent unauthenticated operation.
+    """
+    verify_url = os.environ.get("GIT_RELAY_VERIFY_URL", "").strip()
+    if not verify_url:
+        return None
+    if not shutil.which("fleet-secrets"):
+        raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
+    from .app_tokens import AppTokenError, FleetSecretsSource
+    from .shared_bearer import SharedBearerVerifier
+
+    raw_path = os.environ.get("GIT_RELAY_SECRETS_PATH")
+    try:
+        return SharedBearerVerifier(
+            url=verify_url,
+            key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
+            key_source=FleetSecretsSource(path=(raw_path or "/github-apps").strip()),
+        )
+    except (AppTokenError, ValueError) as exc:
+        raise SystemExit(f"git-relay config: {exc}") from exc
+
+
 def from_env() -> Relay:
     try:
         policy = SeatPolicy(
             os.environ.get("GIT_RELAY_SEATS_JSON", ""),
             rate_per_hour=int(os.environ.get("GIT_RELAY_RATE_PER_HOUR", "120")),
+            verifier=_build_shared_verifier(),
         )
     except PolicyError as exc:
         raise SystemExit(f"git-relay config: {exc}") from exc
