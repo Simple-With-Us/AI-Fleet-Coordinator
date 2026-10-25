@@ -1794,6 +1794,16 @@ try {
     // It acts only as JET-CHAT, even when asked to be another identity.
     const echo = await call(bearer, "whoami", { identity: "ECHO" });
     assert.equal(echo.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
+    // The DM guard holds over the bearer path too (AFC-469):  a bot-only
+    // direct message is refused and nothing is sent;  one with the owner goes out.
+    const sentBefore = zulip.requestsTo("POST", "messages").length;
+    const blocked = await call(bearer, "zulip_dm_send", { user_ids: [1212001], text: "bot to bot", identity: "JET-CHAT" });
+    assert.equal(blocked.json.result.isError, true);
+    assert.equal(blocked.json.result._meta["agent-sync/error"].code, "dm_owner_not_participant");
+    assert.equal(zulip.requestsTo("POST", "messages").length, sentBefore);
+    const allowedDm = await call(bearer, "zulip_dm_send", { user_ids: [OWNER_ID], text: "owner is here", identity: "JET-CHAT" });
+    assert.equal(allowedDm.json.result.isError, undefined, summarize(allowedDm.json));
+    assert.equal(zulip.requestsTo("POST", "messages").length, sentBefore + 1);
     // The admin page shows state, never the token.
     const page = await (await browser("/admin")).text();
     assert.ok(!page.includes(bearer));

@@ -549,7 +549,7 @@ async function serveSbtBearerMcp(request, env, token) {
     // Same pass-through as the persona path:  the relay authenticates this
     // bearer and enforces the seat's own allowlist.
     gr: grClientFromResolved(grSecrets, env, { bearer: token }),
-    zulip: new ZulipClient({ email, key }),
+    zulip: new ZulipClient({ email, key, ownerUserId: config.ownerUserId }),
     key,
     gate: seatGate,
     cf: { asn: request.cf?.asn, country: request.cf?.country },
