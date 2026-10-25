@@ -227,7 +227,7 @@ PR-write authoring runs under the owner's scoped PR-only token on purpose:  a pu
 
 Per-seat policy is an allowlist layer over that credential:  allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every call, allowed or denied, is written to the audit log, and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
 
-**Status.**  git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**:  no seat is pointed at it and no daemon or launchd job has been verified.  The owner has chosen the Hetzner server as the host;  provisioning, the route and the approval to deploy are not settled, and a bounded read of that host found no relay in the places checked, which is not proof it is absent everywhere.  Until the owner decides the cutover, the interim `gh` and shell path is the one that works.  Do not plan work that assumes the relay is live.
+**Status.**  git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**:  no seat is pointed at it and no daemon or launchd job has been verified.  The owner has chosen the Hetzner server as the host;  provisioning, the route and the approval to deploy are not settled, and a bounded read of that host found no relay in the places checked, which is not proof it is absent everywhere.  Until the owner decides the cutover, the relay is not an available route:  do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
 
 `mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP:  it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
 
@@ -321,7 +321,7 @@ Every MCP tool has a command except the hosted-only `whatsapp_read`, which has n
 | MCP server | `simple-chat mcp` (what an MCP client's config runs) |
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool;  stdio runs it that way) |
 | WhatsApp | None:  `whatsapp_read` is hosted only (the whatsapp section above), so no CLI command or stdio tool serves it |
-| GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio);  the relay is not deployed yet, so the interim `gh` path is the one that works today |
+| GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio);  the relay is not deployed yet, so it is not an available route today |
 
 Long text stays out of `argv`:  `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.
 
