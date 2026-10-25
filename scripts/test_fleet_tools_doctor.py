@@ -1704,9 +1704,7 @@ class CodeRootTests(unittest.TestCase):
             home = Path(tmp) / "home"
             repo = self.make_repo(home / "vol" / "Code", "Fixture-Repo-2")
             with (
-                mock.patch.dict(
-                    os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": "vol"}
-                ),
+                mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": "vol"}),
                 mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
                 mock.patch.object(doctor, "HOME", home),
             ):
