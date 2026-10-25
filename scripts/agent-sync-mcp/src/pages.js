@@ -113,7 +113,7 @@ export function noConnectionPage() {
  * is a literal U+00A0 rather than an entity, so it passes through escapeHtml unchanged.
  */
 export function gapped(text) {
-  return escapeHtml(String(text ?? "").replace(/(?<![0-9])([.!?])[ \t]+(?=[A-Z0-9"*`#@])/g, `$1${SENTENCE_GAP}`));
+  return escapeHtml(String(text ?? "").replace(/(?<![0-9])([.!?])[ \t]+(?=[A-Z0-9"*`#@\[])/g, `$1${SENTENCE_GAP}`));
 }
 
 export function errorPage(title, message, status = 400) {
