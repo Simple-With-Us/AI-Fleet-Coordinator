@@ -291,8 +291,12 @@ class ReleaseTests(unittest.TestCase):
         (self.home / "apps").mkdir(parents=True, exist_ok=True)
         self.receive()
         text = (self.home / ".local/bin/lane").read_text()
-        self.assertIn(f"os.environ.setdefault('FLEET_CODE_ROOT', {str(self.home / 'Code')!r})", text)
-        self.assertIn(f"os.environ.setdefault('FLEET_APPS_ROOT', {str(self.home / 'apps')!r})", text)
+        self.assertIn(
+            f"os.environ.setdefault('FLEET_CODE_ROOT', {str(self.home / 'Code')!r})", text
+        )
+        self.assertIn(
+            f"os.environ.setdefault('FLEET_APPS_ROOT', {str(self.home / 'apps')!r})", text
+        )
 
     def test_only_the_lane_wrapper_carries_the_roots(self):
         self.receive()
@@ -312,7 +316,9 @@ class ReleaseTests(unittest.TestCase):
         self.receive(bundle)
         wrapper = self.home / ".local/bin/lane"
         out = subprocess.run(
-            [str(wrapper)], capture_output=True, text=True,
+            [str(wrapper)],
+            capture_output=True,
+            text=True,
             env={**os.environ, "FLEET_CODE_ROOT": "/from/the/caller"},
         )
         self.assertEqual(out.returncode, 0, out.stderr)
