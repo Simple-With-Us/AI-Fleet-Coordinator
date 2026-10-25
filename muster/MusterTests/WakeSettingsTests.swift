@@ -426,6 +426,8 @@ final class WakeSettingsTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_000_000)
         let ledger = """
         {"ts": 999900.0, "wake_id": "w1", "state": "held_back", "reason": "host_busy", "owner": false, "topic": "AFC-536"}
+        {"ts": 999905.0, "wake_id": "w1", "state": "accepted", "owner": false, "topic": "AFC-536"}
+        {"ts": 999915.0, "wake_id": "w1", "state": "done", "owner": false, "topic": "AFC-536"}
         {"ts": 999910.0, "wake_id": "w2", "state": "skipped", "reason": "leased", "owner": false, "topic": "AFC-536"}
         {"ts": 999920.0, "wake_id": "w3", "state": "dropped", "why": "budget", "owner": false, "topic": "AFC-536"}
         {"ts": 999930.0, "wake_id": "w4", "state": "accepted", "owner": false, "topic": "AFC-536"}
@@ -496,5 +498,32 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(seat.quotaRemaining, 85.0)
         XCTAssertFalse(seat.quotaExhausted)
         XCTAssertEqual(seat.quotaSource, "codecaps")
+
+        let exhaustedNoPercentStatus = """
+        {
+          "running": true,
+          "status": {
+            "seats": {
+              "MM": {
+                "bot": "MM",
+                "quota": {
+                  "known": true,
+                  "exhausted": true,
+                  "remaining": null,
+                  "source": "provider_quota"
+                }
+              }
+            }
+          }
+        }
+        """
+        let exhaustedModel = WakeSettingsBuilder.build(sources(status: exhaustedNoPercentStatus))
+        guard let exhaustedSeat = exhaustedModel.seats.first else {
+            XCTFail("expected MM seat in exhausted status")
+            return
+        }
+        XCTAssertNil(exhaustedSeat.quotaRemaining)
+        XCTAssertTrue(exhaustedSeat.quotaExhausted)
+        XCTAssertEqual(exhaustedSeat.quotaSource, "provider_quota")
     }
 }

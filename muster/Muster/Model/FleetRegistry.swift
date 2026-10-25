@@ -50,6 +50,11 @@ struct FleetRegistryDocument: Decodable, Equatable {
     struct SeatAppsSection: Decodable, Equatable {
         let bySeat: [String: String]?
         let extraSeats: [String: String]?
+        struct Pattern: Decodable, Equatable {
+            let match: String
+            let app: String
+        }
+        let patterns: [Pattern]?
     }
 
     let owner: String?
@@ -222,7 +227,11 @@ enum FleetRegistryReader {
             }()
 
             let state: CellState
-            if viewOutput == nil {
+            let lanesKnown = viewOutput?.sections.lanes.isKnown ?? false
+            let prsKnown = viewOutput?.sections.pullRequests.isKnown ?? false
+            let claimsKnown = viewOutput?.sections.claims.isKnown ?? false
+            if viewOutput == nil || !lanesKnown || !prsKnown || !claimsKnown {
+                // A section that could not be collected proves nothing about the app.
                 state = .unproven
             } else if !failingOrConflictingPRs.isEmpty || expired > 0 {
                 state = .missing
@@ -252,12 +261,24 @@ enum FleetRegistryReader {
             )
         }
 
-        // Group live seats by their coding app slug in `seatApps.bySeat`.
+        // Group live seats by their coding app slug in `seatApps.bySeat` and `patterns`.
         let bySeat = document.seatApps?.bySeat ?? [:]
+        let patterns = document.seatApps?.patterns ?? []
         var orderedSlugs: [String] = []
         var seatsBySlug: [String: [String]] = [:]
         for seat in document.liveSeats {
-            let slug = bySeat[seat.tag] ?? seat.tag.lowercased()
+            let slug: String = {
+                if let direct = bySeat[seat.tag] { return direct }
+                for pat in patterns {
+                    if pat.match.hasSuffix("*") {
+                        let prefix = String(pat.match.dropLast())
+                        if seat.tag.hasPrefix(prefix) { return pat.app }
+                    } else if seat.tag == pat.match {
+                        return pat.app
+                    }
+                }
+                return seat.tag.lowercased()
+            }()
             if seatsBySlug[slug] == nil {
                 orderedSlugs.append(slug)
                 seatsBySlug[slug] = []
@@ -275,18 +296,39 @@ enum FleetRegistryReader {
                 }
             }
         }
+        for pat in patterns {
+            if seatsBySlug[pat.app] == nil {
+                orderedSlugs.append(pat.app)
+                seatsBySlug[pat.app] = []
+            }
+            if !(seatsBySlug[pat.app]?.contains(pat.match) ?? false) {
+                seatsBySlug[pat.app]?.append(pat.match)
+            }
+        }
 
-        let macRows = toolsReading?.hosts.first(where: { $0.host == "mac" })?.allRows ?? []
+        let macRows = (toolsReading?.isCurrent == true)
+            ? (toolsReading?.hosts.first(where: { $0.host == "mac" })?.allRows ?? [])
+            : []
         let codingStatuses: [CodingAppStatus] = orderedSlugs.map { slug in
             let meta = codingAppMetadata[slug] ?? (title: slug, cli: nil)
             let seatTags = seatsBySlug[slug] ?? []
-            let seatSet = Set(seatTags)
+            let matchesSeat: (String) -> Bool = { candidate in
+                for tag in seatTags {
+                    if tag.hasSuffix("*") {
+                        let prefix = String(tag.dropLast())
+                        if candidate.hasPrefix(prefix) { return true }
+                    } else if candidate == tag {
+                        return true
+                    }
+                }
+                return false
+            }
             let cliRow = meta.cli.flatMap { cliName in
                 macRows.first(where: { $0.check == "tool:\(cliName)" })
             }
-            let appLanes = lanes.filter { seatSet.contains($0.seat) }.count
-            let appPRs = prs.filter { seatSet.contains($0.seat) }.count
-            let appClaims = claims.filter { seatSet.contains($0.seat) }.count
+            let appLanes = lanes.filter { matchesSeat($0.seat) }.count
+            let appPRs = prs.filter { matchesSeat($0.seat) }.count
+            let appClaims = claims.filter { matchesSeat($0.seat) }.count
 
             return CodingAppStatus(
                 appSlug: slug,

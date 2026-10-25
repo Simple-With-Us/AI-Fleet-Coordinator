@@ -151,4 +151,138 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertEqual(jet.seats, ["JET"])
         XCTAssertNil(jet.cliTool)
     }
+
+    func test_fleet_app_state_is_unproven_when_any_fleet_view_section_is_unknown() throws {
+        let envelopeUnknownPRs = """
+        {
+          "schemaVersion": 1,
+          "tool": "fleet-view",
+          "command": "status",
+          "generatedAt": "2026-10-25T16:00:00Z",
+          "summary": { "lanes": 0, "pullRequests": 0, "claims": 0, "overallVerdict": "UNKNOWN" },
+          "requestCounts": { "github": 0, "linear": 0, "githubMax": 60, "linearMax": 30 },
+          "sections": {
+            "lanes": { "state": "OK", "reason": "0 lane(s)", "items": [] },
+            "pullRequests": { "state": "UNKNOWN", "reason": "github timeout", "items": [] },
+            "claims": { "state": "OK", "reason": "0 claim(s)", "items": [] }
+          },
+          "notes": []
+        }
+        """
+        let envelope = try JSONDecoder().decode(FleetViewEnvelope.self, from: Data(envelopeUnknownPRs.utf8))
+        let summary = FleetRegistryReader.build(
+            from: Data(sampleRegistry.utf8),
+            viewOutput: envelope,
+            toolsReading: nil,
+            pathExists: { _ in false }
+        )
+        // With pullRequests reported UNKNOWN, an unobserved app must be .unproven rather than .passed.
+        XCTAssertEqual(summary.apps[0].state, .unproven)
+    }
+
+    func test_stale_doctor_report_is_not_consumed_as_mac_cli_currency() throws {
+        let envelope = try JSONDecoder().decode(FleetViewEnvelope.self, from: Data(sampleEnvelopeJSON.utf8))
+        let rowJSON = """
+        {"check": "tool:agy", "status": "OK", "state": "current", "installed": "v1.2.3"}
+        """
+        let row = try JSONDecoder().decode(FleetToolsRow.self, from: Data(rowJSON.utf8))
+        let hostVerdict = FleetToolsHostVerdict(
+            host: "mac",
+            reachable: true,
+            state: .passed,
+            failing: 0,
+            unknown: 0,
+            stale: 0,
+            current: 1,
+            absent: 0,
+            notableRows: [],
+            allRows: [row],
+            reason: nil,
+            generatedAt: Date(),
+            age: "50m ago",
+            expected: nil,
+            doctorCommit: nil
+        )
+        var staleReading = FleetToolsReading()
+        staleReading.isCurrent = false
+        staleReading.hosts = [hostVerdict]
+
+        let summary = FleetRegistryReader.build(
+            from: Data(sampleRegistry.utf8),
+            viewOutput: envelope,
+            toolsReading: staleReading,
+            pathExists: { _ in false }
+        )
+        let ag = summary.codingApps.first { $0.appSlug == "antigravity" }
+        XCTAssertNil(ag?.cliVersion)
+        XCTAssertNil(ag?.cliState)
+
+        var freshReading = staleReading
+        freshReading.isCurrent = true
+        let freshSummary = FleetRegistryReader.build(
+            from: Data(sampleRegistry.utf8),
+            viewOutput: envelope,
+            toolsReading: freshReading,
+            pathExists: { _ in false }
+        )
+        let agFresh = freshSummary.codingApps.first { $0.appSlug == "antigravity" }
+        XCTAssertEqual(agFresh?.cliVersion, "v1.2.3")
+        XCTAssertEqual(agFresh?.cliState, .current)
+    }
+
+    func test_seat_apps_patterns_are_expanded_into_coding_apps() throws {
+        let registryWithPatterns = """
+        {
+          "zulipChannel": "work-in-progress",
+          "apps": [],
+          "seats": [
+            { "tag": "AG", "notesName": "AG", "worktreeSuffix": "antigravity", "branchPrefixes": ["ag/"] }
+          ],
+          "seatApps": {
+            "bySeat": { "AG": "antigravity" },
+            "patterns": [
+              { "match": "BF-*", "app": "botfleet" },
+              { "match": "GB-*", "app": "grok-bot" }
+            ]
+          }
+        }
+        """
+        let envelopeWithRoleSeat = """
+        {
+          "schemaVersion": 1,
+          "tool": "fleet-view",
+          "command": "status",
+          "generatedAt": "2026-10-25T16:00:00Z",
+          "summary": { "lanes": 1, "pullRequests": 0, "claims": 0, "overallVerdict": "PASS" },
+          "requestCounts": { "github": 1, "linear": 0, "githubMax": 60, "linearMax": 30 },
+          "sections": {
+            "lanes": {
+              "state": "OK",
+              "reason": "1 lane",
+              "items": [
+                { "repo": "AI-Fleet-Coordinator", "lane": "bf-triage-1", "seat": "BF-TRIAGE", "branch": "bf/triage", "dirtyFiles": 0, "ageSeconds": 30, "state": "OK" }
+              ]
+            },
+            "pullRequests": { "state": "OK", "reason": "0 open PR(s)", "items": [] },
+            "claims": { "state": "OK", "reason": "0 claim(s)", "items": [] }
+          },
+          "notes": []
+        }
+        """
+        let envelope = try JSONDecoder().decode(FleetViewEnvelope.self, from: Data(envelopeWithRoleSeat.utf8))
+        let summary = FleetRegistryReader.build(
+            from: Data(registryWithPatterns.utf8),
+            viewOutput: envelope,
+            toolsReading: nil,
+            pathExists: { _ in false }
+        )
+        let slugs = summary.codingApps.map(\.appSlug)
+        XCTAssertTrue(slugs.contains("botfleet"))
+        XCTAssertTrue(slugs.contains("grok-bot"))
+
+        let botfleet = summary.codingApps.first { $0.appSlug == "botfleet" }
+        XCTAssertEqual(botfleet?.displayName, "BotFleet Personas")
+        XCTAssertEqual(botfleet?.seats, ["BF-*"])
+        XCTAssertEqual(botfleet?.activeLanes, 1)
+    }
 }

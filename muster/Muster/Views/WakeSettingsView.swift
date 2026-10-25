@@ -404,10 +404,15 @@ struct WakeSettingsView: View {
                     value: "nudges: \(seat.chatNudgesPending) pending, \(seat.chatNudgesBlocked) blocked, \(seat.chatNudgesAccepted) accepted"
                 )
             }
-            if let remaining = seat.quotaRemaining {
-                GridCellText(
-                    value: "quota \(Int(remaining))% left\(seat.quotaExhausted ? " (EXHAUSTED)" : "")"
-                )
+            if seat.quotaRemaining != nil || seat.quotaExhausted {
+                let text: String = {
+                    if let remaining = seat.quotaRemaining {
+                        return "quota \(Int(remaining))% left\(seat.quotaExhausted ? " (EXHAUSTED)" : "")"
+                    } else {
+                        return "quota EXHAUSTED"
+                    }
+                }()
+                GridCellText(value: text, emphasised: seat.quotaExhausted)
             }
         }
     }
