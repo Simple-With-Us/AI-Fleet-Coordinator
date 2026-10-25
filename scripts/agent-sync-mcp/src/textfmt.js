@@ -148,7 +148,7 @@ const ABBREVIATIONS = new Set([
 
 // The lookahead carries MASK as well as the plain characters:  a one-space gap before a code span or a mention
 // is still a gap, and masking is what lets that stay true (textfmt.py's class holds U+E000 for the same reason).
-const SINGLE_GAP_RE = /([.!?]["'”’)\]*_]*)( )(?=[A-Z0-9"“(*#])/g;
+const SINGLE_GAP_RE = /([.!?]["'”’)\]*_]*)( )(?=[A-Z0-9"“(*#\[])/g;
 // Python's `$` also matches before one trailing newline;  singleGaps strips it rather than emulate it.
 const WORD_BEFORE_RE = /([A-Za-z][A-Za-z.]*)$/;
 const ANY_SINGLE_GAP_RE = /[.!?]\S* /;

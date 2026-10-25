@@ -139,7 +139,7 @@ def sentence_gap(text: str) -> str:
 #
 # sentence_gap only widens a gap the author typed as two spaces.  Agents often type one (and some tools collapse two
 # into one before the text reaches this client), so single_gaps also widens ONE space after a sentence when a capital
-# letter, digit, quote, `*`, `#`, `(`, code or a mention follows.  It is a heuristic:  a list marker (`1. Item`) is
+# letter, digit, quote, `*`, `#`, `(`, `[` (a markdown link opener), code or a mention follows.  It is a heuristic:  a list marker (`1. Item`) is
 # skipped, and so are known abbreviations, dotted words and single-letter initials (`Dr. Smith`, `U.S. Army`,
 # `J. Doe`).  A missed gap is the old behaviour;  a wrong one is a slightly wider space, never changed words.
 #
@@ -181,7 +181,7 @@ _ABBREVIATIONS = frozenset(
         "sq",
     ]
 )
-_SINGLE_GAP_RE = re.compile(r"(?P<end>[.!?][\"'”’)\]*_]*)(?P<space>[ ])(?=[A-Z0-9\"“(*#\[])")
+_SINGLE_GAP_RE = re.compile(r"(?P<end>[.!?][\"'”’)\]*_]*)(?P<space>[ ])(?=[A-Z0-9\"“(*#\[])")
 _WORD_BEFORE_RE = re.compile(r"([A-Za-z][A-Za-z.]*)$")
 
 # The same rules as the Apple Notes script's date rewrite.  A date is a token of its own:  a name or a query string

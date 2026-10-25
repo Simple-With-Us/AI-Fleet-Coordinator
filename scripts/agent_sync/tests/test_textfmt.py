@@ -284,6 +284,12 @@ SINGLE_GAPPED = (
         "Merged. [PR #314](https://example.com/pull/314) Next sentence.",
         "Merged.%s[PR #314](https://example.com/pull/314) Next sentence." % G,
     ),
+    # The same sentence end, with a lowercase follower after the link:  the gap belongs before
+    # the opener, and the lowercase words that follow it are not sentence ends of their own.
+    (
+        "Merged. [PR #314](https://example.com/pull/314) is in.",
+        "Merged.%s[PR #314](https://example.com/pull/314) is in." % G,
+    ),
 )
 SINGLE_UNCHANGED = (
     "Ask Dr. Smith.",
