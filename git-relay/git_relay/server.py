@@ -3,9 +3,9 @@
 Endpoints (all JSON in, JSON out):
     GET  /healthz
     POST /v1/open_pr           {repo, base, head, title, body}      (owner token)
-    POST /v1/edit_pr           {repo, number, title?, body?}        (owner token)
-    POST /v1/reply_thread      {repo, number, comment_id, body}     (owner token)
-    POST /v1/comment_pr        {repo, number, body}                 (owner token)
+    POST /v1/edit_pr           {repo, number, title?, body?}        (seat's App)
+    POST /v1/reply_thread      {repo, number, comment_id, body}     (seat's App)
+    POST /v1/comment_pr        {repo, number, body}                 (seat's App)
     POST /v1/mint_token        {repo, permissions}                  (seat's App)
     POST /v1/merge_pr          {repo, number, method?}              (seat's App)
     POST /v1/workflow_dispatch {repo, workflow, ref, inputs?}       (seat's App)
@@ -171,6 +171,11 @@ ACTION_REQUIRED_PERMISSIONS = {
     "merge_pr": {"contents": "write", "pull_requests": "write"},
     "workflow_dispatch": {"actions": "write"},
     "resolve_thread": {"pull_requests": "write"},
+    # A PR edit and a review-comment reply write the pull;  a PR conversation
+    # comment writes the issue side of the same number.
+    "edit_pr": {"pull_requests": "write"},
+    "reply_thread": {"pull_requests": "write"},
+    "comment_pr": {"issues": "write"},
 }
 
 
@@ -377,7 +382,6 @@ class Relay:
         # call (allowlist + hourly quota, once);  dispatch only executes.
         if action in SeatPolicy.APP_ACTIONS:
             return self._dispatch_app(seat, action, args, repo)
-        number = args.get("number")
         if action == "open_pr":
             return self.client.open_pr(
                 repo,
@@ -386,23 +390,8 @@ class Relay:
                 title=_clean_text(args.get("title"), "title"),
                 body=_clean_text(args.get("body"), "body"),
             )
-        if action == "edit_pr":
-            return self.client.edit_pr(
-                repo,
-                _number(number, "number"),
-                title=_clean_text(args.get("title"), "title", required=False),
-                body=_clean_text(args.get("body"), "body", required=False),
-            )
-        if action == "reply_thread":
-            return self.client.reply_thread(
-                repo,
-                _number(number, "number"),
-                _number(args.get("comment_id"), "comment_id"),
-                _clean_text(args.get("body"), "body"),
-            )
-        return self.client.comment_pr(
-            repo, _number(number, "number"), _clean_text(args.get("body"), "body")
-        )
+        # Every non-open_pr write is an APP_ACTION and never reaches here.
+        raise ValueError(f"unknown owner-token action {action!r}")
 
 
 def _perm_within_ceiling(requested: dict, ceiling: dict) -> str | None:
@@ -438,6 +427,26 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
     if missing:
         raise PolicyDenied(f"seat ceiling does not cover permission {missing!r}")
     token, _ = self.app_minter.token_for(app_slug, repo, dict(required))
+    if action == "edit_pr":
+        return self.client.edit_pr(
+            repo,
+            _number(args.get("number"), "number"),
+            title=_clean_text(args.get("title"), "title", required=False),
+            body=_clean_text(args.get("body"), "body", required=False),
+            bearer=token,
+        )
+    if action == "reply_thread":
+        return self.client.reply_thread(
+            repo,
+            _number(args.get("number"), "number"),
+            _number(args.get("comment_id"), "comment_id"),
+            _clean_text(args.get("body"), "body"),
+            bearer=token,
+        )
+    if action == "comment_pr":
+        return self.client.comment_pr(
+            repo, _number(args.get("number"), "number"), _clean_text(args.get("body"), "body"), bearer=token
+        )
     if action == "merge_pr":
         return self.client.merge_pr(
             repo,

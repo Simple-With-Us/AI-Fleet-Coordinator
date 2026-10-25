@@ -37,11 +37,15 @@ SEATS_JSON = json.dumps(
             "token": SEAT_TOKEN,
             "actions": ["open_pr", "edit_pr", "reply_thread", "comment_pr"],
             "repos": ["example/fixture-repo"],
+            "app_slug": "swu-echo",
+            "mint_permissions": {"pull_requests": "write", "issues": "write"},
         },
         "swu-prime": {
             "token": OTHER_TOKEN,
             "actions": ["comment_pr"],
             "repos": ["example/*"],
+            "app_slug": "swu-prime",
+            "mint_permissions": {"issues": "write"},
         },
     }
 )
@@ -190,13 +194,16 @@ class StubClient:
         self.calls.append(("open_pr", repo, base, head, title, body))
         return {"number": 1, "url": "https://x/pr/1"}
 
-    def edit_pr(self, repo, number, title=None, body=None):
+    def edit_pr(self, repo, number, title=None, body=None, bearer=None):
+        self.calls.append(("edit_pr", repo, number, title, body, bearer))
         return {"number": number, "url": "u"}
 
-    def reply_thread(self, repo, number, comment_id, body):
+    def reply_thread(self, repo, number, comment_id, body, bearer=None):
+        self.calls.append(("reply_thread", repo, number, comment_id, body, bearer))
         return {"id": 2, "url": "u"}
 
-    def comment_pr(self, repo, number, body):
+    def comment_pr(self, repo, number, body, bearer=None):
+        self.calls.append(("comment_pr", repo, number, body, bearer))
         return {"id": 3, "url": "u"}
 
 
@@ -407,6 +414,9 @@ APP_SEATS_JSON = json.dumps(
                 "merge_pr",
                 "workflow_dispatch",
                 "resolve_thread",
+                "edit_pr",
+                "reply_thread",
+                "comment_pr",
                 "create_release",
             ],
             "repos": ["example/*"],
@@ -414,6 +424,7 @@ APP_SEATS_JSON = json.dumps(
             "mint_permissions": {
                 "contents": "write",
                 "pull_requests": "write",
+                "issues": "write",
                 "actions": "write",
                 "metadata": "read",
             },
@@ -497,6 +508,75 @@ class TestAppActions(unittest.TestCase):
             status, body = relay.handle(SEAT_TOKEN, "merge_pr", {"repo": "example/x", "number": 1})
             self.assertEqual(status, 503)
             self.assertIn("not configured", body["error"])
+
+    def test_edit_pr_uses_minted_bearer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, body = relay.handle(
+                SEAT_TOKEN, "edit_pr", {"repo": "example/x", "number": 1, "title": "t2"}
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                relay.app_minter.calls, [("swu-echo", "example/x", {"pull_requests": "write"})]
+            )
+            self.assertEqual(
+                relay.client.calls, [("edit_pr", "example/x", 1, "t2", None, "MINTED-FAKE-TOKEN")]
+            )
+
+    def test_reply_thread_uses_minted_bearer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, body = relay.handle(
+                SEAT_TOKEN,
+                "reply_thread",
+                {"repo": "example/x", "number": 1, "comment_id": 2, "body": "b"},
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                relay.app_minter.calls, [("swu-echo", "example/x", {"pull_requests": "write"})]
+            )
+            self.assertEqual(
+                relay.client.calls, [("reply_thread", "example/x", 1, 2, "b", "MINTED-FAKE-TOKEN")]
+            )
+
+    def test_comment_pr_uses_minted_bearer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, body = relay.handle(
+                SEAT_TOKEN, "comment_pr", {"repo": "example/x", "number": 1, "body": "b"}
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                relay.app_minter.calls, [("swu-echo", "example/x", {"issues": "write"})]
+            )
+            self.assertEqual(
+                relay.client.calls, [("comment_pr", "example/x", 1, "b", "MINTED-FAKE-TOKEN")]
+            )
+
+    def test_comment_pr_beyond_ceiling_is_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = Relay(
+                SeatPolicy(
+                    json.dumps(
+                        {
+                            "swu-echo": {
+                                "token": SEAT_TOKEN,
+                                "actions": ["comment_pr"],
+                                "repos": ["example/*"],
+                                "app_slug": "swu-echo",
+                                "mint_permissions": {"pull_requests": "write"},
+                            }
+                        }
+                    )
+                ),
+                StubClient(),
+                AuditLog(os.path.join(tmp, "a.jsonl")),
+                app_minter=FakeMinter(),
+            )
+            status, _ = relay.handle(
+                SEAT_TOKEN, "comment_pr", {"repo": "example/x", "number": 1, "body": "b"}
+            )
+            self.assertEqual(status, 403)
 
 
 class TestMinter(unittest.TestCase):
@@ -1802,7 +1882,7 @@ class BotIdentityTests(unittest.TestCase):
             {
                 "swu-echo": {
                     "token": "x" * 32,
-                    "actions": ["comment_pr"],
+                    "actions": ["open_pr"],
                     "repos": ["example/fixture-repo"],
                 }
             }

@@ -43,10 +43,12 @@ class SeatPolicy:
                  is unreachable when no verifier is configured.
     """
 
-    # PR-write actions are authored as the owner (PR-only token);  everything
-    # else runs as the seat's own GitHub App via a relay-minted token.
-    VALID_ACTIONS = ("open_pr", "edit_pr", "reply_thread", "comment_pr")
-    APP_ACTIONS = ("mint_token", "merge_pr", "workflow_dispatch", "resolve_thread")
+    # Only open_pr is authored as the owner (owner direction 2026-10-21:  the
+    # PR-only token makes PRs and does what the bot tokens cannot).  Every
+    # other write - edits, replies and comments included - runs as the seat's
+    # own GitHub App via a relay-minted token.
+    VALID_ACTIONS = ("open_pr",)
+    APP_ACTIONS = ("mint_token", "merge_pr", "workflow_dispatch", "resolve_thread", "edit_pr", "reply_thread", "comment_pr")
     # Known but not implemented:  accepted in seat config, refused at dispatch
     # until their implementation and per-action policy land.
     REGISTERED_ACTIONS = (
