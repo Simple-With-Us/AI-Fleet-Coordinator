@@ -53,7 +53,7 @@ jobs:
     # keys, and Ruby is already on this runner, so the check adds no package.
     - name: Workflow YAML rejects duplicate keys
       run: |
-        ruby scripts/check-workflow-duplicate-keys.rb .github/workflows
+        ruby scripts/check-workflow-duplicate-keys.rb .github/workflows .github/pr-autofix-trusted.yml
         cd scripts && python3 -m unittest test_workflow_duplicate_keys -v
     # AGENT-SYNC.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
     # handbook-sync/mirror.  The mirror must start with the GENERATED header, its body must hash to the header, and

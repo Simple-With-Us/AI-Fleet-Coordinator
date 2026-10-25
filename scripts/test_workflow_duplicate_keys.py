@@ -19,15 +19,22 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CHECKER = os.path.join(ROOT, "scripts", "check-workflow-duplicate-keys.rb")
 WORKFLOWS = os.path.join(ROOT, ".github", "workflows")
 CODEX_AUTOFIX = os.path.join(WORKFLOWS, "codex-autofix-reusable.yml")
+TRUSTED_POLICY = os.path.join(ROOT, ".github", "pr-autofix-trusted.yml")
 GUARDED_IF = "if: ${{ always() && steps.request_gate.outputs.skip != 'true' }}"
 
 
 def run(args):
-    return subprocess.run(
-        ["ruby", CHECKER, *args],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        return subprocess.run(
+            ["ruby", CHECKER, *args],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise SystemExit(124) from exc
+    except FileNotFoundError as exc:
+        raise SystemExit(127) from exc
 
 
 class WorkflowDuplicateKeyTests(unittest.TestCase):
@@ -36,6 +43,14 @@ class WorkflowDuplicateKeyTests(unittest.TestCase):
 
     def test_live_workflows_have_unique_keys(self):
         result = run([WORKFLOWS])
+        self.assertEqual(
+            result.returncode,
+            0,
+            result.stderr or result.stdout,
+        )
+
+    def test_live_trusted_policy_has_unique_keys(self):
+        result = run([TRUSTED_POLICY])
         self.assertEqual(
             result.returncode,
             0,
