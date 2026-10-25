@@ -50,6 +50,7 @@ from . import heartbeat as HB
 from . import heldalert as HELDALERT
 from . import heldback as HELD
 from . import host_load as HL
+from . import inbox_delivery as IDEL
 from . import listener_api as LAPI
 from . import live as L
 from . import muse_bridge as MB
@@ -648,6 +649,9 @@ class Daemon:
         self._fanout_lock = threading.Lock()
         # Bounded:  the ids only have to outlive one message's routing, so the daemon never grows without limit.
         self._fanout_seen: collections.deque[int] = collections.deque(maxlen=RING_LIMIT)
+        # The same ring for the native Zulip inbox delivery:  one delivery per message, whichever
+        # seat saw it first.
+        self._inbox_seen: collections.deque[int] = collections.deque(maxlen=RING_LIMIT)
         # Owner `@all` wakes the fanout thread hands back;  only tick() (the event thread) drains it,
         # because the coalescer is not thread-safe.
         self._broadcast_wakes: queue.SimpleQueue[tuple[Mapping[str, Any], frozenset[str]]] = (
@@ -1696,6 +1700,11 @@ class Daemon:
         # where the fanout would wake every seat, so the fanout checks the marker too (AFC-468).
         if self._owner_broadcast(c):
             self.start_fanout(message, c)
+        # The owner's channel-wide note also belongs UNREAD in every fleet bot's own Zulip
+        # inbox (AFC-938).  This is a second copy, not a replacement:  the `@**all**` wake path
+        # above is untouched, and `@**everyone**` keeps waking nobody.
+        if self._owner_inbox_broadcast(c):
+            self.start_inbox_delivery(message, c)
         if (
             first_seen
             and c.owner
@@ -3123,12 +3132,129 @@ class Daemon:
                 return
             self._fanout_seen.append(message_id)
         where = FAN.scope(R.outside_code(str(message.get("content") or "")), c.topic)
-        threading.Thread(
+        thread = threading.Thread(
             target=self.fanout,
             args=(message_id, c.channel, c.topic, where, FAN.ChatPlaces(), message),
             name="chat-fanout",
             daemon=True,
-        ).start()
+        )
+        try:
+            thread.start()
+        except Exception as exc:  # noqa: BLE001 - a fanout that never started owns nothing
+            # The thread never ran, so nobody owns the delivery:  the id must not stay "seen"
+            # (a retry would be deduped away) and the wake must not be lost.  The message goes
+            # straight to the event thread with an empty nudged set, so tick() still wakes every
+            # seat.  The log carries the id and the error type only:  never the content.
+            self._forget_fanout(message_id)
+            self._broadcast_wakes.put((message, frozenset()))
+            self.log.write("fanout-start-failed", id=message_id, error=type(exc).__name__)
+
+    def _forget_fanout(self, message_id: int) -> None:
+        """Take a message id back out of the fanout's seen ring.
+
+        The id only stays "seen" while a delivery owns it.  A fanout that never started owns
+        nothing, so the id comes back out and a later retry of the same message is not deduped
+        away.  The ring is bounded, so the id may already be gone:  that is fine."""
+        with self._fanout_lock:
+            try:
+                self._fanout_seen.remove(message_id)
+            except ValueError:
+                pass
+
+    @staticmethod
+    def _owner_inbox_broadcast(c: R.Classes) -> bool:
+        """The owner's channel-wide note that belongs UNREAD in every bot's Zulip inbox.
+
+        `@**all**` (the `_owner_broadcast` gate) gets it too, and keeps its existing wake path:
+        the delivery adds an inbox copy, it never replaces a wake.  `@**everyone**` gets the
+        inbox copy and wakes nobody, which is what it already does.  The `:eyes:` marker keeps
+        the message out of the fleet's inboxes as well as out of every wake."""
+        return bool(
+            c.owner
+            and (c.broadcast_all or c.everyone_inert)
+            and not c.dm
+            and not c.stale
+            and not c.no_wake
+        )
+
+    def start_inbox_delivery(self, message: Mapping[str, Any], c: R.Classes) -> None:
+        """Put the owner's channel-wide note UNREAD in every fleet bot's own Zulip inbox.
+
+        One delivery per message, whichever seat saw it first.  The work is network IO, so it
+        runs off the event thread;  that thread never touches the coalescer, which only the
+        event thread owns.  The id stays in the seen ring only while a delivery owns it:  a
+        thread that never started owns nothing, so the id comes back out and a later retry is
+        not deduped away."""
+        message_id = message.get("id")
+        if not isinstance(message_id, int):
+            return
+        with self._fanout_lock:
+            if message_id in self._inbox_seen:
+                return
+            self._inbox_seen.append(message_id)
+        try:
+            threading.Thread(
+                target=self._deliver_inbox,
+                args=(message,),
+                name="inbox-delivery",
+                daemon=True,
+            ).start()
+        except Exception as exc:  # noqa: BLE001 - a delivery that never started owns nothing
+            self._forget_inbox(message_id)
+            self.log.write(
+                "inbox-delivery-failed",
+                id=message_id,
+                error=type(exc).__name__,
+                reason="delivery thread did not start",
+            )
+
+    def _forget_inbox(self, message_id: int) -> None:
+        """Take a message id back out of the inbox delivery's seen ring (see `_forget_fanout`)."""
+        with self._fanout_lock:
+            try:
+                self._inbox_seen.remove(message_id)
+            except ValueError:
+                pass
+
+    def _owner_email(self) -> str:
+        """The owner's own account email, when a seat's realm user list knows it.
+
+        The owner is a human and reads the channel anyway:  the delivery never targets the
+        owner's account."""
+        for runner in self.seats.values():
+            users = getattr(runner, "users", None) or {}
+            user = users.get(self.config.owner_user_id) or {}
+            email = str(user.get("email") or "")
+            if email:
+                return email
+        return ""
+
+    def _deliver_inbox(self, message: Mapping[str, Any]) -> None:
+        """The network part of the inbox delivery, off the event thread.
+
+        The bot list and the credentials come from Infisical only.  When Infisical cannot be
+        read, this logs an explicit `inbox-delivery-failed` with the reason:  there is no
+        fallback and no pretend success."""
+        message_id = message.get("id")
+        try:
+            targets = IDEL.infisical_targets(env=self.env, home=Path(self.home), log=self.log.write)
+        except IDEL.DeliveryError as exc:
+            self.log.write("inbox-delivery-failed", id=message_id, reason=str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 - an unreadable Infisical is a logged failure
+            self.log.write("inbox-delivery-failed", id=message_id, error=type(exc).__name__)
+            return
+        owner_email = self._owner_email()
+        try:
+            IDEL.deliver(
+                message,
+                targets=targets,
+                http_factory=IDEL.zulip_http,
+                log=self.log.write,
+                skip_emails=[owner_email] if owner_email else [],
+            )
+        except Exception as exc:  # noqa: BLE001 - the delivery never breaks the router
+            self.log.write("inbox-delivery-failed", id=message_id, error=type(exc).__name__)
 
     def fanout(
         self,

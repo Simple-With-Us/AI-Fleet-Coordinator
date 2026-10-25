@@ -3,6 +3,8 @@
 Zulip sets the same wildcard flags for both tokens; only the raw message token may decide."""
 from __future__ import annotations
 
+import json
+import threading
 import unittest
 from unittest import mock
 
@@ -264,6 +266,31 @@ class OwnerAllFanoutDedupTests(DaemonHarness):
         rows = [e for e in self.log_rows(daemon) if e.get("event") == "broadcast-wake-failed"]
         self.assertEqual([r.get("seat") for r in rows], ["BROKEN"])
         self.assertGreaterEqual(len(self.wakes_for(message_id)), 1, "CLAUDE still woke after BROKEN failed")
+
+    def test_a_fanout_thread_that_cannot_start_still_wakes_the_seat_once(self) -> None:
+        """A fanout that never started owns nothing:  the id comes back out of the seen ring
+        and the wake is not lost (AFC-938)."""
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.owner_all()
+        real_start = threading.Thread.start
+
+        def boom(thread, *args, **kwargs):
+            if thread.name == "chat-fanout":
+                raise RuntimeError("can't start new thread")
+            return real_start(thread, *args, **kwargs)
+
+        with mock.patch.object(threading.Thread, "start", boom):
+            self.settle(daemon, message_id)
+        daemon.tick()
+        self.assertEqual(len(self.wakes_for(message_id)), 1, "the wake must not be lost")
+        self.assertNotIn(message_id, daemon._fanout_seen, "the id must not stay seen")
+        events = [e.get("event") for e in self.log_rows(daemon)]
+        self.assertIn("fanout-start-failed", events)
+        row = next(e for e in self.log_rows(daemon) if e.get("event") == "fanout-start-failed")
+        self.assertEqual(row.get("id"), message_id)
+        self.assertEqual(row.get("error"), "RuntimeError")
+        self.assertNotIn("deploy", json.dumps(row), "the log never holds the content")
 
 
 class NonOwnerAllChatNudgeTests(DaemonHarness):
