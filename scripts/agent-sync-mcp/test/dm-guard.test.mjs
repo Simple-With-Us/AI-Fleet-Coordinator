@@ -178,3 +178,20 @@ test("a malformed draft entry is refused with its index", async () => {
   );
   assert.equal(fake.drafts.size, 0, "nothing was sent");
 });
+
+test("a draft key does not hide a top-level direct message", async () => {
+  //  A body that carries a draft key and names a direct message at the top level is two
+  //  conversations, and both are checked:  the draft branch must not short-circuit the top-level
+  //  one (AFC-469).
+  const { c, fake } = harness({ ownerUserId: OWNER_ID });
+  await assert.rejects(
+    c.post("messages", {
+      draft: { type: "stream", to: [7], topic: "t" },
+      type: "direct",
+      to: [CODEX_ID],
+      content: "hello",
+    }),
+    (e) => e instanceof DmGuardRefused && e.code === "dm_owner_not_participant",
+  );
+  assert.equal(fake.messages.length, 0, "nothing was sent");
+});

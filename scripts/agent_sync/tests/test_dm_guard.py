@@ -64,6 +64,27 @@ class GuardShapeTests(unittest.TestCase):
             [[CODEX_ID, OWNER_ID], [CODEX_ID]],
         )
 
+    def test_a_draft_key_does_not_hide_a_top_level_direct_message(self) -> None:
+        #  A body that carries a draft key and names a direct message at the top level is two
+        #  conversations, and both are checked:  the draft branch must not short-circuit the
+        #  top-level one (AFC-469).
+        self.assertEqual(
+            Z.direct_recipient_sets(
+                {"draft": {"type": "stream", "to": [7], "topic": "t"}, "type": "direct", "to": [CODEX_ID]}
+            ),
+            [[CODEX_ID]],
+        )
+        self.assertEqual(
+            Z.direct_recipient_sets(
+                {
+                    "drafts": [{"type": "stream", "to": [7], "topic": "t"}],
+                    "type": "direct",
+                    "to": [CODEX_ID],
+                }
+            ),
+            [[CODEX_ID]],
+        )
+
     def test_a_malformed_draft_is_refused_with_its_index(self) -> None:
         #  A draft nobody can read is not skipped:  an unreadable draft could reach the request
         #  builder while another owner-addressed draft satisfied the guard.
@@ -166,6 +187,21 @@ class ClientGuardTests(Harness):
             )
         self.assertEqual(caught.exception.code, "dm_owner_not_participant")
         self.assertEqual(self.fake.requests_to("POST", "scheduled_messages"), [])
+
+    def test_a_draft_key_does_not_hide_a_top_level_direct_message(self) -> None:
+        client = self.client(OWNER_ID)
+        with self.assertRaises(Z.DmGuardRefused) as caught:
+            client.post(
+                "messages",
+                {
+                    "draft": {"type": "stream", "to": [7], "topic": "t"},
+                    "type": "direct",
+                    "to": [CODEX_ID],
+                    "content": "hello",
+                },
+            )
+        self.assertEqual(caught.exception.code, "dm_owner_not_participant")
+        self.assertEqual(self.fake.requests_to("POST", "messages"), [])
 
     def test_a_batched_draft_cannot_borrow_the_owners_participation(self) -> None:
         #  One owner-addressed draft beside a bot to bot draft does not authorise the second one

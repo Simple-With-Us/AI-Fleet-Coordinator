@@ -1128,29 +1128,31 @@ def direct_recipient_sets(params: Mapping[str, Any] | None) -> list[list[int]] |
     a union would let one owner-addressed draft authorise an unrelated bot to bot draft beside it.
 
     A channel send names a stream, not a user, so it is never a direct message and never one of
-    this guard's business."""
+    this guard's business.
+
+    Every shape the body carries contributes its own set and none of them short-circuits another:
+    a body that names a direct message at the top level and also carries a draft key is two
+    conversations, and both of them are checked."""
     if not isinstance(params, Mapping):
         return None
+    sets: list[list[int]] = []
     drafts = params.get("drafts")
     if isinstance(drafts, list):
-        sets: list[list[int]] = []
         for index, draft in enumerate(drafts):
             if not isinstance(draft, Mapping):
                 raise ValueError("drafts[%d] is not a draft object:  %r" % (index, draft))
             if str(draft.get("type") or "").strip().lower() in DM_GUARD_TYPES:
                 sets.append(_recipient_ids(draft.get("to")))
-        #  A drafts list with no direct draft in it is not a direct message at all.
-        return sets or None
     if "draft" in params:
         draft = params.get("draft")
         if not isinstance(draft, Mapping):
             raise ValueError("draft is not a draft object:  %r" % (draft,))
         if str(draft.get("type") or "").strip().lower() in DM_GUARD_TYPES:
-            return [_recipient_ids(draft.get("to"))]
-        return None
+            sets.append(_recipient_ids(draft.get("to")))
     if str(params.get("type") or "").strip().lower() in DM_GUARD_TYPES:
-        return [_recipient_ids(params.get("to"))]
-    return None
+        sets.append(_recipient_ids(params.get("to")))
+    #  A body with no direct conversation in it is not a direct message at all.
+    return sets or None
 
 
 def check_dm_guard(

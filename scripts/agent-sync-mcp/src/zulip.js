@@ -90,8 +90,8 @@ function recipientIds(value) {
  */
 export function directRecipientSets(params) {
   if (!params || typeof params !== "object") return null;
+  const sets = [];
   if (Array.isArray(params.drafts)) {
-    const sets = [];
     params.drafts.forEach((draft, index) => {
       if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
         throw new UsageError(`drafts[${index}] is not a draft object`);
@@ -100,8 +100,6 @@ export function directRecipientSets(params) {
         sets.push(recipientIds(draft.to));
       }
     });
-    //  A drafts list with no direct draft in it is not a direct message at all.
-    return sets.length ? sets : null;
   }
   //  One draft being rewritten:  PATCH drafts/<id> carries {draft: {type, to}}, the same shape a
   //  created draft has, so a draft's recipient set is checked when it is rewritten and not only
@@ -112,14 +110,17 @@ export function directRecipientSets(params) {
       throw new UsageError("draft is not a draft object");
     }
     if (DM_GUARD_TYPES.includes(String(one.type ?? "").trim().toLowerCase())) {
-      return [recipientIds(one.to)];
+      sets.push(recipientIds(one.to));
     }
-    return null;
   }
+  //  Every shape the body carries contributes its own set and none of them short-circuits another:
+  //  a body that names a direct message at the top level and also carries a draft key is two
+  //  conversations, and both of them are checked.
   if (DM_GUARD_TYPES.includes(String(params.type ?? "").trim().toLowerCase())) {
-    return [recipientIds(params.to)];
+    sets.push(recipientIds(params.to));
   }
-  return null;
+  //  A body with no direct conversation in it is not a direct message at all.
+  return sets.length ? sets : null;
 }
 
 /**
