@@ -70,7 +70,8 @@ ALLOW = {
     "BOTFLEET-EFFORT-LOG.md": APPS / "BOTFLEET-EFFORT-LOG.md",
     "FLEET-OPS-EFFORT-LOG.md": APPS / "FLEET-OPS-EFFORT-LOG.md",
     "EFFORT-LOG-PROTOCOL.md": APPS / "EFFORT-LOG-PROTOCOL.md",
-    "FLEET-PROTOCOL.md": APPS / "FLEET-PROTOCOL.md",   # the document is being renamed:  both names serve during the move
+    "FLEET-PROTOCOL.md": APPS
+    / "FLEET-PROTOCOL.md",  # the document is being renamed:  both names serve during the move
     "AGENT-SYNC.md": APPS / "AGENT-SYNC.md",
     "MAC-LOCAL-PROCESSES.md": APPS / "MAC-LOCAL-PROCESSES.md",
 }

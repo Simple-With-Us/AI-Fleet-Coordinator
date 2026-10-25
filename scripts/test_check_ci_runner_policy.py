@@ -8,6 +8,7 @@ Pins policy_states_ban() against AGENT-SYNC.md's CI Runners ban line and scan_in
 CI: .github/workflows/ci.yml runs this file in the step named
 ``CI runner policy lint tracks AGENT-SYNC ban text``.
 """
+
 from __future__ import annotations
 
 import importlib.machinery
@@ -46,9 +47,7 @@ class PolicyBan(unittest.TestCase):
         )
 
     def test_legacy_permanently_banned_heading_still_matches(self) -> None:
-        self.assertTrue(
-            mod.policy_states_ban("Local Mac Runner PERMANENTLY BANNED for all repos.")
-        )
+        self.assertTrue(mod.policy_states_ban("Local Mac Runner PERMANENTLY BANNED for all repos."))
 
     def test_missing_ban_is_false(self) -> None:
         self.assertFalse(mod.policy_states_ban("# CI\n- Use coolify runners only.\n"))
@@ -65,11 +64,11 @@ class ScanInventory(unittest.TestCase):
         self.assertEqual(mod.scan_inventory(row), [])
 
 
-
 class DefaultPolicyRename(unittest.TestCase):
     def test_default_policy_resolves_to_whichever_name_the_checkout_holds(self) -> None:
         self.assertIn(mod.DEFAULT_POLICY.name, ("FLEET-PROTOCOL.md", "AGENT-SYNC.md"))
         self.assertTrue(mod.DEFAULT_POLICY.is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
