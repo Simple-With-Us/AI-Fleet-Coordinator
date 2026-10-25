@@ -84,18 +84,25 @@ class ClassifyTests(unittest.TestCase):
     def test_at_all_in_agent_sync_fleet_is_the_fleet_wake(self) -> None:
         for name, kw in {
             "flags and literal": dict(content="@**all** HALT", **FLEET_KW),
-            "stream flag only": dict(content="HALT", topic="fleet", channel="work-in-progress",
+            "stream flag only still needs a token": dict(content="HALT", topic="fleet", channel="work-in-progress",
                                           flags=["stream_wildcard_mentioned"]),
-            "legacy flag only": dict(content="HALT", topic="fleet", channel="work-in-progress",
+            "legacy flag only still needs a token": dict(content="HALT", topic="fleet", channel="work-in-progress",
                                       flags=["wildcard_mentioned"]),
             "literal only (no flags on the event)": dict(content="[CODEX·ab] @**all** HALT", topic="fleet",
                                                          channel="work-in-progress"),
             "topic and channel without case": dict(content="@**all** HALT", topic="Fleet", channel="Work-In-Progress"),
-            "@**everyone** is the same stream wildcard": dict(content="@**everyone** HALT", **FLEET_KW),
+            "@**everyone** alone is not a fleet wake": dict(content="@**everyone** HALT", **FLEET_KW),
         }.items():
             with self.subTest(name):
                 c = R.classify(msg(**kw), ME, ctx())
-                self.assertTrue(c.fleet, "fleet")
+                if "everyone** alone" in name:
+                    self.assertFalse(c.fleet, "fleet")
+                    self.assertTrue(c.everyone_inert)
+                elif "needs a token" in name:
+                    self.assertFalse(c.fleet, "fleet")
+                    self.assertFalse(c.broadcast_all)
+                else:
+                    self.assertTrue(c.fleet, "fleet")
         # A real @**all** also carries the wildcard class, as it always did.
         c = R.classify(msg(content="@**all** HALT", **FLEET_KW), ME, ctx())
         self.assertTrue(c.fleet and c.wildcard and "fleet" in c.labels() and "wildcard" in c.labels())
@@ -401,14 +408,14 @@ class LeaseRoutingTests(unittest.TestCase):
         self.assertTrue(c.fleet and c.eligible and not c.owner)
         self.assertEqual((d.lease_items, d.seat_inbox, d.wake, d.wake_block), ([], True, None, "group_or_wildcard"))
 
-    def test_an_owner_wildcard_outside_the_fleet_topic_keeps_the_wildcard_handling(self) -> None:
-        for topic in ("t", "roll call", "AFC 1a2b3c4d work"):
+    def test_an_owner_at_all_outside_the_fleet_topic_wakes_every_seat(self) -> None:
+        for topic in ("t", "roll call", "AFC 1a2b3c4d work", "general"):
             with self.subTest(topic=topic):
-                c, d = R.route(msg(sender=OWNER, content="@**all** hi", topic=topic,
+                c, d = R.route(msg(sender=OWNER, content="@**all** hi", topic=topic, channel="policy",
                                    flags=["wildcard_mentioned", "stream_wildcard_mentioned"]), ME, ctx(), [])
                 self.assertFalse(c.fleet)
-                self.assertTrue(c.wildcard)
-                self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, None, "group_or_wildcard"))
+                self.assertTrue(c.broadcast_all and c.wildcard)
+                self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, "owner", None))
 
     def test_with_no_wake_capable_lease_a_mention_falls_to_the_inbox_and_the_wake(self) -> None:
         c, d = R.route(msg(content=DIRECT[0], flags=DIRECT[1]), ME, ctx(), [lease("nc", capable=False)])

@@ -1605,5 +1605,165 @@ class NotesServiceTests(unittest.TestCase):
         self.assertEqual(self.rows("server", network=False)["notes:queue"]["state"], "unknown")
 
 
+class CodeRootTests(unittest.TestCase):
+    """The doctor finds the integration checkouts through the canonical roots.
+
+    The owner removed the /root aliases on 2026-10-25, so the doctor reads the
+    roots the fleet names in the environment and keeps the copy under the home
+    as the fallback.
+    """
+
+    def make_repo(self, root: Path, name: str) -> Path:
+        repo = root / name
+        (repo / ".git").mkdir(parents=True)
+        return repo
+
+    def test_a_configured_root_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "configured"
+            repo = self.make_repo(root, "Fixture-Repo")
+            with mock.patch.dict(
+                os.environ, {"FLEET_CODE_ROOT": str(root), "FLEET_SERVER_VOLUME": ""}
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo"), repo)
+
+    def test_the_volume_the_host_names_is_used_next(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            volume = Path(tmp) / "volume"
+            repo = self.make_repo(volume / "Code", "Fixture-Repo-2")
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": str(volume)}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", Path(tmp) / "home"),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo-2"), repo)
+
+    def test_the_copy_under_the_home_is_the_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "Code", "Fixture-Repo")
+            with (
+                mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": ""}),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo"), repo)
+
+    def test_a_host_with_no_root_and_no_alias_finds_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": ""}),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", Path(tmp) / "home"),
+            ):
+                self.assertIsNone(doctor.find_repo("Fixture-Repo"))
+
+    def test_a_root_named_with_a_tilde_is_expanded_against_the_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "trees", "Fixture-Repo")
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "~/trees", "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo"), repo)
+
+    def test_a_relative_root_is_joined_onto_the_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "trees", "Fixture-Repo")
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "trees", "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo"), repo)
+
+    def test_the_volume_may_be_named_with_a_tilde(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "vol" / "Code", "Fixture-Repo-2")
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": "~/vol"}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo-2"), repo)
+
+    def test_a_relative_volume_is_joined_onto_the_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            repo = self.make_repo(home / "vol" / "Code", "Fixture-Repo-2")
+            with (
+                mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "", "FLEET_SERVER_VOLUME": "vol"}),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                self.assertEqual(doctor.find_repo("Fixture-Repo-2"), repo)
+
+    def test_as_root_a_root_another_user_can_write_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "planted"
+            repo = self.make_repo(root, "Fixture-Repo")
+            fake = mock.Mock(st_uid=1000, st_mode=stat.S_IFDIR | 0o755)
+            real_stat = os.stat
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": str(root), "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(
+                    doctor.os,
+                    "stat",
+                    side_effect=lambda p, *a, **k: (
+                        fake if p == str(root) else real_stat(p, *a, **k)
+                    ),
+                ),
+            ):
+                # As root the doctor runs nothing out of a tree another user can write.
+                self.assertIsNone(doctor.find_repo("Fixture-Repo", euid=0))
+                # As that user, the tree is its own and is searched.
+                self.assertEqual(doctor.find_repo("Fixture-Repo", euid=1000), repo)
+
+    def test_the_warning_names_every_root_that_was_searched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            report = doctor.Report()
+            with (
+                mock.patch.dict(
+                    os.environ, {"FLEET_CODE_ROOT": str(home), "FLEET_SERVER_VOLUME": ""}
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                doctor.check_checkouts(report, network=False, host="server")
+            detail = report.row(f"checkout:{doctor.REPOS[0]}")["detail"]
+            self.assertIn(str(home), detail)
+            self.assertIn(str(home / "Code"), detail)
+
+    def test_the_roots_are_reported_once_each(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {"FLEET_CODE_ROOT": str(home / "Code"), "FLEET_SERVER_VOLUME": ""},
+                ),
+                mock.patch.object(doctor, "SERVER_CODE_ROOTS", ()),
+                mock.patch.object(doctor, "HOME", home),
+            ):
+                roots = doctor.code_roots()
+            self.assertEqual(roots, [home / "Code"])
+
+
 if __name__ == "__main__":
     unittest.main()

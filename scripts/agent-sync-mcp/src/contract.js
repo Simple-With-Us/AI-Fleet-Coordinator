@@ -225,6 +225,20 @@ export class NetworkError extends AgentSyncError {
   }
 }
 
+/**
+ * A direct message the owner-in-the-conversation guard refused (AFC-469).  The rule:  a bot may
+ * send a direct message only when Jay is an actual participant in the conversation, and
+ * participation is the authenticated Zulip user id.  `code` is the machine-readable reason, the
+ * same shape the Python guard uses.
+ */
+export class DmGuardRefused extends AgentSyncError {
+  constructor(message, { code = "dm_owner_not_participant" } = {}) {
+    super(message);
+    this.name = "DmGuardRefused";
+    this.code = code;
+  }
+}
+
 /** A tool failure the caller sees as {code, message, retryable, ...}. */
 export class ToolError extends Error {
   constructor(code, message, { retryable = false, retryAfterS = null, resetAt = null, check = null, extra = null, meta = null } = {}) {
@@ -264,6 +278,7 @@ function retryAfter(exc) {
  */
 export function mapException(exc, { write = false, sent = false } = {}) {
   if (exc instanceof ToolError) return exc;
+  if (exc instanceof DmGuardRefused) return new ToolError(exc.code, exc.message, { extra: { reason: exc.code } });
   if (exc instanceof UsageError) return new ToolError("invalid_argument", exc.message);
   if (exc instanceof CredentialError) return new ToolError("not_authorized", exc.message);
   if (exc instanceof ApiError) {

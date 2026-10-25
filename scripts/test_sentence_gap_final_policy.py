@@ -55,22 +55,70 @@ STALE_RULE_FILES = (
     "docs/protocols/zulip-fleet-guide.md",
     "docs/fleet-skills/fleet-coordination/SKILL.md",
     "skills/fleet-coordination/SKILL.md",
+    # The seat template every other fleet repo copies.  It held the one-mechanism
+    # wording with no pane exception, so a seat that read only the template never
+    # learned that its own chat pane takes the entity.  Owner ruling 2026-10-25.
+    "TEMPLATE-AGENTS.md",
+    # The onboarding prompts and the skill catalog each state the rule to a seat
+    # that is reading them for the first time, so each has to name the exception.
+    "docs/INSTINCT-ONBOARDING-PROMPT.md",
+    "docs/OPENCODE-ONBOARDING-PROMPT.md",
+    "docs/fleet-skills/README-add-in-app.md",
 )
 
+# The packs whose own text states the rule.  The installer writes a copy of each
+# one into skills/ and a per-seat copy into docs/fleet-skills/by-seat/, so the
+# gate covers every copy through a glob instead of a hand-kept list of paths.
+RULE_STATING_PACKS = ("fleet-coordination", "land-lane", "owner-copy", "sentence-gap")
+
+
+def _pack_copies(pack: str) -> tuple[str, ...]:
+    """Every copy of one rule-stating pack that this repository holds."""
+    paths = [
+        ROOT / "docs" / "fleet-skills" / pack / "SKILL.md",
+        ROOT / "skills" / pack / "SKILL.md",
+    ]
+    paths += sorted(ROOT.glob("docs/fleet-skills/by-seat/*/%s/SKILL.md" % pack))
+    return tuple(str(p.relative_to(ROOT)) for p in paths if p.is_file())
+
+
 # The files that state the rule, and therefore must carry the one exception.
-# The Cursor rule, the fleet-coordination pack (canonical and rendered) and the
-# Zulip guide all state the rule, so all of them must name the one exception.
+# The Cursor rule and the Zulip guide all state the rule, so all of them must
+# name the one exception.
 EXCEPTION_FILES = (
-    "docs/fleet-skills/sentence-gap/SKILL.md",
-    "docs/fleet-skills/owner-copy/SKILL.md",
     "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
     "docs/grok-web/INSTRUCTIONS.md",
     "docs/ZULIP-SWITCH-PROMPT.md",
     ".cursor/rules/sentence-gap.mdc",
-    "docs/fleet-skills/fleet-coordination/SKILL.md",
-    "skills/fleet-coordination/SKILL.md",
     "docs/protocols/zulip-fleet-guide.md",
-)
+    # The seat template states the rule too, so it states the exception.
+    "TEMPLATE-AGENTS.md",
+    # The recall snippet is pasted into every app's instruction file, and the
+    # onboarding prompts are the first instruction file a new seat reads.
+    "docs/AGENTS-RECALL-SNIPPET.md",
+    "docs/INSTINCT-ONBOARDING-PROMPT.md",
+    "docs/OPENCODE-ONBOARDING-PROMPT.md",
+    # The skill catalog row is how a seat finds the rule.
+    "docs/fleet-skills/README-add-in-app.md",
+    # The shared rules part renders into every platform's own rules file, so a
+    # stale line here reaches every seat's prompt.
+    "scripts/fleet_lanes/rules/fleet-common.md",
+    # The rules the pr_sweep agent runs on, and the packs that state the rule
+    # for a bot or a routine:  one mechanism everywhere, so the two chat panes
+    # have to be named or a seat that reads only these writes the wrong gap.
+    "scripts/pr_sweep/rules.md",
+    "docs/grok-web/skills/grok-web-work-items/SKILL.md",
+    "docs/grok-web/README.md",
+    "docs/HOUSEKEEPER.md",
+    "docs/open-loops/README.md",
+    # The status log carries the rule as it stands, next to the dated entries
+    # that record how it stood before.
+    "STATUS.md",
+) + tuple(path for pack in RULE_STATING_PACKS for path in _pack_copies(pack))
+
+# The files whose fenced block is what a reader pastes.  A rule inside the
+# block reaches every app, so it has to carry the exception with it.
+PASTED_BLOCK_FILES = ("docs/AGENTS-RECALL-SNIPPET.md",)
 
 # The stale prescriptions, as they are written.  Each one is a live instruction a
 # reader could follow:  GitHub takes the entity, or two plain ASCII spaces are the
@@ -123,6 +171,11 @@ def _read(rel: str) -> str:
     if not path.is_file():
         raise AssertionError("%s is missing" % rel)
     return path.read_text(encoding="utf-8")
+
+
+def _fenced_blocks(text: str) -> tuple[str, ...]:
+    """The fenced blocks in a file, which are the parts a reader pastes."""
+    return tuple(re.findall(r"^```[^\n]*\n.*?^```", text, re.MULTILINE | re.DOTALL))
 
 
 def _is_history(line: str) -> bool:
@@ -207,6 +260,28 @@ class PaneExceptionTests(unittest.TestCase):
             "blanket chat-pane claims that the two exception panes contradict:\n"
             + "\n".join(problems),
         )
+
+    def test_a_pasted_block_states_no_rule_without_the_exception(self) -> None:
+        """A pasted block that states the gap rule must name the two panes.
+
+        The note above the block is for whoever pastes it, so the block is the
+        text that reaches every app.  If it ever states the rule, it has to
+        carry the exception with it.
+        """
+        for rel in PASTED_BLOCK_FILES:
+            for block in _fenced_blocks(_read(rel)):
+                if "U+00A0" not in block and "&nbsp;" not in block:
+                    continue
+                self.assertTrue(
+                    _states_the_exception(block),
+                    "%s has a pasted block that states the gap rule without the pane exception"
+                    % rel,
+                )
+                self.assertTrue(
+                    ONLY_EXCEPTION_RE.search(block),
+                    "%s has a pasted block that does not call the two panes the only exception"
+                    % rel,
+                )
 
 
 class PublishedGapTests(unittest.TestCase):

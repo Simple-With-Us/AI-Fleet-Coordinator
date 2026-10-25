@@ -51,7 +51,7 @@ _ONE_LINER_RE = re.compile(r"perl -CSDA -pe '(s/.*?/g)'")
 #  pattern the program applies.  The program must not quietly change what a gap is.
 _CANONICAL = (
     r"""s/(?<![0-9])([.!?])((?:\]\([^()\s]{1,255}\)|[*_`~)\]"\x{27}\x{2019}\x{201D}])*) +"""
-    r"""(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}])/$1$2\x{a0} /g"""
+    r"""(?=[A-Z0-9"*`#@\x{27}\x{2018}\x{201C}\[])/$1$2\x{a0} /g"""
 )
 
 #  The canonical pattern with the entity in place of the byte pair:  the same

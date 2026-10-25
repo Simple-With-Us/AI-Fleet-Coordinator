@@ -395,8 +395,10 @@ def _outcome(status: str, reason: str, **extra: Any) -> dict[str, Any]:
     return out
 
 
-def _operator_client(creds: Any, realm: str | None) -> Any:
-    return Z.ZulipClient(creds, realm or creds.site)
+def _operator_client(creds: Any, realm: str | None, owner_user_id: int = 0) -> Any:
+    # The owner's id goes with the client so the owner-in-the-conversation guard can check this
+    # direct message:  the list goes to the owner, so the owner is in the conversation (AFC-469).
+    return Z.ZulipClient(creds, realm or creds.site, owner_user_id=owner_user_id)
 
 
 def send_candidate_list(
@@ -520,7 +522,7 @@ def _send_candidate_list(
 
     if client is None:
         try:
-            client = _operator_client(creds, realm)
+            client = _operator_client(creds, realm, owner_user_id)
         except Exception as exc:
             return _outcome(
                 "refused", "the Operator client could not be built: %s" % type(exc).__name__
@@ -634,7 +636,13 @@ def _send_candidate_list(
         )
 
     try:
-        result = client.post("messages", {"type": "direct", "to": [recipient_id], "content": body})
+        # The owner is in the conversation, so this is not a bot to bot direct message (AFC-469).
+        # The candidate list carries internal session ids and titles, and the owner is the one who
+        # configured the allowlist that named this recipient, so the owner takes part in it.
+        recipients = [recipient_id]
+        if owner_user_id > 0 and owner_user_id != recipient_id:
+            recipients.append(owner_user_id)
+        result = client.post("messages", {"type": "direct", "to": recipients, "content": body})
     except Z.NetworkError as exc:
         # A timeout or a post-send disconnect leaves the outcome unknown:  the message may already
         # exist, so the key is kept and replay is refused.  A failure that provably never reached
