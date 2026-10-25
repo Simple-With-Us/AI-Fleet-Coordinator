@@ -46,7 +46,7 @@ function harness({ scopes = ["zulip:read", "zulip:write"] } = {}) {
     grantRef: "abcdef012345",
     paused: false,
     config,
-    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
+    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, ownerUserId: config.ownerUserId, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
     key: fake.key,
     gate,
     now: () => clock.now,
@@ -123,7 +123,7 @@ test("the client reaches only the allowlisted endpoints, per method", async () =
     assert.equal(pathAllowed(method, p), false, `${method} ${p}`);
   }
   const { fake } = harness();
-  const client = new ZulipClient({ email: BOT_EMAIL, key: fake.key, fetch: fake.fetch });
+  const client = new ZulipClient({ email: BOT_EMAIL, key: fake.key, ownerUserId: config.ownerUserId, fetch: fake.fetch });
   await assert.rejects(client.request("POST", "users", {}), (e) => e.code === "BAD_PATH");
   assert.equal(fake.requests.length, 0);
 });
@@ -279,14 +279,16 @@ test("upload:  text or base64, at most 1 MB, idempotent, multipart to user_uploa
 });
 
 test("scheduled messages:  tagged, idempotent, channel rule, edit and delete", async () => {
-  const { fake, tools, clock, codex } = harness();
+  const { fake, tools, clock, codex, jay } = harness();
   const when = Math.floor(clock.now / 1000) + 3600;
   const made = ok(await tools.call("zulip_scheduled_create", { topic: "later", text: "ping @**Codex**", deliver_at: when }), "zulip_scheduled_create");
   assert.equal(fake.scheduled.get(made.id).content, "[GROK-WEB] ping @_**Codex**");
   const again = ok(await tools.call("zulip_scheduled_create", { topic: "later", text: "ping @**Codex**", deliver_at: when }), "zulip_scheduled_create");
   assert.deepEqual([again.id, again.duplicate], [made.id, true]);
-  const dm = ok(await tools.call("zulip_scheduled_create", { user_ids: [codex.user_id], text: "hi", deliver_at: when }), "zulip_scheduled_create");
-  assert.deepEqual(fake.scheduled.get(dm.id).to, [codex.user_id]);
+  //  Jay is in the scheduled direct message (AFC-469):  it goes out only when the owner takes
+  //  part in it.
+  const dm = ok(await tools.call("zulip_scheduled_create", { user_ids: [codex.user_id, jay.user_id], text: "hi", deliver_at: when }), "zulip_scheduled_create");
+  assert.deepEqual(fake.scheduled.get(dm.id).to, [codex.user_id, jay.user_id].sort((a, b) => a - b));
   toolError(await tools.call("zulip_scheduled_create", { channel: "other", topic: "x", text: "hi", deliver_at: when }), "channel_not_allowed");
   toolError(await tools.call("zulip_scheduled_create", { topic: "x", text: "hi", deliver_at: 1000 }), "invalid_argument");
   toolError(await tools.call("zulip_scheduled_create", { user_ids: [codex.user_id], topic: "x", text: "hi", deliver_at: when }), "invalid_argument");
@@ -299,10 +301,12 @@ test("scheduled messages:  tagged, idempotent, channel rule, edit and delete", a
 });
 
 test("drafts and typing", async () => {
-  const { fake, tools, codex } = harness();
+  const { fake, tools, codex, jay } = harness();
   const draft = ok(await tools.call("zulip_draft_create", { topic: "d", text: "note" }), "zulip_draft_create");
-  ok(await tools.call("zulip_draft_edit", { draft_id: draft.id, user_ids: [codex.user_id], text: "n2" }), "zulip_draft_edit");
-  assert.deepEqual(fake.drafts.get(draft.id).to, [codex.user_id]);
+  //  Jay is in the direct draft (AFC-469):  it goes out only when the owner takes part in it,
+  //  and the same rule covers editing a draft, which rewrites its recipient set.
+  ok(await tools.call("zulip_draft_edit", { draft_id: draft.id, user_ids: [codex.user_id, jay.user_id], text: "n2" }), "zulip_draft_edit");
+  assert.deepEqual(fake.drafts.get(draft.id).to, [codex.user_id, jay.user_id].sort((a, b) => a - b));
   assert.deepEqual(ok(await tools.call("zulip_drafts_list", {}), "zulip_drafts_list").ids, [draft.id]);
   ok(await tools.call("zulip_draft_delete", { draft_id: draft.id }), "zulip_draft_delete");
   toolError(await tools.call("zulip_draft_create", { channel: "other", topic: "d", text: "x" }), "channel_not_allowed");

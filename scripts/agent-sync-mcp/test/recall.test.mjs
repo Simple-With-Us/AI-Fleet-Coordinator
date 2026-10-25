@@ -88,7 +88,7 @@ function harness({ respond = defaultRespond, scopes = ["zulip:read", "zulip:writ
     grantRef: "abcdef012345",
     paused,
     config,
-    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
+    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, ownerUserId: config.ownerUserId, fetch: fake.fetch, sleep: async (ms) => (clock.now += ms), now: () => clock.now }),
     key: fake.key,
     gate,
     cf: { asn: 13335, country: "US" },
