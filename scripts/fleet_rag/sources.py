@@ -61,7 +61,11 @@ GROK_SESSIONS = GROK_HOME / "sessions"
 CURSOR_PROJECTS = HOME / ".cursor" / "projects"
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
 GEMINI_HOME = HOME / ".gemini"
+# The protocol document is being renamed:  during the move the live copy exists under both names (equal bytes) and the
+# mirror under exactly one.  Remove the old name when the rename is complete.
+PROTOCOL_DOC_NAMES = ("FLEET-PROTOCOL.md", "AGENT-SYNC.md")
 EXTRA_DOCS = (
+    APPS_DIR / "FLEET-PROTOCOL.md",
     APPS_DIR / "AGENT-SYNC.md",
     APPS_DIR / "MAC-LOCAL-PROCESSES.md",
     APPS_DIR / "FLEET-UI-COPY.md",
@@ -739,7 +743,7 @@ def mirror_skip_reason(
         return SKIP_APPS_MIRROR
     ops = list(ops_repos)
     if agent_sync_ingested is None:
-        agent_sync_ingested = "AGENT-SYNC.md" in live
+        agent_sync_ingested = any(n in live for n in PROTOCOL_DOC_NAMES)
     if ops and agent_sync_ingested:
         rel = _rel_under(p, ops)
         if rel is not None and rel.parts:
@@ -894,7 +898,7 @@ def _doc_files(
     def _ingestable_mirror(f: pathlib.Path) -> bool:
         try:
             return (
-                f.name == "AGENT-SYNC.md"
+                f.name in PROTOCOL_DOC_NAMES
                 and f.is_file()
                 and not _skip_doc(f)
                 and _under(f, fleet_repos)
@@ -904,7 +908,7 @@ def _doc_files(
         ):  # unreadable:  _dedupe_docs drops it too, so it cannot stand in for the pages
             return False
 
-    agent_sync_ingested = "AGENT-SYNC.md" in live_basenames or any(
+    agent_sync_ingested = any(n in live_basenames for n in PROTOCOL_DOC_NAMES) or any(
         _ingestable_mirror(f) for f in files
     )
     kept: list[pathlib.Path] = []

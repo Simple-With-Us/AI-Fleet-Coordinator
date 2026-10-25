@@ -79,11 +79,18 @@ class GeneratedPath:
     # reverts to the pinned text (rule 3 alone would let it through, because the pin exemption accepts header-less
     # bytes and the mirror branch is exempt from rule 3's branch attribution check).
     pre_flip_sha256: str | None
+    # Migration scaffolding for a rename:  the other name of the same document.  Exactly one of the two must exist
+    # (the sync job's mirror pull request adds one and deletes the other in a single commit), and whichever exists
+    # is held to every rule below.  None for a path that is not being renamed.  Remove with the old name.
+    alternate: str | None = None
 
 
 # Fleet-OPS handbook/README.md records this hash as the verbatim import of AGENT-SYNC.md at AFC #476 (fa7daadb).
 GENERATED_PATHS: tuple[GeneratedPath, ...] = (
-    GeneratedPath("AGENT-SYNC.md", "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef"),
+    GeneratedPath("AGENT-SYNC.md", "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef",
+                  alternate="FLEET-PROTOCOL.md"),
+    # The new name, mid-rename:  the first header-bearing copy arrives by the mirror pull request, never by hand.
+    GeneratedPath("FLEET-PROTOCOL.md", None, alternate="AGENT-SYNC.md"),
     # Phase B (U9) adds the Zulip guide here, in an ordinary PR, with the pin set to the guide's sha256 at that
     # commit;  the first header then arrives by the mirror PR, as it does for AGENT-SYNC.md.  Listed now it would
     # fail, because the guide is hand-written.
@@ -144,7 +151,9 @@ def branch_problems(spec: GeneratedPath, base: bytes | None, head: bytes | None,
     strip refusal here.  The pin still excuses a header-less file before the first mirror PR lands.
     """
     if head_branch == mirror_branch:
-        if has_header(base) and not has_header(head):
+        # A deletion is not a strip when the path has an alternate:  during a rename the old name is removed in the
+        # commit that adds the new one, and check() fails the pair unless exactly one of them exists.
+        if has_header(base) and not has_header(head) and not (head is None and spec.alternate is not None):
             return [
                 f"strips the GENERATED header;  the base already has it, and on the mirror branch rule 3 would "
                 f"otherwise pass the change.  Removing it leaves main without the invariant this gate enforces, "
@@ -209,8 +218,14 @@ def check(root: Path, specs: tuple[GeneratedPath, ...], base: str | None, head_b
     for spec in specs:
         target = root / spec.path
         data = target.read_bytes() if target.is_file() else None
-        if data is None:
-            problems.append((spec.path, "is missing;  a generated path must exist"))
+        if spec.alternate is not None and data is not None and (root / spec.alternate).is_file():
+            problems.append((spec.path, f"exists together with {spec.alternate};  during a rename exactly one of the "
+                                        "two may exist, so the mirror pull request must delete the old name"))
+        if data is None and spec.alternate is not None and (root / spec.alternate).is_file():
+            notes.append(f"{spec.path}: absent while {spec.alternate} holds the document (rename in flight)")
+        elif data is None:
+            problems.append((spec.path, "is missing;  a generated path must exist"
+                             + (f" (nor is {spec.alternate})" if spec.alternate else "")))
         else:
             found, note = content_problems(spec, data)
             problems += [(spec.path, m) for m in found]

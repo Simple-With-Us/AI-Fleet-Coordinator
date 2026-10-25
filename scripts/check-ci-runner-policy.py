@@ -30,7 +30,10 @@ import re
 import sys
 
 DEFAULT_INVENTORY = pathlib.Path("~/apps/MAC-LOCAL-PROCESSES.md").expanduser()
-DEFAULT_POLICY = pathlib.Path(__file__).resolve().parent.parent / "AGENT-SYNC.md"
+# The protocol document is being renamed;  the mirror holds it under exactly one of the two names (check-generated-mirror.py).
+# Remove the old name when the rename is complete.
+_ROOT = pathlib.Path(__file__).resolve().parent.parent
+DEFAULT_POLICY = next((_ROOT / n for n in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md") if (_ROOT / n).is_file()), _ROOT / "FLEET-PROTOCOL.md")
 
 RUNNER_ROW_RE = re.compile(
     r"actions\.runner|self-hosted runner|mac-xcode|trading-live-mac", re.I

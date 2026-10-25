@@ -1478,6 +1478,15 @@ class ChatLogTests(unittest.TestCase):
         self.assertIn("chat-log", sources.GENERATORS)
 
 
+
+class ProtocolDocRename(unittest.TestCase):
+    """The protocol document is being renamed;  readers accept either name until the old one is retired."""
+
+    def test_both_names_are_known_and_the_extra_docs_list_both(self) -> None:
+        self.assertEqual(set(sources.PROTOCOL_DOC_NAMES), {"FLEET-PROTOCOL.md", "AGENT-SYNC.md"})
+        names = {p.name for p in sources.EXTRA_DOCS}
+        self.assertTrue({"FLEET-PROTOCOL.md", "AGENT-SYNC.md"} <= names)
+
 if __name__ == "__main__":
     unittest.main()
 

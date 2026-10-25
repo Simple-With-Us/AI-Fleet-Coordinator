@@ -65,5 +65,11 @@ class ScanInventory(unittest.TestCase):
         self.assertEqual(mod.scan_inventory(row), [])
 
 
+
+class DefaultPolicyRename(unittest.TestCase):
+    def test_default_policy_resolves_to_whichever_name_the_checkout_holds(self) -> None:
+        self.assertIn(mod.DEFAULT_POLICY.name, ("FLEET-PROTOCOL.md", "AGENT-SYNC.md"))
+        self.assertTrue(mod.DEFAULT_POLICY.is_file())
+
 if __name__ == "__main__":
     unittest.main()

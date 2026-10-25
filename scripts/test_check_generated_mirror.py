@@ -372,6 +372,97 @@ class BranchRule(RepoCase):
         self.assertEqual([p for p, _ in problems], ["docs/guide.md"])
 
 
+class RenameInFlight(RepoCase):
+    """A mirror being renamed:  exactly one of the two names exists, and only the mirror branch may move it."""
+    OLD = "OLD-NAME.md"
+    NEW = "NEW-NAME.md"
+
+    def pair(self):
+        return (gm.GeneratedPath(self.OLD, None, alternate=self.NEW), gm.GeneratedPath(self.NEW, None, alternate=self.OLD))
+
+    def run_pair(self, *, base: bool = False, branch: str | None = None):
+        problems, notes = gm.check(self.root, self.pair(), self.base_sha if base else None, branch)
+        return [m for _, m in problems], notes
+
+    def remove(self, path: str) -> None:
+        (self.root / path).unlink()
+        self.git("add", "-A")
+
+    def test_the_old_name_alone_is_fine_and_the_new_name_is_noted_as_absent(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.commit_base(None)
+        problems, notes = self.run_pair(base=True, branch="claude/anything")
+        self.assertEqual(problems, [])
+        self.assertTrue(any(self.NEW in n and "rename in flight" in n for n in notes), notes)
+
+    def test_the_new_name_alone_is_fine_after_the_move(self) -> None:
+        self.write(mirror(), self.NEW)
+        self.commit_base(None)
+        problems, _ = self.run_pair(base=True, branch="claude/anything")
+        self.assertEqual(problems, [])
+
+    def test_neither_name_fails(self) -> None:
+        self.commit_base(None)
+        problems, _ = self.run_pair()
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(all("a generated path must exist" in m for m in problems))
+
+    def test_both_names_fail(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.write(mirror(), self.NEW)
+        self.commit_base(None)
+        problems, _ = self.run_pair()
+        self.assertTrue(problems)
+        self.assertTrue(all("exactly one of the two may exist" in m for m in problems), problems)
+
+    def test_the_mirror_branch_moves_the_document(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.commit_base(None)
+        self.remove(self.OLD)
+        self.write(mirror(BODY + "Moved.\n"), self.NEW)
+        problems, _ = self.run_pair(base=True, branch="handbook-sync/mirror")
+        self.assertEqual(problems, [])
+
+    def test_the_mirror_branch_adding_the_new_name_without_deleting_the_old_fails(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.commit_base(None)
+        self.write(mirror(BODY + "Moved.\n"), self.NEW)
+        problems, _ = self.run_pair(base=True, branch="handbook-sync/mirror")
+        self.assertTrue(problems)
+        self.assertTrue(all("exactly one of the two may exist" in m for m in problems), problems)
+
+    def test_an_ordinary_branch_cannot_put_a_headered_copy_under_the_new_name(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.commit_base(None)
+        self.remove(self.OLD)
+        self.write(mirror(), self.NEW)
+        problems, _ = self.run_pair(base=True, branch="claude/hand-move")
+        self.assertTrue(problems)
+        self.assertTrue(any("not 'handbook-sync/mirror'" in m for m in problems), problems)
+
+    def test_an_ordinary_branch_cannot_delete_the_old_name(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.write(mirror(), self.NEW)      # (cannot exist together on main;  the base here only sets up the deletion)
+        self.commit_base(None)
+        self.remove(self.OLD)
+        problems, _ = self.run_pair(base=True, branch="claude/delete")
+        self.assertTrue(any("not 'handbook-sync/mirror'" in m for m in problems), problems)
+
+    def test_the_mirror_branch_may_not_touch_other_paths_during_the_move(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.commit_base(None)
+        self.remove(self.OLD)
+        self.write(mirror(), self.NEW)
+        self.write("other\n", "README.md")
+        problems, _ = self.run_pair(base=True, branch="handbook-sync/mirror")
+        self.assertTrue(any("may change generated paths only" in m for m in problems), problems)
+
+    def test_the_shipped_list_names_both_during_the_rename(self) -> None:
+        shipped = {s.path: s.alternate for s in gm.GENERATED_PATHS}
+        self.assertEqual(shipped.get("AGENT-SYNC.md"), "FLEET-PROTOCOL.md")
+        self.assertEqual(shipped.get("FLEET-PROTOCOL.md"), "AGENT-SYNC.md")
+
+
 class CommandLine(RepoCase):
     def run_main(self, *argv: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
