@@ -390,10 +390,45 @@ test("every mint attempt writes exactly one outcome audit row from the central f
   assert.equal(rows.length, 3, "three attempts, three rows, exactly one each");
 });
 
-test("a commit failure after the mint body leaves only the error row, never a false minted row (kody 4372747686)", async () => {
+test("an audit-write failure aborts the mint: no bearer, no tombstone, no reveal (kody 4372747686)", async () => {
+  // DO-semantic store (snapshot rollback on throw) whose audit write fails
+  // ONCE, inside the transaction:  the mint must abort with it.
   const base = S.memoryStore();
   const store = Object.create(base);
-  store.transaction = async (cb) => { await cb(base); throw new Error("commit lost"); };
+  store.transaction = async (cb) => {
+    const snapshot = new Map([...base.map.entries()]);
+    try { return await cb(base); }
+    catch (e) { base.map.clear(); for (const [k, v] of snapshot) base.map.set(k, v); throw e; }
+  };
+  const realPut = base.put.bind(base);
+  let failedOnce = false;
+  base.put = async (k, v) => { if (k === "audit" && !failedOnce) { failedOnce = true; throw new Error("audit store down"); } return realPut(k, v); };
+  const a = await newGbBearer(ID);
+  const mintId = mintIdAt(NOW);
+  // The mint throws, so the route never reaches its reveal page.
+  await assert.rejects(S.gbBearerMintChecked(store, { mintId, hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW), /audit store down/);
+  base.put = realPut;
+  assert.equal((await S.gbBearerStatus(store, NOW)).active, false, "no bearer row survived the audit failure");
+  assert.equal(store.map.has("gb_bearer_mint_forms"), false, "no tombstone survived the audit failure");
+  // The aborted attempt is recorded exactly once, by the outside error row.
+  const rows = (await store.get("audit")) ?? [];
+  assert.equal(rows.filter((r) => r.event === "gb_bearer_minted").length, 0, "no false minted row: " + JSON.stringify(rows));
+  assert.equal(rows.filter((r) => r.event === "gb_bearer_mint_error").length, 1, JSON.stringify(rows));
+  // The same form mints once the audit store recovers.
+  const retry = await S.gbBearerMintChecked(store, { mintId, hash: a.hash, by: "j", expiresAt: NOW + 1e9 }, NOW + 1000);
+  assert.equal(retry.minted, true, "the form survives an aborted attempt");
+});
+
+test("a commit failure after the mint body leaves only the error row, never a false minted row (kody 4372747686)", async () => {
+  // A commit failure in a real Durable Object rolls the whole transaction
+  // back, including the finally's row;  the fake emulates that.
+  const base = S.memoryStore();
+  const store = Object.create(base);
+  store.transaction = async (cb) => {
+    const snapshot = new Map([...base.map.entries()]);
+    try { await cb(base); throw new Error("commit lost"); }
+    catch (e) { base.map.clear(); for (const [k, v] of snapshot) base.map.set(k, v); throw e; }
+  };
   await assert.rejects(
     S.gbBearerMintChecked(store, { mintId: mintIdAt(NOW), hash: "h", by: "j", expiresAt: NOW + 1e9 }, NOW),
     /commit lost/,
