@@ -55,6 +55,15 @@ STALE_RULE_FILES = (
     "docs/protocols/zulip-fleet-guide.md",
     "docs/fleet-skills/fleet-coordination/SKILL.md",
     "skills/fleet-coordination/SKILL.md",
+    # The seat template every other fleet repo copies.  It held the one-mechanism
+    # wording with no pane exception, so a seat that read only the template never
+    # learned that its own chat pane takes the entity.  Owner ruling 2026-10-25.
+    "TEMPLATE-AGENTS.md",
+    # The onboarding prompts and the skill catalog each state the rule to a seat
+    # that is reading them for the first time, so each has to name the exception.
+    "docs/INSTINCT-ONBOARDING-PROMPT.md",
+    "docs/OPENCODE-ONBOARDING-PROMPT.md",
+    "docs/fleet-skills/README-add-in-app.md",
 )
 
 # The files that state the rule, and therefore must carry the one exception.
@@ -70,6 +79,18 @@ EXCEPTION_FILES = (
     "docs/fleet-skills/fleet-coordination/SKILL.md",
     "skills/fleet-coordination/SKILL.md",
     "docs/protocols/zulip-fleet-guide.md",
+    # The seat template states the rule too, so it states the exception.
+    "TEMPLATE-AGENTS.md",
+    # The recall snippet is pasted into every app's instruction file, and the
+    # onboarding prompts are the first instruction file a new seat reads.
+    "docs/AGENTS-RECALL-SNIPPET.md",
+    "docs/INSTINCT-ONBOARDING-PROMPT.md",
+    "docs/OPENCODE-ONBOARDING-PROMPT.md",
+    # The skill catalog row is how a seat finds the rule.
+    "docs/fleet-skills/README-add-in-app.md",
+    # The shared rules part renders into every platform's own rules file, so a
+    # stale line here reaches every seat's prompt.
+    "scripts/fleet_lanes/rules/fleet-common.md",
 )
 
 # The stale prescriptions, as they are written.  Each one is a live instruction a

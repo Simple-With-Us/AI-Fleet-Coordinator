@@ -1,6 +1,6 @@
 # AGENTS.md fleet-recall stanza (paste into every app)
 
-Owner 2026-09-02.  A real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23).
+Owner 2026-09-02.  A real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23), with one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.
 
 ```
 ## Fleet recall
