@@ -18,6 +18,14 @@ final class FleetRegistryTests: XCTestCase {
           "visibility": "private"
         },
         {
+          "repo": "Usage-Monitor",
+          "acronym": "UM",
+          "displayName": "Usage Monitor",
+          "codeDir": "Usage-Monitor",
+          "kind": "product",
+          "visibility": "private"
+        },
+        {
           "repo": "AI-Fleet-Coordinator",
           "acronym": "AFC",
           "displayName": "AI Fleet Coordinator",
@@ -88,6 +96,7 @@ final class FleetRegistryTests: XCTestCase {
         let existingPaths: Set<String> = [
             "/home/fixture/Code/Socratic-Trade",
             "/home/fixture/apps/trading-publish.sh",
+            "/home/fixture/apps/usage-publish.sh",
         ]
         let summary = FleetRegistryReader.build(
             from: Data(sampleRegistry.utf8),
@@ -98,7 +107,7 @@ final class FleetRegistryTests: XCTestCase {
 
         XCTAssertNil(summary.problem)
         XCTAssertEqual(summary.zulipChannel, "work-in-progress")
-        XCTAssertEqual(summary.apps.count, 2)
+        XCTAssertEqual(summary.apps.count, 3)
 
         let st = summary.apps[0]
         XCTAssertEqual(st.acronym, "ST")
@@ -112,7 +121,12 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertEqual(st.activeClaims, 1)
         XCTAssertEqual(st.state, .passed)
 
-        let afc = summary.apps[1]
+        let um = summary.apps[1]
+        XCTAssertEqual(um.acronym, "UM")
+        XCTAssertNil(um.publishScript)
+        XCTAssertFalse(um.hasPublishScript)
+
+        let afc = summary.apps[2]
         XCTAssertEqual(afc.acronym, "AFC")
         XCTAssertFalse(afc.hasCodeCheckout)
         XCTAssertFalse(afc.hasIntegrationCheckout)
