@@ -357,30 +357,29 @@ def _change_text(rule: Rule, result: CheckResult, installer: Installer | None) -
     """One sentence saying what would change for this rule."""
     kind = rule.kind.value
     platform = result.platform
+    subject = (
+        "the fleet-wide compliance rule for %s" % platform
+        if rule.kind is ConfigKind.COMPLIANCE
+        else "the %s config for %s" % (kind, platform)
+    )
     if result.state is CheckState.MISSING:
         if installer is not None:
-            return "the %s config for %s is missing;  %s would write %s" % (
-                kind,
-                platform,
+            return "%s is missing;  %s would write %s" % (
+                subject,
                 installer.key,
                 ", ".join(installer.files) or "its file",
             )
-        return "the %s config for %s is missing;  no installer can create it" % (kind, platform)
+        return "%s is missing;  no installer can create it" % subject
     if result.state is CheckState.DRIFT:
         if installer is not None:
-            return "the %s config for %s does not match the manifest;  %s would rewrite %s" % (
-                kind,
-                platform,
+            return "%s does not match the manifest;  %s would rewrite %s" % (
+                subject,
                 installer.key,
                 ", ".join(installer.files) or "its file",
             )
-        return "the %s config for %s does not match the manifest;  no installer can repair it" % (
-            kind,
-            platform,
-        )
-    return "the %s config for %s could not be verified (%s:  %s);  no change is identified" % (
-        kind,
-        platform,
+        return "%s does not match the manifest;  no installer can repair it" % subject
+    return "%s could not be verified (%s:  %s);  no change is identified" % (
+        subject,
         result.state.value,
         result.reason,
     )
@@ -430,6 +429,8 @@ def build_plan(
     for seat_manifest in manifest.seats:
         for rule in seat_manifest.rules:
             rules[rule.id] = rule
+    for rule in manifest.compliance_rules:
+        rules[rule.id] = rule
     entries: list[PlanEntry] = []
     notes: list[str] = []
     for result in observed_results:

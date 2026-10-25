@@ -54,6 +54,8 @@ PLAN_KEYS = {
     "FLEET_SHEET_INGEST_ENABLED",
     "FLEET_SHEET_INGEST_TIMEOUT_MS",  # AFC-423:  the sheet sync's Fleet RAG ingest
     "APPLE_NOTES_PIN_RETRY",  # AFC-431:  whether the pin Shortcut run is retried
+    "COMPLIANCE_CERT_EXPIRY_DAYS",  # AFC-400:  the certificate expiry window the compliance rule reads
+    "COMPLIANCE_SECRETS_FINDINGS_MAX",  # AFC-400:  the secrets-hygiene tolerance the compliance rule reads
 }
 
 
