@@ -767,7 +767,8 @@ class GeneratedMirrorTests(unittest.TestCase):
     exemption.
 
     The mirror is still behind the one home:  the handbook page behind it carries the
-    converter without the markup group, and that fix belongs to Fleet-OPS, not here.  So
+    last sync's converter, which has the markup group but not the opening square bracket,
+    and that fix belongs to Fleet-OPS, not here.  So
     every mirror in the registry is held to one of two known states -- the one home's
     converter, or the pinned converter the mirror ships until the sync job rewrites it --
     and to nothing else.  A mirror that carries anything else fails here, with the

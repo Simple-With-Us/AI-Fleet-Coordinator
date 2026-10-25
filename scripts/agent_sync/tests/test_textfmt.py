@@ -276,6 +276,8 @@ SINGLE_GAPPED = (
     ("4 tests failed. Next.", "4 tests failed.%sNext." % G),
     # "no" is not an abbreviation:  this is a sentence end, and widening it costs a space, never a word.
     ("I said no. Then we stop.", "I said no.%sThen we stop." % G),
+    # A sentence that ends right before a markdown link is a sentence end (AFC-539):  the opener `[` follows.
+    ("Merged. [PR #314](https://example.com/pull/314) is in.", "Merged.%s[PR #314](https://example.com/pull/314) is in." % G),
 )
 SINGLE_UNCHANGED = (
     "Ask Dr. Smith.",
