@@ -445,7 +445,10 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         )
     if action == "comment_pr":
         return self.client.comment_pr(
-            repo, _number(args.get("number"), "number"), _clean_text(args.get("body"), "body"), bearer=token
+            repo,
+            _number(args.get("number"), "number"),
+            _clean_text(args.get("body"), "body"),
+            bearer=token,
         )
     if action == "merge_pr":
         return self.client.merge_pr(

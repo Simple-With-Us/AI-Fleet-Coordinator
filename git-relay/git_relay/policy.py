@@ -48,7 +48,15 @@ class SeatPolicy:
     # other write - edits, replies and comments included - runs as the seat's
     # own GitHub App via a relay-minted token.
     VALID_ACTIONS = ("open_pr",)
-    APP_ACTIONS = ("mint_token", "merge_pr", "workflow_dispatch", "resolve_thread", "edit_pr", "reply_thread", "comment_pr")
+    APP_ACTIONS = (
+        "mint_token",
+        "merge_pr",
+        "workflow_dispatch",
+        "resolve_thread",
+        "edit_pr",
+        "reply_thread",
+        "comment_pr",
+    )
     # Known but not implemented:  accepted in seat config, refused at dispatch
     # until their implementation and per-action policy land.
     REGISTERED_ACTIONS = (
@@ -78,10 +86,12 @@ class SeatPolicy:
                 raise PolicyError(f"seat {seat!r}: config must be an object")
             auth = str(cfg.get("auth") or "token")
             if auth not in ("token", "shared"):
-                raise PolicyError(f"seat {seat!r}: auth must be \"token\" or \"shared\"")
+                raise PolicyError(f'seat {seat!r}: auth must be "token" or "shared"')
             token = str(cfg.get("token") or "")
             if auth == "shared" and token:
-                raise PolicyError(f"seat {seat!r}: a shared-auth seat must not carry a static token")
+                raise PolicyError(
+                    f"seat {seat!r}: a shared-auth seat must not carry a static token"
+                )
             if auth == "token" and len(token) < 16:
                 raise PolicyError(f"seat {seat!r}: token missing or shorter than 16 characters")
             identity = str(cfg.get("identity") or seat)

@@ -43,11 +43,14 @@ def make_transport(behavior):
 
 def ok_answer(identity=IDENTITY, expires_in_s=3600):
     def behavior(body):
-        return 200, json.dumps({
-            "ok": True,
-            "identity": identity,
-            "expires_at": int((time.time() + expires_in_s) * 1000),
-        }).encode()
+        return 200, json.dumps(
+            {
+                "ok": True,
+                "identity": identity,
+                "expires_at": int((time.time() + expires_in_s) * 1000),
+            }
+        ).encode()
+
     return behavior
 
 
@@ -91,7 +94,9 @@ class VerifierTest(unittest.TestCase):
         self.assertIsNone(v.resolve(TOKEN))
 
     def test_refusal_answer_is_refused(self):
-        v = verifier_for(lambda body: (200, json.dumps({"ok": False, "reason": "mismatch"}).encode()))
+        v = verifier_for(
+            lambda body: (200, json.dumps({"ok": False, "reason": "mismatch"}).encode())
+        )
         self.assertIsNone(v.resolve(TOKEN))
 
     def test_http_error_and_garbage_fail_closed(self):
@@ -101,6 +106,7 @@ class VerifierTest(unittest.TestCase):
     def test_transport_exception_fails_closed(self):
         def boom(body):
             raise TimeoutError("nope")
+
         self.assertIsNone(verifier_for(boom).resolve(TOKEN))
 
     def test_positive_answer_not_cached_by_default(self):
@@ -113,6 +119,7 @@ class VerifierTest(unittest.TestCase):
 
     def test_positive_cache_only_with_operator_opt_in(self):
         import os
+
         os.environ["GIT_RELAY_VERIFY_CACHE_S"] = "30"
         try:
             v = verifier_for(ok_answer())
@@ -123,25 +130,45 @@ class VerifierTest(unittest.TestCase):
             del os.environ["GIT_RELAY_VERIFY_CACHE_S"]
 
     def test_cache_is_bounded_and_evicts_oldest(self):
-        v = verifier_for(lambda body: (200, json.dumps({"ok": False, "reason": "mismatch"}).encode()))
+        v = verifier_for(
+            lambda body: (200, json.dumps({"ok": False, "reason": "mismatch"}).encode())
+        )
         for i in range(1100):
             v.resolve("gbb_fixer_" + str(i % 36) * 43)
         from git_relay.shared_bearer import CACHE_MAX_ENTRIES
+
         self.assertLessEqual(len(v._cache), CACHE_MAX_ENTRIES)
 
     def test_negative_answer_caches_briefly(self):
-        v = verifier_for(lambda body: (200, json.dumps({"ok": False, "reason": "mismatch"}).encode()))
+        v = verifier_for(
+            lambda body: (200, json.dumps({"ok": False, "reason": "mismatch"}).encode())
+        )
         self.assertIsNone(v.resolve(TOKEN))
         self.assertIsNone(v.resolve(TOKEN))
         self.assertEqual(len(v._transport.calls), 1)
 
     def test_short_key_and_bad_url_are_startup_errors(self):
         with self.assertRaises(ValueError):
-            SharedBearerVerifier(url=URL, key_name="K", key_source=FakeKeySource({"K": "short"}), transport=make_transport(ok_answer()))
+            SharedBearerVerifier(
+                url=URL,
+                key_name="K",
+                key_source=FakeKeySource({"K": "short"}),
+                transport=make_transport(ok_answer()),
+            )
         with self.assertRaises(ValueError):
-            SharedBearerVerifier(url="http://insecure.example/x", key_name="K", key_source=FakeKeySource({"K": KEY}), transport=make_transport(ok_answer()))
+            SharedBearerVerifier(
+                url="http://insecure.example/x",
+                key_name="K",
+                key_source=FakeKeySource({"K": KEY}),
+                transport=make_transport(ok_answer()),
+            )
         with self.assertRaises(KeyError):
-            SharedBearerVerifier(url=URL, key_name="MISSING", key_source=FakeKeySource({}), transport=make_transport(ok_answer()))
+            SharedBearerVerifier(
+                url=URL,
+                key_name="MISSING",
+                key_source=FakeKeySource({}),
+                transport=make_transport(ok_answer()),
+            )
 
 
 SEAT_CFG = {
@@ -153,25 +180,47 @@ SEAT_CFG = {
 class PolicySharedAuthTest(unittest.TestCase):
     def test_shared_seat_resolves_through_the_verifier(self):
         v = verifier_for(ok_answer())
-        policy = SeatPolicy(json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}), verifier=v)
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}),
+            verifier=v,
+        )
         self.assertEqual(policy.authenticate(TOKEN), "swu-fixer")
 
     def test_shared_seat_without_verifier_is_unreachable(self):
-        policy = SeatPolicy(json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}))
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}})
+        )
         self.assertIsNone(policy.authenticate(TOKEN))
 
     def test_verified_identity_without_a_matching_seat_is_denied(self):
         v = verifier_for(ok_answer(identity="GB-ORACLE"))
-        policy = SeatPolicy(json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}), verifier=v)
+        policy = SeatPolicy(
+            json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG}}),
+            verifier=v,
+        )
         # GB-ORACLE verifies fine but no seat claims that identity.
         self.assertIsNone(policy.authenticate("gbb_oracle_" + "b" * 43))
 
     def test_shared_seat_must_not_carry_a_static_token(self):
         with self.assertRaises(PolicyError):
-            SeatPolicy(json.dumps({"swu-fixer": {"auth": "shared", "identity": IDENTITY, "token": "x" * 20, **SEAT_CFG}}))
+            SeatPolicy(
+                json.dumps(
+                    {
+                        "swu-fixer": {
+                            "auth": "shared",
+                            "identity": IDENTITY,
+                            "token": "x" * 20,
+                            **SEAT_CFG,
+                        }
+                    }
+                )
+            )
 
     def test_static_token_seats_still_work(self):
-        policy = SeatPolicy(json.dumps({"swu-echo": {"token": "s" * 20, **SEAT_CFG}}), verifier=verifier_for(ok_answer()))
+        policy = SeatPolicy(
+            json.dumps({"swu-echo": {"token": "s" * 20, **SEAT_CFG}}),
+            verifier=verifier_for(ok_answer()),
+        )
         self.assertEqual(policy.authenticate("s" * 20), "swu-echo")
         self.assertIsNone(policy.authenticate("wrong" + "s" * 20))
 
@@ -181,10 +230,15 @@ class PolicySharedAuthTest(unittest.TestCase):
 
     def test_two_seats_cannot_claim_one_identity(self):
         with self.assertRaises(PolicyError):
-            SeatPolicy(json.dumps({
-                "swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG},
-                "swu-fixer-2": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG},
-            }))
+            SeatPolicy(
+                json.dumps(
+                    {
+                        "swu-fixer": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG},
+                        "swu-fixer-2": {"auth": "shared", "identity": IDENTITY, **SEAT_CFG},
+                    }
+                )
+            )
+
 
 class SeatFamilyTest(unittest.TestCase):
     SBT = "sbt_jet-chat_" + "c" * 43
@@ -202,7 +256,10 @@ class SeatFamilyTest(unittest.TestCase):
 
     def test_shared_seat_policy_with_sbt_bearer(self):
         v = verifier_for(ok_answer(identity="JET-CHAT"))
-        policy = SeatPolicy(json.dumps({"swu-jet-chat": {"auth": "shared", "identity": "JET-CHAT", **SEAT_CFG}}), verifier=v)
+        policy = SeatPolicy(
+            json.dumps({"swu-jet-chat": {"auth": "shared", "identity": "JET-CHAT", **SEAT_CFG}}),
+            verifier=v,
+        )
         self.assertEqual(policy.authenticate(self.SBT), "swu-jet-chat")
 
 

@@ -180,7 +180,9 @@ class GitHubClient:
 
     def comment_pr(self, repo: str, number: int, body: str, bearer=None) -> dict:
         self._check_repo(repo)
-        data = self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body}, bearer=bearer)
+        data = self._call(
+            "POST", f"/repos/{repo}/issues/{number}/comments", {"body": body}, bearer=bearer
+        )
         return {"id": data.get("id"), "url": data.get("html_url")}
 
     def merge_pr(self, repo: str, number: int, method: str, bearer: str) -> dict:

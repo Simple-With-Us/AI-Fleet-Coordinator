@@ -5,11 +5,12 @@ build time and applies the same section rule (src/guide.js).
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 GUIDE_RELPATH = ("docs", "protocols", "simple-tools-guide.md")
 GUIDE_PATH = Path(__file__).resolve().parents[3].joinpath(*GUIDE_RELPATH)
@@ -31,7 +32,9 @@ def read_text(env: Mapping[str, str] | None = None) -> str:
     try:
         return path.read_text(encoding="utf-8")
     except OSError:
-        raise GuideError("not_found", "the guide is not on this host;  read %s" % GUIDE_URL) from None
+        raise GuideError(
+            "not_found", "the guide is not on this host;  read %s" % GUIDE_URL
+        ) from None
 
 
 def split_sections(text: str) -> list[tuple[str, str]]:
@@ -67,5 +70,9 @@ def lookup(text: str, section: str | None) -> tuple[str, str | None, list[str]]:
     for name, body in split_sections(text):
         if key(name) == wanted and wanted:
             return body, name, names
-    raise GuideError("not_found", "the guide has no section %s;  its sections are:  %s" % (
-        '"%s"' % section[:60].replace('"', "'"), ";  ".join(names) or "none"), names)
+    raise GuideError(
+        "not_found",
+        "the guide has no section %s;  its sections are:  %s"
+        % ('"%s"' % section[:60].replace('"', "'"), ";  ".join(names) or "none"),
+        names,
+    )

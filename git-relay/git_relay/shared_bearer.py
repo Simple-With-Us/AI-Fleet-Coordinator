@@ -42,7 +42,7 @@ REQUEST_TIMEOUT_S = 10
 # lose GR access with its SeatGate row, not with a cache entry.  An operator may
 # set a short TTL knowingly (env GIT_RELAY_VERIFY_CACHE_S, capped here).
 POSITIVE_CACHE_CAP_S = 60
-NEGATIVE_CACHE_S = 30        # a wrong guess must not hammer the Worker
+NEGATIVE_CACHE_S = 30  # a wrong guess must not hammer the Worker
 # The cache key is attacker-controlled (any string hashes), so the map is
 # bounded:  oldest entries are evicted past the cap.
 CACHE_MAX_ENTRIES = 1024
@@ -71,8 +71,11 @@ class SharedBearerVerifier:
             raise ValueError("git-relay config: bearer verify key is shorter than 32 characters")
         self._transport = transport or self._urllib_transport
         import os
+
         try:
-            self._positive_ttl = min(float(os.environ.get("GIT_RELAY_VERIFY_CACHE_S", "0")), POSITIVE_CACHE_CAP_S)
+            self._positive_ttl = min(
+                float(os.environ.get("GIT_RELAY_VERIFY_CACHE_S", "0")), POSITIVE_CACHE_CAP_S
+            )
         except ValueError:
             self._positive_ttl = 0.0
         # token hash -> (identity|None, valid_until, inserted_at);  bounded.
@@ -138,12 +141,15 @@ class SharedBearerVerifier:
             return None  # fail closed, always
 
     def _verify_remote(self, identity: str, digest: str, now: float):
-        body = json.dumps({
-            "contract": VERIFY_CONTRACT,
-            "identity": identity,
-            "hash": digest,
-            "sent_at": int(now),
-        }, separators=(",", ":")).encode()
+        body = json.dumps(
+            {
+                "contract": VERIFY_CONTRACT,
+                "identity": identity,
+                "hash": digest,
+                "sent_at": int(now),
+            },
+            separators=(",", ":"),
+        ).encode()
         signature = hmac.new(self._key.encode(), body, hashlib.sha256).hexdigest()
         status, payload = self._transport(
             "POST",
