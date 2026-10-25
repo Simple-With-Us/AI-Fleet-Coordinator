@@ -53,7 +53,7 @@ function harness({ listener = null } = {}) {
   gate.roleGet = () => S.roleGet(store, clock.now);
   const tools = new HostedTools({
     seat: "GROK-WEB", scopes: ["zulip:read", "zulip:write"], clientId: "c", grantRef: "abcdef012345", paused: false, config,
-    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, fetch: fake.fetch }), key: fake.key, gate,
+    zulip: new ZulipClient({ email: BOT_EMAIL, key: fake.key, ownerUserId: config.ownerUserId, fetch: fake.fetch }), key: fake.key, gate,
     now: () => clock.now, sleep: async () => {}, log: () => {}, usersCache: new Map(), channelsCache: new Map(),
     listener: listener ? listener(clock) : null,
   });

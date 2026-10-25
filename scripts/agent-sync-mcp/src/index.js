@@ -268,7 +268,7 @@ async function serveMcp(request, env, ctx) {
     grantRef: grantId ? await sha256Ref(grantId) : "",
     paused: result.code === "paused",
     config,
-    zulip: key ? new ZulipClient({ email, key }) : null,
+    zulip: key ? new ZulipClient({ email, key, ownerUserId: config.ownerUserId }) : null,
     key,
     gate: seatGate,
     whatsappGate: gate(env, "JET"),
@@ -338,7 +338,7 @@ async function serveMcp(request, env, ctx) {
           seat: identity,
           delegatedLinear: true,
           config: { ...config, botEmails: { ...config.botEmails, [identity]: roleEmail } },
-          zulip: new ZulipClient({ email: roleEmail, key: roleKey }),
+          zulip: new ZulipClient({ email: roleEmail, key: roleKey, ownerUserId: config.ownerUserId }),
           key: roleKey,
           linear: new LinearClient({
             seat: identity,
@@ -358,7 +358,7 @@ async function serveMcp(request, env, ctx) {
         ...common,
         seat: identity,
         config,
-        zulip: new ZulipClient({ email: peerEmail, key: peerKey }),
+        zulip: new ZulipClient({ email: peerEmail, key: peerKey, ownerUserId: config.ownerUserId }),
         key: peerKey,
         linear: linearClientFromPair(linearPairs.get(seatTagForSeat(identity)) ?? null, identity, { gate: identityGate }),
         listener: listenerClientFromEnv(env, identity, {
@@ -471,7 +471,7 @@ async function serveGbBearerMcp(request, env, token) {
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     delegatedLinear: true,
     config: { ...config, botEmails: { ...config.botEmails, [identity]: credentials.email } },
-    zulip: new ZulipClient({ email: credentials.email, key: credentials.zulipKey }),
+    zulip: new ZulipClient({ email: credentials.email, key: credentials.zulipKey, ownerUserId: config.ownerUserId }),
     key: credentials.zulipKey,
     linear: new LinearClient({
       seat: identity,
@@ -755,7 +755,7 @@ async function wakeChannels(env, config, seat, seatGate) {
   // channels", which the caller already handles;  an outage still throws.
   const key = await resolveSecret(env, { name: SEAT_SECRETS[seat].infisical.name, path: SEAT_SECRETS[seat].infisical.path, envName: SEAT_SECRETS[seat].key, optional: true });
   if (!key) return null;
-  const tools = new HostedTools({ seat, scopes: [], config, zulip: new ZulipClient({ email: config.botEmails[seat], key }), key, gate: seatGate });
+  const tools = new HostedTools({ seat, scopes: [], config, zulip: new ZulipClient({ email: config.botEmails[seat], key, ownerUserId: config.ownerUserId }), key, gate: seatGate });
   try {
     return await tools.checkedChannelSet();
   } catch (error) {
