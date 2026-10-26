@@ -41,9 +41,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_apple_notes_actions import (  # noqa: E402  (the stubs live with the AFC-486 test)
-    NOTES,
+from test_apple_notes_actions import (
     NOT_FOUND,
+    NOTES,
     OPEN_STUB,
     OSASCRIPT_STUB,
     PGREP_STUB,
@@ -106,7 +106,9 @@ class LinkifyTestCase(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def run_script(self, *args: str, body: str | None = None, **env: str) -> subprocess.CompletedProcess:
+    def run_script(
+        self, *args: str, body: str | None = None, **env: str
+    ) -> subprocess.CompletedProcess:
         child = {
             "PATH": f"{self.bindir}:{os.environ.get('PATH', '/usr/bin:/bin')}",
             "HOME": str(self.tmp),
@@ -137,9 +139,7 @@ class LinkifyTestCase(unittest.TestCase):
 
     def html(self, title: str, body: str, **env: str) -> str:
         """The HTML the note would get, from the preview hook:  no Notes, no log, no side effect."""
-        p = self.run_script(
-            "--session", SESSION, title, body, APPLE_NOTES_PRINT_HTML="1", **env
-        )
+        p = self.run_script("--session", SESSION, title, body, APPLE_NOTES_PRINT_HTML="1", **env)
         self.assertEqual(p.returncode, 0, p.stderr)
         return p.stdout
 
@@ -158,21 +158,26 @@ class LinkifyTests(LinkifyTestCase):
     def test_a_pull_request_reference_becomes_a_link_and_keeps_the_house_form(self):
         out = self.html("[AFC, MM] Notes", "Shipped in PR #957 and PR 958.")
         self.assertIn(
-            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">PR #957</a>', out
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">PR #957</a>',
+            out,
         )
         #  the bare form is normalised to the house form, PR #N
         self.assertIn(
-            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/958">PR #958</a>', out
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/958">PR #958</a>',
+            out,
         )
 
     def test_the_team_key_in_the_title_picks_the_repository(self):
         out = self.html("[ST, Claude] Trading note", "Shipped in PR #957.")
-        self.assertIn('<a href="https://github.com/Simple-With-Us/Socratic-Trade/pull/957">PR #957</a>', out)
+        self.assertIn(
+            '<a href="https://github.com/Simple-With-Us/Socratic-Trade/pull/957">PR #957</a>', out
+        )
 
     def test_a_note_with_no_team_key_falls_back_to_the_fleet_repository(self):
         out = self.html("⭐️ Background Jobs Master List", "Shipped in PR #957.")
         self.assertIn(
-            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">PR #957</a>', out
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">PR #957</a>',
+            out,
         )
 
     def test_an_identifier_that_is_not_a_linear_issue_is_left_alone(self):
@@ -199,7 +204,8 @@ class LinkifyTests(LinkifyTestCase):
         #  the markdown link is already an anchor when the linkifier sees it, so it is left exactly as it is
         self.assertEqual(out.count("<a href="), 2, out)
         self.assertIn(
-            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">PR #957</a>', out
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">PR #957</a>',
+            out,
         )
         self.assertIn(f'<a href="{LINEAR}OPS-1000">OPS-1000</a>', out)
 
@@ -230,12 +236,17 @@ class LinkifyTests(LinkifyTestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn(
-            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">PR #957</a>', p.stdout
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">PR #957</a>',
+            p.stdout,
         )
 
     def test_the_writer_says_what_it_linkified(self):
         p = self.run_script(
-            "--session", SESSION, "[AFC, MM] Notes", "Filed as OPS-1000 and PR #957.", APPLE_NOTES_PRINT_HTML="1"
+            "--session",
+            SESSION,
+            "[AFC, MM] Notes",
+            "Filed as OPS-1000 and PR #957.",
+            APPLE_NOTES_PRINT_HTML="1",
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("notes: linkified:", p.stderr)
@@ -253,15 +264,14 @@ class LinkifyTests(LinkifyTestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         (line,) = self.log_lines()
-        self.assertEqual(
-            line["reformatted"]["links"], {"issues": 2, "prs": 1}, line["reformatted"]
-        )
+        self.assertEqual(line["reformatted"]["links"], {"issues": 2, "prs": 1}, line["reformatted"])
 
     def test_a_repository_named_next_to_the_reference_picks_the_repository(self):
         #  the title says Socratic-Trade and the reference names AI-Fleet-Coordinator
         out = self.html("[ST, Claude] Trading note", "Merged as AFC PR #318.")
         self.assertIn(
-            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/318">PR #318</a>', out
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/318">PR #318</a>',
+            out,
         )
 
     def test_the_subject_of_a_table_row_picks_the_repository(self):
@@ -270,12 +280,20 @@ class LinkifyTests(LinkifyTestCase):
             "| Name | What it is |\n|---|---|\n"
             "| `com.jay.botfleet.server` | The harness, reset to origin/main (PR #480). |\n",
         )
-        self.assertIn('<a href="https://github.com/Simple-With-Us/BotFleet/pull/480">PR #480</a>', out)
+        self.assertIn(
+            '<a href="https://github.com/Simple-With-Us/BotFleet/pull/480">PR #480</a>', out
+        )
 
     def test_a_qualified_reference_links_to_the_repository_it_names(self):
         out = self.html("[AFC, MM] Notes", "Fixed by BotFleet#1282 and AFC#957.")
-        self.assertIn('<a href="https://github.com/Simple-With-Us/BotFleet/issues/1282">BotFleet#1282</a>', out)
-        self.assertIn('<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/issues/957">AFC#957</a>', out)
+        self.assertIn(
+            '<a href="https://github.com/Simple-With-Us/BotFleet/issues/1282">BotFleet#1282</a>',
+            out,
+        )
+        self.assertIn(
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/issues/957">AFC#957</a>',
+            out,
+        )
 
     def test_a_team_key_names_the_repository_of_that_team(self):
         #  there is one Linear team per repository, and OPS is the Fleet-OPS team
@@ -308,53 +326,72 @@ class LinkifyTests(LinkifyTestCase):
     def test_a_block_that_names_two_teams_names_no_repository(self):
         #  AFC-547 and OPS-1000 together say nothing about where a pull request lives, so the
         #  repository of the note decides
-        out = self.html("[AFC, MM] Notes", "See also AFC-547 and OPS-1000.  Prior PRs #380, #386 and #389.")
+        out = self.html(
+            "[AFC, MM] Notes", "See also AFC-547 and OPS-1000.  Prior PRs #380, #386 and #389."
+        )
         for num in (380, 386, 389):
             self.assertIn(
-                f'<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/{num}">#{num}</a>', out
+                f'<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/{num}">#{num}</a>',
+                out,
             )
 
     def test_a_list_of_pull_requests_becomes_one_link_each(self):
-        out = self.html("[AFC, MM] Notes", "Installed live from AFC main (PRs #380, #386 and #389).")
+        out = self.html(
+            "[AFC, MM] Notes", "Installed live from AFC main (PRs #380, #386 and #389)."
+        )
         for num in (380, 386, 389):
             self.assertIn(
-                f'<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/{num}">#{num}</a>', out
+                f'<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/{num}">#{num}</a>',
+                out,
             )
 
     def test_a_file_count_after_a_list_is_not_a_pull_request(self):
         out = self.html("[AFC, MM] Notes", "refreshed after PRs 439, 440 and 445, 22 files.")
         for num in (439, 440, 445):
             self.assertIn(
-                f'<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/{num}">#{num}</a>', out
+                f'<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/{num}">#{num}</a>',
+                out,
             )
         self.assertNotIn("pull/22", out)
         self.assertIn("22 files", out)
 
     def test_a_file_count_after_one_pull_request_stays_in_the_text(self):
         out = self.html("[AFC, MM] Notes", "shipped in PR #12, 34 files.")
-        self.assertIn('<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/12">PR #12</a>', out)
+        self.assertIn(
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/12">PR #12</a>',
+            out,
+        )
         self.assertNotIn("pull/34", out)
         self.assertIn("34 files", out)
 
     def test_a_pull_request_without_a_space_is_the_keyword_form(self):
         out = self.html("[AFC, MM] Notes", "landed as PR#957.")
-        self.assertIn('<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">PR #957</a>', out)
+        self.assertIn(
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">PR #957</a>',
+            out,
+        )
         self.assertIn("<a href=", out)
         self.assertNotIn("PR#957", out)
 
     def test_a_timestamp_is_not_a_repository(self):
         #  CT is Central Time here, and Congress.Trade is not what this note is about
-        out = self.html("[AFC, MM] Notes", "At 9:13pm CT (MM) the maintenance trigger landed in PR #909.")
+        out = self.html(
+            "[AFC, MM] Notes", "At 9:13pm CT (MM) the maintenance trigger landed in PR #909."
+        )
         self.assertIn(
-            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/909">PR #909</a>', out
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/909">PR #909</a>',
+            out,
         )
 
     def test_a_linear_issue_next_to_a_reference_does_not_move_it(self):
         #  OPS-1000 is a Linear issue on the Fleet-OPS board and says nothing about the repository
-        out = self.html("[AFC, MM] Notes", "See also AFC-547 and OPS-1000.  Prior PRs #380, #386 and #389.")
+        out = self.html(
+            "[AFC, MM] Notes", "See also AFC-547 and OPS-1000.  Prior PRs #380, #386 and #389."
+        )
         for num in (380, 386, 389):
             self.assertIn(
-                f'<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/{num}">#{num}</a>', out
+                f'<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/{num}">#{num}</a>',
+                out,
             )
 
     def test_a_reference_the_block_cannot_place_is_left_as_text(self):
