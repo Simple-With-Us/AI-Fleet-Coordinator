@@ -1085,17 +1085,17 @@ def inline(s: str) -> str:
         return "\x00code" + str(len(code_spans) - 1) + "\x00"
     s = re.sub(r"`[^`]+`", hold_code_span, s)
     # Notes.app is an HTML renderer — two ASCII spaces collapse.
-    # Sentence gap in HTML is the numeric reference for an EN SPACE, `&#8194; ` + space.
+    # Sentence gap in HTML is the numeric reference for a NARROW NO-BREAK SPACE, `&#8239; ` + space.
     # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
     # raw non-ASCII byte to the note HTML.
     # AFC-552:  the character the reference names decides whether the gap arrives.  Apple Notes
     # normalises a NO-BREAK space away on import, so `&#160; ` came back as two ordinary spaces,
-    # which the renderer collapses to one, and the gap never reached the note at all.  The en
-    # space survives the import unchanged.  Measured Oct 26, 2026 by writing ten candidate
+    # which the renderer collapses to one, and the gap never reached the note at all.  The NARROW
+    # NO-BREAK SPACE survives the import unchanged.  Measured Oct 26, 2026 by writing ten candidate
     # mechanisms into a real note and reading them back:  the no-break space, the named entity
-    # and two of them all come back as ordinary spaces, and the en, em, thin and ideographic
-    # spaces all come back as themselves.
-    s = re.sub(r"([.!?]) {2,}", r"\1&#8194; ", s)
+    # and two of them all come back as ordinary spaces, and the narrow no-break, en, em, thin and
+    # ideographic spaces all come back as themselves.
+    s = re.sub(r"([.!?]) {2,}", r"\1&#8239; ", s)
     s = re.sub(r"\x00code(\d+)\x00", lambda m: code_spans[int(m.group(1))], s)
     # links [text](url) — after escape brackets still match
     s = re.sub(
@@ -1312,13 +1312,13 @@ PY
 }
 
 # Notes.app collapses ASCII double spaces.  Turn leftover `.  ` / `!  ` / `?  `
-# into `&#8194; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
+# into `&#8239; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
 # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
 # raw non-ASCII byte to the note HTML.
 # AFC-552:  the character the reference names decides whether the gap arrives.  Apple Notes
 # normalises a NO-BREAK space away on import, so `&#160; ` came back as two ordinary spaces,
-# which the renderer collapses to one, and the gap never reached the note at all.  The en
-# space survives the import unchanged.
+# which the renderer collapses to one, and the gap never reached the note at all.  The NARROW
+# NO-BREAK SPACE survives the import unchanged.
 # A sentence that ends INSIDE inline markup puts the closing tag between the punctuation
 # and the run of spaces (`Bold end.</b>  Next`), so the run never sits next to the
 # punctuation and the gap was lost.  The optional tag group carries the closing tag
@@ -1333,7 +1333,7 @@ for i, part in enumerate(parts):
     if i % 2 == 1:
         out.append(part)
         continue
-    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#8194; ", part))
+    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#8239; ", part))
 sys.stdout.write("".join(out))
 '
 }
@@ -1590,7 +1590,7 @@ def _one_space_gaps(segment):
             if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
                 return m.group(0)
         _changes['gaps'] += 1
-        return m.group(1) + '\u2002 '
+        return m.group(1) + '\u202f '
     return _GAP1.sub(repl, segment)
 
 inner = fleet_dates(inner)

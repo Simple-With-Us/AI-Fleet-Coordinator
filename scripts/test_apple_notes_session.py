@@ -286,10 +286,10 @@ class SessionIdTests(unittest.TestCase):
             "--session", "abc12345", "[AFC, Claude] t", env={"AGENT_SEAT": "CLAUDE"}, body=body
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        #  AFC-552:  the widened gap is an en space plus a normal space.  The no-break space
-        #  it used to be is normalised away by Notes on import, so the widened gap never
-        #  reached the note either.
-        g = "\u2002 "
+        #  AFC-552:  the widened gap is a narrow no-break space plus a normal space.  The
+        #  no-break space it used to be is normalised away by Notes on import, so the
+        #  widened gap never reached the note either.
+        g = "\u202f "
         self.assertIn(
             f"Merged it.{g}Next is CI.{g}Ask Dr. Smith.{g}The U.S. Army.{g}4 tests failed.{g}Done.",
             p.stdout,
@@ -609,9 +609,9 @@ class SentenceGapMarkupTests(unittest.TestCase):
     ordinary spaces, which the renderer collapses to one, and the gap never reached a note.
     Measured Oct 26, 2026 by writing ten candidate mechanisms into a real note and reading them
     back:  the no-break space, the named entity and two of them all come back as ordinary
-    spaces, and the en, em, thin and ideographic spaces all come back as themselves.  So the
-    gap is the reference for an EN SPACE, `&#8194; `, and the no-break-space reference is
-    never emitted.
+    spaces, and the narrow no-break, en, em, thin and ideographic spaces all come back as
+    themselves.  So the gap is the reference for a NARROW NO-BREAK SPACE, `&#8239; `, and
+    the no-break-space reference is never emitted.
 
     The helper converts the gap twice, an inline pass over the Markdown source and a whole-HTML
     pass over the finished HTML, and a sentence that ends inside `**bold**`, `*italic*` or a
@@ -671,13 +671,13 @@ class SentenceGapMarkupTests(unittest.TestCase):
         p = self.run_script(self.PROBE)
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         for fragment in (
-            "<b>Bold sentence end.</b>&#8194; Plain sentence after the bold one.",
-            "<i>Italic sentence end.</i>&#8194; Plain sentence after the italic one.",
+            "<b>Bold sentence end.</b>&#8239; Plain sentence after the bold one.",
+            "<i>Italic sentence end.</i>&#8239; Plain sentence after the italic one.",
             (
-                '<a href="https://example.test/probe">Link sentence end.</a>&#8194; '
+                '<a href="https://example.test/probe">Link sentence end.</a>&#8239; '
                 "Plain sentence after the link one."
             ),
-            "Plain sentence end.&#8194; Second plain sentence.",
+            "Plain sentence end.&#8239; Second plain sentence.",
         ):
             self.assertIn(fragment, p.stdout)
 
@@ -691,7 +691,7 @@ class SentenceGapMarkupTests(unittest.TestCase):
         #  Every sentence end that is followed by a space carries the numeric reference and a space.
         for m in re.finditer(r"[.!?](</[a-zA-Z][^>]*>)?", outside):
             after = outside[m.end() :]
-            if after.startswith("&#8194; "):
+            if after.startswith("&#8239; "):
                 continue
             self.assertFalse(
                 after[:1].isspace(),
@@ -709,9 +709,9 @@ class SentenceGapMarkupTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         self.assertEqual(
             self.body_html(p.stdout),
-            "<p>Plain sentence one.&#8194; Plain sentence two.&#8194; Plain sentence three.</p>"
+            "<p>Plain sentence one.&#8239; Plain sentence two.&#8239; Plain sentence three.</p>"
             "<div><br></div>"
-            "<p>A second paragraph here.&#8194; And its end.</p>"
+            "<p>A second paragraph here.&#8239; And its end.</p>"
             "<div><br></div></div>\n",
         )
 
@@ -735,7 +735,8 @@ class SentenceGapMarkupTests(unittest.TestCase):
 
         A note that carries the reference for a no-break space comes back from Notes holding two
         ordinary spaces, and the renderer collapses those to one, so the gap never reaches the
-        owner.  The en space survives the import unchanged, so that is what the helper writes.
+        owner.  The narrow no-break space survives the import unchanged, so that is what the
+        helper writes.
         The reference for a no-break space is never emitted, in either path.
         """
         p = self.run_script(self.PROBE)
@@ -746,18 +747,35 @@ class SentenceGapMarkupTests(unittest.TestCase):
             outside = self.REGION.sub("", out)
             self.assertNotIn("&#160;", outside, out)
 
-    def test_a_one_space_sentence_end_widens_to_the_en_space(self):
-        """AFC-552:  the one-space widening writes the en space, not the no-break space.
+    def test_a_one_space_sentence_end_widens_to_the_narrow_no_break_space(self):
+        """AFC-552:  the one-space widening writes the narrow no-break space.
 
         The no-break space the widening used to write is normalised away by Notes exactly like
-        the reference, so that path was broken in the same way.  The widened gap is an en space
-        plus a normal space.
+        the reference, so that path was broken in the same way.  The widened gap is a narrow
+        no-break space plus a normal space.
+
+        The helper writes the gap on two paths and they carry it differently:  a body that
+        already holds two spaces is converted by the HTML passes, which write the numeric
+        reference, and a body that holds one space is widened by the later plain-text pass,
+        which writes the character itself.  Both must carry the narrow no-break space.
         """
-        p = self.run_script("One sentence end.  Another one.\n")
+        #  One space:  the widening path, which writes the character.
+        p = self.run_script("One sentence end. Another one.\n")
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
-        outside = self.REGION.sub("", p.stdout)
-        self.assertNotIn("&#160;", outside, outside)
-        self.assertNotIn("\xa0", outside, outside)
+        widened = self.REGION.sub("", p.stdout)
+        self.assertNotIn("&#160;", widened, widened)
+        self.assertNotIn("\xa0", widened, widened)
+        self.assertIn("\u202f ", widened, widened)
+        self.assertNotIn("\u2002 ", widened, widened)
+
+        #  Two spaces:  the HTML path, which writes the reference.
+        q = self.run_script("One sentence end.  Another one.\n")
+        self.assertEqual(q.returncode, 0, q.stderr[-400:])
+        converted = self.REGION.sub("", q.stdout)
+        self.assertNotIn("&#160;", converted, converted)
+        self.assertNotIn("\xa0", converted, converted)
+        self.assertIn("&#8239; ", converted, converted)
+        self.assertNotIn("&#8194; ", converted, converted)
 
 
 if __name__ == "__main__":
