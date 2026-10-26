@@ -933,7 +933,9 @@ class BoardTest(unittest.TestCase):
         self.verify_store = {"key": BEARER_VERIFY_KEY, "mode": "ok", "queries": []}
         self.vserver = ThreadingHTTPServer(("127.0.0.1", 0), make_verify_handler(self.verify_store))
         threading.Thread(target=self.vserver.serve_forever, daemon=True).start()
-        self.verify_url = f"http://127.0.0.1:{self.vserver.server_address[1]}/internal/gr-bearer-verify"
+        self.verify_url = (
+            f"http://127.0.0.1:{self.vserver.server_address[1]}/internal/gr-bearer-verify"
+        )
         (self.ops_vault / "tools").mkdir()
         (self.ops_vault / "tools" / "GR_BEARER_VERIFY_KEY").write_text(BEARER_VERIFY_KEY)
         (self.ops_vault / "fleet-seats").mkdir()
@@ -976,9 +978,11 @@ class BoardTest(unittest.TestCase):
 
     def seated_env(self, seat="CLAUDE"):
         """self.env plus the launcher binding, for tests that spawn the CLI directly."""
-        return dict(self.env,
-                    SIMPLE_BOARD_BEARER_LOCATOR=self.bearer_locator_for(seat),
-                    SIMPLE_BOARD_BEARER_VERIFY_URL=self.verify_url)
+        return dict(
+            self.env,
+            SIMPLE_BOARD_BEARER_LOCATOR=self.bearer_locator_for(seat),
+            SIMPLE_BOARD_BEARER_VERIFY_URL=self.verify_url,
+        )
 
     def ops_put(self, name, value):
         """Put one key in the fake Fleet-OPS /linear folder."""
@@ -1023,7 +1027,12 @@ class BoardTest(unittest.TestCase):
             e["SIMPLE_BOARD_BEARER_VERIFY_URL"] = self.verify_url
         kw = {} if stdin is None else {"input": stdin}
         p = subprocess.run(
-            [PY, "-c", CLI_BOOTSTRAP, str(CLI), *args], env=e, capture_output=True, text=True, timeout=60, **kw
+            [PY, "-c", CLI_BOOTSTRAP, str(CLI), *args],
+            env=e,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            **kw,
         )
         for tok in self.mock.tokens:
             self.assertNotIn(tok, p.stdout + p.stderr, "a token reached the output")
@@ -1271,7 +1280,9 @@ class BearerSeatTests(BoardTest):
         self.assertNotIn(BEARER_VERIFY_KEY, p.stdout + p.stderr)
 
     def test_bearer_seat_signs_a_write(self):
-        p = self.board("comment", "OPS-10", "--by", "ECHO", "--text", "Bearer run.", extra=self.bearer_env)
+        p = self.board(
+            "comment", "OPS-10", "--by", "ECHO", "--text", "Bearer run.", extra=self.bearer_env
+        )
         self.assertIn("as ECHO", p.stdout)
         body = self.comments_of(self.issue_by_ident("OPS-10"))[-1]
         self.assertTrue(body.startswith("[ECHO\u00b75e55105a] Bearer run."), body)
@@ -1283,7 +1294,9 @@ class BearerSeatTests(BoardTest):
 
     def test_bearer_beats_the_agent_seat_environment(self):
         # Base env still says AGENT_SEAT=CLAUDE; the verified bearer wins and CLAUDE is ignored.
-        p = self.board("comment", "OPS-10", "--by", "ECHO", "--text", "Whose seat?", extra=self.bearer_env)
+        p = self.board(
+            "comment", "OPS-10", "--by", "ECHO", "--text", "Whose seat?", extra=self.bearer_env
+        )
         self.assertIn("as ECHO", p.stdout)
         self.assertNotIn("as CLAUDE", p.stdout)
 
@@ -1325,7 +1338,10 @@ class BearerSeatTests(BoardTest):
         self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
 
     def test_an_unreachable_verifier_is_refused(self):
-        extra = dict(self.bearer_env, SIMPLE_BOARD_BEARER_VERIFY_URL="http://127.0.0.1:9/internal/gr-bearer-verify")
+        extra = dict(
+            self.bearer_env,
+            SIMPLE_BOARD_BEARER_VERIFY_URL="http://127.0.0.1:9/internal/gr-bearer-verify",
+        )
         p = self.board("stats", extra=extra, code=None)
         self.assert_clean_failure(p)
         self.assertIn("unreachable", p.stderr)
@@ -1339,10 +1355,15 @@ class BearerSeatTests(BoardTest):
         sandbox = self.tmp / "net-sandbox"
         sandbox.mkdir()
         (sandbox / "sitecustomize.py").write_text(NETWORK_SANDBOX)
-        e = dict(self.env, **self.bearer_env,
-                 SIMPLE_BOARD_BEARER_VERIFY_URL=self.verify_url,
-                 PYTHONPATH=str(sandbox))
-        p = subprocess.run([PY, str(CLI), "stats"], env=e, capture_output=True, text=True, timeout=60)
+        e = dict(
+            self.env,
+            **self.bearer_env,
+            SIMPLE_BOARD_BEARER_VERIFY_URL=self.verify_url,
+            PYTHONPATH=str(sandbox),
+        )
+        p = subprocess.run(
+            [PY, str(CLI), "stats"], env=e, capture_output=True, text=True, timeout=60
+        )
         self.assert_clean_failure(p)
         # "unreachable" proves the sandbox engaged:  a real Worker answer would be a
         # fixed-reason refusal (bad_signature), not a transport failure.
@@ -1364,18 +1385,38 @@ class BearerSeatTests(BoardTest):
         self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
 
     def test_malformed_locators_are_refused(self):
-        for bad in ("nope", "/fleet-seats", "fleet-seats:ECHO_SEAT_BEARER",
-                    "/fleet-seats:lowercase", "/../tools:KEY", "/fleet-seats:KEY:EXTRA",
-                    "/a/../b:KEY", "/a/./b:KEY", "/fleet-seats/:KEY", "//fleet-seats:KEY",
-                    "/fleet-seats//x:KEY", "/fleet-seats:KEY_NAME_OK:EXTRA2"):
-            p = self.board("stats", extra=dict(self.bearer_env, SIMPLE_BOARD_BEARER_LOCATOR=bad), code=None)
+        for bad in (
+            "nope",
+            "/fleet-seats",
+            "fleet-seats:ECHO_SEAT_BEARER",
+            "/fleet-seats:lowercase",
+            "/../tools:KEY",
+            "/fleet-seats:KEY:EXTRA",
+            "/a/../b:KEY",
+            "/a/./b:KEY",
+            "/fleet-seats/:KEY",
+            "//fleet-seats:KEY",
+            "/fleet-seats//x:KEY",
+            "/fleet-seats:KEY_NAME_OK:EXTRA2",
+        ):
+            p = self.board(
+                "stats", extra=dict(self.bearer_env, SIMPLE_BOARD_BEARER_LOCATOR=bad), code=None
+            )
             self.assert_clean_failure(p)
 
     def test_without_a_locator_the_environment_cannot_pick_an_identity(self):
         # AGENT_SEAT stays set but is inert:  with no locator the write refuses (exit 6),
         # reads run without an identity, and the verifier is never asked.
-        p = self.board("comment", "OPS-10", "--by", "CLAUDE", "--text", "x",
-                       extra={"SIMPLE_BOARD_BEARER_LOCATOR": ""}, code=6)
+        p = self.board(
+            "comment",
+            "OPS-10",
+            "--by",
+            "CLAUDE",
+            "--text",
+            "x",
+            extra={"SIMPLE_BOARD_BEARER_LOCATOR": ""},
+            code=6,
+        )
         self.assertIn("no verified seat", p.stderr)
         self.assertEqual(self.mock.ops, [])
         p = self.board("whoami", extra={"SIMPLE_BOARD_BEARER_LOCATOR": ""})
@@ -1395,9 +1436,12 @@ class BearerTransportSeamTests(unittest.TestCase):
     def test_the_endpoint_is_the_fixed_trusted_origin(self):
         cli = _cli()
         self.assertIsNone(cli.BEARER_TRANSPORT)
-        self.assertEqual(cli.BEARER_VERIFY_URL,
-                         "https://agents.simplewithus.com/internal/gr-bearer-verify")
-        self.assertNotIn("SIMPLE_BOARD_BEARER_VERIFY_URL", inspect.getsource(cli.bearer_verified_seat))
+        self.assertEqual(
+            cli.BEARER_VERIFY_URL, "https://agents.simplewithus.com/internal/gr-bearer-verify"
+        )
+        self.assertNotIn(
+            "SIMPLE_BOARD_BEARER_VERIFY_URL", inspect.getsource(cli.bearer_verified_seat)
+        )
 
     def test_the_sandbox_blocks_every_network_entry_path(self):
         sandbox = Path(tempfile.mkdtemp(prefix="net-sandbox-"))
@@ -1405,7 +1449,10 @@ class BearerTransportSeamTests(unittest.TestCase):
         p = subprocess.run(
             [PY, "-c", SANDBOX_PROBE],
             env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": str(sandbox)},
-            capture_output=True, text=True, timeout=60)
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
         self.assertEqual(p.returncode, 0, f"stdout:\n{p.stdout}\nstderr:\n{p.stderr}")
         self.assertIn("SANDBOX OK", p.stdout)
 
@@ -1427,15 +1474,19 @@ class BearerTransportSeamTests(unittest.TestCase):
 
         def fake(url, headers, body, timeout):
             calls.append((url, body))
-            return json.dumps({"ok": True, "identity": "ECHO",
-                               "expires_at": int((time.time() + 3600) * 1000)}).encode()
+            return json.dumps(
+                {"ok": True, "identity": "ECHO", "expires_at": int((time.time() + 3600) * 1000)}
+            ).encode()
 
         cli.BEARER_TRANSPORT = fake
         try:
-            with unittest.mock.patch.dict(os.environ, {
-                "SIMPLE_BOARD_BEARER_LOCATOR": "/fleet-seats:ECHO_SEAT_BEARER",
-                "LINEAR_BOARD_FLEET_SECRETS": str(stub),
-            }):
+            with unittest.mock.patch.dict(
+                os.environ,
+                {
+                    "SIMPLE_BOARD_BEARER_LOCATOR": "/fleet-seats:ECHO_SEAT_BEARER",
+                    "LINEAR_BOARD_FLEET_SECRETS": str(stub),
+                },
+            ):
                 self.assertEqual(cli.bearer_verified_seat(), "ECHO")
         finally:
             cli.BEARER_TRANSPORT = None
@@ -3146,7 +3197,9 @@ class SeatAppTests(BoardTest):
             self.as_seat(
                 alias, "comment", B_A[:8], "--by", alias, "--text", "alias resolves to WISE"
             )
-            self.assertIn("seat:        WISE (bearer-verified)", self.as_seat(alias, "whoami").stdout)
+            self.assertIn(
+                "seat:        WISE (bearer-verified)", self.as_seat(alias, "whoami").stdout
+            )
         for alias in ("Muse-Assist", "Rob", "Rob-Muse"):
             self.as_seat(alias, "comment", B_A[:8], "--by", alias, "--text", "alias resolves to MA")
             self.assertIn("seat:        MA (bearer-verified)", self.as_seat(alias, "whoami").stdout)
@@ -3968,8 +4021,13 @@ class TokenBlobTests(BoardTest):
         # client id, client secret, blob)
         self.assertEqual(
             self.fs_verbs()[before:],
-            ["get CLAUDE_SEAT_BEARER", "get GR_BEARER_VERIFY_KEY",
-             "get CLAUDE_LINEAR_CLIENT_ID", "get CLAUDE_LINEAR_CLIENT_SECRET", "get CACHE_CLAUDE"],
+            [
+                "get CLAUDE_SEAT_BEARER",
+                "get GR_BEARER_VERIFY_KEY",
+                "get CLAUDE_LINEAR_CLIENT_ID",
+                "get CLAUDE_LINEAR_CLIENT_SECRET",
+                "get CACHE_CLAUDE",
+            ],
         )
 
     def test_an_expired_blob_means_one_mint_and_one_write_with_the_value_on_stdin(self):

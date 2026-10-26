@@ -195,7 +195,7 @@ class InfisicalTests(T.BoardTest):
             'case "$2" in INFISICAL_AUTOMATION_CLIENT_ID) echo inf-id;; INFISICAL_AUTOMATION_CLIENT_SECRET) echo inf-secret;; '
             f'GR_BEARER_VERIFY_KEY) cat "{self.ops_vault}/tools/GR_BEARER_VERIFY_KEY";; '
             f'CLAUDE_SEAT_BEARER) cat "{self.ops_vault}/fleet-seats/CLAUDE_SEAT_BEARER";; '
-            '*) exit 3;; esac\n'
+            "*) exit 3;; esac\n"
         )
         stub.chmod(0o700)
         p = self.as_seat(
