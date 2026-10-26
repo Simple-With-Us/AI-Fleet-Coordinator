@@ -181,6 +181,16 @@ function gbBearerSection(rows, csrf, mintId = "") {
       const state = r.status === null ? "Unknown (diagnostic read failed)" : st.active ? `<span class="ok">Active</span>` : st.expired ? `<span class="warn">Expired</span>` : "None";
       const mcpState = st.active || st.expired ? (st.mcp_accept ? "also accepted on /mcp" : "GR-MCP only") : "";
       const detail = st.created_at ? `minted ${escapeHtml(ownerTime(st.created_at))}, expires ${escapeHtml(ownerTime(st.expires_at))}${st.last_used_at ? `, last used ${escapeHtml(ownerTime(st.last_used_at))}` : ", never used"}` : "";
+      // Wrong-secret presentations against this identity:  counts and a time,
+      // never a hash (kody 4373163328:  make a guessing storm visible here).
+      // A failed read is NOT a zero:  say so instead of hiding it (Tailnet
+      // review of the metric, 2026-10-25).  Counts are lifetime per identity,
+      // kept only while the identity stays configured;  they do not reset.
+      const mm = r.mismatchesUnavailable
+        ? `<br><small>wrong-secret counter read unavailable</small>`
+        : r.mismatches && Number(r.mismatches.count) > 0
+          ? `<br><small class="warn">${Number(r.mismatches.count)} wrong-secret attempt${Number(r.mismatches.count) === 1 ? "" : "s"}${r.mismatches.last_at ? `, last ${escapeHtml(ownerTime(r.mismatches.last_at))}` : ""} (lifetime)</small>`
+          : "";
       const mintLabel = st.active || st.expired ? "Rotate (Mint New)" : "Mint";
       // A rotation without the box ticked drops a seat's existing /mcp access:
       // a block-level warning ABOVE the actions, before the owner commits.
@@ -196,7 +206,7 @@ function gbBearerSection(rows, csrf, mintId = "") {
         mint,
         st.active || st.expired ? actionButton(csrf, "revoke_gb_bearer", "Revoke", { identity: r.identity }) : "",
       ].join("");
-      return `<tr><td><strong>${escapeHtml(r.identity)}</strong><br><small>${r.kind === "seat" ? "seat" : "Grok Bot"}</small></td><td>${state}${mcpState ? `<br><small>${mcpState}</small>` : ""}<br><small>${detail}</small></td><td>${buttons}</td></tr>`;
+      return `<tr><td><strong>${escapeHtml(r.identity)}</strong><br><small>${r.kind === "seat" ? "seat" : "Grok Bot"}</small></td><td>${state}${mcpState ? `<br><small>${mcpState}</small>` : ""}<br><small>${detail}</small>${mm}</td><td>${buttons}</td></tr>`;
     })
     .join("");
   return `<h2>Per-Identity Bearers</h2>

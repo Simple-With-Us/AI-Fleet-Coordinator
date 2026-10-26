@@ -1770,6 +1770,30 @@ try {
     assert.equal(none.status, 400);
   });
 
+  await step(`wrong bearer guesses count against the claimed persona - counter only, visible on /admin`, async () => {
+    // Regression for the roles-map bug (Tailnet review, 2026-10-25):  the
+    // public GB route's mismatch counter call must read the roles MAP.  A
+    // single-role lookup object has no .roles, the TypeError was swallowed by
+    // the observability catch, and every increment silently skipped.
+    const minted = await adminAction("mint_gb_bearer", { identity: PERSONA });
+    assert.equal(minted.status, 200);
+    const countLine = (html) => html.match(/(\d+) wrong-secret attempts?/);
+    const before = Number(countLine(await (await browser("/admin")).text())?.[1] ?? "0");
+    for (let n = 1; n <= 2; n++) {
+      const wrong = `gbb_${PERSONA.slice(3).toLowerCase()}_${String(n)}${"A".repeat(42)}`;
+      const refused = await mcp(wrong, "tools/list");
+      assert.equal(refused.status, 401, "a wrong secret is refused, never served");
+    }
+    const page = await (await browser("/admin")).text();
+    const after = Number(countLine(page)?.[1] ?? "0");
+    assert.equal(after, before + 2, "both wrong guesses persisted against the persona");
+    assert.match(page, /wrong-secret attempts?, last /);
+    assert.match(page, /\(lifetime\)/);
+    const line = page.split("wrong-secret attempts")[1] ?? "";
+    assert.ok(!/[0-9a-f]{64}/.test(line.slice(0, 200)), "the count line carries no token hash");
+    await adminAction("revoke_gb_bearer", { identity: PERSONA });
+  });
+
   await step("a seat bearer: minted on /admin, serves /mcp only with the recorded acceptance, acts only as JET-CHAT, rotates and revokes", async () => {
     // Minted without the tick:  GR-MCP's verify route may honor it, /mcp itself refuses.
     const grOnly = await adminAction("mint_gb_bearer", { identity: "JET-CHAT" });

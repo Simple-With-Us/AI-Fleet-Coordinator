@@ -132,6 +132,10 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
       // The refusal audit is required:  if the write fails the route errors
       // and the relay fails closed, so a missing row can never pass silently.
       await identityGate.audit({ event: "gb_bearer_refused", reason: "expired", via: "gr-verify" });
+    } else if (verdict.reason === "mismatch") {
+      // Wrong guesses write no audit row (they are free to send) but DO count
+      // against the claimed identity - the relay-facing view of a storm.
+      try { await identityGate.gbBearerMismatch(identity, new Set([...GB_IDENTITIES, ...KNOWN_SEATS])); } catch { /* A counter is observability, never the security path. */ }
     }
     return jsonResponse({ ok: false, reason: verdict.reason }, 200);
   }

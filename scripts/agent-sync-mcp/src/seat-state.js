@@ -1224,6 +1224,46 @@ export async function gbBearerRevoke(store, { by }, now = Date.now()) {
   return { revoked: Boolean(had) };
 }
 
+const GB_MISMATCH_KEY = "gb_bearer_mismatches";
+
+/**
+ * Count one wrong-secret presentation against the identity it CLAIMED (kody
+ * 4373163328:  a guessing storm was invisible;  gbBearerCheck deliberately
+ * writes nothing on mismatch to protect the capped audit log).  Counts and a
+ * last-seen time only - never a hash, a token, or an audit row.
+ *
+ * `configured` is the caller's set of currently configured identity names.
+ * A claimed name outside it lands in the single "unconfigured" bucket, so
+ * attacker-chosen names can never grow the map past |configured| + 1, and
+ * keys dropped from the configuration are evicted on the next write so the
+ * persisted map stays bounded as seats change.  The read-modify-write runs
+ * in one storage transaction so concurrent mismatches cannot lose a count.
+ */
+export async function gbBearerMismatch(store, identity, configured, now = Date.now()) {
+  const names = configured instanceof Set ? configured : new Set(configured ?? []);
+  const bucket = names.has(identity) ? identity : "unconfigured";
+  const ts = Number.isFinite(now) ? now : Date.now();
+  await store.transaction(async (txn) => {
+    const map = (await txn.get(GB_MISMATCH_KEY)) ?? {};
+    const pruned = {};
+    for (const [key, row] of Object.entries(map)) {
+      if (key === "unconfigured" || names.has(key)) pruned[key] = row;
+    }
+    const row = pruned[bucket];
+    const count = Number(row?.count);
+    pruned[bucket] = {
+      count: (Number.isFinite(count) && count >= 0 ? count : 0) + 1,
+      last_at: ts,
+    };
+    await txn.put(GB_MISMATCH_KEY, pruned);
+  });
+}
+
+/** For /admin:  the per-identity mismatch counts, times and counts only. */
+export async function gbBearerMismatches(store) {
+  return (await store.get(GB_MISMATCH_KEY)) ?? {};
+}
+
 /**
  * Check a presented hash.  {ok: true} or {ok: false, reason} with reason one of
  * none, mismatch, expired.  last_used_at is written at most once an hour, so a busy bot

@@ -437,3 +437,44 @@ test("a commit failure after the mint body leaves only the error row, never a fa
   assert.equal(rows.filter((r) => r.event === "gb_bearer_minted").length, 0, "no false minted row: " + JSON.stringify(rows));
   assert.equal(rows.filter((r) => r.event === "gb_bearer_mint_error").length, 1, JSON.stringify(rows));
 });
+
+test("gbBearerMismatch counts per configured identity, buckets strangers, and stays bounded", async () => {
+  const store = S.memoryStore();
+  const configured = new Set(["JET", "ECHO"]);
+
+  await S.gbBearerMismatch(store, "JET", configured, 1000);
+  await S.gbBearerMismatch(store, "JET", configured, 2000);
+  await S.gbBearerMismatch(store, "ECHO", configured, 3000);
+  // An attacker-chosen name lands in the one bucket, never its own key.
+  await S.gbBearerMismatch(store, "JET-EVIL", configured, 4000);
+  await S.gbBearerMismatch(store, "anything at all", configured, 5000);
+
+  let map = await S.gbBearerMismatches(store);
+  assert.deepEqual(Object.keys(map).sort(), ["ECHO", "JET", "unconfigured"]);
+  assert.equal(map.JET.count, 2);
+  assert.equal(map.JET.last_at, 2000);
+  assert.equal(map.ECHO.count, 1);
+  assert.equal(map.unconfigured.count, 2);
+  for (const row of Object.values(map)) {
+    assert.ok(!("hash" in row) && !("token" in row) && !("bearer" in row));
+  }
+
+  // A seat dropped from the configuration is evicted on the next write.
+  await S.gbBearerMismatch(store, "JET", new Set(["JET"]), 6000);
+  map = await S.gbBearerMismatches(store);
+  assert.deepEqual(Object.keys(map).sort(), ["JET", "unconfigured"]);
+  assert.equal(map.JET.count, 3);
+});
+
+test("gbBearerMismatch recovers from a corrupted count and a bad clock", async () => {
+  const store = S.memoryStore();
+  await store.put("gb_bearer_mismatches", { JET: { count: "not-a-number", last_at: -5 } });
+  await S.gbBearerMismatch(store, "JET", new Set(["JET"]), Number.NaN);
+  const map = await S.gbBearerMismatches(store);
+  assert.equal(map.JET.count, 1);
+  assert.ok(Number.isFinite(map.JET.last_at));
+});
+
+test("gbBearerMismatches is empty before any mismatch", async () => {
+  assert.deepEqual(await S.gbBearerMismatches(S.memoryStore()), {});
+});

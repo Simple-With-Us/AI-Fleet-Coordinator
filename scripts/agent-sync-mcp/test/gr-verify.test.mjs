@@ -16,11 +16,14 @@ const ID = "GB-FIXER";
 
 function memStore() {
   const m = new Map();
-  return {
+  const store = {
     get: async (k) => (m.has(k) ? m.get(k) : undefined),
     put: async (k, v) => void m.set(k, v),
     delete: async (k) => void m.delete(k),
+    // The DO store serializes transactions;  the counter needs the same surface.
+    transaction: (cb) => cb(store),
   };
+  return store;
 }
 
 async function signedBody(fields) {
@@ -32,6 +35,8 @@ function fakeGates(store, state = { paused: false }) {
   return (env, seat) => ({
     gbBearerCheck: (hash) => S.gbBearerCheck(store, hash),
     gbBearerStatus: () => S.gbBearerStatus(store),
+    gbBearerMismatch: (identity, configured) => S.gbBearerMismatch(store, identity, configured),
+    gbBearerMismatches: () => S.gbBearerMismatches(store),
     getState: async () => state,
     audit: async () => {},
   });
@@ -84,12 +89,24 @@ test("the route resolves a live bearer, and refuses none/mismatch/expired/paused
 
   assert.equal((await call("0".repeat(64))).body.reason, "mismatch");
 
+  // The wrong guess counted against the claimed identity (counts only).
+  let counted = await S.gbBearerMismatches(store);
+  assert.equal(counted[ID]?.count, 1);
+  assert.equal((await call("1".repeat(64))).body.reason, "mismatch");
+  counted = await S.gbBearerMismatches(store);
+  assert.equal(counted[ID]?.count, 2);
+  assert.ok(!("hash" in counted[ID]) && !("token" in counted[ID]));
+
   const unknown = memStore();
   assert.equal((await call(hash, fakeGates(unknown))).body.reason, "none");
+  // "none" is not a wrong secret:  it does not count.
+  assert.deepEqual(await S.gbBearerMismatches(unknown), {});
 
   const expiredStore = memStore();
   await S.gbBearerMint(expiredStore, { hash, by: "t", expiresAt: Date.now() - 1000 });
   assert.equal((await call(hash, fakeGates(expiredStore))).body.reason, "expired");
+  // An expired-but-matching bearer is not a guess either.
+  assert.deepEqual(await S.gbBearerMismatches(expiredStore), {});
 
   assert.equal((await call(hash, fakeGates(store, { paused: true }))).body.reason, "paused");
 });

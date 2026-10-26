@@ -169,6 +169,14 @@ export class SeatGate extends DurableObject {
     return state.gbBearerStatus(this.store);
   }
 
+  gbBearerMismatch(identity, configured) {
+    return state.gbBearerMismatch(this.store, identity, configured);
+  }
+
+  gbBearerMismatches() {
+    return state.gbBearerMismatches(this.store);
+  }
+
   linearTokenClear() {
     return state.linearTokenClear(this.store);
   }
