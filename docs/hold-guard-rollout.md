@@ -111,6 +111,13 @@ per-setter holds; the suffix is a display hint, never the ownership source.
     critical failure.  This mirrors the fleet's own contract (ST
     scripts/disable-pr-automerge.sh, ported inline into the AFC reusable
     workflow's disarm job); no blanket `|| true` anywhere.
+  - An unconfirmed disarm also settles the CHECK conclusion as a failure
+    (AFC-553): the guard does not know that auto-merge is off, so it cannot
+    vouch for a pull request that may still merge itself, whatever the hold
+    state says.  The gate publishes red and says why, instead of publishing
+    green over a known-unresolved condition.  The seat that armed auto-merge
+    can always disarm it with its own token, and the git relay is meant to
+    give the workflow a token allowed to make the mutation.
   - Check publication: the check-run listing (GET) is the last read and
     happens before the payload is built, so its failure recomputes the
     payload to failure; the POST is still attempted best-effort.  A

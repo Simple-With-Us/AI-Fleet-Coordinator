@@ -485,6 +485,36 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(p.returncode, 3)
         self.assertIn("auto-merge state after disarm", p.stdout)
 
+    def test_disarm_unconfirmed_publishes_a_red_gate_not_a_green_one(self):
+        # armed, the disable mutation is refused, and the state read still says
+        # armed: the hold state may be clean, but the guard does not know that
+        # auto-merge is off, so it must not publish a green gate over a pull
+        # request that can still merge itself (AFC-553).
+        self._clear_scenario()
+        self.scenario(
+            {
+                **json.load(open(self.scenario_path)),
+                "armed": True,
+                "fail": {
+                    "pr_merge": {
+                        "rc": 1,
+                        "stderr": "Resource not accessible by integration",
+                    }
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 3)
+        published = [
+            c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
+        ]
+        self.assertEqual(len(published), 1, published)
+        body = json.loads(published[0]["stdin"])
+        self.assertEqual(body["name"], "merge-gate")
+        self.assertEqual(body["conclusion"], "failure")
+        self.assertIn("disarm", body["output"]["title"])
+        self.assertIn("disarm", body["output"]["summary"])
+
     def test_disarm_state_unreadable_red_job(self):
         self._clear_scenario()
         self.scenario(
