@@ -59,7 +59,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_apple_notes_actions import (  # noqa: E402  (the stubs live with the AFC-486 test)
+from test_apple_notes_actions import (
     NOT_FOUND,
     NOTES,
     OPEN_STUB,
@@ -259,7 +259,13 @@ class LinkifyTests(LinkifyTestCase):
         #  force:  the link it makes names the synthetic host
         out = self.html("[AFC, MM] Notes", "Shipped in PR #957.")
         self.assertIn("https://" + GITHUB_HOST + "/", out)
-        for real in ("Simple-With-Us", "jaywedgeworth22", "github.com", "linear.app", "simple-with-us"):
+        for real in (
+            "Simple-With-Us",
+            "jaywedgeworth22",
+            "github.com",
+            "linear.app",
+            "simple-with-us",
+        ):
             self.assertNotIn(real, out)
 
     def test_a_linear_issue_identifier_becomes_a_link_to_the_issue(self):
@@ -297,10 +303,7 @@ class LinkifyTests(LinkifyTestCase):
         self.assertIn("AFC-380", out)
 
     def test_a_hand_written_link_is_not_doubled(self):
-        written = (
-            f"[PR #957]({gh_url(FLEET_REPO, '957')}) and "
-            f"[OPS-1000]({LINEAR_URL}OPS-1000)"
-        )
+        written = f"[PR #957]({gh_url(FLEET_REPO, '957')}) and [OPS-1000]({LINEAR_URL}OPS-1000)"
         out = self.html("[AFC, MM] Notes", f"Already linked: {written}.")
         #  the markdown link is already an anchor when the linkifier sees it, so it is left exactly as it is
         self.assertEqual(out.count("<a href="), 2, out)
@@ -416,9 +419,10 @@ class LinkifyTests(LinkifyTestCase):
 
     def test_the_repositories_of_the_teams_can_be_overridden(self):
         #  a test does not have to carry the names of the repositories of the fleet
-        repos = ",".join(
-            key + "=" + value for key, value in TEAM_REPOS.items() if key != "OPS"
-        ) + ",OPS=Another-Repo"
+        repos = (
+            ",".join(key + "=" + value for key, value in TEAM_REPOS.items() if key != "OPS")
+            + ",OPS=Another-Repo"
+        )
         out = self.html(
             "[AFC, MM] Notes",
             "OPS-1000 in PR #957.",
@@ -438,9 +442,7 @@ class LinkifyTests(LinkifyTestCase):
         out = self.html(
             "[AFC, MM] Notes",
             "CTS-330 in PR #4523.",
-            GH_STUB_MISSING=(
-                gh_path(FLEET_REPO, "4523") + "," + gh_path(SECOND_REPO, "4523")
-            ),
+            GH_STUB_MISSING=(gh_path(FLEET_REPO, "4523") + "," + gh_path(SECOND_REPO, "4523")),
         )
         self.assertIn(f'<a href="{gh_url(THIRD_REPO, "4523")}">PR #4523</a>', out)
 
@@ -553,13 +555,15 @@ class LinkifyTests(LinkifyTestCase):
 
     def test_a_team_named_a_long_way_from_the_reference_is_asked_of_github(self):
         #  a team that owns more than one repository is asked of GitHub, however far away it is named
-        body = "AFC-547 opened the work.  " + ("Filler that takes up the room.  " * 5) + "PR #957 closed it."
+        body = (
+            "AFC-547 opened the work.  "
+            + ("Filler that takes up the room.  " * 5)
+            + "PR #957 closed it."
+        )
         out = self.html("⭐️ Background Jobs Master List", body)
         self.assertIn(f'<a href="{gh_url(FLEET_REPO, "957")}">PR #957</a>', out)
         #  the control:  when GitHub says no repository holds it, the reference is left as text
-        missing = self.html(
-            "⭐️ Background Jobs Master List", body, GH_STUB_MISSING="*"
-        )
+        missing = self.html("⭐️ Background Jobs Master List", body, GH_STUB_MISSING="*")
         self.assertNotIn("pull/957", missing)
         self.assertIn("PR #957", missing)
 
