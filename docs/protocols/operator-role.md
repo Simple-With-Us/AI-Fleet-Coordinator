@@ -6,17 +6,29 @@ A discussion, for WISE, ECHO and JET to weigh in on, written from Jay's rulings 
 This document says what the Operator is, what already exists, what does not, and which parts
 are a decision rather than a task.
 
+It records what WISE and ECHO recommended, and it records the one they withdrew:  they had framed
+the Operator as a conversational assistant answering seats' questions, and Jay's clarification is
+that the Operator is mostly deterministic and does not converse with users.  The withdrawal is
+the part that stands, so the Operator's one bounded exception, a question to a message's poster or
+sender about a tag to wake, is a bounded exception and not a conversational turn.
+
 ## 1. What Jay has ruled
 
 1.  **The Operator is the thing that listens.**  It holds the eavesdropper, it runs on the server,
     and it is the service identity the fleet talks to.
 
-2.  **It talks under its own identity.**  It does not reply to a Zulip post directly, it does not
+2.  **It acts under its own identity.**  It does not reply to a Zulip post directly, it does not
     impersonate the seat it is speaking to, and it never says a seat's wake tag.
 
-3.  **It asks its questions in a post, not a direct message.**  A direct message is the fleet's
-    exception, used only by the Operator, and only when the Operator cannot pair the message with
-    a specific thread to receive it.
+3.  **It is mostly deterministic, and it does not converse with users.**  Its work is defined
+    event inputs, routing and matching rules, defined outputs, and one bounded exception:  a
+    question to a message's poster or sender about a tag to wake.  A direct message is the
+    fleet's exception, used only by the Operator, and only when the Operator cannot pair the
+    message with a specific thread to receive it.  Jay's consultant boundary is separate:  the
+    Muse spark 1.3 contributor or the MiniMax M3.1 fallback is for the headless consultant, not
+    for the Operator's own voice, and separating incoming content from authority, and consultation
+    from execution, are the barriers that make that safe.  Jay's own note is that a barrier may
+    also help with prompt-injection risk, which is a rationale and not a proof of immunity.
 
 4.  **It issues session letters.**  A letter is given in exchange for the session id and a set of
     facts about the conversation, a brief list of what the conversation is about, where it lives,
@@ -92,11 +104,7 @@ talks" on Oct 25, 2026.
 seat's questions, and a seat keeps what is already its own.  This answers Jay's "the Operator
 should have its eavesdropper on the server" without a seat losing its own ground.
 
-**The Operator's answer is a new post in the same topic, under its own identity, and never carries
-a seat's wake tag.**  That is the same shape Jay ruled, and it is also the shape that keeps the
-answer findable next to the question without the Operator ever replying to the post that asked.
-
-**The session summary carries purpose, the owning issue, the source thread, repository and pull
+**A session summary carries purpose, the owning issue, the source thread, repository and pull
 request links, the current status, and a contact.**  A letter read six weeks later should still
 say what the conversation was for and who to ask.
 
@@ -109,6 +117,20 @@ has to be writable after the letter is issued.
 **An off-topic issue mention keeps its own attribution and link, and is never folded into the
 topic's standing comment.**  Batching those by issue may cut the noise, and that batch is kept
 distinct from the standing comment rather than merged into it.
+
+**Withdrawn, and not carried forward.**  WISE and ECHO first recommended that the Operator answer
+a seat in a new post in the same topic, and then withdrew it:  they had framed the Operator as a
+conversational assistant answering seats' questions, and Jay's clarification is that the Operator
+is mostly deterministic and should not converse with users.  The withdrawal is the part that
+stands, so the discussion here is about defined event inputs, routing and matching rules, outputs
+and bounded exception behaviour, and the Operator's one question about a tag to wake is that
+bounded exception rather than a conversational turn.  The rest of their recommendations stand only
+where they are consistent with that role.
+
+**What they asked for, and what they asked about.**  They asked for the document, for the wake tag
+composer, for the merged owner-in-the-direct-message guard, for the Lark bridge implementation, for
+the source of the new wake-surface requirements, and for the provenance of the three decisions so
+that Jay is not asked the same thing twice.  All of that is in section 3.3 and section 7.
 
 ### 3.1  The Operator as the listener with the eavesdropper
 
@@ -125,24 +147,35 @@ The shape that fits:  the Operator holds the eavesdropper for the whole fleet an
 seat's questions about its own records, and a seat's own eavesdropper read is narrowed to what that
 seat already owns.  The decision for Jay is whether a seat's own eavesdropper read survives at all.
 
-### 3.2  How the Operator speaks
+### 3.2  How the Operator acts
 
-The rules are:  a post, never a reply to the triggering post;  the Operator's own identity;  no
-wake tag;  and a direct message only when the message pairs with no thread.
+The Operator is mostly deterministic.  Its behaviour is defined event inputs, routing and matching
+rules, defined outputs, and one bounded exception.  It does not converse with users, and it is not
+a conversational assistant that answers seats.
 
 Three concrete changes carry that:
 
-1.  **The post is a post, not a reply.**  The Operator's own message is composed and sent as a
-    new message.  A reply carries the thread's context and reads as the conversation's own voice,
-    which is the impersonation Jay is ruling out.
+1.  **A message it sends is its own, not a reply.**  The Operator's own message is composed and
+    sent as a new message.  A reply carries the thread's context and reads as the conversation's
+    own voice, which is the impersonation Jay is ruling out.
 
 2.  **The Operator does not wear a seat's wake tag.**  The wake tag is composed in one place, so
     this is one place:  the `OPERATOR` seat composes its own tag, and the wake-reply tag stays for
     a seat answering on the owner's behalf.
 
-3.  **The pairing test decides post against direct message.**  A message that pairs with a thread
-    gets the Operator's post in that thread.  A message that pairs with no thread gets the
-    Operator's direct message, and that is the only direct message the fleet sends.
+3.  **The pairing test decides post against direct message, and it decides only that.**  A message
+    that pairs with a thread gets the Operator's own message in that thread.  A message that pairs
+    with no thread gets the Operator's one question, and that direct message is the only direct
+    message the fleet sends.  The question itself is bounded:  it asks the message's poster or
+    sender about a tag to wake, and it is not an opening for a conversation.
+
+**The headless consultant is a different thing.**  Jay's boundary is that the Muse spark 1.3
+contributor or the MiniMax M3.1 fallback is for the headless consultant, and it is not the
+Operator's own voice.  So the Operator's deterministic outputs and the consultant's reasoning are
+separate, and the consultant is not what the Operator listens with.  Jay's own note is that
+separating incoming content from authority, and consultation from execution, are the useful
+barriers here, and that a barrier may also help with prompt-injection risk, which is a rationale
+and not a proof of immunity.
 
 **The direct message consequence, which is new and follows from today's rule.**  AFC-469 merged
 today says a direct message may go out only when the owner is in the conversation, checked by
@@ -243,10 +276,10 @@ shape from Jay on Oct 25, 2026, and what is left is narrower than it looks.
 Three slices, one seat each, and each is asked rather than assigned.  A seat that wants a
 different slice, or both, says so.
 
-**The Operator's egress and its own voice.**  The tag the Operator speaks under, the rule that it
-posts and never replies inline, the pairing test that decides post against direct message, and
-the eavesdropper grant question.  This is the listener and identity layer, where the wake tag is
-composed and where the seats are told apart.
+**The Operator's egress and its own voice.**  The tag the Operator speaks under, the rule that a
+message it sends is its own and never a reply inline, the pairing test that decides post against
+direct message, and the eavesdropper grant question.  This is the listener and identity layer,
+where the wake tag is composed and where the seats are told apart.
 
 **The WhatsApp surface.**  What it takes for the Operator to wake Jet on WhatsApp, which is the
 outbound leg and the bridge's send path, and the receive half that has to be running first.  This
@@ -276,10 +309,11 @@ Zulip only.
     fleet, or is the Operator's answer enough?  **Answered, in recommendation form, by WISE and
     ECHO:**  keep each seat's own records, and give the Operator the fleet view.  Jay's call is
     still needed on the shape, and this is the recommendation that goes with it.
-2.  Where should the Operator's posts live, so a seat that asks a question sees the answer in the
-    thread it asked in without the Operator ever replying to the post that asked?  **Answered, in
-    recommendation form, by WISE and ECHO:**  a new post in the same topic, under the Operator's
-    own identity, with no seat's wake tag on it.
+2.  Where should the Operator's message live, so that a seat that asked sees the answer in the
+    thread it asked in, without the Operator ever replying to the post that asked?  **Withdrawn
+    by WISE and ECHO and not carried forward:**  the Operator is mostly deterministic and does not
+    converse with users, so "the Operator answers in the thread" is the wrong shape to design for.
+    What stands is the narrower rule:  a message it sends is its own, never a reply.
 3.  What belongs in the short summary of what a conversation is about, so that a letter read six
     weeks later still says what it was for?  **Answered, in recommendation form, by WISE and
     ECHO:**  purpose, owning issue, source thread, repository and pull request links, current
