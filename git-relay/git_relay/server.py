@@ -344,6 +344,8 @@ class Relay:
                     if exc.credential_preview is not None:
                         payload["credential_preview"] = exc.credential_preview
                         detail["credential_preview"] = exc.credential_preview
+                    payload["github_diagnostics"] = dict(exc.diagnostics)
+                    detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 503, payload
                 if exc.status in (0, 408) or exc.status >= 500:
                     # Transport failure, timeout, or 5xx:  GitHub may have accepted
@@ -361,6 +363,8 @@ class Relay:
                     if exc.code is not None:
                         payload["github_code"] = exc.code
                         detail["github_code"] = exc.code
+                    payload["github_diagnostics"] = dict(exc.diagnostics)
+                    detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 502, payload
                 if exc.status == 429:
                     # Rate limited before the write ran:  a definite refusal.
@@ -377,6 +381,8 @@ class Relay:
                     if exc.retry_after is not None:
                         payload["retry_after_seconds"] = exc.retry_after
                         detail["retry_after_seconds"] = exc.retry_after
+                    payload["github_diagnostics"] = dict(exc.diagnostics)
+                    detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 429, payload
                 self._release(key, "refused")
                 outcome = "github_terminal"
@@ -391,6 +397,8 @@ class Relay:
                 if exc.credential_preview is not None:
                     payload["credential_preview"] = exc.credential_preview
                     detail["credential_preview"] = exc.credential_preview
+                payload["github_diagnostics"] = dict(exc.diagnostics)
+                detail["github_diagnostics"] = dict(exc.diagnostics)
                 return 400, payload
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
