@@ -124,6 +124,12 @@ jobs:
         python3 scripts/test_fleet_cli_sync.py
         python3 scripts/test_fleet_cli_runtime.py
         bash -n scripts/agent-sync-runtime-sync.sh
+    # fleet-server-status (AFC-548):  the server collector whose report the Muster
+    # Server Status panel reads.  The drift against the previous report, the omission
+    # of a measurement that could not be taken, the credential path filter and the
+    # atomic private write.  Fakes only:  no docker, no network, no server.
+    - name: fleet-server-status tests
+      run: python3 scripts/test_fleet_server_status.py
     # The Lark bridge: the eyes marker, the Operator's signal path and the
     # durable write of a record.  No job ran this file, so every assertion in
     # it was decoration: the write could lose a record on a crash and CI would
