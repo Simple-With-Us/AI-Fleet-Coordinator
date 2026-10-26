@@ -102,15 +102,23 @@ class AdapterTests(unittest.TestCase):
                 self.run_mint(**kwargs)
 
     def test_null_and_malformed_viewer_refused(self):
-        for response in [None, {}, {"data": None}, {"data": []},
-                         {"data": {"viewer": None}}, {"data": {"viewer": []}},
-                         {"errors": ["denied"]}]:
+        for response in [
+            None,
+            {},
+            {"data": None},
+            {"data": []},
+            {"data": {"viewer": None}},
+            {"data": {"viewer": []}},
+            {"errors": ["denied"]},
+        ]:
             calls = []
+
             def request(url, headers, body):
                 calls.append(url)
                 if len(calls) == 1:
                     return {"app_slug": "swu-wise", "token": "ghs_fake", "expires_in_seconds": 3590}
                 return response
+
             with self.assertRaises(w.Refused):
                 w.mint_verified(self.config(), request)
 

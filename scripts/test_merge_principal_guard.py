@@ -137,7 +137,9 @@ esac
 
 class RelayWorkflowContainment(unittest.TestCase):
     def test_relay_does_not_publish_secret(self):
-        source = (Path(__file__).resolve().parents[1] / ".github/workflows/auto-merge-reusable.yml").read_text()
+        source = (
+            Path(__file__).resolve().parents[1] / ".github/workflows/auto-merge-reusable.yml"
+        ).read_text()
         self.assertNotIn("WISE_MERGE_TOKEN", source)
         self.assertNotIn("--github-env", source)
         self.assertIn("python3 - -- bash", source)

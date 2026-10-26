@@ -135,8 +135,12 @@ def mint_verified(config, request=request_json):
     )
     data = viewer.get("data") if isinstance(viewer, dict) else None
     user = data.get("viewer") if isinstance(data, dict) else None
-    if (not isinstance(viewer, dict) or viewer.get("errors")
-            or not isinstance(user, dict) or user.get("login") != ACTOR):
+    if (
+        not isinstance(viewer, dict)
+        or viewer.get("errors")
+        or not isinstance(user, dict)
+        or user.get("login") != ACTOR
+    ):
         raise Refused("GitHub principal mismatch")
     return token
 
