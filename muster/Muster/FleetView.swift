@@ -212,9 +212,15 @@ struct FleetView: View {
                                     .foregroundStyle(.secondary)
                                     .frame(width: 150, alignment: .leading)
                                 if let cli = codingApp.cliTool {
-                                    Text("\(cli): \(codingApp.cliVersion ?? "—") (\(codingApp.cliState?.rawValue ?? "unreconciled"))")
-                                        .font(.caption.monospaced())
-                                        .foregroundStyle(codingApp.cliState == .current ? .green : (codingApp.cliState == .stale ? .orange : .secondary))
+                                    if !codingApp.doctorReportCurrent {
+                                        Text("\(cli): unknown (doctor report stale)")
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(.secondary)
+                                    } else {
+                                        Text("\(cli): \(codingApp.cliVersion ?? "—") (\(codingApp.cliState?.rawValue ?? "unknown"))")
+                                            .font(.caption.monospaced())
+                                            .foregroundStyle(codingApp.cliState == .current ? .green : (codingApp.cliState == .stale ? .orange : .secondary))
+                                    }
                                 } else {
                                     Text("hosted / cloud seat")
                                         .font(.caption.monospaced())

@@ -448,6 +448,21 @@ final class WakeSettingsTests: XCTestCase {
         XCTAssertEqual(byID["w4"]?.reason, "exit_1")
     }
 
+    func test_deferred_states_outside_24h_window_are_not_counted() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        // 3 days ago: 1_000_000 - 3 * 86400 = 740_800
+        // held_back 3 days ago, accepted 1 hour ago (996_400)
+        let ledger = """
+        {"ts": 740800.0, "wake_id": "wOld", "state": "held_back", "reason": "host_busy", "owner": false, "topic": "AFC-536"}
+        {"ts": 996400.0, "wake_id": "wOld", "state": "accepted", "owner": false, "topic": "AFC-536"}
+        {"ts": 996500.0, "wake_id": "wOld", "state": "done", "owner": false, "topic": "AFC-536"}
+        """
+        let parsed = WakeLedger.parse(ledger)
+        let usage = WakeLedger.usage(from: parsed, now: now)
+        XCTAssertEqual(usage.heldBackThisDay, 0, "States reached before the 24h window must not count in daily deferred totals")
+        XCTAssertEqual(usage.wakesThisDay, 1)
+    }
+
     /// Operator red warnings, held-back queue totals, chat nudges, and quota are decoded into WakeSeat.
     func test_operator_telemetry_populates_wake_seat() {
         let richStatus = """

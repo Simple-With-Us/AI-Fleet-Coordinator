@@ -18,10 +18,10 @@ final class FleetRegistryTests: XCTestCase {
           "visibility": "private"
         },
         {
-          "repo": "Usage-Monitor",
-          "acronym": "UM",
-          "displayName": "Usage Monitor",
-          "codeDir": "Usage-Monitor",
+          "repo": "Fixture-Monitor",
+          "acronym": "FM",
+          "displayName": "Fixture Monitor",
+          "codeDir": "Fixture-Monitor",
           "kind": "product",
           "visibility": "private"
         },
@@ -121,10 +121,10 @@ final class FleetRegistryTests: XCTestCase {
         XCTAssertEqual(st.activeClaims, 1)
         XCTAssertEqual(st.state, .passed)
 
-        let um = summary.apps[1]
-        XCTAssertEqual(um.acronym, "UM")
-        XCTAssertNil(um.publishScript)
-        XCTAssertFalse(um.hasPublishScript)
+        let fm = summary.apps[1]
+        XCTAssertEqual(fm.acronym, "FM")
+        XCTAssertNil(fm.publishScript)
+        XCTAssertFalse(fm.hasPublishScript)
 
         let afc = summary.apps[2]
         XCTAssertEqual(afc.acronym, "AFC")
@@ -230,6 +230,7 @@ final class FleetRegistryTests: XCTestCase {
         let ag = summary.codingApps.first { $0.appSlug == "antigravity" }
         XCTAssertNil(ag?.cliVersion)
         XCTAssertNil(ag?.cliState)
+        XCTAssertFalse(ag?.doctorReportCurrent ?? true)
 
         var freshReading = staleReading
         freshReading.isCurrent = true
@@ -242,6 +243,7 @@ final class FleetRegistryTests: XCTestCase {
         let agFresh = freshSummary.codingApps.first { $0.appSlug == "antigravity" }
         XCTAssertEqual(agFresh?.cliVersion, "v1.2.3")
         XCTAssertEqual(agFresh?.cliState, .current)
+        XCTAssertTrue(agFresh?.doctorReportCurrent ?? false)
     }
 
     func test_seat_apps_patterns_are_expanded_into_coding_apps() throws {

@@ -11,6 +11,8 @@ enum WakeLedger {
         var state: String
         /// Every unique state the wake reached across its ledger rows.
         var states: [String] = []
+        /// The earliest timestamp when each state was reached.
+        var stateTimes: [String: Date] = [:]
         /// Whether the owner asked for it.
         var owner: Bool
         /// The channel and topic it belongs to.
@@ -120,9 +122,16 @@ enum WakeLedger {
         for identifier in order {
             let accepted = times[identifier]?["accepted"] ?? times[identifier]?["started"]
             let latest = lastAt[identifier].map { Date(timeIntervalSince1970: $0) }
+            var stMap: [String: Date] = [:]
+            if let idTimes = times[identifier] {
+                for (k, v) in idTimes {
+                    stMap[k] = Date(timeIntervalSince1970: v)
+                }
+            }
             parsed.wakes.append(Wake(
                 state: states[identifier] ?? "",
                 states: statesReached[identifier] ?? [],
+                stateTimes: stMap,
                 owner: owners[identifier] ?? false,
                 topicKey: topicKeys[identifier] ?? nil,
                 at: accepted.map { Date(timeIntervalSince1970: $0) },
@@ -194,11 +203,9 @@ enum WakeLedger {
         usage.worstOwnerTopicThisHour = busiest(owner.filter { within($0, hour) })
 
         for wake in wakes {
-            let stamp = wake.lastAt ?? wake.at
-            guard let stamp, now.timeIntervalSince(stamp) < day else { continue }
-            // A wake counts once per deferred state it reached, not only by its last state:
-            // a wake that was held back and later surfaced is still a held-back wake.
-            for state in wake.states {
+            // Only states the wake reached inside the 24h window count:
+            // `stateTimes` holds the first timestamp of each reached state.
+            for (state, firstSeen) in wake.stateTimes where now.timeIntervalSince(firstSeen) < day {
                 switch state {
                 case "held_back": usage.heldBackThisDay += 1
                 case "dropped": usage.droppedThisDay += 1

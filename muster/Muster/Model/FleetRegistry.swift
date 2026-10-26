@@ -107,6 +107,7 @@ struct CodingAppStatus: Identifiable, Equatable {
     let cliTool: String?
     let cliVersion: String?
     let cliState: FleetToolsRowState?
+    let doctorReportCurrent: Bool
     let activeLanes: Int
     let openPullRequests: Int
     let activeClaims: Int
@@ -230,8 +231,13 @@ enum FleetRegistryReader {
             let lanesKnown = viewOutput?.sections.lanes.isKnown ?? false
             let prsKnown = viewOutput?.sections.pullRequests.isKnown ?? false
             let claimsKnown = viewOutput?.sections.claims.isKnown ?? false
-            if viewOutput == nil || !lanesKnown || !prsKnown || !claimsKnown {
-                // A section that could not be collected proves nothing about the app.
+
+            let lanesUnproven = (!lanesKnown && repoLanes.isEmpty) || repoLanes.contains { $0.state != "OK" }
+            let prsUnproven = !prsKnown && repoPRs.isEmpty
+            let claimsUnproven = !claimsKnown && !appClaims.isEmpty
+
+            if viewOutput == nil || lanesUnproven || prsUnproven || claimsUnproven {
+                // An uncollected or failed section relevant to this app proves nothing.
                 state = .unproven
             } else if !failingOrConflictingPRs.isEmpty || expired > 0 {
                 state = .missing
@@ -306,7 +312,8 @@ enum FleetRegistryReader {
             }
         }
 
-        let macRows = (toolsReading?.isCurrent == true)
+        let toolsCurrent = toolsReading?.isCurrent == true
+        let macRows = toolsCurrent
             ? (toolsReading?.hosts.first(where: { $0.host == "mac" })?.allRows ?? [])
             : []
         let codingStatuses: [CodingAppStatus] = orderedSlugs.map { slug in
@@ -337,6 +344,7 @@ enum FleetRegistryReader {
                 cliTool: meta.cli,
                 cliVersion: cliRow?.installed,
                 cliState: cliRow?.rowState,
+                doctorReportCurrent: toolsCurrent,
                 activeLanes: appLanes,
                 openPullRequests: appPRs,
                 activeClaims: appClaims
