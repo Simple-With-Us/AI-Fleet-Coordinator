@@ -76,7 +76,7 @@ because an agent that delegates only when certain delegates almost never.
 
 ## Canonical sources
 
-- Full policy: `/Users/jay/apps/AGENT-SYNC.md` § Delegation & model economics
+- Full policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Delegation & model economics
 - Claude Code skill: `~/.claude/skills/fleet-mode/SKILL.md`
 - Claude Code enforcement hook: `~/.claude/hooks/subagent-economy-pretooluse.py`
 - Printer: `~/apps/fleet-mode` (on-demand helper script)

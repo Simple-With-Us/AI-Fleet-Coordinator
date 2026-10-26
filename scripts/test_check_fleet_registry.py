@@ -62,8 +62,8 @@ class AgentSyncRows(unittest.TestCase):
             ["coordinator AGENT-SYNC.md missing repo fleet-ops", "coordinator AGENT-SYNC.md missing acronym OPS"],
         )
         self.assertEqual(
-            reg.agent_sync_errors(APPS, text, "~/apps/AGENT-SYNC.md", fold_repo=True),
-            ["~/apps/AGENT-SYNC.md missing repo fleet-ops", "~/apps/AGENT-SYNC.md missing acronym OPS"],
+            reg.agent_sync_errors(APPS, text, "~/apps/FLEET-PROTOCOL.md", fold_repo=True),
+            ["~/apps/FLEET-PROTOCOL.md missing repo fleet-ops", "~/apps/FLEET-PROTOCOL.md missing acronym OPS"],
         )
 
     def test_live_copy_ignores_repo_case_but_not_acronym_case(self) -> None:

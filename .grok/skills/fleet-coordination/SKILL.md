@@ -10,7 +10,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 > **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
-Canonical reference: `/Users/jay/apps/AGENT-SYNC.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
+Canonical reference: `/Users/jay/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
 Chat mechanics:  `docs/protocols/zulip-fleet-guide.md` in AI-Fleet-Coordinator.  Slack is retired (hard cut, owner 2026-10-07); Zulip realm `https://simplewithus.zulipchat.com` is the only agent chat.  Coordination channel:  Zulip `#Work-In-Progress`, where a topic is the thread.
 
 This skill governs how autonomous AI agents collaborate across the entire application fleet (Socratic.Trade, Congress.Trade, Usage-Monitor, congress-trading-shared, DealDex, Personal-Site, Autorotate, ContactLogo, and AI-Fleet-Coordinator).

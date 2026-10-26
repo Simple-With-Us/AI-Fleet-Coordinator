@@ -515,7 +515,7 @@ class StageCase(unittest.TestCase):
     def test_loose_files_staged_and_junk_skipped(self):
         files = self.rels("files/")
         for want in (
-            "files/apps/AGENT-SYNC.md",
+            "files/apps/FLEET-PROTOCOL.md",
             "files/apps/notes/x.txt",
             "files/apps/ok-helper.sh",
             "files/apps/scratch-env/.env.example",

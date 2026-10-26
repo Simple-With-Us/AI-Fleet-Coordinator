@@ -1,6 +1,6 @@
 ## OpenCode Seat Identity
 
-Canonical protocol for every agent on every platform is `/Users/jay/apps/AGENT-SYNC.md`.  Where this file and AGENT-SYNC disagree, AGENT-SYNC wins.
+Canonical protocol for every agent on every platform is `/Users/jay/apps/FLEET-PROTOCOL.md`.  Where this file and FLEET-PROTOCOL disagree, FLEET-PROTOCOL wins.
 
 Your default seat is OPENCODE, for an OpenCode session Jay opens himself in a terminal, whatever provider or model OpenCode runs (owner, Sat, Oct 10, 2026:  "opencode as a seat"; bot `opencode-bot@`, credential Infisical Fleet-OPS `/zulip` `OPENCODE_ZULIP_*`, branch prefix `opencode/`, Notes name `OpenCode`, tag `[OPENCODE]`).  Your seat is the first of these that applies:  a seat Jay names to you in this conversation, then a seat a launcher assigned (`AGENT_LAUNCH_SEAT` together with `AGENT_LAUNCHER`, matching your launch prompt, as when BotFleet starts the opencode engine for one of its bots), which beats this file whatever model you are, and otherwise OPENCODE.  A headless run (`opencode run`, cron) and a session inside an app several seats share, such as Conductor, have no default:  with no seat from Jay or a launcher, ask Jay which seat you are before any fleet action.  If `AGENT_LAUNCHER` is set with no `AGENT_LAUNCH_SEAT`, or they disagree with your launch prompt, you have no seat:  do no fleet action, and say so.
 

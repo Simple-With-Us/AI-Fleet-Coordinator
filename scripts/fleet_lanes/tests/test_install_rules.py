@@ -416,7 +416,7 @@ class ContradictionTests(unittest.TestCase):
             "~/apps/scratch/claude/topic",
             "~/Code/Socratic-Trade is the integration tree",
             "branches are `<seat>/<slug>`",
-            "~/apps/apple-notes-coding.sh and ~/apps/AGENT-SYNC.md",
+            "~/apps/apple-notes-coding.sh and ~/apps/FLEET-PROTOCOL.md",
         ])
         self.assertEqual(self.kinds(text), [])
 
@@ -1160,7 +1160,7 @@ class FleetBasicsTests(HomeCase):
             body = IR.body_text(variant)
             with self.subTest(variant=variant):
                 self.assertTrue(body.startswith("## Fleet Basics\n"))
-                for needle in ("/Users/jay/apps/AGENT-SYNC.md", "### Seat Identity", "## Lane Map: where every checkout lives",
+                for needle in ("/Users/jay/apps/FLEET-PROTOCOL.md", "### Seat Identity", "## Lane Map: where every checkout lives",
                                "~/apps/lanes/<Repo>/<seat>-<slug>", "### Coordination", "### Land Your Work",
                                "### Secrets", "### Writing Anything a Human Reads", "sentence-gap", "`ps`",
                                "Never write `AGENT_LAUNCH_SEAT` or `AGENT_LAUNCHER`"):

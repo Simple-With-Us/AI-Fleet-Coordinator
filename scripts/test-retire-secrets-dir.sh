@@ -183,7 +183,7 @@ rm -f "$RETIRE_HOME/Library/LaunchAgents/rt-dirty.plist" "$RETIRE_HOME/Library/L
 
 # The real allowlist:  every group hides what it should and nothing more.
 mkdir -p "$RETIRE_HOME/.cursor/extensions/x" "$RETIRE_HOME/apps/ios-fleet/.backup-x" "$RETIRE_HOME/bin" "$RETIRE_HOME/apps/dirtyco/tests"
-for f in .cursor/extensions/x/out.js apps/ios-fleet/.backup-x/a.sh apps/AGENT-SYNC.md.orig apps/AGENT-SYNC.md.pre-sync-1 \
+for f in .cursor/extensions/x/out.js apps/ios-fleet/.backup-x/a.sh apps/FLEET-PROTOCOL.md.orig apps/FLEET-PROTOCOL.md.pre-sync-1 \
   apps/output.json apps/.monitor-mac/findings.json bin/infisical-secrets-sync.sh apps/upstream/v/a.ts apps/handbook-sync/allowlist.json; do
   mkdir -p "$(dirname "$RETIRE_HOME/$f")"; printf 'source ~/.secrets/dummy.env\n' > "$RETIRE_HOME/$f"
 done
@@ -210,7 +210,7 @@ out4="$(RETIRE_ALLOW="$here/retire-secrets-dir.allow" bash "$script" check 2>/de
 check "the same checkout is runtime again once its LaunchAgent is loaded" bash -c "printf '%s' \"\$1\" | grep -q '^checkout:dirtyco:real.py'" _ "$out4"
 rm -f "$RETIRE_HOME/Library/LaunchAgents/rt-dirty.plist" "$RETIRE_HOME/apps/dirtyco/real.py" "$RETIRE_HOME/apps/real-reader.py"
 rm -rf "$RETIRE_HOME/apps/tests" "$RETIRE_HOME/apps/dirtyco/tests" "$RETIRE_HOME/.cursor" "$RETIRE_HOME/apps/ios-fleet" "$RETIRE_HOME/apps/upstream" "$RETIRE_HOME/apps/handbook-sync" "$RETIRE_HOME/apps/.monitor-mac"
-rm -f "$RETIRE_HOME/apps/AGENT-SYNC.md.orig" "$RETIRE_HOME/apps/AGENT-SYNC.md.pre-sync-1" "$RETIRE_HOME/apps/output.json" "$RETIRE_HOME/bin/infisical-secrets-sync.sh"
+rm -f "$RETIRE_HOME/apps/FLEET-PROTOCOL.md.orig" "$RETIRE_HOME/apps/FLEET-PROTOCOL.md.pre-sync-1" "$RETIRE_HOME/apps/output.json" "$RETIRE_HOME/bin/infisical-secrets-sync.sh"
 
 # LaunchAgent plists.  Environment values carry a canary that must never be printed.
 mkdir -p "$RETIRE_HOME/opt/tool" "$RETIRE_HOME/apps/lanes/_managed/AFC"

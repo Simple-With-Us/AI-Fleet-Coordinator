@@ -80,7 +80,7 @@ Repeat 1–3.  Comment on the matching Linear issue (`simple-board comment <id> 
 
 ## Canon
 
-- `/Users/jay/apps/AGENT-SYNC.md` — Merge requirements; CI runner policy
+- `/Users/jay/apps/FLEET-PROTOCOL.md` — Merge requirements; CI runner policy
 - App `AGENTS.md` Pull requests section
 - Skills: `codex-triage`, `land-lane`
 - ST flake origin: `docs/rollouts/2026-06-22-e2e-smoke-auth-fix.md`

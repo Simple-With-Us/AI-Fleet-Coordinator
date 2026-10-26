@@ -10,7 +10,7 @@ description: Fleet human-facing prose — two spaces between sentences (a real U
 > **Cloud VM batch agent.** Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
 
-Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/AGENT-SYNC.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
@@ -104,5 +104,5 @@ Product UI times are the **viewer's** timezone except market-day accounting (Chi
 ## Canon
 
 - `/Users/jay/apps/FLEET-UI-COPY.md`
-- `/Users/jay/apps/AGENT-SYNC.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
+- `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
 - Skills: `apple-notes`, `sentence-gap`, `closeout`

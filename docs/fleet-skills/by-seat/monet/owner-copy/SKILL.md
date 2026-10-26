@@ -8,7 +8,7 @@ description: Fleet human-facing prose — two spaces between sentences (a real U
 > **Retired seat.**  Owner directive 2026-10-07: the Monet Claude account and app are no longer used, and `CLAUDE` is the only Claude seat.  Do not take work as MONET, do not leave MONET In Progress, and do not install this pack anywhere.  This catalog copy is inactive.
 
 
-Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/AGENT-SYNC.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
@@ -102,5 +102,5 @@ Product UI times are the **viewer's** timezone except market-day accounting (Chi
 ## Canon
 
 - `/Users/jay/apps/FLEET-UI-COPY.md`
-- `/Users/jay/apps/AGENT-SYNC.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
+- `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
 - Skills: `apple-notes`, `sentence-gap`, `closeout`

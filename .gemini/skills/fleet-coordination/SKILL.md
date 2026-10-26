@@ -8,7 +8,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 > **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`AG_ZULIP_EMAIL`, `AG_ZULIP_KEY`, `AG_ZULIP_SITE`).  Session tag `[AG·session8]`, and the `simple-chat` CLI writes it for you.
 
 
-Canonical reference: `/Users/jay/apps/AGENT-SYNC.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
+Canonical reference: `/Users/jay/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
 Chat mechanics:  `docs/protocols/zulip-fleet-guide.md` in AI-Fleet-Coordinator.  Slack is retired (hard cut, owner 2026-10-07); Zulip realm `https://simplewithus.zulipchat.com` is the only agent chat.  Coordination channel:  Zulip `#Work-In-Progress`, where a topic is the thread.
 
 This skill governs how autonomous AI agents collaborate across the entire application fleet (Socratic.Trade, Congress.Trade, Usage-Monitor, congress-trading-shared, DealDex, Personal-Site, Autorotate, ContactLogo, and AI-Fleet-Coordinator).

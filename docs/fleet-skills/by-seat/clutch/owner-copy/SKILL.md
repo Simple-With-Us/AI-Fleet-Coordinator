@@ -10,7 +10,7 @@ description: Fleet human-facing prose — two spaces between sentences (a real U
 > **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
 
-Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/AGENT-SYNC.md` § Two spaces, timestamps, TestFlight metadata.
+Canonical detail: `/Users/jay/apps/FLEET-UI-COPY.md`.  Policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces, timestamps, TestFlight metadata.
 
 ## Two spaces between sentences
 
@@ -104,5 +104,5 @@ Product UI times are the **viewer's** timezone except market-day accounting (Chi
 ## Canon
 
 - `/Users/jay/apps/FLEET-UI-COPY.md`
-- `/Users/jay/apps/AGENT-SYNC.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
+- `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces; Theme via FLEET-UI-COPY; TestFlight template
 - Skills: `apple-notes`, `sentence-gap`, `closeout`

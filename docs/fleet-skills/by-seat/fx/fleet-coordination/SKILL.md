@@ -10,7 +10,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 > **Runtime (fx).** Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
 
 
-Canonical reference: `/Users/jay/apps/AGENT-SYNC.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
+Canonical reference: `/Users/jay/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
 Chat mechanics:  `docs/protocols/zulip-fleet-guide.md` in AI-Fleet-Coordinator.  Slack is retired (hard cut, owner 2026-10-07); Zulip realm `https://simplewithus.zulipchat.com` is the only agent chat.  Coordination channel:  Zulip `#Work-In-Progress`, where a topic is the thread.
 
 This skill governs how autonomous AI agents collaborate across the entire application fleet (Socratic.Trade, Congress.Trade, Usage-Monitor, congress-trading-shared, DealDex, Personal-Site, Autorotate, ContactLogo, and AI-Fleet-Coordinator).

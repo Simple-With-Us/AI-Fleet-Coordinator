@@ -23,7 +23,7 @@ A real U+00A0 plus a normal space between sentences in this file and in every re
 
 ## What Instinct needs before its first session
 
-1. **Reading material** it can actually open.  On the Mac the canon is `~/apps/AGENT-SYNC.md` and
+1. **Reading material** it can actually open.  On the Mac the canon is `~/apps/FLEET-PROTOCOL.md` and
    `~/apps/EFFORT-LOG-PROTOCOL.md` (a retired stub) on the owner login; from the `agents` login or anywhere else the
    main-branch copies in this repo are the fallback (the prompt links them).
 2. **Linear** reachable:  the `simple-board` CLI on the `agents` login's PATH (`~/.local/bin/simple-board`, or
@@ -54,7 +54,7 @@ for the whole session:
 2. scripts/linear-board/README.md   (the board CLI on Linear:  verbs, claims, ids; EFFORT-LOG-PROTOCOL.md is a retired stub)
 3. docs/ONBOARDING-NEW-AGENT.md   (the hard rules every seat learns on day one)
 
-On the Mac owner login they are ~/apps/AGENT-SYNC.md and the checkout's scripts/linear-board/README.md.  From
+On the Mac owner login they are ~/apps/FLEET-PROTOCOL.md and the checkout's scripts/linear-board/README.md.  From
 the agents login or anywhere else, read the main-branch copies in
 https://github.com/Simple-With-Us/AI-Fleet-Coordinator (AGENT-SYNC.md,
 scripts/linear-board/README.md, docs/ONBOARDING-NEW-AGENT.md).

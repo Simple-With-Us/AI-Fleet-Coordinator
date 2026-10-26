@@ -958,7 +958,7 @@ class MirrorSkipTests(unittest.TestCase):
 
     def test_rule_d_stands_down_to_the_afc_mirror_when_there_is_no_live_file(self):
         live, mirror, generated, public, private = self._handbook()
-        live.unlink()  # a fresh host:  no ~/apps/AGENT-SYNC.md
+        live.unlink()  # a fresh host:  no ~/apps/FLEET-PROTOCOL.md
         docs = list(
             sources.iter_docs(
                 self.fleet,

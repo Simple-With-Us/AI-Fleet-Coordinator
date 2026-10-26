@@ -10,7 +10,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 > **Runtime (MiniMax).** MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
 
-Canonical reference: `/Users/jay/apps/AGENT-SYNC.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
+Canonical reference: `/Users/jay/apps/FLEET-PROTOCOL.md`.  Linear is the system of record (owner 2026-10-10) and the effort logs are archived (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` is a retired stub).  
 Chat mechanics:  `docs/protocols/zulip-fleet-guide.md` in AI-Fleet-Coordinator.  Slack is retired (hard cut, owner 2026-10-07); Zulip realm `https://simplewithus.zulipchat.com` is the only agent chat.  Coordination channel:  Zulip `#Work-In-Progress`, where a topic is the thread.
 
 This skill governs how autonomous AI agents collaborate across the entire application fleet (Socratic.Trade, Congress.Trade, Usage-Monitor, congress-trading-shared, DealDex, Personal-Site, Autorotate, ContactLogo, and AI-Fleet-Coordinator).

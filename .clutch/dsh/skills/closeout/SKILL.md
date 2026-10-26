@@ -103,7 +103,7 @@ or MCP `recall_contribute`.  40–4000 chars, one idea, category `lesson | prefe
 
 ## Canon
 
-- `/Users/jay/apps/AGENT-SYNC.md` — Linear and the claim lifecycle; Apple Notes; Mac local processes; always-commit
+- `/Users/jay/apps/FLEET-PROTOCOL.md` — Linear and the claim lifecycle; Apple Notes; Mac local processes; always-commit
 - `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` — retired stub:  the effort logs are archived
 - Skills: `board-ops`, `apple-notes`, `deploy-verify`, `land-lane`
 
