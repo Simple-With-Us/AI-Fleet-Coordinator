@@ -44,8 +44,7 @@ class GuardIntegration(unittest.TestCase):
         shim = os.path.join(bindir, "gh")
         with open(shim, "w") as fh:
             fh.write(
-                '#!/usr/bin/env bash\nexec python3 "%s" "$@"\n'
-                % os.path.join(DIR, "fake_gh.py")
+                '#!/usr/bin/env bash\nexec python3 "%s" "$@"\n' % os.path.join(DIR, "fake_gh.py")
             )
         os.chmod(shim, os.stat(shim).st_mode | stat.S_IEXEC)
         self.env = dict(os.environ)
@@ -122,17 +121,13 @@ class GuardIntegration(unittest.TestCase):
             and "-X" in c["argv"]
         ]
         self.assertEqual(len(label_posts), 1)
-        self.assertEqual(
-            json.loads(label_posts[0]["stdin"]), {"labels": ["do-not-automerge"]}
-        )
+        self.assertEqual(json.loads(label_posts[0]["stdin"]), {"labels": ["do-not-automerge"]})
         comments = [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
         self.assertEqual(len(comments), 1)
         body = comments[0]["argv"][comments[0]["argv"].index("--body") + 1]
         self.assertIn("swu-wise[bot]", body)
         self.assertIn("swu-echo[bot]", body)
-        checks = [
-            c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
-        ]
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
         self.assertEqual(len(checks), 1)
         payload = json.loads(checks[0]["stdin"])
         self.assertEqual(payload["conclusion"], "failure")
@@ -174,23 +169,15 @@ class GuardIntegration(unittest.TestCase):
         )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 0, p.stderr)
-        checks = [
-            c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
-        ]
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
         self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "success")
-        self.assertFalse(
-            [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
-        )
+        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
 
     def test_events_api_error_fails_closed_and_loud(self):
-        self.scenario(
-            {"labels": {"3": []}, "fail": {"events/3": {"rc": 1, "stderr": "boom 500"}}}
-        )
+        self.scenario({"labels": {"3": []}, "fail": {"events/3": {"rc": 1, "stderr": "boom 500"}}})
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 3)
-        checks = [
-            c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
-        ]
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
         payload = json.loads(checks[0]["stdin"])
         self.assertEqual(payload["conclusion"], "failure")
         self.assertIn("evaluation error", payload["output"]["title"])
@@ -211,11 +198,7 @@ class GuardIntegration(unittest.TestCase):
         self.scenario(
             {
                 "labels": {"3": [{"name": "do-not-merge"}]},
-                "events": {
-                    "3": [
-                        [ev("labeled", "do-not-merge", *ECHO, "2026-10-25T01:00:00Z")]
-                    ]
-                },
+                "events": {"3": [[ev("labeled", "do-not-merge", *ECHO, "2026-10-25T01:00:00Z")]]},
             }
         )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
@@ -364,9 +347,7 @@ class GuardIntegration(unittest.TestCase):
         )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 0, p.stderr)
-        checks = [
-            c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
-        ]
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
         self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "success")
 
     def test_armer_wrapper_held_blocks_with_reason(self):
@@ -397,9 +378,7 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
 
     def test_armer_wrapper_error_fails_closed(self):
-        self.scenario(
-            {"labels": {"3": []}, "fail": {"events/3": {"rc": 1, "stderr": "boom"}}}
-        )
+        self.scenario({"labels": {"3": []}, "fail": {"events/3": {"rc": 1, "stderr": "boom"}}})
         p = self.run_armer(PR_NUMBER="3")
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("error", p.stdout.lower())
@@ -690,9 +669,7 @@ class GuardIntegration(unittest.TestCase):
                 if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
             ]
         )
-        self.assertFalse(
-            [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
-        )
+        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
         checks = [
             c
             for c in self.calls()
@@ -706,17 +683,13 @@ class GuardIntegration(unittest.TestCase):
         self._held_scenario()
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
-        self.assertEqual(
-            len([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]), 1
-        )
+        self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]), 1)
         label_post = next(
             i
             for i, c in enumerate(self.calls())
             if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
         )
-        comment = next(
-            i for i, c in enumerate(self.calls()) if c["argv"][:2] == ["pr", "comment"]
-        )
+        comment = next(i for i, c in enumerate(self.calls()) if c["argv"][:2] == ["pr", "comment"])
         self.assertLess(label_post, comment)  # narrates the actual repair
 
     def test_no_comment_when_repair_post_fails(self):
@@ -732,9 +705,7 @@ class GuardIntegration(unittest.TestCase):
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 3)
         self.assertIn("failed to re-apply label", p.stdout)
-        self.assertFalse(
-            [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
-        )
+        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
         # the published check still says the hold is active (fail closed)
         checks = [
             c
@@ -812,9 +783,7 @@ class GuardIntegration(unittest.TestCase):
                 if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
             ]
         )
-        self.assertFalse(
-            [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
-        )
+        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
         checks = [
             c
             for c in self.calls()
@@ -944,8 +913,7 @@ class GuardIntegration(unittest.TestCase):
         gets = [
             c
             for c in self.calls()
-            if c["argv"][0] == "api"
-            and any("check-runs?check_name=" in a for a in c["argv"])
+            if c["argv"][0] == "api" and any("check-runs?check_name=" in a for a in c["argv"])
         ]
         self.assertEqual(len(gets), 1)
         self.assertIn("--paginate", gets[0]["argv"])

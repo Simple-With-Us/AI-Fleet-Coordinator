@@ -115,10 +115,7 @@ def evaluate(repo, pr, runner=gh_json):
                 if open_hold is None:
                     open_hold = {"owner_id": None, "owner_login": None, "unknown": True}
                     illegit.append(a.get("login"))
-                elif (
-                    open_hold["owner_id"] is not None
-                    and a.get("id") == open_hold["owner_id"]
-                ):
+                elif open_hold["owner_id"] is not None and a.get("id") == open_hold["owner_id"]:
                     open_hold = None  # released by owner
                     illegit = []
                 else:

@@ -33,9 +33,7 @@ class WorkflowStatic(unittest.TestCase):
     def test_checkout_pinned_to_full_sha(self):
         steps = self.doc["jobs"]["guard"]["steps"]
         co = next(
-            s
-            for s in steps
-            if "uses" in s and str(s["uses"]).startswith("actions/checkout@")
+            s for s in steps if "uses" in s and str(s["uses"]).startswith("actions/checkout@")
         )
         ref = str(co["uses"]).split("@", 1)[1].split()[0]
         self.assertRegex(ref, r"^[0-9a-f]{40}$", "checkout must be SHA-pinned")
@@ -43,13 +41,9 @@ class WorkflowStatic(unittest.TestCase):
     def test_scripts_always_from_default_branch(self):
         steps = self.doc["jobs"]["guard"]["steps"]
         co = next(
-            s
-            for s in steps
-            if "uses" in s and str(s["uses"]).startswith("actions/checkout@")
+            s for s in steps if "uses" in s and str(s["uses"]).startswith("actions/checkout@")
         )
-        self.assertEqual(
-            co["with"]["ref"], "${{ github.event.repository.default_branch }}"
-        )
+        self.assertEqual(co["with"]["ref"], "${{ github.event.repository.default_branch }}")
 
     def test_no_pr_controlled_refs_anywhere(self):
         # base.ref and head.ref are writer-controllable for same-repo PRs

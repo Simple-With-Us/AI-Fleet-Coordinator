@@ -66,9 +66,7 @@ class HoldGuardTests(unittest.TestCase):
                 ev("unlabeled", "do-not-automerge", *ECHO, "2026-10-25T02:00:00Z"),
             ]
         ]
-        self.assertEqual(
-            hold_guard.evaluate("o/r", 1, make_runner([], pages))["state"], "clear"
-        )
+        self.assertEqual(hold_guard.evaluate("o/r", 1, make_runner([], pages))["state"], "clear")
 
     def test_illegitimate_removal_keeps_original_owner_and_reapplies(self):
         pages = [
@@ -100,12 +98,8 @@ class HoldGuardTests(unittest.TestCase):
         self.assertEqual(h["illegitimate_removals"], ["swu-wise[bot]"])
         self.assertFalse(h["needs_reapply"])  # label is back on
         # and the ORIGINAL owner can still release after the repair
-        pages[0].append(
-            ev("unlabeled", "do-not-automerge", *ECHO, "2026-10-25T03:00:00Z")
-        )
-        self.assertEqual(
-            hold_guard.evaluate("o/r", 1, make_runner([], pages))["state"], "clear"
-        )
+        pages[0].append(ev("unlabeled", "do-not-automerge", *ECHO, "2026-10-25T03:00:00Z"))
+        self.assertEqual(hold_guard.evaluate("o/r", 1, make_runner([], pages))["state"], "clear")
 
     def test_repeated_unauthorized_removal_and_repair(self):
         pages = [
@@ -136,29 +130,12 @@ class HoldGuardTests(unittest.TestCase):
     def test_per_setter_labels_independent(self):
         pages = [
             [
-                ev(
-                    "labeled",
-                    "do-not-automerge:swu-echo[bot]",
-                    *ECHO,
-                    "2026-10-25T01:00:00Z"
-                ),
-                ev(
-                    "labeled",
-                    "do-not-automerge:swu-wise[bot]",
-                    *WISE,
-                    "2026-10-25T01:05:00Z"
-                ),
-                ev(
-                    "unlabeled",
-                    "do-not-automerge:swu-echo[bot]",
-                    *ECHO,
-                    "2026-10-25T02:00:00Z"
-                ),
+                ev("labeled", "do-not-automerge:swu-echo[bot]", *ECHO, "2026-10-25T01:00:00Z"),
+                ev("labeled", "do-not-automerge:swu-wise[bot]", *WISE, "2026-10-25T01:05:00Z"),
+                ev("unlabeled", "do-not-automerge:swu-echo[bot]", *ECHO, "2026-10-25T02:00:00Z"),
             ]
         ]
-        r = hold_guard.evaluate(
-            "o/r", 1, make_runner(["do-not-automerge:swu-wise[bot]"], pages)
-        )
+        r = hold_guard.evaluate("o/r", 1, make_runner(["do-not-automerge:swu-wise[bot]"], pages))
         self.assertEqual(len(r["holds"]), 1)
         self.assertEqual(r["holds"][0]["label"], "do-not-automerge:swu-wise[bot]")
 
@@ -175,9 +152,7 @@ class HoldGuardTests(unittest.TestCase):
                 ),
             ]
         ]
-        self.assertEqual(
-            hold_guard.evaluate("o/r", 1, make_runner([], pages))["state"], "clear"
-        )
+        self.assertEqual(hold_guard.evaluate("o/r", 1, make_runner([], pages))["state"], "clear")
 
     def test_label_present_no_events_unknown_owner(self):
         r = hold_guard.evaluate("o/r", 1, make_runner(["do-not-automerge"], [[]]))
@@ -204,9 +179,7 @@ class HoldGuardTests(unittest.TestCase):
         self.assertEqual(len(r["holds"][0]["illegitimate_removals"]), 3)
 
     def test_deleted_label_events_retain_name_and_owner(self):
-        pages = [
-            [ev("labeled", "do-not-automerge:old-name", *ECHO, "2026-10-25T01:00:00Z")]
-        ]
+        pages = [[ev("labeled", "do-not-automerge:old-name", *ECHO, "2026-10-25T01:00:00Z")]]
         r = hold_guard.evaluate("o/r", 1, make_runner([], pages))
         h = r["holds"][0]
         self.assertEqual(r["state"], "held")
@@ -231,9 +204,7 @@ class HoldGuardTests(unittest.TestCase):
             "created_at": "2026-10-25T01:00:00Z",
         }
         pages = [[e2, e1]]
-        self.assertEqual(
-            hold_guard.evaluate("o/r", 1, make_runner([], pages))["state"], "clear"
-        )
+        self.assertEqual(hold_guard.evaluate("o/r", 1, make_runner([], pages))["state"], "clear")
 
     def test_multiple_holds_multiple_actors(self):
         pages = [
@@ -254,27 +225,18 @@ class HoldGuardTests(unittest.TestCase):
         pages = [
             [
                 ev("labeled", "do-not-merge", *ECHO, "2026-10-25T01:00:00Z"),
-                ev(
-                    "labeled",
-                    "do-not-merge:swu-wise[bot]",
-                    *WISE,
-                    "2026-10-25T01:05:00Z"
-                ),
+                ev("labeled", "do-not-merge:swu-wise[bot]", *WISE, "2026-10-25T01:05:00Z"),
                 ev("unlabeled", "do-not-merge", *ECHO, "2026-10-25T02:00:00Z"),
             ]
         ]
-        r = hold_guard.evaluate(
-            "o/r", 1, make_runner(["do-not-merge:swu-wise[bot]"], pages)
-        )
+        r = hold_guard.evaluate("o/r", 1, make_runner(["do-not-merge:swu-wise[bot]"], pages))
         self.assertEqual(len(r["holds"]), 1)
         self.assertEqual(r["holds"][0]["owner_id"], WISE[0])
 
     def test_unrelated_labels_ignored(self):
         pages = [[ev("labeled", "bug", *ECHO, "2026-10-25T01:00:00Z")]]
         self.assertEqual(
-            hold_guard.evaluate("o/r", 1, make_runner(["bug", "priority"], pages))[
-                "state"
-            ],
+            hold_guard.evaluate("o/r", 1, make_runner(["bug", "priority"], pages))["state"],
             "clear",
         )
 
@@ -299,10 +261,8 @@ class HoldGuardTests(unittest.TestCase):
             subprocess,
             "run",
             side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30),
-        ):
-            with contextlib.redirect_stdout(io.StringIO()):
-                with self.assertRaises(SystemExit) as cm:
-                    hold_guard.gh_json(["api", "repos/o/r"])
+        ), contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            hold_guard.gh_json(["api", "repos/o/r"])
         self.assertEqual(cm.exception.code, 124)
 
     def test_gh_json_missing_executable_exits_127(self):
@@ -316,9 +276,7 @@ class HoldGuardTests(unittest.TestCase):
         # Kody r4373586704/r4373592031: the API's stderr and the argv never
         # reach the exception text
         leaked = "response body with token ghp_abcdef0123456789 and request detail"
-        done = subprocess.CompletedProcess(
-            args=["gh"], returncode=1, stdout="", stderr=leaked
-        )
+        done = subprocess.CompletedProcess(args=["gh"], returncode=1, stdout="", stderr=leaked)
         with mock.patch.object(subprocess, "run", return_value=done):
             with self.assertRaises(RuntimeError) as cm:
                 hold_guard.gh_json(["api", "repos/o/r", "--input", "-"])
@@ -327,9 +285,7 @@ class HoldGuardTests(unittest.TestCase):
         self.assertNotIn("repos/o/r", str(cm.exception))
 
     def test_gh_json_non_json_stdout_fails_precisely(self):
-        done = subprocess.CompletedProcess(
-            args=["gh"], returncode=0, stdout="<html>", stderr=""
-        )
+        done = subprocess.CompletedProcess(args=["gh"], returncode=0, stdout="<html>", stderr="")
         with mock.patch.object(subprocess, "run", return_value=done):
             with self.assertRaises(RuntimeError) as cm:
                 hold_guard.gh_json(["api", "repos/o/r"])

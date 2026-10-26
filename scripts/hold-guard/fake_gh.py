@@ -64,9 +64,7 @@ def _load_scenario(path):
             if not isinstance(key, str) or not key or len(key) > 256:
                 raise ValueError(f"FAKE_GH_SCENARIO.{section}: invalid key")
             if not isinstance(items, list) or len(items) > 1000:
-                raise ValueError(
-                    f"FAKE_GH_SCENARIO.{section}.{key}: expected a bounded array"
-                )
+                raise ValueError(f"FAKE_GH_SCENARIO.{section}.{key}: expected a bounded array")
             for item in items:
                 if section in ("events_seq", "events"):
                     # event pages are lists of event objects; a page may be a
@@ -80,27 +78,19 @@ def _load_scenario(path):
                     raise ValueError(f"{section}.{key}: expected object items")
     for key, pulls in value.get("pulls", {}).items():
         for pull in pulls:
-            if not isinstance(pull.get("number"), int) or isinstance(
-                pull.get("number"), bool
-            ):
-                raise ValueError(
-                    f"FAKE_GH_SCENARIO.pulls.{key}: number must be an integer"
-                )
+            if not isinstance(pull.get("number"), int) or isinstance(pull.get("number"), bool):
+                raise ValueError(f"FAKE_GH_SCENARIO.pulls.{key}: number must be an integer")
     for key, runs in value.get("check_runs", {}).items():
         for run in runs:
             if not isinstance(run.get("id"), int) or isinstance(run.get("id"), bool):
-                raise ValueError(
-                    f"FAKE_GH_SCENARIO.check_runs.{key}: id must be an integer"
-                )
+                raise ValueError(f"FAKE_GH_SCENARIO.check_runs.{key}: id must be an integer")
             app = run.get("app", "github-actions")
             if not isinstance(app, (str, dict)):
                 raise ValueError(
                     f"FAKE_GH_SCENARIO.check_runs.{key}: app must be a string or object"
                 )
             if isinstance(app, dict) and not isinstance(app.get("slug", ""), str):
-                raise ValueError(
-                    f"FAKE_GH_SCENARIO.check_runs.{key}: app.slug must be a string"
-                )
+                raise ValueError(f"FAKE_GH_SCENARIO.check_runs.{key}: app.slug must be a string")
     return value
 
 
