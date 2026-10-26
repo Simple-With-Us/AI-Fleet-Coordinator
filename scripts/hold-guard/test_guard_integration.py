@@ -505,9 +505,7 @@ class GuardIntegration(unittest.TestCase):
         )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 3)
-        published = [
-            c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
-        ]
+        published = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
         self.assertEqual(len(published), 1, published)
         body = json.loads(published[0]["stdin"])
         self.assertEqual(body["name"], "merge-gate")
