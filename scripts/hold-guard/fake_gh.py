@@ -45,7 +45,12 @@ if argv and argv[0] == 'api':
             if os.path.exists(posfile):
                 pos = int(open(posfile).read() or 0)
             open(posfile, 'w').write(str(pos + 1))
-            out(seq[min(pos, len(seq) - 1)])
+            item = seq[min(pos, len(seq) - 1)]
+            if isinstance(item, dict) and '__fail__' in item:
+                f = item['__fail__']
+                sys.stderr.write(f.get('stderr', 'boom') + '\n')
+                sys.exit(f.get('rc', 1))
+            out(item)
         out(scenario.get('events', {}).get(n, [[]]))
     if '/commits/' in path and path.endswith('/pulls'):
         sha = parts[4]; fail(f'pulls/{sha}')

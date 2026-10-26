@@ -75,9 +75,12 @@ per-setter holds; the suffix is a display hint, never the ownership source.
 - Fail-closed applies to evaluation ERRORS only (API/eval failure ->
   armer does not arm; guard publishes a failure conclusion when the API
   allows and exits 3).
-- ERROR PROPAGATION (guard): every critical failure turns the guard JOB
-  red (exit 3): disarm unconfirmed, evaluation error, label re-apply
-  failure, comment failure, check-run list/patch/create failure.
+- ERROR PROPAGATION (guard): every critical READ error (evaluation,
+  fresh-state fence, check-run listing) is settled BEFORE the check
+  payload is constructed and forces a FAILURE conclusion - a degraded
+  guard never publishes green.  Every critical failure of any kind (read
+  errors, disarm unconfirmed, label re-apply, comment, check
+  patch/create) also turns the guard JOB red (exit 3).
   - Disarm success is defined by the post-attempt STATE READ
     (`gh pr view --json autoMergeRequest`): off = benign (covers both
     "was armed, now disarmed" and "was never armed" - the disable mutation
@@ -85,10 +88,12 @@ per-setter holds; the suffix is a display hint, never the ownership source.
     critical failure.  This mirrors the fleet's own contract (ST
     scripts/disable-pr-automerge.sh, ported inline into the AFC reusable
     workflow's disarm job); no blanket `|| true` anywhere.
-  - Check publication: a failed PATCH of an owned run forces a fresh
-    owned POST so our identity still carries the current conclusion; a
-    failed list (GET) still attempts the POST best-effort; a failed POST
-    is reported.  All three turn the job red.
+  - Check publication: the check-run listing (GET) is the last read and
+    happens before the payload is built, so its failure recomputes the
+    payload to failure; the POST is still attempted best-effort.  A
+    failed PATCH of an owned run forces a fresh owned POST so our
+    identity still carries the current conclusion; a failed POST is
+    reported.  All three turn the job red.
 - RESIDUAL (stated, not claimed away): when GitHub API WRITES themselves
   fail, the guard cannot force a red check onto the PR - a previously
   green merge-gate on an unchanged head can persist.  The failure signal
@@ -154,15 +159,17 @@ per-setter holds; the suffix is a display hint, never the ownership source.
 ## Tests
 
 - scripts/hold-guard/test_hold_guard.py - 17 unit tests (canned runner)
-- scripts/hold-guard/test_guard_integration.py - 22 integration tests that
+- scripts/hold-guard/test_guard_integration.py - 23 integration tests that
   execute the shipped shell (guard_run.sh, armer_hold_check.sh) against
   fake_gh.py: call ordering (disarm first), request-body exactness, labels
   with spaces, pagination, evaluation fail-closed, and every realistic
   HTTP/gh failure path (disarm armed-after-attempt, disarm state
   unreadable, not-armed benign, owned-PATCH failure forcing fresh POST,
-  check-run GET/POST failure, label repair failure, comment failure).
-- All suites PASS on this branch (17 unit + 22 integration + 7 static =
-  46).  These are SOURCE fixtures; a later LIVE test on a scoped
+  check-run GET/POST failure, clear-initial-then-fence-read-error,
+  clear-initial-then-listing-error - both asserting red job AND failure
+  payload - label repair failure, comment failure).
+- All suites PASS on this branch (17 unit + 23 integration + 7 static =
+  47).  These are SOURCE fixtures; a later LIVE test on a scoped
   throwaway PR is a separate, not-yet-authorized step.
 
 ### Slice 0.5: merge_group support - REMOVED from slice 1, needs default-branch-pinned execution design for queue refs before any repo with a queue adopts the guard.

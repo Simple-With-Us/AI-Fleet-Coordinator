@@ -7,13 +7,15 @@
 # Required env: REPO (owner/repo), PR (pull number), HEAD_SHA, PR_URL.
 # Optional env: GUARD_APP_SLUG (default github-actions).
 #
-# Error contract: every critical failure (disarm unconfirmed, evaluation,
-# repair, comment, check list/patch/create) makes the job RED (exit 3).
-# Fail-closed applies to evaluation and write FAILURES.  What we cannot do
-# (documented, not claimed): if GitHub API writes themselves fail, no red
-# check can be forced onto the PR - a previously green merge-gate may
-# persist; the red job + notices are the signal, and the armer-side gate
-# re-evaluates independently at arm time.
+# Error contract: every critical READ error (evaluation, fresh-state fence,
+# check-run listing) is settled BEFORE the check payload is built and forces
+# a FAILURE conclusion - a degraded guard never publishes green.  Every
+# critical failure of any kind (read errors, disarm unconfirmed, label
+# repair, comment, check patch/create) also makes the JOB red (exit 3).
+# What we cannot do (documented, not claimed): if GitHub API writes
+# themselves fail, no red check can be forced onto the PR - a previously
+# green merge-gate may persist; the red job + notices are the signal, and
+# the armer-side gate re-evaluates independently at arm time.
 set -uo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,6 +27,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ERR=/tmp/hold-guard-errors; : > "$ERR"
 PF=/tmp/hold-guard-patch-fail; : > "$PF"
 any_error=0
+read_error=""
 
 echo "::group::hold-guard run (event=$EVENT_NAME repo=$REPO sha=$HEAD_SHA pr=${PR:-none})"
 
@@ -38,8 +41,9 @@ prs=("$PR")
 #    Fleet contract (ST scripts/disable-pr-automerge.sh, ported inline into
 #    AFC auto-merge-reusable.yml disarm job): success is defined by the
 #    STATE READ (`gh pr view --json autoMergeRequest`), not by the mutation
-#    exit code.  off = benign (armed or never armed); armed or unreadable
-#    after the attempt = critical failure.
+#    exit code.  off = benign (disarmed or never armed); armed or
+#    unreadable after the attempt = critical failure (red job; the check
+#    still publishes the evaluated hold state below).
 gh pr merge --disable-auto "$PR_URL" 2>&1 | head -3 || true
 state="$(gh pr view "$PR_URL" --json autoMergeRequest \
   --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || true)"
@@ -56,7 +60,7 @@ for pr in "${prs[@]}"; do
   if out="$(python3 "$DIR/hold_guard.py" "$REPO" "$pr")"; then
     :
   else
-    any_error=1
+    any_error=1; read_error="evaluation error"
     out="$(printf '{"state":"error","error":"hold_guard rc: %s"}' "$out")"
   fi
   echo "$out" > "/tmp/hold-guard-$pr.json"
@@ -64,7 +68,8 @@ for pr in "${prs[@]}"; do
 done
 
 # 3. Repairs + reports (labels via jq-built JSON, never word-split).
-#    Pipelines run in subshells; failures are recorded via marker file.
+#    Pipelines run in subshells; failures are recorded via marker file and
+#    turn the job red; the evaluated hold state still decides the payload.
 printf '%s' "$combined" | jq -c '.[] | select(.needs_reapply)' | while IFS= read -r h; do
   pr=$(printf '%s' "$h" | jq -r .pr)
   if printf '%s' "$h" | jq -c '{labels: [.label]}' \
@@ -88,20 +93,30 @@ done
 #    start of this run.  A still-later change is covered by the next queued
 #    run; per-run freshness is the strongest asynchronous guarantee here.
 fresh='[]'
-fresh_error=0
 for pr in "${prs[@]}"; do
   if fout="$(python3 "$DIR/hold_guard.py" "$REPO" "$pr")"; then
     fresh="$(jq -s '.[0] + [ .[1].holds[]? | . + {pr: $pr} ]' --arg pr "$pr" <(echo "$fresh") <(echo "$fout"))"
   else
-    fresh_error=1
+    any_error=1; read_error="evaluation error"
   fi
 done
 echo "$fresh" > /tmp/hold-guard-combined.json
 
 # 5. Publish the merge-gate conclusion (always attempted).
-if [ "$any_error" -eq 1 ] || [ "$fresh_error" -eq 1 ]; then
-  conclusion=failure; title="merge-gate: evaluation error"
-  summary="Hold evaluation or a guard step failed (see workflow log). Failing closed."
+#    The check-run listing is the LAST read; it happens BEFORE the payload
+#    is built so its failure also forces a failure conclusion.
+owned=""
+if runs_json="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=merge-gate")"; then
+  owned="$(printf '%s' "$runs_json" | jq -r --arg s "$GUARD_APP_SLUG" '.check_runs[] | select(.app.slug == $s) | .id')"
+else
+  echo "::error::could not list merge-gate runs for $HEAD_SHA"
+  any_error=1
+  [ -n "$read_error" ] || read_error="check-run listing error"
+fi
+
+if [ -n "$read_error" ]; then
+  conclusion=failure; title="merge-gate: $read_error"
+  summary="A guard read step failed (see workflow log). Failing closed - no green check from a degraded guard."
 elif [ "$(printf '%s' "$fresh" | jq 'length')" -eq 0 ]; then
   conclusion=success; title="merge-gate: no active merge holds"
   summary="All holds were released by their setters."
@@ -114,13 +129,6 @@ payload="$(jq -n --arg sha "$HEAD_SHA" --arg c "$conclusion" --arg t "$title" --
 
 # Only runs owned by OUR app identity are eligible to PATCH (no foreign
 # probing: a 403 we never trigger is a mutation we never attempt).
-if runs_json="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=merge-gate")"; then
-  owned="$(printf '%s' "$runs_json" | jq -r --arg s "$GUARD_APP_SLUG" '.check_runs[] | select(.app.slug == $s) | .id')"
-else
-  echo "::error::could not list merge-gate runs for $HEAD_SHA"
-  any_error=1
-  owned=""
-fi
 printf '%s\n' "$owned" | while IFS= read -r run_id; do
   [ -z "$run_id" ] && continue
   if ! printf '%s' "$payload" | gh api "repos/$REPO/check-runs/$run_id" -X PATCH --input - >/dev/null; then

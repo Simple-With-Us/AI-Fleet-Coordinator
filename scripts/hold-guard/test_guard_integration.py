@@ -294,6 +294,11 @@ class GuardIntegration(unittest.TestCase):
         posts = [c for c in self.calls() if 'POST' in c['argv']
                  and any(a.endswith('/check-runs') for a in c['argv'])]
         self.assertEqual(len(posts), 1)  # best-effort conclusion still published
+        payload = json.loads(posts[0]['stdin'])
+        # clear initial state, but the critical read error must recompute
+        # the payload: a degraded guard never publishes green
+        self.assertEqual(payload['conclusion'], 'failure')
+        self.assertIn('check-run listing error', payload['output']['title'])
 
     def test_repair_label_post_failure_red_job(self):
         self._held_scenario()
@@ -310,6 +315,27 @@ class GuardIntegration(unittest.TestCase):
         p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
         self.assertEqual(p.returncode, 3)
         self.assertIn('failed to comment', p.stdout)
+
+
+    def test_clear_initial_then_fence_error_red_and_failure_payload(self):
+        # first evaluation CLEAR, fresh-state fence read fails: job red AND
+        # the published check is a failure payload, never green
+        self.scenario({
+            'labels': {'3': []},
+            'events_seq': {'3': [
+                [[ev('labeled', 'do-not-automerge', *ECHO, '2026-10-25T01:00:00Z'),
+                  ev('unlabeled', 'do-not-automerge', *ECHO, '2026-10-25T02:00:00Z')]],
+                {'__fail__': {'rc': 1, 'stderr': 'boom 500'}},
+            ]},
+        })
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 3)
+        posts = [c for c in self.calls() if 'POST' in c['argv']
+                 and any(a.endswith('/check-runs') for a in c['argv'])]
+        self.assertEqual(len(posts), 1)
+        payload = json.loads(posts[0]['stdin'])
+        self.assertEqual(payload['conclusion'], 'failure')
+        self.assertIn('evaluation error', payload['output']['title'])
 
 if __name__ == '__main__':
     unittest.main()
