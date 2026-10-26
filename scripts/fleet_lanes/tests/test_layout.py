@@ -451,6 +451,34 @@ class RootsTests(HomeCase):
         self.assertEqual(self.roots({"FLEET_LAYOUT": "nested"}).layout_mode, "nested")
         self.assertEqual(self.roots({"FLEET_LAYOUT": ""}).warnings, ())
 
+    def test_code_and_apps_roots_from_the_environment(self) -> None:
+        """A server host keeps them on a volume and links no ~/Code or ~/apps into the home."""
+        r = self.roots({"FLEET_CODE_ROOT": "/srv/checkout-volume/Code",
+                        "FLEET_APPS_ROOT": "/srv/checkout-volume/apps"})
+        self.assertEqual(r.code_root, pathlib.Path("/srv/checkout-volume/Code"))
+        self.assertEqual(r.apps_root, pathlib.Path("/srv/checkout-volume/apps"))
+
+    def test_the_code_and_apps_roots_keep_the_home_defaults(self) -> None:
+        self.assertEqual(self.roots({}).code_root, self.home / "Code")
+        self.assertEqual(self.roots({}).apps_root, self.home / "apps")
+        self.assertEqual(self.roots({"FLEET_CODE_ROOT": "  "}).code_root, self.home / "Code")
+        self.assertEqual(self.roots({"FLEET_APPS_ROOT": "  "}).apps_root, self.home / "apps")
+
+    def test_a_tilde_code_root_expands_against_the_home(self) -> None:
+        self.assertEqual(self.roots({"FLEET_CODE_ROOT": "~/Code"}).code_root, self.home / "Code")
+        self.assertEqual(self.roots({"FLEET_APPS_ROOT": "~/other/apps"}).apps_root, self.home / "other" / "apps")
+        self.assertEqual(self.roots({"FLEET_CODE_ROOT": "rel/Code"}).code_root, self.home / "rel" / "Code")
+
+    def test_the_lanes_root_follows_the_apps_root(self) -> None:
+        r = self.roots({"FLEET_APPS_ROOT": "/srv/checkout-volume/apps"})
+        self.assertEqual(r.lanes_root, pathlib.Path("/srv/checkout-volume/apps/lanes"))
+        self.assertEqual(r.codex_root, pathlib.Path("/srv/checkout-volume/apps/lanes/_codex"))
+
+    def test_the_lanes_root_override_still_wins_over_the_apps_root(self) -> None:
+        r = self.roots({"FLEET_APPS_ROOT": "/srv/checkout-volume/apps",
+                        "FLEET_LANES_ROOT": "/srv/checkout-volume/apps/lanes"})
+        self.assertEqual(r.lanes_root, pathlib.Path("/srv/checkout-volume/apps/lanes"))
+
     def test_bad_layout_falls_back_and_never_disables_tmp_detection(self) -> None:
         r = self.roots({"FLEET_LAYOUT": "sideways"})
         self.assertEqual(r.layout_mode, "nested")

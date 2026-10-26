@@ -82,6 +82,8 @@ __all__ = [
     "CONDUCTOR_DIR",
     "DEFAULT_EXTERNAL_LANES_ROOT",
     "DEFAULT_LAYOUT",
+    "ENV_APPS_ROOT",
+    "ENV_CODE_ROOT",
     "ENV_LANES_EXTERNAL_ROOT",
     "EXTRA_APPS",
     "LAYOUT_FLAT",
@@ -155,6 +157,12 @@ DEFAULT_LAYOUT = LAYOUT_NESTED
 
 ENV_LAYOUT = "FLEET_LAYOUT"
 ENV_LANES_ROOT = "FLEET_LANES_ROOT"
+# Where the integration trees and the apps folder live when they are not under the home directory.
+# The server keeps both on a volume the host names and the root account has no ~/Code or ~/apps
+# alias, so the roots come from the environment there (owner 2026-10-25).  Unset means the
+# default under the home directory.
+ENV_CODE_ROOT = "FLEET_CODE_ROOT"
+ENV_APPS_ROOT = "FLEET_APPS_ROOT"
 ENV_APPS_JSON = "FLEET_APPS_JSON"
 # Where lanes may physically live when ~/apps/lanes/<Repo> is a symlink onto an external disk (owner 2026-10-10).
 # Unset means the default below; set but empty turns the feature off; anything else must be an absolute path.
@@ -680,6 +688,25 @@ def _real(path: str | os.PathLike[str]) -> str:
     return os.path.realpath(os.fspath(path))
 
 
+def _env_root(env: Mapping[str, str], key: str, home: str, default: str) -> str:
+    """A root read from the environment, the way FLEET_LANES_ROOT is read.
+
+    `~` expands against the home and a relative path is joined onto it, so a
+    configured root selects the same directory here that `lane new` uses.  An
+    unset or blank value keeps the default under the home directory.
+    """
+    raw = (env.get(key) or "").strip()
+    if raw == "~":
+        return home
+    if raw.startswith("~/"):
+        return os.path.join(home, raw[2:])
+    if raw and os.path.isabs(raw):
+        return raw
+    if raw:
+        return os.path.join(home, raw)
+    return default
+
+
 def make_tmp_roots(env: Mapping[str, str] | None = None,
                    home: str | os.PathLike[str] | None = None) -> tuple[tuple[Path, ...], tuple[str, ...]]:
     """Forbidden temp roots and temp globs.  Parses no layout and loads no registry, so a guard
@@ -719,11 +746,14 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
                registry: Registry | None = None, case_insensitive: bool | None = None) -> Roots:
     """Resolve every root under `home`.
 
-    `env` is read for FLEET_LAYOUT, FLEET_LANES_ROOT, FLEET_LANES_EXTERNAL_ROOT and TMPDIR only; pass an explicit dict in
+    `env` is read for FLEET_LAYOUT, FLEET_LANES_ROOT, FLEET_CODE_ROOT, FLEET_APPS_ROOT,
+    FLEET_LANES_EXTERNAL_ROOT and TMPDIR only; pass an explicit dict in
     tests so the process environment never leaks in.  FLEET_LAYOUT other than nested or flat falls
     back to nested and is recorded in `warnings` (it never raises, so forbidden-tmp detection stays
-    on).  `registry` defaults to `load_registry(env=env)`, which can raise if the file is
-    unreadable.  `case_insensitive` defaults to true on macOS.
+    on).  FLEET_CODE_ROOT and FLEET_APPS_ROOT name the integration trees and the apps folder when
+    they are not under the home directory, as on a server host that keeps them on a volume and
+    links no ~/Code or ~/apps into the home.  `registry` defaults to `load_registry(env=env)`,
+    which can raise if the file is unreadable.  `case_insensitive` defaults to true on macOS.
     """
     env = os.environ if env is None else env
     real_home = _real(home)
@@ -737,18 +767,9 @@ def make_roots(home: str | os.PathLike[str], env: Mapping[str, str] | None = Non
         if raw_mode:
             warnings.append(f"unrecognized {ENV_LAYOUT} {raw_mode!r}; using {DEFAULT_LAYOUT}")
 
-    code_root = _real(os.path.join(real_home, "Code"))
-    apps_root = _real(os.path.join(real_home, "apps"))
-    raw_lanes = (env.get(ENV_LANES_ROOT) or "").strip()
-    if raw_lanes == "~" or raw_lanes.startswith("~/"):
-        lanes = os.path.join(real_home, raw_lanes[2:])
-    elif raw_lanes and os.path.isabs(raw_lanes):
-        lanes = raw_lanes
-    elif raw_lanes:
-        lanes = os.path.join(real_home, raw_lanes)
-    else:
-        lanes = os.path.join(apps_root, "lanes")
-    lanes_root = _real(lanes)
+    code_root = _real(_env_root(env, ENV_CODE_ROOT, real_home, os.path.join(real_home, "Code")))
+    apps_root = _real(_env_root(env, ENV_APPS_ROOT, real_home, os.path.join(real_home, "apps")))
+    lanes_root = _real(_env_root(env, ENV_LANES_ROOT, real_home, os.path.join(apps_root, "lanes")))
 
     if registry is None:
         registry = load_registry(env=env)
