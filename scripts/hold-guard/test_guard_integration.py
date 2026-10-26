@@ -166,5 +166,42 @@ class GuardIntegration(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn('error', p.stdout.lower())
 
+
+    def _clear_scenario(self):
+        self.scenario({'labels': {'3': []}, 'events': {'3': [[
+            ev('labeled', 'do-not-automerge', *ECHO, '2026-10-25T01:00:00Z'),
+            ev('unlabeled', 'do-not-automerge', *ECHO, '2026-10-25T02:00:00Z')]]}})
+
+    def test_existing_runs_patched_no_duplicate_no_stale(self):
+        # two of OUR prior merge-gate runs on the SHA: both must be PATCHed
+        # to the current conclusion; no new POST -> no same-name ambiguity
+        sha = 'deadbeef' * 5
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       'check_runs': {sha: [{'id': 555, 'app': 'github-actions'},
+                                            {'id': 556, 'app': 'github-actions'}]}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        patches = [c for c in self.calls() if 'PATCH' in c['argv']]
+        posts = [c for c in self.calls() if 'POST' in c['argv']
+                 and any(a.endswith('/check-runs') for a in c['argv'])]
+        self.assertEqual(len(patches), 2)
+        self.assertEqual(len(posts), 0)
+        for c in patches:
+            self.assertEqual(json.loads(c['stdin'])['conclusion'], 'success')
+
+    def test_foreign_app_run_tolerated_and_fresh_run_posted(self):
+        sha = 'deadbeef' * 5
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       'check_runs': {sha: [{'id': 777, 'app': 'swu-wise'}]}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('not patchable', p.stderr + p.stdout)
+        posts = [c for c in self.calls() if 'POST' in c['argv']
+                 and any(a.endswith('/check-runs') for a in c['argv'])]
+        self.assertEqual(len(posts), 1)  # our identity carries current state
+        self.assertEqual(json.loads(posts[0]['stdin'])['conclusion'], 'success')
+
 if __name__ == '__main__':
     unittest.main()

@@ -69,8 +69,13 @@ printf '%s' "$combined" | jq -c '.[] | select((.illegitimate_removals // []) | l
     || echo "::error::failed to comment on #$pr"
 done
 
-# 5. Publish the merge-gate check (always attempted; new run per evaluation -
-#    required-check evaluation uses the latest run of this name on the SHA).
+# 5. Publish the merge-gate conclusion (always attempted).
+#    GitHub's selection among multiple same-name check runs on one SHA is
+#    not doc-verified, so this does NOT rely on "latest run wins": every
+#    existing merge-gate run on this SHA created by our identity is PATCHED
+#    to the current conclusion, and a new run is only POSTed when none
+#    exist.  Runs from a foreign app 403 on PATCH - tolerated and counted;
+#    binding the required check to our App (slice 4) resolves that class.
 if [ "$any_error" -eq 1 ]; then
   conclusion=failure; title="merge-gate: evaluation error"
   summary="Hold evaluation failed (see workflow log). Failing closed."
@@ -81,10 +86,24 @@ else
   conclusion=success; title="merge-gate: no active merge holds"
   summary="All holds were released by their setters."
 fi
-jq -n --arg sha "$HEAD_SHA" --arg c "$conclusion" --arg t "$title" --arg s "$summary" \
-  '{name: "merge-gate", head_sha: $sha, status: "completed", conclusion: $c, output: {title: $t, summary: $s}}' \
-  | gh api "repos/$REPO/check-runs" -X POST --input - >/dev/null \
-  || echo "::error::failed to create merge-gate check run"
+payload="$(jq -n --arg sha "$HEAD_SHA" --arg c "$conclusion" --arg t "$title" --arg s "$summary" \
+  '{name: "merge-gate", head_sha: $sha, status: "completed", conclusion: $c, output: {title: $t, summary: $s}}')"
+existing="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=merge-gate" --jq '.check_runs[].id' 2>/dev/null || true)"
+patch_fail=/tmp/hold-guard-patch-fail
+: > "$patch_fail"
+printf '%s\n' "$existing" | while IFS= read -r run_id; do
+  [ -z "$run_id" ] && continue
+  if ! printf '%s' "$payload" | gh api "repos/$REPO/check-runs/$run_id" -X PATCH --input - >/dev/null 2>&1; then
+    echo fail >> "$patch_fail"
+    echo "::notice::merge-gate run $run_id not patchable by this identity (foreign app?) - left as-is"
+  fi
+done
+# POST a fresh run when none existed OR any existing run rejected our PATCH,
+# so our identity always carries the current conclusion on this SHA.
+if [ -z "$(printf '%s' "$existing" | tr -d '[:space:]')" ] || [ -s "$patch_fail" ]; then
+  printf '%s' "$payload" | gh api "repos/$REPO/check-runs" -X POST --input - >/dev/null \
+    || echo "::error::failed to create merge-gate check run"
+fi
 
 echo "::endgroup::"
 [ "$any_error" -eq 1 ] && exit 3

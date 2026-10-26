@@ -45,6 +45,25 @@ if argv and argv[0] == 'api':
                 print(p['number'])
             sys.exit(0)
         out(pulls)
+    if '/commits/' in path and 'check-runs' in path and '-X' not in argv:
+        sha = parts[4]; fail(f'sha-checks/{sha}')
+        runs = scenario.get('check_runs', {}).get(sha, [])
+        if '--jq' in argv and argv[argv.index('--jq') + 1] == '.check_runs[].id':
+            for r in runs:
+                print(r['id'])
+            sys.exit(0)
+        out({'check_runs': runs})
+    if '/check-runs/' in path and '-X' in argv and 'PATCH' in argv:
+        run_id = int(path.split('/check-runs/')[1])
+        for runs in scenario.get('check_runs', {}).values():
+            for r in runs:
+                if r['id'] == run_id:
+                    if r.get('app', 'github-actions') != 'github-actions':
+                        sys.stderr.write('Resource not accessible by integration\n')
+                        sys.exit(1)
+                    out(r)
+        sys.stderr.write('Not Found\n')
+        sys.exit(1)
     if path.endswith('/check-runs'):
         fail('check-runs')
         out({'id': 1001})

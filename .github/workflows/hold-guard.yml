@@ -41,7 +41,13 @@ jobs:
       - name: Checkout hold-guard from base branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (SHA-pinned 2026-10-25)
         with:
-          ref: ${{ github.event.pull_request.base.ref || github.event.repository.default_branch }}
+          # ALWAYS the default branch.  pull_request_target runs the workflow
+          # file from the default branch of the base repository (docs:
+          # events-that-trigger-workflows#pull_request_target) - and the
+          # scripts it executes must come from the same trusted ref.  A PR's
+          # base branch is NOT trusted: any repo writer can create a branch
+          # with doctored scripts and target a PR at it.
+          ref: ${{ github.event.repository.default_branch }}
           sparse-checkout: scripts/hold-guard
           fetch-depth: 1
 
