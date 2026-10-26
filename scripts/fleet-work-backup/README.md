@@ -41,7 +41,7 @@ not fetched lately, the newest commit it shares with that branch;  `local-remote
 
 A checkout with nothing unpushed, no stash and nothing dirty leaves nothing behind.
 
-**(b) Non-git files** under `~/apps`, outside any checkout:  `AGENT-SYNC.md`, the effort logs,
+**(b) Non-git files** under `~/apps`, outside any checkout:  `FLEET-PROTOCOL.md`, the effort logs,
 `MAC-LOCAL-PROCESSES.md`, helper scripts, runtime
 configs.  They are staged under `files/`, which mirrors the path relative to the home directory
 (`files/apps/FLEET-PROTOCOL.md`).  The loose files directly in `~/Code` are included too.  SQLite files
