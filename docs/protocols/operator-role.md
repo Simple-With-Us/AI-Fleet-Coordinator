@@ -14,6 +14,29 @@ sender about a tag to wake, is a bounded exception and not a conversational turn
 
 ## 1. What Jay has ruled
 
+**These are rulings and intended design, not verified current behaviour.**  Jay's words on Oct 25,
+2026, in the MiniMax Code pane, and where a seat relayed them, in `#Work-In-Progress`.  The
+current runtime is described in section 2 and section 7, and the two are kept apart on purpose:
+a ruling says where the design is going, and it is not a claim that the running code does it
+today.
+
+**Where each ruling came from, so that it is not re-derived from a later paraphrase.**
+
+*  The Operator as the listener with the eavesdropper on the server, acting under its own
+    identity, never wearing a seat's wake tag, and asking in a post rather than a direct message:
+    Jay, in the MiniMax Code pane on Oct 25, 2026.
+*  The direct message being the fleet's exception, used only by the Operator and only when the
+    message cannot be paired with a specific thread to receive it:  Jay, in the MiniMax Code pane
+    on Oct 25, 2026.
+*  The Operator waking a seat on the seat's own surface, MM on Lark and Jet on WhatsApp:  Jay, in
+    the MiniMax Code pane on Oct 25, 2026.
+*  The no bot-to-bot direct message rule, that a bot may send one only when Jay is an actual
+    participant, checked by authenticated user id:  Jet relaying Jay's own answer, `#Work-In-Progress`
+    message 633794973, Oct 23, 2026.
+*  The Operator being mostly deterministic and not conversing with users, and the Muse spark 1.3
+    contributor or the MiniMax M3.1 fallback being for the headless consultant:  Jay, relayed by
+    ECHO and WISE, `#Work-In-Progress`, Oct 25, 2026.
+
 1.  **The Operator is the thing that listens.**  It holds the eavesdropper, it runs on the server,
     and it is the service identity the fleet talks to.
 
@@ -101,9 +124,11 @@ of the session rather than a decision the Operator makes per message.
 Their input, recorded as theirs, in the topic "Operator role: listener, letters, relay and how it
 talks" on Oct 25, 2026.
 
-**Keep each seat's own records, and give the Operator the fleet view.**  The Operator answers a
-seat's questions, and a seat keeps what is already its own.  This answers Jay's "the Operator
-should have its eavesdropper on the server" without a seat losing its own ground.
+**Keep each seat's own records, and give the Operator the fleet view.**  A seat keeps what is
+already its own, and the Operator holds the fleet-wide view over it.  This answers Jay's "the
+Operator should have its eavesdropper on the server" without a seat losing its own ground, and it
+does not make the Operator a conversational assistant:  the fleet view is a read it serves
+deterministically, not a question it answers in a thread.
 
 **A session summary carries purpose, the owning issue, the source thread, repository and pull
 request links, the current status, and a contact.**  A letter read six weeks later should still
@@ -144,9 +169,10 @@ The second is a much bigger grant, because an Operator that reads every seat's i
 everything the fleet sees.  It is also the only shape that matches "the Operator is the thing that
 listens".
 
-The shape that fits:  the Operator holds the eavesdropper for the whole fleet and answers a
-seat's questions about its own records, and a seat's own eavesdropper read is narrowed to what that
-seat already owns.  The decision for Jay is whether a seat's own eavesdropper read survives at all.
+The shape that fits:  the Operator holds the eavesdropper for the whole fleet, a seat's own
+eavesdropper read is narrowed to what that seat already owns, and the Operator serves the
+fleet-wide read deterministically rather than answering questions in a thread.  The decision for
+Jay is whether a seat's own eavesdropper read survives at all.
 
 ### 3.2  How the Operator acts
 
@@ -167,8 +193,23 @@ Three concrete changes carry that:
 3.  **The pairing test decides post against direct message, and it decides only that.**  A message
     that pairs with a thread gets the Operator's own message in that thread.  A message that pairs
     with no thread gets the Operator's one question, and that direct message is the only direct
-    message the fleet sends.  The question itself is bounded:  it asks the message's poster or
-    sender about a tag to wake, and it is not an opening for a conversation.
+    message the fleet sends.  The question itself is bounded:  it asks about a tag to wake, and it
+    is not an opening for a conversation.
+
+**The audience of that one question, stated so it cannot drift into user conversation.**  The
+question is addressed to the message's poster or sender, and the audience is decided by what that
+poster or sender is.  When it is a seat, the question is a seat-to-seat message about a tag, and
+it belongs to the fleet's internal exception.  When it is a human, the Operator does not open a
+direct message with that person and does not start a thread with them either, because a
+conversation with a user is exactly what the boundary rules out;  the question goes into the
+owner's queue as a queued item instead, and Jay answers it the way he answers everything else in
+his queue.
+
+**What that costs, and why it is Jay's call.**  The owner-in-the-conversation guard merged today
+requires Jay in a direct message, so a seat-to-seat question that goes by direct message has to
+carry him as a participant.  That is in tension with "the Operator does not converse with users",
+and the two ways out are:  the seat-to-seat question carries Jay and is addressed to the seat, or
+the question does not go by direct message at all.  Jay rules.
 
 **The headless consultant is a different thing.**  Jay's boundary is that the Muse spark 1.3
 contributor or the MiniMax M3.1 fallback is for the headless consultant, and it is not the
