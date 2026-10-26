@@ -49,9 +49,9 @@
     <string>/Users/jay/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>/Users/jay</string>
-    <!-- The seat this agent acts as.  Only CLAUDE runs the notifier, and AGENT_LAUNCHER is deliberately not set. -->
-    <key>AGENT_SEAT</key>
-    <string>CLAUDE</string>
+    <!-- No identity variable lives here:  the seat is proven by CLAUDE's own bearer.  Provisioning adds
+         SIMPLE_BOARD_BEARER_LOCATOR (a FOLDER:KEY_NAME location, never a value) for the CLAUDE seat bearer;  until
+         it is added the notifier refuses (no verified seat) instead of acting as anyone. -->
   </dict>
 </dict>
 </plist>

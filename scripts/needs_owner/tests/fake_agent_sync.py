@@ -99,7 +99,7 @@ def main():
     stdin = ""
     if getattr(args, "text", None) == ["-"]:
         stdin = sys.stdin.read()
-    entry = {"tool": "simple-chat", "argv": argv, "stdin": stdin, "seat": os.environ.get("AGENT_SEAT"),
+    entry = {"tool": "simple-chat", "argv": argv, "stdin": stdin, "seat": os.environ.get("FAKE_BEARER_SEAT"), "env_seat": os.environ.get("AGENT_SEAT"),
              "launch_seat": os.environ.get("AGENT_LAUNCH_SEAT"), "launcher": os.environ.get("AGENT_LAUNCHER")}
     world = load()
     seat = str(getattr(args, "as_seat", "") or "").upper()

@@ -700,7 +700,7 @@ Every work item gets ONE topic.  The first post in it is the claim, the last is 
 
 Order (owner 2026-10-16):
 
-1. Linear first:  `board list` for the app, then `board claim <id>` (or `board file`, then claim) with `--by "$AGENT_SEAT" --env Mac --where "claimed: Wed, Oct 7, 2026 ~/apps/lanes/<Repo>/<seat>-<slug> @ <branch-prefix>/<slug>"`.  Writes need `AGENT_SEAT`.
+1. Linear first:  `board list` for the app, then `board claim <id>` (or `board file`, then claim) with `--by <YOUR_TAG> --env Mac --where "claimed: Wed, Oct 7, 2026 ~/apps/lanes/<Repo>/<seat>-<slug> @ <branch-prefix>/<slug>"`.  Writes need your bearer-verified seat (`simple-board whoami`); `--by` is only a check.
 2. Then the CLAIMED status block in the work topic, named `<ID> <subject>`.
 
 There is no second board to update.  The effort logs are archived and nothing writes back to them, and every imported GitHub issue has a Linear twin (a new GitHub issue is copied in one way once Linear's GitHub sync is on).  The branch is `<seat>/<id>-<slug>` and the PR body says `Fixes <ID>` when it finishes the issue and `Refs <ID>` for partial work, so Linear's GitHub link attaches the PR.  The Linear issue and the Zulip post are the claim; the same two are the closeout.

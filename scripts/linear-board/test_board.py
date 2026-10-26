@@ -1255,6 +1255,12 @@ def make_verify_handler(store):
                 self._answer(200, {"ok": True, "identity": "CODEX", "expires_at": future})
             elif mode == "past-expiry":
                 self._answer(200, {"ok": True, "identity": q.get("identity"), "expires_at": 1000})
+            elif mode == "nan-expiry":
+                self._answer(200, ('{"ok":true,"identity":"%s","expires_at":NaN}' % q.get("identity")).encode())
+            elif mode == "inf-expiry":
+                self._answer(200, ('{"ok":true,"identity":"%s","expires_at":Infinity}' % q.get("identity")).encode())
+            elif mode == "bool-expiry":
+                self._answer(200, ('{"ok":true,"identity":"%s","expires_at":true}' % q.get("identity")).encode())
             elif mode == "not-json":
                 self._answer(200, b"not json")
             else:  # expired / mismatch / paused
@@ -1332,6 +1338,20 @@ class BearerSeatTests(BoardTest):
     def test_a_past_expiry_is_refused(self):
         self.verify_store["mode"] = "past-expiry"
         self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_a_non_finite_or_boolean_expiry_is_refused(self):
+        for mode in ("nan-expiry", "inf-expiry", "bool-expiry"):
+            self.verify_store["mode"] = mode
+            self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_a_non_canonical_verified_seat_is_refused_not_remapped(self):
+        # A verifier answering an alias spelling (INSTINCT is the retired spelling of WISE) is refused:
+        # the CLI never re-maps a verified identity.
+        alias = "sbt_instinct_" + "C" * 43
+        (self.ops_vault / "fleet-seats" / "INSTINCT_BEARER").write_text(alias)
+        p = self.board("stats", extra=dict(self.bearer_env, SIMPLE_BOARD_BEARER_LOCATOR="/fleet-seats:INSTINCT_BEARER"), code=None)
+        self.assert_clean_failure(p)
+        self.assertIn("non-canonical", p.stderr)
 
     def test_a_non_json_answer_is_refused(self):
         self.verify_store["mode"] = "not-json"
@@ -1455,6 +1475,25 @@ class BearerTransportSeamTests(unittest.TestCase):
         )
         self.assertEqual(p.returncode, 0, f"stdout:\n{p.stdout}\nstderr:\n{p.stderr}")
         self.assertIn("SANDBOX OK", p.stdout)
+
+    def test_every_verifier_identity_is_already_a_canonical_seat_tag(self):
+        # The verifier can only answer KNOWN_SEATS (ST-MCP config.js) or an enabled GB persona
+        # (gb-identities.json), and sbt_/gbb_ bearers are minted for those only.  The CLI refuses a
+        # non-canonical answer instead of re-mapping it, so this guards drift:  if the verifier set ever
+        # gains an alias spelling, this fails and the contract is revisited rather than silently remapped.
+        root = Path(__file__).resolve().parents[1]
+        cfg = (root / "agent-sync-mcp" / "src" / "config.js").read_text()
+        m = re.search(r"KNOWN_SEATS = Object\.freeze\(\[([^\]]+)\]\)", cfg)
+        self.assertIsNotNone(m)
+        seats = re.findall(r'"([A-Z][A-Z0-9-]*)"', m.group(1))
+        gb = json.loads((root / "agent_sync" / "mcp" / "gb-identities.json").read_text())["enabled"]
+        # This pins only what the hosted verifier answers TODAY.  It is not the fleet roster:  other active
+        # tags (AG, CLUTCH, FX, GROK, MC, MM, OPENCODE, BotFleet roles) have no verifier identity yet and
+        # need verifier/admin work, not an alias map here.
+        self.assertGreaterEqual(len(seats), 9)
+        cli = _cli()
+        for ident in [*seats, *gb]:
+            self.assertEqual(cli.norm_seat(ident), ident, ident)
 
     def test_in_process_transport_injection(self):
         cli = _cli()
@@ -1689,15 +1728,15 @@ class SafetyTests(BoardTest):
     def test_backend_fallback_execs_old_cli(self):
         old = self.tmp / "old-board"
         old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
-        p = self.board(
-            "claim",
-            "abc",
-            "--by",
-            "X",
-            drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"),
-            extra={"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)},
-        )
-        self.assertEqual(p.stdout.strip(), "OLD BOARD ['claim', 'abc', '--by', 'X']")
+        extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
+        p = self.board("list", "--app", "AFC", drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), extra=extra)
+        self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
+        self.assertEqual(self.mock.ops, [])
+        # a write never rides the rollback backend:  it would skip the bearer-verified seat
+        for verb in ("claim", "file", "status", "comment"):
+            p = self.board(verb, "abc", "--by", "X", extra=extra, code=6)
+            self.assertIn("bearer-verified seat", p.stderr, verb)
+            self.assertNotIn("OLD BOARD", p.stdout, verb)
         self.assertEqual(self.mock.ops, [])
 
     def test_source_never_reads_admin_or_personal_keys(self):
@@ -3882,20 +3921,8 @@ class FlatLabelTests(BoardTest):
             p = self.board(*args, extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), code=2)
             self.assertIn("Linear only", p.stderr, args)
             self.assertNotIn("OLD BOARD", p.stdout, args)
-        p = self.board(
-            "file",
-            "--title",
-            "x",
-            "--desc",
-            "d",
-            "--fix",
-            "f",
-            extra=extra,
-            drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"),
-        )
-        self.assertEqual(
-            p.stdout.strip(), "OLD BOARD ['file', '--title', 'x', '--desc', 'd', '--fix', 'f']"
-        )
+        p = self.board("list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"))
+        self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])
 
 

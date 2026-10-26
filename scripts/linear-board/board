@@ -80,7 +80,7 @@ app's writes are refused when Linear names another app as the viewer
 seat:<TAG> labels only say who reported or touched it (the import put them on
 reporters too), so they are never read as a claim.  Writes are off unless
 LINEAR_BOARD_WRITES=1.  BOARD_BACKEND=mac-collab runs the old board CLI
-instead (rollback).
+instead for reads (rollback);  it never carries a write, which needs the bearer-verified seat.
 
 Stdlib only, so cloud seats, the Grok Bot VM and BotFleet containers can run
 it from any AI-Fleet-Coordinator checkout: python3 scripts/linear-board/board.
@@ -96,6 +96,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import math
 import os
 import re
 import shutil
@@ -865,8 +866,10 @@ def bearer_verified_seat() -> str:
     if len(payload) > BEARER_MAX_RESPONSE:
         die("bearer verification answer was oversized", EXIT_AUTH)
     reason = _verify_reason(payload)
+    def _no_constant(name):  # NaN / Infinity / -Infinity are not JSON;  never let one reach a comparison
+        raise ValueError(name)
     try:
-        answer = json.loads(payload)
+        answer = json.loads(payload, parse_constant=_no_constant)
     except ValueError:
         die("bearer verification answer was not JSON", EXIT_AUTH)
     if not isinstance(answer, dict) or answer.get("ok") is not True:
@@ -876,11 +879,16 @@ def bearer_verified_seat() -> str:
     if answer.get("identity") != claimed:
         die("bearer verification answered for a different identity", EXIT_AUTH)
     expires = answer.get("expires_at")
-    if not isinstance(expires, (int, float)) or expires <= time.time() * 1000:
-        die("the seat bearer is expired", EXIT_AUTH)
+    if (isinstance(expires, bool) or not isinstance(expires, (int, float))
+            or not math.isfinite(expires) or expires <= time.time() * 1000):
+        die("the seat bearer is expired or carries no valid expiry", EXIT_AUTH)
     seat = answer["identity"]
     if not re.fullmatch(r"[A-Z][A-Z0-9-]{0,31}", seat):
         die("bearer verification answered an invalid seat tag", EXIT_AUTH)
+    # The verifier names canonical seat tags (KNOWN_SEATS / GB-<ROLE>).  A verified identity is used
+    # exactly as answered, never re-mapped:  an alias spelling here would merge two identities.
+    if norm_seat(seat) != seat:
+        die("bearer verification answered a non-canonical seat tag", EXIT_AUTH)
     return seat
 
 
@@ -1181,7 +1189,7 @@ def resolve_identity(seat: str = "") -> Identity:
                     f"LINEAR_{k}_CLIENT_ID", f"LINEAR_{k}_CLIENT_SECRET"]
     die(f"no Fleet credentials: FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET are missing from Infisical "
         f"Fleet-OPS {FLEET_OPS_LINEAR_PATH} (`fleet-secrets get`), and LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are not "
-        f"set{seat_part}.  Check `fleet-secrets doctor`.  Until then use BOARD_BACKEND=mac-collab.", EXIT_NO_CREDS,
+        f"set{seat_part}.  Check `fleet-secrets doctor`.", EXIT_NO_CREDS,
         credential_field=",".join(missing))
 
 
@@ -4765,6 +4773,11 @@ def main(argv: list[str] | None = None) -> int:
         if linear_only:
             die(f"`{linear_only}` is Linear only:  BOARD_BACKEND=mac-collab runs the old board CLI, which has "
                 "no such flag or verb.  Unset BOARD_BACKEND to use it.", EXIT_USAGE)
+        # The rollback backend runs the old CLI, which has no bearer-verified identity:  it never gets a write
+        # through this entry point, so no environment variable can route a write around the bearer.
+        if any(a in WRITE_VERBS for a in argv[:1]):
+            die(f"`{argv[0]}` is a write, and BOARD_BACKEND=mac-collab runs the old board CLI, which cannot prove "
+                "a seat from a bearer.  Writes only run as the bearer-verified seat:  unset BOARD_BACKEND.", EXIT_AUTH)
         old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "mac-collab" / "board")).expanduser()
         if not old.is_file():
             die(f"BOARD_BACKEND=mac-collab, but the old board CLI is not at {old} (set BOARD_MAC_COLLAB_CLI)")

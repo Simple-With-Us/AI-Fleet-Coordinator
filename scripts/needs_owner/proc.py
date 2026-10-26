@@ -1,6 +1,6 @@
 """Running `board` and `agent-sync`.
 
-Both are run as argv lists (never through a shell), with the verified seat as `AGENT_SEAT` in the child's
+Both are run as argv lists (never through a shell), with identity variables removed from the child's
 environment.  Free text never rides on argv:  the board reads a description or a comment from a private
 temp file (mode 0600, removed afterwards) and `agent-sync` reads a message from standard input, so
 nothing a filer wrote shows up in `ps` or in a shell history.  Each tool is looked up on PATH, then in
@@ -39,6 +39,8 @@ class Result:
 
 
 def find_tool(name: str, environ: Mapping[str, str]) -> str | None:
+    if name == "simple-board":  # the board is the managed install of this account, never a PATH or HOME lookup
+        return seatmod.managed_board()
     found = shutil.which(name, path=environ.get("PATH"))
     if found:
         return found
@@ -58,11 +60,11 @@ def first_line(text: str, cap: int = 200) -> str:
 
 class Runner:
     def __init__(self, seat: str | None, environ: Mapping[str, str] | None = None) -> None:
-        """`seat` is the verified seat for a writer (it becomes AGENT_SEAT in every child);  a reader passes
+        """`seat` is the verified seat for a writer (every child loses AGENT_SEAT and the bearer locator picks the identity);  a reader passes
         None and the environment goes through as it is."""
         self.seat = seat or ""
         base = os.environ if environ is None else environ
-        self.env = seatmod.child_environment(seat, base) if seat else dict(base)
+        self.env = seatmod.child_environment(base) if seat else dict(base)
 
     # ---- private files ---------------------------------------------------------------------
     @contextlib.contextmanager

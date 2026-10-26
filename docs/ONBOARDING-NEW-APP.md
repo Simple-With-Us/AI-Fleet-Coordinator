@@ -60,7 +60,7 @@ for integration trees only"* (owner ruling 2026-09-25).
    brand-new fleet app being onboarded via this procedure — strays are
    detected and logged by `code-main-keeper.sh` and pruned by the owner.
 2. **Linear, then code.**  The app needs a Linear team keyed by its acronym (Jay creates it, so ask
-   in the claim post).  Claim the onboarding issue with `simple-board claim` (writes need `AGENT_SEAT`) and
+   in the claim post).  Claim the onboarding issue with `simple-board claim` (writes need your bearer-verified seat) and
    move it to In Progress before substantial edits.  There is no effort log to create.
 3. **Claim and closeout:** the Linear issue + `#Work-In-Progress`, and the PR names the issue (`Fixes <ID>`
    or `Refs <ID>`, branch `<seat>/<id>-<slug>`).

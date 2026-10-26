@@ -50,9 +50,11 @@ _SEAT_PIN_SOURCE = re.compile(
     + r")"
 )
 
-# What a rendered command writes where the seat goes (`board ... --by`).  The
-# identity block exports AGENT_SEAT from the verified seat when it is unset.
-BY_SEAT = '"$AGENT_SEAT"'
+# What a rendered command writes where the seat goes (`board ... --by`).  `simple-board` never reads
+# AGENT_SEAT:  its seat is proven by the reader's own bearer (`simple-board whoami`), so `--by` is only a
+# check and the pack writes a placeholder for the seat `whoami` reports.  (simple-chat and lane keep their
+# own seat contracts and still use the identity block above.)
+BY_SEAT = "<YOUR_TAG>"
 # The placeholder for the reader's branch prefix in example claim posts.  A
 # launched bot's prefix is its launcher's to name, so no render hard-codes one.
 BRANCH_PREFIX = "<branch-prefix>"
@@ -89,8 +91,10 @@ def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
         "Stop if `whoami` shows another seat's bot or the credential is missing "
         "(the CLI also refuses on its own).  Never use another seat's credential or "
         "Jay's account.  Your shell may not keep exports between commands, so pass "
-        '`--as <SEAT>` on every simple-chat call, and read `"$AGENT_SEAT"` in the '
-        f"commands below as the seat you verified.{extra}  {LAUNCHER_CLAUSE}"
+        '`--as <SEAT>` on every simple-chat call.  `simple-board` does not read these variables:  '
+        "the fleet verifier names your seat from your own bearer (`simple-board whoami` prints it as "
+        "`bearer-verified`), no variable can pick it, and `--by <YOUR_TAG>` in the commands below is only a "
+        f"check that must equal that seat.{extra}  {LAUNCHER_CLAUSE}"
     )
 
 

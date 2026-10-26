@@ -179,6 +179,11 @@ def env_code(seat: str) -> str:
     return re.sub(r"[^A-Z0-9]", "_", seat.upper())
 
 
+# Same canonical locator shape the board CLI enforces (scripts/linear-board/board BEARER_LOCATOR_RE).
+BEARER_LOCATOR_RE = re.compile(
+    r"/[A-Za-z0-9_-]{1,64}(?:/[A-Za-z0-9_-]{1,64}){0,7}:[A-Z][A-Z0-9_]{0,63}"
+)
+
 class RoutineConfig:
     """Where a remote `http` wake goes:  the names of the environment variables that hold the
     routine URL and its sender key (never the values), the method, the header and auth mode."""
@@ -244,6 +249,7 @@ class SeatConfig:
         fallback_uncontained_ok: bool = False,
         muse_bridge: bool = False,
         typing_indicator: bool = False,
+        bearer_locator: str | None = None,
         config_problems: list[str] | None = None,
     ) -> None:
         self.seat = seat
@@ -272,6 +278,10 @@ class SeatConfig:
         self.instance = instance
         self.enabled = enabled
         self.creds = creds  # "file", "infisical" or "env"
+        # The seat's own simple-board bearer LOCATOR (a Fleet-OPS FOLDER:KEY_NAME, never a secret), from this trusted
+        # daemon config only.  It names where the seat's bearer lives;  the CLI still verifies it and takes the seat
+        # from the verifier, so a wake or request can never choose a credential.  None = this seat files no board item.
+        self.bearer_locator = bearer_locator
         self.email_env = email_env
         self.key_env = key_env
         self.site_env = site_env
@@ -905,6 +915,14 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(typing_indicator, bool):
             wake_problems.append("seat.%s.typing_indicator must be true or false" % seat_name)
             typing_indicator = False
+        bearer_locator = section.get("bearer_locator")
+        if bearer_locator is not None and (
+            not isinstance(bearer_locator, str) or not BEARER_LOCATOR_RE.fullmatch(bearer_locator)
+        ):
+            wake_problems.append(
+                "seat.%s.bearer_locator must be a FOLDER:KEY_NAME location (no secret value)" % seat_name
+            )
+            bearer_locator = None
         creds = section.get("creds", "file")
         if creds not in ("file", "infisical", "env"):
             problems.append(
@@ -1119,6 +1137,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             fallback_uncontained_ok=uncontained,
             muse_bridge=muse_bridge,
             typing_indicator=typing_indicator,
+            bearer_locator=bearer_locator,
             config_problems=wake_problems,
         )
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg
