@@ -79,27 +79,43 @@ done
 # 3. Repairs + reports (labels via jq-built JSON, never word-split).
 #    Pipelines run in subshells; failures are recorded via marker file and
 #    turn the job red; the evaluated hold state still decides the payload.
+# Stale-repair fence (Kody r4373591313): candidates come from the
+# pre-disarm evaluation; a legitimate release landing since then must not
+# be resurrected as a guard-owned hold (releaseable by nobody).  Each
+# distinct PR is re-evaluated ONCE before its repairs (hoisted per Kody
+# r4373834824 - one evaluation per hold would multiply paginated API
+# calls; per-PR is sufficient because epoch pairing allows at most one
+# open hold per label name, so repairing hold A cannot change hold B's
+# needs_reapply).  A re-check read error, and a jq failure reading the
+# re-check (Kody r4373834619 - an empty result used to fall into the
+# stale-skip branch and skip the repair with NO red signal), both record a
+# repair error and turn the job red (fail closed - the next
+# event-triggered run retries).  The fence re-check can predate a later
+# POST in the same pass by seconds; that and the re-check-to-POST window
+# are the documented asynchronous residue (docs/hold-guard-rollout.md) -
+# shrunk, never eliminated.
+declare -A fresh_repair_ok=()
 printf '%s' "$combined" | jq -c '.[] | select(.needs_reapply)' | while IFS= read -r h; do
   pr=$(printf '%s' "$h" | jq -r .pr)
   label=$(printf '%s' "$h" | jq -r .label)
-  # Stale-repair fence (Kody r4373591313): candidates come from the
-  # pre-disarm evaluation; a legitimate release landing since then must not
-  # be resurrected as a guard-owned hold (releaseable by nobody).  Re-
-  # evaluate THIS PR immediately before the POST and repair only while the
-  # hold still needs it; a re-check read error skips the repair and turns
-  # the job red (fail closed - the next event-triggered run retries).
-  # The POST stays asynchronous: a release landing between the re-check and
-  # the POST is NOT prevented here - it is caught by that event's own
-  # queued run (docs/hold-guard-rollout.md, stated limits).
-  if fresh1="$(python3 "$DIR/hold_guard.py" "$REPO" "$pr")"; then
-    still="$(printf '%s' "$fresh1" | jq --arg l "$label" '[.holds[]? | select(.label == $l and .needs_reapply)] | length')"
-    if [ "$still" != "1" ]; then
-      echo "::notice::skipping stale repair of $label on #$pr (no longer needed at re-check)"
-      continue
+  if [ -z "${fresh_repair_ok[$pr]:-}" ]; then
+    if fresh1="$(python3 "$DIR/hold_guard.py" "$REPO" "$pr")"; then
+      printf '%s' "$fresh1" > "/tmp/hold-guard-fresh-repair-$pr.json"
+      fresh_repair_ok[$pr]=1
+    else
+      echo "::error::pre-repair re-check failed on #$pr - skipping repair"
+      echo repair >> "$ERR"
+      fresh_repair_ok[$pr]=0
     fi
-  else
-    echo "::error::pre-repair re-check failed on #$pr - skipping repair"
+  fi
+  [ "${fresh_repair_ok[$pr]}" = "1" ] || continue
+  if ! still="$(jq --arg l "$label" '[.holds[]? | select(.label == $l and .needs_reapply)] | length' < "/tmp/hold-guard-fresh-repair-$pr.json")"; then
+    echo "::error::pre-repair re-check parse failed on #$pr - skipping repair"
     echo repair >> "$ERR"
+    continue
+  fi
+  if [ "$still" != "1" ]; then
+    echo "::notice::skipping stale repair of $label on #$pr (no longer needed at re-check)"
     continue
   fi
   if printf '%s' "$h" | jq -c '{labels: [.label]}' \

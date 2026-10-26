@@ -82,10 +82,14 @@ per-setter holds; the suffix is a display hint, never the ownership source.
   block.  They stay open in evaluation (the gate remains red - removal
   alone never turns it green) and escalate via the check summary's
   "owner unknown, needs escalation" line; a human resolves them.
-- STALE-REPAIR FENCE (Kody r4373591313): each label re-apply re-evaluates
-  its PR immediately before the POST and is skipped when the hold no
-  longer needs repair (e.g. the setter re-applied and released in the
-  meantime).  The fence SHRINKS the repair race but cannot eliminate it:
+- STALE-REPAIR FENCE (Kody r4373591313): before its repair POSTs each
+  distinct PR is re-evaluated once (Kody r4373834824 - per-hold
+  re-evaluation would multiply paginated API calls) and any hold the
+  fresh state no longer needs is skipped (e.g. the setter re-applied and
+  released in the meantime).  A re-check read or parse failure records a
+  repair error and turns the job red (Kody r4373834619) - a skipped
+  repair is never silent.  The fence SHRINKS the repair race but cannot
+  eliminate it:
   a release landing between that re-check and the POST is still
   resurrected as a guard-owned hold, caught only by the release event's
   own queued run, which keeps the gate red and surfaces a guard-owned

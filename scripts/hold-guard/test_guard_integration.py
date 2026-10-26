@@ -944,5 +944,84 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(p.returncode, 3)
 
 
+    def test_repair_recheck_parse_failure_red_job(self):
+        # Kody r4373834619: a jq failure reading the re-check result must
+        # record a repair error and turn the job red - never fall into the
+        # stale-skip branch and silently leave the hold unrepaired
+        self._held_scenario()
+        jq_shim = os.path.join(self.tmp, "bin", "jq")
+        real_jq = subprocess.run(
+            ["which", "jq"], capture_output=True, text=True, timeout=30
+        ).stdout.strip()
+        with open(jq_shim, "w") as fh:
+            fh.write(
+                "#!/usr/bin/env bash\n"
+                'for a in "$@"; do\n'
+                '  if [ "$a" = "l" ] && [ "${FAKE_JQ_FAIL_REPAIR_CHECK:-}" = "1" ]; then\n'
+                '    echo "jq: simulated re-check parse failure" >&2; exit 2\n'
+                "  fi\n"
+                "done\n"
+                'exec "%s" "$@"\n' % real_jq
+            )
+        os.chmod(jq_shim, os.stat(jq_shim).st_mode | stat.S_IEXEC)
+        p = self.run_guard(
+            PR="3", PR_URL="u", EVENT_NAME="pull_request_target", FAKE_JQ_FAIL_REPAIR_CHECK="1"
+        )
+        self.assertEqual(p.returncode, 3)
+        self.assertIn("pre-repair re-check parse failed", p.stdout)
+        self.assertFalse(
+            [
+                c
+                for c in self.calls()
+                if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
+            ]
+        )
+        # and the published check still says the hold is active (fail closed)
+        checks = [
+            c
+            for c in self.calls()
+            if any(a.endswith("/check-runs") for a in c["argv"]) and "POST" in c["argv"]
+        ]
+        self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "failure")
+
+    def test_repair_fence_evaluates_once_per_pr(self):
+        # Kody r4373834824: the stale-repair fence re-evaluates each PR once,
+        # not once per hold - two needing-repair holds on one PR cost one
+        # re-check evaluation, and both repairs still land
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {
+                    "3": [
+                        [
+                            ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z"),
+                            ev("unlabeled", "do-not-automerge", *WISE, "2026-10-25T02:00:00Z"),
+                            ev("labeled", "do-not-merge", *ECHO, "2026-10-25T01:10:00Z"),
+                            ev("unlabeled", "do-not-merge", *WISE, "2026-10-25T02:10:00Z"),
+                        ]
+                    ]
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        events_gets = [
+            c
+            for c in self.calls()
+            if c["argv"][0] == "api" and any(a.endswith("/events") for a in c["argv"])
+        ]
+        # exactly 3 evaluations total: step-2 eval, ONE hoisted repair
+        # re-check, step-4 fresh-state fence
+        self.assertEqual(len(events_gets), 3)
+        label_posts = [
+            c
+            for c in self.calls()
+            if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
+        ]
+        self.assertEqual(len(label_posts), 2)
+        repaired = sorted(json.loads(c["stdin"])["labels"][0] for c in label_posts)
+        self.assertEqual(repaired, ["do-not-automerge", "do-not-merge"])
+
+
 if __name__ == "__main__":
     unittest.main()
