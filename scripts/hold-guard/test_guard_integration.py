@@ -1116,9 +1116,7 @@ class GuardIntegration(unittest.TestCase):
             if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
         ]
         self.assertEqual(len(label_posts), 1)
-        self.assertEqual(
-            json.loads(label_posts[0]["stdin"])["labels"], ["do-not-automerge"]
-        )
+        self.assertEqual(json.loads(label_posts[0]["stdin"])["labels"], ["do-not-automerge"])
 
     def test_marker_append_failure_after_init_red_job(self):
         # Root-cause follow-up to Kody r4374404410: init-time validation
