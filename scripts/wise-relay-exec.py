@@ -94,7 +94,11 @@ def request_json(url, headers, body=None):
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode() if body is not None else None,
-        headers={**headers, "Content-Type": "application/json"},
+        headers={
+            "User-Agent": "wise-relay-exec/1.0",
+            **headers,
+            "Content-Type": "application/json",
+        },
     )
     try:
         with urllib.request.build_opener(NoRedirect).open(req, timeout=30) as response:
