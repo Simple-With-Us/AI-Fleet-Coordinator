@@ -31,7 +31,11 @@ on:
   # merge queue (live ruleset read 2026-10-25); a safe queue design is a
   # future slice (docs/hold-guard-rollout.md).
   pull_request_target:
-    types: [opened, labeled, unlabeled, synchronize, ready_for_review]
+    # auto_merge_enabled included (Kody r4373585289): an auto-merge armed
+    # after this workflow's latest run would otherwise stay armed until an
+    # unrelated label/synchronize event; this type re-fires the disarm at
+    # the arming moment (remaining window: Actions scheduling latency).
+    types: [opened, labeled, unlabeled, synchronize, ready_for_review, auto_merge_enabled]
 
 permissions:
   contents: read

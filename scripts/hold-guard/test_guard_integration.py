@@ -44,13 +44,14 @@ class GuardIntegration(unittest.TestCase):
         shim = os.path.join(bindir, "gh")
         with open(shim, "w") as fh:
             fh.write(
-                '#!/usr/bin/env bash\nexec python3 "%s" "$@"\n' % os.path.join(DIR, "fake_gh.py")
+                '#!/usr/bin/env bash\nexec python3 "%s" "$@"\n'
+                % os.path.join(DIR, "fake_gh.py")
             )
         os.chmod(shim, os.stat(shim).st_mode | stat.S_IEXEC)
         self.env = dict(os.environ)
         self.env["PATH"] = bindir + os.pathsep + self.env["PATH"]
         self.env["FAKE_GH_LOG"] = self.log
-        self.env.update(REPO="Simple-With-Us/AI-Fleet-Coordinator", HEAD_SHA="deadbeef" * 5)
+        self.env.update(REPO="Fixture-Org/Fixture-Repo", HEAD_SHA="deadbeef" * 5)
         self.scenario_path = os.path.join(self.tmp, "scenario.json")
 
     def scenario(self, data):
@@ -67,6 +68,7 @@ class GuardIntegration(unittest.TestCase):
             env=self.env,
             capture_output=True,
             text=True,
+            timeout=60,
         )
 
     def run_armer(self, **env):
@@ -76,6 +78,7 @@ class GuardIntegration(unittest.TestCase):
             env=self.env,
             capture_output=True,
             text=True,
+            timeout=60,
         )
 
     def test_held_repairs_comments_and_publishes_failure_in_order(self):
@@ -85,15 +88,27 @@ class GuardIntegration(unittest.TestCase):
                 "events": {
                     "3": [
                         [
-                            ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z"),
-                            ev("unlabeled", "do-not-automerge", *WISE, "2026-10-25T02:00:00Z"),
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            ),
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *WISE,
+                                "2026-10-25T02:00:00Z",
+                            ),
                         ]
                     ]
                 },
             }
         )
         p = self.run_guard(
-            PR="3", PR_URL="https://github.com/x/pull/3", EVENT_NAME="pull_request_target"
+            PR="3",
+            PR_URL="https://github.com/x/pull/3",
+            EVENT_NAME="pull_request_target",
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         kinds = [(" ".join(c["argv"][:3])) for c in self.calls()]
@@ -107,13 +122,17 @@ class GuardIntegration(unittest.TestCase):
             and "-X" in c["argv"]
         ]
         self.assertEqual(len(label_posts), 1)
-        self.assertEqual(json.loads(label_posts[0]["stdin"]), {"labels": ["do-not-automerge"]})
+        self.assertEqual(
+            json.loads(label_posts[0]["stdin"]), {"labels": ["do-not-automerge"]}
+        )
         comments = [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
         self.assertEqual(len(comments), 1)
         body = comments[0]["argv"][comments[0]["argv"].index("--body") + 1]
         self.assertIn("swu-wise[bot]", body)
         self.assertIn("swu-echo[bot]", body)
-        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        checks = [
+            c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
+        ]
         self.assertEqual(len(checks), 1)
         payload = json.loads(checks[0]["stdin"])
         self.assertEqual(payload["conclusion"], "failure")
@@ -136,8 +155,18 @@ class GuardIntegration(unittest.TestCase):
                 "events": {
                     "3": [
                         [
-                            ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z"),
-                            ev("unlabeled", "do-not-automerge", *ECHO, "2026-10-25T02:00:00Z"),
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            ),
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T02:00:00Z",
+                            ),
                         ]
                     ]
                 },
@@ -145,15 +174,23 @@ class GuardIntegration(unittest.TestCase):
         )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 0, p.stderr)
-        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        checks = [
+            c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
+        ]
         self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "success")
-        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
+        self.assertFalse(
+            [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
+        )
 
     def test_events_api_error_fails_closed_and_loud(self):
-        self.scenario({"labels": {"3": []}, "fail": {"events/3": {"rc": 1, "stderr": "boom 500"}}})
+        self.scenario(
+            {"labels": {"3": []}, "fail": {"events/3": {"rc": 1, "stderr": "boom 500"}}}
+        )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 3)
-        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        checks = [
+            c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
+        ]
         payload = json.loads(checks[0]["stdin"])
         self.assertEqual(payload["conclusion"], "failure")
         self.assertIn("evaluation error", payload["output"]["title"])
@@ -174,7 +211,11 @@ class GuardIntegration(unittest.TestCase):
         self.scenario(
             {
                 "labels": {"3": [{"name": "do-not-merge"}]},
-                "events": {"3": [[ev("labeled", "do-not-merge", *ECHO, "2026-10-25T01:00:00Z")]]},
+                "events": {
+                    "3": [
+                        [ev("labeled", "do-not-merge", *ECHO, "2026-10-25T01:00:00Z")]
+                    ]
+                },
             }
         )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
@@ -196,16 +237,46 @@ class GuardIntegration(unittest.TestCase):
                     "3": [
                         [
                             [
-                                ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z"),
-                                ev("unlabeled", "do-not-automerge", *WISE, "2026-10-25T02:00:00Z"),
+                                ev(
+                                    "labeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T01:00:00Z",
+                                ),
+                                ev(
+                                    "unlabeled",
+                                    "do-not-automerge",
+                                    *WISE,
+                                    "2026-10-25T02:00:00Z",
+                                ),
                             ]
                         ],
                         [
                             [
-                                ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z"),
-                                ev("unlabeled", "do-not-automerge", *WISE, "2026-10-25T02:00:00Z"),
-                                ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T02:00:05Z"),
-                                ev("unlabeled", "do-not-automerge", *ECHO, "2026-10-25T03:00:00Z"),
+                                ev(
+                                    "labeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T01:00:00Z",
+                                ),
+                                ev(
+                                    "unlabeled",
+                                    "do-not-automerge",
+                                    *WISE,
+                                    "2026-10-25T02:00:00Z",
+                                ),
+                                ev(
+                                    "labeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T02:00:05Z",
+                                ),
+                                ev(
+                                    "unlabeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T03:00:00Z",
+                                ),
                             ]
                         ],
                     ]
@@ -271,15 +342,31 @@ class GuardIntegration(unittest.TestCase):
                 "labels": {"3": []},
                 "events": {
                     "3": [
-                        [ev("unlabeled", "do-not-automerge", *ECHO, "2026-10-25T02:00:00Z")],
-                        [ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z")],
+                        [
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T02:00:00Z",
+                            )
+                        ],
+                        [
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            )
+                        ],
                     ]
                 },
             }
         )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 0, p.stderr)
-        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        checks = [
+            c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
+        ]
         self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "success")
 
     def test_armer_wrapper_held_blocks_with_reason(self):
@@ -287,7 +374,16 @@ class GuardIntegration(unittest.TestCase):
             {
                 "labels": {"3": [{"name": "do-not-automerge"}]},
                 "events": {
-                    "3": [[ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z")]]
+                    "3": [
+                        [
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            )
+                        ]
+                    ]
                 },
             }
         )
@@ -301,7 +397,9 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
 
     def test_armer_wrapper_error_fails_closed(self):
-        self.scenario({"labels": {"3": []}, "fail": {"events/3": {"rc": 1, "stderr": "boom"}}})
+        self.scenario(
+            {"labels": {"3": []}, "fail": {"events/3": {"rc": 1, "stderr": "boom"}}}
+        )
         p = self.run_armer(PR_NUMBER="3")
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("error", p.stdout.lower())
@@ -313,8 +411,18 @@ class GuardIntegration(unittest.TestCase):
                 "events": {
                     "3": [
                         [
-                            ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z"),
-                            ev("unlabeled", "do-not-automerge", *ECHO, "2026-10-25T02:00:00Z"),
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            ),
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T02:00:00Z",
+                            ),
                         ]
                     ]
                 },
@@ -358,8 +466,18 @@ class GuardIntegration(unittest.TestCase):
                 "events": {
                     "3": [
                         [
-                            ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z"),
-                            ev("unlabeled", "do-not-automerge", *WISE, "2026-10-25T02:00:00Z"),
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            ),
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *WISE,
+                                "2026-10-25T02:00:00Z",
+                            ),
                         ]
                     ]
                 },
@@ -374,7 +492,12 @@ class GuardIntegration(unittest.TestCase):
             {
                 **json.load(open(self.scenario_path)),
                 "armed": True,
-                "fail": {"pr_merge": {"rc": 1, "stderr": "Resource not accessible by integration"}},
+                "fail": {
+                    "pr_merge": {
+                        "rc": 1,
+                        "stderr": "Resource not accessible by integration",
+                    }
+                },
             }
         )
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
@@ -491,8 +614,18 @@ class GuardIntegration(unittest.TestCase):
                     "3": [
                         [
                             [
-                                ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z"),
-                                ev("unlabeled", "do-not-automerge", *ECHO, "2026-10-25T02:00:00Z"),
+                                ev(
+                                    "labeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T01:00:00Z",
+                                ),
+                                ev(
+                                    "unlabeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T02:00:00Z",
+                                ),
                             ]
                         ],
                         {"__fail__": {"rc": 1, "stderr": "boom 500"}},
@@ -525,9 +658,24 @@ class GuardIntegration(unittest.TestCase):
                 "events": {
                     "3": [
                         [
-                            ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z"),
-                            ev("unlabeled", "do-not-automerge", *WISE, "2026-10-25T02:00:00Z"),
-                            ev("labeled", "do-not-automerge", *GUARD, "2026-10-25T02:01:00Z"),
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            ),
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *WISE,
+                                "2026-10-25T02:00:00Z",
+                            ),
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *GUARD,
+                                "2026-10-25T02:01:00Z",
+                            ),
                         ]
                     ]
                 },
@@ -542,7 +690,9 @@ class GuardIntegration(unittest.TestCase):
                 if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
             ]
         )
-        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
+        self.assertFalse(
+            [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
+        )
         checks = [
             c
             for c in self.calls()
@@ -556,13 +706,17 @@ class GuardIntegration(unittest.TestCase):
         self._held_scenario()
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
-        self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]), 1)
+        self.assertEqual(
+            len([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]), 1
+        )
         label_post = next(
             i
             for i, c in enumerate(self.calls())
             if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
         )
-        comment = next(i for i, c in enumerate(self.calls()) if c["argv"][:2] == ["pr", "comment"])
+        comment = next(
+            i for i, c in enumerate(self.calls()) if c["argv"][:2] == ["pr", "comment"]
+        )
         self.assertLess(label_post, comment)  # narrates the actual repair
 
     def test_no_comment_when_repair_post_fails(self):
@@ -578,7 +732,9 @@ class GuardIntegration(unittest.TestCase):
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 3)
         self.assertIn("failed to re-apply label", p.stdout)
-        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
+        self.assertFalse(
+            [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
+        )
         # the published check still says the hold is active (fail closed)
         checks = [
             c
@@ -586,6 +742,238 @@ class GuardIntegration(unittest.TestCase):
             if any(a.endswith("/check-runs") for a in c["argv"]) and "POST" in c["argv"]
         ]
         self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "failure")
+
+    def test_stale_repair_skipped_when_recheck_shows_release(self):
+        # Kody r4373591313: candidate list is from the first evaluation; a
+        # legitimate release landing before the repair POST must NOT be
+        # resurrected as a guard-owned hold.  Sequence: eval1 = illegitimate
+        # removal (repair candidate); re-check = owner re-applied then
+        # released (clear); fence = still clear.
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events_seq": {
+                    "3": [
+                        [
+                            [
+                                ev(
+                                    "labeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T01:00:00Z",
+                                ),
+                                ev(
+                                    "unlabeled",
+                                    "do-not-automerge",
+                                    *WISE,
+                                    "2026-10-25T02:00:00Z",
+                                ),
+                            ]
+                        ],
+                        [
+                            [
+                                ev(
+                                    "labeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T01:00:00Z",
+                                ),
+                                ev(
+                                    "unlabeled",
+                                    "do-not-automerge",
+                                    *WISE,
+                                    "2026-10-25T02:00:00Z",
+                                ),
+                                ev(
+                                    "labeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T02:30:00Z",
+                                ),
+                                ev(
+                                    "unlabeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T03:00:00Z",
+                                ),
+                            ]
+                        ],
+                    ]
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        self.assertIn("skipping stale repair", p.stdout)
+        self.assertFalse(
+            [
+                c
+                for c in self.calls()
+                if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
+            ]
+        )
+        self.assertFalse(
+            [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
+        )
+        checks = [
+            c
+            for c in self.calls()
+            if any(a.endswith("/check-runs") for a in c["argv"]) and "POST" in c["argv"]
+        ]
+        self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "success")
+
+    def test_repair_recheck_error_blocks_repair_and_red_job(self):
+        # the pre-repair re-check is a critical read: its failure skips the
+        # repair (fail closed) and turns the job red
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events_seq": {
+                    "3": [
+                        [
+                            [
+                                ev(
+                                    "labeled",
+                                    "do-not-automerge",
+                                    *ECHO,
+                                    "2026-10-25T01:00:00Z",
+                                ),
+                                ev(
+                                    "unlabeled",
+                                    "do-not-automerge",
+                                    *WISE,
+                                    "2026-10-25T02:00:00Z",
+                                ),
+                            ]
+                        ],
+                        {"__fail__": {"rc": 1, "stderr": "boom 500"}},
+                    ]
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 3)
+        self.assertIn("pre-repair re-check failed", p.stdout)
+        self.assertFalse(
+            [
+                c
+                for c in self.calls()
+                if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
+            ]
+        )
+
+    def test_unknown_owner_hold_not_rearmed_but_gate_red(self):
+        # Kody r4373587152: an unknown-owner hold must NOT be re-applied
+        # (re-applying makes it releaseable by nobody); it escalates through
+        # the red gate summary instead
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {
+                    "3": [
+                        [
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *WISE,
+                                "2026-10-25T02:00:00Z",
+                            )
+                        ]
+                    ]
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        self.assertFalse(
+            [
+                c
+                for c in self.calls()
+                if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
+            ]
+        )
+        checks = [
+            c
+            for c in self.calls()
+            if any(a.endswith("/check-runs") for a in c["argv"]) and "POST" in c["argv"]
+        ]
+        payload = json.loads(checks[0]["stdin"])
+        self.assertEqual(payload["conclusion"], "failure")
+        self.assertIn("owner unknown, needs escalation", payload["output"]["summary"])
+
+    def test_null_remover_login_coalesced_in_comment(self):
+        # Kody r4373591641: a timeline event with no actor login must not
+        # crash the jq join into an empty comment
+        no_login = {
+            "id": 900,
+            "event": "unlabeled",
+            "label": {"name": "do-not-automerge"},
+            "actor": {"id": 424242},
+            "created_at": "2026-10-25T02:00:00Z",
+        }
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {
+                    "3": [
+                        [
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            ),
+                            no_login,
+                        ]
+                    ]
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        comments = [c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]
+        self.assertEqual(len(comments), 1)
+        body = comments[0]["argv"][comments[0]["argv"].index("--body") + 1]
+        self.assertIn("unknown", body)
+
+    def test_checkrun_listing_uses_pagination(self):
+        # Kody r4373586178/r4373591470: the owned-run listing must page
+        self._clear_scenario()
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        gets = [
+            c
+            for c in self.calls()
+            if c["argv"][0] == "api"
+            and any("check-runs?check_name=" in a for a in c["argv"])
+        ]
+        self.assertEqual(len(gets), 1)
+        self.assertIn("--paginate", gets[0]["argv"])
+        self.assertIn("--slurp", gets[0]["argv"])
+
+    def test_fake_gh_refuses_secret_shaped_invocation(self):
+        # Kody r4373585476: the fake itself refuses to persist token-shaped
+        # argv, exiting 2 with only the field name
+        self.scenario({"labels": {}, "events": {}})
+        shim = os.path.join(os.path.dirname(self.log), "bin", "gh")
+        p = subprocess.run(
+            [shim, "api", "repos/x", "-H", "Authorization: token ghp_" + "a" * 20],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("code=secret field=argv", p.stderr)
+        self.assertNotIn("ghp_", p.stderr)
+        self.assertEqual(open(self.log).read(), "")
+
+    def test_fake_gh_rejects_unknown_scenario_section(self):
+        # Kody r4373585668: malformed scenario -> precise failure, and the
+        # guard fails closed on the resulting evaluation error
+        self.scenario({"labels": {"3": []}, "events": {"3": [[]]}, "bogus": 1})
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 3)
 
 
 if __name__ == "__main__":

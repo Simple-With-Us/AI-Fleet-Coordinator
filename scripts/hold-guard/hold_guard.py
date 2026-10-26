@@ -14,7 +14,9 @@ Ownership model (epoch pairing per label name):
     `unlabeled` with no visible open hold -> application predates the
         recoverable window: hold opens as owner UNKNOWN
     label present with zero timeline events -> hold ACTIVE, owner UNKNOWN
-  UNKNOWN-owner holds are clearable by no one automatically; they escalate.
+  UNKNOWN-owner holds are clearable by no one automatically; they escalate
+  (red gate + notice) and are never re-armed - re-applying one would make
+  it releaseable by nobody (Kody r4373587152).
   Logins are display only; all matching is by numeric actor.id (renames safe).
 
 State comes from the timeline API at evaluation time, never from a webhook
@@ -39,10 +41,29 @@ HOLD_RE = re.compile(r"^(do-not-merge(:.*)?|do-not-automerge(:.*)?|needs-human-m
 
 
 def gh_json(args):
-    p = subprocess.run(["gh"] + args, capture_output=True, text=True)
+    # Kody r4373592227/r4373586898: bound every gh call; a hung child maps to
+    # 124 and a missing executable to 127 (both nonzero -> callers fail
+    # closed).  Kody r4373586704/r4373592031: error text carries normalized
+    # metadata only - never the argv or the API's stderr, which can echo
+    # response bodies, request details or tokens into logs and check output.
+    try:
+        p = subprocess.run(["gh"] + args, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        print(json.dumps({"state": "error", "error": "gh call exceeded 30s timeout"}))
+        sys.exit(124)
+    except FileNotFoundError:
+        print(json.dumps({"state": "error", "error": "gh executable not found"}))
+        sys.exit(127)
     if p.returncode != 0:
-        raise RuntimeError(f"gh {' '.join(args)} rc={p.returncode}: {p.stderr.strip()[:500]}")
-    return json.loads(p.stdout)
+        raise RuntimeError(f"gh call failed rc={p.returncode}")
+    try:
+        value = json.loads(p.stdout)
+    except json.JSONDecodeError:
+        # precise failure instead of a misleading partial consume
+        raise RuntimeError(f"gh rc=0 but stdout is not JSON ({len(p.stdout)} bytes)")
+    if not isinstance(value, (list, dict)):
+        raise RuntimeError("gh returned an unexpected JSON shape")
+    return value
 
 
 def evaluate(repo, pr, runner=gh_json):
@@ -94,7 +115,10 @@ def evaluate(repo, pr, runner=gh_json):
                 if open_hold is None:
                     open_hold = {"owner_id": None, "owner_login": None, "unknown": True}
                     illegit.append(a.get("login"))
-                elif open_hold["owner_id"] is not None and a.get("id") == open_hold["owner_id"]:
+                elif (
+                    open_hold["owner_id"] is not None
+                    and a.get("id") == open_hold["owner_id"]
+                ):
                     open_hold = None  # released by owner
                     illegit = []
                 else:
@@ -105,7 +129,12 @@ def evaluate(repo, pr, runner=gh_json):
                     "label": name,
                     **open_hold,
                     "illegitimate_removals": illegit,
-                    "needs_reapply": name not in current,
+                    # Kody r4373587152: UNKNOWN-owner holds are NEVER re-armed -
+                    # a re-applied unknown-owner hold is releaseable by no one
+                    # (owner_id is None) and becomes a permanent block.  They
+                    # stay open in evaluation (gate red) and escalate via the
+                    # check summary; only a human resolves them.
+                    "needs_reapply": (name not in current) and not open_hold["unknown"],
                 }
             )
     return {"state": "held" if holds else "clear", "holds": holds}

@@ -15,7 +15,12 @@ import unittest
 import yaml
 
 WF = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "..", "..", ".github", "workflows", "hold-guard.yml"
+    os.path.dirname(os.path.abspath(__file__)),
+    "..",
+    "..",
+    ".github",
+    "workflows",
+    "hold-guard.yml",
 )
 
 
@@ -28,7 +33,9 @@ class WorkflowStatic(unittest.TestCase):
     def test_checkout_pinned_to_full_sha(self):
         steps = self.doc["jobs"]["guard"]["steps"]
         co = next(
-            s for s in steps if "uses" in s and str(s["uses"]).startswith("actions/checkout@")
+            s
+            for s in steps
+            if "uses" in s and str(s["uses"]).startswith("actions/checkout@")
         )
         ref = str(co["uses"]).split("@", 1)[1].split()[0]
         self.assertRegex(ref, r"^[0-9a-f]{40}$", "checkout must be SHA-pinned")
@@ -36,9 +43,13 @@ class WorkflowStatic(unittest.TestCase):
     def test_scripts_always_from_default_branch(self):
         steps = self.doc["jobs"]["guard"]["steps"]
         co = next(
-            s for s in steps if "uses" in s and str(s["uses"]).startswith("actions/checkout@")
+            s
+            for s in steps
+            if "uses" in s and str(s["uses"]).startswith("actions/checkout@")
         )
-        self.assertEqual(co["with"]["ref"], "${{ github.event.repository.default_branch }}")
+        self.assertEqual(
+            co["with"]["ref"], "${{ github.event.repository.default_branch }}"
+        )
 
     def test_no_pr_controlled_refs_anywhere(self):
         # base.ref and head.ref are writer-controllable for same-repo PRs
@@ -59,7 +70,12 @@ class WorkflowStatic(unittest.TestCase):
         perms = self.doc["permissions"]
         self.assertEqual(
             perms,
-            {"contents": "read", "pull-requests": "write", "issues": "write", "checks": "write"},
+            {
+                "contents": "read",
+                "pull-requests": "write",
+                "issues": "write",
+                "checks": "write",
+            },
         )
 
     def test_concurrency_serialized_no_cancel(self):
@@ -75,6 +91,29 @@ class WorkflowStatic(unittest.TestCase):
         steps = self.doc["jobs"]["guard"]["steps"]
         runs = [s["run"] for s in steps if "run" in s]
         self.assertEqual(runs, ["bash scripts/hold-guard/guard_run.sh"])
+
+    def test_auto_merge_enabled_trigger_present(self):
+        # Kody r4373585289: without this type an auto-merge armed after the
+        # guard's latest run is never disarmed until an unrelated event
+        on = self.doc.get("on", self.doc.get(True))
+        types = on["pull_request_target"]["types"]
+        self.assertIn("auto_merge_enabled", types)
+
+    def test_ci_runs_hold_guard_suites(self):
+        # Kody r4373587808: these suites must be wired into ci.yml or they
+        # are decoration - regressions would ship under a green CI
+        ci = os.path.join(os.path.dirname(WF), "ci.yml")
+        doc = yaml.safe_load(open(ci))
+        runs = [
+            step["run"]
+            for job in doc["jobs"].values()
+            for step in job.get("steps", [])
+            if "run" in step
+        ]
+        self.assertTrue(
+            any("hold-guard" in r and "unittest" in r for r in runs),
+            "ci.yml must run the scripts/hold-guard suites",
+        )
 
     def test_no_merge_group_trigger(self):
         # removed in slice 1: queue refs carry PR-head content, so the

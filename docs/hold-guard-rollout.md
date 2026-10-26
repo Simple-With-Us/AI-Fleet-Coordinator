@@ -72,6 +72,25 @@ per-setter holds; the suffix is a display hint, never the ownership source.
   rewritten.  Window = Actions scheduling latency.  Wiring merge-gate as a
   required check narrows the window and gates manual merges at steady state
   but does not remove the window.
+- An auto-merge armed AFTER the guard's latest run fires the
+  `auto_merge_enabled` activity (Kody r4373585289), so the disarm re-runs
+  at the arming moment instead of waiting for an unrelated
+  label/synchronize event.  The remaining window is the Actions scheduling
+  latency of that triggered run - present, and not claimed away.
+- UNKNOWN-owner holds are never re-armed (Kody r4373587152): a re-applied
+  unknown-owner hold is releaseable by nobody and becomes a permanent
+  block.  They stay open in evaluation (the gate remains red - removal
+  alone never turns it green) and escalate via the check summary's
+  "owner unknown, needs escalation" line; a human resolves them.
+- STALE-REPAIR FENCE (Kody r4373591313): each label re-apply re-evaluates
+  its PR immediately before the POST and is skipped when the hold no
+  longer needs repair (e.g. the setter re-applied and released in the
+  meantime).  The fence SHRINKS the repair race but cannot eliminate it:
+  a release landing between that re-check and the POST is still
+  resurrected as a guard-owned hold, caught only by the release event's
+  own queued run, which keeps the gate red and surfaces a guard-owned
+  hold in the summary for human escalation.  No stronger guarantee is
+  claimed without a merge queue.
 - Fail-closed applies to evaluation ERRORS only (API/eval failure ->
   armer does not arm; guard publishes a failure conclusion when the API
   allows and exits 3).

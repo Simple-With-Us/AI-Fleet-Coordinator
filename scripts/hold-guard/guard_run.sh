@@ -61,11 +61,19 @@ for pr in "${prs[@]}"; do
   if out="$(python3 "$DIR/hold_guard.py" "$REPO" "$pr")"; then
     :
   else
+    rc=$?
     any_error=1; read_error="evaluation error"
-    out="$(printf '{"state":"error","error":"hold_guard rc: %s"}' "$out")"
+    # hold_guard.py already prints a valid {"state":"error",...} object on
+    # failure - keep it intact (r4373586516/r4373591826: interpolating it
+    # into a JSON string produced invalid JSON, emptying `combined` and
+    # dropping every collected hold).  Wrap via jq (proper escaping) only
+    # when stdout was not JSON at all.
+    if ! printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
+      out="$(jq -cn --arg rc "$rc" --arg e "$out" '{state:"error",error:("hold_guard rc=" + $rc + ": " + $e)}')"
+    fi
   fi
   echo "$out" > "/tmp/hold-guard-$pr.json"
-  combined="$(jq -s '.[0] + [ .[1].holds[]? | . + {pr: $pr} ]' --arg pr "$pr" <(echo "$combined") <(echo "$out"))"
+  combined="$(jq -s --arg pr "$pr" '.[0] + [ .[1].holds[]? | . + {pr: $pr} ]' <(echo "$combined") <(echo "$out"))"
 done
 
 # 3. Repairs + reports (labels via jq-built JSON, never word-split).
@@ -73,6 +81,27 @@ done
 #    turn the job red; the evaluated hold state still decides the payload.
 printf '%s' "$combined" | jq -c '.[] | select(.needs_reapply)' | while IFS= read -r h; do
   pr=$(printf '%s' "$h" | jq -r .pr)
+  label=$(printf '%s' "$h" | jq -r .label)
+  # Stale-repair fence (Kody r4373591313): candidates come from the
+  # pre-disarm evaluation; a legitimate release landing since then must not
+  # be resurrected as a guard-owned hold (releaseable by nobody).  Re-
+  # evaluate THIS PR immediately before the POST and repair only while the
+  # hold still needs it; a re-check read error skips the repair and turns
+  # the job red (fail closed - the next event-triggered run retries).
+  # The POST stays asynchronous: a release landing between the re-check and
+  # the POST is NOT prevented here - it is caught by that event's own
+  # queued run (docs/hold-guard-rollout.md, stated limits).
+  if fresh1="$(python3 "$DIR/hold_guard.py" "$REPO" "$pr")"; then
+    still="$(printf '%s' "$fresh1" | jq --arg l "$label" '[.holds[]? | select(.label == $l and .needs_reapply)] | length')"
+    if [ "$still" != "1" ]; then
+      echo "::notice::skipping stale repair of $label on #$pr (no longer needed at re-check)"
+      continue
+    fi
+  else
+    echo "::error::pre-repair re-check failed on #$pr - skipping repair"
+    echo repair >> "$ERR"
+    continue
+  fi
   if printf '%s' "$h" | jq -c '{labels: [.label]}' \
     | gh api "repos/$REPO/issues/$pr/labels" -X POST --input - >/dev/null; then
     echo "::notice::re-applied $(printf '%s' "$h" | jq -r .label) on #$pr"
@@ -89,7 +118,7 @@ done
 # (Sentry finding 4373451447 on #964).
 jq -c 'select((.illegitimate_removals // []) | length > 0)' "$REPAIRED" | while IFS= read -r h; do
   pr=$(printf '%s' "$h" | jq -r .pr)
-  body=$(printf '%s' "$h" | jq -r '"Hold `\(.label)` was removed by \(.illegitimate_removals | join(", ")). Only its setter (\(.owner_login // "unknown")) can release it - the hold is back on."')
+  body=$(printf '%s' "$h" | jq -r '"Hold `\(.label)` was removed by \([.illegitimate_removals[]? | . // "unknown"] | join(", ")). Only its setter (\(.owner_login // "unknown")) can release it - the hold is back on."')
   gh pr comment "$pr" --repo "$REPO" --body "$body" >/dev/null \
     || { echo "::error::failed to comment on #$pr"; echo comment >> "$ERR"; }
 done
@@ -102,7 +131,7 @@ done
 fresh='[]'
 for pr in "${prs[@]}"; do
   if fout="$(python3 "$DIR/hold_guard.py" "$REPO" "$pr")"; then
-    fresh="$(jq -s '.[0] + [ .[1].holds[]? | . + {pr: $pr} ]' --arg pr "$pr" <(echo "$fresh") <(echo "$fout"))"
+    fresh="$(jq -s --arg pr "$pr" '.[0] + [ .[1].holds[]? | . + {pr: $pr} ]' <(echo "$fresh") <(echo "$fout"))"
   else
     any_error=1; read_error="evaluation error"
   fi
@@ -113,8 +142,12 @@ echo "$fresh" > /tmp/hold-guard-combined.json
 #    The check-run listing is the LAST read; it happens BEFORE the payload
 #    is built so its failure also forces a failure conclusion.
 owned=""
-if runs_json="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=merge-gate")"; then
-  owned="$(printf '%s' "$runs_json" | jq -r --arg s "$GUARD_APP_SLUG" '.check_runs[] | select(.app.slug == $s) | .id')"
+# --paginate --slurp (r4373586178/r4373591470): the first REST page holds
+# 30 runs; owned merge-gate runs beyond it were invisible, producing
+# duplicate POSTs beside a stale green.  Pages arrive as one slurped array
+# of page objects and are merged before the GUARD_APP_SLUG filter.
+if runs_json="$(gh api --paginate --slurp "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=merge-gate")"; then
+  owned="$(printf '%s' "$runs_json" | jq -r --arg s "$GUARD_APP_SLUG" '[.[].check_runs[]?] | .[] | select(.app.slug == $s) | .id')"
 else
   echo "::error::could not list merge-gate runs for $HEAD_SHA"
   any_error=1
