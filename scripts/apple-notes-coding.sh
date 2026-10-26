@@ -1378,6 +1378,8 @@ sys.stdout.write("".join(out))
 # The overrides (a caller may set these):
 #   NOTES_LINKIFY=0            turn the whole step off
 #   NOTES_GITHUB_OWNER=...     the GitHub owner, Simple-With-Us by default
+#   NOTES_LINKIFY_GITHUB_HOST=...  the GitHub host, github.com by default
+#   NOTES_LINKIFY_LINEAR_HOST=...  the Linear host, linear.app by default
 #   NOTES_LINKIFY_REPO=...     the fallback repository, AI-Fleet-Coordinator by default
 #   NOTES_LINKIFY_FORCE_REPO=...  use this repository for every pull request in this run
 #   NOTES_LINEAR_WORKSPACE=... the Linear workspace slug, simple-with-us by default
@@ -1400,6 +1402,8 @@ def _env(name, default):
 
 
 owner = _env("NOTES_GITHUB_OWNER", "Simple-With-Us")
+github_host = _env("NOTES_LINKIFY_GITHUB_HOST", "github.com")
+linear_host = _env("NOTES_LINKIFY_LINEAR_HOST", "linear.app")
 default_repo = _env("NOTES_LINKIFY_REPO", "AI-Fleet-Coordinator")
 forced_repo = _env("NOTES_LINKIFY_FORCE_REPO", "")
 workspace = _env("NOTES_LINEAR_WORKSPACE", "simple-with-us")
@@ -1537,11 +1541,15 @@ def _a(url, text):
 
 
 def _pull_url(repo, num):
-    return "https://github.com/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/pull/" + num
+    return (
+        "https://" + github_host + "/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/pull/" + num
+    )
 
 
 def _issue_url(repo, num):
-    return "https://github.com/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/issues/" + num
+    return (
+        "https://" + github_host + "/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/issues/" + num
+    )
 
 
 def _mentions(text):
@@ -1888,7 +1896,7 @@ def _process_unit(unit_html, is_row, title_repo):
                     continue
                 _counts["issues"] += 1
                 ident = key + "-" + m.group("num")
-                edits.append((r, m.start(), m.end(), _a("https://linear.app/" + workspace + "/issue/" + ident, ident)))
+                edits.append((r, m.start(), m.end(), _a("https://" + linear_host + "/" + workspace + "/issue/" + ident, ident)))
         if edits:
             by_run = {}
             for r, s, e, t in edits:
