@@ -8,6 +8,7 @@ with spaces (no word-splitting), merge_group PR mapping, multi-page event
 pagination, error fail-closed behavior, and the check-run payload shape.
 """
 
+import errno
 import json
 import os
 import shutil
@@ -1148,6 +1149,30 @@ class GuardIntegration(unittest.TestCase):
                 "fail": {"labels-post/3": {"rc": 1, "stderr": "boom 500"}},
             }
         )
+        # Platform guard (Kody r4374666905): /dev/full is Linux-only.  Where
+        # it is absent the dangling symlink could make the guard's init
+        # truncate create a host file or fail the run for the wrong reason,
+        # invalidating the assertion - so probe the exact ENOSPC semantics
+        # the test needs and skip loudly elsewhere.  (A read-only file is
+        # NOT a substitute: chmod 444 fails the init truncation, exercising
+        # the init check, not the post-init append path this test targets.)
+        # The probe itself must never create, truncate or write to a host
+        # file: stat first and require an existing character device, then
+        # open O_WRONLY WITHOUT O_CREAT/O_TRUNC and expect ENOSPC on write.
+        try:
+            if not stat.S_ISCHR(os.stat("/dev/full").st_mode):
+                self.skipTest("/dev/full is not a character device here")
+            fd = os.open("/dev/full", os.O_WRONLY)
+            try:
+                os.write(fd, b"x")
+            finally:
+                os.close(fd)
+            self.skipTest("/dev/full lacks ENOSPC semantics on this platform")
+        except FileNotFoundError:
+            self.skipTest("/dev/full not available on this platform")
+        except OSError as e:
+            if e.errno != errno.ENOSPC:
+                self.skipTest("/dev/full not usable on this platform")
         scratch = tempfile.mkdtemp(prefix="hold-guard-test-")
         os.symlink("/dev/full", os.path.join(scratch, "errors"))
         try:
