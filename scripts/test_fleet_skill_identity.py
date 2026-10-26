@@ -1320,6 +1320,41 @@ class InstallerRepoOnlyTests(unittest.TestCase):
             for f in files
         )
 
+    def test_purge_removes_a_skill_left_under_a_renamed_old_name(self) -> None:
+        """TEMPORARY with RENAMED_SKILL_OLD_NAMES:  delete this test and the next one when the rename is complete."""
+        from fleet_skill_identity import RENAMED_SKILL_OLD_NAMES
+
+        old = "agent-sync-tools-guide"
+        self.assertIn(old, RENAMED_SKILL_OLD_NAMES)
+        dest = self.home / ".claude" / "skills"
+        (dest / old).mkdir(parents=True)
+        (dest / old / "SKILL.md").write_text("stale\n", encoding="utf-8")
+        (dest / f"{old}.zip").write_bytes(b"stale")
+        keep = dest / "session-start"
+        keep.mkdir(parents=True)
+        (keep / "SKILL.md").write_text("keep\n", encoding="utf-8")
+        self.installer._purge_retired(str(dest), install_target=True)
+        self.assertFalse((dest / old).exists())
+        self.assertFalse((dest / f"{old}.zip").exists())
+        self.assertTrue((keep / "SKILL.md").is_file())
+
+    def test_a_renamed_name_is_never_purged_from_the_source_pack(self) -> None:
+        """TEMPORARY with RENAMED_SKILL_OLD_NAMES.  Removing a renamed skill from the repo is a git operation."""
+        old = "agent-sync-tools-guide"
+        docs = self.repo / "docs" / "fleet-skills"
+        (docs / old).mkdir(parents=True)
+        (docs / old / "SKILL.md").write_text("local edit\n", encoding="utf-8")
+        self.installer._purge_retired(str(docs))
+        self.assertTrue((docs / old / "SKILL.md").is_file())
+        names = catalog_skill_names(str(docs))
+        self.assertNotIn(old, names)
+
+    def test_the_live_pack_exposes_the_new_guide_name_only(self) -> None:
+        """TEMPORARY with RENAMED_SKILL_OLD_NAMES."""
+        names = catalog_skill_names(DOCS)
+        self.assertIn("simple-tools-guide", names)
+        self.assertNotIn("agent-sync-tools-guide", names)
+
     def test_repo_only_renders_platform_copies_and_skips_home(self) -> None:
         out = self._run(["--repo-only"])
         for tree in (".claude", ".cursor", ".grok"):

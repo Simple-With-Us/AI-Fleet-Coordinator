@@ -84,8 +84,8 @@ One guide, `docs/protocols/simple-tools-guide.md` (written, AFC-331):  every too
 
 - **MCP `instructions`.**  Both servers already send them at `initialize`, and most clients load them unasked.  They stay short:  the identity rule, the families, and where the guide is.
 - **A `guide` tool** (unprefixed, beside `whoami` and `identities`) that returns the guide or one section of it, for clients that ignore `instructions`.
-- **FleetLink**, at `https://fleetlink.online/agent-sync-tools-guide/`, beside the Zulip and Linear guides, for agents with no MCP connection yet.
-- **A skill**, `agent-sync-tools-guide`, installed for every platform that takes skills.
+- **FleetLink**, at `https://fleetlink.online/simple-tools-guide/`, beside the Zulip and Linear guides, for agents with no MCP connection yet.
+- **A skill**, `simple-tools-guide`, installed for every platform that takes skills.
 
 The MCP section of `zulip-fleet-guide.md`, the fleet skills that name tools, and an owner Apple Note point at it.
 

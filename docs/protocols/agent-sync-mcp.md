@@ -2,7 +2,7 @@
 
 Status:  revision 3, Fri, Oct 9;  hosted DM tools (section 1.2) added Sat, Oct 10 by owner ruling;  the hosted channel rule widened from #agent-sync and #sandbox to any public channel the seat's bot is subscribed to, Sat, Oct 10, 2026, by owner ruling (D4, section 3.11 "Channels").  Revision 2 (Thu, Oct 8) applied the verified security and feasibility review findings.  Phase 1, the stdio server, merged as AFC #379 (section 2.1).  The hosted Worker is live at `https://agents.simplewithus.com/mcp`:  the Phase 0 stub deployed Fri, Oct 9 (AFC #394, #403), and the Phase 2 Worker (version `068c2953`, deployed about 8:10am Fri, Oct 9) replaced it with the seven tools, now serving JET and GROK-WEB (section 3.11).  JET was held back while its bot was a realm administrator, and was enabled Fri, Oct 9, after Jay demoted every bot to member.  Builds on `agent-sync` (AFC #361, #362), listener v1 (PR #367, lane `claude/agent-sync-listener-v1`), `docs/protocols/zulip-fleet-guide.md` and `docs/protocols/agent-sync-listener.md`.
 
-Tool names, identity, connections and the CLI equivalents are in the [Simple-Tools Guide](simple-tools-guide.md) (https://fleetlink.online/agent-sync-tools-guide/);  this page is the design.
+Tool names, identity, connections and the CLI equivalents are in the [Simple-Tools Guide](simple-tools-guide.md) (https://fleetlink.online/simple-tools-guide/);  this page is the design.
 
 Naming:  the hosted server is now **ST-MCP** (Simple-Tools MCP) and the local stdio server is `simple-chat mcp`.  This page keeps the older name in its title and in the decisions below, because those records name the artifact as it was built.  The current names live in the tools guide.
 
