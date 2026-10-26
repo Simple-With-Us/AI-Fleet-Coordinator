@@ -175,7 +175,7 @@ Safety:
   * The stable dir is replaced as a whole, so it is owned only if it is empty, or if its VERSION has the
     `sha=` and a 64-hex `tree=` line, its lane-guard-hook carries this tool's generated mark, and every
     entry in it is a file this tool writes (VERSION, fleet-apps.json, lane-guard-hook,
-    fleet_lanes/*.py).  Anything else is a foreign dir and is refused, whatever else it contains: a project
+    fleet_lanes/*.py, fleet_lanes/rules/*).  Anything else is a foreign dir and is refused, whatever else it contains: a project
     with its own VERSION file is not a stable dir.  `--replace-extra` waives only the last rule.  A dir that
     holds `.git`, the source, the registry or the home is refused with or without it.  `plan` prints
     `WILL DELETE n files` for what the replacement removes.
@@ -1913,6 +1913,7 @@ def read_tree(root: str) -> dict[str, bytes]:
 
 _TREE_RE = re.compile(r"^[0-9a-f]{64}$")
 _PKG_FILE_RE = re.compile(re.escape(PACKAGE) + r"/[^/]+\.py")
+_PKG_RULES_RE = re.compile(re.escape(PACKAGE) + "/" + re.escape(RULES_DIRNAME) + r"/[^/]+")
 _TOP_FILES = (
     VERSION_NAME,
     REGISTRY_NAME,
@@ -1926,7 +1927,11 @@ _TOP_FILES = (
 
 def _expected_shape(rel: str) -> bool:
     """A path this tool could have written into a stable dir (in this or an earlier version)."""
-    return rel in _TOP_FILES or _PKG_FILE_RE.fullmatch(rel) is not None
+    return (
+        rel in _TOP_FILES
+        or _PKG_FILE_RE.fullmatch(rel) is not None
+        or _PKG_RULES_RE.fullmatch(rel) is not None
+    )
 
 
 def scan_stable(root: str) -> tuple[dict[str, bytes], list[str]]:

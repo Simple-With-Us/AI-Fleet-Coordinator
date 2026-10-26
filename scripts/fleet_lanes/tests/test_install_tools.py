@@ -6729,6 +6729,18 @@ class ServerRootResolutionTests(World):
         self.assertIn("== codex", out)
         self.assertEqual(proc.returncode, 0, err)
 
+    def test_an_installed_dir_with_the_rule_templates_plans_clean(self) -> None:
+        """The installed rule templates are this tool's own shape, not foreign extras.
+
+        The templates travel under fleet_lanes/rules/, so a second plan over an installed
+        dir must see them as ours:  extras here would refuse every later apply.
+        """
+        source = self.source_with_the_rules()
+        res = T.apply_tools(source, self.paths, probes=False)
+        self.assertTrue(res.ok, res)
+        plan = T.plan_tools(source, self.paths)
+        self.assertEqual((plan.state, plan.problems), ("current", []))
+
     # -- the repository
 
     def test_no_server_volume_path_is_written_in_the_repository(self) -> None:
