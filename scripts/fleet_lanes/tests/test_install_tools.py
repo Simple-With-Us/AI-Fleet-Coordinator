@@ -6759,6 +6759,139 @@ class ServerRootResolutionTests(World):
             text = (REAL_PKG / "rules" / name).read_text(encoding="utf-8")
             self.assertEqual(text, text.encode("ascii").decode("ascii"), name)
 
+    def test_the_installed_rule_templates_are_not_foreign_files(self) -> None:
+        """A second run must not call the installed templates foreign and refuse.
+
+        build_files copies the rule templates into the stable dir, so scan_stable has to read them as files
+        this tool writes:  the shape check knew only the modules, and a template fell into the extras, which
+        is what `apply tools` refuses on.
+        """
+        files = T.build_files(self.source_with_the_rules(), self.paths)
+        stable = self.tmp / "stable"
+        for rel, data in files.items():
+            path = stable / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        found, extras = T.scan_stable(str(stable))
+        rules = sorted(rel for rel in found if rel.startswith("fleet_lanes/rules/"))
+        self.assertTrue(rules, "the rule templates were not read as files this tool writes")
+        self.assertEqual([e for e in extras if e.startswith("fleet_lanes/rules")], [])
+
+    def test_a_configured_apps_root_does_not_move_the_lanes_root(self) -> None:
+        """The host tools resolve the lanes root from FLEET_LANES_ROOT, the home and the volume.
+
+        They never derive it from the apps root, so a shim that offered that candidate would point the
+        guard at a different directory than the host tools read, and the two would disagree about where a
+        lane lives.
+        """
+        apps = self.tmp / "elsewhere" / "apps"
+        (apps / "lanes").mkdir(parents=True)
+        (self.home / "apps" / "lanes").mkdir(parents=True)
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(shim, self.home, FLEET_APPS_ROOT=str(apps))
+        self.assertEqual(got["apps"], str(apps))
+        self.assertEqual(got["lanes"], str(self.home / "apps" / "lanes"))
+
+    def test_a_relative_root_with_no_home_is_the_relative_path(self) -> None:
+        """A relative root is joined onto the home, and with no home there is nothing to join it onto.
+
+        Python reads it as os.path.join(home, raw), which with an empty home is the relative path itself,
+        so the shim has to read it the same way or the two disagree about where the trees are.
+        """
+        work = self.tmp / "work"
+        (work / "relcode").mkdir(parents=True)
+        shim = self.shim(T.render_hook_shim())
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": ""}
+        payload = json.dumps(
+            {"tool_name": "Bash", "tool_input": {"command": "git clone x y"}}
+        ).encode("utf-8")
+        rc, out, err = run_bytes(
+            [str(shim), "--format", "claude"],
+            payload,
+            dict(env, FLEET_CODE_ROOT="relcode"),
+            cwd=str(work),
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("code=relcode", out.decode("utf-8"))
+        rc, out, err = run_bytes(
+            [str(shim), "--format", "claude"],
+            payload,
+            dict(env, FLEET_CODE_ROOT="~/relcode"),
+            cwd=str(work),
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("code=relcode", out.decode("utf-8"))
+
+
+class VerifierShimVolumeTests(World):
+    """The copilot and opencode verifiers accept the shim the install wrote.
+
+    A shim carries the host's volume as its default, so a verify that runs in an environment the install
+    did not see has to accept that rendering too.  verify_tools and verify_minimax do; these two did not,
+    so an install on a server host failed its own verify.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.volume = self.tmp / "volume"
+        (self.volume / "Code").mkdir(parents=True)
+
+    def shim_with_the_volume(self) -> None:
+        facts = T.read_guard_facts(self.paths.stable)
+        shim = Path(self.paths.fleet_shim)
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text(T.render_fleet_hook_shim(facts, volume=str(self.volume)), encoding="utf-8")
+        os.chmod(shim, 0o755)
+
+    def test_the_copilot_verifier_accepts_a_shim_that_carries_the_volume(self) -> None:
+        self.shim_with_the_volume()
+        hooks = Path(self.paths.copilot_hooks)
+        hooks.parent.mkdir(parents=True, exist_ok=True)
+        hooks.write_text("{}\n", encoding="utf-8")
+        checks = T.verify_copilot(self.paths, minimal_path=False)
+        check = next(c for c in checks if c.name == "shim fleet-guard-hook")
+        self.assertEqual(check.status, "PASS", check.detail)
+
+    def test_the_opencode_verifier_accepts_a_shim_that_carries_the_volume(self) -> None:
+        self.shim_with_the_volume()
+        plugin = Path(self.paths.opencode_plugin)
+        plugin.parent.mkdir(parents=True, exist_ok=True)
+        plugin.write_text(T.render_opencode_plugin(), encoding="utf-8")
+        (Path(self.home) / ".config" / "opencode").mkdir(parents=True, exist_ok=True)
+        checks = T.verify_opencode(self.paths, minimal_path=False)
+        check = next(c for c in checks if c.name == "shim fleet-guard-hook")
+        self.assertEqual(check.status, "PASS", check.detail)
+
+
+class MinimaxProbeRootTests(World):
+    """The probe writes into the code root the guard watches.
+
+    The guard denies writes into the integration tree, so the probe has to write there.  On a server host
+    the trees live on the volume and the root account has no ~/Code, so a probe that wrote under the home
+    would test a path the guard does not watch:  the guard would allow that write, the probe would read the
+    allow as a failure to deny, and `apply tools` would refuse a correct install.
+    """
+
+    def test_the_probe_writes_into_the_volume_code_root(self) -> None:
+        volume = self.tmp / "volume"
+        (volume / "Code").mkdir(parents=True)
+        seen: list = []
+
+        def run(command, payload, env, timeout):
+            doc = json.loads(payload)
+            seen.append(doc["tool_input"].get("path", ""))
+            return T.RunResult(0, b"", b"")
+
+        with mock.patch.object(T, "registry_tree", return_value="ExampleRepo"):
+            with mock.patch.object(T, "run_shell", side_effect=run):
+                T.probe_minimax_files(
+                    "hook", str(self.home), "registry", 1, True, volume=str(volume)
+                )
+        self.assertTrue(seen)
+        self.assertIn(
+            os.path.join(str(volume), "Code", "ExampleRepo", "probe-placeholder"), seen
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -651,6 +651,20 @@ def host_code_root(home: str, env: dict[str, str] | None = None) -> str:
     return _resolved_root(home, "Code", env)
 
 
+def _guard_code_root(home: str, volume: str = "") -> str:
+    """Where the guard will look for the integration trees, resolved the way the hook shim resolves them.
+
+    The shim exports FLEET_CODE_ROOT before the guard's Python starts:  the environment first, then the
+    home, then the volume it carries.  A probe's own environment holds no fleet root, so the volume the shim
+    carries is the one that decides.  A probe that wrote under <home>/Code would test a path the guard does
+    not watch on a server host, where the trees live on the volume and the root account has no ~/Code:  the
+    guard would allow that write, the probe would read the allow as a failure to deny, and `apply tools`
+    would refuse an install that is correct.
+    """
+    env = {ENV_SERVER_VOLUME: volume} if volume else {}
+    return host_code_root(home, env)
+
+
 def host_apps_root(home: str, env: dict[str, str] | None = None) -> str:
     """Where the apps folder lives on this host:  FLEET_APPS_ROOT, then ~/apps, then the volume."""
     env = dict(os.environ if env is None else env)
@@ -994,16 +1008,18 @@ def _shim_root_lines(volume: str | None) -> list:
         "  # only when the directory is there, the rule server_working_dirs.py uses, and a configured root",
         "  # is read the way layout.py reads one:  a lone tilde is the home, a tilde and a slash are",
         "  # under it, an absolute path is itself, and a relative path is joined onto the home.",
+        "  # With no home at all there is nothing to join onto, so the path stays as it is, which is what",
+        "  # os.path.join(home, raw) reads it as.",
         "  _lg_c=",
         '  if [ -n "$1" ]; then',
         '    if [ "$1" = "~" ]; then',
         "      _lg_c=$_lg_home",
         '    elif [ "${1%%/*}" = "~" ]; then',
-        "      _lg_c=$_lg_home/${1#??}",
+        '      if [ -z "$_lg_home" ]; then _lg_c=${1#??}; else _lg_c=$_lg_home/${1#??}; fi',
         '    elif [ "${1#/}" != "$1" ]; then',
         "      _lg_c=$1",
         "    else",
-        "      _lg_c=$_lg_home/$1",
+        '      if [ -z "$_lg_home" ]; then _lg_c=$1; else _lg_c=$_lg_home/$1; fi',
         "    fi",
         "  fi",
         '  if [ -n "$_lg_c" ] && [ -d "$_lg_c" ]; then',
@@ -1030,16 +1046,17 @@ def _shim_resolve_lines() -> list:
     before Python starts.  A root that resolves nowhere is not exported at all:  the environment stays as it
     was, and layout falls back to the home the way it always did.
     """
+    # server_working_dirs.py resolves the lanes root from FLEET_LANES_ROOT, the home and the volume, and
+    # never from the apps root, so the shim must not offer a candidate the host tools do not:  a custom
+    # FLEET_APPS_ROOT would otherwise point the guard at a different directory than the host tools read.
     lanes = (
-        '  _lg_lanes=$(_lg_root "${FLEET_LANES_ROOT:-}" "$_lg_apps_lanes" "$_lg_home/apps/lanes"'
+        '  _lg_lanes=$(_lg_root "${FLEET_LANES_ROOT:-}" "$_lg_home/apps/lanes"'
         ' "$_lg_vol_lanes") || _lg_lanes='
     )
     return [
         "  # the fleet roots, resolved the way server_working_dirs.py resolves them",
         '  _lg_code=$(_lg_root "${FLEET_CODE_ROOT:-}" "$_lg_home/Code" "$_lg_vol_code") || _lg_code=',
         '  _lg_apps=$(_lg_root "${FLEET_APPS_ROOT:-}" "$_lg_home/apps" "$_lg_vol_apps") || _lg_apps=',
-        "  _lg_apps_lanes=",
-        '  [ -n "$_lg_apps" ] && _lg_apps_lanes=$_lg_apps/lanes',
         lanes,
         '  if [ -n "$_lg_code" ]; then export FLEET_CODE_ROOT="$_lg_code"; fi',
         '  if [ -n "$_lg_apps" ]; then export FLEET_APPS_ROOT="$_lg_apps"; fi',
@@ -3757,6 +3774,7 @@ def apply_tools(
                     timeout,
                     minimal_path,
                     source_registry=src.registry,
+                    volume=_baked_volume(os.path.join(stage, MINIMAX_HOOK_NAME)),
                 )
                 if c.status == "FAIL"
             )
@@ -5721,11 +5739,15 @@ def probe_minimax_files(
     timeout: float,
     minimal_path: bool,
     source_registry: str | None = None,
+    volume: str = "",
 ) -> list[Check]:
     """Run MM's compatible file payloads in its restricted subprocess environment.
 
     `source_registry` names the registry the operator has to repair when `registry` is a staged
     copy that is deleted with the stage; it is reported with the refusal.
+
+    `volume` is the volume the hook shim being probed carries as its default, so the probe writes into the
+    code root the guard watches (see _guard_code_root).
     """
     env = {k: os.environ[k] for k in _MINIMAX_HOOK_ENV_KEYS if k in os.environ and k != "HOME"}
     env.update(HOME=home, PATH=MINIMAL_PATH if minimal_path else os.environ.get("PATH", ""))
@@ -5741,7 +5763,7 @@ def probe_minimax_files(
             # name the registry the operator must repair.
             detail = f"{detail}; source registry: {source_registry}"
         return [Check("minimax", "registry-tree", "FAIL", detail)]
-    integration = os.path.join("Code", tree, "probe-placeholder")
+    integration = os.path.join(_guard_code_root(home, volume), tree, "probe-placeholder")
     out = []
     for tool, path, deny in (
         ("Read", ".secrets/probe-placeholder", True),
@@ -5952,7 +5974,12 @@ def apply_minimax(
         bad.extend(
             c
             for c in probe_minimax_files(
-                mp.command, paths.home, paths.registry, timeout, minimal_path
+                mp.command,
+                paths.home,
+                paths.registry,
+                timeout,
+                minimal_path,
+                volume=_baked_volume(os.path.join(paths.stable, MINIMAX_HOOK_NAME)),
             )
             if c.status == "FAIL"
         )
@@ -6187,7 +6214,16 @@ def verify_minimax(
     # single platform, so the `apply all` unwind the downgrade inside
     # probe_minimax_files protects against does not apply here.
     registry_tree(paths.registry)
-    out.extend(probe_minimax_files(cmd, paths.home, paths.registry, timeout, minimal_path))
+    out.extend(
+        probe_minimax_files(
+            cmd,
+            paths.home,
+            paths.registry,
+            timeout,
+            minimal_path,
+            volume=_baked_volume(os.path.join(paths.stable, MINIMAX_HOOK_NAME)),
+        )
+    )
     switch, _off = guard_switch()
     if _is_off(os.environ.get(switch, "")):
         out.append(
@@ -6436,12 +6472,13 @@ def verify_copilot(
     if os.path.islink(path) or not os.path.isfile(path):
         return [Check(t, "hooks file", "FAIL", f"{path} is not a regular file")]
     out: list[Check] = [Check(t, "hooks file", "PASS", f"{path} is a regular file")]
+    facts = read_guard_facts(paths.stable)
     out.append(
         _check_shim(
             t,
             FLEET_HOOK_NAME,
             paths.fleet_shim,
-            render_fleet_hook_shim(read_guard_facts(paths.stable)),
+            _shim_renderings(functools.partial(render_fleet_hook_shim, facts), paths.fleet_shim),
         )
     )
     try:
@@ -6839,12 +6876,13 @@ def verify_opencode(
         )
     else:
         out.append(Check(t, "no credential copy", "PASS", "the plugin text holds no credential"))
+    facts = read_guard_facts(paths.stable)
     out.append(
         _check_shim(
             t,
             FLEET_HOOK_NAME,
             paths.fleet_shim,
-            render_fleet_hook_shim(read_guard_facts(paths.stable)),
+            _shim_renderings(functools.partial(render_fleet_hook_shim, facts), paths.fleet_shim),
         )
     )
     config = paths.opencode_config
