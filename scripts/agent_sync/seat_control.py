@@ -23,9 +23,7 @@ from typing import Any, Literal, Protocol
 # Keep host categories separate from the concrete host ID returned by the
 # existing chat catalog. The caller never chooses a title as an identity.
 HostScope = Literal["mac", "server", "cloud"]
-Operation = Literal[
-    "list", "read", "status", "output", "create", "resume", "prompt", "cancel_turn"
-]
+Operation = Literal["list", "read", "status", "output", "create", "resume", "prompt", "cancel_turn"]
 CapabilityState = Literal["implemented", "unsupported", "stale", "runtime_unverified"]
 
 HOST_SCOPES = ("mac", "server", "cloud")
@@ -63,10 +61,18 @@ def _states(**overrides: CapabilityState) -> dict[str, CapabilityState]:
 # not grant control capability.
 CAPABILITY_MATRIX: dict[tuple[str, str], dict[str, CapabilityState]] = {
     ("mac", "grok-leader"): _states(
-        list="implemented", read="implemented", status="implemented", output="implemented", prompt="implemented"
+        list="implemented",
+        read="implemented",
+        status="implemented",
+        output="implemented",
+        prompt="implemented",
     ),
     ("mac", "codex"): _states(
-        list="implemented", read="implemented", status="implemented", output="implemented", prompt="implemented"
+        list="implemented",
+        read="implemented",
+        status="implemented",
+        output="implemented",
+        prompt="implemented",
     ),
     ("mac", "claude"): _states(
         list="implemented", read="implemented", status="implemented", output="implemented"
@@ -78,7 +84,11 @@ CAPABILITY_MATRIX: dict[tuple[str, str], dict[str, CapabilityState]] = {
     ("mac", "muse"): _states(list="implemented", status="implemented"),
     ("mac", "fx"): _states(list="implemented", status="implemented"),
     ("cloud", "cursor-cloud"): _states(
-        list="implemented", read="implemented", status="implemented", output="implemented", prompt="implemented"
+        list="implemented",
+        read="implemented",
+        status="implemented",
+        output="implemented",
+        prompt="implemented",
     ),
 }
 for _platform in SUPPORTED_PLATFORMS:
@@ -138,7 +148,7 @@ class SessionTarget:
     owner: str
 
     @classmethod
-    def parse(cls, raw: Mapping[str, Any]) -> "SessionTarget":
+    def parse(cls, raw: Mapping[str, Any]) -> SessionTarget:
         scope = raw.get("host_scope")
         if scope not in HOST_SCOPES:
             raise ValueError("host_scope must be mac, server, or cloud")
@@ -204,7 +214,9 @@ def _target_schema() -> dict[str, Any]:
 _TARGET = _target_schema()
 
 
-def _tool(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+def _tool(
+    name: str, description: str, properties: dict[str, Any], required: list[str]
+) -> dict[str, Any]:
     return {
         "name": name,
         "description": description,
@@ -229,31 +241,73 @@ SEAT_CONTROL_TOOL_SCHEMAS = [
     _tool(
         "seat_control_list",
         "List bounded session metadata for one explicit host scope. Titles are display-only.",
-        {"host_scope": {"type": "string", "enum": list(HOST_SCOPES)}, "host": {"type": "string", "minLength": 1, "maxLength": 512}, "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST}},
+        {
+            "host_scope": {"type": "string", "enum": list(HOST_SCOPES)},
+            "host": {"type": "string", "minLength": 1, "maxLength": 512},
+            "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST},
+        },
         ["host_scope", "host"],
     ),
-    _tool("seat_control_read", "Read bounded metadata for one exact session identity.", {"target": _TARGET}, ["target"]),
-    _tool("seat_control_status", "Read status for one exact session identity.", {"target": _TARGET}, ["target"]),
+    _tool(
+        "seat_control_read",
+        "Read bounded metadata for one exact session identity.",
+        {"target": _TARGET},
+        ["target"],
+    ),
+    _tool(
+        "seat_control_status",
+        "Read status for one exact session identity.",
+        {"target": _TARGET},
+        ["target"],
+    ),
     _tool(
         "seat_control_output",
         "Read bounded user and assistant output for one exact session identity.",
-        {"target": _TARGET, "limit": {"type": "integer", "minimum": 1, "maximum": MAX_OUTPUT_MESSAGES}},
+        {
+            "target": _TARGET,
+            "limit": {"type": "integer", "minimum": 1, "maximum": MAX_OUTPUT_MESSAGES},
+        },
         ["target"],
     ),
     _tool(
         "seat_control_start",
         "Start/create is explicitly unsupported until a host adapter and owner gate are approved.",
-        {"host_scope": {"type": "string", "enum": list(HOST_SCOPES)}, "host": {"type": "string"}, "platform": {"type": "string"}, "request_id": {"type": "string", "minLength": 1, "maxLength": MAX_REQUEST_ID_CHARS}},
+        {
+            "host_scope": {"type": "string", "enum": list(HOST_SCOPES)},
+            "host": {"type": "string"},
+            "platform": {"type": "string"},
+            "request_id": {"type": "string", "minLength": 1, "maxLength": MAX_REQUEST_ID_CHARS},
+        },
         ["host_scope", "host", "platform", "request_id"],
     ),
-    _tool("seat_control_resume", "Resume is unsupported as a separate operation; name the exact existing session.", {"target": _TARGET, "request_id": {"type": "string", "minLength": 1, "maxLength": MAX_REQUEST_ID_CHARS}}, ["target", "request_id"]),
+    _tool(
+        "seat_control_resume",
+        "Resume is unsupported as a separate operation; name the exact existing session.",
+        {
+            "target": _TARGET,
+            "request_id": {"type": "string", "minLength": 1, "maxLength": MAX_REQUEST_ID_CHARS},
+        },
+        ["target", "request_id"],
+    ),
     _tool(
         "seat_control_prompt",
         "Prompt only an exact discovered existing session. Mutation is disabled unless an integration explicitly enables and approves it.",
-        {"target": _TARGET, "request_id": {"type": "string", "minLength": 1, "maxLength": MAX_REQUEST_ID_CHARS}, "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_PROMPT_CHARS}},
+        {
+            "target": _TARGET,
+            "request_id": {"type": "string", "minLength": 1, "maxLength": MAX_REQUEST_ID_CHARS},
+            "prompt": {"type": "string", "minLength": 1, "maxLength": MAX_PROMPT_CHARS},
+        },
         ["target", "request_id", "prompt"],
     ),
-    _tool("seat_control_cancel_turn", "Cancel-turn is unsupported. This tool never kills a process.", {"target": _TARGET, "request_id": {"type": "string", "minLength": 1, "maxLength": MAX_REQUEST_ID_CHARS}}, ["target", "request_id"]),
+    _tool(
+        "seat_control_cancel_turn",
+        "Cancel-turn is unsupported. This tool never kills a process.",
+        {
+            "target": _TARGET,
+            "request_id": {"type": "string", "minLength": 1, "maxLength": MAX_REQUEST_ID_CHARS},
+        },
+        ["target", "request_id"],
+    ),
 ]
 
 
@@ -362,7 +416,11 @@ class SeatControlMCP:
             platform = row.get("platform")
             host = row.get("host")
             sid = row.get("session_id")
-            if not isinstance(platform, str) or not isinstance(host, str) or not isinstance(sid, str):
+            if (
+                not isinstance(platform, str)
+                or not isinstance(host, str)
+                or not isinstance(sid, str)
+            ):
                 continue
             if _scope_for(platform, self.local_scope) != target_scope or host != host_filter:
                 continue
@@ -389,8 +447,14 @@ class SeatControlMCP:
         return self._result("ok", data={"sessions": output, "limit": limit})
 
     def _read(self, name: str, args: Mapping[str, Any]) -> dict[str, Any]:
-        target = SessionTarget.parse(args.get("target") if isinstance(args.get("target"), Mapping) else {})
-        operation = {"seat_control_read": "read", "seat_control_status": "status", "seat_control_output": "output"}[name]
+        target = SessionTarget.parse(
+            args.get("target") if isinstance(args.get("target"), Mapping) else {}
+        )
+        operation = {
+            "seat_control_read": "read",
+            "seat_control_status": "status",
+            "seat_control_output": "output",
+        }[name]
         if not self.authorize(self.caller_id, operation, target):
             self._audit(operation, target, "permission_refused")
             return self._result("permission_refused", "caller is not authorized for this session")
@@ -405,17 +469,30 @@ class SeatControlMCP:
             return self._result(state, "capability is not available for this host and platform")
         if operation == "output":
             limit = args.get("limit", 4)
-            if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_OUTPUT_MESSAGES:
-                return self._result("invalid_request", "output limit is outside the supported bound")
+            if (
+                not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or not 1 <= limit <= MAX_OUTPUT_MESSAGES
+            ):
+                return self._result(
+                    "invalid_request", "output limit is outside the supported bound"
+                )
             record_id = row.get("id")
             try:
-                messages = self.catalog.excerpt(record_id, limit=limit) if isinstance(record_id, str) else []
+                messages = (
+                    self.catalog.excerpt(record_id, limit=limit)
+                    if isinstance(record_id, str)
+                    else []
+                )
             except Exception:
                 messages = []
             safe = []
             total = 0
             for message in messages if isinstance(messages, list) else []:
-                if not isinstance(message, dict) or message.get("role") not in {"user", "assistant"}:
+                if not isinstance(message, dict) or message.get("role") not in {
+                    "user",
+                    "assistant",
+                }:
                     continue
                 text = message.get("text")
                 if not isinstance(text, str):
@@ -463,7 +540,9 @@ class SeatControlMCP:
                 self._audit(operation, None, "permission_refused", request_id=request_id)
                 return self._result("permission_refused", "caller is not authorized")
             self._audit(operation, None, "unsupported", request_id=request_id)
-            return self._result("unsupported", "start/create is not implemented for any verified adapter")
+            return self._result(
+                "unsupported", "start/create is not implemented for any verified adapter"
+            )
         try:
             target = SessionTarget.parse(raw_target if isinstance(raw_target, Mapping) else {})
         except ValueError:
@@ -475,7 +554,9 @@ class SeatControlMCP:
             # These operations do not have verified native implementations.
             # In particular cancel-turn never maps to process termination.
             self._audit(operation, target, "unsupported", request_id=request_id)
-            return self._result("unsupported", f"{operation} is not implemented for any verified adapter")
+            return self._result(
+                "unsupported", f"{operation} is not implemented for any verified adapter"
+            )
         prompt = args.get("prompt")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > MAX_PROMPT_CHARS:
             return self._result("invalid_request", "prompt is empty or exceeds the supported bound")
@@ -501,9 +582,7 @@ class SeatControlMCP:
             "permission_waiting",
             "pending_permission",
             "waiting_permission",
-        } or row.get(
-            "pending_permission"
-        ):
+        } or row.get("pending_permission"):
             return self._held(
                 operation,
                 target,
@@ -516,7 +595,9 @@ class SeatControlMCP:
             self._audit(operation, target, capability, prompt=prompt, request_id=request_id)
             return self._result(capability, "prompt capability is not implemented for this target")
         if self._nudge_pending(target):
-            return self._held(operation, target, request_id, prompt, "existing queue item for exact session")
+            return self._held(
+                operation, target, request_id, prompt, "existing queue item for exact session"
+            )
         binding = {
             "platform": target.platform,
             "host": target.host,
@@ -545,20 +626,34 @@ class SeatControlMCP:
         if not prior:
             return None
         if prior.get("fingerprint") != fingerprint:
-            return self._result("request_conflict", "request_id was already used for different content")
+            return self._result(
+                "request_conflict", "request_id was already used for different content"
+            )
         if prior.get("state") == "sent":
             self._audit("prompt", target, "duplicate", prompt=prompt, request_id=request_id)
-            return self._result("duplicate", "request was already accepted", data=prior.get("result"))
+            return self._result(
+                "duplicate", "request was already accepted", data=prior.get("result")
+            )
         if prior.get("state") == "unknown":
             self._audit("prompt", target, "unknown", prompt=prompt, request_id=request_id)
-            return self._result("unknown", "previous outcome is uncertain; automatic replay is blocked")
+            return self._result(
+                "unknown", "previous outcome is uncertain; automatic replay is blocked"
+            )
         if prior.get("state") == "pending":
             self._audit("prompt", target, "pending", prompt=prompt, request_id=request_id)
             return self._result("pending", "request is already in progress")
         return None
 
-    def _dispatch_prompt(self, target: SessionTarget, request_id: str, prompt: str, binding: dict[str, str]) -> dict[str, Any]:
-        fingerprint = _digest(json.dumps({"op": "prompt", "target": target.public(), "prompt": _digest(prompt)}, sort_keys=True, separators=(",", ":")))
+    def _dispatch_prompt(
+        self, target: SessionTarget, request_id: str, prompt: str, binding: dict[str, str]
+    ) -> dict[str, Any]:
+        fingerprint = _digest(
+            json.dumps(
+                {"op": "prompt", "target": target.public(), "prompt": _digest(prompt)},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         key = _digest(self.caller_id + "\0" + request_id)
         fields = {
             "operation": "prompt",
@@ -570,26 +665,40 @@ class SeatControlMCP:
         prior = self.idempotency.row(key)
         if prior:
             if prior.get("fingerprint") != fingerprint:
-                self._audit("prompt", target, "request_conflict", prompt=prompt, request_id=request_id)
-                return self._result("request_conflict", "request_id was already used for different content")
+                self._audit(
+                    "prompt", target, "request_conflict", prompt=prompt, request_id=request_id
+                )
+                return self._result(
+                    "request_conflict", "request_id was already used for different content"
+                )
             if prior.get("state") == "sent":
                 self._audit("prompt", target, "duplicate", prompt=prompt, request_id=request_id)
-                return self._result("duplicate", "request was already accepted", data=prior.get("result"))
+                return self._result(
+                    "duplicate", "request was already accepted", data=prior.get("result")
+                )
             if prior.get("state") == "unknown":
                 self._audit("prompt", target, "unknown", prompt=prompt, request_id=request_id)
-                return self._result("unknown", "previous outcome is uncertain; automatic replay is blocked")
+                return self._result(
+                    "unknown", "previous outcome is uncertain; automatic replay is blocked"
+                )
             if prior.get("state") == "pending":
                 self._audit("prompt", target, "pending", prompt=prompt, request_id=request_id)
                 return self._result("pending", "request is already in progress")
         state, previous = self.idempotency.begin(key, REQUEST_TTL_SECONDS, fields)
         if previous and previous.get("fingerprint") != fingerprint:
             self._audit("prompt", target, "request_conflict", prompt=prompt, request_id=request_id)
-            return self._result("request_conflict", "request_id was already used for different content")
+            return self._result(
+                "request_conflict", "request_id was already used for different content"
+            )
         if state == "duplicate":
             if previous is None:
                 self._audit("prompt", target, "unknown", prompt=prompt, request_id=request_id)
-                return self._result("unknown", "idempotency receipt is missing; dispatch is blocked")
-            return self._result("duplicate", "request was already accepted", data=previous.get("result"))
+                return self._result(
+                    "unknown", "idempotency receipt is missing; dispatch is blocked"
+                )
+            return self._result(
+                "duplicate", "request was already accepted", data=previous.get("result")
+            )
         if state == "busy":
             self._audit("prompt", target, "pending", prompt=prompt, request_id=request_id)
             return self._result("pending", "request is already in progress")
@@ -600,7 +709,9 @@ class SeatControlMCP:
                 key, state="unknown", result={"status": "unknown"}, expires=TOMBSTONE_EXPIRES_AT
             )
             self._audit("prompt", target, "unknown", prompt=prompt, request_id=request_id)
-            return self._result("unknown", "previous outcome is uncertain; automatic replay is blocked")
+            return self._result(
+                "unknown", "previous outcome is uncertain; automatic replay is blocked"
+            )
         if state != "send":
             self._audit("prompt", target, "unknown", prompt=prompt, request_id=request_id)
             return self._result("unknown", "idempotency state is unrecognized; dispatch is blocked")
@@ -610,7 +721,9 @@ class SeatControlMCP:
             self.idempotency.set(key, state="pending", expires=TOMBSTONE_EXPIRES_AT)
         except Exception:
             self.idempotency.drop(key)
-            return self._result("unavailable", "could not persist the no-replay guard; prompt was not sent")
+            return self._result(
+                "unavailable", "could not persist the no-replay guard; prompt was not sent"
+            )
 
         try:
             preflight = self.transport.preflight(binding)
@@ -626,9 +739,7 @@ class SeatControlMCP:
             return self._result("invalid_target", "native adapter rejected the exact target")
         if preflight != "ready":
             result = {"status": "held", "reason": "target is busy or unavailable"}
-            self.idempotency.set(
-                key, state="held", result=result, expires=TOMBSTONE_EXPIRES_AT
-            )
+            self.idempotency.set(key, state="held", result=result, expires=TOMBSTONE_EXPIRES_AT)
             self._audit("prompt", target, "held", prompt=prompt, request_id=request_id)
             return self._result("held", result["reason"], data=result)
 
@@ -661,9 +772,7 @@ class SeatControlMCP:
                 except Exception:
                     pass
                 try:
-                    self._audit(
-                        "prompt", target, "unknown", prompt=prompt, request_id=request_id
-                    )
+                    self._audit("prompt", target, "unknown", prompt=prompt, request_id=request_id)
                 except Exception:
                     pass
                 return self._result(
@@ -685,7 +794,9 @@ class SeatControlMCP:
                     # The previously persisted sent/pending row is still a
                     # no-replay state; preserve the uncertain caller outcome.
                     pass
-                return self._result("unknown", "audit outcome is uncertain; automatic replay is blocked")
+                return self._result(
+                    "unknown", "audit outcome is uncertain; automatic replay is blocked"
+                )
             return self._result(status, message, data=result)
 
         def permit() -> bool:
@@ -701,49 +812,93 @@ class SeatControlMCP:
         except Exception:
             # Once send() starts, a raised error is an uncertain delivery.
             result = {"status": "unknown", "request_id": request_id}
-            return finish("unknown", "unknown", result, "delivery outcome is uncertain; automatic replay is blocked")
+            return finish(
+                "unknown",
+                "unknown",
+                result,
+                "delivery outcome is uncertain; automatic replay is blocked",
+            )
 
         if outcome == "accepted":
             # Existing native transport acceptance does not prove pickup or completion.
-            result = {"status": "accepted", "request_id": request_id, "picked_up": False, "completed": False}
+            result = {
+                "status": "accepted",
+                "request_id": request_id,
+                "picked_up": False,
+                "completed": False,
+            }
             return finish("accepted", "sent", result, "transport accepted the prompt")
         if outcome == "unknown":
             result = {"status": "unknown", "request_id": request_id}
-            return finish("unknown", "unknown", result, "delivery outcome is uncertain; automatic replay is blocked")
+            return finish(
+                "unknown",
+                "unknown",
+                result,
+                "delivery outcome is uncertain; automatic replay is blocked",
+            )
         if outcome in {"deferred", "held"}:
             result = {"status": "held", "reason": "target is busy or unavailable"}
             return finish("held", "held", result, result["reason"])
         # Existing adapters report a correlated rejection / pre-send failure as failed.
-        return finish("failed", "failed", {"status": "failed"}, "native adapter rejected the prompt before acceptance")
+        return finish(
+            "failed",
+            "failed",
+            {"status": "failed"},
+            "native adapter rejected the prompt before acceptance",
+        )
 
-    def _held(self, operation: str, target: SessionTarget, request_id: str, prompt: str, reason: str) -> dict[str, Any]:
+    def _held(
+        self, operation: str, target: SessionTarget, request_id: str, prompt: str, reason: str
+    ) -> dict[str, Any]:
         key = _digest(self.caller_id + "\0" + request_id)
-        fingerprint = _digest(json.dumps({"op": operation, "target": target.public(), "prompt": _digest(prompt)}, sort_keys=True, separators=(",", ":")))
+        fingerprint = _digest(
+            json.dumps(
+                {"op": operation, "target": target.public(), "prompt": _digest(prompt)},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
         prior = self.idempotency.row(key)
         if prior and prior.get("fingerprint") != fingerprint:
-            return self._result("request_conflict", "request_id was already used for different content")
+            return self._result(
+                "request_conflict", "request_id was already used for different content"
+            )
         if prior and prior.get("state") == "sent":
-            return self._result("duplicate", "request was already accepted", data=prior.get("result"))
+            return self._result(
+                "duplicate", "request was already accepted", data=prior.get("result")
+            )
         if prior and prior.get("state") == "unknown":
-            return self._result("unknown", "previous outcome is uncertain; automatic replay is blocked")
+            return self._result(
+                "unknown", "previous outcome is uncertain; automatic replay is blocked"
+            )
         if prior and prior.get("state") == "pending":
             return self._result("pending", "request is already in progress")
         if not prior:
-            state, raced = self.idempotency.begin(key, REQUEST_TTL_SECONDS, {
-                "operation": operation,
-                "fingerprint": fingerprint,
-                "target_fingerprint": _digest(json.dumps(target.public(), sort_keys=True)),
-                "prompt_fingerprint": _digest(prompt),
-                "caller_fingerprint": _digest(self.caller_id),
-            })
+            state, raced = self.idempotency.begin(
+                key,
+                REQUEST_TTL_SECONDS,
+                {
+                    "operation": operation,
+                    "fingerprint": fingerprint,
+                    "target_fingerprint": _digest(json.dumps(target.public(), sort_keys=True)),
+                    "prompt_fingerprint": _digest(prompt),
+                    "caller_fingerprint": _digest(self.caller_id),
+                },
+            )
             if raced and raced.get("fingerprint") != fingerprint:
-                return self._result("request_conflict", "request_id was already used for different content")
+                return self._result(
+                    "request_conflict", "request_id was already used for different content"
+                )
             if state == "duplicate" and raced:
                 self._audit(operation, target, "duplicate", prompt=prompt, request_id=request_id)
-                return self._result("duplicate", "request was already accepted", data=raced.get("result"))
+                return self._result(
+                    "duplicate", "request was already accepted", data=raced.get("result")
+                )
             if state == "duplicate":
                 self._audit(operation, target, "unknown", prompt=prompt, request_id=request_id)
-                return self._result("unknown", "idempotency receipt is missing; dispatch is blocked")
+                return self._result(
+                    "unknown", "idempotency receipt is missing; dispatch is blocked"
+                )
             if state == "busy":
                 self._audit(operation, target, "pending", prompt=prompt, request_id=request_id)
                 return self._result("pending", "request is already in progress")
@@ -752,10 +907,14 @@ class SeatControlMCP:
                     key, state="unknown", result={"status": "unknown"}, expires=TOMBSTONE_EXPIRES_AT
                 )
                 self._audit(operation, target, "unknown", prompt=prompt, request_id=request_id)
-                return self._result("unknown", "previous outcome is uncertain; automatic replay is blocked")
+                return self._result(
+                    "unknown", "previous outcome is uncertain; automatic replay is blocked"
+                )
             if state != "send":
                 self._audit(operation, target, "unknown", prompt=prompt, request_id=request_id)
-                return self._result("unknown", "idempotency state is unrecognized; dispatch is blocked")
+                return self._result(
+                    "unknown", "idempotency state is unrecognized; dispatch is blocked"
+                )
         self.idempotency.set(
             key,
             state="held",
@@ -798,7 +957,8 @@ class SeatControlMCP:
         except Exception:
             return None, "unavailable"
         matches = [
-            row for row in rows
+            row
+            for row in rows
             if isinstance(row, dict)
             and row.get("host") == target.host
             and row.get("platform") == target.platform
@@ -808,7 +968,8 @@ class SeatControlMCP:
             return None, "ambiguous"
         if not matches:
             same_session_elsewhere = [
-                row for row in rows
+                row
+                for row in rows
                 if isinstance(row, dict)
                 and row.get("platform") == target.platform
                 and row.get("session_id") == target.session_id
@@ -825,7 +986,9 @@ class SeatControlMCP:
             return None, "unavailable"
         return row, None
 
-    def _capabilities(self, target: SessionTarget, row: Mapping[str, Any] | None = None) -> dict[str, CapabilityState]:
+    def _capabilities(
+        self, target: SessionTarget, row: Mapping[str, Any] | None = None
+    ) -> dict[str, CapabilityState]:
         result = dict(CAPABILITY_MATRIX.get((target.host_scope, target.platform), _states()))
         if row and (row.get("stale") or row.get("status") == "stale"):
             for action, state in list(result.items()):
