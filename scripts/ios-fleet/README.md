@@ -23,6 +23,8 @@ hand-maintained sheet is exactly why it never converged.
 | `ios_testflight_freshness.mjs` | The TestFlight freshness deploy check:  is each app's newest processed build behind its native tree on main?  `--ship-behind` dispatches the app's own ship workflow under the fleet guards;  `--alert` posts to Zulip.  Runs every two hours as the LaunchAgent `com.jay.ios-testflight-freshness`.  See `docs/ios-testflight-freshness.md`. |
 | `testflight-apps.json` | The freshness check's registry (appleId, repo, native paths, ship workflow, compile check).  Edit it when an app or its pipeline changes. |
 | `install-testflight-freshness.sh` | Installs the check and registry into `~/apps/ios-fleet` and loads the LaunchAgent. |
+| `publish-ios-versions.sh` | The canonical fleet iOS version manifest publisher (AFC-540).  **This file is the source of truth and every repo that ships vendors a byte-identical copy.**  It updates `site/ios-versions.json` by opening a BRANCH and a PULL REQUEST against this repository — never a direct write to `main`, which the ruleset refuses — and it never uses the workflow's own read-only `GITHUB_TOKEN`. |
+| `publish-ios-versions.test.mjs` | The publisher's contract test.  Run with `node --test`; CI runs it in the "Fleet iOS version manifest publisher tests" step. |
 
 ## The Google Sheet
 
@@ -42,10 +44,37 @@ node scripts/fleet-apps-sheet-sync.mjs             # backs up the workbook, then
 
 Then run the ops half from a Fleet-OPS lane:  `node scripts/fleet-sheet/fleet-ops-sheet-sync.mjs`.
 
-`ios-fleet/publish-ios-versions.sh` calls `~/apps/fleet-apps-sheet-sync.mjs` after a
-successful manifest push.  That file is a guarded shim:  it runs
-`~/Code/AI-Fleet-Coordinator/scripts/fleet-apps-sheet-sync.mjs` only when that tree is clean
-and at origin/main, and otherwise exits non-zero with the lane command.
+The Mac runtime copy at `~/apps/ios-fleet/publish-ios-versions.sh` calls
+`~/apps/fleet-apps-sheet-sync.mjs` after a successful manifest push.  That file is a guarded
+shim:  it runs `~/Code/AI-Fleet-Coordinator/scripts/fleet-apps-sheet-sync.mjs` only when that
+tree is clean and at origin/main, and otherwise exits non-zero with the lane command.
+
+## The version manifest publisher (AFC-540)
+
+`site/ios-versions.json` is what every fleet iOS app's in-app update prompt reads, from
+`https://raw.githubusercontent.com/Simple-With-Us/AI-Fleet-Coordinator/main/site/ios-versions.json`.
+The default URL is compiled into `scripts/ios-fleet/AppUpdatePrompt.swift`.
+
+The publisher in this directory is the CANONICAL copy, and it publishes as a branch plus a
+pull request rather than a direct write to `main`.  The reason is the ruleset:  this
+repository's ruleset requires `test` and `gitleaks` on `main`, and a ruleset with required
+status checks refuses a direct write to the protected branch, so a Contents API PUT to the
+default branch is rejected.  The old publisher treated that rejection as non-fatal and the
+ship discarded its output, so the only trace anywhere was one warning line and the manifest
+sat stale for a week.  A pull request merge is exempt from that gate, so the manifest is
+published as a reviewable pull request instead, and the ship logs its URL.
+
+**One implementation, many copies.**  The script is vendored into every repo that ships
+(Socratic-Trade, BotFleet, and the Mac runtime copy), and every copy must be byte-identical
+to the one here.  A copy that drifts is a copy that can silently go back to writing `main`.
+
+Two rules the copy must keep:
+
+1. **Seed from the live remote, never from the vendored snapshot.**  The `ios-app-versions.json`
+   checked into a shipping repo is a stale snapshot; publishing from it would drop fleet apps
+   and roll other apps' versions backwards.
+2. **Never publish a one-app or empty-apps document over a multi-app remote.**  That is the
+   same class as DealDex #173.
 
 ## Why the rules block is generated
 
