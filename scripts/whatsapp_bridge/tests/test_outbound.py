@@ -1,12 +1,11 @@
 import json
-import os
 import tempfile
 import unittest
 import urllib.error
 from unittest.mock import patch
 
 from whatsapp_bridge import outbound
-from whatsapp_bridge.bridge import BridgeError, State, digest
+from whatsapp_bridge.bridge import State
 from whatsapp_bridge.outbound import Outbox, body_hash
 
 KEY = "k" * 64
@@ -93,7 +92,10 @@ class OutboundTests(unittest.TestCase):
         self.outbox(worker).step()
         url, headers, body = worker.requests[0]
         self.assertTrue(url.endswith("/internal/wa-outbox/JET"))
-        self.assertEqual(headers["X-WA-Bridge-Signature"], __import__("hmac").new(KEY.encode(), body, __import__("hashlib").sha256).hexdigest())
+        self.assertEqual(
+            headers["X-WA-Bridge-Signature"],
+            __import__("hmac").new(KEY.encode(), body, __import__("hashlib").sha256).hexdigest(),
+        )
 
     def test_an_unknown_outcome_is_never_sent_again(self):
         worker = FakeWorker([reply()])
@@ -137,7 +139,12 @@ class OutboundTests(unittest.TestCase):
         def fake_send(*_args, **_options):
             calls.append(1)
             if len(calls) == 1:
-                return {"outcome": "retry", "status": 503, "code": outbound.RETRYABLE_CODE, "retry_after_s": 1}
+                return {
+                    "outcome": "retry",
+                    "status": 503,
+                    "code": outbound.RETRYABLE_CODE,
+                    "retry_after_s": 1,
+                }
             return {"outcome": "sent", "message_id": "wamid.sent"}
 
         with patch.object(outbound, "send", fake_send):
@@ -172,7 +179,11 @@ class OutboundTests(unittest.TestCase):
     def test_the_switch_off_claims_nothing_and_sends_nothing(self):
         worker = FakeWorker([reply()])
         calls = []
-        with patch.object(outbound, "send", lambda *a, **k: calls.append(1) or {"outcome": "sent", "message_id": "x"}):
+        with patch.object(
+            outbound,
+            "send",
+            lambda *a, **k: calls.append(1) or {"outcome": "sent", "message_id": "x"},
+        ):
             answer = self.outbox(worker, enabled=False).step()
         self.assertEqual(answer["state"], "send_disabled")
         self.assertEqual(len(calls), 0)
@@ -196,7 +207,11 @@ class OutboundTests(unittest.TestCase):
             enabled=enabled,
         )
         calls = []
-        with patch.object(outbound, "send", lambda *a, **k: calls.append(1) or {"outcome": "sent", "message_id": "x"}):
+        with patch.object(
+            outbound,
+            "send",
+            lambda *a, **k: calls.append(1) or {"outcome": "sent", "message_id": "x"},
+        ):
             answer = box.step()
         self.assertEqual(answer["state"], "declined")
         self.assertEqual(len(calls), 0, "the POST never started")
@@ -204,8 +219,12 @@ class OutboundTests(unittest.TestCase):
 
     def test_a_restart_finds_a_claimed_reply_queued_again_and_a_sending_reply_unknown(self):
         worker = FakeWorker([])
-        self.state.ledger_put("wa_reply_" + "a" * 32, "claimed", body_hash("hello"), None, 1792700000)
-        self.state.ledger_put("wa_reply_" + "b" * 32, "sending", body_hash("world"), None, 1792700000)
+        self.state.ledger_put(
+            "wa_reply_" + "a" * 32, "claimed", body_hash("hello"), None, 1792700000
+        )
+        self.state.ledger_put(
+            "wa_reply_" + "b" * 32, "sending", body_hash("world"), None, 1792700000
+        )
         self.outbox(worker).step()
         outcomes = {row["intent_id"]: row["outcome"] for row in worker.results}
         self.assertEqual(outcomes["wa_reply_" + "a" * 32], "requeue")
@@ -227,7 +246,11 @@ class OutboundTests(unittest.TestCase):
                 enabled=lambda: True,
             )
             calls = []
-            with patch.object(outbound, "send", lambda *a, **k: calls.append(1) or {"outcome": "sent", "message_id": "x"}):
+            with patch.object(
+                outbound,
+                "send",
+                lambda *a, **k: calls.append(1) or {"outcome": "sent", "message_id": "x"},
+            ):
                 answer = box.step()
             self.assertEqual(answer["state"], "no_recipient")
             self.assertEqual(len(calls), 0)
@@ -268,7 +291,9 @@ class OutboundTests(unittest.TestCase):
                 super().__init__(
                     "https://api.whatsapp.com", status, "Bad", {"Retry-After": "7"}, None
                 )
-                self._body = json.dumps({"error": {"code": code, "message": "secret detail"}}).encode()
+                self._body = json.dumps(
+                    {"error": {"code": code, "message": "secret detail"}}
+                ).encode()
 
             def read(self, *_args):
                 return self._body
@@ -290,7 +315,11 @@ class OutboundTests(unittest.TestCase):
         box = self.outbox(worker)
         box._sent_at = [1792700000 - index for index in range(outbound.SENDS_PER_MINUTE)]
         calls = []
-        with patch.object(outbound, "send", lambda *a, **k: calls.append(1) or {"outcome": "sent", "message_id": "x"}):
+        with patch.object(
+            outbound,
+            "send",
+            lambda *a, **k: calls.append(1) or {"outcome": "sent", "message_id": "x"},
+        ):
             answer = box.step()
         self.assertEqual(answer["state"], "rate_limited")
         self.assertEqual(len(calls), 0, "nothing is sent this minute")

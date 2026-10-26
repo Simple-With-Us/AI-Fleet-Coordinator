@@ -293,9 +293,7 @@ class State:
     def record_recipient(self, value, now):
         """The bound sender's own id: the only address a reply may use."""
         with self.db:
-            self.db.execute(
-                "INSERT OR REPLACE INTO recipient VALUES(1,?,?)", (value, int(now))
-            )
+            self.db.execute("INSERT OR REPLACE INTO recipient VALUES(1,?,?)", (value, int(now)))
 
     def recipient(self):
         row = self.db.execute("SELECT value FROM recipient WHERE id=1").fetchone()

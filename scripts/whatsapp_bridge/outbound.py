@@ -65,7 +65,9 @@ def claim(worker_url, signing_key, clock=time.time, request=request_json):
     return reply if isinstance(reply, dict) else None
 
 
-def report(worker_url, signing_key, intent_id, outcome, clock=time.time, request=request_json, **fields):
+def report(
+    worker_url, signing_key, intent_id, outcome, clock=time.time, request=request_json, **fields
+):
     """Tell the Worker what happened to one reply."""
     payload = {
         "contract": "wa-outbox-result/1",
@@ -137,7 +139,11 @@ def send(api_key, recipient, text, context_id=None, timeout=SEND_TIMEOUT):
             except (ValueError, RecursionError):
                 return {"outcome": "unknown", "error": "invalid_json"}
             messages = parsed.get("messages") if isinstance(parsed, dict) else None
-            message_id = messages[0].get("id") if isinstance(messages, list) and messages and isinstance(messages[0], dict) else None
+            message_id = (
+                messages[0].get("id")
+                if isinstance(messages, list) and messages and isinstance(messages[0], dict)
+                else None
+            )
             if not isinstance(message_id, str) or not message_id:
                 return {"outcome": "unknown", "error": "no_message_id"}
             return {"outcome": "sent", "message_id": message_id}
@@ -147,13 +153,23 @@ def send(api_key, recipient, text, context_id=None, timeout=SEND_TIMEOUT):
         code = provider_code(error)
         error.close()
         if status == 429:
-            return {"outcome": "retry", "status": status, "code": code, "retry_after_s": retry_delay(retry)}
+            return {
+                "outcome": "retry",
+                "status": status,
+                "code": code,
+                "retry_after_s": retry_delay(retry),
+            }
         if status == 503 and code == RETRYABLE_CODE:
-            return {"outcome": "retry", "status": status, "code": code, "retry_after_s": retry_delay(retry)}
+            return {
+                "outcome": "retry",
+                "status": status,
+                "code": code,
+                "retry_after_s": retry_delay(retry),
+            }
         if 400 <= status < 500:
             return {"outcome": "refused", "status": status, "code": code}
         return {"outcome": "unknown", "status": status, "code": code}
-    except (TimeoutError, socket.timeout):
+    except TimeoutError:
         return {"outcome": "unknown", "error": "read_timeout"}
     except (urllib.error.URLError, OSError) as error:
         if never_opened(error):
@@ -209,7 +225,14 @@ class Outbox:
             if state == "claimed":
                 # The POST never started, so the reply goes back to the queue.
                 self.state.ledger_delete(intent_id)
-                report(self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request)
+                report(
+                    self.worker_url,
+                    self.signing_key,
+                    intent_id,
+                    "requeue",
+                    self.clock,
+                    self.request,
+                )
             else:
                 # The POST may have gone out: unknown for good, never resent.
                 self.state.ledger_put(intent_id, "outcome_unknown", digest, None, self.now())
@@ -241,7 +264,9 @@ class Outbox:
             # The switch flipped before the POST: a decline is a result, so
             # the reply goes back to held and never becomes unknown.
             self.state.ledger_delete(intent_id)
-            report(self.worker_url, self.signing_key, intent_id, "declined", self.clock, self.request)
+            report(
+                self.worker_url, self.signing_key, intent_id, "declined", self.clock, self.request
+            )
             return {"state": "declined"}
         context_id = None
         if reply.get("reply_to_id_hash"):
@@ -251,7 +276,9 @@ class Outbox:
             # The claim is given back: the reply is queued again and nothing
             # is sent this minute.
             self.state.ledger_delete(intent_id)
-            report(self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request)
+            report(
+                self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request
+            )
             return {"state": "rate_limited"}
         self._sent_at.append(self.clock())
         self.state.ledger_put(intent_id, "sending", digest, None, self.now())
@@ -289,7 +316,9 @@ class Outbox:
             return {"state": "refused"}
         if outcome == "requeue":
             self.state.ledger_delete(intent_id)
-            report(self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request)
+            report(
+                self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request
+            )
             return {"state": "requeue"}
         # Unknown: it stays unknown for good, and it is never sent again.
         self.state.ledger_put(intent_id, "outcome_unknown", digest, None, self.now())
