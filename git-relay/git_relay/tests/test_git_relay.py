@@ -6,6 +6,7 @@ tests bind an ephemeral port on 127.0.0.1 with a stubbed client.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import io
 import json
@@ -26,7 +27,7 @@ from http.server import ThreadingHTTPServer
 from git_relay.audit import AuditLog
 from git_relay.github_client import GitHubClient, RelayGitHubError
 from git_relay.policy import PolicyError, SeatPolicy
-from git_relay.server import MAX_REQUEST_BYTES, Relay, make_handler
+from git_relay.server import MAX_REQUEST_BYTES, BoundedThreadingHTTPServer, Relay, make_handler
 
 SEAT_TOKEN = "s" * 32
 OTHER_TOKEN = "o" * 32
@@ -37,11 +38,15 @@ SEATS_JSON = json.dumps(
             "token": SEAT_TOKEN,
             "actions": ["open_pr", "edit_pr", "reply_thread", "comment_pr"],
             "repos": ["example/fixture-repo"],
+            "app_slug": "swu-echo",
+            "mint_permissions": {"pull_requests": "write", "issues": "write"},
         },
         "swu-prime": {
             "token": OTHER_TOKEN,
             "actions": ["comment_pr"],
             "repos": ["example/*"],
+            "app_slug": "swu-prime",
+            "mint_permissions": {"issues": "write"},
         },
     }
 )
@@ -190,13 +195,16 @@ class StubClient:
         self.calls.append(("open_pr", repo, base, head, title, body))
         return {"number": 1, "url": "https://x/pr/1"}
 
-    def edit_pr(self, repo, number, title=None, body=None):
+    def edit_pr(self, repo, number, title=None, body=None, bearer=None):
+        self.calls.append(("edit_pr", repo, number, title, body, bearer))
         return {"number": number, "url": "u"}
 
-    def reply_thread(self, repo, number, comment_id, body):
+    def reply_thread(self, repo, number, comment_id, body, bearer=None):
+        self.calls.append(("reply_thread", repo, number, comment_id, body, bearer))
         return {"id": 2, "url": "u"}
 
-    def comment_pr(self, repo, number, body):
+    def comment_pr(self, repo, number, body, bearer=None):
+        self.calls.append(("comment_pr", repo, number, body, bearer))
         return {"id": 3, "url": "u"}
 
 
@@ -295,6 +303,135 @@ class TestHttpSurface(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBoundedServer(unittest.TestCase):
+    def test_concurrency_is_capped_and_no_request_is_refused(self):
+        # Kody discussion_r4372744451:  the relay must bound in-flight work
+        # without refusing anyone - excess connections wait their turn.
+        from http.server import BaseHTTPRequestHandler
+
+        active = 0
+        peak = 0
+        lock = threading.Lock()
+
+        class Slow(BaseHTTPRequestHandler):
+            def do_GET(self):
+                nonlocal active, peak
+                with lock:
+                    active += 1
+                    peak = max(peak, active)
+                time.sleep(0.05)
+                with lock:
+                    active -= 1
+                body = b"ok"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = BoundedThreadingHTTPServer(("127.0.0.1", 0), Slow, max_concurrent=3)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            port = server.server_address[1]
+            results = []
+
+            def hit():
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as resp:
+                        results.append(resp.status)
+                except Exception as exc:  # a refusal here fails the test
+                    results.append(repr(exc))
+
+            threads = [threading.Thread(target=hit) for _ in range(12)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(15)
+            self.assertEqual(results, [200] * 12)
+            self.assertLessEqual(peak, 3)
+        finally:
+            server.shutdown()
+
+
+class TestBoundedServerResilience(unittest.TestCase):
+    """E2E for the bound (Kody discussion_r4372744451):  stalled clients lose
+    their slots to the socket timeout, a queued valid request is then served,
+    and shutdown returns even with every slot pinned."""
+
+    def _server(self, **kwargs):
+        from http.server import BaseHTTPRequestHandler
+
+        class Ok(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"ok"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        server = BoundedThreadingHTTPServer(("127.0.0.1", 0), Ok, **kwargs)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        return server
+
+    @staticmethod
+    def _stall(port):
+        import socket
+
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+        sock.sendall(b"GET / HTTP/1.0\r\n")  # half-sent:  no terminating blank line
+        return sock
+
+    def test_stalled_clients_time_out_and_a_queued_valid_request_is_served(self):
+        server = self._server(max_concurrent=2, socket_timeout_s=1)
+        port = server.server_address[1]
+        stalled = [self._stall(port), self._stall(port)]
+        self.addCleanup(lambda: [s.close() for s in stalled])
+        time.sleep(0.3)  # both stalls accepted, both slots pinned
+        started = time.time()
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+        elapsed = time.time() - started
+        self.assertGreaterEqual(
+            elapsed, 0.5, "served instantly: the stalls never pinned the slots?"
+        )
+        self.assertLess(elapsed, 8)
+        server.shutdown()
+
+    def test_shutdown_returns_while_every_slot_is_pinned(self):
+        server = self._server(max_concurrent=2, socket_timeout_s=1)
+        port = server.server_address[1]
+        stalled = [self._stall(port), self._stall(port)]
+        self.addCleanup(lambda: [s.close() for s in stalled])
+        time.sleep(0.3)
+        done = threading.Event()
+
+        def stop():
+            server.shutdown()
+            done.set()
+
+        threading.Thread(target=stop, daemon=True).start()
+        self.assertTrue(done.wait(10), "shutdown() stuck behind pinned slots")
+
+    def test_nonpositive_concurrency_is_clamped_and_env_parse_is_strict(self):
+        from git_relay.server import _positive_int
+
+        self.assertEqual(_positive_int("junk", 8), 8)
+        self.assertEqual(_positive_int("0", 8), 8)
+        self.assertEqual(_positive_int("-3", 8), 8)
+        self.assertEqual(_positive_int("5", 8), 5)
+        server = self._server(max_concurrent=0, socket_timeout_s=5)  # clamped to 1, not a deadlock
+        port = server.server_address[1]
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=10) as resp:
+            self.assertEqual(resp.status, 200)
+        server.shutdown()
 
 
 class TestNonPrActionsRejected(unittest.TestCase):
@@ -407,6 +544,9 @@ APP_SEATS_JSON = json.dumps(
                 "merge_pr",
                 "workflow_dispatch",
                 "resolve_thread",
+                "edit_pr",
+                "reply_thread",
+                "comment_pr",
                 "create_release",
             ],
             "repos": ["example/*"],
@@ -414,6 +554,7 @@ APP_SEATS_JSON = json.dumps(
             "mint_permissions": {
                 "contents": "write",
                 "pull_requests": "write",
+                "issues": "write",
                 "actions": "write",
                 "metadata": "read",
             },
@@ -479,6 +620,18 @@ class TestAppActions(unittest.TestCase):
             self.assertNotIn("MINTED-FAKE-TOKEN", logged)
             self.assertIn("token_sha256", logged)
 
+    def test_edit_pr_without_a_field_is_a_local_400(self):
+        # With neither title nor body, GitHub would answer 422 AFTER the call
+        # left the fleet;  _validate_args now refuses locally as a 400 and no
+        # token is minted or spent.
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, body = relay.handle(SEAT_TOKEN, "edit_pr", {"repo": "example/x", "number": 1})
+            self.assertEqual(status, 400)
+            self.assertIn("title or body is required", body["error"])
+            self.assertEqual(relay.app_minter.calls, [])
+            self.assertEqual(relay.client.calls, [])
+
     def test_mint_token_beyond_ceiling_is_denied(self):
         with tempfile.TemporaryDirectory() as tmp:
             relay = self._relay(tmp)
@@ -497,6 +650,75 @@ class TestAppActions(unittest.TestCase):
             status, body = relay.handle(SEAT_TOKEN, "merge_pr", {"repo": "example/x", "number": 1})
             self.assertEqual(status, 503)
             self.assertIn("not configured", body["error"])
+
+    def test_edit_pr_uses_minted_bearer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, body = relay.handle(
+                SEAT_TOKEN, "edit_pr", {"repo": "example/x", "number": 1, "title": "t2"}
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                relay.app_minter.calls, [("swu-echo", "example/x", {"pull_requests": "write"})]
+            )
+            self.assertEqual(
+                relay.client.calls, [("edit_pr", "example/x", 1, "t2", None, "MINTED-FAKE-TOKEN")]
+            )
+
+    def test_reply_thread_uses_minted_bearer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, body = relay.handle(
+                SEAT_TOKEN,
+                "reply_thread",
+                {"repo": "example/x", "number": 1, "comment_id": 2, "body": "b"},
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                relay.app_minter.calls, [("swu-echo", "example/x", {"pull_requests": "write"})]
+            )
+            self.assertEqual(
+                relay.client.calls, [("reply_thread", "example/x", 1, 2, "b", "MINTED-FAKE-TOKEN")]
+            )
+
+    def test_comment_pr_uses_minted_bearer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            status, body = relay.handle(
+                SEAT_TOKEN, "comment_pr", {"repo": "example/x", "number": 1, "body": "b"}
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                relay.app_minter.calls, [("swu-echo", "example/x", {"issues": "write"})]
+            )
+            self.assertEqual(
+                relay.client.calls, [("comment_pr", "example/x", 1, "b", "MINTED-FAKE-TOKEN")]
+            )
+
+    def test_comment_pr_beyond_ceiling_is_denied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = Relay(
+                SeatPolicy(
+                    json.dumps(
+                        {
+                            "swu-echo": {
+                                "token": SEAT_TOKEN,
+                                "actions": ["comment_pr"],
+                                "repos": ["example/*"],
+                                "app_slug": "swu-echo",
+                                "mint_permissions": {"pull_requests": "write"},
+                            }
+                        }
+                    )
+                ),
+                StubClient(),
+                AuditLog(os.path.join(tmp, "a.jsonl")),
+                app_minter=FakeMinter(),
+            )
+            status, _ = relay.handle(
+                SEAT_TOKEN, "comment_pr", {"repo": "example/x", "number": 1, "body": "b"}
+            )
+            self.assertEqual(status, 403)
 
 
 class TestMinter(unittest.TestCase):
@@ -1802,7 +2024,7 @@ class BotIdentityTests(unittest.TestCase):
             {
                 "swu-echo": {
                     "token": "x" * 32,
-                    "actions": ["comment_pr"],
+                    "actions": ["open_pr"],
                     "repos": ["example/fixture-repo"],
                 }
             }
@@ -2047,12 +2269,26 @@ class LegacyStateAdoption(unittest.TestCase):
         origin = pathlib.Path.cwd()
 
         def build(**overrides):
+
             env = dict(os.environ)
             env["GIT_RELAY_SEATS_JSON"] = policy
             env["GIT_RELAY_APP_MINT"] = "0"
-            env["GITHUB_TOKEN"] = "t" * 40
             env.update(overrides)
-            return unittest.mock.patch.dict(os.environ, env, clear=True)
+            return contextlib.ExitStack()
+
+        def build(**overrides):
+            from git_relay import server
+
+            env = dict(os.environ)
+            env["GIT_RELAY_SEATS_JSON"] = policy
+            env["GIT_RELAY_APP_MINT"] = "0"
+            env.update(overrides)
+            stack = contextlib.ExitStack()
+            stack.enter_context(unittest.mock.patch.dict(os.environ, env, clear=True))
+            stack.enter_context(
+                unittest.mock.patch.object(server, "_owner_token_from_cli", return_value="t" * 40)
+            )
+            return stack
 
         with build():
             os.chdir(directory)
@@ -2085,12 +2321,24 @@ class LegacyStateAdoption(unittest.TestCase):
                 }
             }
         )
+        from git_relay import server
+
+        creds = tempfile.NamedTemporaryFile(prefix="apps-token-", delete=False, suffix=".token")
+        creds.write(b"apps-scoped\n")
+        creds.close()
+        self.addCleanup(os.unlink, creds.name)
+
         env = dict(os.environ)
         env["GIT_RELAY_SEATS_JSON"] = policy
-        env["GITHUB_TOKEN"] = "t" * 40
+        env["GIT_RELAY_APPS_CREDENTIAL_FILE"] = creds.name
         env.pop("GIT_RELAY_APP_MINT", None)
         env.update(overrides)
-        return unittest.mock.patch.dict(os.environ, env, clear=True)
+        stack = contextlib.ExitStack()
+        stack.enter_context(unittest.mock.patch.dict(os.environ, env, clear=True))
+        stack.enter_context(
+            unittest.mock.patch.object(server, "_owner_token_from_cli", return_value="t" * 40)
+        )
+        return stack
 
     def test_from_env_honors_the_configured_secrets_path(self):
         from git_relay import app_tokens, server
@@ -2118,6 +2366,10 @@ class LegacyStateAdoption(unittest.TestCase):
             finally:
                 os.chdir(origin)
         self.assertEqual(captured.get("path"), "/other-apps")
+        self.assertTrue(
+            captured.get("credential_file", "").endswith(".token"),
+            f"apps source was not bound to a credential file: {captured!r}",
+        )
 
     def test_from_env_rejects_an_empty_secrets_path(self):
         from git_relay import server
@@ -2138,3 +2390,361 @@ class LegacyStateAdoption(unittest.TestCase):
             finally:
                 os.chdir(origin)
         self.assertIn("GIT_RELAY_SECRETS_PATH", str(ctx.exception))
+
+
+class TestOwnerTokenFromCli(unittest.TestCase):
+    """The open_pr owner token comes ONLY from `fleet-secrets get-verified`
+    at /git-relay-owner;  an ambient GITHUB_TOKEN is never consulted."""
+
+    def _fake_source(self, captured, value=None, error=None):
+        def factory(**kwargs):
+            captured.update(kwargs)
+
+            class _Source:
+                def verified_secret(self, name):
+                    captured["name"] = name
+                    if error is not None:
+                        raise error
+                    return value
+
+            return _Source()
+
+        return factory
+
+    def test_reads_the_fixed_folder_and_ignores_the_environment(self):
+        from git_relay import app_tokens, server
+
+        captured = {}
+        with (
+            unittest.mock.patch.dict(
+                os.environ,
+                {
+                    "GITHUB_TOKEN": "ambient-must-not-be-used",
+                    "GIT_RELAY_OWNER_CREDENTIAL_FILE": "/tmp/owner-test-creds",
+                },
+                clear=True,
+            ),
+            unittest.mock.patch.object(
+                app_tokens, "FleetSecretsSource", self._fake_source(captured, "cli-value")
+            ),
+        ):
+            self.assertEqual(server._owner_token_from_cli(), "cli-value")
+        self.assertEqual(captured.get("path"), "/git-relay-owner")
+        self.assertEqual(captured.get("credential_file"), "/tmp/owner-test-creds")
+        self.assertEqual(captured.get("name"), "GITHUB_TOKEN")
+
+    def test_credential_file_binding_comes_from_the_environment(self):
+        from git_relay import app_tokens, server
+
+        captured = {}
+        with (
+            unittest.mock.patch.dict(
+                os.environ,
+                {"GIT_RELAY_OWNER_CREDENTIAL_FILE": "/run/credentials/owner-token"},
+                clear=True,
+            ),
+            unittest.mock.patch.object(
+                app_tokens, "FleetSecretsSource", self._fake_source(captured, "v")
+            ),
+        ):
+            server._owner_token_from_cli()
+        self.assertEqual(captured.get("credential_file"), "/run/credentials/owner-token")
+
+    def test_a_failed_read_is_a_startup_error_with_no_value_in_it(self):
+        from git_relay import app_tokens, server
+
+        captured = {}
+        with (
+            unittest.mock.patch.dict(
+                os.environ,
+                {"GIT_RELAY_OWNER_CREDENTIAL_FILE": "/tmp/owner-test-creds"},
+                clear=True,
+            ),
+            unittest.mock.patch.object(
+                app_tokens,
+                "FleetSecretsSource",
+                self._fake_source(
+                    captured, error=app_tokens.AppTokenError("the-value-must-not-appear")
+                ),
+            ),
+            self.assertRaises(RuntimeError) as ctx,
+        ):
+            server._owner_token_from_cli()
+        # AppTokenError messages name keys/folders only; the relay adds no values.
+        self.assertIn("owner token", str(ctx.exception))
+
+
+class TestVerifiedSecret(unittest.TestCase):
+    def _source(self, result=None, raises=None, **kwargs):
+        from git_relay.app_tokens import FleetSecretsSource
+
+        captured = {}
+
+        def runner(argv, **run_kwargs):
+            captured["argv"] = list(argv)
+            captured["run_kwargs"] = run_kwargs
+            if raises is not None:
+                raise raises
+            return result
+
+        return FleetSecretsSource(runner=runner, **kwargs), captured
+
+    def _result(self, code=0, stdout=b"v\n", stderr=b""):
+        return subprocess.CompletedProcess(["x"], code, stdout, stderr)
+
+    def test_uses_the_get_verified_command_at_the_source_folder(self):
+        source, captured = self._source(result=self._result())
+        self.assertEqual(source.verified_secret("GITHUB_TOKEN"), "v")
+        self.assertEqual(captured["argv"][0:2], ["fleet-secrets", "get-verified"])
+        self.assertEqual(captured["argv"][2], "GITHUB_TOKEN")
+        self.assertIn("--path", captured["argv"])
+        # transitional mode: no env= kwarg, the legacy call shape is byte-identical
+        self.assertNotIn("env", captured["run_kwargs"])
+
+    def test_absent_is_remembered_and_other_failures_are_not(self):
+        from git_relay.app_tokens import AppTokenError
+
+        source, _ = self._source(result=self._result(code=3))
+        with self.assertRaises(AppTokenError) as ctx:
+            source.verified_secret("MISSING")
+        self.assertIn("MISSING", str(ctx.exception))
+        self.assertIn("MISSING", source._missing)
+
+        source, _ = self._source(result=self._result(code=1))
+        with self.assertRaises(AppTokenError):
+            source.verified_secret("OTHER")
+        with self.assertRaises(AppTokenError):
+            source.verified_secret("OTHER")  # not cached absent: raises, no retry state
+
+    def test_empty_stdout_is_an_error_not_a_value(self):
+        from git_relay.app_tokens import AppTokenError
+
+        source, _ = self._source(result=self._result(code=0, stdout=b"\n"))
+        with self.assertRaises(AppTokenError):
+            source.verified_secret("EMPTY")
+
+    def test_credential_file_scopes_the_child_environment(self):
+        from git_relay.app_tokens import FleetSecretsSource
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        creds = directory / "owner-token"
+        creds.write_text("scoped-token\n", encoding="utf-8")
+
+        captured = {}
+
+        def runner(argv, **run_kwargs):
+            captured.update(run_kwargs)
+            return self._result()
+
+        environ = {
+            "PATH": "/usr/bin",
+            "HOME": "/home/x",
+            "INFISICAL_FLEET_OPS_PROJECT_ID": "project-uuid",
+            "INFISICAL_TOKEN": "ambient-must-not-leak",
+            "GIT_RELAY_SEATS_JSON": "co-located-must-not-leak",
+        }
+        source = FleetSecretsSource(
+            runner=runner,
+            path="/git-relay-owner",
+            credential_file=str(creds),
+            environ=environ,
+        )
+        source.verified_secret("GITHUB_TOKEN")
+        child = captured["env"]
+        self.assertEqual(child["INFISICAL_TOKEN"], "scoped-token")
+        self.assertEqual(child["PATH"], "/usr/bin")
+        self.assertEqual(child["INFISICAL_ENVIRONMENT"], "prod")
+        self.assertEqual(child["INFISICAL_FLEET_OPS_PROJECT_ID"], "project-uuid")
+        self.assertNotIn("ENVIRONMENT", child)
+        self.assertNotIn("INFISICAL_PROJECT_ID", child)
+        self.assertNotIn("HOME", child)  # no incidental ~/.agent-sync resolution
+        self.assertNotIn("GIT_RELAY_SEATS_JSON", child)
+
+    def test_unreadable_credential_file_fails_closed(self):
+        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+
+        source = FleetSecretsSource(
+            runner=lambda *a, **k: None,
+            path="/git-relay-owner",
+            credential_file="/nonexistent/credential",
+        )
+        with self.assertRaises(AppTokenError) as ctx:
+            source.verified_secret("GITHUB_TOKEN")
+        self.assertNotIn("credential-value", str(ctx.exception))
+
+    def test_scoped_env_applies_to_app_key_reads_too(self):
+        from git_relay.app_tokens import FleetSecretsSource
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        creds = directory / "apps-token"
+        creds.write_text("apps-scoped\n", encoding="utf-8")
+
+        captured = {}
+
+        def runner(argv, **run_kwargs):
+            captured.update(run_kwargs)
+            return self._result(stdout=b'{"GH_APP_X_ID": "1", "GH_APP_X_PRIVATE_KEY": "k"}')
+
+        source = FleetSecretsSource(
+            runner=runner,
+            credential_file=str(creds),
+            environ={"PATH": "/usr/bin", "INFISICAL_FLEET_OPS_PROJECT_ID": "uuid"},
+        )
+        source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
+        self.assertEqual(captured["env"]["INFISICAL_TOKEN"], "apps-scoped")
+
+
+class TestProductionCredentialBinding(unittest.TestCase):
+    """from_env's production entry binds every fleet-secrets source to its
+    credential file and fails closed otherwise - the class-level
+    credential_file=None shape is unreachable from production wiring."""
+
+    POLICY = json.dumps(
+        {
+            "swu-echo": {
+                "token": "e" * 32,
+                "actions": ["open_pr"],
+                "repos": ["acme-org/acme-repo"],
+            }
+        }
+    )
+
+    def _env(self, **overrides):
+        env = {
+            "GIT_RELAY_SEATS_JSON": self.POLICY,
+            "GIT_RELAY_APP_MINT": "0",
+        }
+        env.update(overrides)
+        return unittest.mock.patch.dict(os.environ, env, clear=True)
+
+    def _credentials_dir(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        for name in ("git-relay-owner-token", "git-relay-apps-token"):
+            (directory / name).write_text("x\n", encoding="utf-8")
+        return directory
+
+    def test_no_binding_refuses_startup_naming_the_scope_variable(self):
+        from git_relay import server
+
+        with self._env(), self.assertRaises(SystemExit) as ctx:
+            server.from_env()
+        message = str(ctx.exception)
+        self.assertIn("GIT_RELAY_OWNER_CREDENTIAL_FILE", message)
+        self.assertIn("/git-relay-owner", message)
+        self.assertNotIn("x", message.replace("Exit", "").replace("exit", ""))
+
+    def test_empty_override_is_a_config_error(self):
+        from git_relay import server
+
+        with self._env(GIT_RELAY_OWNER_CREDENTIAL_FILE="  "):
+            with self.assertRaises(SystemExit) as ctx:
+                server.from_env()
+        self.assertIn("GIT_RELAY_OWNER_CREDENTIAL_FILE", str(ctx.exception))
+
+    def test_no_inheritance_escape_even_when_the_old_variable_is_set(self):
+        from git_relay import server
+
+        with self._env(GIT_RELAY_ALLOW_ENV_INHERITANCE="1"):
+            with self.assertRaises(SystemExit) as ctx:
+                server.from_env()
+        self.assertIn("GIT_RELAY_OWNER_CREDENTIAL_FILE", str(ctx.exception))
+
+    def test_all_three_sources_bind_their_credential_files_from_the_directory(self):
+        from git_relay import app_tokens, server
+
+        directory = self._credentials_dir()
+        constructions = []
+
+        def fake_source(**kwargs):
+            constructions.append(dict(kwargs))
+
+            class _Source:
+                def verified_secret(self, name):
+                    return "v"
+
+                def secret(self, name):
+                    return "k" * 32
+
+            return _Source()
+
+        with (
+            self._env(
+                CREDENTIALS_DIRECTORY=str(directory),
+                GIT_RELAY_APP_MINT="1",
+                GIT_RELAY_APPS_CREDENTIAL_FILE=str(directory / "git-relay-apps-token"),
+                GIT_RELAY_VERIFY_URL="https://sync.example/gr-internal/verify-bearer",
+            ),
+            unittest.mock.patch.object(
+                server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
+            ),
+            unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source),
+            unittest.mock.patch.object(server, "_owner_token_from_cli", return_value="t" * 40),
+        ):
+            server.from_env()
+        bound = {c.get("path"): c.get("credential_file") for c in constructions}
+        self.assertEqual(bound.get("/github-apps"), str(directory / "git-relay-apps-token"))
+        # two-reader host contract:  /tools binds the App reader's file
+        self.assertEqual(bound.get("/tools"), str(directory / "git-relay-apps-token"))
+
+    def test_owner_source_binds_from_the_directory_when_unpatched(self):
+        from git_relay import app_tokens, server
+
+        directory = self._credentials_dir()
+        captured = {}
+
+        def fake_source(**kwargs):
+            captured.update(kwargs)
+
+            class _Source:
+                def verified_secret(self, name):
+                    return "v"
+
+            return _Source()
+
+        with (
+            self._env(CREDENTIALS_DIRECTORY=str(directory)),
+            unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source),
+        ):
+            server.from_env()
+        self.assertEqual(captured.get("path"), "/git-relay-owner")
+        self.assertEqual(captured.get("credential_file"), str(directory / "git-relay-owner-token"))
+
+
+class TestScopedChildProjectBinding(unittest.TestCase):
+    """The scoped CLI child must carry the SUPPORTED fleet-secrets variable
+    names and cannot fall through to ~/.agent-sync file resolution."""
+
+    def _creds(self):
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        creds = directory / "token"
+        creds.write_text("scoped\n", encoding="utf-8")
+        return str(creds)
+
+    def test_missing_project_binding_fails_closed_naming_the_variable(self):
+        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+
+        source = FleetSecretsSource(
+            runner=lambda *a, **k: None,
+            path="/git-relay-owner",
+            credential_file=self._creds(),
+            environ={"PATH": "/usr/bin", "HOME": "/home/x"},
+        )
+        with self.assertRaises(AppTokenError) as ctx:
+            source.verified_secret("GITHUB_TOKEN")
+        self.assertIn("INFISICAL_FLEET_OPS_PROJECT_ID", str(ctx.exception))
+
+    def test_blank_project_binding_is_missing(self):
+        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+
+        source = FleetSecretsSource(
+            runner=lambda *a, **k: None,
+            path="/git-relay-owner",
+            credential_file=self._creds(),
+            environ={"PATH": "/usr/bin", "INFISICAL_FLEET_OPS_PROJECT_ID": "  "},
+        )
+        with self.assertRaises(AppTokenError):
+            source.verified_secret("GITHUB_TOKEN")

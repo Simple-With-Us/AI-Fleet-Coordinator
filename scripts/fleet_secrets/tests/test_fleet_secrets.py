@@ -978,3 +978,231 @@ class SetTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFetchVerified(unittest.TestCase):
+    """fetch_verified:  the REST row's own fields prove the folder."""
+
+    ENV = {"INFISICAL_FLEET_OPS_PROJECT_ID": "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"}
+    PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
+    PATH = "/git-relay-owner"
+
+    def _secret(self, **overrides):
+        row = {
+            "workspace": self.PROJECT,
+            "environment": "prod",
+            "type": "shared",
+            "secretKey": "GITHUB_TOKEN",
+            "secretValue": "the-value",
+            "secretValueHidden": False,
+            "secretPath": self.PATH,
+            "id": "row-id",
+            "version": 3,
+        }
+        row.update(overrides)
+        return row
+
+    def _run(self, status=200, answer=None, row_overrides=None):
+        if answer is None:
+            answer = {"secret": self._secret(**(row_overrides or {}))}
+        calls = []
+
+        def fake_api_json(method, path, token, body, env, max_bytes=None):
+            calls.append(
+                {
+                    "method": method,
+                    "path": path,
+                    "token": token,
+                    "max_bytes": max_bytes,
+                }
+            )
+            return status, answer
+
+        with mock.patch.object(core, "_api_json", fake_api_json):
+            try:
+                value = core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV, token="tok")
+                return value, calls, None
+            except core.SecretsError as exc:
+                return None, calls, exc
+
+    def test_happy_path_returns_the_value(self):
+        value, calls, err = self._run()
+        self.assertIsNone(err)
+        self.assertEqual(value, "the-value")
+        call = calls[0]
+        self.assertEqual(call["method"], "GET")
+        self.assertIn("/v3/secrets/raw/GITHUB_TOKEN?", call["path"])
+        self.assertIn("workspaceId=" + self.PROJECT, call["path"])
+        self.assertIn("environment=prod", call["path"])
+        self.assertIn("secretPath=%2Fgit-relay-owner", call["path"])
+        self.assertEqual(call["token"], "tok")
+        self.assertEqual(call["max_bytes"], core.MAX_VERIFIED_BYTES)
+
+    def test_wrong_secret_path_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretPath": "/"})
+        self.assertIsNotNone(err)
+        self.assertEqual(err.code, 4)
+        self.assertIn("secretPath", str(err))
+        self.assertNotIn("the-value", str(err))
+
+    def test_wrong_workspace_fails_closed(self):
+        _, _, err = self._run(row_overrides={"workspace": "other-uuid"})
+        self.assertEqual(err.code, 4)
+        self.assertNotIn("the-value", str(err))
+
+    def test_wrong_environment_fails_closed(self):
+        _, _, err = self._run(row_overrides={"environment": "dev"})
+        self.assertEqual(err.code, 4)
+
+    def test_personal_type_fails_closed(self):
+        _, _, err = self._run(row_overrides={"type": "personal"})
+        self.assertEqual(err.code, 4)
+
+    def test_wrong_key_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretKey": "OTHER_KEY"})
+        self.assertEqual(err.code, 4)
+
+    def test_hidden_value_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretValueHidden": True})
+        self.assertEqual(err.code, 4)
+
+    def test_missing_hidden_field_fails_closed(self):
+        row = self._secret()
+        del row["secretValueHidden"]
+        _, _, err = self._run(answer={"secret": row})
+        self.assertEqual(err.code, 4)
+
+    def test_non_string_value_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretValue": 42})
+        self.assertEqual(err.code, 4)
+
+    def test_empty_value_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretValue": ""})
+        self.assertEqual(err.code, 4)
+
+    def test_unresolved_reference_fails_closed(self):
+        _, _, err = self._run(row_overrides={"secretValue": "${OTHER_KEY}"})
+        self.assertIsNotNone(err)
+
+    def test_missing_secret_row_fails_closed(self):
+        _, _, err = self._run(answer={"unexpected": {}})
+        self.assertEqual(err.code, 4)
+
+    def test_absent_key_is_exit_3_naming_folder_and_key_only(self):
+        for status in (400, 404):
+            _, _, err = self._run(status=status, answer=None)
+            self.assertEqual(err.code, 3)
+            self.assertIn("GITHUB_TOKEN", str(err))
+            self.assertIn("/git-relay-owner", str(err))
+            self.assertNotIn("the-value", str(err))
+
+    def test_other_status_is_a_fetch_failure(self):
+        _, _, err = self._run(status=500, answer={"secret": self._secret()})
+        self.assertEqual(err.code, 4)
+        self.assertIn("status-500", str(err))
+
+    def test_unreachable_is_a_fetch_failure(self):
+        _, _, err = self._run(status=0, answer=None)
+        self.assertEqual(err.code, 4)
+        self.assertIn("unreachable", str(err))
+
+    def test_non_json_answer_fails_closed(self):
+        # _api_json returns (status, None) for an unparseable body
+        with mock.patch.object(core, "_api_json", lambda *a, **k: (200, None)):
+            with self.assertRaises(core.SecretsError) as ctx:
+                core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV, token="tok")
+        self.assertEqual(ctx.exception.code, 4)
+        self.assertIn("bad-output", str(ctx.exception))
+
+    def test_session_mode_is_refused(self):
+        with (
+            mock.patch.object(core, "find_cli", lambda env: "/usr/bin/infisical"),
+            mock.patch.object(core, "auth_mode", lambda env: "session"),
+        ):
+            with self.assertRaises(core.SecretsError) as ctx:
+                core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV)
+        self.assertIn("machine identity", str(ctx.exception))
+
+    def test_machine_token_resolution_when_no_token_given(self):
+        with (
+            mock.patch.object(core, "find_cli", lambda env: "/usr/bin/infisical"),
+            mock.patch.object(core, "auth_mode", lambda env: "keychain"),
+            mock.patch.object(core, "resolve_token", lambda env, cli, mode: "minted"),
+            mock.patch.object(core, "_api_json", lambda *a, **k: (200, {"secret": self._secret()})),
+        ):
+            self.assertEqual(core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV), "the-value")
+
+
+class TestApiJsonBoundedRead(unittest.TestCase):
+    def test_oversized_answer_fails_closed_without_logging(self):
+        class _Resp:
+            status = 200
+
+            def read(self, limit=None):
+                data = b"x" * (core.MAX_VERIFIED_BYTES + 10)
+                return data if limit is None else data[:limit]
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        with mock.patch.object(core, "_opener", lambda: mock.Mock(open=lambda *a, **k: _Resp())):
+            status, answer = core._api_json(
+                "GET", "/v3/secrets/raw/X", "tok", None, {}, max_bytes=core.MAX_VERIFIED_BYTES
+            )
+        self.assertEqual((status, answer), (0, None))
+
+    def test_unbounded_default_is_unchanged(self):
+        class _Resp:
+            status = 200
+
+            def read(self, limit=None):
+                self.saw_limit = limit
+                return b'{"ok": true}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        resp = _Resp()
+        with mock.patch.object(core, "_opener", lambda: mock.Mock(open=lambda *a, **k: resp)):
+            status, answer = core._api_json("GET", "/v1/x", "tok", None, {})
+        self.assertEqual(status, 200)
+        self.assertEqual(answer, {"ok": True})
+        self.assertIsNone(resp.saw_limit)
+
+
+class TestCmdGetVerified(unittest.TestCase):
+    def test_prints_the_value_only(self):
+        import io
+
+        from fleet_secrets import cli
+
+        out = io.StringIO()
+        with mock.patch.object(core, "fetch_verified", lambda n, p, env: "v"):
+            rc = cli.cmd_get_verified(["NAME", "--path", "/folder"], {}, out)
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue(), "v")
+
+    def test_root_path_is_a_usage_error(self):
+        import io
+
+        from fleet_secrets import cli
+
+        with self.assertRaises(core.UsageError):
+            cli.cmd_get_verified(["NAME"], {}, io.StringIO())
+
+    def test_dispatched_from_main(self):
+        import io
+
+        from fleet_secrets import cli
+
+        out = io.StringIO()
+        with mock.patch.object(core, "fetch_verified", lambda n, p, env: "v"):
+            rc = cli.main(["get-verified", "NAME", "--path", "/folder"], {}, out, io.StringIO())
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.getvalue(), "v")

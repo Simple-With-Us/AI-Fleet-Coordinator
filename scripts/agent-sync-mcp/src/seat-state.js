@@ -1075,7 +1075,7 @@ function sameHash(a, b) {
 }
 
 /** Install `hash` as the persona's bearer, replacing any earlier one (rotate).  Audits who and when, never the hash. */
-export async function gbBearerMint(store, { hash, by, expiresAt }, now = Date.now()) {
+export async function gbBearerMint(store, { hash, by, expiresAt, mcpAccept }, now = Date.now()) {
   const prev = (await store.get(GB_BEARER_KEY)) ?? null;
   const row = {
     hash: String(hash),
@@ -1084,10 +1084,137 @@ export async function gbBearerMint(store, { hash, by, expiresAt }, now = Date.no
     expires_at: Number(expiresAt) || now,
     last_used_at: 0,
     mint_count: Number(prev?.mint_count ?? 0) + 1,
+    // Whether this bearer is ALSO accepted on /mcp itself.  A Grok Bot persona's
+    // bearer is its only credential, so persona mints carry mcp_accept: true from
+    // the existing admin UI.  For an OAuth-capable seat this is the recorded
+    // owner choice (owner direction 2026-10-23:  one credential per identity,
+    // shared between ST-MCP and GR-MCP):  accepting a bearer in place of the
+    // seat's consent flow is opt-in per seat, never inferred.  Absent on rows
+    // minted before this field;  the /mcp seat path must treat absent as false.
+    mcp_accept: mcpAccept === true,
   };
   await store.put(GB_BEARER_KEY, row);
-  await audit(store, { event: "gb_bearer_minted", by: row.created_by, expires_at: row.expires_at, replaced: Boolean(prev) }, now);
-  return { created_at: row.created_at, expires_at: row.expires_at, mint_count: row.mint_count };
+  await audit(store, { event: "gb_bearer_minted", by: row.created_by, expires_at: row.expires_at, replaced: Boolean(prev), mcp_accept: row.mcp_accept }, now);
+  return { created_at: row.created_at, expires_at: row.expires_at, mint_count: row.mint_count, mcp_accept: row.mcp_accept };
+}
+
+// ---------------------------------------------------------------- single-use mint forms
+//
+// Every rendered mint form carries a single-use mint_id (12 hex ms timestamp +
+// 20 random hex).  Check-consume-mint is ONE transaction in the identity's own
+// gate, so a concurrent or retried submission can interleave nowhere and a
+// failure rolls the consume back together with the mint.  A stale (older than
+// the form TTL) or already-consumed form is REFUSED:  the bearer row is never
+// touched and the refusal is only audited, so an accidental refresh, resubmit
+// or days-later replay can never rotate a live bearer.
+
+const GB_MINT_FORMS_KEY = "gb_bearer_mint_forms";
+export const GB_MINT_FORM_TTL_MS = 60 * 60 * 1000;
+// Fail-closed capacity:  a consumed form's record is kept for its WHOLE
+// validity window - only entries already too old to ever mint again may be
+// evicted - and when 64 still-valid records stand, further mints are refused
+// ("busy") rather than evicting a live tombstone.  Single-use never lapses
+// early.  64 real mints inside one hour is far past any deliberate use;  each
+// one needs an authenticated admin POST.
+const GB_MINT_FORM_KEEP = 64;
+const GB_MINT_FORM_SKEW_MS = 60_000;
+
+function mintFormTs(mintId) {
+  const ts = Number.parseInt(String(mintId ?? "").slice(0, 12), 16);
+  return Number.isFinite(ts) ? ts : null;
+}
+
+const GB_MINT_ID_RE = /^[0-9a-f]{32}$/;
+
+export async function gbBearerMintChecked(store, { mintId, hash, by, expiresAt, mcpAccept }, now = Date.now()) {
+  if (typeof store.transaction !== "function") throw new TypeError("transactional store required");
+  // Exactly one outcome-bearing audit row per mint ATTEMPT, from a central
+  // finally - never from a branch (kody discussion_r4372747686).  The finally
+  // sits INSIDE the transaction:  the outcome row is atomic with the mint, so
+  // an audit write failure aborts the whole attempt - no bearer rotation, no
+  // tombstone, no reveal without its audit row.  The one row that cannot live
+  // in an aborted transaction is the unexpected-failure row, written outside
+  // by the catch below (best-effort;  the store may be why we are there).
+  let outcome = null;
+  try {
+    return await store.transaction(async (txn) => {
+    try {
+    const refuse = (reason) => {
+      outcome = { event: "gb_bearer_mint_refused", by: String(by ?? ""), reason };
+      return { minted: false, reason };
+    };
+    // Strict shape before any timestamp math:  a mint id is exactly the
+    // 32-hex form the admin page renders (12-hex ms + 20 random hex).  A
+    // malformed id is refused as invalid, not misread as "stale".
+    if (typeof mintId !== "string" || !GB_MINT_ID_RE.test(mintId)) return refuse("invalid");
+    const forms = (await txn.get(GB_MINT_FORMS_KEY)) ?? { consumed: [] };
+    // A tombstone lives exactly as long as its own form could possibly be
+    // accepted, derived from the form id's timestamp - never from consumption
+    // time:  a form future-dated within the 60s skew outlives a record timed
+    // by `at`, and evicting that record early would reopen a replay window.
+    // Only records whose form is already too old to mint may drop off.
+    forms.consumed = forms.consumed.filter((c) => {
+      const cts = mintFormTs(c.mint_id);
+      return cts !== null && now - cts <= GB_MINT_FORM_TTL_MS;
+    });
+    const consumed = forms.consumed.find((c) => c.mint_id === mintId);
+    if (consumed) {
+      // A retry of a form whose mint COMPLETED is acked from the tombstone's
+      // outcome metadata (kody discussion_r4372748176):  the route generates
+      // a fresh raw token per POST, so a real HTTP resubmit always carries a
+      // NEW hash - comparing hashes can never recognize it.  The ack is
+      // caller-bound by the single-use mint id itself (rendered only in the
+      // owner's authenticated admin page) and carries only what /admin status
+      // already shows:  times, count, acceptance.  No new mint, no mutation,
+      // and the raw token is not stored anywhere, so there is nothing new to
+      // reveal;  an owner who lost it rotates from a fresh form.
+      outcome = { event: "gb_bearer_mint_replay", by: String(by ?? "") };
+      return { minted: false, reason: "completed", result: consumed.result ?? null };
+    }
+    const ts = mintFormTs(mintId);
+    if (ts === null || now - ts > GB_MINT_FORM_TTL_MS || ts - now > GB_MINT_FORM_SKEW_MS) return refuse("stale");
+    if (forms.consumed.length >= GB_MINT_FORM_KEEP) return refuse("busy");
+    const prev = (await txn.get(GB_BEARER_KEY)) ?? null;
+    const row = {
+      hash: String(hash),
+      created_at: now,
+      created_by: String(by ?? ""),
+      expires_at: Number(expiresAt) || now,
+      last_used_at: 0,
+      mint_count: Number(prev?.mint_count ?? 0) + 1,
+      mcp_accept: mcpAccept === true,
+    };
+    // Write order inside the one transaction:  bearer row, then the consumed
+    // marker (the outcome audit is written once, by the finally below).  A
+    // real Durable Object transaction aborts as a unit on any throw;  even
+    // under a non-transactional store every partial is fail-safe (an unseen
+    // bearer nobody can use, or a dead form).
+    await txn.put(GB_BEARER_KEY, row);
+    const result = { created_at: row.created_at, expires_at: row.expires_at, mint_count: row.mint_count, mcp_accept: row.mcp_accept };
+    await txn.put(GB_MINT_FORMS_KEY, { consumed: [...forms.consumed, { mint_id: String(mintId), at: now, result }] });
+    outcome = { event: "gb_bearer_minted", by: row.created_by, expires_at: row.expires_at, replaced: Boolean(prev), mcp_accept: row.mcp_accept };
+    return { minted: true, created_at: row.created_at, expires_at: row.expires_at, mint_count: row.mint_count, mcp_accept: row.mcp_accept };
+    } finally {
+      // The one outcome row for this attempt, inside the transaction (see the
+      // header comment).  A throw here aborts the attempt:  a real Durable
+      // Object transaction rolls back as a unit, so no bearer, tombstone or
+      // half-written audit survives;  the catch records the attempt outside.
+      if (outcome) await audit(txn, outcome, now);
+    }
+    });
+  } catch (err) {
+    // The transaction aborted:  every write inside it rolled back, including
+    // the finally's row.  A tracked "minted" therefore never landed - the
+    // attempt's only true record is the error row.  Refusal and replay
+    // outcomes mutate nothing, so their row stays true even when its
+    // in-transaction write died;  re-writing it here keeps exactly one
+    // durable row per attempt.  Best-effort, and the error still propagates.
+    if (!outcome || outcome.event === "gb_bearer_minted") {
+      outcome = { event: "gb_bearer_mint_error", by: String(by ?? ""), error: err instanceof Error ? err.name : "unknown" };
+    }
+    try { await audit(store, outcome, now); } catch { /* the store is the failure */ }
+    throw err;
+  }
 }
 
 export async function gbBearerRevoke(store, { by }, now = Date.now()) {
@@ -1108,7 +1235,7 @@ export async function gbBearerCheck(store, hash, now = Date.now()) {
   if (!sameHash(String(row.hash), String(hash))) return { ok: false, reason: "mismatch" };
   if (Number(row.expires_at) <= now) return { ok: false, reason: "expired" };
   if (now - Number(row.last_used_at || 0) >= 3_600_000) await store.put(GB_BEARER_KEY, { ...row, last_used_at: now });
-  return { ok: true };
+  return { ok: true, mcp_accept: row.mcp_accept === true };
 }
 
 /** For /admin:  times and counts only, no hash. */
@@ -1118,6 +1245,7 @@ export async function gbBearerStatus(store, now = Date.now()) {
   return {
     active: Number(row.expires_at) > now,
     expired: Number(row.expires_at) <= now,
+    mcp_accept: row.mcp_accept === true,
     created_at: Number(row.created_at) || 0,
     created_by: String(row.created_by ?? ""),
     expires_at: Number(row.expires_at) || 0,

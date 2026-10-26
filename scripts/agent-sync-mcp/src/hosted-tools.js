@@ -2,6 +2,7 @@ import { WA_TOOLS } from "./wa/contract.js";
 import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
 import { callNamedLinear } from "./linear-named.js";
 import { z } from "zod";
+import { parseArgs } from "./args.js";
 import { LINEAR_MCP_BY_NAME } from "./linear-mcp-specs.js";
 import { callLinearMcp } from "./linear-mcp.js";
 import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
@@ -61,6 +62,7 @@ import {
   RECALL_MARKER_BEGIN,
   RECALL_MARKER_END,
 } from "./recall.js";
+import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES } from "./gr-tools.js";
 import {
   FLEETLINK_TOOLS,
   FLEETLINK_READ_TOOLS,
@@ -159,7 +161,7 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
 // (every tools.json tool after the first ten, as zulip_<name>) and the read-only listener tools
 // after those, so every earlier tool keeps its place.
-export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS]);
+export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS]);
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
 export const HOSTED_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])));
 // Every hosted tool is classified here, explicitly, as a read or a write (AFC-331:  a write must name its
@@ -173,7 +175,7 @@ const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
 const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read"]));
-export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS]));
+export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES]));
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
 // a seat inside Linear's request budget, short enough that a team rename or a
@@ -280,6 +282,22 @@ const USERS_CACHE = new Map();
 // Team and state ids per seat, shared the same way.
 const LINEAR_WORKSPACE_CACHE = new Map();
 
+/** workflow_dispatch args bounded at the Worker boundary (kody 4372745946):
+ * flat inputs, <=32 keys, scalar values only, <=1024 chars per string, no
+ * unknown fields.  The relay re-checks the same caps;  an over-limit call
+ * refuses here instead of spending a parse, a stringify and an upstream call. */
+const GR_DISPATCH_ARGS = z
+  .object({
+    repo: z.string().min(3).max(200),
+    workflow: z.string().min(1).max(200),
+    ref: z.string().min(1).max(200),
+    inputs: z
+      .record(z.string().min(1).max(64), z.union([z.string().max(1024), z.number(), z.boolean()]))
+      .refine((value) => Object.keys(value).length <= 32, { message: "inputs is capped at 32 keys" })
+      .optional(),
+  })
+  .strict();
+
 export class HostedTools {
   /**
    * @param {object} o
@@ -300,8 +318,9 @@ export class HostedTools {
    * @param {object|null} [o.fleetlink]    a FleetLinkClient, or null when FleetLink is not configured
    * @param {object|null} [o.listener]     a ListenerClient for this seat (src/listener.js), or null
    * @param {object|null} [o.notes]        an OperatorNotesClient (src/notes.js), or null when notes are not configured
+   * @param {object|null} [o.gr]           a GrRelayClient for this bearer identity (src/gr-tools.js), or null when the GR front is not configured
    */
-  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
+  constructor({ seat, scopes, clientId, grantRef, paused, config, zulip, key, gate, whatsappGate = null, callerSeat = seat, callerGate = gate, verifySeat = false, delegatedLinear = false, linearCredentialNames = null, cf = {}, recall = null, linear = null, linearWrites = false, fleetlink = null, listener = null, notes = null, gr = null, now = Date.now, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), log = (row) => console.log(JSON.stringify(row)), usersCache = USERS_CACHE, channelsCache = CHANNEL_CACHE, linearWorkspaceCache = LINEAR_WORKSPACE_CACHE }) {
     this.seat = seat;
     this.callerSeat = callerSeat;
     this.callerGate = callerGate;
@@ -319,6 +338,9 @@ export class HostedTools {
     this.recall = recall ?? null;
     // The recall secrets join the scrub list, so no error text can carry them.
     if (this.recall) this.known.push(...this.recall.secrets().filter(Boolean));
+    this.gr = gr ?? null;
+    // The GR front's Access pair and the caller's bearer join the scrub list too.
+    if (this.gr) this.known.push(...this.gr.secrets().filter(Boolean));
     this.linear = linear ?? null;
     this.linearWrites = linearWrites === true;
     this.fleetlink = fleetlink ?? null;
@@ -408,7 +430,7 @@ export class HostedTools {
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(publicName);
-      if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP Admin.");
+      if (this.paused) throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP + GR-MCP Admin.");
       // Every delegated service call first verifies the selected role's own
       // Zulip bot is present, matches its email and is a member (role 400).
       if (this.callerGate !== this.gate || this.verifySeat) await this.ensureSeat();
@@ -583,7 +605,7 @@ export class HostedTools {
       if (slot?.code === "budget_exhausted") {
         throw new ToolError("budget_exhausted", `This seat's ${kind} budget for the ${slot.window ?? "hour"} is spent.  Try again after reset_at.`, { retryable: true, resetAt: slot.resetAt });
       }
-      if (slot?.code === "paused") throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP Admin.");
+      if (slot?.code === "paused") throw new ToolError("paused", "This seat is paused.  Jay can unpause it in ST-MCP + GR-MCP Admin.");
       throw new ToolError("rate_limited", "Other calls from this seat are queued", { retryable: true, retryAfterS: slot?.retryAfterS ?? 3 });
     }
     if (slot.waitMs > 0) await this.sleep(slot.waitMs);
@@ -1264,6 +1286,73 @@ export class HostedTools {
       `Fleet recall is not configured on this server.  The owner sets ${Object.values(RECALL_SECRETS).join(", ")} (scripts/agent-sync-mcp/DEPLOY.md).  The Zulip tools still work.`,
     );
   }
+
+  // ---------------------------------------------------------------- GR-MCP front (git-relay)
+
+  requireGr() {
+    if (this.gr) return this.gr;
+    throw new ToolError(
+      "not_configured",
+      `GR-MCP is not configured on this server.  The owner sets GR_UPSTREAM_URL and ${Object.values(GR_SECRETS).join(", ")} (scripts/agent-sync-mcp/DEPLOY.md).  The other tools still work.`,
+    );
+  }
+
+  /** One git-relay call:  the relay's own answer is data (its allowlist
+   * verdicts are 4xx bodies meant for the caller);  only an unreachable or
+   * mis-answering upstream becomes a ToolError.  The relay's error string is
+   * capped:  it is meant for the caller, but it is still another service's
+   * text. */
+  async grCall(action, args) {
+    const { status, body } = await this.requireGr().call(action, args);
+    if (status === 0) throw new ToolError("unavailable", "GR-MCP could not reach git-relay.  Try again shortly;  if it persists, the relay host is down.");
+    // The relay uses 502 for a write whose outcome is UNKNOWN (GitHub may have
+    // accepted;  replay is refused until resolved) - never misread it as an
+    // unreadable answer or a refusal.  The client's own 502s carry
+    // body.error "upstream_*" instead.
+    if (status === 502 && body && typeof body === "object" && body.outcome === "unknown") {
+      const unreadable = typeof body.error === "string" && body.error.startsWith("upstream_");
+      throw new ToolError(
+        "outcome_unknown",
+        unreadable
+          ? "git-relay's server-error answer could not be read, so the call's outcome is unknown:  it may have reached GitHub and been accepted.  Do not retry blindly - check the pull request or workflow state first."
+          : "git-relay reports the call's outcome is unknown:  GitHub may have accepted it, and the relay refuses replay until the outcome resolves.  Do not retry blindly - check the pull request or workflow state first.",
+      );
+    }
+    if (status === 502) throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
+    // Every other 5xx is outcome_unknown (kody discussion_r4372747157):  a
+    // relay crash or edge error can follow an ACCEPTED mutation, so calling
+    // it a refusal (definite, no side effect) is wrong - retry only after a
+    // write-outcome check.  The one source-qualified exception is the relay's
+    // own pre-write app-token outage, which it marks retryable:  only that
+    // marker keeps "nothing was written".
+    if (status >= 500) {
+      if (body && typeof body === "object" && body.retryable === true) {
+        throw new ToolError("unavailable", "git-relay cannot mint a GitHub App token right now (retryable).  Nothing was written;  try again shortly.");
+      }
+      throw new ToolError(
+        "outcome_unknown",
+        "git-relay answered with a server error, so the call's outcome is unknown:  it may have reached GitHub and been accepted.  Do not retry blindly - check the pull request or workflow state first.",
+      );
+    }
+    // relay_refused is reserved for 4xx (kody discussion_r4372747157):  the
+    // relay's deliberate verdicts (allowlist, replay refusals, terminal
+    // GitHub refusals) - definite, no hidden side effect.
+    if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
+    // A successful call still must answer with a plain JSON object;  anything
+    // else is a mis-answering upstream, not a result.
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new ToolError("unavailable", "git-relay answered in a way this server could not read.  The call did not complete.");
+    }
+    return okResult(JSON.stringify(body), body);
+  }
+
+  async tool_gr_open_pr(args) { return this.grCall("open_pr", args); }
+  async tool_gr_edit_pr(args) { return this.grCall("edit_pr", args); }
+  async tool_gr_reply_thread(args) { return this.grCall("reply_thread", args); }
+  async tool_gr_comment_pr(args) { return this.grCall("comment_pr", args); }
+  async tool_gr_merge_pr(args) { return this.grCall("merge_pr", args); }
+  async tool_gr_workflow_dispatch(args) { return this.grCall("workflow_dispatch", parseArgs(GR_DISPATCH_ARGS, args)); }
+  async tool_gr_resolve_thread(args) { return this.grCall("resolve_thread", args); }
 
   /** One recall call, its failure as a ToolError (never a response body but a 400's own message). */
   async recallCall(fn, { write = false } = {}) {

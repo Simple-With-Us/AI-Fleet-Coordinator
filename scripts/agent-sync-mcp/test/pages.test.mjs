@@ -331,6 +331,9 @@ test("a role never checked reads not checked yet, not a setup gap (AFC-347)", as
 test("admin page puts the owner's controls first and folds the long sections (AFC-347)", async () => {
   const calls = Array.from({ length: 40 }, (_, i) => ({ ts: Date.parse("2026-10-18T12:00:00Z") - i * 1000, seat: "JET", tool: "zulip_read", error_code: "ok" }));
   const html = await adminPage({ ...adminFacts, calls, statusCalls: calls, generatedAt: Date.parse("2026-10-18T12:00:00Z") }).text();
+  // The renamed unified title is pinned:  a rename regression fails here
+  // (kody 4372747419 - the visual harness covers the static site only).
+  assert.match(html, /<title>ST-MCP \+ GR-MCP Admin<\/title>/);
   const at = (s) => html.indexOf(s);
   assert.ok(at("<h2>Seats</h2>") > 0 && at("<h2>Seats</h2>") < at("Hand-Registered Clients"));
   assert.ok(at("Hand-Registered Clients") < at('id="status-overview"'));

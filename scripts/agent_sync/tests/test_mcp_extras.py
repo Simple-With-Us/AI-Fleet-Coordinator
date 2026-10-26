@@ -143,7 +143,7 @@ class GuideToolTests(McpHarness):
             },
         )["result"]["instructions"]
         self.assertIn("Call guide", text)
-        self.assertIn("https://fleetlink.online/agent-sync-tools-guide/", text)
+        self.assertIn("https://fleetlink.online/simple-tools-guide/", text)
         for family in ("linear_*", "recall_*", "notes_*"):
             self.assertIn(family, text)
 

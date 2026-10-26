@@ -109,7 +109,7 @@ SHIPPED = (
     "scripts/fleet_knobs/",
     "scripts/fleet-mode",
     "docs/FLEET-MODE.md",
-    "docs/protocols/agent-sync-tools-guide.md",
+    "docs/protocols/simple-tools-guide.md",
 )
 # What a fleet-cli release ships:  mirrors EXACT and allowed_path in scripts/fleet-cli-release.py, so a
 # commit that changes only tests or docs under those folders needs no push and is not drift.
@@ -137,7 +137,7 @@ SHIPPED_EXACT = frozenset(
         "scripts/agent_sync/mcp/fleetlink-tools.json",
         # AFC-412 PR2:  mirrors the release EXACT entry for the operator registry outbox exporter.
         "scripts/agent_sync/operator_sheets_export.mjs",
-        "docs/protocols/agent-sync-tools-guide.md",
+        "docs/protocols/simple-tools-guide.md",
         "scripts/agent_sync/wake/wake-schema.json",
         "scripts/linear-board/catalog/named-commands.json",
         "scripts/linear-board/catalog/official-mcp-tools.json",

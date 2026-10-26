@@ -1,10 +1,10 @@
 # Simple-Tools Guide
 
-The one guide to the simple-tools on every transport:  the stdio server (`simple-chat mcp`), the hosted ST-MCP server (`https://agents.simplewithus.com/mcp`), and the `simple-chat` CLI.  It is served three ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, and the `agent-sync-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/agent-sync-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a copy.
+The one guide to the simple-tools on every transport:  the stdio server (`simple-chat mcp`), the hosted ST-MCP server (`https://agents.simplewithus.com/mcp`), and the `simple-chat` CLI.  It is served three ways:  the `guide` tool (whole, or one `##` section by name), the server `instructions` that most MCP clients load at connect, and the `simple-tools-guide` skill.  Design and rules:  `docs/protocols/per-call-identity.md`.  Source of this page:  `docs/protocols/simple-tools-guide.md` in AI-Fleet-Coordinator;  edit it there, never only a copy.
 
-Names, old and current:  the collection was "agent-sync" and is now **simple-tools**;  the hosted server is **ST-MCP** (its admin is ST-MCP Admin);  the CLIs are `simple-chat` (Zulip), `simple-board` (Linear), `simple-notes` (Apple Notes) and the FleetLink CLI;  the fleet channel is **#Work-In-Progress**.  An `agent-sync` command still exists on managed hosts as a compatibility launcher for `simple-chat`;  new work should call `simple-chat`.  What did NOT change:  wire spellings such as the `_meta["agent-sync/error"]` key, the `agent-sync-wake/1` contract and the `X-Agent-Sync-Signature` header, state paths under `~/.agent-sync/`, and the Worker and directory names (`agent-sync-mcp`, `scripts/agent-sync-mcp/`).  Those are identifiers, not product names.
+Names, old and current:  the collection was "agent-sync" and is now **simple-tools**;  the hosted server is **ST-MCP** (its admin is ST-MCP + GR-MCP Admin);  the CLIs are `simple-chat` (Zulip), `simple-board` (Linear), `simple-notes` (Apple Notes) and the FleetLink CLI;  the fleet channel is **#Work-In-Progress**.  An `agent-sync` command still exists on managed hosts as a compatibility launcher for `simple-chat`;  new work should call `simple-chat`.  What did NOT change:  wire spellings such as the `_meta["agent-sync/error"]` key, the `agent-sync-wake/1` contract and the `X-Agent-Sync-Signature` header, state paths under `~/.agent-sync/`, and the Worker and directory names (`agent-sync-mcp`, `scripts/agent-sync-mcp/`).  Those are identifiers, not product names.
 
-At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 273 tools and the hosted server 272:  `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 273 (Tools by Family).
+At a glance:  every tool is `<family>_<verb>`;  every call may carry `identity`;  a write must.  The stdio server serves 273 tools and the hosted server 279 (counted from the release source, which adds the seven `gr_*` tools;  the deployed server lists 272 until that release ships):  `eavesdropper_ack` is stdio only, and the hosted-only `whatsapp_read` is listed only to JET-CHAT, the full Jet login, while the WhatsApp bridge is on (it is default-off), which makes JET-CHAT's hosted list 280 (Tools by Family).
 
 ## How to Pass Identity
 
@@ -62,6 +62,7 @@ Name = `<family>_<verb>`.  R = read, W = write (writes need `identity`).  Where:
 | `linear_*` | 196 | both | The Linear board as the identity's own app |
 | `fleetlink_*` | 15 | both | FleetLink shares and links |
 | `whatsapp_read` | 1 | hosted | The owner's WhatsApp messages;  JET-CHAT only, only while the bridge is enabled (default-off) |
+| `gr_*` | 7 | hosted | The git-relay actions, write-only (GitHub Tools section);  in the release source, not on the deployed server yet |
 
 ### zulip
 
@@ -210,14 +211,14 @@ GitHub work is not a simple-tools family.  It has its own relay and its own MCP
 
 **git-relay** is the relay:  a CLI (`git-relay serve`) and a small service in front of the GitHub API.  It knows each seat from its bearer token and picks the credential BY TASK.  **GR-MCP** is the MCP wrapper for it (`git-relay mcp`):  a stdio server that advertises itself as `GR-MCP`, holds only the seat's own bearer token, and forwards every call over HTTP, so policy, caps and the audit log stay server-side.
 
-A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement, so a seat may find the GitHub tools on its ST-MCP connection, while other seats run GR-MCP directly as its own stdio server.  ST-MCP does not carry them today:  its tool list has no `open_pr`, `edit_pr`, `reply_thread`, `comment_pr`, `merge_pr`, `workflow_dispatch` or `resolve_thread`, so a call made there answers `Unknown tool`.  The tool names are the same on every path that serves them.
+A seat reaches these tools with its own bearer token.  ST-MCP shares the same bearer-token arrangement:  a Grok Bot's bearer is also accepted on ST-MCP's `/mcp`, and another seat's bearer is accepted there only when it was minted with that acceptance ticked in ST-MCP + GR-MCP Admin;  otherwise it is GR-MCP only.  The hosted server fronts the seven actions below as write-only tools named `gr_open_pr`, `gr_edit_pr`, `gr_reply_thread`, `gr_comment_pr`, `gr_merge_pr`, `gr_workflow_dispatch` and `gr_resolve_thread`.  The Worker adds no policy of its own:  it passes the caller's bearer to the relay unchanged and the relay enforces the seat's allowlist.  Rollout is staged.  Today, before the Worker half ships, ST-MCP's live tool list does not carry them and a call there answers `Unknown tool`.  Once the Worker half ships, the seven names are always listed, and a call answers `not_configured` until the relay's upstream URL and its Access credential are set (it fails closed, with no fallback), then reaches the relay;  nothing here says either step has happened.  GR-MCP over stdio (`git-relay mcp`) uses the plain names in the table.
 
 | Tool | Credential | Purpose |
 |---|---|---|
 | `open_pr` | owner PR-only token | Open a pull request |
-| `edit_pr` | owner PR-only token | Change a pull request's title or body |
-| `reply_thread` | owner PR-only token | Reply inline to a review thread |
-| `comment_pr` | owner PR-only token | Post a top-level pull request comment |
+| `edit_pr` | the seat's own GitHub App | Change a pull request's title or body |
+| `reply_thread` | the seat's own GitHub App | Reply inline to a review thread |
+| `comment_pr` | the seat's own GitHub App | Post a top-level pull request comment |
 | `merge_pr` | the seat's own GitHub App | Merge (squash, merge or rebase) |
 | `workflow_dispatch` | the seat's own GitHub App | Dispatch a workflow run |
 | `resolve_thread` | the seat's own GitHub App | Resolve a review thread |
@@ -226,9 +227,9 @@ PR-write authoring runs under the owner's scoped PR-only token on purpose:  a pu
 
 Per-seat policy is an allowlist layer over that credential:  allowed actions, allowed repos, a mint-permission ceiling and an hourly call cap.  It can only narrow what the credential allows, never exceed it.  Every call, allowed or denied, is written to the audit log, and a non-idempotent write is gated by an outcome record, so a replay never lands twice.
 
-**Status.**  git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**:  there is no daemon, no launchd job, no seat pointed at it and no service host chosen yet.  Until the owner decides the cutover, the interim `gh` and shell path is the one that works.  Do not plan work that assumes the relay is live.
+**Status.**  git-relay and GR-MCP are implemented, policy-checked and tested, but **not deployed**:  no seat is pointed at it and no running service has been verified.  The owner has chosen the host and the rollout is staged;  until the owner decides the cutover, the relay is not an available route:  do not plan work that assumes it is live, and do not assume any other GitHub path or credential is available to a seat either.  What a seat may use today is whatever its own environment and owner have set up and verified.
 
-`mint_token` is deliberately not exposed over GR-MCP:  it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
+`mint_token` is deliberately not exposed over GR-MCP or fronted by ST-MCP:  it returns a raw credential, and a stdio transcript is too easy to capture.  A seat that needs a token for git-over-HTTPS calls the relay's HTTP API directly, where the answer goes only to that caller and the mint is capped the same way.
 
 A relay refusal arrives as a tool error carrying the relay's own HTTP status, never as one of the codes below:  401 unauthenticated, 403 policy denial, 400 a bad request or a terminal GitHub refusal, 409 a replay refused, 429 a GitHub rate limit (retryable), 502 an unknown outcome (not retryable — check GitHub before retrying) and 503 app-token minting unavailable.
 
@@ -320,7 +321,7 @@ Every MCP tool has a command except the hosted-only `whatsapp_read`, which has n
 | MCP server | `simple-chat mcp` (what an MCP client's config runs) |
 | FleetLink | `fleetlink` (`fleetlink tool NAME` runs any `fleetlink_*` tool;  stdio runs it that way) |
 | WhatsApp | None:  `whatsapp_read` is hosted only (the whatsapp section above), so no CLI command or stdio tool serves it |
-| GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio);  the relay is not deployed yet, so the interim `gh` path is the one that works today |
+| GitHub | `git-relay serve` (the relay) and `git-relay mcp` (GR-MCP over stdio);  the relay is not deployed yet, so it is not an available route today |
 
 Long text stays out of `argv`:  `--body-file PATH` (a file you own, mode 0600 or 0400, at most 64 KB) or `-` for standard input.
 

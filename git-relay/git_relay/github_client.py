@@ -154,7 +154,9 @@ class GitHubClient:
         )
         return {"number": data.get("number"), "url": data.get("html_url")}
 
-    def edit_pr(self, repo: str, number: int, title: str | None, body: str | None) -> dict:
+    def edit_pr(
+        self, repo: str, number: int, title: str | None, body: str | None, bearer=None
+    ) -> dict:
         self._check_repo(repo)
         payload: dict[str, str] = {}
         if title is not None:
@@ -163,21 +165,24 @@ class GitHubClient:
             payload["body"] = body
         if not payload:
             raise ValueError("edit_pr needs a title or a body")
-        data = self._call("PATCH", f"/repos/{repo}/pulls/{number}", payload)
+        data = self._call("PATCH", f"/repos/{repo}/pulls/{number}", payload, bearer=bearer)
         return {"number": data.get("number"), "url": data.get("html_url")}
 
-    def reply_thread(self, repo: str, number: int, comment_id: int, body: str) -> dict:
+    def reply_thread(self, repo: str, number: int, comment_id: int, body: str, bearer=None) -> dict:
         self._check_repo(repo)
         data = self._call(
             "POST",
             f"/repos/{repo}/pulls/{number}/comments",
             {"body": body, "in_reply_to": comment_id},
+            bearer=bearer,
         )
         return {"id": data.get("id"), "url": data.get("html_url")}
 
-    def comment_pr(self, repo: str, number: int, body: str) -> dict:
+    def comment_pr(self, repo: str, number: int, body: str, bearer=None) -> dict:
         self._check_repo(repo)
-        data = self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
+        data = self._call(
+            "POST", f"/repos/{repo}/issues/{number}/comments", {"body": body}, bearer=bearer
+        )
         return {"id": data.get("id"), "url": data.get("html_url")}
 
     def merge_pr(self, repo: str, number: int, method: str, bearer: str) -> dict:

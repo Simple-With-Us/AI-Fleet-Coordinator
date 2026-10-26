@@ -55,7 +55,7 @@
     {
       "name": "guide",
       "title": "Guide",
-      "description": "The simple-tools guide:  every tool by family, how to pass identity, which connection each client uses, the old-to-new name table, Apple Notes and the CLI equivalents.  Give section (a ## heading from the guide) for just that part;  a name that is not one lists the sections.  Also at https://fleetlink.online/agent-sync-tools-guide/.",
+      "description": "The simple-tools guide:  every tool by family, how to pass identity, which connection each client uses, the old-to-new name table, Apple Notes and the CLI equivalents.  Give section (a ## heading from the guide) for just that part;  a name that is not one lists the sections.  Also at https://fleetlink.online/simple-tools-guide/.",
       "inputSchema": {"type": "object", "additionalProperties": false, "properties": {"section": {"type": "string", "maxLength": 100, "description": "A section heading from the guide, matched without regard to case.  Omit it for the whole guide."}}},
       "outputSchema": {
         "type": "object",

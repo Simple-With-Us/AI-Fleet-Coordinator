@@ -28,3 +28,4 @@ scripts/safari-start/.wrangler/
 muster/Muster.xcodeproj/
 muster/.build/
 muster/dist/
+/.wrangler/

@@ -281,7 +281,7 @@ The eight notes tools (`notes_create`, `notes_update`, `notes_pin`, `notes_unpin
 4. Remove the retired relay binding:  `WRANGLER_SEND_METRICS=false npx --no-install wrangler secret delete NOTES_RELAY_CONSUMER`, with Step 1's credentials.  One binding goes and one comes, so the Worker's binding count does not change (see the FleetLink note below).  `sync_notes_consumer.py`, which copied that knob from Infisical, is gone.
 5. Deploy (step 1).  From a connected seat, `notes_list` with `{"limit": 3}` answers `done` with three titles while the Mac runner is up;  `queued` means the Operator took the request and the runner has not answered within 25 seconds (`notes_status` follows it from there).  A `not_configured` that names the signature means the two keys differ or the clocks are more than five minutes apart;  one that names `[notes_queue]` means the Operator has no `WORKER` key or the queue is off;  `forbidden` means the seat is not in `worker_seats`.  **Deployed Sat, Oct 24, 2026 at 12:08 AM** (version `7a5dec1e`, from `c2b4da0d`), with the Operator at `https://operator.jays.services`.  Checked from a connected CLAUDE seat:  `notes_create` answered `transport: operator`, and `notes_status` showed it `done` 40 seconds later.  The deploy dropped `ACCESS_AUD`, which had been a plain-text var, so it was put back as a secret (as DEPLOY-PHASE0.md says it is);  a later deploy leaves a secret alone.
 
-The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/agent-sync-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/agent_sync/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools (the notes tools went from five to eight).
+The `guide` tool serves `src/guide-text.js`, generated from `docs/protocols/simple-tools-guide.md`:  after editing that page run `node scripts/export-guide.mjs` (a test fails when it is stale).  `recall_*` specs are shared with the stdio server through `scripts/agent_sync/mcp/recall-tools.json`:  after changing `src/recall.js` run `node scripts/export-recall-tools.mjs`.  Clients that cache `tools/list` refresh the connector to see the new tools (the notes tools went from five to eight).
 
 ## AFC-477 second-event spike (temporary)
 
@@ -520,3 +520,40 @@ Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers
 - A persona with no credentials in the bindings cannot mint.
 - Leak paths to know: whoever holds an Access session for the admin email can mint; the page response is the only place the token appears.
 - Deploy is normal.  Nothing to configure first.
+
+## git-relay rollout (GR-MCP)
+
+The relay (`git-relay/`) ships as code, policy and tests only.  Nothing in this section has been run live yet:  no service is installed, no hostname, tunnel or Access resource exists for it, no Worker variable is set, and no seat is pointed at it.  Each step names its authority state;  "pending" means the owner's go has not been given as of this writing.
+
+### 1. Host
+
+The owner-chosen host is the Hetzner box (Oct 21).  A read-only check on Oct 25 found no cloudflared install and no git-relay unit, process or listener there yet.  The service needs Python 3.11+ and runs from a checkout with no install step:  `git-relay serve` (or `python3 -m git_relay.server`).  It binds `GIT_RELAY_HOST`:`GIT_RELAY_PORT` (default `127.0.0.1:8471`) and must not get a public port of its own.
+
+### 2. Reachability from the hosted Worker (pending owner yes)
+
+The Worker reaches the relay through `GR_UPSTREAM_URL` with a Cloudflare Access service credential (`GR_ACCESS_CLIENT_ID` / `GR_ACCESS_CLIENT_SECRET`).  The owner accepted this specific backend domain and Access layout on Oct 25 (nothing broader):  a public hostname `git-relay.simplewithus.com` (like the other MCP surfaces) fronted by a dedicated cloudflared tunnel on the Hetzner box, a DNS entry, and a dedicated Access service token;  the hostname is public but authentication-protected and the relay port stays private;  no paid changes.  The Access pair lives in the Worker-only Fleet-OPS folder `/gr-front` (the relay host never reads it);  the tunnel token lives in the host-only folder `/gr-tunnel` (the Worker never reads it);  the verify key stays at `/tools`.  Seats on tailnet machines can instead run GR-MCP over stdio (`git-relay mcp`) against the tailnet address, matching the original tailnet-only design note;  the hosted Worker front needs the protected public URL.  Until `GR_UPSTREAM_URL` and the Access pair are set, the Worker's seven `gr_*` tools answer `not_configured` (fail closed, no fallback).
+
+### 3. Runtime credentials (established patterns only)
+
+- `GITHUB_TOKEN`:  the owner's scoped PR-only PAT (the only credential the service holds).  Deliver it into the service environment at start with the host's existing Infisical pattern (a `fleet-secrets` read of the Fleet-OPS prod root entry), never into a file in the repo, a log line or a message.
+- `GH_APP_<SLUG>_ID` / `GH_APP_<SLUG>_PRIVATE_KEY`:  read per App through `fleet-secrets` from Fleet-OPS prod `/github-apps` (present today).  `fleet-secrets` must be on the service's PATH at startup, or App actions stay disabled (`GIT_RELAY_APP_MINT=0` forces that).
+- `GR_BEARER_VERIFY_KEY`:  read through `fleet-secrets` from Fleet-OPS prod `/tools` (present today).  The Worker side fetches the same key at runtime through its existing Infisical runtime pattern;  neither side keeps a persistent Cloudflare copy.
+- Audit and outcome paths (`GIT_RELAY_AUDIT_PATH`, `GIT_RELAY_OUTCOMES_PATH`) need a writable directory on the host;  both fail closed on write errors.
+
+### 4. Seat policy
+
+`GIT_RELAY_SEATS_JSON` comes from a reviewed file (or an audited Infisical write).  Initial shape, grounded in the owner's Oct 21-22 direction and the implemented dispatch (policy.py):  `open_pr` is the one action authored as the owner, so PRs open under the owner's name;  every other write - `edit_pr`, `reply_thread`, `comment_pr` included - runs under each seat's own App via a relay-minted token, along with `merge_pr`, `workflow_dispatch` and `resolve_thread`;  `app_slug` must be the seat's own bot.  Bearer values come from the ST-MCP + GR-MCP Admin page (one shared bearer per identity);  never invent or hand-write a bearer into the file.  Repos start at `Simple-With-Us/*`.
+
+### 5. Worker variables
+
+Set when step 2 lands:  `GR_UPSTREAM_URL` as a plain Worker var;  `GR_ACCESS_CLIENT_ID` / `GR_ACCESS_CLIENT_SECRET` are placed in Fleet-OPS `/gr-front` and read at runtime like the verify key - never put as Worker secrets, never at `/tools`.  `GR_BEARER_VERIFY_KEY` is read at runtime from `/tools`, not put as a Worker secret.  After deploy, `/admin` shows the GR section configured and a `gr_*` call answers from the relay instead of `not_configured`.
+
+### 6. Smoke check
+
+1. `GET /healthz` on the relay answers without auth.
+2. From a seat bearer:  `whoami`-equivalent against the Worker, then one low-risk `gr_*` read-only-adjacent call;  a policy denial is a pass if it is the expected seat.
+3. First real `gr_open_pr` creates one PR under the owner's account;  check the audit row landed with no title/body stored.
+
+### 7. Seat cutover
+
+Per seat, at its own pace:  mint or confirm its shared bearer on the admin page, point the seat at GR-MCP (stdio) or the Worker's `gr_*` tools, verify one action end to end, then retire that seat's interim AFC-460 shell/cache path.  The interim path stays working for seats that have not moved;  retiring it fleet-wide is its own owner decision.

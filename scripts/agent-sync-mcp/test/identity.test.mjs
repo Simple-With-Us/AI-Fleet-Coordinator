@@ -289,7 +289,7 @@ test("the instructions state the rule, the set and the families", () => {
   for (const identity of allowedIdentities("GROK-WEB")) assert.ok(text.includes(identity), identity);
   assert.match(text, /zulip_\*, linear_\*, recall_\*, notes_\*, fleetlink_\* and listener_\*/);
   assert.match(text, /Call guide for the full tools guide/);
-  assert.match(text, /fleetlink\.online\/agent-sync-tools-guide\//);
+  assert.match(text, /fleetlink\.online\/simple-tools-guide\//);
 });
 
 // ---------------------------------------------------------------- the per-identity gate
