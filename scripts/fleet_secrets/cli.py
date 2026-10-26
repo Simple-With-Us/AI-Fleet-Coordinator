@@ -36,6 +36,7 @@ from .core import SecretsError, UsageError
 USAGE = (
     "usage: fleet-secrets run [--path /] [--only NAME,NAME] -- CMD [ARG...]\n"
     "       fleet-secrets get NAME [NAME ...] [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
+    "       fleet-secrets get-verified NAME --path /folder   (fails unless the row proves its folder)\n"
     "       fleet-secrets names [--path /] [--project fleet-ops|ai-fleet-coordinator]\n"
     "       fleet-secrets set NAME --path /linear   (value on standard input;  CACHE_* names only)\n"
     "       fleet-secrets doctor [--json]\n"
@@ -133,6 +134,18 @@ def cmd_get(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
         out.write(secrets[names[0]])
     else:
         out.write(json.dumps({n: secrets[n] for n in names}))
+    out.flush()
+    return 0
+
+
+def cmd_get_verified(args: Sequence[str], env: Mapping[str, str], out: TextIO) -> int:
+    opts = _parse(args, False, 1)
+    name = core.check_name(str(opts["args"][0]))  # type: ignore[index]
+    path = core.check_path(str(opts["path"]))
+    if path == "/":
+        raise UsageError("get-verified needs an explicit --path:  the project root proves nothing")
+    value = core.fetch_verified(name, path, env)
+    out.write(value)
     out.flush()
     return 0
 
@@ -317,6 +330,8 @@ def main(
     try:
         if cmd == "get":
             return cmd_get(rest, env, out)
+        if cmd == "get-verified":
+            return cmd_get_verified(rest, env, out)
         if cmd == "names":
             return cmd_names(rest, env, out)
         if cmd == "set":

@@ -31,6 +31,7 @@ import shutil
 import subprocess
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -524,6 +525,89 @@ def _pairs(payload) -> dict[str, str]:
     return found
 
 
+# One raw-secret row is a few KB; 16 MiB of "secret" is an attack or a bug.
+MAX_VERIFIED_BYTES = 1024 * 1024
+
+
+def fetch_verified(
+    name: str,
+    path: str,
+    env: Mapping[str, str],
+    token: str | None = None,
+) -> str:
+    """One folder-PROVEN secret, through the REST raw-secret endpoint.
+
+    `fetch_all` cannot prove provenance:  the CLI export row's secretPath
+    comes back empty, and a token scoped to one folder silently clamps a
+    --path it cannot read to its own.  Here the ANSWER's own fields must
+    show the row came from exactly (Fleet-OPS, prod, `path`):  workspace,
+    environment, secretPath, secretKey, and type "shared" (a personal
+    override is exactly the shadow-precedence hazard).  Any missing or
+    mismatched field, a hidden or non-string value, an unresolved
+    reference, an oversized answer or a redirect fails closed.  The value
+    never appears in a message or a log;  errors name the key, the folder,
+    or the HTTP status only.  Exit 3 when the key is absent at that path.
+    """
+    refusal = environment_refusal(env)
+    if refusal:
+        raise SecretsError(refusal, 2)
+    check_name(name)
+    check_path(path)
+    project = infisical_project_id(env, home_dir(env))
+    if token is None:
+        # The CLI is only needed to mint a token,  so a caller that already
+        # has one does not need it on this host.
+        cli = find_cli(env)
+        if not cli:
+            raise SecretsError("cli-missing:  the infisical CLI is not installed", 4)
+        mode = auth_mode(env)
+        if mode == "session":
+            raise SecretsError(
+                "read-needs-machine-identity:  get-verified needs a machine identity "
+                "(keychain or INFISICAL_AUTOMATION_*) or INFISICAL_TOKEN",
+                4,
+            )
+        token = resolve_token(env, cli, mode)
+    query = urllib.parse.urlencode(
+        {"workspaceId": project, "environment": ENVIRONMENT, "secretPath": path}
+    )
+    status, answer = _api_json(
+        "GET",
+        "/v3/secrets/raw/{}?{}".format(urllib.request.quote(name, safe=""), query),
+        token,
+        None,
+        env,
+        max_bytes=MAX_VERIFIED_BYTES,
+    )
+    if status in (400, 404):
+        raise SecretsError(f"key {name} is not in Infisical at {path}", 3)
+    if status != 200:
+        detail = "unreachable" if status == 0 else f"status-{status}"
+        raise SecretsError(f"fetch-failed:  {detail} for {name} at {path}", 4)
+    if not isinstance(answer, dict):
+        raise SecretsError(f"fetch-failed:  bad-output for {name} at {path}", 4)
+    secret = answer.get("secret")
+    if not isinstance(secret, dict):
+        raise SecretsError(f"unverified-source:  no secret row for {name} at {path}", 4)
+    checks = (
+        ("secretKey", name),
+        ("secretPath", path),
+        ("workspace", project),
+        ("environment", ENVIRONMENT),
+        ("type", "shared"),
+    )
+    for field, want in checks:
+        if secret.get(field) != want:
+            raise SecretsError(f"unverified-source:  {name} at {path} ({field})", 4)
+    if "secretValueHidden" not in secret or secret["secretValueHidden"]:
+        raise SecretsError(f"unverified-source:  {name} at {path} (secretValueHidden)", 4)
+    value = secret.get("secretValue")
+    if not isinstance(value, str) or not value:
+        raise SecretsError(f"unverified-source:  {name} at {path} (secretValue)", 4)
+    reject_unresolved({name: value}, [name])
+    return value
+
+
 def reject_unresolved(secrets: Mapping[str, str], names: Iterable[str] | None = None) -> None:
     """Fail closed when a value is still an unresolved reference.  Names the key, never the value."""
     for key in sorted(names if names is not None else secrets):
@@ -564,13 +648,22 @@ def _opener() -> urllib.request.OpenerDirector:
 
 
 def _api_json(
-    method: str, path: str, token: str, body: dict | None, env: Mapping[str, str]
+    method: str,
+    path: str,
+    token: str,
+    body: dict | None,
+    env: Mapping[str, str],
+    max_bytes: int | None = None,
 ) -> tuple[int, object]:
     """One Infisical REST call.  The status and the parsed body,  never a message.
 
     The body comes back for the calls that have to read it,  like the folder create,
     whose 400 says whether the folder is already there or the request was wrong.  The
     token travels in a header, never in an argument list.
+
+    `max_bytes`, when set, bounds the socket read itself (not a post-read length
+    check):  an oversized answer fails closed as (0, None) without the body being
+    buffered whole.  Existing callers pass nothing and keep the unbounded read.
     """
     base = (env.get(ENV_API) or API_BASE).rstrip("/")
     data = json.dumps(body).encode("utf-8") if body is not None else None
@@ -584,17 +677,20 @@ def _api_json(
             "User-Agent": "fleet-secrets",
         },
     )
+    limit = None if max_bytes is None else max_bytes + 1
     try:
         with _opener().open(req, timeout=API_TIMEOUT) as resp:
-            raw = resp.read()
+            raw = resp.read(limit)
             status = resp.status
     except urllib.error.HTTPError as exc:
-        raw = exc.read()
+        raw = exc.read(limit)
         status = exc.code
     except (urllib.error.URLError, OSError, TimeoutError):
         return 0, None
     finally:
         data = None
+    if max_bytes is not None and len(raw) > max_bytes:
+        return 0, None
     try:
         return status, json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
