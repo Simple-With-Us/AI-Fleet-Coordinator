@@ -434,9 +434,7 @@ class ReleaseTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "~otheruser/Code"}):
             self.receive()
         text = (self.home / ".local/bin/lane").read_text()
-        self.assertIn(
-            "os.environ.setdefault('FLEET_CODE_ROOT', '~otheruser/Code')", text
-        )
+        self.assertIn("os.environ.setdefault('FLEET_CODE_ROOT', '~otheruser/Code')", text)
 
     def old_bundle(self):
         """A release as installed before AFC-331:  only the base files."""
