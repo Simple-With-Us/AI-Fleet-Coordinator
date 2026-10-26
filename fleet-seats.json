@@ -341,7 +341,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.gemini/skills",
             "names": [
-              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -361,6 +360,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -523,7 +523,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.claude/skills",
             "names": [
-              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -543,6 +542,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -721,7 +721,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.clutch/dsh/skills",
             "names": [
-              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -741,6 +740,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -903,7 +903,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.codex/skills",
             "names": [
-              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -923,6 +922,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -1120,7 +1120,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.cursor/skills",
             "names": [
-              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1140,6 +1139,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -1350,7 +1350,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.fx/skills",
             "names": [
-              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1370,6 +1369,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -1564,7 +1564,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.grok/skills",
             "names": [
-              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1584,6 +1583,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -1946,7 +1946,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.config/muse/skills",
             "names": [
-              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1966,6 +1965,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -2129,7 +2129,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.minimax/skills",
             "names": [
-              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -2149,6 +2148,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
