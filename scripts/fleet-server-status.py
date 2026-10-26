@@ -126,13 +126,12 @@ COOLIFY_TYPES = ("application", "service", "database", "standalone")
 
 def utc_now() -> str:
     """The time this report was made,  in the spelling the doctor uses."""
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def iso_from_timestamp(value: float) -> str:
-    return (
-        datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
-        .strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.fromtimestamp(value, datetime.UTC).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
     )
 
 
@@ -512,9 +511,7 @@ def watched_paths(code_root, limit=200):
     for repo in repos:
         found = []
         for root, directories, names in os.walk(repo, followlinks=False):
-            directories[:] = sorted(
-                name for name in directories if name not in SKIP_DIRECTORIES
-            )
+            directories[:] = sorted(name for name in directories if name not in SKIP_DIRECTORIES)
             for name in sorted(names):
                 path = Path(root) / name
                 if not is_watched(repo, path):
@@ -688,7 +685,9 @@ def write_report(path, document):
         os.chmod(path.parent, 0o700)
     except OSError:
         pass
-    handle, temporary = tempfile.mkstemp(prefix=".server-status.", suffix=".tmp", dir=str(path.parent))
+    handle, temporary = tempfile.mkstemp(
+        prefix=".server-status.", suffix=".tmp", dir=str(path.parent)
+    )
     try:
         os.fchmod(handle, 0o600)
         with os.fdopen(handle, "w") as output:
@@ -768,9 +767,7 @@ def main(argv=None):
 
     coolify = collect_coolify()
     processes = collect_processes(limit=args.process_limit, interval=args.cpu_interval)
-    files, found = collect_files(
-        args.code_root, previous_files(snapshot), limit=args.file_limit
-    )
+    files, found = collect_files(args.code_root, previous_files(snapshot), limit=args.file_limit)
     document = build_report(
         coolify,
         processes,
