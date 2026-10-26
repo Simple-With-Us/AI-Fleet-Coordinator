@@ -93,7 +93,7 @@ test("empty base is refused so a missing local file cannot wipe the fleet", () =
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a one-app document is refused over a multi-app remote", () => {
+test("a single-app base stays a single-app document", () => {
   const { dir, base, out } = fixture("afc-ios-versions-one-app-", {
     schemaVersion: 1,
     apps: { "com.socratictrade.ios": { marketingVersion: "1.0.68" } },
@@ -115,6 +115,56 @@ test("a one-app document is refused over a multi-app remote", () => {
   assert.equal(res.status, 0, res.stderr || res.stdout);
   const merged = JSON.parse(readFileSync(out, "utf8"));
   assert.deepEqual(Object.keys(merged.apps), ["com.socratictrade.ios"]);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("a version and build the remote already records is a no-op", () => {
+  const doc = JSON.parse(JSON.stringify(FLEET));
+  doc.apps["com.socratictrade.ios"].build = "202608250045";
+  const { dir, base } = fixture("afc-ios-versions-noop-", doc);
+  const res = run(
+    [
+      "--bundle-id",
+      "com.socratictrade.ios",
+      "--version",
+      "1.0.68",
+      "--build",
+      "202608250045",
+      "--base-json",
+      base,
+      "--skip-local-write",
+    ],
+    { GH_TOKEN: "", GITHUB_TOKEN: "" },
+  );
+  // The check runs before the credential is resolved, so a ship with nothing
+  // to publish needs no token, reaches no network, and leaves no pull request.
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  assert.match(res.stdout, /already recorded/);
+  assert.doesNotMatch(res.stdout, /pull/);
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("the same version with a new build is NOT a no-op", () => {
+  const doc = JSON.parse(JSON.stringify(FLEET));
+  doc.apps["com.socratictrade.ios"].build = "202608250045";
+  const { dir, base } = fixture("afc-ios-versions-newbuild-", doc);
+  const res = run(
+    [
+      "--bundle-id",
+      "com.socratictrade.ios",
+      "--version",
+      "1.0.68",
+      "--build",
+      "202608259999",
+      "--base-json",
+      base,
+      "--skip-local-write",
+    ],
+    { GH_TOKEN: "", GITHUB_TOKEN: "ghs_notarealtoken" },
+  );
+  // It got past the no-op check and reached the credential, which is refused.
+  assert.notEqual(res.status, 0);
+  assert.match(res.stderr, /GITHUB_TOKEN cannot write to/);
   rmSync(dir, { recursive: true, force: true });
 });
 
