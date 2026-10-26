@@ -257,11 +257,15 @@ class HoldGuardTests(unittest.TestCase):
         self.assertFalse(h["needs_reapply"])
 
     def test_gh_json_timeout_exits_124(self):
-        with mock.patch.object(
-            subprocess,
-            "run",
-            side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30),
-        ), contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as cm:
+        with (
+            mock.patch.object(
+                subprocess,
+                "run",
+                side_effect=subprocess.TimeoutExpired(cmd="gh", timeout=30),
+            ),
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(SystemExit) as cm,
+        ):
             hold_guard.gh_json(["api", "repos/o/r"])
         self.assertEqual(cm.exception.code, 124)
 
