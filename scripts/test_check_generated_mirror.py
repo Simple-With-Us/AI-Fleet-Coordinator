@@ -7,6 +7,7 @@ Every case builds a throwaway git repository in a temp directory:  a base commit
 working-tree edits, which is exactly what the CI step sees (a checkout of the merge commit against the base sha).
 Nothing reads the network, ~/apps or a real checkout.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -28,7 +29,7 @@ def _load():
     loader = importlib.machinery.SourceFileLoader("check_generated_mirror", str(SCRIPT))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     mod = importlib.util.module_from_spec(spec)
-    sys.modules[loader.name] = mod       # @dataclass looks its module up here
+    sys.modules[loader.name] = mod  # @dataclass looks its module up here
     loader.exec_module(mod)
     return mod
 
@@ -37,8 +38,10 @@ gm = _load()
 
 # The exact line scripts/handbook/build.mjs headerLine() writes in Fleet-OPS (copied from its source, with the hash
 # slot filled by header()).  If the generator's wording changes, this fixture and HEADER_RE change together.
-GENERATOR_LINE = ("<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  "
-                  "body-sha256:{sha} -->")
+GENERATOR_LINE = (
+    "<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  "
+    "body-sha256:{sha} -->"
+)
 
 BODY = "# AGENT-SYNC\n\nOne rule.  Another rule.\n"
 OPS_BODY = "# AGENT-SYNC\n\nOPS and Fleet-OPS are listed here.\n"
@@ -69,17 +72,37 @@ class RepoCase(unittest.TestCase):
         self.tmp.cleanup()
 
     def git(self, *args: str) -> str:
-        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
-               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid",
-               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
-        done = subprocess.run(["git", "-C", str(self.root), *args], capture_output=True, text=True, env=env, check=True)
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        }
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(self.root), *args],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            sys.exit(124)
+        except FileNotFoundError:
+            sys.exit(127)
         return done.stdout.strip()
 
     def write(self, text: str, path: str | None = None) -> None:
         target = self.root / (path or self.PATH)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(text.encode())
-        self.git("add", "-A")      # the check diffs the base against the working tree, which sees staged new files
+        self.git(
+            "add", "-A"
+        )  # the check diffs the base against the working tree, which sees staged new files
 
     def commit_base(self, text: str | None) -> str:
         if text is not None:
@@ -91,11 +114,13 @@ class RepoCase(unittest.TestCase):
         self.base_sha = self.git("rev-parse", "HEAD")
         return self.base_sha
 
-    def spec(self, pin: str | None = None) -> "gm.GeneratedPath":
+    def spec(self, pin: str | None = None) -> gm.GeneratedPath:
         return gm.GeneratedPath(self.PATH, pin)
 
     def run_check(self, pin: str | None = None, *, base: bool = False, branch: str | None = None):
-        problems, notes = gm.check(self.root, (self.spec(pin),), self.base_sha if base else None, branch)
+        problems, notes = gm.check(
+            self.root, (self.spec(pin),), self.base_sha if base else None, branch
+        )
         return [m for _, m in problems], notes
 
 
@@ -148,10 +173,10 @@ class ContentRules(RepoCase):
         good = GENERATOR_LINE.format(sha=sha(BODY))
         bad_lines = [
             good.replace("Fleet-OPS", "Other-Repo"),
-            good.replace(".  Do not", ". Do not"),                       # one space, not two
-            good.replace(sha(BODY), sha(BODY).upper()),                  # uppercase hex
-            good.replace(sha(BODY), sha(BODY)[:63]),                     # 63 digits
-            good + " ",                                                   # trailing space
+            good.replace(".  Do not", ". Do not"),  # one space, not two
+            good.replace(sha(BODY), sha(BODY).upper()),  # uppercase hex
+            good.replace(sha(BODY), sha(BODY)[:63]),  # 63 digits
+            good + " ",  # trailing space
             good.replace("<!-- GENERATED", "<!--  GENERATED"),
             good.replace(" -->", " -->  trailing"),
         ]
@@ -173,7 +198,9 @@ class ContentRules(RepoCase):
 
     def test_crlf_after_the_header_fails(self) -> None:
         self.commit_base(None)
-        self.root.joinpath(self.PATH).write_bytes(GENERATOR_LINE.format(sha=sha(BODY)).encode() + b"\r\n" + BODY.encode())
+        self.root.joinpath(self.PATH).write_bytes(
+            GENERATOR_LINE.format(sha=sha(BODY)).encode() + b"\r\n" + BODY.encode()
+        )
         problems, _ = self.run_check()
         self.assertEqual(len(problems), 1)
         self.assertIn("not the generator's line", problems[0])
@@ -183,12 +210,15 @@ class ContentRules(RepoCase):
         body = "café — line\r\nsecond\r\n"
         raw = body.encode()
         self.root.joinpath(self.PATH).write_bytes(
-            GENERATOR_LINE.format(sha=hashlib.sha256(raw).hexdigest()).encode() + b"\n" + raw)
+            GENERATOR_LINE.format(sha=hashlib.sha256(raw).hexdigest()).encode() + b"\n" + raw
+        )
         self.assertEqual(self.run_check()[0], [])
 
     def test_header_with_no_body_fails(self) -> None:
         self.commit_base(None)
-        self.root.joinpath(self.PATH).write_bytes(GENERATOR_LINE.format(sha=sha("")).encode() + b"\n")
+        self.root.joinpath(self.PATH).write_bytes(
+            GENERATOR_LINE.format(sha=sha("")).encode() + b"\n"
+        )
         self.assertIn("no body", self.run_check()[0][0])
         self.root.joinpath(self.PATH).write_bytes(GENERATOR_LINE.format(sha=sha("")).encode())
         self.assertIn("no body", self.run_check()[0][0])
@@ -202,7 +232,9 @@ class ContentRules(RepoCase):
     def test_the_real_pin_is_the_imported_text(self) -> None:
         spec = gm.GENERATED_PATHS[0]
         self.assertEqual(spec.path, "AGENT-SYNC.md")
-        self.assertEqual(spec.pre_flip_sha256, "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef")
+        self.assertEqual(
+            spec.pre_flip_sha256, "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef"
+        )
 
 
 class BranchRule(RepoCase):
@@ -230,13 +262,20 @@ class BranchRule(RepoCase):
     def test_a_fork_cannot_borrow_the_mirror_branch_name(self) -> None:
         self.commit_base(mirror())
         self.write(mirror(BODY + "From a fork.\n"))
-        problems, _ = self.run_check(base=True, branch="fork:someone/AI-Fleet-Coordinator:handbook-sync/mirror")
+        problems, _ = self.run_check(
+            base=True, branch="fork:someone/AI-Fleet-Coordinator:handbook-sync/mirror"
+        )
         self.assertEqual(len(problems), 1)
 
     def test_a_similar_branch_name_is_not_the_mirror_branch(self) -> None:
         self.commit_base(mirror())
         self.write(mirror(BODY + "Near miss.\n"))
-        for name in ("handbook-sync/mirror2", "handbook-sync", "Handbook-Sync/Mirror", "x/handbook-sync/mirror"):
+        for name in (
+            "handbook-sync/mirror2",
+            "handbook-sync",
+            "Handbook-Sync/Mirror",
+            "x/handbook-sync/mirror",
+        ):
             with self.subTest(branch=name):
                 self.assertEqual(len(self.run_check(base=True, branch=name)[0]), 1)
 
@@ -246,7 +285,7 @@ class BranchRule(RepoCase):
 
     def test_first_header_from_a_feature_branch_fails(self) -> None:
         self.commit_base(BODY)
-        self.write(mirror(BODY))      # strips nothing but adds a valid header by hand
+        self.write(mirror(BODY))  # strips nothing but adds a valid header by hand
         problems, _ = self.run_check(pin=sha(BODY), base=True, branch="claude/flip-it-myself")
         self.assertEqual(len(problems), 1)
         self.assertIn("only the sync job's mirror pull request", problems[0])
@@ -271,7 +310,7 @@ class BranchRule(RepoCase):
         # later mirror PR drop the GENERATED header from main while CI reports success.  The mirror-branch strip
         # check fires regardless of those exemptions.
         self.commit_base(mirror())
-        self.write(BODY)             # the pinned pre-flip text, no header
+        self.write(BODY)  # the pinned pre-flip text, no header
         problems, _ = self.run_check(pin=sha(BODY), base=True, branch="handbook-sync/mirror")
         # the only problem is the strip:  rule 1 accepts the pinned bytes, rule 3 exempts the mirror branch
         self.assertEqual(len(problems), 1)
@@ -281,7 +320,7 @@ class BranchRule(RepoCase):
         # Same shape, but the unheadered head is not the pinned text.  Both rule 1 and the strip rule fire, and
         # the strip rule's message is in the output.
         self.commit_base(mirror())
-        self.write(BODY + "An extra line.\n")      # not the pin, so rule 1 also fires
+        self.write(BODY + "An extra line.\n")  # not the pin, so rule 1 also fires
         problems, _ = self.run_check(pin=sha(BODY), base=True, branch="handbook-sync/mirror")
         self.assertEqual(len(problems), 2)
         self.assertTrue(any("strips the GENERATED header" in m for m in problems))
@@ -372,6 +411,103 @@ class BranchRule(RepoCase):
         self.assertEqual([p for p, _ in problems], ["docs/guide.md"])
 
 
+class RenameInFlight(RepoCase):
+    """A mirror being renamed:  exactly one of the two names exists, and only the mirror branch may move it."""
+
+    OLD = "OLD-NAME.md"
+    NEW = "NEW-NAME.md"
+
+    def pair(self):
+        return (
+            gm.GeneratedPath(self.OLD, None, alternate=self.NEW),
+            gm.GeneratedPath(self.NEW, None, alternate=self.OLD),
+        )
+
+    def run_pair(self, *, base: bool = False, branch: str | None = None):
+        problems, notes = gm.check(self.root, self.pair(), self.base_sha if base else None, branch)
+        return [m for _, m in problems], notes
+
+    def remove(self, path: str) -> None:
+        (self.root / path).unlink()
+        self.git("add", "-A")
+
+    def test_the_old_name_alone_is_fine_and_the_new_name_is_noted_as_absent(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.commit_base(None)
+        problems, notes = self.run_pair(base=True, branch="claude/anything")
+        self.assertEqual(problems, [])
+        self.assertTrue(any(self.NEW in n and "rename in flight" in n for n in notes), notes)
+
+    def test_the_new_name_alone_is_fine_after_the_move(self) -> None:
+        self.write(mirror(), self.NEW)
+        self.commit_base(None)
+        problems, _ = self.run_pair(base=True, branch="claude/anything")
+        self.assertEqual(problems, [])
+
+    def test_neither_name_fails(self) -> None:
+        self.commit_base(None)
+        problems, _ = self.run_pair()
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(all("a generated path must exist" in m for m in problems))
+
+    def test_both_names_fail(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.write(mirror(), self.NEW)
+        self.commit_base(None)
+        problems, _ = self.run_pair()
+        self.assertTrue(problems)
+        self.assertTrue(all("exactly one of the two may exist" in m for m in problems), problems)
+
+    def test_the_mirror_branch_moves_the_document(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.commit_base(None)
+        self.remove(self.OLD)
+        self.write(mirror(BODY + "Moved.\n"), self.NEW)
+        problems, _ = self.run_pair(base=True, branch="handbook-sync/mirror")
+        self.assertEqual(problems, [])
+
+    def test_the_mirror_branch_adding_the_new_name_without_deleting_the_old_fails(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.commit_base(None)
+        self.write(mirror(BODY + "Moved.\n"), self.NEW)
+        problems, _ = self.run_pair(base=True, branch="handbook-sync/mirror")
+        self.assertTrue(problems)
+        self.assertTrue(all("exactly one of the two may exist" in m for m in problems), problems)
+
+    def test_an_ordinary_branch_cannot_put_a_headered_copy_under_the_new_name(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.commit_base(None)
+        self.remove(self.OLD)
+        self.write(mirror(), self.NEW)
+        problems, _ = self.run_pair(base=True, branch="claude/hand-move")
+        self.assertTrue(problems)
+        self.assertTrue(any("not 'handbook-sync/mirror'" in m for m in problems), problems)
+
+    def test_an_ordinary_branch_cannot_delete_the_old_name(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.write(
+            mirror(), self.NEW
+        )  # (cannot exist together on main;  the base here only sets up the deletion)
+        self.commit_base(None)
+        self.remove(self.OLD)
+        problems, _ = self.run_pair(base=True, branch="claude/delete")
+        self.assertTrue(any("not 'handbook-sync/mirror'" in m for m in problems), problems)
+
+    def test_the_mirror_branch_may_not_touch_other_paths_during_the_move(self) -> None:
+        self.write(mirror(), self.OLD)
+        self.commit_base(None)
+        self.remove(self.OLD)
+        self.write(mirror(), self.NEW)
+        self.write("other\n", "README.md")
+        problems, _ = self.run_pair(base=True, branch="handbook-sync/mirror")
+        self.assertTrue(any("may change generated paths only" in m for m in problems), problems)
+
+    def test_the_shipped_list_names_both_during_the_rename(self) -> None:
+        shipped = {s.path: s.alternate for s in gm.GENERATED_PATHS}
+        self.assertEqual(shipped.get("AGENT-SYNC.md"), "FLEET-PROTOCOL.md")
+        self.assertEqual(shipped.get("FLEET-PROTOCOL.md"), "AGENT-SYNC.md")
+
+
 class CommandLine(RepoCase):
     def run_main(self, *argv: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
@@ -391,11 +527,15 @@ class CommandLine(RepoCase):
         self.commit_base(None)
         self.write(mirror())
         code, out, _ = self.run_main()
-        self.assertEqual((code, out.startswith("ok: AGENT-SYNC.md: GENERATED header valid")), (0, True))
+        self.assertEqual(
+            (code, out.startswith("ok: AGENT-SYNC.md: GENERATED header valid")), (0, True)
+        )
         self.write(header(BODY) + BODY + "Hand edit.\n")
         code, out, _ = self.run_main()
         self.assertEqual(code, 1)
-        self.assertTrue(out.startswith("error: AGENT-SYNC.md: the body does not match its header"), out)
+        self.assertTrue(
+            out.startswith("error: AGENT-SYNC.md: the body does not match its header"), out
+        )
 
     def test_github_annotation_only_in_actions(self) -> None:
         self.commit_base(None)

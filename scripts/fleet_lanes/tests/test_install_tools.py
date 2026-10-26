@@ -477,6 +477,64 @@ class ProbeTests(unittest.TestCase):
 # --------------------------------------------------------------------------- merge (pure)
 
 
+class PathsTests(unittest.TestCase):
+    def test_the_apps_folder_defaults_under_the_home(self) -> None:
+        p = T.make_paths("/h", env={})
+        self.assertEqual(p.apps_dir, "/h/apps")
+        self.assertEqual(p.stable, "/h/apps/lane-tools")
+        self.assertEqual(p.lane_shim, "/h/apps/lane")
+
+    def test_the_apps_root_from_the_environment(self) -> None:
+        """A server host keeps the apps folder on a volume and links no ~/apps into the home."""
+        p = T.make_paths("/h", env={"FLEET_APPS_ROOT": "/srv/fleet/apps"})
+        self.assertEqual(p.apps_dir, "/srv/fleet/apps")
+        self.assertEqual(p.stable, "/srv/fleet/apps/lane-tools")
+        self.assertEqual(p.lane_shim, "/srv/fleet/apps/lane")
+
+    def test_a_tilde_apps_root_expands_against_the_home(self) -> None:
+        self.assertEqual(T.make_paths("/h", env={"FLEET_APPS_ROOT": "~/v/apps"}).apps_dir, "/h/v/apps")
+        self.assertEqual(T.make_paths("/h", env={"FLEET_APPS_ROOT": "rel/apps"}).apps_dir, "/h/rel/apps")
+
+    def test_an_explicit_stable_dir_still_wins(self) -> None:
+        p = T.make_paths("/h", "/srv/lane-tools", env={"FLEET_APPS_ROOT": "/srv/fleet/apps"})
+        self.assertEqual(p.stable, "/srv/lane-tools")
+
+    def test_the_host_apps_root_follows_the_home_when_it_has_one(self) -> None:
+        """A host that keeps its apps folder in the home keeps it there."""
+        with tempfile.TemporaryDirectory() as home:
+            os.mkdir(os.path.join(home, "apps"))
+            p = T.host_paths(home, env={})
+            self.assertEqual(p.apps_dir, os.path.join(home, "apps"))
+            self.assertEqual(p.stable, os.path.join(home, "apps", "lane-tools"))
+
+    def test_the_host_apps_root_falls_back_to_the_volume_the_host_names(self) -> None:
+        """A server host keeps the apps folder on a volume and links no ~/apps into the home.
+
+        An install there must write to the volume, not create a second apps folder under
+        the home:  the owner asked for the /root alias to be gone for good.  The volume's
+        path is named by the host in the environment, so it is not in this repository.
+        """
+        with tempfile.TemporaryDirectory() as home:
+            with tempfile.TemporaryDirectory() as volume:
+                apps = os.path.join(volume, "apps")
+                os.makedirs(apps)
+                p = T.host_paths(home, env={"FLEET_SERVER_VOLUME": volume})
+                self.assertEqual(p.apps_dir, apps)
+                self.assertEqual(p.stable, os.path.join(apps, "lane-tools"))
+
+    def test_a_host_that_names_no_volume_keeps_the_copy_under_the_home(self) -> None:
+        """Without a named volume there is no volume, so the home copy is the only folder."""
+        with tempfile.TemporaryDirectory() as home:
+            p = T.host_paths(home, env={})
+            self.assertEqual(p.apps_dir, os.path.join(home, "apps"))
+            self.assertEqual(p.stable, os.path.join(home, "apps", "lane-tools"))
+
+    def test_a_configured_apps_root_wins_over_the_volume(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            p = T.host_paths(home, env={"FLEET_APPS_ROOT": "/srv/fleet/apps"})
+            self.assertEqual(p.apps_dir, "/srv/fleet/apps")
+
+
 class MergeTests(unittest.TestCase):
     P = T.make_paths("/h")
 
@@ -1617,6 +1675,22 @@ class CliTests(World):
         self.assertIn("Write/probe-placeholder/deny/hook-env", text)
         self.assertIn("FAIL  claude", text)  # the failures it provoked are printed
         self.assertNotIn("self-test FAIL", text)
+
+    def test_the_self_test_stays_inside_its_fake_home(self) -> None:
+        # A server host keeps the apps folder on a volume, and the self-test must never touch it:
+        # it writes a whole install, so a path that resolved to the host's apps folder would
+        # write into production (Sentry's finding on AFC-541).
+        with tempfile.TemporaryDirectory() as outside:
+            marker = os.path.join(outside, "lane-tools")
+            os.makedirs(marker)
+            with mock.patch.dict(os.environ, {"FLEET_SERVER_VOLUME": outside}):
+                lines: list[str] = []
+                rc = T.self_test(lines.append, timeout=TIMEOUT, minimal_path=False, source=self.source)
+            text = "\n".join(lines)
+            self.assertEqual(rc, 0, text)
+            self.assertIn("self-test PASS", text)
+            self.assertEqual(os.listdir(outside), ["lane-tools"],
+                             "the self-test wrote into the host's apps folder")
 
     def test_self_test_reports_a_verify_that_cannot_fail(self) -> None:
         # if verify never failed, the self-test must say so instead of passing

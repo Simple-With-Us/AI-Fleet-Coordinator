@@ -363,13 +363,20 @@ def main() -> int:
 
     digest = (ROOT / "scripts" / "build-fleet-daily-digest.py").read_text()
     public_repos = set(PUBLIC_REPOS)
-    agent_sync = (ROOT / "AGENT-SYNC.md").read_text()
-    live_sync = APPS / "AGENT-SYNC.md"
+    # The document is being renamed:  read whichever name exists (the mirror and the live copy each hold one or, for the
+    # live copy during the move, both with the same text).  Remove the old name when the rename is complete.
+    doc_names = ("FLEET-PROTOCOL.md", "AGENT-SYNC.md")
+    agent_sync = next(
+        (ROOT / n for n in doc_names if (ROOT / n).is_file()), ROOT / doc_names[0]
+    ).read_text()
+    live_sync = next((APPS / n for n in doc_names if (APPS / n).is_file()), APPS / doc_names[0])
     live_checks = APPS.is_dir() if _board_home_env else live_sync.is_file()
     if _board_home_env and not live_checks:
         errors.append(f"FLEET_BOARD_HOME is not a directory: {APPS}")
     elif not live_checks:
-        print(f"note: live copy checks skipped (no FLEET_BOARD_HOME, {APPS} has no AGENT-SYNC.md)")
+        print(
+            f"note: live copy checks skipped (no FLEET_BOARD_HOME, {APPS} has no AGENT-SYNC.md or FLEET-PROTOCOL.md)"
+        )
 
     for app in apps:
         repo = app["repo"]

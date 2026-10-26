@@ -36,7 +36,7 @@ Read-only survey.  Nothing was installed, started, stopped, edited or executed b
 
 - `systemctl list-timers --all` (27 timers) and the full custom unit list under `/etc/systemd/system` (34 units, of which 29 are fleet-owned).
 - The unit files themselves (`systemctl cat` equivalent, read directly), for: `fleet-deploy-guard@`, `fleet-health-recover@`, `fleet-housekeep`, `fleet-tools-doctor`, `fleet-cli-git-update`, `code-main-sync`, `codex-operator-coordination-check`, `usage-monitor-replica-status`, `box-disk-hygiene`, `lane-auto-retire`, `ct-deploy-guard`, `ct-deploy-overlap`, `congress-health-recover`, `afc-jet-operator-wake@`, `afc-wa-bridge`, `clutch-chat-bridge`, `claude-remote-control`, `codex-tmux-boot`, `opencode-server`.
-- Every file in `/etc/cron.d/` (9 active files; 8 backup copies of `fleet-backups` also present and **not** active).
+- Every file in `/etc/cron.d/` (9 active files; 8 backup copies of `fleet-backups` also present and **not** active).  **The host has no root crontab**: `/var/spool/cron/crontabs/` is empty, confirmed Oct 26, 2026 under OPS-1000, so SRV-C09 was inferred from the Shellular runtime rather than read from a crontab file.
 - `/usr/local/bin/`, `/usr/local/sbin/`, `/root/.local/bin/`, `/root/apps/`, the volume's `Code/` directory, `/root/.local/share/fleet-cli/`.
 - Secret **names** only, read by `cut -d= -f1` over the environment files (`/etc/congress-health-recover.env`, `/etc/fleet-housekeep.env`, `/etc/fleet-deploy-guard.d/*.env`, `/etc/fleet-health-recover.d/*.env`).  No secret value was read, printed or stored.
 
