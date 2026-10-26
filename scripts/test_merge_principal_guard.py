@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Exercise the actual principal guard without external writes."""
+
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
+
 from test_auto_merge_reusable import step_script
 
 
@@ -13,13 +15,23 @@ class PrincipalGuard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             gh = root / "gh"
-            gh.write_text('#!/bin/sh\n[ "$FAKE_FAIL" = 1 ] && exit 1\nprintf "%s\\n" "$FAKE_ACTOR"\n')
+            gh.write_text(
+                '#!/bin/sh\n[ "$FAKE_FAIL" = 1 ] && exit 1\nprintf "%s\\n" "$FAKE_ACTOR"\n'
+            )
             gh.chmod(0o755)
-            env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
-                       EXPECTED_MERGE_ACTOR=expected, FAKE_ACTOR=actual,
-                       FAKE_FAIL="1" if fail else "0")
-            return subprocess.run(["bash", "-c", step_script("Require the configured bot principal before arming")],
-                                  env=env, capture_output=True, text=True)
+            env = dict(
+                os.environ,
+                PATH=f"{root}:{os.environ['PATH']}",
+                EXPECTED_MERGE_ACTOR=expected,
+                FAKE_ACTOR=actual,
+                FAKE_FAIL="1" if fail else "0",
+            )
+            return subprocess.run(
+                ["bash", "-c", step_script("Require the configured bot principal before arming")],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
 
     def test_exact_bot(self):
         self.assertEqual(self.run_guard("swu-wise[bot]", "swu-wise[bot]").returncode, 0)
@@ -44,11 +56,11 @@ class PrincipalGuard(unittest.TestCase):
 
 
 class DisarmPrincipal(unittest.TestCase):
-    def run_disarm(self, actor='github-actions[bot]', mode='ok'):
+    def run_disarm(self, actor="github-actions[bot]", mode="ok"):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            gh = root / 'gh'
-            gh.write_text('''#!/bin/bash
+            gh = root / "gh"
+            gh.write_text("""#!/bin/bash
 printf '%s\\n' "$*" >> "$CALLS"
 case "$*" in
   api*) [ "$MODE" = api_failure ] && exit 1; printf '%s\\n' "$ACTOR" ;;
@@ -64,45 +76,63 @@ case "$*" in
     exit 0 ;;
   *) exit 1 ;;
 esac
-''')
+""")
             gh.chmod(0o755)
-            env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
-                       ACTOR=actor, MODE=mode, CALLS=str(root/'calls'),
-                       DONE=str(root/'done'), GH_TOKEN='repository-token',
-                       PR_URL='https://github.com/example/repo/pull/1', REASON='hold')
-            result = subprocess.run(['bash', '-c', step_script('Disable any armed auto-merge (inline port of disable-pr-automerge.sh)')], env=env, capture_output=True, text=True)
-            return result.returncode, (root/'calls').read_text()
+            env = dict(
+                os.environ,
+                PATH=f"{root}:{os.environ['PATH']}",
+                ACTOR=actor,
+                MODE=mode,
+                CALLS=str(root / "calls"),
+                DONE=str(root / "done"),
+                GH_TOKEN="repository-token",
+                PR_URL="https://github.com/example/repo/pull/1",
+                REASON="hold",
+            )
+            result = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    step_script(
+                        "Disable any armed auto-merge (inline port of disable-pr-automerge.sh)"
+                    ),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            return result.returncode, (root / "calls").read_text()
 
     def test_repository_bot_disarms_and_verifies(self):
         code, calls = self.run_disarm()
         self.assertEqual(code, 0)
-        self.assertIn('pr merge --disable-auto', calls)
-        self.assertEqual(calls.count('pr view'), 2)
+        self.assertIn("pr merge --disable-auto", calls)
+        self.assertEqual(calls.count("pr view"), 2)
 
     def test_personal_and_other_bot_never_write(self):
-        for actor in ['jaywedgeworth22', 'swu-wise[bot]', '']:
+        for actor in ["jaywedgeworth22", "swu-wise[bot]", ""]:
             code, calls = self.run_disarm(actor)
             self.assertNotEqual(code, 0)
-            self.assertNotIn('pr merge', calls)
-            self.assertNotIn('pr view', calls)
+            self.assertNotIn("pr merge", calls)
+            self.assertNotIn("pr view", calls)
 
     def test_unverified_never_writes(self):
-        code, calls = self.run_disarm(mode='api_failure')
+        code, calls = self.run_disarm(mode="api_failure")
         self.assertNotEqual(code, 0)
-        self.assertNotIn('pr merge', calls)
+        self.assertNotIn("pr merge", calls)
 
     def test_already_off_never_writes(self):
-        code, calls = self.run_disarm(mode='off')
+        code, calls = self.run_disarm(mode="off")
         self.assertEqual(code, 0)
-        self.assertNotIn('pr merge', calls)
+        self.assertNotIn("pr merge", calls)
 
     def test_denied_and_unreadable_fail(self):
-        for mode in ['denied', 'unreadable']:
+        for mode in ["denied", "unreadable"]:
             code, _ = self.run_disarm(mode=mode)
             self.assertNotEqual(code, 0)
 
     def test_lost_response_readback(self):
-        self.assertEqual(self.run_disarm(mode='response_lost')[0], 0)
+        self.assertEqual(self.run_disarm(mode="response_lost")[0], 0)
 
 
 if __name__ == "__main__":
