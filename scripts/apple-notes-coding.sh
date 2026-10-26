@@ -1096,10 +1096,17 @@ def inline(s: str) -> str:
         return "\x00code" + str(len(code_spans) - 1) + "\x00"
     s = re.sub(r"`[^`]+`", hold_code_span, s)
     # Notes.app is an HTML renderer — two ASCII spaces collapse.
-    # Sentence gap in HTML is the numeric reference `&#160; ` + space.
-    # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference renders
-    # as a real U+00A0 in Notes and adds no raw non-ASCII byte to the note HTML.
-    s = re.sub(r"([.!?]) {2,}", r"\1&#160; ", s)
+    # Sentence gap in HTML is the numeric reference for a NARROW NO-BREAK SPACE, `&#8239; ` + space.
+    # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
+    # raw non-ASCII byte to the note HTML.
+    # AFC-552:  the character the reference names decides whether the gap arrives.  Apple Notes
+    # normalises a NO-BREAK space away on import, so `&#160; ` came back as two ordinary spaces,
+    # which the renderer collapses to one, and the gap never reached the note at all.  The NARROW
+    # NO-BREAK SPACE survives the import unchanged.  Measured Oct 26, 2026 by writing ten candidate
+    # mechanisms into a real note and reading them back:  the no-break space, the named entity
+    # and two of them all come back as ordinary spaces, and the narrow no-break, en, em, thin and
+    # ideographic spaces all come back as themselves.
+    s = re.sub(r"([.!?]) {2,}", r"\1&#8239; ", s)
     s = re.sub(r"\x00code(\d+)\x00", lambda m: code_spans[int(m.group(1))], s)
     # links [text](url) — after escape brackets still match
     s = re.sub(
@@ -1316,9 +1323,13 @@ PY
 }
 
 # Notes.app collapses ASCII double spaces.  Turn leftover `.  ` / `!  ` / `?  `
-# into `&#160; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
-# Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference renders as
-# a real U+00A0 in Notes and adds no raw non-ASCII byte to the note HTML.
+# into `&#8239; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
+# Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
+# raw non-ASCII byte to the note HTML.
+# AFC-552:  the character the reference names decides whether the gap arrives.  Apple Notes
+# normalises a NO-BREAK space away on import, so `&#160; ` came back as two ordinary spaces,
+# which the renderer collapses to one, and the gap never reached the note at all.  The NARROW
+# NO-BREAK SPACE survives the import unchanged.
 # A sentence that ends INSIDE inline markup puts the closing tag between the punctuation
 # and the run of spaces (`Bold end.</b>  Next`), so the run never sits next to the
 # punctuation and the gap was lost.  The optional tag group carries the closing tag
@@ -1333,7 +1344,7 @@ for i, part in enumerate(parts):
     if i % 2 == 1:
         out.append(part)
         continue
-    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#160; ", part))
+    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#8239; ", part))
 sys.stdout.write("".join(out))
 '
 }
@@ -2109,7 +2120,7 @@ if m:
 # AFC-361, owner 2026-10-19:  the writer's session id is the small row under the timestamp, with no second date.
 # An update rewrites the whole body, so a Session row the caller echoed back from the old body is dropped
 # wherever it sat (under the timestamp, or at the end, where a version of 2026-10-19 put it) and the current one is
-# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts "Session:" is not a row
+# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts \"Session:\" is not a row
 # and stays.  A spacer after the row belongs to it, so a stale row at the end goes with every spacer it left behind
 # (an old note can end on more than one of them, so the row must not have to be the last characters of the body).
 _SESSION_ROW = (
@@ -2184,7 +2195,7 @@ def _fleet_date_text(m):
     except ValueError:
         return m.group(0)
 
-def fleet_dates(markup):
+def fleet_dates(markup, gap_entity=False):
     parts = re.split(r'(<[^>]+>)', markup)
     depth = 0
     for i, part in enumerate(parts):
@@ -2194,7 +2205,7 @@ def fleet_dates(markup):
                 depth += -1 if part.startswith('</') else 1
                 depth = max(depth, 0)
         elif depth == 0:
-            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part))
+            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part), gap_entity)
     return ''.join(parts)
 
 # Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as agent-sync's textfmt.single_gaps), so
@@ -2203,7 +2214,7 @@ _ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dep
 _GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#])')
 _WORD = re.compile(r'([A-Za-z][A-Za-z.]*)\Z')
 
-def _one_space_gaps(segment):
+def _one_space_gaps(segment, gap_entity=False):
     def repl(m):
         if m.group(1).startswith('.'):
             before = _WORD.search(segment[max(0, m.start() - 40):m.start()])
@@ -2213,10 +2224,15 @@ def _one_space_gaps(segment):
             if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
                 return m.group(0)
         _changes['gaps'] += 1
-        return m.group(1) + '  '
+        #  AFC-552:  the note body is HTML, so the gap is the numeric reference,
+        #  like the two HTML passes and with no raw non-ASCII byte in the note HTML.
+        #  The mobile quick view is plain text that is embedded with html.escape, so
+        #  a reference there would reach the owner as the literal six characters.
+        #  It carries the character itself, which Notes keeps byte-intact.
+        return m.group(1) + ('&#8239; ' if gap_entity else '\u202f ')
     return _GAP1.sub(repl, segment)
 
-inner = fleet_dates(inner)
+inner = fleet_dates(inner, gap_entity=True)
 if summary_text:
     summary_text = fleet_dates(summary_text)
 
