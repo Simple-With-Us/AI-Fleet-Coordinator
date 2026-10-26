@@ -326,11 +326,21 @@ class SessionIdTests(unittest.TestCase):
             "--session",
             "new-id-0002",
             "[AFC, Claude] t",
-            env={"AGENT_SEAT": "CLAUDE"},
+            #  a synthetic Linear host and workspace, so the fixture names no organisation of the
+            #  fleet (Kody rule:  synthetic hostnames and paths in test fixtures)
+            env={
+                "AGENT_SEAT": "CLAUDE",
+                "NOTES_LINKIFY_LINEAR_HOST": "notes.example.test",
+                "NOTES_LINEAR_WORKSPACE": "example-workspace",
+            },
             body=body,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("Session: the board claim was AFC-123", p.stdout)
+        #  the prose survives as prose, and the Linear id inside it is linked by
+        #  the linkifier (AFC-547) rather than being left bare -- either way it
+        #  is content, not the stamped row
+        self.assertIn("Session: the board claim was", p.stdout)
+        self.assertIn('href="https://notes.example.test/example-workspace/issue/AFC-123"', p.stdout)
         self.assertEqual(
             p.stdout.count("Session:"), 2, p.stdout
         )  #  the prose one and the stamped row
