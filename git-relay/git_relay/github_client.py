@@ -53,11 +53,12 @@ def safe_error_diagnostics(headers=None, message=None):
     Unknown/hostile bodies cannot become a diagnostic string. This does not
     change retry classification, request permissions, or request behavior.
     """
-    result = {
-        "category": _ERROR_CATEGORIES.get(message, "unknown")
-        if isinstance(message, str)
-        else "unknown"
-    }
+    category = "unknown"
+    if isinstance(message, str) and len(message) <= MAX_ERROR_PREVIEW:
+        category = _ERROR_CATEGORIES.get(message, "unknown")
+        if re.fullmatch(r"API rate limit exceeded for (?:user|installation) ID [0-9]{1,20}\.", message):
+            category = "rate_limit"
+    result = {"category": category}
     request_id = headers.get("X-GitHub-Request-Id") if headers is not None else None
     if isinstance(request_id, str) and re.fullmatch(
         r"[0-9A-Fa-f]{4,8}(?::[0-9A-Fa-f]{4,8}){3}", request_id
@@ -65,20 +66,29 @@ def safe_error_diagnostics(headers=None, message=None):
         result["request_id"] = request_id
     raw = headers.get("X-Accepted-GitHub-Permissions") if headers is not None else None
     if isinstance(raw, str) and 0 < len(raw) <= 512 and all(32 <= ord(char) < 127 for char in raw):
-        permissions = {}
-        for item in raw.split(","):
-            pair = item.strip().split("=")
-            if (
-                len(pair) != 2
-                or pair[0] not in _DIAGNOSTIC_PERMISSIONS
-                or pair[1] not in ("read", "write")
-                or pair[0] in permissions
-            ):
+        groups = raw.split(";")
+        sets = []
+        # Reject the whole header on an anomaly. Partial alternatives could
+        # misrepresent upstream requirements; unknown metadata is safer.
+        if len(groups) <= 4:
+            for group in groups:
+                permissions = {}
+                for item in group.split(","):
+                    pair = item.strip().split("=")
+                    if (len(pair) != 2 or pair[0] not in _DIAGNOSTIC_PERMISSIONS
+                            or pair[1] not in ("read", "write") or pair[0] in permissions):
+                        break
+                    permissions[pair[0]] = pair[1]
+                else:
+                    if permissions:
+                        sets.append(permissions)
+                        continue
                 break
-            permissions[pair[0]] = pair[1]
-        else:
-            if permissions:
-                result["accepted_permissions"] = permissions
+            else:
+                if len(sets) == 1:
+                    result["accepted_permissions"] = sets[0]
+                elif sets:
+                    result["accepted_permission_sets"] = sets
     return result
 
 
@@ -120,11 +130,14 @@ class RelayGitHubError(Exception):
         source = diagnostics if isinstance(diagnostics, dict) else {}
         hdrs = {"X-GitHub-Request-Id": source.get("request_id")}
         perms = source.get("accepted_permissions")
-        if isinstance(perms, dict) and len(perms) <= len(_DIAGNOSTIC_PERMISSIONS):
-            if all(isinstance(k, str) and isinstance(v, str) for k, v in perms.items()):
-                hdrs["X-Accepted-GitHub-Permissions"] = ",".join(
-                    k + "=" + v for k, v in perms.items()
-                )
+        alternatives = source.get("accepted_permission_sets")
+        groups = [perms] if perms is not None and alternatives is None else alternatives
+        if isinstance(groups, list) and 1 <= len(groups) <= 4:
+            if all(isinstance(group, dict) and 1 <= len(group) <= len(_DIAGNOSTIC_PERMISSIONS)
+                   and all(isinstance(k, str) and isinstance(v, str)
+                           for k, v in group.items()) for group in groups):
+                hdrs["X-Accepted-GitHub-Permissions"] = ";".join(
+                    ",".join(k + "=" + v for k, v in group.items()) for group in groups)
         self.diagnostics = safe_error_diagnostics(hdrs)
         if isinstance(source.get("category"), str) and source["category"] in set(
             _ERROR_CATEGORIES.values()

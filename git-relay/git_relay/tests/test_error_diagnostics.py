@@ -172,3 +172,48 @@ class TestErrorDiagnostics(unittest.TestCase):
                 row = json.loads(fh.read())
             self.assertEqual(row["result"], "github_auth")
             self.assertNotIn("reflection", json.dumps([row, payload]))
+
+    def test_alternatives_preserve_sets_and_revalidate(self):
+        expected = [{"issues": "write"}, {"pull_requests": "write", "contents": "read"}]
+        d = safe_error_diagnostics({"X-Accepted-GitHub-Permissions":
+                                    "issues=write; pull_requests=write,contents=read"})
+        self.assertEqual(d["accepted_permission_sets"], expected)
+        self.assertNotIn("accepted_permissions", d)
+        self.assertEqual(RelayGitHubError(403, "x", diagnostics=d).diagnostics, d)
+
+    def test_one_poisoned_alternative_rejects_whole_header(self):
+        for raw in ["token=secret;issues=write", "issues=write;token=secret",
+                    "token=secret;unknown=read", "issues=write;", ";issues=write",
+                    ";".join(["issues=write"] * 5), "issues=write;" + "x" * 513]:
+            self.assertEqual(safe_error_diagnostics({"X-Accepted-GitHub-Permissions": raw}),
+                             {"category": "unknown"})
+        err = RelayGitHubError(403, "x", diagnostics={"accepted_permission_sets":
+                                                    [{"issues": "write"}, {"secret": "read"}]})
+        self.assertEqual(err.diagnostics, {"category": "unknown"})
+
+    def test_category_variants_are_narrow_not_reflections(self):
+        for message in ["API rate limit exceeded", "API rate limit exceeded for user ID 123.",
+                        "API rate limit exceeded for installation ID 456."]:
+            self.assertEqual(safe_error_diagnostics(message=message), {"category": "rate_limit"})
+        for message in ["Not Founder secret", "Bad credentialsXYZ", "Bad credentials: secret",
+                        "Resource not accessible by integration: https://docs.example/secret",
+                        "API rate limit exceeded for user ID abc.",
+                        "API rate limit exceeded for user ID 123. secret",
+                        "API rate limit exceeded for user ID " + "1" * 21 + ".",
+                        "Not Found: " + "x" * 600, "Not Found\nsecret", ["Not Found"]]:
+            self.assertEqual(safe_error_diagnostics(message=message), {"category": "unknown"})
+
+    def test_hostile_alternatives_do_not_reach_response_or_audit(self):
+        client = fixtures.TestGithubErrorSplit.ErrClient(403)
+        client._err = RelayGitHubError(403, "secret-body", diagnostics={
+            "category": "secret-body", "accepted_permission_sets":
+            [{"issues": "write"}, {"ghs_secret": "write"}]})
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "audit")
+            relay = Relay(SeatPolicy(fixtures.SEATS_JSON), client, AuditLog(path))
+            _, payload = relay.handle(fixtures.SEAT_TOKEN, "open_pr", {
+                "repo": "example/fixture-repo", "base": "main", "head": "b", "title": "t", "body": "x"})
+            with open(path) as fh:
+                row = json.loads(fh.read())
+            self.assertEqual(payload["github_diagnostics"], {"category": "unknown"})
+            self.assertNotIn("secret", json.dumps([payload, row]))
