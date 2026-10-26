@@ -363,15 +363,31 @@ def opencode_server_flags() -> str:
 
 
 def unit_execstart(text: str) -> str:
-    """The ExecStart line of a unit, or "" when it has none."""
-    match = re.search(r"^ExecStart=(.*)$", text or "", flags=re.MULTILINE)
-    return match.group(1).strip() if match else ""
+    """The ExecStart command of a unit, or "" when it has none.
+
+    A line the unit continues is one line here, so a flag on a continuation line
+    is read as part of the command.
+    """
+    for line in unit_logical_lines(text or ""):
+        stripped = line.strip()
+        if stripped.startswith("ExecStart="):
+            return stripped[len("ExecStart="):].strip()
+    return ""
+
+
+# The host and port pair the fleet's clients use, as it appears in a command.
+FLAG_PAIR = re.compile(r"\s--hostname\s+\S+\s+--port\s+\S+")
+
+
+def command_flags(command: str) -> str:
+    """The `--hostname`/`--port` pair a command carries, or "" when it carries none."""
+    match = FLAG_PAIR.search(command or "")
+    return match.group(0) if match else ""
 
 
 def unit_execstart_flags(text: str) -> str:
     """The `--hostname`/`--port` pair a unit already carries, or ""."""
-    match = re.search(r"\s--hostname\s+\S+\s+--port\s+\S+", unit_execstart(text))
-    return match.group(0) if match else ""
+    return command_flags(unit_execstart(text))
 
 
 # The tmux session's own `-c`, anchored to the new-session command so a Codex
@@ -897,16 +913,38 @@ IDENTITY_ENVIRONMENT = ("HOME", "PATH")
 BINARY_MARKER = "@@fleet-binary@@"
 
 
+def unit_logical_lines(text: str) -> list[str]:
+    """The lines of a unit, with a continued line joined to the line it continues.
+
+    systemd continues a line that ends with a backslash, so the command of a
+    directive is the line and the lines it continues.  A directive that is spliced
+    back into a unit must not keep a trailing backslash, or systemd reads the line
+    after it as part of the command.
+    """
+    joined: list[str] = []
+    for raw in (text or "").splitlines():
+        stripped = raw.strip()
+        if joined and joined[-1].rstrip().endswith("\\"):
+            joined[-1] = joined[-1].rstrip()[:-1].rstrip() + " " + stripped
+            continue
+        joined.append(raw)
+    return joined
+
+
 def unit_directives(text: str, name: str) -> list[str]:
-    """The lines of a unit that set `name`, in the order they appear."""
+    """The lines of a unit that set `name`, in the order they appear.
+
+    A line the unit continues is one line here, so the command keeps its whole
+    value when it is spliced back into a unit.
+    """
     prefix = name + "="
-    return [line.strip() for line in (text or "").splitlines() if line.strip().startswith(prefix)]
+    return [line.strip() for line in unit_logical_lines(text) if line.strip().startswith(prefix)]
 
 
 def unit_environment(text: str) -> dict[str, list[str]]:
     """The environment variables a unit sets, each with the assignments it wrote."""
     found: dict[str, list[str]] = {}
-    for line in (text or "").splitlines():
+    for line in unit_logical_lines(text):
         stripped = line.strip()
         if not stripped.startswith("Environment="):
             continue
@@ -979,7 +1017,7 @@ def carried_directives(text: str, body: str, placed: set[str] | None = None) -> 
     owned = set(OWNED_ENVIRONMENT)
     done = set(placed or ())
     carried: list[str] = []
-    for line in text.splitlines():
+    for line in unit_logical_lines(text):
         stripped = line.strip()
         if not stripped:
             continue
@@ -1002,7 +1040,25 @@ def carried_directives(text: str, body: str, placed: set[str] | None = None) -> 
     return carried
 
 
-def merge_unit(body: str, existing: str) -> str:
+def reconcile_execstart(line: str, flags: str) -> str:
+    """The operator's ExecStart line with the knob's flags in its command.
+
+    The operator's binary, its argv and its account are the operator's, but the host
+    and the port the fleet's clients use are the knob's policy, so the pair in the
+    command is the configured one:  a stale pair is replaced and a command that
+    carries no pair gains one.  A command with no configured pair is left exactly as
+    it is.
+    """
+    prefix = "ExecStart="
+    if not flags or not line.startswith(prefix):
+        return line
+    command = line[len(prefix):]
+    stale = command_flags(command)
+    command = command.replace(stale, flags, 1) if stale else command + flags
+    return prefix + command
+
+
+def merge_unit(body: str, existing: str, flags: str = "") -> str:
     """The template body with the operator's own settings kept.
 
     The operator's identity directives win over the template's defaults:  the account
@@ -1021,6 +1077,10 @@ def merge_unit(body: str, existing: str) -> str:
         theirs = unit_directives(existing, name)
         if not theirs:
             continue
+        if name == "ExecStart" and flags:
+            # The knob reads the first ExecStart line, so only that one carries the
+            # host and the port the fleet's clients use.
+            theirs = [reconcile_execstart(theirs[0], flags)] + theirs[1:]
         indexes = [i for i, line in enumerate(lines) if line.strip().startswith(name + "=")]
         if indexes:
             first = indexes[0]
@@ -1033,13 +1093,16 @@ def merge_unit(body: str, existing: str) -> str:
     lines, placed = replace_identity_environment(lines, existing)
     carried = carried_directives(existing, body, placed)
     if carried:
-        after = [i for i, line in enumerate(lines) if line.startswith(("Environment=", "EnvironmentFile="))]
+        after = [
+            i for i, line in enumerate(lines)
+            if line.startswith(("Environment=", "EnvironmentFile="))
+        ]
         at = max(after) + 1 if after else len(lines)
         lines[at:at] = carried
     return "\n".join(lines) + "\n"
 
 
-def apply_unit(path: Path, body: str, tool: str = "") -> bool:
+def apply_unit(path: Path, body: str, tool: str = "", flags: str = "") -> bool:
     """Replace a unit with the template, keeping the operator's own settings.
 
     The operator's identity directives win over the template's defaults, so an apply
@@ -1051,7 +1114,7 @@ def apply_unit(path: Path, body: str, tool: str = "") -> bool:
     it, and the host need not carry the template's binary at all.
     """
     text = read(path)
-    merged = merge_unit(body, text)
+    merged = merge_unit(body, text, flags)
     if tool and BINARY_MARKER in merged:
         merged = merged.replace(BINARY_MARKER, which(tool))
     if text == merged:
@@ -1082,7 +1145,7 @@ def apply(root: Path) -> int:
                 lanes=root, home=HOME, opencode=BINARY_MARKER, flags=flags,
                 **unit_environments(root),
             )
-            touched = apply_unit(path, body, "opencode")
+            touched = apply_unit(path, body, "opencode", flags)
             if touched:
                 restart.append("opencode-server.service")
         else:

@@ -424,6 +424,81 @@ class ServerWorkingDirsTest(unittest.TestCase):
         self.assertNotIn(str(self.home / ".local" / "bin" / "opencode"), text)
         self.assertEqual(self.verify(), 0)
 
+    def test_a_continued_execstart_stays_a_whole_command(self) -> None:
+        """systemd continues a line that ends with a backslash, so the command is one line.
+
+        A directive that keeps its backslash would read the line after it as part of
+        the command, and the apply would write a unit that runs the wrong thing.
+        """
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve \\\n"
+            "    --service --hostname example.test --port 62306\n"
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertNotIn("\\\n", text)
+        self.assertIn("--service --hostname example.test --port 62306", text)
+        self.assertEqual(
+            swd.unit_execstart_flags(text), " --hostname example.test --port 62306"
+        )
+        self.assertEqual(self.verify(), 0)
+
+    def test_a_continued_environment_line_survives_the_merge(self) -> None:
+        """An Environment= the unit continues is one value, and it is carried once."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            'Environment="EXTRA=one \\\n'
+            'two"\n'
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertEqual(text.count("EXTRA=one"), 1)
+        self.assertNotIn("\\\n", text)
+        self.assertIn("EXTRA=one two", text)
+
+    def test_a_stale_pair_in_the_operator_s_command_becomes_the_configured_one(self) -> None:
+        """The host and the port are the knob's policy, so the command carries the configured pair."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service"
+            " --hostname old.example --port 1234\n"
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertIn("--hostname example.test --port 62306", text)
+        self.assertNotIn("old.example", text)
+        self.assertEqual(self.verify(), 0)
+
+    def test_a_command_with_no_pair_gains_the_configured_one(self) -> None:
+        """A command that names no host and no port gains the configured pair."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service\n"
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertIn("--hostname example.test --port 62306", text)
+        self.assertEqual(self.verify(), 0)
+
+    def test_a_config_that_names_no_server_block_leaves_the_command_alone(self) -> None:
+        """No configured pair means no pair is invented and none is removed."""
+        self.write_config("{}\n")
+        command = (
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service"
+            " --hostname keep.example --port 1234\n"
+        )
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text("[Unit]\nDescription=mine\n\n[Service]\n" + command)
+        self.apply()
+        text = unit.read_text()
+        self.assertIn(command, text)
+        self.assertEqual(text.count("ExecStart="), 1)
+
     def test_a_unit_that_sets_no_identity_gets_the_template_values(self) -> None:
         """A directive the operator did not set keeps the template's value."""
         unit = self.systemd / "opencode-server.service"
