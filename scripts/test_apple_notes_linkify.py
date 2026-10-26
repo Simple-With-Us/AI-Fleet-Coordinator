@@ -42,7 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_apple_notes_actions import (  # noqa: E402  (the stubs live with the AFC-486 test)
+from test_apple_notes_actions import (
     NOT_FOUND,
     NOTES,
     OPEN_STUB,
