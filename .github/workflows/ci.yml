@@ -422,6 +422,15 @@ jobs:
       run: |
         node --test scripts/ios-fleet/ios_testflight_freshness.test.mjs
         bash -n scripts/ios-fleet/install-testflight-freshness.sh
+    # The fleet iOS version manifest publisher (AFC-540).  It publishes as a
+    # branch plus a pull request against this repository, because the ruleset
+    # refuses a direct write to main.  The tests assert the merge keeps every
+    # sibling app, that the publish never names the default branch, and that
+    # the workflow's own read-only GITHUB_TOKEN is refused.
+    - name: Fleet iOS version manifest publisher tests
+      run: |
+        node --test scripts/ios-fleet/publish-ios-versions.test.mjs
+        bash -n scripts/ios-fleet/publish-ios-versions.sh
     - name: Mac ledger mirror tests
       run: bash scripts/test-mac-ledger-mirror.sh
     # The cutover helper for retiring ~/.secrets (AFC-359):  a temp HOME, stub launchctl and lsof, a throwaway repo.
