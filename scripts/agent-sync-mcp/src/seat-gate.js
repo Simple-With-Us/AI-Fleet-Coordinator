@@ -35,14 +35,19 @@ export class SeatGate extends DurableObject {
     if (state.gbMismatchDue(this._mmBuf, now)) {
       try { await state.gbMismatchFlushGuarded(this.store, this._mmBuf, now); } catch { /* deltas kept; the retry comes due at buffer.retryAt, scheduled below. */ }
     }
-    const more = await wa.sweep(this.store);
-    // One alarm serves both features:  the EARLIEST of the sweep's own
-    // cadence and the counter's due time.  The idle hour can no longer
-    // bury a pending tail or a retry, and the busy chain can no longer
-    // pull a flush forward - the due check above decides, not the cadence.
-    const waNext = Date.now() + (more ? 1000 : 3600000);
-    const mmNext = state.gbMismatchDueAt(this._mmBuf, Date.now());
-    await this.store.setAlarm(mmNext === null ? waNext : Math.min(waNext, mmNext));
+    let more = false;
+    try { more = await wa.sweep(this.store); } finally {
+      // One alarm serves both features:  the EARLIEST of the sweep's own
+      // cadence and the counter's due time.  The idle hour can no longer
+      // bury a pending tail or a retry, and the busy chain can no longer
+      // pull a flush forward - the due check above decides, not the cadence.
+      // finally:  a sweep throw must not orphan a buffered tail or a backoff
+      // retry - the reschedule runs even then, and the error still propagates
+      // so the runtime's own alarm retry applies on top (fresh-head review).
+      const waNext = Date.now() + (more ? 1000 : 3600000);
+      const mmNext = state.gbMismatchDueAt(this._mmBuf, Date.now());
+      await this.store.setAlarm(mmNext === null ? waNext : Math.min(waNext, mmNext));
+    }
   }
   waRead(options) { return wa.read(this.store, options); }
   async waOperator(options) {

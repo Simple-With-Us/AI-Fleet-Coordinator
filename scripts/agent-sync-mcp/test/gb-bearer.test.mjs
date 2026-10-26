@@ -635,3 +635,37 @@ test("alarm-driven flushes are due-gated: a busy chain writes nothing before the
   assert.equal(writes, 2, "the deadline fire flushed exactly once");
   assert.equal((await S.gbBearerMismatches(store)).JET.count, 2);
 });
+
+test("alarm composition: a throwing sweep still reschedules for the buffered tail", async () => {
+  // The SeatGate.alarm composition, modeled (node cannot import
+  // cloudflare:workers):  a sweep throw must not orphan the mismatch tail -
+  // the finally still schedules the earliest of the sweep cadence and the
+  // counter due time, and the error still propagates to the runtime's own
+  // alarm retry.
+  const store = S.memoryStore();
+  const buf = S.gbMismatchBuffer();
+  const seats = new Set(["JET"]);
+  const t0 = 1_000_000;
+  await S.gbMismatchCount(store, buf, "JET", seats, t0);      // cold flush
+  await S.gbMismatchCount(store, buf, "JET", seats, t0 + 1);  // buffered tail
+  const scheduled = [];
+  let more = false;
+  const alarmBody = async (sweep, now) => {
+    if (S.gbMismatchDue(buf, now)) {
+      try { await S.gbMismatchFlushGuarded(store, buf, now); } catch { /* deltas kept */ }
+    }
+    try { more = await sweep(); } finally {
+      const waNext = now + (more ? 1000 : 3600000);
+      const mmNext = S.gbMismatchDueAt(buf, now);
+      scheduled.push(mmNext === null ? waNext : Math.min(waNext, mmNext));
+    }
+  };
+  await assert.rejects(
+    alarmBody(async () => { throw new Error("sweep down"); }, t0 + 2000),
+    /sweep down/,
+    "the sweep error still propagates to the runtime retry",
+  );
+  assert.equal(scheduled.length, 1, "the reschedule ran despite the throw");
+  assert.equal(scheduled[0], t0 + S.GB_MISMATCH_FLUSH_MS, "the orphaned-tail case now wakes at the counter deadline, not never");
+  assert.equal(buf.pending.get("JET").count, 1, "the tail was not flushed early (not due) and survives for the rescheduled alarm");
+});
