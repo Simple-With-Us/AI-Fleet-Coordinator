@@ -1755,6 +1755,12 @@ try {
       const refused = await mcp(bad, "tools/list");
       assert.equal(refused.status, 401, bad);
     }
+    // The wrong gbb_fixer secret counted against the persona end to end
+    // (route -> DO counter -> /admin).  The first mismatch on a cold counter
+    // flushes immediately, so exactly one attempt is visible here.
+    const counterPage = await (await browser("/admin")).text();
+    assert.match(counterPage, /1 wrong-secret attempt, last /);
+    assert.match(counterPage, /approximate; updates at most once a minute/);
     // Rotating replaces it at once.
     const rotated = await adminAction("mint_gb_bearer", { identity: PERSONA });
     const next = (await rotated.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
@@ -1786,9 +1792,14 @@ try {
     }
     const page = await (await browser("/admin")).text();
     const after = Number(countLine(page)?.[1] ?? "0");
-    assert.equal(after, before + 2, "both wrong guesses persisted against the persona");
+    // Write-throttled (fresh-head review):  these two guesses land within
+    // the flush window of the persona step's writes, so they buffer in the
+    // DO instance's memory and persist NOTHING yet - the visible count is
+    // unchanged, proving a guess storm cannot force a storage write each.
+    // The alarm flushes the tail within the interval (unit-tested logic).
+    assert.equal(after, before, "wrong guesses inside the flush window write nothing");
     assert.match(page, /wrong-secret attempts?, last /);
-    assert.match(page, /\(lifetime\)/);
+    assert.match(page, /approximate; updates at most once a minute/);
     const line = page.split("wrong-secret attempts")[1] ?? "";
     assert.ok(!/[0-9a-f]{64}/.test(line.slice(0, 200)), "the count line carries no token hash");
     await adminAction("revoke_gb_bearer", { identity: PERSONA });

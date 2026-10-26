@@ -478,3 +478,49 @@ test("gbBearerMismatch recovers from a corrupted count and a bad clock", async (
 test("gbBearerMismatches is empty before any mismatch", async () => {
   assert.deepEqual(await S.gbBearerMismatches(S.memoryStore()), {});
 });
+
+test("gbMismatchCount buffers in memory and flushes at most once per interval", async () => {
+  const store = S.memoryStore();
+  const buf = S.gbMismatchBuffer();
+  const seats = new Set(["JET"]);
+  // First call flushes immediately (cold instance):  onset is visible at once.
+  assert.equal(await S.gbMismatchCount(store, buf, "JET", seats, 1_000_000), true);
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 1);
+  // Within the interval:  memory only, no storage write.
+  assert.equal(await S.gbMismatchCount(store, buf, "JET", seats, 1_000_001), false);
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 1, "still 1 in storage");
+  // After the interval:  one flush carries the buffered delta.
+  assert.equal(await S.gbMismatchCount(store, buf, "JET", seats, 1_000_000 + S.GB_MISMATCH_FLUSH_MS + 1), true);
+  const row = (await S.gbBearerMismatches(store)).JET;
+  assert.equal(row.count, 3, "both buffered increments landed in one flush");
+  assert.equal(row.last_at, 1_000_000 + S.GB_MISMATCH_FLUSH_MS + 1);
+});
+
+test("a failed flush keeps the buffer and the reader never writes", async () => {
+  const store = S.memoryStore();
+  const buf = S.gbMismatchBuffer();
+  const seats = new Set(["JET"]);
+  await S.gbMismatchCount(store, buf, "JET", seats, 1_000_000);
+  await S.gbMismatchCount(store, buf, "JET", seats, 1_000_001);
+  const broken = { ...store, transaction: async () => { throw new Error("storage down"); } };
+  await assert.rejects(S.gbMismatchCount(broken, buf, "JET", seats, 1_000_000 + S.GB_MISMATCH_FLUSH_MS + 1), /storage down/);
+  assert.equal(buf.pending.get("JET").count, 2, "the failed flush kept the pending delta");
+  // The reader is storage-only:  pending counts stay invisible and no read
+  // can ever flush (an /admin refresh must not bypass the write throttle).
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 1);
+  assert.equal(buf.pending.size, 1, "the read did not flush");
+  // Recovery:  the next in-interval call retries and lands both deltas.
+  await S.gbMismatchFlush(store, buf, seats, 1_100_000);
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 3);
+});
+
+test("the flush applies the configured-set prune and keeps last_at monotonic", async () => {
+  const store = S.memoryStore();
+  await store.put("gb_bearer_mismatches", { RETIRED: { count: 9, last_at: 5 }, JET: { count: 2, last_at: 900_000 } });
+  const buf = S.gbMismatchBuffer();
+  await S.gbMismatchCount(store, buf, "JET", new Set(["JET"]), 800_000); // stale clock: last_at must not go backwards
+  const map = await S.gbBearerMismatches(store);
+  assert.equal(map.RETIRED, undefined, "de-configured identities prune on flush");
+  assert.equal(map.JET.count, 3);
+  assert.equal(map.JET.last_at, 900_000, "last_at stays monotonic");
+});

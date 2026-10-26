@@ -1259,6 +1259,80 @@ export async function gbBearerMismatch(store, identity, configured, now = Date.n
   });
 }
 
+/**
+ * The write-throttled counting layer (fresh-head review:  one storage write
+ * per wrong guess lets an anonymous caller burn the shared DO write quota and
+ * serialize the identity's writes).  The Durable Object instance buffers
+ * increments in memory and flushes at most once per GB_MISMATCH_FLUSH_MS,
+ * exactly the discipline last_used_at already keeps in gbBearerCheck.
+ *
+ * HONEST ACCOUNTING:  persisted totals are exact at flush points;  increments
+ * buffered since the last flush live in instance memory only and are lost if
+ * the instance is evicted, so the stored count is a LOWER BOUND, not an exact
+ * lifetime total.  For the metric's purpose - is this identity under a
+ * guessing storm, and how recently - a lower bound plus last_at is the
+ * signal;  exact per-guess accounting is not what /admin shows.  Reads never
+ * flush, so refreshing /admin or reading the state API can never cause a
+ * write.  A flush failure keeps the buffer for the next call and (via the
+ * caller's catch) never weakens bearer rejection.
+ */
+export const GB_MISMATCH_FLUSH_MS = 60_000;
+
+/** The per-instance buffer a gate holds:  pending deltas + the last flush. */
+export function gbMismatchBuffer() {
+  return { pending: new Map(), lastFlush: 0, configured: new Set() };
+}
+
+/**
+ * Count one wrong-secret presentation.  Returns true when this call flushed
+ * to storage, false when the increment sits in memory.  The first call after
+ * an instance starts (or after a quiet interval) flushes immediately, so a
+ * storm's onset is visible within one call and a steady stream can never
+ * produce more than one write per interval per instance.
+ */
+export async function gbMismatchCount(store, buffer, identity, configured, now = Date.now(), flushMs = GB_MISMATCH_FLUSH_MS) {
+  const ts = Number.isFinite(now) ? now : Date.now();
+  buffer.configured = configured instanceof Set ? configured : new Set(configured ?? []);
+  const row = buffer.pending.get(identity) ?? { count: 0, last_at: 0 };
+  row.count += 1;
+  row.last_at = ts;
+  buffer.pending.set(identity, row);
+  if (buffer.lastFlush !== 0 && ts - buffer.lastFlush < flushMs) return false;
+  await gbMismatchFlush(store, buffer, configured, ts);
+  return true;
+}
+
+/**
+ * Persist every pending delta in one transaction, applying the same prune
+ * (drop rows for identities that left the configured set) as the direct
+ * counter.  On success the buffer empties and lastFlush advances;  on failure
+ * the exception propagates with the buffer intact for the next call.
+ */
+export async function gbMismatchFlush(store, buffer, configured, now = Date.now()) {
+  if (buffer.pending.size === 0) return;
+  const names = configured instanceof Set ? configured : new Set(configured ?? []);
+  const ts = Number.isFinite(now) ? now : Date.now();
+  await store.transaction(async (txn) => {
+    const map = (await txn.get(GB_MISMATCH_KEY)) ?? {};
+    const pruned = {};
+    for (const [key, row] of Object.entries(map)) {
+      if (key === "unconfigured" || names.has(key)) pruned[key] = row;
+    }
+    for (const [identity, delta] of buffer.pending) {
+      const bucket = names.has(identity) ? identity : "unconfigured";
+      const row = pruned[bucket];
+      const count = Number(row?.count);
+      pruned[bucket] = {
+        count: (Number.isFinite(count) && count >= 0 ? count : 0) + delta.count,
+        last_at: Math.max(Number(row?.last_at) || 0, delta.last_at),
+      };
+    }
+    await txn.put(GB_MISMATCH_KEY, pruned);
+  });
+  buffer.pending.clear();
+  buffer.lastFlush = ts;
+}
+
 /** For /admin:  the per-identity mismatch counts, times and counts only. */
 export async function gbBearerMismatches(store) {
   return (await store.get(GB_MISMATCH_KEY)) ?? {};

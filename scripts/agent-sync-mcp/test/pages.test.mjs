@@ -398,5 +398,5 @@ test("the mismatch count line labels its lifetime retention", async () => {
     gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null, mismatches: { count: 3, last_at: 1730000000000 } }],
   }).text();
   assert.ok(html.includes("3 wrong-secret attempts"), "count renders");
-  assert.ok(html.includes("(lifetime)"), "retention is labelled: lifetime, not daily, no reset");
+  assert.ok(html.includes("(approximate; updates at most once a minute)"), "the write-throttled, lower-bound nature is labelled");
 });

@@ -25,6 +25,11 @@ export class SeatGate extends DurableObject {
     return result;
   }
   async alarm() {
+    // A mismatch flush the counter buffered since the last write (best
+    // effort:  a failed flush keeps the buffer for the next alarm).
+    if (this._mmBuf?.pending.size) {
+      try { await state.gbMismatchFlush(this.store, this._mmBuf, this._mmBuf.configured); } catch { /* retried on the next alarm. */ }
+    }
     const more = await wa.sweep(this.store);
     await this.store.setAlarm(Date.now() + (more ? 1000 : 3600000));
   }
@@ -169,8 +174,16 @@ export class SeatGate extends DurableObject {
     return state.gbBearerStatus(this.store);
   }
 
-  gbBearerMismatch(identity, configured) {
-    return state.gbBearerMismatch(this.store, identity, configured);
+  // Buffered:  one in-memory increment per call, at most one storage write
+  // per GB_MISMATCH_FLUSH_MS per instance (fresh-head review - an anonymous
+  // caller must not turn wrong guesses into unbounded DO storage writes).
+  // A buffered (unflushed) increment arms the alarm so even a quiet tail -
+  // one probe and then silence - persists within the interval;  an existing
+  // alarm (the wa sweep's) covers it without a second scheduling write.
+  async gbBearerMismatch(identity, configured) {
+    const flushed = await state.gbMismatchCount(this.store, (this._mmBuf ??= state.gbMismatchBuffer()), identity, configured);
+    if (!flushed && await this.store.getAlarm() === null) await this.store.setAlarm(Date.now() + state.GB_MISMATCH_FLUSH_MS);
+    return flushed;
   }
 
   gbBearerMismatches() {

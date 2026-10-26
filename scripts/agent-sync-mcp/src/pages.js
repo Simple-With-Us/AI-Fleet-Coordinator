@@ -184,12 +184,14 @@ function gbBearerSection(rows, csrf, mintId = "") {
       // Wrong-secret presentations against this identity:  counts and a time,
       // never a hash (the narrowing review verdict:  make a guessing storm visible here).
       // A failed read is NOT a zero:  say so instead of hiding it (Tailnet
-      // review of the metric, 2026-10-25).  Counts are lifetime per identity,
-      // kept only while the identity stays configured;  they do not reset.
+      // review of the metric, 2026-10-25).  Counts are approximate per
+      // identity (write-throttled:  buffered increments can be lost to a DO
+      // eviction, so a stored total is a lower bound) and kept only while
+      // the identity stays configured;  they do not reset.
       const mm = r.mismatchesUnavailable
         ? `<br><small>wrong-secret counter read unavailable</small>`
         : r.mismatches && Number(r.mismatches.count) > 0
-          ? `<br><small class="warn">${Number(r.mismatches.count)} wrong-secret attempt${Number(r.mismatches.count) === 1 ? "" : "s"}${r.mismatches.last_at ? `, last ${escapeHtml(ownerTime(r.mismatches.last_at))}` : ""} (lifetime)</small>`
+          ? `<br><small class="warn">${Number(r.mismatches.count)} wrong-secret attempt${Number(r.mismatches.count) === 1 ? "" : "s"}${r.mismatches.last_at ? `, last ${escapeHtml(ownerTime(r.mismatches.last_at))}` : ""} (approximate; updates at most once a minute)</small>`
           : "";
       const mintLabel = st.active || st.expired ? "Rotate (Mint New)" : "Mint";
       // A rotation without the box ticked drops a seat's existing /mcp access:
