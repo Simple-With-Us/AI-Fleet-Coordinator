@@ -904,7 +904,7 @@ def catalog_skill_names(docs_skills: str) -> list[str]:
         path = os.path.join(docs_skills, entry)
         if not os.path.isdir(path) or entry.startswith(".") or entry == "by-seat":
             continue
-        if entry in NEVER_INSTALL:
+        if entry in NEVER_INSTALL or entry in RENAMED_SKILL_OLD_NAMES:
             continue
         if os.path.isfile(os.path.join(path, "SKILL.md")):
             names.append(entry)

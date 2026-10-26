@@ -89,10 +89,19 @@ def _zip_skill(zip_path: str, skill_name: str, md_path: str) -> bool:
     return True
 
 
-def _purge_retired(dest_base: str) -> None:
+def _purge_retired(dest_base: str, *, install_target: bool = False) -> None:
+    """Delete the skills that must not live in dest_base.
+
+    A renamed-away skill name is purged only from install targets (seat homes, tool trees, by-seat copies).  It is never
+    purged from the canonical pack or the root skills tree: removing a renamed skill from the repo is a git operation,
+    and deleting a source copy here would lose local edits.
+    """
     if not dest_base or not os.path.isdir(dest_base):
         return
-    for name in sorted(NEVER_INSTALL | RENAMED_SKILL_OLD_NAMES):
+    names = set(NEVER_INSTALL)
+    if install_target:
+        names |= RENAMED_SKILL_OLD_NAMES
+    for name in sorted(names):
         path = os.path.join(dest_base, name)
         if os.path.isdir(path):
             shutil.rmtree(path)
@@ -106,7 +115,7 @@ def _install_skill_set(
 ) -> list[str]:
     written: list[str] = []
     os.makedirs(dest_base, exist_ok=True)
-    _purge_retired(dest_base)
+    _purge_retired(dest_base, install_target=True)
     for name, monet_src in sources.items():
         if not skill_allowed_for_seat(name, seat):
             leftover = os.path.join(dest_base, name)
