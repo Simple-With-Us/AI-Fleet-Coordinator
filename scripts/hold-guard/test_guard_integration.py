@@ -1022,5 +1022,34 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(repaired, ["do-not-automerge", "do-not-merge"])
 
 
+    def test_repair_recheck_cache_write_failure_red_job(self):
+        # Kody r4374043272: a failed cache write must not leave the PR
+        # marked fresh-ok for a stale file to be trusted - error + red job
+        self._held_scenario()
+        # a directory at the deterministic cache path makes the write fail
+        if os.path.isfile("/tmp/hold-guard-fresh-repair-3.json"):
+            os.unlink("/tmp/hold-guard-fresh-repair-3.json")
+        os.makedirs("/tmp/hold-guard-fresh-repair-3.json")
+        try:
+            p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        finally:
+            os.rmdir("/tmp/hold-guard-fresh-repair-3.json")
+        self.assertEqual(p.returncode, 3)
+        self.assertIn("pre-repair re-check cache write failed", p.stdout)
+        self.assertFalse(
+            [
+                c
+                for c in self.calls()
+                if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
+            ]
+        )
+        checks = [
+            c
+            for c in self.calls()
+            if any(a.endswith("/check-runs") for a in c["argv"]) and "POST" in c["argv"]
+        ]
+        self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "failure")
+
+
 if __name__ == "__main__":
     unittest.main()

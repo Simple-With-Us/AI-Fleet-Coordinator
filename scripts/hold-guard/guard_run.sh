@@ -27,6 +27,10 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ERR=/tmp/hold-guard-errors; : > "$ERR"
 PF=/tmp/hold-guard-patch-fail; : > "$PF"
 REPAIRED=/tmp/hold-guard-repaired; : > "$REPAIRED"
+# The repair re-check cache paths are deterministic per PR: drop any file a
+# prior run on a reused runner left behind (Kody r4374043272 - a failed
+# write must never leave a stale snapshot for the jq parse to trust).
+rm -f /tmp/hold-guard-fresh-repair-*.json
 any_error=0
 read_error=""
 
@@ -100,8 +104,16 @@ printf '%s' "$combined" | jq -c '.[] | select(.needs_reapply)' | while IFS= read
   label=$(printf '%s' "$h" | jq -r .label)
   if [ -z "${fresh_repair_ok[$pr]:-}" ]; then
     if fresh1="$(python3 "$DIR/hold_guard.py" "$REPO" "$pr")"; then
-      printf '%s' "$fresh1" > "/tmp/hold-guard-fresh-repair-$pr.json"
-      fresh_repair_ok[$pr]=1
+      # Kody r4374043272: mark fresh-ok ONLY after the cache write itself
+      # succeeds; a failed write with a stale leftover would make the later
+      # jq parse trust old state (silent skip or resurrected hold, no red).
+      if printf '%s' "$fresh1" > "/tmp/hold-guard-fresh-repair-$pr.json"; then
+        fresh_repair_ok[$pr]=1
+      else
+        echo "::error::pre-repair re-check cache write failed on #$pr - skipping repair"
+        echo repair >> "$ERR"
+        fresh_repair_ok[$pr]=0
+      fi
     else
       echo "::error::pre-repair re-check failed on #$pr - skipping repair"
       echo repair >> "$ERR"
