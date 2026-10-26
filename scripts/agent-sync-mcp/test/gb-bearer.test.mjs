@@ -496,22 +496,32 @@ test("gbMismatchCount buffers in memory and flushes at most once per interval", 
   assert.equal(row.last_at, 1_000_000 + S.GB_MISMATCH_FLUSH_MS + 1);
 });
 
-test("a failed flush keeps the buffer and the reader never writes", async () => {
+test("a failed flush keeps the buffer, backs off to the interval, and the reader never writes", async () => {
   const store = S.memoryStore();
   const buf = S.gbMismatchBuffer();
   const seats = new Set(["JET"]);
   await S.gbMismatchCount(store, buf, "JET", seats, 1_000_000);
   await S.gbMismatchCount(store, buf, "JET", seats, 1_000_001);
   const broken = { ...store, transaction: async () => { throw new Error("storage down"); } };
-  await assert.rejects(S.gbMismatchCount(broken, buf, "JET", seats, 1_000_000 + S.GB_MISMATCH_FLUSH_MS + 1), /storage down/);
+  const failedAt = 1_000_000 + S.GB_MISMATCH_FLUSH_MS + 1;
+  await assert.rejects(S.gbMismatchCount(broken, buf, "JET", seats, failedAt), /storage down/);
   assert.equal(buf.pending.get("JET").count, 2, "the failed flush kept the pending delta");
+  assert.equal(buf.retryAt, failedAt + S.GB_MISMATCH_FLUSH_MS, "the retry is due one interval after the failure, not immediately");
+  assert.equal(S.gbMismatchDue(buf, failedAt + 1000), false, "a busy one-second alarm inside the backoff does not retry");
+  assert.equal(S.gbMismatchDue(buf, failedAt + S.GB_MISMATCH_FLUSH_MS), true, "the retry comes due at the backoff");
+  // A steady stream during the backoff attempts no write (the broken store
+  // would throw):  it buffers, so a guessing storm on a failing store still
+  // cannot amplify writes.
+  assert.equal(await S.gbMismatchCount(broken, buf, "JET", seats, failedAt + 2000), false);
+  assert.equal(buf.pending.get("JET").count, 3);
   // The reader is storage-only:  pending counts stay invisible and no read
   // can ever flush (an /admin refresh must not bypass the write throttle).
   assert.equal((await S.gbBearerMismatches(store)).JET.count, 1);
   assert.equal(buf.pending.size, 1, "the read did not flush");
-  // Recovery:  the next in-interval call retries and lands both deltas.
-  await S.gbMismatchFlush(store, buf, seats, 1_100_000);
-  assert.equal((await S.gbBearerMismatches(store)).JET.count, 3);
+  // Recovery at the backoff lands every delta and clears the backoff.
+  assert.equal(await S.gbMismatchFlushGuarded(store, buf, failedAt + S.GB_MISMATCH_FLUSH_MS), true);
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 4);
+  assert.equal(buf.retryAt, 0, "a successful flush clears the backoff");
 });
 
 test("the flush applies the configured-set prune and keeps last_at monotonic", async () => {
@@ -537,18 +547,34 @@ test("gbMismatchAlarmDeadline pulls a later alarm in, leaves an earlier one, ski
   const cold = S.gbMismatchBuffer();
   cold.pending.set("JET", { count: 1, last_at: 5 });
   assert.equal(S.gbMismatchAlarmDeadline(cold, null, 2_000_000), 2_000_000, "cold with a failed first flush: retry now");
+  cold.retryAt = 2_060_000;
+  assert.equal(S.gbMismatchAlarmDeadline(cold, null, 2_000_000), 2_060_000, "a failed flush retries at its backoff, not immediately");
+  assert.equal(S.gbMismatchAlarmDeadline(cold, null, 2_070_000), 2_070_000, "past the backoff: due now");
+  const warmFail = S.gbMismatchBuffer();
+  warmFail.pending.set("JET", { count: 1, last_at: 5 });
+  warmFail.lastFlush = 1_000_000;
+  warmFail.retryAt = 1_000_000 + 2 * S.GB_MISMATCH_FLUSH_MS + 1; // failed at the deadline
+  assert.equal(S.gbMismatchAlarmDeadline(warmFail, 1_000_000 + 3_600_000, 1_000_000 + S.GB_MISMATCH_FLUSH_MS + 2), 1_000_000 + 2 * S.GB_MISMATCH_FLUSH_MS + 1, "the idle hour is pulled to the retry, not the original deadline");
 });
 
-test("overlapping cold calls produce exactly one storage write (no assumed serialization)", async () => {
-  // A deferred transaction gate lets two calls interleave their awaits the
-  // way the DO input gate does:  each synchronous section is atomic, but the
-  // awaits overlap.  The in-memory guard must collapse them to ONE write.
+test("overlapping cold calls produce exactly one storage write, and a mid-transaction delta survives", async () => {
+  // A deferred gate INSIDE the transaction callback lets the second call's
+  // synchronous section run after the batch was snapshotted but before the
+  // transaction resolves - the exact interleaving the fresh-head review
+  // flagged.  The synchronous hand-off (batch swapped out before the first
+  // await) must keep that delta out of the write yet never drop it.
   const store = S.memoryStore();
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
   const realTxn = store.transaction;
   let txnCalls = 0;
-  store.transaction = (cb) => { txnCalls += 1; return gate.then(() => realTxn(cb)); };
+  store.transaction = (cb) => {
+    txnCalls += 1;
+    return realTxn(async (txn) => {
+      const gated = { ...txn, get: async (...args) => { const v = await txn.get(...args); await gate; return v; } };
+      return cb(gated);
+    });
+  };
   const buf = S.gbMismatchBuffer();
   const seats = new Set(["JET"]);
   const a = S.gbMismatchCount(store, buf, "JET", seats, 1_000_000);
@@ -556,6 +582,56 @@ test("overlapping cold calls produce exactly one storage write (no assumed seria
   release();
   const [flushedA, flushedB] = await Promise.all([a, b]);
   assert.equal(txnCalls, 1, "exactly one transaction ran");
-  assert.equal((await S.gbBearerMismatches(store)).JET.count, 2, "both increments landed in the one flush");
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 1, "the first call's delta flushed");
+  assert.equal(buf.pending.get("JET").count, 1, "the delta counted mid-transaction survives in the buffer");
   assert.equal([flushedA, flushedB].filter(Boolean).length, 1, "one call flushed, the other buffered through it");
+  await S.gbMismatchFlushGuarded(store, buf, 1_000_002);
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 2, "nothing was dropped: the surviving delta lands in the next flush");
+});
+
+test("a failed flush merges its batch back under deltas counted during the transaction", async () => {
+  const store = S.memoryStore();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const realTxn = store.transaction;
+  store.transaction = () => gate.then(() => { throw new Error("storage down"); });
+  const buf = S.gbMismatchBuffer();
+  const seats = new Set(["JET"]);
+  const a = S.gbMismatchCount(store, buf, "JET", seats, 1_000_000);
+  const b = S.gbMismatchCount(store, buf, "JET", seats, 1_000_500);
+  release();
+  await assert.rejects(a, /storage down/);
+  assert.equal(await b, false, "the second call saw the in-flight guard and buffered");
+  assert.equal(buf.pending.get("JET").count, 2, "merge-back kept both deltas");
+  assert.equal(buf.retryAt, 1_000_000 + S.GB_MISMATCH_FLUSH_MS, "the failure armed the backoff");
+  store.transaction = realTxn;
+  assert.equal(S.gbMismatchDue(buf, 1_000_000 + S.GB_MISMATCH_FLUSH_MS), true, "due exactly at the backoff");
+  await S.gbMismatchFlushGuarded(store, buf, 1_000_000 + S.GB_MISMATCH_FLUSH_MS);
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 2, "both deltas survived the failure");
+  assert.equal(buf.retryAt, 0, "the recovery cleared the backoff");
+});
+
+test("alarm-driven flushes are due-gated: a busy chain writes nothing before the deadline", async () => {
+  // The SeatGate.alarm composition, modeled:  the wa sweep's busy chain
+  // fires the handler every second;  only a DUE check may write.
+  const store = S.memoryStore();
+  let writes = 0;
+  const realTxn = store.transaction;
+  store.transaction = (cb) => { writes += 1; return realTxn(cb); };
+  const buf = S.gbMismatchBuffer();
+  const seats = new Set(["JET"]);
+  const t0 = 1_000_000;
+  await S.gbMismatchCount(store, buf, "JET", seats, t0);      // cold flush
+  await S.gbMismatchCount(store, buf, "JET", seats, t0 + 1);  // buffered
+  assert.equal(writes, 1);
+  for (let sec = 1; sec <= 30; sec++) {
+    const t = t0 + sec * 1000;
+    if (S.gbMismatchDue(buf, t)) await S.gbMismatchFlushGuarded(store, buf, t);
+  }
+  assert.equal(writes, 1, "no busy-alarm write before the deadline");
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 1, "the tail stayed buffered");
+  const at = t0 + S.GB_MISMATCH_FLUSH_MS;
+  if (S.gbMismatchDue(buf, at)) await S.gbMismatchFlushGuarded(store, buf, at);
+  assert.equal(writes, 2, "the deadline fire flushed exactly once");
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 2);
 });

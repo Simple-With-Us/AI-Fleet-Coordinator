@@ -1796,13 +1796,93 @@ try {
     // the flush window of the persona step's writes, so they buffer in the
     // DO instance's memory and persist NOTHING yet - the visible count is
     // unchanged, proving a guess storm cannot force a storage write each.
-    // The alarm flushes the tail within the interval (unit-tested logic).
+    // The alarm persists the tail at its due time - exercised for real in the lifecycle step below.
     assert.equal(after, before, "wrong guesses inside the flush window write nothing");
     assert.match(page, /wrong-secret attempts?, last /);
     assert.match(page, /approximate; updates at most once a minute/);
     const line = page.split("wrong-secret attempts")[1] ?? "";
     assert.ok(!/[0-9a-f]{64}/.test(line.slice(0, 200)), "the count line carries no token hash");
     await adminAction("revoke_gb_bearer", { identity: PERSONA });
+  });
+
+  await step("input-gate qualification: concurrent RPCs during a real mismatch flush (classification, not assumed)", async () => {
+    // Fresh-head review flagged that a delta counted while the flush
+    // transaction is in flight could be dropped by post-transaction
+    // bookkeeping.  Cloudflare documents (rules-of-durable-objects, Oct 2026)
+    // that awaiting STORAGE operations holds the input gate CLOSED - no
+    // other event starts - while only non-storage awaits open it;  the flush
+    // transaction awaits storage ops only, so per the docs no RPC can
+    // interleave with it.  Rather than assume, measure the actual runtime:
+    // twenty cold flushes, each with a read fired in the same macrotask.
+    // A read observing the PRE-flush count proves concurrent delivery during
+    // the transaction;  zero across the trials is consistent with the
+    // documented closed gate.  Either outcome is reported:  the buffer's
+    // synchronous hand-off is correct under BOTH, by JS run-to-completion.
+    // A fresh OBJECT NAME per trial is a genuinely cold instance (same
+    // class, its own storage);  granular eviction is not drivable here -
+    // unsafeEvictDurableObject refuses while any stub to the object exists
+    // in the process (measured:  ~30s "active references" timeout, even
+    // after dropping the reference and forcing GC).
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+    const configured = new Set(GB_IDENTITIES);
+    let staleReads = 0;
+    for (let trial = 0; trial < 20; trial++) {
+      const name = `GB-TRADER-PROBE-${trial}`;
+      const gate = ns.get(ns.idFromName(name));
+      const [flushed, during] = await Promise.all([
+        gate.gbBearerMismatch(name, configured),
+        gate.gbBearerMismatches(),
+      ]);
+      assert.equal(flushed, true, "the cold call flushed");
+      if ((during.unconfigured?.count ?? 0) < 1) staleReads += 1;
+    }
+    console.log(`      input-gate probe: ${staleReads}/20 reads observed the pre-flush state (0 = consistent with the documented closed gate during storage awaits)`);
+  });
+
+  await step("mismatch counter lifecycle on a real SeatGate: concurrent cold calls write once, the armed alarm persists the tail at its deadline, the window still holds after it", async () => {
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+    const gate = ns.get(ns.idFromName("GB-ORACLE"));
+    const configured = new Set(GB_IDENTITIES);
+    const stored = async () => (await gate.gbBearerMismatches())["GB-ORACLE"]?.count ?? 0;
+    const base = await stored();
+    // Two overlapping cold calls on the real DO:  exactly one storage
+    // write, the other delta buffered - the in-memory guard holds against
+    // the real runtime, not just the model store.
+    const [flushA, flushB] = await Promise.all([
+      gate.gbBearerMismatch("GB-ORACLE", configured),
+      gate.gbBearerMismatch("GB-ORACLE", configured),
+    ]);
+    assert.equal([flushA, flushB].filter(Boolean).length, 1, "one call flushed, the other buffered through it");
+    assert.equal(await stored(), base + 1, "overlapping cold calls produced exactly one write");
+    // Another guess inside the window buffers and writes nothing.
+    assert.equal(await gate.gbBearerMismatch("GB-ORACLE", configured), false);
+    assert.equal(await stored(), base + 1, "inside the window nothing writes");
+    // The route armed the DO's real alarm at the flush deadline even though
+    // the idle sweep's cadence is an hour:  the runtime must fire it, the
+    // due check must pass, and the two buffered deltas must persist with NO
+    // further calls.  (alarm() is a reserved method and cannot be invoked
+    // over RPC - measured against this runtime - so the busy-chain due
+    // gate is qualified by the unit suite's thirty simulated fires;  what
+    // is proven HERE is the armed deadline, the real fire and the flush.)
+    let flushedByAlarm = false;
+    for (let waited = 0; waited < 70_000; waited += 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (await stored() >= base + 3) { flushedByAlarm = true; break; }
+    }
+    assert.equal(flushedByAlarm, true, "the armed alarm fired at the deadline by itself and persisted the tail (reads never flush)");
+    console.log("      the armed alarm fired at the deadline by itself and persisted the tail");
+    // The window discipline survives the alarm flush:  the next guess
+    // buffers again instead of writing.
+    assert.equal(await gate.gbBearerMismatch("GB-ORACLE", configured), false, "after the alarm flush the next guess buffers");
+    assert.equal(await stored(), base + 3, "still no write inside the new window");
+    // A genuinely COLD instance (a fresh object name) flushes at once -
+    // onset visibility across instance restarts.  (The buffered half of
+    // the lower bound - a delta dying with an evicted instance - is
+    // structural:  the buffer is instance memory.  Granular eviction is
+    // not drivable in this harness, see the probe step's note.)
+    const cold = ns.get(ns.idFromName("GB-ORACLE-COLD"));
+    assert.equal(await cold.gbBearerMismatch("GB-ORACLE-COLD", configured), true, "a cold instance flushes at once");
+    assert.equal((await cold.gbBearerMismatches()).unconfigured?.count, 1, "the cold instance's write landed");
   });
 
   await step("a seat bearer: minted on /admin, serves /mcp only with the recorded acceptance, acts only as JET-CHAT, rotates and revokes", async () => {
