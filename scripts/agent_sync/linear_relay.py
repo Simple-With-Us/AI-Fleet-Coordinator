@@ -1478,9 +1478,14 @@ def run_check(client: ZulipClient, linear: LinearClient, env: Mapping[str, str],
         streams = load_public_streams(client)
     except (ApiError, NetworkError, ValueError) as exc:
         # run() relays nothing until this set loads, so a set that cannot load fails the check.
+        # The name and the message together say which of the three it is: the client scrubs
+        # the key and the auth token out of its own messages (zulip.py:1231 and zulip.py:1415),
+        # and a ValueError is one of this module's own fixed strings, so nothing credential-
+        # shaped reaches the operator's terminal here.
+        detail = " ".join(str(exc).split())[:200] or "no detail"
         print(
-            "zulip public-stream set failed to load (%s); the relay would relay nothing"
-            % type(exc).__name__
+            "zulip public-stream set failed to load (%s: %s); the relay would relay nothing"
+            % (type(exc).__name__, detail)
         )
         return 1
     print("zulip public-stream set ok: %d public stream(s)" % len(streams))

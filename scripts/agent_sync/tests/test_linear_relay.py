@@ -809,6 +809,14 @@ class RelayTests(unittest.TestCase):
                 code = lr.run_check(StreamsZulip(answer), NoLinear(), {}, "https://z.example")
             self.assertEqual(code, 1)
             self.assertIn("public-stream set failed to load", out.getvalue())
+            # each failure names its kind and its own text, so an auth failure, a network
+            # failure and a malformed answer read differently
+            expected = {
+                "ApiError": "ApiError: denied",
+                "NetworkError": "NetworkError: down",
+                "dict": "ValueError: ",
+            }[type(answer).__name__]
+            self.assertIn(expected, out.getvalue())
 
     def test_linear_error_codes_are_sorted_by_what_waiting_can_change(self) -> None:
         def classify(code: str) -> lr.LinearError:

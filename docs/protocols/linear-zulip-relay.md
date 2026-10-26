@@ -232,13 +232,15 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
 2. **Zulip**: a new bot, role Member, not admin and not owner.
 3. **Infisical**: `ZULIP_RELAY_EMAIL` and `ZULIP_RELAY_API_KEY` in prod `/zulip`, where the
    fleet keeps every Zulip bot's credentials, and `LINEAR_RELAY_TOKEN` in a path of Jay's choice.
-4. **Coolify**: after the PR merges, a second process or service from the same image, with the
-   environment above, a persistent volume for the ledger with `LINEAR_RELAY_STATE` pointing at a
-   file on it, and restart always.  Without that variable the ledger sits in the container's home
-   directory, which a redeploy empties, and the relay would then start a second comment for every
-   topic.  First run with `LINEAR_RELAY_DRY_RUN=1`, watch the log, then unset it.  A dry run keeps
-   its own ledger next to the configured one (`linear-relay.dry-run.json` beside
-   `linear-relay.json`), so it never marks a topic written in the file the live run will use.
+4. **Coolify**: after the PR merges, a second service built with Coolify's Docker Compose build
+   pack from the same Dockerfile (not a Dockerfile application; the healthcheck paragraph below
+   says why), with the environment above, a persistent volume for the ledger with
+   `LINEAR_RELAY_STATE` pointing at a file on it, and restart always.  Without that variable the
+   ledger sits in the container's home directory, which a redeploy empties, and the relay would
+   then start a second comment for every topic.  First run with `LINEAR_RELAY_DRY_RUN=1`, watch
+   the log, then unset it.  A dry run keeps its own ledger next to the configured one
+   (`linear-relay.dry-run.json` beside `linear-relay.json`), so it never marks a topic written in
+   the file the live run will use.
 
    The image is built for the daemon, so the relay service changes three things.  The image's
    Infisical loader (`scripts/agent_sync/server/infisical_env.py`) copies only the names on its
@@ -247,8 +249,9 @@ The relay writes nothing to Linear and holds no credential until Jay approves ea
    The image's entrypoint always runs `simple-chat` and its command is `daemon run --wait-lock`, so
    the service replaces both: the entrypoint becomes `python3` and the command
    `-m agent_sync.linear_relay run`, with `PYTHONPATH` set to the image's `scripts` folder.  And the
-   image's healthcheck watches the daemon's status file, which the relay never writes, so the service
-   turns that healthcheck off; restart always still brings the relay back if it exits.
+   image's healthcheck watches the daemon's status file, which the relay never writes, so the relay
+   service must have that healthcheck disabled, which the compose file described below does;
+   restart always still brings the relay back if it exits.
 
    Coolify's health-check setting cannot turn it off for a Dockerfile application, which is how the
    daemon is deployed.  In Coolify 4.5, the version on the server, such an application always ends
