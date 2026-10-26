@@ -513,5 +513,55 @@ class GuardIntegration(unittest.TestCase):
         self.assertIn("evaluation error", payload["output"]["title"])
 
 
+
+    def test_repaired_hold_comments_once_not_every_run(self):
+        # Sentry finding 4373451447 on #964: after the guard re-applies a
+        # hold, the illegitimate removal stays in timeline history; the
+        # comment step must not refire while no new repair happens.
+        # Repaired state: label present, history = set, illegit removal,
+        # re-applied -> no label POST, no comment, check still failure.
+        GUARD = (41999999, "github-actions[bot]")
+        self.scenario({
+            "labels": {"3": [{"name": "do-not-automerge"}]},
+            "events": {"3": [[ev("labeled", "do-not-automerge", *ECHO, "2026-10-25T01:00:00Z"),
+                              ev("unlabeled", "do-not-automerge", *WISE, "2026-10-25T02:00:00Z"),
+                              ev("labeled", "do-not-automerge", *GUARD, "2026-10-25T02:01:00Z")]]},
+        })
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        self.assertFalse([c for c in self.calls()
+                          if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]])
+        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
+                  and "POST" in c["argv"]]
+        self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "failure")
+
+    def test_comment_fires_on_the_repair_run(self):
+        # the SAME illegitimate history, label still absent: the repair run
+        # re-applies AND comments exactly once, after the successful POST
+        self._held_scenario()
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        self.assertEqual(len([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]]), 1)
+        label_post = next(i for i, c in enumerate(self.calls())
+                          if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"])
+        comment = next(i for i, c in enumerate(self.calls()) if c["argv"][:2] == ["pr", "comment"])
+        self.assertLess(label_post, comment)  # narrates the actual repair
+
+    def test_no_comment_when_repair_post_fails(self):
+        # failed repair: red job, NO comment - never claim "the hold is
+        # back on" when it is not
+        self._held_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       "fail": {"labels-post/3": {"rc": 1, "stderr": "boom 500"}}})
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 3)
+        self.assertIn("failed to re-apply label", p.stdout)
+        self.assertFalse([c for c in self.calls() if c["argv"][:2] == ["pr", "comment"]])
+        # the published check still says the hold is active (fail closed)
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])
+                  and "POST" in c["argv"]]
+        self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "failure")
+
 if __name__ == "__main__":
     unittest.main()

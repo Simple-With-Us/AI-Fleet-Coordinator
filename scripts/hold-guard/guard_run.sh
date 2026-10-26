@@ -26,6 +26,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ERR=/tmp/hold-guard-errors; : > "$ERR"
 PF=/tmp/hold-guard-patch-fail; : > "$PF"
+REPAIRED=/tmp/hold-guard-repaired; : > "$REPAIRED"
 any_error=0
 read_error=""
 
@@ -75,12 +76,18 @@ printf '%s' "$combined" | jq -c '.[] | select(.needs_reapply)' | while IFS= read
   if printf '%s' "$h" | jq -c '{labels: [.label]}' \
     | gh api "repos/$REPO/issues/$pr/labels" -X POST --input - >/dev/null; then
     echo "::notice::re-applied $(printf '%s' "$h" | jq -r .label) on #$pr"
+    printf '%s\n' "$h" >> "$REPAIRED"
   else
     echo "::error::failed to re-apply label on #$pr"
     echo repair >> "$ERR"
   fi
 done
-printf '%s' "$combined" | jq -c '.[] | select((.illegitimate_removals // []) | length > 0)' | while IFS= read -r h; do
+# Comments narrate ACTUAL repairs only: the entry lands in $REPAIRED after
+# a successful re-apply POST, so a failed repair never produces a "the
+# hold is back on" comment, and a hold already repaired in an earlier run
+# (label present, needs_reapply false) is not re-narrated on every run
+# (Sentry finding 4373451447 on #964).
+jq -c 'select((.illegitimate_removals // []) | length > 0)' "$REPAIRED" | while IFS= read -r h; do
   pr=$(printf '%s' "$h" | jq -r .pr)
   body=$(printf '%s' "$h" | jq -r '"Hold `\(.label)` was removed by \(.illegitimate_removals | join(", ")). Only its setter (\(.owner_login // "unknown")) can release it - the hold is back on."')
   gh pr comment "$pr" --repo "$REPO" --body "$body" >/dev/null \
