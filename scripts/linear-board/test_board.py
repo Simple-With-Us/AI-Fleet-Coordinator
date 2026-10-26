@@ -22,6 +22,9 @@ each request, so a test can tell one seat's token from another's.
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
+import inspect
 import io
 import json
 import os
@@ -862,9 +865,12 @@ if len(a) < 2:
     sys.exit(2)
 verb = a[0]
 if verb == "get":
-    if a[2:] != ["--path", "/linear"]:
+    if a[2:] == ["--path", "/linear"]:
+        f = os.path.join(V, a[1])
+    elif len(a[2:]) == 2 and a[2] == "--path" and a[3].startswith("/") and ".." not in a[3]:
+        f = os.path.join(V, a[3].strip("/"), a[1])
+    else:
         sys.exit(3)
-    f = os.path.join(V, a[1])
     if not os.path.isfile(f):
         sys.exit(3)
     sys.stdout.write(open(f).read())
@@ -921,6 +927,16 @@ class BoardTest(unittest.TestCase):
         self.fleet_secrets_stub.chmod(0o700)
         # The stored token blobs are keys of the same fake vault:  CACHE_FLEET, CACHE_<SEAT>.
         self.token_cache = self.ops_vault / "CACHE_FLEET"
+        # The harness plays the trusted launcher and the ST-MCP verify route:  a mock
+        # gr-bearer-verify/1 server, its key in the fake /tools folder, and one
+        # admin-minted bearer per seat in /fleet-seats, bound to each run by board().
+        self.verify_store = {"key": BEARER_VERIFY_KEY, "mode": "ok", "queries": []}
+        self.vserver = ThreadingHTTPServer(("127.0.0.1", 0), make_verify_handler(self.verify_store))
+        threading.Thread(target=self.vserver.serve_forever, daemon=True).start()
+        self.verify_url = f"http://127.0.0.1:{self.vserver.server_address[1]}/internal/gr-bearer-verify"
+        (self.ops_vault / "tools").mkdir()
+        (self.ops_vault / "tools" / "GR_BEARER_VERIFY_KEY").write_text(BEARER_VERIFY_KEY)
+        (self.ops_vault / "fleet-seats").mkdir()
         ids = self.tmp / "board-ids.txt"
         ids.write_text(
             "# test ids\n" + "\n".join([B_A, B_B, B_C, f"{B_D}\t{D_LINEAR}", B_F, B_G, B_H]) + "\n"
@@ -944,7 +960,25 @@ class BoardTest(unittest.TestCase):
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
+        self.vserver.shutdown()
+        self.vserver.server_close()
         self.assertEqual(self.mock.violations, [], "mock recorded contract violations")
+
+    def bearer_locator_for(self, seat):
+        """One deterministic admin-minted bearer per seat in the fake /fleet-seats folder."""
+        part = seat.lower()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{1,19}", part):
+            self.fail(f"test harness cannot mint a bearer for seat {seat!r}")
+        token = f"sbt_{part}_" + (part * 43)[:43]
+        key = seat.replace("-", "_") + "_SEAT_BEARER"  # key names allow no hyphen
+        (self.ops_vault / "fleet-seats" / key).write_text(token)
+        return f"/fleet-seats:{key}"
+
+    def seated_env(self, seat="CLAUDE"):
+        """self.env plus the launcher binding, for tests that spawn the CLI directly."""
+        return dict(self.env,
+                    SIMPLE_BOARD_BEARER_LOCATOR=self.bearer_locator_for(seat),
+                    SIMPLE_BOARD_BEARER_VERIFY_URL=self.verify_url)
 
     def ops_put(self, name, value):
         """Put one key in the fake Fleet-OPS /linear folder."""
@@ -978,9 +1012,18 @@ class BoardTest(unittest.TestCase):
         e.setdefault(own, BASE_SESSION)
         for k in drop:
             e.pop(k, None)
+        # The harness plays the trusted launcher:  a run whose environment names a seat is
+        # bound to that seat's bearer locator (the CLI itself never reads AGENT_SEAT).  An
+        # explicit locator in `extra` - including an emptied one - is left alone.
+        fab = _cli().norm_seat(e.get("AGENT_SEAT")) if e.get("AGENT_SEAT") else ""
+        if fab and e.get("SIMPLE_BOARD_BEARER_LOCATOR") is None:
+            e["SIMPLE_BOARD_BEARER_LOCATOR"] = self.bearer_locator_for(fab)
+        # SIMPLE_BOARD_BEARER_VERIFY_URL is consumed by CLI_BOOTSTRAP (test code) only.
+        if e.get("SIMPLE_BOARD_BEARER_LOCATOR") and e.get("SIMPLE_BOARD_BEARER_VERIFY_URL") is None:
+            e["SIMPLE_BOARD_BEARER_VERIFY_URL"] = self.verify_url
         kw = {} if stdin is None else {"input": stdin}
         p = subprocess.run(
-            [PY, str(CLI), *args], env=e, capture_output=True, text=True, timeout=60, **kw
+            [PY, "-c", CLI_BOOTSTRAP, str(CLI), *args], env=e, capture_output=True, text=True, timeout=60, **kw
         )
         for tok in self.mock.tokens:
             self.assertNotIn(tok, p.stdout + p.stderr, "a token reached the output")
@@ -1048,6 +1091,362 @@ GROK_NOT_ALIASES = (
 )
 
 
+# The test-only in-process launcher:  imports the CLI as a module, injects the fake verify
+# transport for the mock ST-MCP route, and runs main().  The CLI itself has NO environment
+# override for the verify endpoint or transport;  SIMPLE_BOARD_BEARER_VERIFY_URL is read by
+# THIS bootstrap (test code), never by the CLI, mirroring how production launchers bind the
+# locator while the endpoint stays fixed.
+CLI_BOOTSTRAP = r"""
+import importlib.machinery, importlib.util, os, sys, urllib.error, urllib.request
+cli_path = sys.argv[1]
+sys.argv = [cli_path] + sys.argv[2:]
+loader = importlib.machinery.SourceFileLoader("board_cli_under_test", cli_path)
+spec = importlib.util.spec_from_loader("board_cli_under_test", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+mock_url = os.environ.get("SIMPLE_BOARD_BEARER_VERIFY_URL", "")
+if mock_url:
+    def fake_transport(url, headers, body, timeout):
+        req = urllib.request.Request(mock_url, data=body, headers=headers, method="POST")
+        with urllib.request.build_opener().open(req, timeout=timeout) as resp:
+            return resp.read(mod.BEARER_MAX_RESPONSE + 1)
+    mod.BEARER_TRANSPORT = fake_transport
+sys.exit(mod.main())
+"""
+
+# Test-process network sandbox (sitecustomize on PYTHONPATH):  DNS and every non-loopback
+# connection are refused inside the child, so a test can never probe the real Worker.
+NETWORK_SANDBOX = r"""
+import socket
+_LOOPBACK = ("127.0.0.1", "::1", "localhost")
+def _blocked(host):
+    return not (isinstance(host, str) and host in _LOOPBACK)
+def _dns_guard(name, real):
+    def guarded(host, *a, **k):
+        if _blocked(host):
+            raise socket.gaierror(-2, "test sandbox: DNS blocked")
+        return real(host, *a, **k)
+    guarded._sandbox_guard = True
+    return guarded
+for _name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr", "getnameinfo"):
+    socket.__dict__[_name]  # must exist
+    globals()["_real_" + _name] = socket.__dict__[_name]
+    setattr(socket, _name, _dns_guard(_name, globals()["_real_" + _name]))
+_real_connect = socket.socket.connect
+def _connect(self, address):
+    host = address[0] if isinstance(address, tuple) else address
+    if _blocked(host):
+        raise OSError(111, "test sandbox: outbound connection blocked")
+    return _real_connect(self, address)
+_connect._sandbox_guard = True
+socket.socket.connect = _connect
+_real_connect_ex = socket.socket.connect_ex
+def _connect_ex(self, address):
+    host = address[0] if isinstance(address, tuple) else address
+    if _blocked(host):
+        return 111  # ECONNREFUSED, without ever attempting the connection
+    return _real_connect_ex(self, address)
+_connect_ex._sandbox_guard = True
+socket.socket.connect_ex = _connect_ex
+"""
+
+# Sentinel-first sandbox self-check, run as a child with NETWORK_SANDBOX on PYTHONPATH:
+# guards are verified present BEFORE any denial is exercised, and every denial is
+# answered by the guard itself (no real external connect or DNS is ever attempted).
+SANDBOX_PROBE = r"""
+import socket, sys
+missing = []
+for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr", "getnameinfo"):
+    if not getattr(getattr(socket, name), "_sandbox_guard", False):
+        missing.append(name)
+for meth in ("connect", "connect_ex"):
+    if not getattr(getattr(socket.socket, meth), "_sandbox_guard", False):
+        missing.append("socket." + meth)
+if missing:
+    print("guards missing: " + ", ".join(missing))
+    sys.exit(1)
+ext = ("203.0.113.1", 443)  # TEST-NET-3, documentation-only;  never really attempted
+for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex"):
+    try:
+        getattr(socket, name)("sandbox-probe.invalid")
+        print(name + " did not refuse")
+        sys.exit(1)
+    except socket.gaierror:
+        pass
+for call in (lambda: socket.gethostbyaddr("203.0.113.1"), lambda: socket.getnameinfo(ext, 0)):
+    try:
+        call()
+        print("reverse/nameinfo did not refuse")
+        sys.exit(1)
+    except socket.gaierror:
+        pass
+try:
+    socket.socket().connect(ext)
+    print("connect did not refuse")
+    sys.exit(1)
+except OSError:
+    pass
+if socket.socket().connect_ex(ext) == 0:
+    print("connect_ex did not refuse")
+    sys.exit(1)
+srv = socket.socket()
+srv.bind(("127.0.0.1", 0))
+srv.listen(1)
+port = srv.getsockname()[1]
+c = socket.socket()
+c.settimeout(5)
+c.connect(("127.0.0.1", port))
+conn, _ = srv.accept()
+c.close(); conn.close(); srv.close()
+if socket.gethostbyname("localhost") != "127.0.0.1":
+    print("loopback DNS broke")
+    sys.exit(1)
+print("SANDBOX OK")
+"""
+
+BEARER_ECHO = "sbt_echo_" + "A" * 43
+BEARER_FIXER = "gbb_fixer_" + "B" * 43
+BEARER_VERIFY_KEY = "verify-key-" + "k" * 40
+
+
+def make_verify_handler(store):
+    """A mock of the ST-MCP gr-bearer-verify/1 route: HMAC-checked, fixed reason codes."""
+
+    class VerifyHandler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _answer(self, status, obj):
+            data = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n)
+            sig = self.headers.get("X-Agent-Sync-Signature") or ""
+            good = hmac.new(store["key"].encode(), body, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(sig, good):
+                self._answer(401, {"ok": False, "reason": "bad_signature"})
+                return
+            try:
+                q = json.loads(body)
+            except ValueError:
+                self._answer(400, {"ok": False, "reason": "bad_json"})
+                return
+            store["queries"].append(q)
+            mode = store["mode"]
+            future = int((time.time() + 3600) * 1000)
+            if mode == "ok":
+                self._answer(200, {"ok": True, "identity": q.get("identity"), "expires_at": future})
+            elif mode == "wrong-identity":
+                self._answer(200, {"ok": True, "identity": "CODEX", "expires_at": future})
+            elif mode == "past-expiry":
+                self._answer(200, {"ok": True, "identity": q.get("identity"), "expires_at": 1000})
+            elif mode == "not-json":
+                self._answer(200, b"not json")
+            else:  # expired / mismatch / paused
+                self._answer(200, {"ok": False, "reason": mode})
+
+    return VerifyHandler
+
+
+class BearerSeatTests(BoardTest):
+    """Bearer identity:  the bearer proves the seat;  the environment never picks one."""
+
+    def setUp(self):
+        super().setUp()
+        (self.ops_vault / "fleet-seats" / "ECHO_SEAT_BEARER").write_text(BEARER_ECHO)
+        (self.ops_vault / "fleet-seats" / "FIXER_BEARER").write_text(BEARER_FIXER)
+        self.bearer_env = {"SIMPLE_BOARD_BEARER_LOCATOR": "/fleet-seats:ECHO_SEAT_BEARER"}
+
+    def assert_clean_failure(self, p, code=6):
+        self.assertEqual(p.returncode, code, f"stdout:\n{p.stdout}\nstderr:\n{p.stderr}")
+        self.assertNotIn(BEARER_ECHO, p.stdout + p.stderr)
+        self.assertNotIn(BEARER_FIXER, p.stdout + p.stderr)
+        self.assertNotIn(hashlib.sha256(BEARER_ECHO.encode()).hexdigest(), p.stdout + p.stderr)
+        self.assertNotIn(BEARER_VERIFY_KEY, p.stdout + p.stderr)
+
+    def test_bearer_seat_signs_a_write(self):
+        p = self.board("comment", "OPS-10", "--by", "ECHO", "--text", "Bearer run.", extra=self.bearer_env)
+        self.assertIn("as ECHO", p.stdout)
+        body = self.comments_of(self.issue_by_ident("OPS-10"))[-1]
+        self.assertTrue(body.startswith("[ECHO\u00b75e55105a] Bearer run."), body)
+        q = self.verify_store["queries"][-1]
+        self.assertEqual(q["contract"], "gr-bearer-verify/1")
+        self.assertEqual(q["identity"], "ECHO")
+        self.assertEqual(q["hash"], hashlib.sha256(BEARER_ECHO.encode()).hexdigest())
+        self.assertNotIn(BEARER_ECHO, json.dumps(q))
+
+    def test_bearer_beats_the_agent_seat_environment(self):
+        # Base env still says AGENT_SEAT=CLAUDE; the verified bearer wins and CLAUDE is ignored.
+        p = self.board("comment", "OPS-10", "--by", "ECHO", "--text", "Whose seat?", extra=self.bearer_env)
+        self.assertIn("as ECHO", p.stdout)
+        self.assertNotIn("as CLAUDE", p.stdout)
+
+    def test_gbb_bearer_maps_to_its_gb_role(self):
+        extra = dict(self.bearer_env, SIMPLE_BOARD_BEARER_LOCATOR="/fleet-seats:FIXER_BEARER")
+        self.board("stats", extra=extra)
+        self.assertEqual(self.verify_store["queries"][-1]["identity"], "GB-FIXER")
+
+    def test_bad_signature_is_refused(self):
+        (self.ops_vault / "tools" / "GR_BEARER_VERIFY_KEY").write_text("wrong-" + "k" * 40)
+        p = self.board("stats", extra=self.bearer_env, code=None)
+        self.assert_clean_failure(p)
+        self.assertIn("bad_signature", p.stderr)
+
+    def test_mismatch_is_refused(self):
+        self.verify_store["mode"] = "mismatch"
+        p = self.board("stats", extra=self.bearer_env, code=None)
+        self.assert_clean_failure(p)
+        self.assertIn("mismatch", p.stderr)
+
+    def test_expired_is_refused(self):
+        self.verify_store["mode"] = "expired"
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_paused_is_refused(self):
+        self.verify_store["mode"] = "paused"
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_an_answer_for_another_identity_is_refused(self):
+        self.verify_store["mode"] = "wrong-identity"
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_a_past_expiry_is_refused(self):
+        self.verify_store["mode"] = "past-expiry"
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_a_non_json_answer_is_refused(self):
+        self.verify_store["mode"] = "not-json"
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_an_unreachable_verifier_is_refused(self):
+        extra = dict(self.bearer_env, SIMPLE_BOARD_BEARER_VERIFY_URL="http://127.0.0.1:9/internal/gr-bearer-verify")
+        p = self.board("stats", extra=extra, code=None)
+        self.assert_clean_failure(p)
+        self.assertIn("unreachable", p.stderr)
+
+    def test_an_untrusted_verify_url_env_cannot_pick_an_identity(self):
+        # Run the CLI binary DIRECTLY (no test bootstrap) under a test-process network
+        # sandbox (sitecustomize:  DNS and non-loopback connects are blocked, so this test
+        # never produces a real external call).  The caller's SIMPLE_BOARD_BEARER_VERIFY_URL
+        # loopback mock stays fully reachable but is never queried;  the CLI's fixed
+        # production endpoint attempt fails closed.
+        sandbox = self.tmp / "net-sandbox"
+        sandbox.mkdir()
+        (sandbox / "sitecustomize.py").write_text(NETWORK_SANDBOX)
+        e = dict(self.env, **self.bearer_env,
+                 SIMPLE_BOARD_BEARER_VERIFY_URL=self.verify_url,
+                 PYTHONPATH=str(sandbox))
+        p = subprocess.run([PY, str(CLI), "stats"], env=e, capture_output=True, text=True, timeout=60)
+        self.assert_clean_failure(p)
+        # "unreachable" proves the sandbox engaged:  a real Worker answer would be a
+        # fixed-reason refusal (bad_signature), not a transport failure.
+        self.assertIn("unreachable", p.stderr)
+        self.assertEqual(self.verify_store["queries"], [], "the caller's mock was never queried")
+
+    def test_a_malformed_bearer_value_is_refused(self):
+        (self.ops_vault / "fleet-seats" / "ECHO_SEAT_BEARER").write_text("not-a-bearer")
+        p = self.board("stats", extra=self.bearer_env, code=None)
+        self.assert_clean_failure(p)
+        self.assertIn("not an admin-minted bearer", p.stderr)
+
+    def test_a_missing_bearer_value_is_refused(self):
+        (self.ops_vault / "fleet-seats" / "ECHO_SEAT_BEARER").unlink()
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_a_missing_verify_key_is_refused(self):
+        (self.ops_vault / "tools" / "GR_BEARER_VERIFY_KEY").unlink()
+        self.assert_clean_failure(self.board("stats", extra=self.bearer_env, code=None))
+
+    def test_malformed_locators_are_refused(self):
+        for bad in ("nope", "/fleet-seats", "fleet-seats:ECHO_SEAT_BEARER",
+                    "/fleet-seats:lowercase", "/../tools:KEY", "/fleet-seats:KEY:EXTRA",
+                    "/a/../b:KEY", "/a/./b:KEY", "/fleet-seats/:KEY", "//fleet-seats:KEY",
+                    "/fleet-seats//x:KEY", "/fleet-seats:KEY_NAME_OK:EXTRA2"):
+            p = self.board("stats", extra=dict(self.bearer_env, SIMPLE_BOARD_BEARER_LOCATOR=bad), code=None)
+            self.assert_clean_failure(p)
+
+    def test_without_a_locator_the_environment_cannot_pick_an_identity(self):
+        # AGENT_SEAT stays set but is inert:  with no locator the write refuses (exit 6),
+        # reads run without an identity, and the verifier is never asked.
+        p = self.board("comment", "OPS-10", "--by", "CLAUDE", "--text", "x",
+                       extra={"SIMPLE_BOARD_BEARER_LOCATOR": ""}, code=6)
+        self.assertIn("no verified seat", p.stderr)
+        self.assertEqual(self.mock.ops, [])
+        p = self.board("whoami", extra={"SIMPLE_BOARD_BEARER_LOCATOR": ""})
+        self.assertIn("no bearer", p.stdout)
+        self.assertEqual(self.verify_store["queries"], [])
+
+    def test_every_seated_run_verifies_its_bearer(self):
+        # The harness binds the launcher locator for AGENT_SEAT=CLAUDE:  the run verifies.
+        self.board("stats")
+        self.assertEqual(self.verify_store["queries"][-1]["identity"], "CLAUDE")
+
+
+class BearerTransportSeamTests(unittest.TestCase):
+    """The verify transport seam is import-only:  the CLI binary reads no endpoint or
+    transport from the environment, and the fixed endpoint is the trusted https origin."""
+
+    def test_the_endpoint_is_the_fixed_trusted_origin(self):
+        cli = _cli()
+        self.assertIsNone(cli.BEARER_TRANSPORT)
+        self.assertEqual(cli.BEARER_VERIFY_URL,
+                         "https://agents.simplewithus.com/internal/gr-bearer-verify")
+        self.assertNotIn("SIMPLE_BOARD_BEARER_VERIFY_URL", inspect.getsource(cli.bearer_verified_seat))
+
+    def test_the_sandbox_blocks_every_network_entry_path(self):
+        sandbox = Path(tempfile.mkdtemp(prefix="net-sandbox-"))
+        (sandbox / "sitecustomize.py").write_text(NETWORK_SANDBOX)
+        p = subprocess.run(
+            [PY, "-c", SANDBOX_PROBE],
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": str(sandbox)},
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, f"stdout:\n{p.stdout}\nstderr:\n{p.stderr}")
+        self.assertIn("SANDBOX OK", p.stdout)
+
+    def test_in_process_transport_injection(self):
+        cli = _cli()
+        tmp = Path(tempfile.mkdtemp(prefix="board-seam-"))
+        (tmp / "tools").mkdir()
+        (tmp / "fleet-seats").mkdir()
+        (tmp / "tools" / "GR_BEARER_VERIFY_KEY").write_text(BEARER_VERIFY_KEY)
+        (tmp / "fleet-seats" / "ECHO_SEAT_BEARER").write_text(BEARER_ECHO)
+        stub = tmp / "fleet-secrets"
+        stub.write_text(
+            FAKE_FLEET_SECRETS.replace("@VAULT@", str(tmp))
+            .replace("@CALLS@", str(tmp / "calls.log"))
+            .replace("@PY@", PY)
+        )
+        stub.chmod(0o700)
+        calls = []
+
+        def fake(url, headers, body, timeout):
+            calls.append((url, body))
+            return json.dumps({"ok": True, "identity": "ECHO",
+                               "expires_at": int((time.time() + 3600) * 1000)}).encode()
+
+        cli.BEARER_TRANSPORT = fake
+        try:
+            with unittest.mock.patch.dict(os.environ, {
+                "SIMPLE_BOARD_BEARER_LOCATOR": "/fleet-seats:ECHO_SEAT_BEARER",
+                "LINEAR_BOARD_FLEET_SECRETS": str(stub),
+            }):
+                self.assertEqual(cli.bearer_verified_seat(), "ECHO")
+        finally:
+            cli.BEARER_TRANSPORT = None
+        url, body = calls[0]
+        self.assertEqual(url, "https://agents.simplewithus.com/internal/gr-bearer-verify")
+        q = json.loads(body)
+        self.assertEqual(q["identity"], "ECHO")
+        self.assertEqual(q["hash"], hashlib.sha256(BEARER_ECHO.encode()).hexdigest())
+        self.assertNotIn(BEARER_ECHO, body.decode())
+
+
 class SeatAliasTests(unittest.TestCase):
     """Any spelling of GROK followed by BUILD is the seat GROK (owner 2026-10-10);  nothing else is aliased."""
 
@@ -1106,14 +1505,15 @@ class SafetyTests(BoardTest):
             ["comment", B_A[:8], "--by", "CLAUDE", "--text-file", "/nonexistent"],
             ["label", "add", B_A[:8], "needs-owner"],
         ):
-            p = self.board(*args, drop=("AGENT_SEAT",), code=2)
-            self.assertIn("AGENT_SEAT is not set", p.stderr)
+            p = self.board(*args, drop=("AGENT_SEAT",), code=6)
+            self.assertIn("no verified seat", p.stderr)
         self.assertEqual(self.mock.ops, [])
         self.assertEqual(self.mock.mints, 0)
 
     def test_reads_work_without_agent_seat(self):
-        """AGENT_SEAT is unset in plain shells, `zsh -lic` and the listener's `env -i`; the skills' reads
-        (`board stats`, `board list --status open,in_progress --severity P0,P1 --limit 25`) must still run."""
+        """No bearer locator is bound in plain shells, `zsh -lic` and the listener's `env -i`;
+        the skills' reads (`board stats`, `board list --status open,in_progress --severity P0,P1
+        --limit 25`) must still run, without an identity."""
         p = self.board(
             "list",
             "--status",
@@ -1128,7 +1528,7 @@ class SafetyTests(BoardTest):
         self.board("show", "OPS-10", drop=("AGENT_SEAT",))
         self.assertIn("total 9", self.board("stats", drop=("AGENT_SEAT",)).stdout)
         p = self.board("whoami", drop=("AGENT_SEAT",))
-        self.assertIn("AGENT_SEAT is not set", p.stdout)
+        self.assertIn("no bearer", p.stdout)
         self.assertIn("viewer:      Fleet (app user)", p.stdout)
 
     def test_missing_credentials(self):
@@ -1163,7 +1563,7 @@ class SafetyTests(BoardTest):
 
     def test_by_must_match_seat(self):
         p = self.board("comment", B_A[:8], "--by", "CODEX", "--text", "hi", code=2)
-        self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
+        self.assertIn("does not match the verified seat CLAUDE", p.stderr)
         self.board(
             "comment", B_A[:8], "--by", "@claude", "--text", "hi"
         )  # normalized match is fine
@@ -1193,7 +1593,7 @@ class SafetyTests(BoardTest):
             extra={"AGENT_SEAT": "GROK-BUILD"},
             code=2,
         )
-        self.assertIn("does not match AGENT_SEAT=GROK", p.stderr)
+        self.assertIn("does not match the verified seat GROK", p.stderr)
         p = self.board(
             "comment",
             B_A[:8],
@@ -1204,7 +1604,7 @@ class SafetyTests(BoardTest):
             extra={"AGENT_SEAT": "GROK-BUILD"},
             code=2,
         )
-        self.assertIn("does not match AGENT_SEAT=GROK", p.stderr)
+        self.assertIn("does not match the verified seat GROK", p.stderr)
         p = self.board(
             "comment",
             B_A[:8],
@@ -1225,7 +1625,7 @@ class SafetyTests(BoardTest):
             extra={"AGENT_SEAT": "GROKBUILDER"},
             code=2,
         )
-        self.assertIn("does not match AGENT_SEAT=GROKBUILDER", p.stderr)
+        self.assertIn("does not match the verified seat GROKBUILDER", p.stderr)
         self.assertEqual(self.mock.violations, [])
 
     def test_url_override_must_be_loopback(self):
@@ -2003,7 +2403,7 @@ class SessionIdTests(BoardTest):
             self.assertNotIn("commented on", p.stdout)
         # --by does not make a non-exempt seat exempt either:  it must equal AGENT_SEAT.
         p = self.bare("CLAUDE", "comment", "OPS-10", "--by", "WISE", "--text", "x", code=2)
-        self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
+        self.assertIn("does not match the verified seat CLAUDE", p.stderr)
 
     def test_an_exempt_seat_that_has_an_id_still_records_it(self):
         p = self.bare(
@@ -2741,15 +3141,15 @@ class SeatAppTests(BoardTest):
         )
         # Legacy and display aliases resolve to WISE, and sign as WISE with Wise's app.
         self.as_seat("WISE", "comment", B_A[:8], "--by", "WISE", "--text", "WISE is INSTINCT")
-        self.assertIn("seat:        WISE (AGENT_SEAT)", self.as_seat("WISE", "whoami").stdout)
+        self.assertIn("seat:        WISE (bearer-verified)", self.as_seat("WISE", "whoami").stdout)
         for alias in ("Wise-Instinct", "Echo-Instinct", "Instinct"):
             self.as_seat(
                 alias, "comment", B_A[:8], "--by", alias, "--text", "alias resolves to WISE"
             )
-            self.assertIn("seat:        WISE (AGENT_SEAT)", self.as_seat(alias, "whoami").stdout)
+            self.assertIn("seat:        WISE (bearer-verified)", self.as_seat(alias, "whoami").stdout)
         for alias in ("Muse-Assist", "Rob", "Rob-Muse"):
             self.as_seat(alias, "comment", B_A[:8], "--by", alias, "--text", "alias resolves to MA")
-            self.assertIn("seat:        MA (AGENT_SEAT)", self.as_seat(alias, "whoami").stdout)
+            self.assertIn("seat:        MA (bearer-verified)", self.as_seat(alias, "whoami").stdout)
         # OpenCode and OC are interchangeable, and case never matters
         self.seat_app("OPENCODE", "OpenCode")
         self.as_seat(
@@ -2827,8 +3227,8 @@ class SeatAppTests(BoardTest):
         self.cache("CLAUDE").write_text(json.dumps(blob))
         procs = [
             subprocess.Popen(
-                [PY, str(CLI), "list"],
-                env=dict(self.env, AGENT_SEAT="CLAUDE"),
+                [PY, "-c", CLI_BOOTSTRAP, str(CLI), "list"],
+                env=self.seated_env("CLAUDE"),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -3049,8 +3449,8 @@ class FileInputTests(BoardTest):
 
     def test_standard_input_that_is_not_utf8_is_refused(self):
         p = subprocess.run(
-            [PY, str(CLI), "file", "--title", "x", "--desc-file", "-"],
-            env=self.env,
+            [PY, "-c", CLI_BOOTSTRAP, str(CLI), "file", "--title", "x", "--desc-file", "-"],
+            env=self.seated_env("CLAUDE"),
             input=b"caf\xe9",
             capture_output=True,
             timeout=60,
@@ -3106,7 +3506,7 @@ class FileInputTests(BoardTest):
         self.assertIn("--by", p.stderr)
         self.assertEqual(len(self.mock.ops), ops)
         p = self.board("comment", "OPS-10", "--by", "CODEX", "--text-file", f, code=2)
-        self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
+        self.assertIn("does not match the verified seat CLAUDE", p.stderr)
 
     def test_an_empty_comment_file_is_refused(self):
         p = self.board(
@@ -3134,7 +3534,7 @@ class FileInputTests(BoardTest):
             ["label", "add", B_A[:8], "needs-owner"],
         ):
             self.board(*args, drop=("LINEAR_BOARD_WRITES",), code=7, stdin="")
-            self.board(*args, drop=("AGENT_SEAT",), code=2, stdin="")
+            self.board(*args, drop=("AGENT_SEAT",), code=6, stdin="")
         self.untouched()
 
 
@@ -3296,7 +3696,7 @@ class FlatLabelTests(BoardTest):
 
     def test_label_by_must_match_the_seat(self):
         p = self.board("label", "add", "OPS-10", "needs-owner", "--by", "CODEX", code=2)
-        self.assertIn("does not match AGENT_SEAT=CLAUDE", p.stderr)
+        self.assertIn("does not match the verified seat CLAUDE", p.stderr)
         self.assertEqual(self.mock.ops, [])
 
     def test_a_team_scoped_label_of_the_same_name_is_not_used(self):
@@ -3458,6 +3858,17 @@ def load_cli():
     return mod
 
 
+_CLI_MOD = None
+
+
+def _cli():
+    """load_cli(), cached:  the board() launcher shim normalizes seats with it."""
+    global _CLI_MOD
+    if _CLI_MOD is None:
+        _CLI_MOD = load_cli()
+    return _CLI_MOD
+
+
 class CommentAuthorTests(BoardTest):
     """`show --json` hands a consumer the Linear account behind each comment (the needs-owner notifier checks the
     owner's reply by it), and that account never comes from the comment's text."""
@@ -3553,10 +3964,12 @@ class TokenBlobTests(BoardTest):
         self.as_seat("CLAUDE", "list")
         self.assertEqual(self.mock.mints, 1)
         self.assertEqual(self.sets(), ["set CACHE_CLAUDE"], "only the first run wrote")
-        # AFC-361:  no bundle dump, one `fleet-secrets get` per key (client id, client secret, blob)
+        # AFC-361:  no bundle dump, one `fleet-secrets get` per key (bearer, verify key, then
+        # client id, client secret, blob)
         self.assertEqual(
             self.fs_verbs()[before:],
-            ["get CLAUDE_LINEAR_CLIENT_ID", "get CLAUDE_LINEAR_CLIENT_SECRET", "get CACHE_CLAUDE"],
+            ["get CLAUDE_SEAT_BEARER", "get GR_BEARER_VERIFY_KEY",
+             "get CLAUDE_LINEAR_CLIENT_ID", "get CLAUDE_LINEAR_CLIENT_SECRET", "get CACHE_CLAUDE"],
         )
 
     def test_an_expired_blob_means_one_mint_and_one_write_with_the_value_on_stdin(self):
