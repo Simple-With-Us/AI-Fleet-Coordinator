@@ -1018,7 +1018,7 @@ def verify_realm(creds: Credentials, realm: str) -> None:
 
     A host that is not the realm's is a `RealmMismatch` (a `CredentialError`):  the key is fine,
     it belongs to another server, so a caller skips that target instead of failing the seat.
-    The message names the bot's email, so a caller that logs it must scrub it first."""
+    The message names only hosts, so a caller may print it without exposing an identity."""
     c_host, c_port, _ = _host_key(creds.site)
     r_host, r_port, r_scheme = _host_key(realm)
     if not r_host or not c_host:
@@ -1027,8 +1027,8 @@ def verify_realm(creds: Credentials, realm: str) -> None:
         )
     if (c_host, c_port) != (r_host, r_port):
         raise RealmMismatch(
-            "credential site host %s (bot %s, from %s) does not match the realm host %s; refusing to send it there"
-            % (c_host, creds.email, creds.source, r_host)
+            "credential site host %s does not match the realm host %s; refusing to send it there"
+            % (c_host, r_host)
         )
     if r_scheme != "https" and not _is_loopback(r_host):
         raise CredentialError(

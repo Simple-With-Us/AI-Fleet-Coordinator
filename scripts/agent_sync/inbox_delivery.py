@@ -300,7 +300,7 @@ def deliver_to_bot(
     http: Http,
     message_id: int,
     channel: str,
-    streams: Sequence[Mapping[str, Any]],
+    streams: Sequence[Mapping[str, Any]] | None,
     *,
     seat: str,
     log: Log,
@@ -317,6 +317,17 @@ def deliver_to_bot(
     message is unread for the bot.  A failed write is raised as a `_Step`, so the caller can
     tell a write that may have been applied from one that certainly was not."""
     completed = done if done is not None else set()
+    # `unread` is never a frozen done-step: a listener may re-read the message
+    # after one attempt, so every attempt reapplies it (it is idempotent).
+    completed.discard("unread")
+    if streams is None:
+        # Only the read flag is missing: no channel lookup is needed.
+        try:
+            mark_unread(http, message_id)
+        except Exception as exc:  # noqa: BLE001 - the classifier decides
+            raise _Step(exc) from None
+        completed.discard("unread")
+        return DELIVERED
     public, stream_id = channel_state(streams, channel)
     if not public:
         log(
@@ -333,9 +344,8 @@ def deliver_to_bot(
         if "quiet" not in completed:
             quiet(http, stream_id)
             completed.add("quiet")
-        if "unread" not in completed:
-            mark_unread(http, message_id)
-            completed.add("unread")
+        mark_unread(http, message_id)
+        completed.discard("unread")
     except Exception as exc:  # noqa: BLE001 - the classifier decides what the failure means
         raise _Step(exc) from None
     return DELIVERED
@@ -543,19 +553,19 @@ def _deliver_one(
         log("inbox-delivery-skipped", seat=seat, id=message_id, reason="owner")
         return SKIPPED
     completed = steps.setdefault(seat, set())
-    if all(step in completed for step in STEPS):
-        # Every step of this bot already worked:  it is delivered, and a retry does not even
-        # read the channel again for it.
-        return DELIVERED
+    completed.discard("unread")
     http = http_factory(creds, realm)
     site = str(creds.site or "")
-    if site not in streams_by_site:
-        streams_by_site[site] = fetch_streams(http)
+    streams: list[Mapping[str, Any]] | None = None
+    if not {"subscribe", "quiet"} <= completed:
+        if site not in streams_by_site:
+            streams_by_site[site] = fetch_streams(http)
+        streams = streams_by_site[site]
     return deliver_to_bot(
         http,
         message_id,
         channel,
-        streams_by_site[site],
+        streams,
         seat=seat,
         log=log,
         done=completed,

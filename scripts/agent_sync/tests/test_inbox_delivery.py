@@ -161,6 +161,36 @@ class InboxDeliveryTests(unittest.TestCase):
         settings = {row["property"]: row["value"] for row in properties[0]["subscription_data"]}
         self.assertEqual(settings, SUB.QUIET, "the bot stays quiet")
 
+    def test_unread_is_reapplied_and_streams_not_refetched_when_only_unread_is_missing(
+        self,
+    ) -> None:
+        transport = FakeTransport("CLAUDE")
+        done: dict[str, set[str]] = {"CLAUDE": set()}
+        for _ in range(2):
+            result, _events = self.deliver(
+                message(),
+                [("CLAUDE", creds("CLAUDE"))],
+                lambda _c, _realm: transport,
+                done=done,
+            )
+            self.assertEqual(result["outcomes"]["CLAUDE"], "delivered")
+        self.assertEqual(len(transport.payloads("messages/flags")), 2)
+        self.assertEqual(transport.paths().count("users/me/subscriptions"), 1)
+        self.assertEqual(transport.paths().count("streams"), 1)
+
+    def test_only_unread_missing_does_not_fetch_streams(self) -> None:
+        transport = FakeTransport("CLAUDE")
+        done: dict[str, set[str]] = {"CLAUDE": {"subscribe", "quiet"}}
+        result, _events = self.deliver(
+            message(),
+            [("CLAUDE", creds("CLAUDE"))],
+            lambda _c, _realm: transport,
+            done=done,
+        )
+        self.assertEqual(result["outcomes"]["CLAUDE"], "delivered")
+        self.assertEqual(transport.paths().count("streams"), 0)
+        self.assertEqual(len(transport.payloads("messages/flags")), 1)
+
     def test_one_bot_raising_does_not_stop_the_others(self) -> None:
         broken = FakeTransport("CLAUDE", fail_on="streams")
         fine = FakeTransport("CODEX")
@@ -268,6 +298,23 @@ class InboxDeliveryTests(unittest.TestCase):
             "https://zulip.test/api/v1/",
             "the transport addresses the source realm, not the credential's own site",
         )
+
+
+class RealmMismatchMessageTests(unittest.TestCase):
+    def test_realm_mismatch_names_only_hosts(self) -> None:
+        secret_creds = Z.Credentials(
+            email="claude-bot@zulip.test",
+            key="k",
+            site="https://other-realm.test",
+            source="CLAUDE_ZULIP_KEY",
+        )
+        with self.assertRaises(Z.RealmMismatch) as caught:
+            Z.verify_realm(secret_creds, "https://zulip.test")
+        text = str(caught.exception)
+        self.assertIn("other-realm.test", text)
+        self.assertIn("zulip.test", text)
+        self.assertNotIn("claude-bot@zulip.test", text)
+        self.assertNotIn("CLAUDE_ZULIP_KEY", text)
 
 
 class OutcomeClassificationTests(unittest.TestCase):
@@ -999,6 +1046,69 @@ class OwnerInboxDeliveryTests(DaemonHarness):
         ]
         self.assertEqual(len(incomplete), 1, "a terminal seat is reported once")
         self.assertEqual(incomplete[0].get("outcomes"), {"CLAUDE": "terminal"})
+
+    def test_missing_credentials_event_is_not_repeated_on_retry(self) -> None:
+        from agent_sync.daemon import InboxPending
+
+        daemon = self.started()
+        msg = message()
+        daemon._inbox_pending[4242] = InboxPending(message=msg, seats={"CODEX"})
+        targets = IDEL.Targets(
+            targets=[("CLAUDE", creds("CLAUDE", site=self.fake.url))],
+            skipped={"CODEX": "CODEX_ZULIP_KEY", "OTHER": "OTHER_ZULIP_KEY"},
+        )
+        with (
+            mock.patch.object(IDEL, "infisical_targets", return_value=targets),
+            mock.patch.object(IDEL, "zulip_http", side_effect=self.transport_for),
+        ):
+            daemon._deliver_inbox(msg, only_seats={"CODEX"})
+            daemon._deliver_inbox(msg, only_seats={"CODEX"})
+        rows = [
+            r
+            for r in self.log_rows(daemon)
+            if r.get("event") == "inbox-delivery-missing-credentials"
+        ]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("seats"), {"CODEX": "CODEX_ZULIP_KEY"})
+
+    def test_whole_retry_pending_event_lists_no_delivered_seat(self) -> None:
+        from agent_sync.daemon import InboxPending
+
+        daemon = self.started()
+        daemon._inbox_pending[4242] = InboxPending(
+            message=message(),
+            outcomes={"CLAUDE": "delivered", "CODEX": "unknown"},
+        )
+        daemon._inbox_finish(4242, outcomes={}, whole=True)
+        rows = self.retry_rows(daemon)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].get("seats"), [])
+
+    def test_inbox_finish_logs_after_releasing_fanout_lock(self) -> None:
+        from agent_sync.daemon import InboxPending
+
+        daemon = self.started()
+        daemon._inbox_pending[4242] = InboxPending(
+            message=message(), outcomes={"CLAUDE": "unknown"}
+        )
+        seen: list[tuple[str, bool]] = []
+        real_log = daemon.log
+
+        class StubLog:
+            path = real_log.path
+
+            def write(self, event, **fields):
+                acquired = daemon._fanout_lock.acquire(blocking=False)
+                seen.append((event, acquired))
+                if acquired:
+                    daemon._fanout_lock.release()
+
+        daemon.log = StubLog()  # type: ignore[assignment]
+        try:
+            daemon._inbox_finish(4242, outcomes={"CLAUDE": "unknown"})
+        finally:
+            daemon.log = real_log  # type: ignore[assignment]
+        self.assertEqual(seen, [("inbox-delivery-retry-pending", True)])
 
     def test_a_delivery_thread_that_cannot_start_leaves_no_id_behind(self) -> None:
         import threading

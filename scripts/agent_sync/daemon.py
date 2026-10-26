@@ -586,6 +586,7 @@ class InboxPending:
     attempts: int = 0
     next_due: float = 0.0
     in_flight: bool = False
+    missing_named: dict[str, str] = field(default_factory=dict)
 
 
 class Daemon:
@@ -3320,13 +3321,26 @@ class Daemon:
             self._inbox_finish(message_id, outcomes={}, whole=True)
             return
         if targets.skipped:
-            # One event for every seat without credentials, before any write:  a seat that
-            # cannot be addressed is named, never a silent gap.
-            self.log.write(
-                "inbox-delivery-missing-credentials",
-                id=message_id,
-                seats={seat: targets.skipped[seat] for seat in sorted(targets.skipped)},
-            )
+            # One event for the seats this attempt is responsible for, before any write:
+            # a seat that cannot be addressed is named, never a silent gap.  The same
+            # unchanged set is not named again on every retry.
+            named = {
+                seat: targets.skipped[seat]
+                for seat in sorted(targets.skipped)
+                if only_seats is None or seat in only_seats
+            }
+            if named:
+                with self._fanout_lock:
+                    state = self._inbox_pending.get(message_id)
+                    changed = state is None or state.missing_named != named
+                    if state is not None:
+                        state.missing_named = dict(named)
+                if changed:
+                    self.log.write(
+                        "inbox-delivery-missing-credentials",
+                        id=message_id,
+                        seats=named,
+                    )
         owner_email = self._owner_email()
         try:
             result = IDEL.deliver(
@@ -3370,6 +3384,7 @@ class Daemon:
         retry queue with the steps it already completed.  A seat that ended `terminal` is
         reported once, in an `inbox-delivery-incomplete` event, so it is never silent.  When
         the last retry fails, the queue gives up, says so, and drops the message."""
+        event: tuple[str, dict[str, Any]] | None = None
         with self._fanout_lock:
             state = self._inbox_pending.get(message_id)
             if state is None:
@@ -3400,31 +3415,40 @@ class Daemon:
             if pending or whole:
                 if state.attempts >= len(INBOX_RETRY_BACKOFF):
                     gave_up = sorted(pending) if pending else sorted(state.outcomes)
-                    self.log.write(
+                    event = (
                         "inbox-delivery-gave-up",
-                        id=message_id,
-                        seats=gave_up,
-                        outcomes={seat: state.outcomes.get(seat, IDEL.UNKNOWN) for seat in gave_up},
+                        {
+                            "id": message_id,
+                            "seats": gave_up,
+                            "outcomes": {
+                                seat: state.outcomes.get(seat, IDEL.UNKNOWN) for seat in gave_up
+                            },
+                        },
                     )
                     del self._inbox_pending[message_id]
-                    return
-                state.attempts += 1
-                state.next_due = self.clock.time() + INBOX_RETRY_BACKOFF[state.attempts - 1]
-                state.seats = None if whole else set(pending)
-                self.log.write(
-                    "inbox-delivery-retry-pending",
-                    id=message_id,
-                    seats=sorted(pending) if pending else sorted(state.outcomes),
-                )
-                return
-            terminal = {
-                seat: outcome
-                for seat, outcome in state.outcomes.items()
-                if outcome == IDEL.TERMINAL
-            }
-            if terminal:
-                self.log.write("inbox-delivery-incomplete", id=message_id, outcomes=terminal)
-            del self._inbox_pending[message_id]
+                else:
+                    state.attempts += 1
+                    state.next_due = self.clock.time() + INBOX_RETRY_BACKOFF[state.attempts - 1]
+                    state.seats = None if whole else set(pending)
+                    event = (
+                        "inbox-delivery-retry-pending",
+                        {"id": message_id, "seats": sorted(pending)},
+                    )
+            else:
+                terminal = {
+                    seat: outcome
+                    for seat, outcome in state.outcomes.items()
+                    if outcome == IDEL.TERMINAL
+                }
+                if terminal:
+                    event = (
+                        "inbox-delivery-incomplete",
+                        {"id": message_id, "outcomes": terminal},
+                    )
+                del self._inbox_pending[message_id]
+        # JsonLog.write is blocking I/O: it must not run under _fanout_lock.
+        if event is not None:
+            self.log.write(event[0], **event[1])
 
     def _start_due_inbox_retries(self, now: float) -> None:
         """Event thread only (tick):  start one retry thread per due message.
