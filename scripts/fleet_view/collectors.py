@@ -1,7 +1,7 @@
 """The three collectors:  lanes, pull requests and Linear claims.
 
 Each collector takes a ``runner`` so a test can drive it with fake output and
-no network, no real home and no real ``gh`` or ``board``.  The runner is the
+no network, no real home and no real ``gh`` or ``simple-board``.  The runner is the
 only place a child process starts, it carries a timeout, and it refuses any
 executable outside the allowlist before a process exists.
 
@@ -42,7 +42,7 @@ __all__ = [
 
 # The only executables a collector may start.  A command outside this list is
 # refused before any process exists.
-ALLOWED_EXECUTABLES = frozenset({"git", "gh", "board"})
+ALLOWED_EXECUTABLES = frozenset({"git", "gh", "simple-board", "board"})
 
 # runner(argv) -> (exit_code, stdout).  It raises TimeoutError on a timeout.
 Runner = Callable[[list], tuple]
@@ -306,7 +306,7 @@ def collect_claims(
     now: datetime,
     expiry_hours: int,
 ) -> Section:
-    """One ``board list --json`` for every In Progress claim.
+    """One ``simple-board list --json`` for every In Progress claim.
 
     Grouping is by the ``claimed:<SEAT>`` label.  Expiry compares the claim's
     last update age with ``expiry_hours`` (the CLAIM_EXPIRY ceiling the caller
@@ -317,17 +317,19 @@ def collect_claims(
             state="UNKNOWN", reason="Linear request budget spent (%d)" % budget.linear_max
         )
     try:
-        code, out = runner(["board", "list", "--status", "in_progress", "--limit", "200", "--json"])
+        code, out = runner(
+            ["simple-board", "list", "--status", "in_progress", "--limit", "200", "--json"]
+        )
     except (TimeoutError, RuntimeError, ValueError) as exc:
-        return Section(state="UNKNOWN", reason="board failed: %s" % exc)
+        return Section(state="UNKNOWN", reason="simple-board failed: %s" % exc)
     if code != 0:
-        return Section(state="UNKNOWN", reason="board exited %d" % code)
+        return Section(state="UNKNOWN", reason="simple-board exited %d" % code)
     try:
         rows = json.loads(out)
     except ValueError:
-        return Section(state="UNKNOWN", reason="board output unparseable")
+        return Section(state="UNKNOWN", reason="simple-board output unparseable")
     if not isinstance(rows, list):
-        return Section(state="UNKNOWN", reason="board output not a list")
+        return Section(state="UNKNOWN", reason="simple-board output not a list")
     items: list = []
     for row in rows:
         if not isinstance(row, dict):

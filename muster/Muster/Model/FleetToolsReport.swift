@@ -243,6 +243,23 @@ struct FleetToolsReport: Decodable {
 
 // MARK: - The verdicts
 
+/// Categories an operator can filter a host's doctor rows by in `FleetHostsView`.
+///
+/// The host's verdict (`FleetToolsHostVerdict.state`) always excludes `harness`, `human-tree`,
+/// and `presence` per the protocol rule; this filter lets the operator inspect every category
+/// on demand without changing the verdict math.
+enum FleetHostCategoryFilter: String, CaseIterable, Identifiable {
+    case notable = "Problems Only"
+    case all = "All Checks"
+    case codingApps = "Coding App CLIs"
+    case fleetTools = "Fleet Tools"
+    case devTools = "Dev Tools"
+    case servicesAndHarnesses = "Services & Harnesses"
+    case checkoutsAndPresence = "Checkouts & Presence"
+
+    var id: String { rawValue }
+}
+
 /// What Muster can say about one host,  from the report.
 ///
 /// The state is the app's own vocabulary (`CellState`),  so a host reads like every
@@ -266,6 +283,8 @@ struct FleetToolsHostVerdict: Identifiable, Equatable {
     let absent: Int
     /// The rows worth looking at,  worst first.
     let notableRows: [FleetToolsRow]
+    /// Every row observed on a reachable host (including passing and excluded-category rows),  worst first.
+    var allRows: [FleetToolsRow] = []
     /// Why the host could not be read,  when it could not be.
     let reason: String?
     /// When this host's own half of the report was written.
@@ -278,6 +297,35 @@ struct FleetToolsHostVerdict: Identifiable, Equatable {
     let doctorCommit: String?
 
     var id: String { host }
+
+    /// Rows matching the chosen category filter,  with an optional search query.
+    func rows(matching filter: FleetHostCategoryFilter, search: String = "") -> [FleetToolsRow] {
+        let base: [FleetToolsRow]
+        switch filter {
+        case .notable:
+            base = notableRows
+        case .all:
+            base = allRows
+        case .codingApps:
+            base = allRows.filter { $0.category == "platform-cli" }
+        case .fleetTools:
+            base = allRows.filter { $0.category == "fleet-tool" }
+        case .devTools:
+            base = allRows.filter { $0.category == "dev-tool" }
+        case .servicesAndHarnesses:
+            base = allRows.filter { $0.category == "service" || $0.category == "harness" }
+        case .checkoutsAndPresence:
+            base = allRows.filter { $0.category == "human-tree" || $0.category == "presence" }
+        }
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return base }
+        return base.filter {
+            $0.check.lowercased().contains(query)
+                || ($0.tool?.lowercased().contains(query) ?? false)
+                || ($0.category?.lowercased().contains(query) ?? false)
+                || $0.summary.lowercased().contains(query)
+        }
+    }
 
     /// The tip,  short.
     var tip: String? {
@@ -444,6 +492,7 @@ enum FleetToolsReportReader {
         }
 
         let hostGenerated = host.generatedAt.flatMap(FleetTime.parse)
+        let sortedAll = host.reachable ? host.checks.sorted(by: notableFirst) : []
         return FleetToolsHostVerdict(
             host: host.host,
             reachable: host.reachable,
@@ -454,6 +503,7 @@ enum FleetToolsReportReader {
             current: current,
             absent: absent,
             notableRows: notable,
+            allRows: sortedAll,
             reason: host.reachable ? nil : (host.error ?? "the doctor could not reach this host"),
             generatedAt: hostGenerated,
             age: hostGenerated == nil ? nil : FleetTime.ageText(since: hostGenerated, now: now),

@@ -10,8 +10,39 @@ import SwiftUI
 /// A setting the engine does not enforce is shown as NOT OWNED and is not editable:  the
 /// listener counts wakes and not dollars,  so a dollar cap in the file would never bind.
 struct WakeSettingsView: View {
+    enum SeatFilter: String, CaseIterable, Identifiable {
+        case all = "All Seats"
+        case problems = "Problems Only"
+        case deferred = "With Deferred Wakes"
+
+        var id: String { rawValue }
+    }
+
     @EnvironmentObject private var fleet: FleetStore
     @StateObject private var store = WakeSettingsStore()
+    @State private var seatFilter: SeatFilter = .all
+    @State private var searchText: String = ""
+
+    private var filteredSeats: [WakeSeat] {
+        let base: [WakeSeat]
+        switch seatFilter {
+        case .all:
+            base = store.model.seats
+        case .problems:
+            base = store.model.seats.filter { !$0.problems.isEmpty || !$0.redWarnings.isEmpty || $0.quotaExhausted }
+        case .deferred:
+            base = store.model.seats.filter {
+                $0.usage.deferredTotalThisDay > 0 || $0.heldBackQueueCount > 0 || $0.heldBackTotalCount > 0 || $0.chatNudgesPending > 0 || $0.chatNudgesBlocked > 0
+            }
+        }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return base }
+        return base.filter {
+            $0.seat.lowercased().contains(query)
+                || ($0.bot?.lowercased().contains(query) ?? false)
+                || ($0.liveWake?.rawValue.lowercased().contains(query) ?? false)
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -26,7 +57,8 @@ struct WakeSettingsView: View {
                 }
                 daemonSection
                 operatorSection
-                ForEach(store.model.seats) { seat in
+                seatFilterBar
+                ForEach(filteredSeats) { seat in
                     seatSection(seat)
                 }
             }
@@ -35,6 +67,26 @@ struct WakeSettingsView: View {
         }
         .task {
             await store.refresh(roster: fleet.roster)
+        }
+    }
+
+    private var seatFilterBar: some View {
+        HStack(spacing: 12) {
+            Picker("Filter", selection: $seatFilter) {
+                ForEach(SeatFilter.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 420)
+            TextField("Filter seats by tag, bot, or wake type…", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(maxWidth: 260)
+            Spacer()
+            Text("\(filteredSeats.count) of \(store.model.seats.count) seat(s)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -66,7 +118,7 @@ struct WakeSettingsView: View {
                 Circle()
                     .fill(store.model.running ? Color.green : Color.red)
                     .frame(width: 8, height: 8)
-                Text(store.model.running ? "The listener is running" : "The listener is not running")
+                Text(store.model.running ? "The Operator is running" : "The Operator is not running")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                 if let pid = store.model.pid {
                     Text("pid \(pid)")
@@ -248,7 +300,7 @@ struct WakeSettingsView: View {
                 }
                 .disabled(store.isBusy)
             }
-            GridRowHeader(labels: ["Setting", "The file", "The listener", "State"])
+            GridRowHeader(labels: ["Setting", "The file", "The Operator", "State"])
             ForEach(seat.settings) { setting in
                 WakeSettingRow(
                     setting: setting,
@@ -256,7 +308,13 @@ struct WakeSettingsView: View {
                     draft: draftBinding(seat: seat.seat, key: setting.key)
                 )
             }
+            if !seat.redWarnings.isEmpty {
+                ForEach(seat.redWarnings, id: \.self) { warning in
+                    problemBox(warning)
+                }
+            }
             usageLine(seat)
+            deferredAndQuotaLine(seat)
             pinsLine(seat)
             recentWakes(seat)
             HStack(spacing: 8) {
@@ -320,6 +378,42 @@ struct WakeSettingsView: View {
             GridCellText(value: "\(usage.ownerThisDay) owner today")
             GridCellText(value: "busiest topic \(usage.worstTopicThisHour) this hour")
             GridCellText(value: "owner topic \(usage.worstOwnerTopicThisHour) this hour")
+            if usage.failedThisDay > 0 {
+                GridCellText(value: "\(usage.failedThisDay) failed today")
+            }
+        }
+    }
+
+    /// Deferred / held-back wakes, chat nudges, and provider quota reported by the ledger and the Operator.
+    private func deferredAndQuotaLine(_ seat: WakeSeat) -> some View {
+        let usage = seat.usage
+        return HStack(spacing: 14) {
+            Text("Deferred & Queue")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            GridCellText(value: "\(usage.heldBackThisDay) held back (24h)")
+            GridCellText(value: "\(usage.droppedThisDay) dropped (24h)")
+            GridCellText(value: "\(usage.skippedThisDay) skipped (24h)")
+            if seat.heldBackQueueCount > 0 || seat.heldBackTotalCount > 0 {
+                GridCellText(
+                    value: "Operator held queue \(seat.heldBackQueueCount) (\(seat.heldBackSurfacedCount)/\(seat.heldBackTotalCount) surfaced)"
+                )
+            }
+            if seat.chatNudgesPending > 0 || seat.chatNudgesBlocked > 0 || seat.chatNudgesAccepted > 0 {
+                GridCellText(
+                    value: "nudges: \(seat.chatNudgesPending) pending, \(seat.chatNudgesBlocked) blocked, \(seat.chatNudgesAccepted) accepted"
+                )
+            }
+            if seat.quotaRemaining != nil || seat.quotaExhausted {
+                let text: String = {
+                    if let remaining = seat.quotaRemaining {
+                        return "quota \(Int(remaining))% left\(seat.quotaExhausted ? " (EXHAUSTED)" : "")"
+                    } else {
+                        return "quota EXHAUSTED"
+                    }
+                }()
+                GridCellText(value: text, emphasised: seat.quotaExhausted)
+            }
         }
     }
 
@@ -357,6 +451,8 @@ struct WakeSettingsView: View {
                     HStack(spacing: 12) {
                         GridCellText(value: outcome.state)
                             .frame(width: 90, alignment: .leading)
+                        GridCellText(value: outcome.reason ?? "—")
+                            .frame(width: 110, alignment: .leading)
                         GridCellText(value: outcome.topic ?? "—")
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .lineLimit(1)

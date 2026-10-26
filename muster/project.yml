@@ -52,6 +52,7 @@ targets:
       - path: MusterTests
       - path: Muster/FleetConfigCLI.swift
       - path: Muster/FleetConfigStatus.swift
+      - path: Muster/FleetViewModels.swift
       - path: Muster/ApplyPlanModel.swift
       - path: Muster/ApplyCoordinator.swift
       - path: Muster/Model/ConfigFileReader.swift
@@ -64,6 +65,7 @@ targets:
       - path: Muster/Model/EngineRunner.swift
       - path: Muster/Model/FleetConfigContract.swift
       - path: Muster/Model/FleetGrid.swift
+      - path: Muster/Model/FleetRegistry.swift
       - path: Muster/Model/FleetStore.swift
       - path: Muster/Model/FleetToolsReport.swift
       - path: Muster/Model/KnobRegistry.swift

@@ -80,8 +80,17 @@ extension GridCell {
 /// panel back to the previous cell,  so the panel and the popup could disagree about
 /// what was selected and neither was the place the operator was reading.
 struct FleetGridView: View {
+    enum GridFilter: String, CaseIterable, Identifiable {
+        case all = "All Seats"
+        case attention = "Needing Attention"
+
+        var id: String { rawValue }
+    }
+
     @EnvironmentObject private var store: FleetStore
     @State private var selectedCell: GridCell?
+    @State private var gridFilter: GridFilter = .all
+    @State private var searchText: String = ""
     /// The height of the detail panel,  which the operator drags and which survives
     /// the next launch.
     @AppStorage("muster.detailPanelHeight") private var panelHeight: Double = 420
@@ -91,16 +100,40 @@ struct FleetGridView: View {
     private let minPanelHeight: CGFloat = 170
     private let maxPanelHeight: CGFloat = 900
 
+    private var visibleRoster: [String] {
+        let base: [String]
+        switch gridFilter {
+        case .all:
+            base = store.roster
+        case .attention:
+            base = store.roster.filter { seat in
+                ConfigKind.columnOrder.contains { kind in
+                    guard let state = store.cell(seat: seat, kind: kind)?.state else { return false }
+                    return state == .drift || state == .missing || state == .unproven || state == .unknown
+                }
+            }
+        }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return base }
+        return base.filter { $0.lowercased().contains(query) }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    filterBar
+                        .padding(.bottom, 12)
                     header
-                    ForEach(store.roster, id: \.self) { seat in
+                    ForEach(visibleRoster, id: \.self) { seat in
                         row(for: seat)
                     }
                     legend
                         .padding(.top, 18)
+                    if let manifest = store.manifest {
+                        complianceSection(manifest)
+                            .padding(.top, 22)
+                    }
                 }
                 .padding(.horizontal, 22)
                 .padding(.vertical, 18)
@@ -114,6 +147,94 @@ struct FleetGridView: View {
                     onClose: { selectedCell = nil }
                 )
                 .frame(height: CGFloat(panelHeight))
+            }
+        }
+    }
+
+    private var filterBar: some View {
+        HStack(spacing: 12) {
+            Picker("Seats", selection: $gridFilter) {
+                ForEach(GridFilter.allCases) { item in
+                    Text(item.rawValue).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 280)
+            TextField("Filter seats by tag…", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(maxWidth: 200)
+            Spacer()
+            Text("\(visibleRoster.count) of \(store.roster.count) seat(s)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func complianceSection(_ manifest: SeatManifest) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Divider()
+            Text("Fleet Compliance Rules")
+                .font(.headline)
+            Text("Cross-seat compliance rules and documented coverage gaps from fleet-seats.json.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ForEach(manifest.allComplianceRules, id: \.id) { rule in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text(rule.id)
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        if let owner = rule.ownerSeat, !owner.isEmpty {
+                            Text("owner: \(owner)")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Color.secondary.opacity(0.14), in: Capsule())
+                        }
+                        if let checkType = rule.check?.type, !checkType.isEmpty {
+                            Text(checkType)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        if rule.implemented == false {
+                            Text("UNIMPLEMENTED")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.orange)
+                        } else {
+                            Text("ACTIVE")
+                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.green)
+                        }
+                        Spacer()
+                    }
+                    if let target = rule.check?.target, !target.isEmpty {
+                        Text("Target:  \(target)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                    if let reason = rule.implementationReason, !reason.isEmpty {
+                        Text("Reason:  \(reason)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(rule.implemented == false ? .orange : .secondary)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            if !manifest.complianceRulesNotImplemented.isEmpty {
+                Text("Documented Coverage Gaps (\(manifest.complianceRulesNotImplemented.count))")
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.top, 6)
+                ForEach(manifest.complianceRulesNotImplemented, id: \.id) { gap in
+                    HStack(spacing: 8) {
+                        Text(gap.id)
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        Text(gap.implementationReason ?? "Not implemented yet")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                        Spacer()
+                    }
+                    .padding(.vertical, 1)
+                }
             }
         }
     }
