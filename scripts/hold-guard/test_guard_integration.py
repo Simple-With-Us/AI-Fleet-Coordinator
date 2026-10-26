@@ -1056,7 +1056,6 @@ class GuardIntegration(unittest.TestCase):
         ]
         self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "failure")
 
-
     def test_concurrent_run_snapshot_survives_this_run(self):
         # Kody r4374207226: a concurrent guard run on the same reused
         # runner must not lose its snapshot to this run's startup cleanup.
@@ -1093,9 +1092,7 @@ class GuardIntegration(unittest.TestCase):
             if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
         ]
         self.assertEqual(len(label_posts), 1)
-        self.assertEqual(
-            json.loads(label_posts[0]["stdin"])["labels"], ["do-not-automerge"]
-        )
+        self.assertEqual(json.loads(label_posts[0]["stdin"])["labels"], ["do-not-automerge"])
 
 
 if __name__ == "__main__":
