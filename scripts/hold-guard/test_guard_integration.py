@@ -943,7 +943,6 @@ class GuardIntegration(unittest.TestCase):
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 3)
 
-
     def test_repair_recheck_parse_failure_red_job(self):
         # Kody r4373834619: a jq failure reading the re-check result must
         # record a repair error and turn the job red - never fall into the
