@@ -116,10 +116,12 @@ class FleetSecretsSource:
     `credential_file`, when set, names a protected file (systemd
     LoadCredential, root 0600) holding the ONE Infisical token for this
     source's folder scope:  it is read at call time and passed to the CLI
-    child with an allowlist environment, so no co-located secret in the
-    relay's own environment (seat tokens, another scope's token) is ever
-    inherited.  When unset the child inherits the process environment - the
-    transitional shape until the host unit ships the credential files.
+    child with an allowlist environment (INFISICAL_FLEET_OPS_PROJECT_ID
+    required, INFISICAL_ENVIRONMENT=prod set, no HOME), so no co-located
+    secret in the relay's own environment is ever inherited and the CLI
+    cannot fall through to ~/.agent-sync file resolution.  When unset the
+    child inherits the process environment - the legacy shape the fleet's
+    other local tooling still uses.
     """
 
     def __init__(
@@ -193,7 +195,20 @@ class FleetSecretsSource:
     # Child-environment allowlist for scoped reads:  what the CLI needs to
     # run, plus the one token from the credential file.  Nothing else in the
     # relay's environment is the CLI's business.
-    _CHILD_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ")
+    # Matches the supported fleet-secrets core:  ENV_PROJECT /
+    # ENV_NAMES in scripts/fleet_secrets/core.py.  The required
+    # INFISICAL_FLEET_OPS_PROJECT_ID binding is what keeps the CLI off
+    # its ~/.agent-sync project-file fallback (expanduser reaches the
+    # runtime user's home regardless of HOME), and HOME is simply not
+    # forwarded.
+    _CHILD_ENV_KEYS = (
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TZ",
+        "INFISICAL_FLEET_OPS_PROJECT_ID",
+    )
 
     def _child_env(self):
         if self._credential_file is None:
@@ -205,8 +220,15 @@ class FleetSecretsSource:
             raise AppTokenError(f"credential file unreadable for {self._path}") from None
         if not token:
             raise AppTokenError(f"credential file empty for {self._path}")
+        if not (self._environ.get("INFISICAL_FLEET_OPS_PROJECT_ID") or "").strip():
+            raise AppTokenError(
+                "INFISICAL_FLEET_OPS_PROJECT_ID is not set:  without it the "
+                "CLI would resolve the Fleet-OPS project from the runtime "
+                "user's ~/.agent-sync file instead of the explicit binding"
+            )
         env = {k: self._environ[k] for k in self._CHILD_ENV_KEYS if k in self._environ}
         env["INFISICAL_TOKEN"] = token
+        env["INFISICAL_ENVIRONMENT"] = "prod"  # the CLI contract:  Fleet-OPS prod only
         return env
 
     def _run_scoped(self, argv):

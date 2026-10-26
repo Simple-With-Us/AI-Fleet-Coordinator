@@ -773,7 +773,29 @@ def _build_shared_verifier():
         return SharedBearerVerifier(
             url=verify_url,
             key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
-            key_source=FleetSecretsSource(path=(raw_path or "/tools").strip()),
+            # The host plan provisions TWO scoped service tokens:  the
+            # owner-only /git-relay-owner token, and the existing App
+            # reader whose scope already covers /github-apps and /tools.
+            # The verify-key source therefore binds the App credential
+            # file by default;  GIT_RELAY_TOOLS_CREDENTIAL_FILE exists
+            # only for a future split.
+            key_source=FleetSecretsSource(
+                path=(raw_path or "/tools").strip(),
+                credential_file=(
+                    _credential_file_for(
+                        "the /tools verify-key source",
+                        "GIT_RELAY_TOOLS_CREDENTIAL_FILE",
+                        "",
+                    )
+                    if os.environ.get("GIT_RELAY_TOOLS_CREDENTIAL_FILE")
+                    is not None
+                    else _credential_file_for(
+                        "the App-credentials source",
+                        "GIT_RELAY_APPS_CREDENTIAL_FILE",
+                        "git-relay-apps-token",
+                    )
+                ),
+            ),
         )
     except (AppTokenError, ValueError) as exc:
         raise SystemExit(f"git-relay config: {exc}") from exc
@@ -825,7 +847,14 @@ def from_env() -> Relay:
             )
         try:
             app_minter = AppTokenMinter(
-                FleetSecretsSource(path=(raw_secrets_path or "/github-apps").strip()),
+                FleetSecretsSource(
+                    path=(raw_secrets_path or "/github-apps").strip(),
+                    credential_file=_credential_file_for(
+                        "the App-credentials source",
+                        "GIT_RELAY_APPS_CREDENTIAL_FILE",
+                        "git-relay-apps-token",
+                    ),
+                ),
                 lambda method, path, bearer, payload=None: client._call(
                     method, path, payload, bearer=bearer
                 ),
@@ -835,6 +864,34 @@ def from_env() -> Relay:
     return Relay(policy, client, audit, app_minter=app_minter, outcomes=outcomes)
 
 
+def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | None:
+    """The protected Infisical-token file one fleet-secrets source runs under.
+
+    Production resolves it from systemd's CREDENTIALS_DIRECTORY (the unit's
+    LoadCredential keys are the default file names) or an explicit
+    GIT_RELAY_*_CREDENTIAL_FILE override;  a set-but-empty override is a
+    config error like any other.  With neither, startup REFUSES - the
+    process environment is never a secret source, and a CLI child that
+    inherits it would pick up co-located secrets (seat tokens, another
+    scope's token).  There is no inheritance escape:  tests and local
+    runs point the variables at their own files.  Names scopes and
+    variables only, never file contents.
+    """
+    explicit = os.environ.get(env_var)
+    if explicit is not None:
+        if not explicit.strip():
+            raise SystemExit(f"git-relay config: {env_var} is set but empty")
+        return explicit.strip()
+    creds = os.environ.get("CREDENTIALS_DIRECTORY", "").strip()
+    if creds:
+        return os.path.join(creds, default_name)
+    raise SystemExit(
+        f"git-relay config: no credential file binding for {scope}:  "
+        f"set {env_var} or run under systemd LoadCredential "
+        f"(CREDENTIALS_DIRECTORY/{default_name})"
+    )
+
+
 def _owner_token_from_cli() -> str:
     """The owner PAT for open_pr, read once at startup through `fleet-secrets
     get-verified` at its fixed folder (/git-relay-owner):  the CLI proves the
@@ -842,19 +899,22 @@ def _owner_token_from_cli() -> str:
     environment - an ambient GITHUB_TOKEN is IGNORED, and there is no other
     fallback source (owner direction 2026-10-21 + the /git-relay-owner
     custody move 2026-10-25).  The relay refuses to start without it,
-    exactly as it refused to start with an empty GITHUB_TOKEN before.
-    GIT_RELAY_OWNER_CREDENTIAL_FILE points the
-    source at the folder scope's protected credential file (systemd
-    LoadCredential);  without it the CLI child inherits the environment -
-    the transitional shape until the host unit ships the files.
+    exactly as it refused to start with an empty GITHUB_TOKEN before,
+    and it refuses to start without a credential file binding for the
+    folder scope (_credential_file_for):  no ambient inheritance in
+    production.
     """
     from .app_tokens import AppTokenError, FleetSecretsSource
 
+    source = FleetSecretsSource(
+        path="/git-relay-owner",
+        credential_file=_credential_file_for(
+            "the /git-relay-owner source",
+            "GIT_RELAY_OWNER_CREDENTIAL_FILE",
+            "git-relay-owner-token",
+        ),
+    )
     try:
-        source = FleetSecretsSource(
-            path="/git-relay-owner",
-            credential_file=os.environ.get("GIT_RELAY_OWNER_CREDENTIAL_FILE") or None,
-        )
         return source.verified_secret("GITHUB_TOKEN")
     except AppTokenError as exc:
         raise RuntimeError(f"git-relay config: owner token:  {exc}") from None
