@@ -341,7 +341,7 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.gemini/skills",
             "names": [
-              "agent-sync-tools-guide",
+              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -523,7 +523,7 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.claude/skills",
             "names": [
-              "agent-sync-tools-guide",
+              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -721,7 +721,7 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.clutch/dsh/skills",
             "names": [
-              "agent-sync-tools-guide",
+              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -903,7 +903,7 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.codex/skills",
             "names": [
-              "agent-sync-tools-guide",
+              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1120,7 +1120,7 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.cursor/skills",
             "names": [
-              "agent-sync-tools-guide",
+              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1350,7 +1350,7 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.fx/skills",
             "names": [
-              "agent-sync-tools-guide",
+              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1564,7 +1564,7 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.grok/skills",
             "names": [
-              "agent-sync-tools-guide",
+              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1946,7 +1946,7 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.config/muse/skills",
             "names": [
-              "agent-sync-tools-guide",
+              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -2129,7 +2129,7 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.minimax/skills",
             "names": [
-              "agent-sync-tools-guide",
+              "simple-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
