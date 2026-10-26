@@ -288,8 +288,9 @@ class SessionIdTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         #  AFC-552:  the widened gap is a narrow no-break space plus a normal space.  The
         #  no-break space it used to be is normalised away by Notes on import, so the
-        #  widened gap never reached the note either.
-        g = "\u202f "
+        #  widened gap never reached the note either.  The note body is HTML, so the gap
+        #  is the numeric reference, like the two HTML passes.
+        g = "&#8239; "
         self.assertIn(
             f"Merged it.{g}Next is CI.{g}Ask Dr. Smith.{g}The U.S. Army.{g}4 tests failed.{g}Done.",
             p.stdout,
@@ -645,7 +646,12 @@ class SentenceGapMarkupTests(unittest.TestCase):
     #  conversion leaves it alone.
     REGION = re.compile(r"<(pre|code|style|script)\b[\s\S]*?</\1>", re.IGNORECASE)
 
-    def run_script(self, body: str) -> subprocess.CompletedProcess:
+    def run_script(
+        self,
+        body: str,
+        env_extra: dict[str, str] | None = None,
+        extra_args: tuple[str, ...] = (),
+    ) -> subprocess.CompletedProcess:
         env = {
             "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
             "HOME": os.environ.get("HOME", "/tmp"),
@@ -654,8 +660,9 @@ class SentenceGapMarkupTests(unittest.TestCase):
             "AGENT_SEAT": "MM",
             "LANG": "en_US.UTF-8",
         }
+        env.update(env_extra or {})
         return subprocess.run(
-            ["/bin/bash", str(SCRIPT), "[AFC, MM] Gap probe", body],
+            ["/bin/bash", str(SCRIPT), *extra_args, "[AFC, MM] Gap probe", body],
             capture_output=True,
             text=True,
             timeout=120,
@@ -754,18 +761,19 @@ class SentenceGapMarkupTests(unittest.TestCase):
         the reference, so that path was broken in the same way.  The widened gap is a narrow
         no-break space plus a normal space.
 
-        The helper writes the gap on two paths and they carry it differently:  a body that
-        already holds two spaces is converted by the HTML passes, which write the numeric
-        reference, and a body that holds one space is widened by the later plain-text pass,
-        which writes the character itself.  Both must carry the narrow no-break space.
+        The helper writes the gap on two paths and they carry it differently:  the note
+        body is HTML, so both the one-space widening and the two HTML passes write the
+        numeric reference, and the plain-text mobile quick view writes the character
+        itself because it is escaped.  All of them must carry the narrow no-break space.
         """
-        #  One space:  the widening path, which writes the character.
+        #  One space:  the widening path, which writes the reference into the HTML body.
         p = self.run_script("One sentence end. Another one.\n")
         self.assertEqual(p.returncode, 0, p.stderr[-400:])
         widened = self.REGION.sub("", p.stdout)
         self.assertNotIn("&#160;", widened, widened)
         self.assertNotIn("\xa0", widened, widened)
-        self.assertIn("\u202f ", widened, widened)
+        self.assertIn("&#8239; ", widened, widened)
+        self.assertNotIn("&#8194; ", widened, widened)
         self.assertNotIn("\u2002 ", widened, widened)
 
         #  Two spaces:  the HTML path, which writes the reference.
@@ -776,6 +784,28 @@ class SentenceGapMarkupTests(unittest.TestCase):
         self.assertNotIn("\xa0", converted, converted)
         self.assertIn("&#8239; ", converted, converted)
         self.assertNotIn("&#8194; ", converted, converted)
+
+    def test_the_mobile_quick_view_gap_is_the_character_not_the_reference(self):
+        """AFC-552:  the plain-text path carries the character, not the reference.
+
+        The widening pass serves two contexts.  The note body is HTML, so it carries the
+        numeric reference, like the two HTML passes and with no raw non-ASCII byte in the
+        note HTML.  The mobile quick view is plain text that is embedded with html.escape,
+        so a reference would reach the owner as the literal text "&#8239;".  It has to carry
+        the character itself, which Notes keeps byte-intact.
+        """
+        p = self.run_script(
+            "Body text.",
+            extra_args=("--summary", "One sentence end. Another one."),
+        )
+        self.assertEqual(p.returncode, 0, p.stderr[-400:])
+        outside = self.REGION.sub("", p.stdout)
+        self.assertIn("Mobile Quick View", outside, outside)
+        self.assertIn("\u202f ", outside, outside)
+        #  An escaped reference would render as the literal text, so it must not be there.
+        self.assertNotIn("&amp;#8239;", outside, outside)
+        self.assertNotIn("&#160;", outside, outside)
+        self.assertNotIn("\xa0", outside, outside)
 
 
 if __name__ == "__main__":

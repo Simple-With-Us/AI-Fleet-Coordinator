@@ -1486,7 +1486,7 @@ if m:
 # AFC-361, owner 2026-10-19:  the writer's session id is the small row under the timestamp, with no second date.
 # An update rewrites the whole body, so a Session row the caller echoed back from the old body is dropped
 # wherever it sat (under the timestamp, or at the end, where a version of 2026-10-19 put it) and the current one is
-# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts "Session:" is not a row
+# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts \"Session:\" is not a row
 # and stays.  A spacer after the row belongs to it, so a stale row at the end goes with every spacer it left behind
 # (an old note can end on more than one of them, so the row must not have to be the last characters of the body).
 _SESSION_ROW = (
@@ -1561,7 +1561,7 @@ def _fleet_date_text(m):
     except ValueError:
         return m.group(0)
 
-def fleet_dates(markup):
+def fleet_dates(markup, gap_entity=False):
     parts = re.split(r'(<[^>]+>)', markup)
     depth = 0
     for i, part in enumerate(parts):
@@ -1571,7 +1571,7 @@ def fleet_dates(markup):
                 depth += -1 if part.startswith('</') else 1
                 depth = max(depth, 0)
         elif depth == 0:
-            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part))
+            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part), gap_entity)
     return ''.join(parts)
 
 # Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as agent-sync's textfmt.single_gaps), so
@@ -1580,7 +1580,7 @@ _ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dep
 _GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#])')
 _WORD = re.compile(r'([A-Za-z][A-Za-z.]*)\Z')
 
-def _one_space_gaps(segment):
+def _one_space_gaps(segment, gap_entity=False):
     def repl(m):
         if m.group(1).startswith('.'):
             before = _WORD.search(segment[max(0, m.start() - 40):m.start()])
@@ -1590,10 +1590,15 @@ def _one_space_gaps(segment):
             if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
                 return m.group(0)
         _changes['gaps'] += 1
-        return m.group(1) + '\u202f '
+        #  AFC-552:  the note body is HTML, so the gap is the numeric reference,
+        #  like the two HTML passes and with no raw non-ASCII byte in the note HTML.
+        #  The mobile quick view is plain text that is embedded with html.escape, so
+        #  a reference there would reach the owner as the literal six characters.
+        #  It carries the character itself, which Notes keeps byte-intact.
+        return m.group(1) + ('&#8239; ' if gap_entity else '\u202f ')
     return _GAP1.sub(repl, segment)
 
-inner = fleet_dates(inner)
+inner = fleet_dates(inner, gap_entity=True)
 if summary_text:
     summary_text = fleet_dates(summary_text)
 
