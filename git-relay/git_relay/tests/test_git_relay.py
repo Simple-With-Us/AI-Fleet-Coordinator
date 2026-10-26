@@ -2466,7 +2466,8 @@ class TestOwnerTokenFromCli(unittest.TestCase):
                 self._fake_source(
                     captured, error=app_tokens.AppTokenError("the-value-must-not-appear")
                 ),
-            ),self.assertRaises(RuntimeError) as ctx
+            ),
+            self.assertRaises(RuntimeError) as ctx,
         ):
             server._owner_token_from_cli()
         # AppTokenError messages name keys/folders only; the relay adds no values.
