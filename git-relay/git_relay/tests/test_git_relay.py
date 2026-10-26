@@ -700,15 +700,19 @@ class TestAppActions(unittest.TestCase):
         # uses /issues/:number/comments. No Issues permission is required.
         with tempfile.TemporaryDirectory() as tmp:
             relay = self._relay(tmp)
-            relay.policy = SeatPolicy(json.dumps({
-                "swu-echo": {
-                    "token": SEAT_TOKEN,
-                    "actions": ["comment_pr"],
-                    "repos": ["example/*"],
-                    "app_slug": "swu-echo",
-                    "mint_permissions": {"pull_requests": "write"},
-                }
-            }))
+            relay.policy = SeatPolicy(
+                json.dumps(
+                    {
+                        "swu-echo": {
+                            "token": SEAT_TOKEN,
+                            "actions": ["comment_pr"],
+                            "repos": ["example/*"],
+                            "app_slug": "swu-echo",
+                            "mint_permissions": {"pull_requests": "write"},
+                        }
+                    }
+                )
+            )
             status, _ = relay.handle(
                 SEAT_TOKEN, "comment_pr", {"repo": "example/x", "number": 1, "body": "b"}
             )
@@ -724,15 +728,19 @@ class TestAppActions(unittest.TestCase):
         for ceiling in ({"issues": "write"}, {"pull_requests": "read"}, {"contents": "read"}):
             with self.subTest(ceiling=ceiling), tempfile.TemporaryDirectory() as tmp:
                 relay = Relay(
-                    SeatPolicy(json.dumps({
-                        "swu-echo": {
-                            "token": SEAT_TOKEN,
-                            "actions": ["comment_pr"],
-                            "repos": ["example/*"],
-                            "app_slug": "swu-echo",
-                            "mint_permissions": ceiling,
-                        }
-                    })),
+                    SeatPolicy(
+                        json.dumps(
+                            {
+                                "swu-echo": {
+                                    "token": SEAT_TOKEN,
+                                    "actions": ["comment_pr"],
+                                    "repos": ["example/*"],
+                                    "app_slug": "swu-echo",
+                                    "mint_permissions": ceiling,
+                                }
+                            }
+                        )
+                    ),
                     StubClient(),
                     AuditLog(os.path.join(tmp, "a.jsonl")),
                     app_minter=FakeMinter(),
