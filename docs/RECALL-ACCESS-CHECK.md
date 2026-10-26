@@ -170,7 +170,7 @@ Where it goes, and what already carries it (checked 2026-09-03):
 | ChatGPT / Claude.ai / Gemini web personalization | paste the block as-is |
 | DeepSeek Harness (DSH), Kimi | skills only (`~/.deepseek/skills`); DSH chat tag is `[DSH]` (former `DEEPSEEK` retired).  Kimi is retired |
 
-Keep the wording aligned with the `fleet-recall` skill and the AGENT-SYNC stanza, so a seat
+Keep the wording aligned with the `fleet-recall` skill and the FLEET-PROTOCOL stanza, so a seat
 reading two sources never gets two different rules.
 
 ## Rules that apply on every surface

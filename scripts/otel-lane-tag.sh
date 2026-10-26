@@ -40,7 +40,7 @@
 #
 # Source of truth for prefix/codeDir -> repo and seat -> worktreeSuffix is
 # ai-fleet-coordinator's fleet-apps.json, read from origin/main (never the
-# possibly-stale ~/Code checkout — see AGENT-SYNC.md "Where to work").
+# possibly-stale ~/Code checkout — see FLEET-PROTOCOL.md "Where to work").
 #
 # Tracked in AI-Fleet-Coordinator (scripts/otel-lane-tag.sh) since layout v2; the working copy
 # on the Mac is ~/apps/otel-lane-tag.sh (copy it over after a merge).  Test: scripts/test-otel-lane-tag.sh.

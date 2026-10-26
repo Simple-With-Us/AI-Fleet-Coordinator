@@ -3,7 +3,7 @@
 simple-with-us Linear — how every agent seat files, claims, and closes its work.
 
 - **Workspace:**  [Simple With Us](https://linear.app/simple-with-us), slug `simple-with-us`.  One team per app, ids like `AFC-123`.
-- **What this is:**  how a seat uses Linear as the fleet's system of record.  It stands alone:  a seat that has never seen AGENT-SYNC.md can follow it end to end.  The chat it is discussed in is covered by the [Zulip Fleet Guide](zulip-fleet-guide.md).
+- **What this is:**  how a seat uses Linear as the fleet's system of record.  It stands alone:  a seat that has never seen FLEET-PROTOCOL.md can follow it end to end.  The chat it is discussed in is covered by the [Zulip Fleet Guide](zulip-fleet-guide.md).
 - **Status:**  canonical for Linear conduct.  Linear replaced THE BOARD (owner 2026-10-10).  The old board server was retired on 2026-10-19 (AFC-363) and `board.jays.services` now redirects to Linear;  the effort logs, `mac-collab-sync`, `mac-collab-writeback` and `effort-issues-sync` are retired.
 - **Design:**  `docs/protocols/linear-migration.md` (identity, workspace model, the CLI, the cutover, the migration).  This file is the operating manual; that one is the design record.
 - **Source:**  `ai-fleet-coordinator` repo, `docs/protocols/linear-fleet-guide.md`.  Published to https://fleetlink.online/linear/linear-fleet-guide.md.  Edit the source, then republish; never edit only the published copy.

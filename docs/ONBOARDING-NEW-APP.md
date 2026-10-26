@@ -35,7 +35,7 @@ A new folder under `~/Code` is **not** a fleet app yet. Peers will not see it
 in Linear, the daily digest, Zulip skim-match, Apple Notes acronyms,
 or iOS ship tooling. Agents will also work in `~/Code/<App>` and collide with
 the integration tree. This procedure is the self-propagation rule from
-`AGENT-SYNC.md`, expanded so the next app is not a scavenger hunt.
+`FLEET-PROTOCOL.md`, expanded so the next app is not a scavenger hunt.
 
 Equally important: once an app **is** onboarded, no further top-level folder
 may be added to `~/Code/` — *except* the integration tree for another
@@ -43,7 +43,7 @@ brand-new fleet app.  Per-seat worktrees, lane checkouts, scratch clones,
 and `*-wt-*` directories all belong in `~/apps/`, never under `~/Code/`.
 `code-main-keeper.sh` (PM2 daemon) scans `~/Code/*` every ~60s and logs a
 `STRAY-WORKTREE` line to `~/apps/logs/code-main-keeper.log` for any linked
-worktree it finds there.  See `AGENT-SYNC.md` § *"Hard rule: `~/Code/` is
+worktree it finds there.  See `FLEET-PROTOCOL.md` § *"Hard rule: `~/Code/` is
 for integration trees only"* (owner ruling 2026-09-25).
 
 ---
@@ -80,7 +80,7 @@ for integration trees only"* (owner ruling 2026-09-25).
    `hexdump` a loaded `$KEY` / `$TOKEN` / `$SECRET` variable.
 6. **Light theme is the product default.** Dark is opt-in.
 7. **Two spaces between sentences** in every human-facing string, including
-   App Store listing and review notes.  See `AGENT-SYNC.md` § Two spaces and
+   App Store listing and review notes.  See `FLEET-PROTOCOL.md` § Two spaces and
    `FLEET-UI-COPY.md`.
 8. **New DNS-only app zones go on Cloudflare account Usage.Jays.Services.**
    That is an account name, not the hostname `usage.jays.services`.  Create a
@@ -195,7 +195,7 @@ If the repo's `.gitignore` ignores `AGENTS.md` (Grok / Replit leftover),
 **remove that line**. The fleet pointer must be tracked.
 
 `AGENTS.md` must include the Inter-agent coordination stanza from
-`AGENT-SYNC.md` § "Onboarding a new app/repo", plus the DealDex-style
+`FLEET-PROTOCOL.md` § "Onboarding a new app/repo", plus the DealDex-style
 keepout table with **this** app's paths.
 
 Optional but expected before the app is "done" as a fleet citizen:
@@ -210,7 +210,7 @@ Optional but expected before the app is "done" as a fleet citizen:
 - iOS entry in `/Users/jay/apps/ios-fleet/apps.json` if there is a native app.
 - Native iOS onboarding file (`ios/CLAUDE.md`, `clients/ios/CLAUDE.md`, or
   `native/ios/CLAUDE.md`) with bundle ID, scheme, annotated file tree, and a
-  pointer to AGENT-SYNC § iOS agent build loop (`xcodebuild` via bash is
+  pointer to FLEET-PROTOCOL § iOS agent build loop (`xcodebuild` via bash is
   pre-approved; do not stand up Xcode MCP).
 - Claude iOS write-block hook: copy
   `scripts/block-xcode-project-writes.py` → `.claude/hooks/` and merge
@@ -225,7 +225,7 @@ Optional but expected before the app is "done" as a fleet citizen:
 
 ### Live machine (`/Users/jay/apps` — not a git repo)
 
-- `AGENT-SYNC.md` — intro app list, Apple Notes acronym table, Zulip
+- `FLEET-PROTOCOL.md` — intro app list, Apple Notes acronym table, Zulip
   `repo:` canonical names.  **Do not edit it by hand:**  it is being generated from
   Fleet-OPS `handbook/`, so these rows are a pull request there (the app table is
   `handbook/appendix/reference-tables.md`)
@@ -239,7 +239,7 @@ Optional but expected before the app is "done" as a fleet citizen:
 
 - `fleet-apps.json` — **add the row first**
 - `FLEET-UI-COPY.md`, `TEMPLATE-AGENTS.md` (keep in lockstep with `~/apps`).
-  `AGENT-SYNC.md` is not edited here:  see the handbook pull request above
+  `FLEET-PROTOCOL.md` is not edited here:  see the handbook pull request above
 - `scripts/build-fleet-daily-digest.py` — `DEFAULT_REPOS`,
   `LIVE_EFFORT_FILES`, `REPO_BADGE`, `REPO_APP_ICON`, `REPO_STRIP_ALIASES`,
   CSS color, HTML legend
@@ -299,7 +299,7 @@ Do **not** invent these. Ask the owner or stop after listing them.
 | Usage-Monitor producer wiring | Only if this app will push telemetry |
 
 Coolify token split still applies: never put `COOLIFY_AGENTS` into Infisical
-as app `COOLIFY_API_TOKEN`. See `AGENT-SYNC.md`.
+as app `COOLIFY_API_TOKEN`. See `FLEET-PROTOCOL.md`.
 
 ---
 
@@ -336,7 +336,7 @@ The inverse of onboarding.  Do these in order, each through a `claude/*` lane an
 - [ ] `fleet-apps.json` has the row
 - [ ] Digest + calendar `DEFAULT_REPOS` include the repo
 - [ ] Apple Notes acronym table includes the acronym
-- [ ] Zulip `repo:` name is in `AGENT-SYNC.md`
+- [ ] Zulip `repo:` name is in `FLEET-PROTOCOL.md`
 - [ ] `check-fleet-registry.py` exits 0
 - [ ] Zulip claim + closeout posted
 - [ ] Remaining owner dashboard items are listed, not silently skipped
