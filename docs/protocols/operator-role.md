@@ -67,8 +67,9 @@ topic)` folds that message into the standing comment for `(issue, topic)`, so a 
 issue the topic is not about lands in a comment that claims the topic is about it.
 
 **The wake tag is composed for every seat, including the Operator.**  `scripts/agent_sync/wakes.py`
-builds `"[%s·wake] re=%d\n%s"`.  There is no path today that lets a seat speak in its own right
-with its own tag instead of the wake-reply tag.
+builds `"[%s·wake] re=%d\n%s"`, and `scripts/agent_sync/adapters.py` sets the same shape as the
+adapter's `reply_prefix`.  There is no path today that lets a seat speak in its own right with
+its own tag instead of the wake-reply tag.
 
 **The Lark path already carries the attribution Jay wants.**  The Lark bridge records that the
 sender travels with the turn, so the seat inbox and the Zulip mirror attribute the Operator's
@@ -159,9 +160,9 @@ Three concrete changes carry that:
     sent as a new message.  A reply carries the thread's context and reads as the conversation's
     own voice, which is the impersonation Jay is ruling out.
 
-2.  **The Operator does not wear a seat's wake tag.**  The wake tag is composed in one place, so
-    this is one place:  the `OPERATOR` seat composes its own tag, and the wake-reply tag stays for
-    a seat answering on the owner's behalf.
+2.  **The Operator does not wear a seat's wake tag.**  The wake tag is composed in two places,
+    `wakes.py` and the adapter's `reply_prefix`, so this is two places:  the `OPERATOR` seat
+    composes its own tag, and the wake-reply tag stays for a seat answering on the owner's behalf.
 
 3.  **The pairing test decides post against direct message, and it decides only that.**  A message
     that pairs with a thread gets the Operator's own message in that thread.  A message that pairs
@@ -192,28 +193,30 @@ The registry row already carries most of what Jay asks for.  Reading the `sessio
 | Jay asks for | Field today | Note |
 | --- | --- | --- |
 | The session id | `native_session_id` | present |
-| Where it lives:  server, Mac, cloud | `verified_host` | present, but free text; it needs to be a location a reader can act on |
+| Where it lives:  server, Mac, cloud | `verified_host` | present, and it already holds the coarse class:  the registry's `--location` argument is documented as "the fleet location (mac, server, cloud), never an OS hostname", and the live row reads `mac` |
 | What it is about | `title`, `project` | present, but a title is not a brief list of what the conversation covers |
 | The rest of the facts | `seat`, `platform`, `profile_scope`, `state`, `wake_capability`, `registered_at`, `last_seen_at`, `closed_at`, `thread_link`, `apple_note_link`, `source` | present |
 
-So the gap is two things:  a location that reads as server, Mac or cloud rather than a hostname,
-and a short summary of what the conversation is about.  Both are new columns on the session row,
-and both need a column on the Fleet Reference sheet, because the sheet is the registry the fleet
-reads.
+So the gap is one thing, not two:  a short summary of what the conversation is about, carrying
+purpose, the owning issue, the source links, the current status and a contact, and correctable
+after the letter is issued.  The location is already recorded, so it needs a column for the
+summary and not for itself.
 
-**The two proposed sheet columns**, on the Sessions tab beside the ones that already exist:
+**The one proposed sheet column**, on the Sessions tab beside the ones that already exist:
 
 | Column | Carries | Written by |
 | --- | --- | --- |
-| Location | the coarse class (server, Mac, cloud) and the stable seat or instance identifier, supplied by the session registration and never inferred | the registry, from the registration |
 | About | purpose, owning issue, source thread, repository and pull request links, current status and contact, correctable after the letter is issued | the registry, and whoever owns the conversation |
+
+The Sessions tab already carries a Host column for the location, so the tab needs one new
+column and not two.
 
 **The sheet adapter is not in this repository.**  `scripts/agent_sync/operator_sheets_export.mjs`
 writes the Sessions and Events tabs and depends on an adapter surface  (`inspect()`,
 `validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`)  that its
-own header records as deliberately another seat's slice.  So the two new columns are a request to
-that adapter's owner, not a change made here, and the sheet's own header list and validation have
-to accept them before a row can carry them.
+own header records as deliberately another seat's slice.  So the new column is a request to that
+adapter's owner, not a change made here, and the sheet's own header list and validation have to
+accept it before a row can carry it.
 
 **The citations for the pieces this discussion rests on.**
 
@@ -237,31 +240,23 @@ the one-standing-comment behaviour for topic-named issues stay exactly as they a
 
 ## 4. What is a decision and what is a task
 
-**Jay's decisions, and nothing else can settle them.**
+**Jay's decisions, and nothing else can settle them.**  All three have a main shape from Jay on
+Oct 25, 2026, and what is left is the residual, so that nobody asks him the same thing twice.
 
-*  Whether a seat keeps its own eavesdropper read of its own records, or the Operator becomes the
-    single reader of the fleet's.
-*  Whether the Operator's fallback direct message carries Jay, or the question goes to Jay
-    directly.
-*  Whether the per-message Linear post is one comment per message, or one comment per message
-    grouped per issue.
-
-**What Jay has already ruled, so that nobody asks him again.**  All three of these have a main
-shape from Jay on Oct 25, 2026, and what is left is narrower than it looks.
-
-*  **The Operator holds the eavesdropper, on the server.**  What is open is the second half that
-    WISE and ECHO answered:  a seat keeps its own records and the Operator takes the fleet view.
-*  **The Operator asks its questions by direct message to the message's poster or sender, and the
-    direct message is the fleet's only exception.**  What is open is the audience, because the
-    owner-in-the-conversation guard merged today (AFC-469, pull request 947) requires Jay in a
+*  **The Operator holds the eavesdropper, on the server.**  That is ruled.  What is open is the
+    second half that WISE and ECHO answered:  a seat keeps its own records, or the Operator
+    becomes the single reader of everything the fleet sees.
+*  **The Operator asks by direct message to the message's poster or sender, and the direct
+    message is the fleet's only exception.**  That is ruled.  What is open is the audience, because
+    the owner-in-the-conversation guard merged today (AFC-469, pull request 947) requires Jay in a
     direct message, so the fallback either carries him or the question goes to him instead.
-*  **A message that names an issue its topic does not gets its own Linear post.**  What is open is
-    the granularity WISE and ECHO raised:  one comment per message, or those batched by issue and
-    kept distinct from the topic's standing comment.
+*  **A message that names an issue its topic does not gets its own Linear post.**  That is ruled.
+    What is open is the granularity WISE and ECHO raised:  one comment per message, or those
+    batched by issue and kept distinct from the topic's standing comment.
 
 **Tasks, once the decisions are made.**
 
-*  The Operator's own tag, and the post-versus-reply rule, in the one place the wake tag is
+*  The Operator's own tag, and the post-versus-reply rule, in the two places the wake tag is
     composed.
 *  The pairing test that decides post against direct message.
 *  The location column and the short summary column, in the registry and on the sheet.
@@ -287,9 +282,8 @@ slice also owns the question of what a question about a tag to wake looks like w
 on WhatsApp rather than on Zulip.
 
 **The registry and the letter.**  The location a session lives at, the short summary of what a
-conversation is about, and the two new columns on the Fleet Reference sheet, because the sheet
-adapter is deliberately another seat's slice and the new columns have to be asked for, not
-assumed.
+conversation is about, and the new column on the Fleet Reference sheet, because the sheet adapter
+is deliberately another seat's slice and the column has to be asked for, not assumed.
 
 **The line that does not move.**  The letter rules stand:  a letter is for a tagged address, only
 the Operator issues one, a direct message needs no letter, and a seat never chooses its own
