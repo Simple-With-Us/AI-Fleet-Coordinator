@@ -441,18 +441,25 @@ async function serveGbBearerMcp(request, env, token) {
   // the persona rows read /zulip and /linear;  /fleetlink and /tools are
   // listed only once the bearer has matched.
   await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
-  const credentials = (await resolveDelegatedCredentials(env)).roles.get(identity);
-  if (!credentials) return refuse();
+  const roles = (await resolveDelegatedCredentials(env)).roles;
   const identityGate = gate(env, identity);
   const checked = await identityGate.gbBearerCheck(await sha256Hex(parsed.token));
   if (!checked.ok) {
     // Only a token whose hash matched is logged (expired).  A wrong guess is not:  anyone can send one, and the
-    // audit log is capped, so guesses would push real mint and revoke rows out.
+    // audit log is capped, so guesses would push real mint and revoke rows out.  They do count
+    // against the claimed identity's mismatch counter (counts only, /admin-visible).
     if (checked.reason === "expired") {
       try { await identityGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
+    } else if (checked.reason === "mismatch") {
+      // Static configured set, not roles.keys():  the counter must still
+      // work during a delegated-credential outage, when the roles map is
+      // incomplete - an attacker's guesses do not pause for our outage.
+      try { await identityGate.gbBearerMismatch(identity, new Set(GB_IDENTITIES)); } catch { /* A counter is observability, never the security path. */ }
     }
     return refuse();
   }
+  const credentials = roles.get(identity);
+  if (!credentials) return refuse();
   const state = await identityGate.getState();
   if (state.paused) return invalidToken("This identity is paused.");
   const scopes = ["zulip:read", "zulip:write"];
@@ -516,22 +523,26 @@ async function serveSbtBearerMcp(request, env, token) {
   const { identity: seat } = parsed;
   if (!config.hostedSeats.includes(seat)) return refuse();
   await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
+  const seatGate = gate(env, seat);
+  const checked = await seatGate.gbBearerCheck(await sha256Hex(parsed.token));
+  if (!checked.ok) {
+    // Same cap discipline as serveGbBearerMcp:  only an expired-but-matching
+    // bearer writes a row;  guesses are free to send.  They do count against
+    // the seat's mismatch counter (counts only, /admin-visible).
+    if (checked.reason === "expired") {
+      try { await seatGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
+    } else if (checked.reason === "mismatch") {
+      // Static seat set for the same outage reason as the persona path.
+      try { await seatGate.gbBearerMismatch(seat, new Set(KNOWN_SEATS)); } catch { /* A counter is observability, never the security path. */ }
+    }
+    return refuse();
+  }
   const secretNames = SEAT_SECRETS[seat];
   // The seat key resolves through Infisical when INFISICAL_MODE allows;  in off
   // mode the legacy binding still answers, exactly as the env read did before.
   const key = secretNames ? String(await resolveSecret(env, { name: secretNames.infisical.name, path: secretNames.infisical.path, envName: secretNames.key, optional: true }) ?? "").trim() : "";
   const email = config.botEmails[seat];
   if (!key || !email) return refuse();
-  const seatGate = gate(env, seat);
-  const checked = await seatGate.gbBearerCheck(await sha256Hex(parsed.token));
-  if (!checked.ok) {
-    // Same cap discipline as serveGbBearerMcp:  only an expired-but-matching
-    // bearer writes a row;  guesses are free to send.
-    if (checked.reason === "expired") {
-      try { await seatGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
-    }
-    return refuse();
-  }
   if (checked.mcp_accept !== true) return refuse();
   const state = await seatGate.getState();
   if (state.paused) return invalidToken("This identity is paused.");
@@ -1117,8 +1128,12 @@ async function serveAdmin(request, env, config, oauth, email) {
     const gbBearers = await Promise.all([
       ...GB_IDENTITIES.map(async (identity) => {
         let status = null;
-        try { status = await gate(env, identity).gbBearerStatus(); } catch { /* Shown as unknown. */ }
-        return { identity, kind: "persona", credentials: delegatedRoles.has(identity), status };
+        let mismatches = null;
+        let mismatchesUnavailable = false;
+        const g = gate(env, identity);
+        try { status = await g.gbBearerStatus(); } catch { /* Shown as unknown. */ }
+        try { mismatches = (await g.gbBearerMismatches())[identity] ?? null; } catch { mismatchesUnavailable = true; }
+        return { identity, kind: "persona", credentials: delegatedRoles.has(identity), status, mismatches, mismatchesUnavailable };
       }),
       // Every seat may hold a bearer too (owner direction 2026-10-23:  all apps in
       // this panel, one credential per identity, honored by ST-MCP and GR-MCP).
@@ -1127,10 +1142,14 @@ async function serveAdmin(request, env, config, oauth, email) {
       // not-installed, never a 500.
       ...KNOWN_SEATS.map(async (identity) => {
         let status = null;
-        try { status = await gate(env, identity).gbBearerStatus(); } catch { /* Shown as unknown. */ }
+        let mismatches = null;
+        let mismatchesUnavailable = false;
+        const g = gate(env, identity);
+        try { status = await g.gbBearerStatus(); } catch { /* Shown as unknown. */ }
+        try { mismatches = (await g.gbBearerMismatches())[identity] ?? null; } catch { mismatchesUnavailable = true; }
         const names = SEAT_SECRETS[identity];
         const key = names ? await resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key, optional: true }) : "";
-        return { identity, kind: "seat", credentials: config.hostedSeats.includes(identity) && Boolean(key), status };
+        return { identity, kind: "seat", credentials: config.hostedSeats.includes(identity) && Boolean(key), status, mismatches, mismatchesUnavailable };
       }),
     ]);
     // Observability for the Infisical transition (kody 4365623014):  the mode

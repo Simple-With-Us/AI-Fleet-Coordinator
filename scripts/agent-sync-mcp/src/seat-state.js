@@ -1224,6 +1224,214 @@ export async function gbBearerRevoke(store, { by }, now = Date.now()) {
   return { revoked: Boolean(had) };
 }
 
+const GB_MISMATCH_KEY = "gb_bearer_mismatches";
+
+/**
+ * Count one wrong-secret presentation against the identity it CLAIMED (kody
+ * The narrowing review verdict:  a guessing storm was invisible;  gbBearerCheck deliberately
+ * writes nothing on mismatch to protect the capped audit log).  Counts and a
+ * last-seen time only - never a hash, a token, or an audit row.
+ *
+ * `configured` is the caller's set of currently configured identity names.
+ * A claimed name outside it lands in the single "unconfigured" bucket, so
+ * attacker-chosen names can never grow the map past |configured| + 1, and
+ * keys dropped from the configuration are evicted on the next write so the
+ * persisted map stays bounded as seats change.  The read-modify-write runs
+ * in one storage transaction so concurrent mismatches cannot lose a count.
+ */
+export async function gbBearerMismatch(store, identity, configured, now = Date.now()) {
+  const names = configured instanceof Set ? configured : new Set(configured ?? []);
+  const bucket = names.has(identity) ? identity : "unconfigured";
+  const ts = Number.isFinite(now) ? now : Date.now();
+  await store.transaction(async (txn) => {
+    const map = (await txn.get(GB_MISMATCH_KEY)) ?? {};
+    const pruned = {};
+    for (const [key, row] of Object.entries(map)) {
+      if (key === "unconfigured" || names.has(key)) pruned[key] = row;
+    }
+    const row = pruned[bucket];
+    const count = Number(row?.count);
+    pruned[bucket] = {
+      count: (Number.isFinite(count) && count >= 0 ? count : 0) + 1,
+      last_at: ts,
+    };
+    await txn.put(GB_MISMATCH_KEY, pruned);
+  });
+}
+
+/**
+ * The write-throttled counting layer (fresh-head review:  one storage write
+ * per wrong guess lets an anonymous caller burn the shared DO write quota and
+ * serialize the identity's writes).  The Durable Object instance buffers
+ * increments in memory and flushes at most once per GB_MISMATCH_FLUSH_MS,
+ * exactly the discipline last_used_at already keeps in gbBearerCheck.
+ *
+ * HONEST ACCOUNTING:  persisted totals are exact at flush points;  increments
+ * buffered since the last flush live in instance memory only and are lost if
+ * the instance is evicted, so the stored count is a LOWER BOUND, not an exact
+ * lifetime total.  For the metric's purpose - is this identity under a
+ * guessing storm, and how recently - a lower bound plus last_at is the
+ * signal;  exact per-guess accounting is not what /admin shows.  Reads never
+ * flush, so refreshing /admin or reading the state API can never cause a
+ * write.  A failed flush merges its batch back into the buffer (nothing is
+ * dropped), backs off to the next interval so a busy alarm chain cannot
+ * spin retries, and (via the caller's catch) never weakens bearer rejection.
+ */
+export const GB_MISMATCH_FLUSH_MS = 60_000;
+
+/** The per-instance buffer a gate holds:  pending deltas, the last flush,
+ * the configured set to prune with, and the in-flight flush guard. */
+export function gbMismatchBuffer() {
+  return { pending: new Map(), lastFlush: 0, configured: new Set(), flushing: false, retryAt: 0 };
+}
+
+/**
+ * Count one wrong-secret presentation.  Returns true when this call flushed
+ * to storage, false when the increment sits in memory.  The first call after
+ * an instance starts (or after a quiet interval) flushes immediately, so a
+ * storm's onset is visible within one call and a steady stream can never
+ * produce more than one write per interval per instance.
+ */
+export async function gbMismatchCount(store, buffer, identity, configured, now = Date.now(), flushMs = GB_MISMATCH_FLUSH_MS) {
+  const ts = Number.isFinite(now) ? now : Date.now();
+  buffer.configured = configured instanceof Set ? configured : new Set(configured ?? []);
+  const row = buffer.pending.get(identity) ?? { count: 0, last_at: 0 };
+  row.count += 1;
+  row.last_at = ts;
+  buffer.pending.set(identity, row);
+  if (!gbMismatchDue(buffer, ts, flushMs)) return false;
+  return gbMismatchFlushGuarded(store, buffer, ts, flushMs);
+}
+
+/**
+ * Flush under the in-memory guard.  lastFlush advances only AFTER the
+ * transaction resolves, so two calls racing a cold start (each synchronous
+ * section is atomic, but awaits interleave) must not both write:  the first
+ * sets buffer.flushing in its synchronous section and the second sees it
+ * and keeps buffering.  Exactly one write per flush window per instance,
+ * demonstrated by the overlapping-calls unit test and the real-SeatGate
+ * integration step.  A failure backs the retry off to the interval
+ * (retryAt) so a busy alarm chain cannot spin it.
+ */
+export async function gbMismatchFlushGuarded(store, buffer, now = Date.now(), flushMs = GB_MISMATCH_FLUSH_MS) {
+  if (buffer.flushing || buffer.pending.size === 0) return false;
+  buffer.flushing = true;
+  const ts = Number.isFinite(now) ? now : Date.now();
+  try {
+    await gbMismatchFlush(store, buffer, buffer.configured, ts);
+    buffer.retryAt = 0;
+    return true;
+  } catch (err) {
+    // Back off to the interval after a failure:  an immediate retry under
+    // the wa sweep's busy (one-second) alarm chain would be a write attempt
+    // per second - the very amplification the buffer exists to bound.
+    buffer.retryAt = ts + flushMs;
+    throw err;
+  } finally {
+    buffer.flushing = false;
+  }
+}
+
+/**
+ * The moment the buffered tail is due to persist:  the flush interval after
+ * the last successful flush, or NOW for a cold instance whose first flush
+ * has not landed - but never before retryAt, the backoff a failed flush
+ * sets.  null when nothing is pending (no alarm work needed).
+ */
+export function gbMismatchDueAt(buffer, now = Date.now(), flushMs = GB_MISMATCH_FLUSH_MS) {
+  if (!buffer || buffer.pending.size === 0) return null;
+  const ts = Number.isFinite(now) ? now : Date.now();
+  const base = buffer.lastFlush === 0 ? ts : buffer.lastFlush + flushMs;
+  return Math.max(base, buffer.retryAt || 0);
+}
+
+/** True when a flush is due at `now` - the single rule the count path and
+ * the alarm path share, so NEITHER can write more than once per interval. */
+export function gbMismatchDue(buffer, now = Date.now(), flushMs = GB_MISMATCH_FLUSH_MS) {
+  const due = gbMismatchDueAt(buffer, now, flushMs);
+  return due !== null && due <= now;
+}
+
+/**
+ * The alarm time that guarantees a buffered tail persists at its due time
+ * (gbMismatchDueAt:  the flush interval after the last flush, or the
+ * failure backoff), or null when no (re)schedule is needed.  An EXISTING
+ * earlier alarm (e.g. the wa sweep's 1s busy chain) already covers the
+ * tail - when it fires early the handler's due check finds nothing to do
+ * and its reschedule carries the metric deadline forward - so it must not
+ * be pushed later;  an existing LATER alarm (the sweep's hourly idle) must
+ * be pulled earlier to keep the guarantee.
+ */
+export function gbMismatchAlarmDeadline(buffer, existingAlarm, now = Date.now(), flushMs = GB_MISMATCH_FLUSH_MS) {
+  const due = gbMismatchDueAt(buffer, now, flushMs);
+  if (due === null) return null;
+  // An existing EARLIER alarm still covers the tail:  when it fires, the
+  // handler runs its due check and reschedules to the metric deadline (see
+  // SeatGate.alarm), so the tail persists on time without a second
+  // scheduling write here.  A LATER existing alarm (the wa sweep's idle
+  // hour) is pulled in to the due time.  The deadline itself is never
+  // pushed out.
+  if (existingAlarm !== null && existingAlarm <= due) return null;
+  return due;
+}
+
+/**
+ * Persist every pending delta in one transaction, applying the same prune
+ * (drop rows for identities that left the configured set) as the direct
+ * counter.  The pending map is swapped out synchronously BEFORE the first
+ * await;  on success lastFlush advances, on failure the batch merges back
+ * into the live buffer and the exception propagates for the caller's
+ * backoff.
+ */
+export async function gbMismatchFlush(store, buffer, configured, now = Date.now()) {
+  if (buffer.pending.size === 0) return;
+  const names = configured instanceof Set ? configured : new Set(configured ?? []);
+  const ts = Number.isFinite(now) ? now : Date.now();
+  // Synchronous hand-off:  the batch leaves the live map BEFORE the first
+  // await.  A delta counted while the transaction is in flight lands in the
+  // fresh map and survives BOTH outcomes - a clear() after the await would
+  // wipe it unwritten.  Correctness here rests on JavaScript's run-to-
+  // completion for synchronous sections, not on DO input-gate behavior.
+  const batch = buffer.pending;
+  buffer.pending = new Map();
+  try {
+    await store.transaction(async (txn) => {
+      const map = (await txn.get(GB_MISMATCH_KEY)) ?? {};
+      const pruned = {};
+      for (const [key, row] of Object.entries(map)) {
+        if (key === "unconfigured" || names.has(key)) pruned[key] = row;
+      }
+      for (const [identity, delta] of batch) {
+        const bucket = names.has(identity) ? identity : "unconfigured";
+        const row = pruned[bucket];
+        const count = Number(row?.count);
+        pruned[bucket] = {
+          count: (Number.isFinite(count) && count >= 0 ? count : 0) + delta.count,
+          last_at: Math.max(Number(row?.last_at) || 0, delta.last_at),
+        };
+      }
+      await txn.put(GB_MISMATCH_KEY, pruned);
+    });
+  } catch (err) {
+    // The transaction rolled back as a unit.  Merge the batch back UNDER
+    // anything counted while it was in flight, so no delta is ever dropped.
+    for (const [identity, delta] of batch) {
+      const current = buffer.pending.get(identity);
+      if (current) {
+        current.count += delta.count;
+        current.last_at = Math.max(current.last_at, delta.last_at);
+      } else buffer.pending.set(identity, delta);
+    }
+    throw err;
+  }
+  buffer.lastFlush = ts;
+}
+
+/** For /admin:  the per-identity mismatch counts, times and counts only. */
+export async function gbBearerMismatches(store) {
+  return (await store.get(GB_MISMATCH_KEY)) ?? {};
+}
+
 /**
  * Check a presented hash.  {ok: true} or {ok: false, reason} with reason one of
  * none, mismatch, expired.  last_used_at is written at most once an hour, so a busy bot

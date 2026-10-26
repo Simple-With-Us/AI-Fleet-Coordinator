@@ -25,8 +25,29 @@ export class SeatGate extends DurableObject {
     return result;
   }
   async alarm() {
-    const more = await wa.sweep(this.store);
-    await this.store.setAlarm(Date.now() + (more ? 1000 : 3600000));
+    // The mismatch counter flushes ONLY when due:  this handler also fires
+    // every second while the wa sweep's busy chain drains, and an
+    // unconditional flush would turn that cadence back into a write per
+    // second - the amplification the buffer exists to bound (fresh-head
+    // review).  A failed flush keeps its deltas and backs off to the
+    // interval (retryAt), which the joint reschedule below honors.
+    const now = Date.now();
+    if (state.gbMismatchDue(this._mmBuf, now)) {
+      try { await state.gbMismatchFlushGuarded(this.store, this._mmBuf, now); } catch { /* deltas kept; the retry comes due at buffer.retryAt, scheduled below. */ }
+    }
+    let more = false;
+    try { more = await wa.sweep(this.store); } finally {
+      // One alarm serves both features:  the EARLIEST of the sweep's own
+      // cadence and the counter's due time.  The idle hour can no longer
+      // bury a pending tail or a retry, and the busy chain can no longer
+      // pull a flush forward - the due check above decides, not the cadence.
+      // finally:  a sweep throw must not orphan a buffered tail or a backoff
+      // retry - the reschedule runs even then, and the error still propagates
+      // so the runtime's own alarm retry applies on top (fresh-head review).
+      const waNext = Date.now() + (more ? 1000 : 3600000);
+      const mmNext = state.gbMismatchDueAt(this._mmBuf, Date.now());
+      await this.store.setAlarm(mmNext === null ? waNext : Math.min(waNext, mmNext));
+    }
   }
   waRead(options) { return wa.read(this.store, options); }
   async waOperator(options) {
@@ -167,6 +188,37 @@ export class SeatGate extends DurableObject {
   }
   gbBearerStatus() {
     return state.gbBearerStatus(this.store);
+  }
+
+  // Buffered:  one in-memory increment per call, at most one storage write
+  // per GB_MISMATCH_FLUSH_MS per instance (fresh-head review - an anonymous
+  // caller must not turn wrong guesses into unbounded DO storage writes).
+  // A buffered (unflushed) increment arms the alarm so even a quiet tail -
+  // one probe and then silence - persists when it comes due;  an existing
+  // earlier alarm covers it (the handler reschedules to the counter's due
+  // time) without a second scheduling write.
+  async gbBearerMismatch(identity, configured) {
+    const buf = (this._mmBuf ??= state.gbMismatchBuffer());
+    let flushed = false;
+    try {
+      flushed = await state.gbMismatchCount(this.store, buf, identity, configured);
+    } catch {
+      // A failed flush keeps every delta in the buffer;  the alarm armed
+      // below drives the retry at the backoff time (retryAt).  The route
+      // caller's own catch keeps the counter off the security path, so
+      // swallowing here only adds the retry arming.
+    }
+    if (!flushed) {
+      // Earlier-of semantics:  an existing earlier alarm covers the tail;
+      // a later one (the wa sweep's idle hour) is pulled to the due time.
+      const setAt = state.gbMismatchAlarmDeadline(buf, await this.store.getAlarm());
+      if (setAt !== null) await this.store.setAlarm(setAt);
+    }
+    return flushed;
+  }
+
+  gbBearerMismatches() {
+    return state.gbBearerMismatches(this.store);
   }
 
   linearTokenClear() {

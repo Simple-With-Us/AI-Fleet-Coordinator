@@ -343,3 +343,60 @@ test("admin page puts the owner's controls first and folds the long sections (AF
   for (const title of ["Refused Authorize Requests", "Audit"]) assert.match(html, new RegExp(`<details class="fold"><summary><h2>${title}`));
   assert.doesNotMatch(html, /<details[^>]* open/, "folded by default");
 });
+
+test("the bearer table shows mismatch counts when present, never hashes", async () => {
+  const { adminPage } = await import("../src/pages.js");
+  const base = {
+    email: "admin@example.test",
+    seats: [],
+    clients: [],
+    refusals: [],
+    audits: [],
+    generatedAt: 0,
+    csrf: "c",
+  };
+  const withCountRes = adminPage({
+    ...base,
+    gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null, mismatches: { count: 3, last_at: 1730000000000 } }],
+  });
+  const withCount = await withCountRes.text();
+  assert.ok(withCount.includes("3 wrong-secret attempts"), "count line renders");
+  const line = withCount.split("3 wrong-secret attempts")[1].slice(0, 120);
+  assert.ok(!/[0-9a-f]{64}/.test(line), "the count line carries no token hash");
+
+  const noneRes = adminPage({
+    ...base,
+    gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null, mismatches: { count: 0, last_at: 0 } }],
+  });
+  const none = await noneRes.text();
+  assert.ok(!none.includes("wrong-secret attempt"), "zero renders nothing");
+
+  const missingRes = adminPage({
+    ...base,
+    gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null }],
+  });
+  const missing = await missingRes.text();
+  assert.ok(!missing.includes("wrong-secret attempt"), "absent renders nothing");
+});
+
+test("a failed counter read says unavailable, never a silent zero", async () => {
+  const { adminPage } = await import("../src/pages.js");
+  const base = { email: "admin@example.test", seats: [], clients: [], refusals: [], audits: [], generatedAt: 0, csrf: "c" };
+  const html = await adminPage({
+    ...base,
+    gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null, mismatchesUnavailable: true }],
+  }).text();
+  assert.ok(html.includes("wrong-secret counter read unavailable"), "the failed read is named");
+  assert.ok(!html.includes("wrong-secret attempt"), "unavailable is not dressed as a count");
+});
+
+test("the mismatch count line labels its lifetime retention", async () => {
+  const { adminPage } = await import("../src/pages.js");
+  const base = { email: "admin@example.test", seats: [], clients: [], refusals: [], audits: [], generatedAt: 0, csrf: "c" };
+  const html = await adminPage({
+    ...base,
+    gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null, mismatches: { count: 3, last_at: 1730000000000 } }],
+  }).text();
+  assert.ok(html.includes("3 wrong-secret attempts"), "count renders");
+  assert.ok(html.includes("(approximate; updates at most once a minute)"), "the write-throttled, lower-bound nature is labelled");
+});
