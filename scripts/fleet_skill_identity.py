@@ -91,7 +91,7 @@ def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
         "Stop if `whoami` shows another seat's bot or the credential is missing "
         "(the CLI also refuses on its own).  Never use another seat's credential or "
         "Jay's account.  Your shell may not keep exports between commands, so pass "
-        '`--as <SEAT>` on every simple-chat call.  `simple-board` does not read these variables:  '
+        "`--as <SEAT>` on every simple-chat call.  `simple-board` does not read these variables:  "
         "the fleet verifier names your seat from your own bearer (`simple-board whoami` prints it as "
         "`bearer-verified`), no variable can pick it, and `--by <YOUR_TAG>` in the commands below is only a "
         f"check that must equal that seat.{extra}  {LAUNCHER_CLAUSE}"

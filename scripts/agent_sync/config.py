@@ -184,6 +184,7 @@ BEARER_LOCATOR_RE = re.compile(
     r"/[A-Za-z0-9_-]{1,64}(?:/[A-Za-z0-9_-]{1,64}){0,7}:[A-Z][A-Z0-9_]{0,63}"
 )
 
+
 class RoutineConfig:
     """Where a remote `http` wake goes:  the names of the environment variables that hold the
     routine URL and its sender key (never the values), the method, the header and auth mode."""
@@ -920,7 +921,8 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             not isinstance(bearer_locator, str) or not BEARER_LOCATOR_RE.fullmatch(bearer_locator)
         ):
             wake_problems.append(
-                "seat.%s.bearer_locator must be a FOLDER:KEY_NAME location (no secret value)" % seat_name
+                "seat.%s.bearer_locator must be a FOLDER:KEY_NAME location (no secret value)"
+                % seat_name
             )
             bearer_locator = None
         creds = section.get("creds", "file")

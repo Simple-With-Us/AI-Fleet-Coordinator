@@ -39,7 +39,9 @@ class Result:
 
 
 def find_tool(name: str, environ: Mapping[str, str]) -> str | None:
-    if name == "simple-board":  # the board is the managed install of this account, never a PATH or HOME lookup
+    if (
+        name == "simple-board"
+    ):  # the board is the managed install of this account, never a PATH or HOME lookup
         return seatmod.managed_board()
     found = shutil.which(name, path=environ.get("PATH"))
     if found:

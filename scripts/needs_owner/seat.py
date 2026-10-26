@@ -7,13 +7,13 @@ verified seat on its `whoami` seat line.  `--by` is only a check that the caller
 every child's environment, so no variable can pick an identity.  No locator, or any verification failure,
 refuses (fail closed).
 """
+
 from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
-from typing import Callable, Mapping
+from collections.abc import Callable, Mapping
 
 from . import f3
 from .errors import Refusal
@@ -123,24 +123,38 @@ def managed_board() -> str | None:
 def _probe(env: Mapping[str, str]) -> tuple[int, str]:
     binary = managed_board()
     if not binary:
-        raise Refusal("the managed simple-board (~/.local/bin/simple-board of this account) is missing, or it or its "
-                      "folder is writable by someone other than this user or root;  the seat is not read from "
-                      "any other simple-board")
+        raise Refusal(
+            "the managed simple-board (~/.local/bin/simple-board of this account) is missing, or it or its "
+            "folder is writable by someone other than this user or root;  the seat is not read from "
+            "any other simple-board"
+        )
     try:
-        done = subprocess.run([binary, "whoami"], capture_output=True, text=True, timeout=60, check=False,
-                              stdin=subprocess.DEVNULL, env=child_environment(env))
+        done = subprocess.run(
+            [binary, "whoami"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            env=child_environment(env),
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         raise Refusal("simple-board could not verify the seat (%s)" % type(exc).__name__) from None
     return done.returncode, done.stdout or ""
 
 
-def verified_seat(by: str, environ: Mapping[str, str] | None = None,
-                  probe: Callable[[Mapping[str, str]], tuple[int, str]] | None = None) -> str:
+def verified_seat(
+    by: str,
+    environ: Mapping[str, str] | None = None,
+    probe: Callable[[Mapping[str, str]], tuple[int, str]] | None = None,
+) -> str:
     """The seat the bearer proves, which must equal `by`.  Raises Refusal."""
     env = os.environ if environ is None else environ
     if not (env.get(LOCATOR_ENV) or "").strip():
-        raise Refusal("no verified seat:  %s is not set.  The trusted launcher binds the run's bearer locator;  "
-                      "no environment variable can choose an identity" % LOCATOR_ENV)
+        raise Refusal(
+            "no verified seat:  %s is not set.  The trusted launcher binds the run's bearer locator;  "
+            "no environment variable can choose an identity" % LOCATOR_ENV
+        )
     code, out = (probe or _probe)(env)
     match = _SEAT_LINE.search(out) if code == 0 else None
     if not match:
@@ -150,8 +164,10 @@ def verified_seat(by: str, environ: Mapping[str, str] | None = None,
         raise Refusal("%r is not a canonical seat tag" % match.group(1)[:40])
     wanted = f3.identity.canonical_seat(by)
     if wanted != seat:
-        raise Refusal("--by %s does not match this session's verified seat %s.  --by is only a check, never the "
-                      "source of identity" % (wanted[:40], seat))
+        raise Refusal(
+            "--by %s does not match this session's verified seat %s.  --by is only a check, never the "
+            "source of identity" % (wanted[:40], seat)
+        )
     return seat
 
 

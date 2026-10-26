@@ -1256,11 +1256,22 @@ def make_verify_handler(store):
             elif mode == "past-expiry":
                 self._answer(200, {"ok": True, "identity": q.get("identity"), "expires_at": 1000})
             elif mode == "nan-expiry":
-                self._answer(200, ('{"ok":true,"identity":"%s","expires_at":NaN}' % q.get("identity")).encode())
+                self._answer(
+                    200,
+                    ('{"ok":true,"identity":"%s","expires_at":NaN}' % q.get("identity")).encode(),
+                )
             elif mode == "inf-expiry":
-                self._answer(200, ('{"ok":true,"identity":"%s","expires_at":Infinity}' % q.get("identity")).encode())
+                self._answer(
+                    200,
+                    (
+                        '{"ok":true,"identity":"%s","expires_at":Infinity}' % q.get("identity")
+                    ).encode(),
+                )
             elif mode == "bool-expiry":
-                self._answer(200, ('{"ok":true,"identity":"%s","expires_at":true}' % q.get("identity")).encode())
+                self._answer(
+                    200,
+                    ('{"ok":true,"identity":"%s","expires_at":true}' % q.get("identity")).encode(),
+                )
             elif mode == "not-json":
                 self._answer(200, b"not json")
             else:  # expired / mismatch / paused
@@ -1349,7 +1360,11 @@ class BearerSeatTests(BoardTest):
         # the CLI never re-maps a verified identity.
         alias = "sbt_instinct_" + "C" * 43
         (self.ops_vault / "fleet-seats" / "INSTINCT_BEARER").write_text(alias)
-        p = self.board("stats", extra=dict(self.bearer_env, SIMPLE_BOARD_BEARER_LOCATOR="/fleet-seats:INSTINCT_BEARER"), code=None)
+        p = self.board(
+            "stats",
+            extra=dict(self.bearer_env, SIMPLE_BOARD_BEARER_LOCATOR="/fleet-seats:INSTINCT_BEARER"),
+            code=None,
+        )
         self.assert_clean_failure(p)
         self.assertIn("non-canonical", p.stderr)
 
@@ -1729,7 +1744,9 @@ class SafetyTests(BoardTest):
         old = self.tmp / "old-board"
         old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
         extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
-        p = self.board("list", "--app", "AFC", drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), extra=extra)
+        p = self.board(
+            "list", "--app", "AFC", drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), extra=extra
+        )
         self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])
         # a write never rides the rollback backend:  it would skip the bearer-verified seat
@@ -3921,7 +3938,9 @@ class FlatLabelTests(BoardTest):
             p = self.board(*args, extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), code=2)
             self.assertIn("Linear only", p.stderr, args)
             self.assertNotIn("OLD BOARD", p.stdout, args)
-        p = self.board("list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"))
+        p = self.board(
+            "list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES")
+        )
         self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])
 
