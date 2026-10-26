@@ -117,7 +117,7 @@ SYNTHETIC_OWNERS = OTHER_REPO + "=" + OTHER_OWNER
 
 def gh_url(repo: str, num: str, owner: str = GITHUB_OWNER, kind: str = "pull") -> str:
     """The link the helper makes for a pull request (or an issue) in a repository."""
-    return "https://" + GITHUB_HOST + "/" + owner + "/" + repo + "/" + kind + "/" + num
+    return "https://" + GITHUB_HOST + "/" + owner + "/" + repo + "/" + kind + "/" + str(num)
 
 
 def gh_path(repo: str, num: str, owner: str = GITHUB_OWNER) -> str:
@@ -541,7 +541,7 @@ class LinkifyTests(LinkifyTestCase):
         #  a team key further down the block says nothing about what came before it
         out = self.html(
             "⭐️ Background Jobs Master List",
-            "AFC-547 opened it.  PR #957 closed it.  And much later OPS-1000 was filed.",
+            "AFC-547.  PR #957 closed it.  And much later OPS-1000 was filed.",
         )
         self.assertIn(f'<a href="{gh_url(FLEET_REPO, "957")}">PR #957</a>', out)
         #  the control:  the same two teams, both above the reference, name no repository at all
