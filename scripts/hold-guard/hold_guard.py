@@ -26,72 +26,89 @@ Usage: hold_guard.py OWNER/REPO PR_NUMBER
 Stdout: {"state": "held"|"clear"|"error", "holds": [...]}
 Exit: 0 evaluated (held or clear); 3 evaluation error.
 """
-import json, re, subprocess, sys
+
+import json
+import re
+import subprocess
+import sys
 
 # Grounded hold families: the fleet's documented do-not-automerge /
 # needs-human-merge, plus the literal do-not-merge family Jay named.
 # Per-setter variants carry a :<login> suffix (display hint only).
-HOLD_RE = re.compile(
-    r'^(do-not-merge(:.*)?|do-not-automerge(:.*)?|needs-human-merge)$')
+HOLD_RE = re.compile(r"^(do-not-merge(:.*)?|do-not-automerge(:.*)?|needs-human-merge)$")
 
 
 def gh_json(args):
-    p = subprocess.run(['gh'] + args, capture_output=True, text=True)
+    p = subprocess.run(["gh"] + args, capture_output=True, text=True)
     if p.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args)} rc={p.returncode}: {p.stderr.strip()[:500]}")
     return json.loads(p.stdout)
 
 
 def evaluate(repo, pr, runner=gh_json):
-    labels = runner(['api', f'repos/{repo}/issues/{pr}/labels'])
-    current = {l['name'] for l in labels if HOLD_RE.match(l.get('name', ''))}
+    labels = runner(["api", f"repos/{repo}/issues/{pr}/labels"])
+    current = {l["name"] for l in labels if HOLD_RE.match(l.get("name", ""))}
     # --slurp flattens --paginate's per-page arrays into one.
-    pages = runner(['api', '--paginate', '--slurp',
-                    f'repos/{repo}/issues/{pr}/events'])
-    evs = [e for page in pages for e in page
-           if e.get('event') in ('labeled', 'unlabeled')
-           and HOLD_RE.match((e.get('label') or {}).get('name', ''))]
-    evs.sort(key=lambda e: (e.get('created_at') or '', e.get('id') or 0))
+    pages = runner(["api", "--paginate", "--slurp", f"repos/{repo}/issues/{pr}/events"])
+    evs = [
+        e
+        for page in pages
+        for e in page
+        if e.get("event") in ("labeled", "unlabeled")
+        and HOLD_RE.match((e.get("label") or {}).get("name", ""))
+    ]
+    evs.sort(key=lambda e: (e.get("created_at") or "", e.get("id") or 0))
     by_label = {}
     for e in evs:
-        by_label.setdefault(e['label']['name'], []).append(e)
+        by_label.setdefault(e["label"]["name"], []).append(e)
 
     holds = []
     for name in sorted(current | set(by_label)):
         hist = by_label.get(name, [])
         if not hist:
             if name in current:
-                holds.append({'label': name, 'owner_id': None,
-                              'owner_login': None, 'unknown': True,
-                              'illegitimate_removals': [],
-                              'needs_reapply': False})
+                holds.append(
+                    {
+                        "label": name,
+                        "owner_id": None,
+                        "owner_login": None,
+                        "unknown": True,
+                        "illegitimate_removals": [],
+                        "needs_reapply": False,
+                    }
+                )
             continue
         open_hold = None
         illegit = []
         for e in hist:
-            a = e.get('actor') or {}
-            if e['event'] == 'labeled':
+            a = e.get("actor") or {}
+            if e["event"] == "labeled":
                 if open_hold is None:
-                    open_hold = {'owner_id': a.get('id'),
-                                 'owner_login': a.get('login'),
-                                 'unknown': a.get('id') is None}
+                    open_hold = {
+                        "owner_id": a.get("id"),
+                        "owner_login": a.get("login"),
+                        "unknown": a.get("id") is None,
+                    }
                 # labeled while open: repair/duplicate, ownership unchanged
             else:  # unlabeled
                 if open_hold is None:
-                    open_hold = {'owner_id': None, 'owner_login': None,
-                                 'unknown': True}
-                    illegit.append(a.get('login'))
-                elif (open_hold['owner_id'] is not None
-                      and a.get('id') == open_hold['owner_id']):
+                    open_hold = {"owner_id": None, "owner_login": None, "unknown": True}
+                    illegit.append(a.get("login"))
+                elif open_hold["owner_id"] is not None and a.get("id") == open_hold["owner_id"]:
                     open_hold = None  # released by owner
                     illegit = []
                 else:
-                    illegit.append(a.get('login'))
+                    illegit.append(a.get("login"))
         if open_hold is not None:
-            holds.append({'label': name, **open_hold,
-                          'illegitimate_removals': illegit,
-                          'needs_reapply': name not in current})
-    return {'state': 'held' if holds else 'clear', 'holds': holds}
+            holds.append(
+                {
+                    "label": name,
+                    **open_hold,
+                    "illegitimate_removals": illegit,
+                    "needs_reapply": name not in current,
+                }
+            )
+    return {"state": "held" if holds else "clear", "holds": holds}
 
 
 def main():
@@ -99,10 +116,10 @@ def main():
     try:
         result = evaluate(repo, pr)
     except Exception as exc:  # fail closed on evaluation error only
-        print(json.dumps({'state': 'error', 'error': str(exc)[:800]}))
+        print(json.dumps({"state": "error", "error": str(exc)[:800]}))
         sys.exit(3)
     print(json.dumps(result))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
