@@ -19,9 +19,10 @@ name: Hold guard
 #     workflow author with checks: write; binding the required check to a
 #     dedicated App (settings change) narrows that to the App's key holders.
 # Error contract: every critical READ error (evaluation, fresh-state
-# fence, check-run listing) is settled before the check payload is built
-# and forces a FAILURE conclusion - a degraded guard never publishes
-# green.  Every critical failure of any kind also makes this job RED.
+# fence, check-run listing) and an unconfirmed disarm are settled before
+# the check payload is built and force a FAILURE conclusion - a degraded
+# guard never publishes green.  Every critical failure of any kind also
+# makes this job RED.
 # When API writes themselves fail, no red check can be forced onto the PR -
 # the red job + error notices are the signal (docs/hold-guard-rollout.md).
 on:

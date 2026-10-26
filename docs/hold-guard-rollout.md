@@ -111,6 +111,18 @@ per-setter holds; the suffix is a display hint, never the ownership source.
     critical failure.  This mirrors the fleet's own contract (ST
     scripts/disable-pr-automerge.sh, ported inline into the AFC reusable
     workflow's disarm job); no blanket `|| true` anywhere.
+  - AFC-553: a critical DISARM failure now also forces the merge-gate
+    conclusion to FAILURE, with the title "merge-gate: auto-merge disarm
+    unconfirmed" and the observed state in the summary.  An unconfirmed
+    disarm means auto-merge may still be armed, so the guard cannot vouch
+    that a merge will not run past the hold check.  Before this, an armed
+    pull request published a RED guard job and a GREEN merge-gate together,
+    which is exactly the degraded guard publishing green that the contract
+    above forbids; the check did arrive, it just arrived green.  The hold
+    list stays in the summary so neither reason is lost.  The disarm
+    mutation is refused for the workflow's own token in this repository
+    ("Resource not accessible by integration"), so the guard reads red on
+    every armed pull request here until the git relay carries the disarm.
   - Check publication: the check-run listing (GET) is the last read and
     happens before the payload is built, so its failure recomputes the
     payload to failure; the POST is still attempted best-effort.  A

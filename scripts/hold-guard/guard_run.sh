@@ -8,10 +8,11 @@
 # Optional env: GUARD_APP_SLUG (default github-actions).
 #
 # Error contract: every critical READ error (evaluation, fresh-state fence,
-# check-run listing) is settled BEFORE the check payload is built and forces
-# a FAILURE conclusion - a degraded guard never publishes green.  Every
-# critical failure of any kind (read errors, disarm unconfirmed, label
-# repair, comment, check patch/create) also makes the JOB red (exit 3).
+# check-run listing) and an unconfirmed disarm are settled BEFORE the check
+# payload is built and force a FAILURE conclusion - a degraded guard never
+# publishes green.  Every critical failure of any kind (read errors, disarm
+# unconfirmed, label repair, comment, check patch/create) also makes the JOB
+# red (exit 3).
 # What we cannot do (documented, not claimed): if GitHub API writes
 # themselves fail, no red check can be forced onto the PR - a previously
 # green merge-gate may persist; the red job + notices are the signal, and
@@ -79,16 +80,25 @@ prs=("$PR")
 #    AFC auto-merge-reusable.yml disarm job): success is defined by the
 #    STATE READ (`gh pr view --json autoMergeRequest`), not by the mutation
 #    exit code.  off = benign (disarmed or never armed); armed or
-#    unreadable after the attempt = critical failure (red job; the check
-#    still publishes the evaluated hold state below).
+#    unreadable after the attempt = critical failure.
+#    AFC-553: the critical failure also forces the merge-gate conclusion to
+#    FAILURE below.  An unconfirmed disarm means auto-merge may still be
+#    armed, so the guard cannot vouch that a merge will not run past the
+#    hold check; a green conclusion there would be the degraded guard
+#    publishing green, which this script's error contract forbids.  The
+#    disarm mutation is refused for the workflow's own token in this
+#    repository ("Resource not accessible by integration"), so every armed
+#    pull request lands here until the git relay carries the disarm.
 gh pr merge --disable-auto "$PR_URL" 2>&1 | head -3 || true
 state="$(gh pr view "$PR_URL" --json autoMergeRequest \
   --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || true)"
 [ -n "$state" ] || state=unreadable
+disarm_unconfirmed=0
 case "$state" in
   off) : ;;
   *) echo "::error::auto-merge state after disarm attempt: $state ($PR_URL)"
-     any_error=1 ;;
+     any_error=1
+     disarm_unconfirmed=1 ;;
 esac
 
 # 2. Evaluate holds (fail closed per PR).
@@ -228,9 +238,16 @@ else
   [ -n "$read_error" ] || read_error="check-run listing error"
 fi
 
+holds_summary="$(printf '%s' "$fresh" | jq -r '[.[] | "- `\(.label)` (PR #\(.pr)) set by \(.owner_login // "unknown")\(if .unknown then " - owner unknown, needs escalation" else "" end)"] | join("\n")')"
 if [ -n "$read_error" ]; then
   conclusion=failure; title="merge-gate: $read_error"
   summary="A guard read step failed (see workflow log). Failing closed - no green check from a degraded guard."
+elif [ "$disarm_unconfirmed" = "1" ]; then
+  # AFC-553: the guard could not confirm that auto-merge was disarmed, so
+  # it cannot vouch that a merge will not run past this hold check.  Red,
+  # never green: a degraded guard does not publish green.
+  conclusion=failure; title="merge-gate: auto-merge disarm unconfirmed"
+  summary="The guard could not confirm that auto-merge was disarmed (state: $state), so it cannot guarantee that a merge will not run past the hold check. Failing closed - no green check from a degraded guard. Holds: ${holds_summary:-none}."
 elif [ "$(printf '%s' "$fresh" | jq 'length')" -eq 0 ]; then
   conclusion=success; title="merge-gate: no active merge holds"
   summary="All holds were released by their setters."
@@ -238,7 +255,7 @@ else
   conclusion=failure; title="merge-gate: active merge holds"
   # summary is built from the in-memory fence result, not the snapshot
   # file, so a snapshot write failure cannot degrade the payload
-  summary="$(printf '%s' "$fresh" | jq -r '[.[] | "- `\(.label)` (PR #\(.pr)) set by \(.owner_login // "unknown")\(if .unknown then " - owner unknown, needs escalation" else "" end)"] | join("\n")')"
+  summary="$holds_summary"
 fi
 payload="$(jq -n --arg sha "$HEAD_SHA" --arg c "$conclusion" --arg t "$title" --arg s "$summary" \
   '{name: "merge-gate", head_sha: $sha, status: "completed", conclusion: $c, output: {title: $t, summary: $s}}')"
