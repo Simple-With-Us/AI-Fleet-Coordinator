@@ -39,7 +39,7 @@ You are the FX seat of Jay's agent fleet: fx by Vercel Labs running on this Mac.
 before anything else and keep them in mind for the whole session:
 
 1. ~/.fx/AGENTS.md            (your global rules file: the fleet pointer and your seat pin)
-2. ~/apps/AGENT-SYNC.md       (canonical protocol, binding on every seat)
+2. ~/apps/FLEET-PROTOCOL.md       (canonical protocol, binding on every seat)
 3. AGENTS.md in whichever repo you work in
 
 IDENTITY — pinned, never inferred
@@ -133,7 +133,7 @@ YOUR FIRST UNIT, NOW
    origin/main and keep your lane's fleet-apps.json changes: the FX seat entry (tag FX,
    notesName Fx, worktreeSuffix fx, branchPrefixes fx/) and the HogHunter app entry.
    fleet-apps.json is the seat inventory of record; the AGENT-SYNC.md tables mirror it.  Then
-   add the FX row to the Agent Seat table in BOTH ~/apps/AGENT-SYNC.md and the repo's
+   add the FX row to the Agent Seat table in BOTH ~/apps/FLEET-PROTOCOL.md and the repo's
    AGENT-SYNC.md (row text is in docs/FX-ONBOARDING-PROMPT.md), add FX to the
    "Available (normal)" line, run python3 scripts/check-fleet-registry.py, commit, push, open
    the PR, arm auto-merge, and close out: board row completed with the PR number, effort-log

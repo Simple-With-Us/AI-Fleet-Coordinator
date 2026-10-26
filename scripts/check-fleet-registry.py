@@ -16,7 +16,7 @@ and hold rules that are internally consistent.  The manifest file is new, so an
 absent file is a skip with a note, never a failure:  a fresh worktree that has not
 seeded the manifest yet must still pass this check.
 
-Live-copy checks compare ~/apps/AGENT-SYNC.md against the registry, which exists
+Live-copy checks compare ~/apps/FLEET-PROTOCOL.md against the registry, which exists
 on operator seats but never on CI runners.  With FLEET_BOARD_HOME set, the live
 checks run against that directory and a missing directory fails the check.  Without
 it, ~/apps is used when present;  when neither exists the live checks are
@@ -404,7 +404,9 @@ def main() -> int:
     errors.extend(agent_sync_errors(apps, agent_sync, "coordinator AGENT-SYNC.md"))
     if live_sync.is_file():
         errors.extend(
-            agent_sync_errors(apps, live_sync.read_text(), "~/apps/AGENT-SYNC.md", fold_repo=True)
+            agent_sync_errors(
+                apps, live_sync.read_text(), "~/apps/FLEET-PROTOCOL.md", fold_repo=True
+            )
         )
 
     errors.extend(zulip_errors(data))

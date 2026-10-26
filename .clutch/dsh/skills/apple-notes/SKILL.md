@@ -110,7 +110,7 @@ Background-jobs inventory note is `⭐️ Background Jobs Master List` — refre
 
 ## Canon
 
-- `/Users/jay/apps/AGENT-SYNC.md` § Apple Notes
+- `/Users/jay/apps/FLEET-PROTOCOL.md` § Apple Notes
 - Skills: `closeout`, `owner-copy`
 
 ### Handoff Reports (Immediate & Living)

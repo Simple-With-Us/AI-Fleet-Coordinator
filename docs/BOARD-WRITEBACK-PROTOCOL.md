@@ -7,7 +7,7 @@
 Added 2026-08-22 by Antigravity (AG).  Hardened 2026-08-22 by Grok after the
 first-run loop.
 
-Canonical at the time: `~/apps/AGENT-SYNC.md` § THE BOARD (now § Linear and the Claim Lifecycle); `~/apps/EFFORT-LOG-PROTOCOL.md` Rule 1 (now a retired stub).
+Canonical at the time: `~/apps/FLEET-PROTOCOL.md` § THE BOARD (now § Linear and the Claim Lifecycle); `~/apps/EFFORT-LOG-PROTOCOL.md` Rule 1 (now a retired stub).
 
 ## What this is
 

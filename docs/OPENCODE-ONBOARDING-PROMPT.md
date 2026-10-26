@@ -41,7 +41,7 @@ You are the OPENCODE seat of Jay's agent fleet: OpenCode running on this Mac.  R
 and keep them in mind for the whole session:
 
 1. ~/.config/opencode/AGENTS.md   (your global rules file: the fleet pointer and the Lane Map)
-2. ~/apps/AGENT-SYNC.md           (canonical protocol, binding on every seat)
+2. ~/apps/FLEET-PROTOCOL.md           (canonical protocol, binding on every seat)
 3. AGENTS.md in whichever repo you work in
 
 STEP 0 — BEFORE ANY COMMAND BELOW
@@ -159,7 +159,7 @@ The repo copy of `AGENT-SYNC.md` carries these in the same PR as the `fleet-apps
 
 Platform Defaults row:  `OpenCode (opencode CLI) | OPENCODE | opencode-bot@`.  Add `OPENCODE` to the **Available (normal)** line
 and take `OpenCode` out of the Engine-only CLIs row.  `scripts/check-fleet-registry.py` must pass.  The live copy at
-`~/apps/AGENT-SYNC.md` already differs from the repo copy, so apply these hunks to it by hand rather than copying the file over.
+`~/apps/FLEET-PROTOCOL.md` already differs from the repo copy, so apply these hunks to it by hand rather than copying the file over.
 
 ## Live files that change after the PR merges
 
@@ -182,7 +182,7 @@ None of these is in the repo, so the PR cannot change them.  Edit each by hand, 
      `~/.claude/CLAUDE.md`.  There is no `[ -t 0 ]` gate on purpose:  an agent's shell tool normally has no TTY on
      stdin, so the gate would send every ordinary session to the error branch.  The headless and Conductor cases are
      covered by the preface text above and by step 0 of the prompt.
-3. `~/apps/AGENT-SYNC.md`:  the hunks above.  Its BotFleet line that lists OpenCode among the ACP engines stays as it is.
+3. `~/apps/FLEET-PROTOCOL.md`:  the hunks above.  Its BotFleet line that lists OpenCode among the ACP engines stays as it is.
 
 ## How to tell it took
 

@@ -28,7 +28,7 @@ or one seat from the CLI (--seat --repo --issue).  --once for a launchd
 StartInterval job (the default); --loop for a foreground loop.  --dry-run reads
 everything and writes nothing.
 
-Protocol: ~/apps/AGENT-SYNC.md § Message Shape.  Skim rules follow § Skim, Then
+Protocol: ~/apps/FLEET-PROTOCOL.md § Message Shape.  Skim rules follow § Skim, Then
 Full-Read Only on a Match.  Tracked in AI-Fleet-Coordinator as
 scripts/github-outbox-bridge.py; live copy ~/apps/github-outbox-bridge.py.
 Runs on the Mac's /usr/bin/python3 (3.9): stdlib only, no 3.10+ syntax.

@@ -41,10 +41,10 @@ not fetched lately, the newest commit it shares with that branch;  `local-remote
 
 A checkout with nothing unpushed, no stash and nothing dirty leaves nothing behind.
 
-**(b) Non-git files** under `~/apps`, outside any checkout:  `AGENT-SYNC.md`, the effort logs,
+**(b) Non-git files** under `~/apps`, outside any checkout:  `FLEET-PROTOCOL.md`, the effort logs,
 `MAC-LOCAL-PROCESSES.md`, helper scripts, runtime
 configs.  They are staged under `files/`, which mirrors the path relative to the home directory
-(`files/apps/AGENT-SYNC.md`).  The loose files directly in `~/Code` are included too.  SQLite files
+(`files/apps/FLEET-PROTOCOL.md`).  The loose files directly in `~/Code` are included too.  SQLite files
 are copied with the online backup API (a live WAL-mode database is never torn;  `-wal` and `-shm`
 sidecars are skipped).  Symlinks are stored as symlinks, never followed.  A folder whose `.git` points
 nowhere (a pruned worktree) is not a checkout, so its files are kept here.

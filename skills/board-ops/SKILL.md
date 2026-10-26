@@ -72,7 +72,7 @@ The full verb table, id forms and exit codes are in `scripts/linear-board/README
 
 ## Canon
 
-- `/Users/jay/apps/AGENT-SYNC.md` § Linear and the Claim Lifecycle
+- `/Users/jay/apps/FLEET-PROTOCOL.md` § Linear and the Claim Lifecycle
 - `scripts/linear-board/README.md` and `docs/protocols/linear-migration.md` in AI-Fleet-Coordinator
 - `simple-board --help` / `simple-board file --help`
 

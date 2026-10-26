@@ -74,7 +74,7 @@
 # 3 --pin-only / --unpin-only / --read / --update --existing-only found no note with that title, 4 --pin-only /
 # --unpin-only did not pin or unpin the note.  Anything else is a failure the script did not plan for (an
 # osascript error, say), and the code is the failing command's own.
-# Canonical policy: /Users/jay/apps/AGENT-SYNC.md § Apple Notes.
+# Canonical policy: /Users/jay/apps/FLEET-PROTOCOL.md § Apple Notes.
 
 set -euo pipefail
 

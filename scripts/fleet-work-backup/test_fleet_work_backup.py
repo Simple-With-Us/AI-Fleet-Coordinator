@@ -232,7 +232,7 @@ class Fixture:
         (dangling / ".git").write_text("gitdir: /nonexistent/gone/.git/worktrees/x\n")
         # loose files (b)
         a = h / "apps"
-        write(a / "AGENT-SYNC.md", "protocol\n")
+        write(a / "FLEET-PROTOCOL.md", "protocol\n")
         write(a / "notes" / "x.txt", "note\n")
         write(a / "node_modules" / "pkg" / "index.js", "x\n")
         write(a / "run.log", "log\n")
@@ -515,7 +515,7 @@ class StageCase(unittest.TestCase):
     def test_loose_files_staged_and_junk_skipped(self):
         files = self.rels("files/")
         for want in (
-            "files/apps/AGENT-SYNC.md",
+            "files/apps/FLEET-PROTOCOL.md",
             "files/apps/notes/x.txt",
             "files/apps/ok-helper.sh",
             "files/apps/scratch-env/.env.example",
