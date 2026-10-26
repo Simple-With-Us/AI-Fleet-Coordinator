@@ -1067,7 +1067,11 @@ fi
 # a missing key, a record with an unknown key, records with values of the
 # wrong type, a record for another host, a record older than the lock beside
 # it, a record naming a dead pid, a record naming a live pid, and a record
-# naming a live pid whose start time does not match -- the reused pid.
+# naming a live pid whose start time does not match -- the reused pid.  It
+# also carries the two ways the readers used to disagree on a record that is
+# well formed in every field but one:  a start token longer than the bound
+# the watcher enforces, and a pid that belongs to another user, so signalling
+# it fails with EPERM.
 OWNER_GONE_FILE="$LOCK_TEST_ROOT/owner-gone.sh"
 printf '%s\n' "$OWNER_GONE_BLOCK" > "$OWNER_GONE_FILE"
 python3 - "$LOCK_TEST_ROOT/agreement" "$OWNER_GONE_FILE" "$ROOT/mac-resource-watch.py" <<'PY' || fail "the two owner readers disagreed"
@@ -1101,6 +1105,38 @@ def start_token(pid):
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+# A pid that belongs to another user cannot be signalled, so os.kill raises
+# EPERM for it.  The readers have to agree on what that means:  the process
+# exists, so the check carries on to the start time, exactly as the watcher
+# does.  The stub reaches the embedded reader through sitecustomize, which
+# Python imports at startup, so the reader under test knows nothing about
+# it.  The watcher runs in THIS process, so the same stub is installed here.
+STUB_DIR = root / "eperm-stub"
+STUB_DIR.mkdir(parents=True, exist_ok=True)
+(STUB_DIR / "sitecustomize.py").write_text(
+    'import os\n'
+    'target = os.environ.get("MM_FAKE_EPERM_PID")\n'
+    'if target:\n'
+    '    real = os.kill\n'
+    '    def kill(pid, sig):\n'
+    '        if int(pid) == int(target):\n'
+    '            raise PermissionError(13, "Permission denied")\n'
+    '        return real(pid, sig)\n'
+    '    os.kill = kill\n',
+    encoding="utf-8",
+)
+_real_kill = os.kill
+_eperm_pid = None
+
+
+def _kill(pid, sig):
+    if _eperm_pid is not None and int(pid) == _eperm_pid:
+        raise PermissionError(13, "Permission denied")
+    return _real_kill(pid, sig)
+
+
+os.kill = _kill
+
 host = socket.gethostname()
 live_pid = os.getpid()
 dead = subprocess.Popen([sys.executable, "-c", "pass"])
@@ -1120,10 +1156,14 @@ def record(rec_pid, lock_path, **overrides):
     return base
 
 
-def shell_verdict(home):
+def shell_verdict(home, eperm_pid=None):
+    run_env = {**env, "HOME": str(home)}
+    if eperm_pid is not None:
+        run_env["PYTHONPATH"] = str(STUB_DIR)
+        run_env["MM_FAKE_EPERM_PID"] = str(eperm_pid)
     result = subprocess.run(
         ["bash", "-c", shell_command],
-        env={**env, "HOME": str(home)},
+        env=run_env,
         capture_output=True,
         text=True,
     )
@@ -1156,37 +1196,50 @@ def write_case(home, payload, owner_newer=True):
     os.utime(owner, (now + offset, now + offset))
 
 
+# The last element of a case is the pid the EPERM stub applies to, or None
+# for a case that signs normally.
 CASES = [
-    ("a dead pid", True, lambda lock: record(dead.pid, lock), True),
-    ("a live pid", False, lambda lock: record(live_pid, lock), True),
+    ("a dead pid", True, lambda lock: record(dead.pid, lock), True, None),
+    ("a live pid", False, lambda lock: record(live_pid, lock), True, None),
     ("a reused pid", True,
-     lambda lock: record(live_pid, lock, start="Mon Jan  1 00:00:00 2024"), True),
+     lambda lock: record(live_pid, lock, start="Mon Jan  1 00:00:00 2024"), True, None),
     ("a missing key", False,
-     lambda lock: {k: v for k, v in record(dead.pid, lock).items() if k != "start"}, True),
+     lambda lock: {k: v for k, v in record(dead.pid, lock).items() if k != "start"}, True, None),
     ("an unknown key", False,
-     lambda lock: dict(record(dead.pid, lock), unexpected="x"), True),
+     lambda lock: dict(record(dead.pid, lock), unexpected="x"), True, None),
     ("a pid that is a string", False,
-     lambda lock: record(dead.pid, lock, pid="1"), True),
+     lambda lock: record(dead.pid, lock, pid="1"), True, None),
     ("a pid that is a bool", False,
-     lambda lock: record(dead.pid, lock, pid=True), True),
+     lambda lock: record(dead.pid, lock, pid=True), True, None),
     ("an empty start", False,
-     lambda lock: record(dead.pid, lock, start=""), True),
+     lambda lock: record(dead.pid, lock, start=""), True, None),
+    ("an overlong start", False,
+     lambda lock: record(dead.pid, lock, start="x" * 200), True, None),
     ("another host", False,
-     lambda lock: record(dead.pid, lock, host="some-other-host"), True),
+     lambda lock: record(dead.pid, lock, host="some-other-host"), True, None),
     ("an owner older than the lock", False,
-     lambda lock: record(dead.pid, lock), False),
-    ("a file that is not json", False, lambda lock: "{ this is not json", True),
+     lambda lock: record(dead.pid, lock), False, None),
+    ("a file that is not json", False, lambda lock: "{ this is not json", True, None),
+    # A live pid that belongs to another user cannot be signalled, so the
+    # check has to treat EPERM as "the process exists" and go on to the
+    # start time.  The start time here does not match, so the holder is gone
+    # and both readers have to say so.
+    ("a pid that is not ours to signal", True,
+     lambda lock: record(live_pid, lock, start="Mon Jan  1 00:00:00 2024"), True,
+     live_pid),
 ]
 
 problems = []
-for name, expected, build, owner_newer in CASES:
+for name, expected, build, owner_newer, eperm_pid in CASES:
     home = root / name.replace(" ", "-")
     shutil.rmtree(home, ignore_errors=True)
     home.mkdir(parents=True)
     lock = home / ".claude-disk-janitor" / ".housekeeper.lock"
     write_case(home, build(str(lock)), owner_newer)
-    shell = shell_verdict(home)
+    _eperm_pid = eperm_pid
+    shell = shell_verdict(home, eperm_pid)
     watcher = watcher_verdict(home)
+    _eperm_pid = None
     if shell != watcher:
         problems.append("%s: the shell said %s and the watcher said %s" % (name, shell, watcher))
     elif shell != expected:

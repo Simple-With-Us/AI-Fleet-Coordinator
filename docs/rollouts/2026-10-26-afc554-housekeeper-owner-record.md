@@ -8,7 +8,7 @@ The housekeeper lock is shared state with two readers in this repository: the Py
 
 The owner record gains a fifth key, `start`: the start time of the holder's process, read from the kernel through `ps` and kept as an opaque string that is compared and never parsed.  The C locale is forced when it is read, so the writer and the reader produce the same value for the same process on any machine and in any locale.  The shell reader now enforces the same schema the watcher enforces, value for value, and both readers compare the start time: a pid whose start time does not match the record names a different process, so the holder is gone and the lock is taken over at once instead of waiting out the whole stale window.  The watcher test stubs the hostname with a synthetic value and restores the original lookup after the host-sensitive cases.
 
-The class of the first finding is two implementations of one protocol drifting apart, so the fix is not only the schema check: a new case runs one table of owner records through both readers and fails when they disagree.  The table covers a good record, a missing key, an unknown key, a pid that is a string, a pid that is a bool, an empty start, another host, an owner older than the lock beside it, a dead pid, a live pid and a reused pid.
+The class of the first finding is two implementations of one protocol drifting apart, so the fix is not only the schema check: a new case runs one table of owner records through both readers and fails when they disagree.  The table covers a good record, a missing key, an unknown key, a pid that is a string, a pid that is a bool, an empty start, an overlong start, another host, an owner older than the lock beside it, a dead pid, a live pid, a reused pid and a pid that cannot be signalled because it belongs to another user.
 
 Files touched:
 
@@ -29,12 +29,24 @@ The two readers stay separate implementations.  A shared module would have been
 
 A partial deployment is safe in both directions.  An old shell reader accepts the new five-key record, because it does not check the key set, and it falls back to the age rule while the pid is alive.  A new watcher rejects an old four-key record as malformed and falls back to the age rule too.  The fast recovery is lost until both copies are updated, and nothing is taken away from a live holder.
 
+## Second round: two more reader divergences, found by the review of the fix
+
+The review of this pull request found two more ways the two readers could reach opposite conclusions about the same owner record, and both were in the shell reader.
+
+The shell reader did not enforce the length bound on the `start` token that the watcher enforces.  A record with an overlong token was refused by the watcher and trusted by the shell, so a dead pid behind such a record was taken over by one implementation and left alone by the other.  The shell reader applies the same bound now, the watcher test pins the bound on the watcher side as well, and the agreement table carries an overlong start case.
+
+The shell reader also answered a permission error as "not gone" and stopped there, while the watcher treated the same error as "the process exists" and went on to compare the start time.  A pid that belongs to another user cannot be signalled, and the shell's answer left a reused pid looking like a live holder for the whole stale window.  The shell reader carries on to the start time now, exactly as the watcher does, so the two agree.
+
+The permission error is exercised with a stub rather than with a real foreign process, so the case runs the same on a developer machine and in CI:  `sitecustomize` raises `PermissionError` for the pid under test, and Python imports it at startup, so the embedded reader reaches the stub without knowing anything about it.
+
+The second round was shown the same way.  With the shell reader from the first commit in place, the agreement table fails and names both divergences:  "an overlong start: the shell said True and the watcher said False" and "a pid that is not ours to signal: the shell said False and the watcher said True".
+
 ## Verification state
 
 Commands run, from the lane:
 
-- `bash scripts/test-mac-auto-cleanup.sh` -> OK, including the new agreement table.
-- `bash scripts/test-mac-resource-watch.sh` -> OK.
+- `bash scripts/test-mac-auto-cleanup.sh` -> OK, including the agreement table and its thirteen cases.
+- `bash scripts/test-mac-resource-watch.sh` -> OK, including the new overlong start cases.
 - `node --test workers/alert-ingress/src/*.test.js` -> 145 pass, 0 fail.
 - `shellcheck -S warning` on the three changed shell files -> the same warnings as `origin/main` and no new one.
 - The watcher test also passes on `ubuntu:24.04` with GNU ps, which is the image the CI `test` job runs it on, so the `ps` path is proven on the BSD and the GNU implementation.

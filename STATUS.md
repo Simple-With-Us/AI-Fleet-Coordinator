@@ -2,7 +2,7 @@
 
 ## 2026-10-26 MM — Housekeeper owner record: one schema, and a reused pid that cannot pass for a live holder (AFC-554)
 
-Kody's post-merge review of AFC-479 (#856) found three defects that are live in `main`, and all three are fixed here: the shell owner reader now enforces the same schema the watcher enforces, the owner record carries the holder's process start time so a reused pid cannot pass for a live holder, and the watcher test stubs the hostname instead of embedding the runner's.  A new case runs one table of owner records through both readers and fails when they disagree.
+Kody's post-merge review of AFC-479 (#856) found three defects that are live in `main`, and all three are fixed here: the shell owner reader now enforces the same schema the watcher enforces, the owner record carries the holder's process start time so a reused pid cannot pass for a live holder, and the watcher test stubs the hostname instead of embedding the runner's.  A new case runs one table of owner records through both readers and fails when they disagree.  The review of that fix found two more ways the readers could disagree, a missing length bound on the start token and a permission error answered differently by each, and both are fixed here as well.
 
 Rollout: `docs/rollouts/2026-10-26-afc554-housekeeper-owner-record.md`.
 

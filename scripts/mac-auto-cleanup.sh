@@ -296,7 +296,7 @@ housekeeper_record_state() {
 # SIBLING of the canonical lock, so the second gate reads the same file.
 housekeeper_owner_is_gone() {
     python3 - "$1" <<'PY'
-import errno, json, math, os, socket, subprocess, sys
+import json, math, os, socket, subprocess, sys
 
 lock_path = sys.argv[1]
 # The moved-aside copy is named `<lock>.stale-<pid>.<uuid>`, so the owner file
@@ -313,6 +313,13 @@ owner_path = canonical + ".owner"
 # malformed and the other calls usable leaves them with conflicting ownership
 # decisions about the same lock and the same file.
 OWNER_KEYS = {"pid", "host", "acquired_at", "lock", "start"}
+
+# The longest start token this protocol accepts.  The token is opaque and is
+# never parsed, so this bound only keeps a hostile file from putting an
+# unbounded string in memory.  The watcher applies the same bound, and the
+# two readers have to apply it in the same place, or an overlong token
+# would be refused by one of them and trusted by the other.
+OWNER_START_MAX = 128
 
 
 def process_start_token(pid):
@@ -373,16 +380,19 @@ lock = owner["lock"]
 if not isinstance(lock, str) or not lock:
     sys.exit(1)
 start = owner["start"]
-if not isinstance(start, str) or not start:
+if not isinstance(start, str) or not start or len(start) > OWNER_START_MAX:
     sys.exit(1)
 try:
     os.kill(pid, 0)
 except ProcessLookupError:
     sys.exit(0)                      # the holder is gone:  take the lock over
-except OSError as exc:
+except OSError:
     # A permission error means the process exists and is merely not ours to
-    # signal; only ESRCH is proof that it is gone.
-    sys.exit(1 if exc.errno != errno.ESRCH else 0)
+    # signal, so it is NOT proof that the holder is gone.  The check carries
+    # on to the start time below, which is how the watcher reads it too:  a
+    # pid owned by somebody else can be a reused pid just the same, and the
+    # start time is what tells the holder from the impostor.
+    pass
 # The pid is ALIVE.  It is the holder only when it is the SAME process:  a
 # reused pid looks exactly like a live holder, and believing it would leave a
 # dead holder's lock in place until the whole stale window expires.

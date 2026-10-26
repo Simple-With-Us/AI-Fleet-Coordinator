@@ -584,6 +584,9 @@ try:
     rejects(dict(good, acquired_at=float("inf")), "an infinite acquired_at must be rejected")
     rejects(dict(good, lock=""), "an empty lock must be rejected")
     rejects(dict(good, lock=None), "a non-string lock must be rejected")
+    rejects(dict(good, start=""), "an empty start must be rejected")
+    rejects(dict(good, start="x" * 200),
+            "a start token longer than the bound must be rejected")
     for raw in ("", "null", "42", '"a string"', "{}", '[1, 2, 3]', "{not json",
                 '{"pid": true}', '{"pid": 1, "host": null, "acquired_at": 0, "lock": "x"}'):
         assert parse(raw) is None, "a malformed record must be rejected, not accepted: %r" % raw
@@ -821,6 +824,10 @@ try:
     fresh_lock(owner_record(gone.pid, host="some-other-host"))
     assert mod._acquire_housekeeper_lock() is False, (
         "another host's pid says nothing about a lock on this one")
+    fresh_lock(owner_record(gone.pid, host=host, start="x" * 200))
+    assert mod._acquire_housekeeper_lock() is False, (
+        "an overlong start token is not an owner record this protocol "
+        "publishes, so the age rule decides instead of the record")
 
     # A LIVE pid whose start time does not match the record:  the kernel has
     # handed that number to somebody else since the record was written, so
