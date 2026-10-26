@@ -279,6 +279,30 @@ class OmissionTests(unittest.TestCase):
 
         self.assertEqual(collector.collect_coolify(run_command=broken), [])
 
+    def test_a_container_that_vanished_does_not_blank_the_section(self):
+        class VanishingDocker:
+            """A docker whose batch inspect fails,  because one container went away."""
+
+            def __call__(self, command, timeout=30):
+                if command[:3] == ["docker", "ps", "-a"]:
+                    return "one\ntwo\n"
+                if command[:2] == ["docker", "inspect"]:
+                    # The batch carries every id,  so it is longer than one call.
+                    if len(command) > 5:
+                        return None
+                    if command[-1] == "one":
+                        return inspect_line(container="coolify") + "\n"
+                    return None
+                if command[:2] == ["docker", "stats"]:
+                    return ""
+                return None
+
+        rows = collector.collect_coolify(run_command=VanishingDocker())
+        # The container that is still there is reported,  and the one that went away
+        # is left out:  one redeploy must not blank the whole section.
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "coolify")
+
     def test_a_health_check_that_fails_is_unhealthy(self):
         docker = FakeDocker(
             containers=[inspect_line(container="app", health="unhealthy")],

@@ -272,6 +272,17 @@ def collect_coolify(run_command=run):
         return []
     inspected = run_command(["docker", "inspect", "--format", INSPECT_FORMAT] + ids)
     if inspected is None:
+        # A container that was removed between the two calls fails the whole batch,
+        # so every container is asked on its own and the ones that are gone are left
+        # out:  one redeploy must not blank the whole section.
+        lines = []
+        for identifier in ids:
+            answer = run_command(["docker", "inspect", "--format", INSPECT_FORMAT, identifier])
+            if answer is None:
+                continue
+            lines.append(answer.strip())
+        inspected = "\n".join(lines)
+    if not inspected:
         return []
 
     stats = {}
