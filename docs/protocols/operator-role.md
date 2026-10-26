@@ -27,10 +27,12 @@ does it today.
 
 *  The Operator as the listener with the eavesdropper on the server, acting under its own
     identity, never wearing a seat's wake tag, and asking in a post rather than a direct message:
-    Jay, in the MiniMax Code pane on Oct 25, 2026.
+    Jay, in the MiniMax Code pane on Oct 25, 2026, **superseded in its asking half on Oct 26,
+    2026**:  the Operator asks by direct message now.
 *  The direct message being the fleet's exception, used only by the Operator and only when the
     message cannot be paired with a specific thread to receive it:  Jay, in the MiniMax Code pane
-    on Oct 25, 2026.
+    on Oct 25, 2026, **narrowed on Oct 26, 2026**:  the direct message is where the Operator's
+    conversation goes, and not only the fallback for a message that pairs with no thread.
 *  The Operator waking a seat on the seat's own surface, MM on Lark and Jet on WhatsApp:  Jay, in
     the MiniMax Code pane on Oct 25, 2026.
 *  The no bot-to-bot direct message rule, that a bot may send one only when Jay is an actual
@@ -57,8 +59,9 @@ does it today.
 3.  **It is mostly deterministic, and where it converses, it converses by direct message.**  Its
     work is defined event inputs, routing and matching rules, defined outputs, and one bounded
     conversational exception:  a question about a tag to wake, which the Operator may put to
-    anyone.  A direct message is the fleet's exception, used only by the Operator, and only when
-    the Operator cannot pair the message with a specific thread to receive it.  Jay's Oct 26
+    anyone.  A direct message is the fleet's exception, used only by the Operator, and under Jay's
+    Oct 26 ruling it is where the Operator's conversation goes, to anyone, and not only when the
+    Operator cannot pair the message with a specific thread to receive it.  Jay's Oct 26
     ruling adds that the Operator may converse at all, and that it does so in a direct message
     rather than in a channel post, so that conversations do not get bloated.  Jay's consultant
     boundary is separate:  the Muse spark 1.3 contributor or the MiniMax M3.1 fallback is for the
@@ -210,14 +213,15 @@ Three concrete changes carry that:
     `wakes.py` and the adapter's `reply_prefix`, so this is two places:  the `OPERATOR` seat
     composes its own tag, and the wake-reply tag stays for a seat answering on the owner's behalf.
 
-3.  **The pairing test decides post against direct message, and it decides only that.**  A message
-    that pairs with a thread gets the Operator's own message in that thread.  A message that pairs
-    with no thread gets the Operator's question, and that direct message is the only direct
-    message the fleet sends.  Jay's Oct 26 ruling changes whether a conversation may happen and
-    where it happens:  the Operator may speak to anyone and converse with them, and it converses
-    by direct message rather than in a channel post, so that conversations do not get bloated.
-    The question itself is bounded:  it asks about a tag to wake, and it is not an opening for an
-    open-ended conversation.
+3.  **The pairing test decides whether the Operator speaks, and the direct message carries what
+    it says.**  A message that pairs with a thread gets the Operator's own message, and that
+    message travels by direct message to the seat that asked, with a link to the thread, because a
+    conversation belongs in a direct message and not in a channel.  A message that pairs with no
+    thread gets the Operator's question, and that direct message is the only direct message the
+    fleet sends.  Jay's Oct 26 ruling is what moved it:  the Operator may speak to anyone and
+    converse with them, and it converses by direct message rather than in a channel post, so that
+    conversations do not get bloated.  The question itself is bounded:  it asks about a tag to
+    wake, and it is not an opening for an open-ended conversation.
 
 **The audience of that one question, stated so it cannot drift into user conversation.**  The
 question may be addressed to anyone, and it goes by direct message, because Jay's Oct 26 ruling
@@ -329,7 +333,8 @@ the residual, so that nobody asks him the same thing twice.
 
 *  The Operator's own tag, and the post-versus-reply rule, in the two places the wake tag is
     composed.
-*  The pairing test that decides post against direct message.
+*  The pairing test that decides whether the Operator speaks, and the direct message that carries
+    what it says.
 *  The AFC-469 owner-in-the-conversation guard gains an Operator exemption, so that the
     Operator's direct message does not have to carry Jay.
 *  The location column and the short summary column, in the registry and on the sheet.
@@ -345,8 +350,8 @@ Three slices, one seat each, and each is asked rather than assigned.  A seat th
 different slice, or both, says so.
 
 **The Operator's egress and its own voice.**  The tag the Operator speaks under, the rule that a
-message it sends is its own and never a reply inline, the pairing test that decides post against
-direct message, and the eavesdropper grant question.  This is the listener and identity layer,
+message it sends is its own and never a reply inline, the pairing test that decides whether the
+Operator speaks, and the eavesdropper grant question.  This is the listener and identity layer,
 where the wake tag is composed and where the seats are told apart.
 
 **The WhatsApp surface.**  What it takes for the Operator to wake Jet on WhatsApp, which is the
