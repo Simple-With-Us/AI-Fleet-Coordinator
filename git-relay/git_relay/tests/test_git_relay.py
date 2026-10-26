@@ -2269,7 +2269,6 @@ class LegacyStateAdoption(unittest.TestCase):
         origin = pathlib.Path.cwd()
 
         def build(**overrides):
-            from git_relay import server
 
             env = dict(os.environ)
             env["GIT_RELAY_SEATS_JSON"] = policy
@@ -2287,9 +2286,7 @@ class LegacyStateAdoption(unittest.TestCase):
             stack = contextlib.ExitStack()
             stack.enter_context(unittest.mock.patch.dict(os.environ, env, clear=True))
             stack.enter_context(
-                unittest.mock.patch.object(
-                    server, "_owner_token_from_cli", return_value="t" * 40
-                )
+                unittest.mock.patch.object(server, "_owner_token_from_cli", return_value="t" * 40)
             )
             return stack
 
@@ -2326,9 +2323,7 @@ class LegacyStateAdoption(unittest.TestCase):
         )
         from git_relay import server
 
-        creds = tempfile.NamedTemporaryFile(
-            prefix="apps-token-", delete=False, suffix=".token"
-        )
+        creds = tempfile.NamedTemporaryFile(prefix="apps-token-", delete=False, suffix=".token")
         creds.write(b"apps-scoped\n")
         creds.close()
         self.addCleanup(os.unlink, creds.name)
@@ -2341,9 +2336,7 @@ class LegacyStateAdoption(unittest.TestCase):
         stack = contextlib.ExitStack()
         stack.enter_context(unittest.mock.patch.dict(os.environ, env, clear=True))
         stack.enter_context(
-            unittest.mock.patch.object(
-                server, "_owner_token_from_cli", return_value="t" * 40
-            )
+            unittest.mock.patch.object(server, "_owner_token_from_cli", return_value="t" * 40)
         )
         return stack
 
@@ -2473,10 +2466,9 @@ class TestOwnerTokenFromCli(unittest.TestCase):
                 self._fake_source(
                     captured, error=app_tokens.AppTokenError("the-value-must-not-appear")
                 ),
-            ),
+            ),self.assertRaises(RuntimeError) as ctx
         ):
-            with self.assertRaises(RuntimeError) as ctx:
-                server._owner_token_from_cli()
+            server._owner_token_from_cli()
         # AppTokenError messages name keys/folders only; the relay adds no values.
         self.assertIn("owner token", str(ctx.exception))
 
@@ -2592,9 +2584,7 @@ class TestVerifiedSecret(unittest.TestCase):
 
         def runner(argv, **run_kwargs):
             captured.update(run_kwargs)
-            return self._result(
-                stdout=b'{"GH_APP_X_ID": "1", "GH_APP_X_PRIVATE_KEY": "k"}'
-            )
+            return self._result(stdout=b'{"GH_APP_X_ID": "1", "GH_APP_X_PRIVATE_KEY": "k"}')
 
         source = FleetSecretsSource(
             runner=runner,
@@ -2638,9 +2628,8 @@ class TestProductionCredentialBinding(unittest.TestCase):
     def test_no_binding_refuses_startup_naming_the_scope_variable(self):
         from git_relay import server
 
-        with self._env():
-            with self.assertRaises(SystemExit) as ctx:
-                server.from_env()
+        with self._env(), self.assertRaises(SystemExit) as ctx:
+            server.from_env()
         message = str(ctx.exception)
         self.assertIn("GIT_RELAY_OWNER_CREDENTIAL_FILE", message)
         self.assertIn("/git-relay-owner", message)
@@ -2691,15 +2680,11 @@ class TestProductionCredentialBinding(unittest.TestCase):
                 server.shutil, "which", return_value="/usr/local/bin/fleet-secrets"
             ),
             unittest.mock.patch.object(app_tokens, "FleetSecretsSource", fake_source),
-            unittest.mock.patch.object(
-                server, "_owner_token_from_cli", return_value="t" * 40
-            ),
+            unittest.mock.patch.object(server, "_owner_token_from_cli", return_value="t" * 40),
         ):
             server.from_env()
         bound = {c.get("path"): c.get("credential_file") for c in constructions}
-        self.assertEqual(
-            bound.get("/github-apps"), str(directory / "git-relay-apps-token")
-        )
+        self.assertEqual(bound.get("/github-apps"), str(directory / "git-relay-apps-token"))
         # two-reader host contract:  /tools binds the App reader's file
         self.assertEqual(bound.get("/tools"), str(directory / "git-relay-apps-token"))
 
@@ -2724,9 +2709,7 @@ class TestProductionCredentialBinding(unittest.TestCase):
         ):
             server.from_env()
         self.assertEqual(captured.get("path"), "/git-relay-owner")
-        self.assertEqual(
-            captured.get("credential_file"), str(directory / "git-relay-owner-token")
-        )
+        self.assertEqual(captured.get("credential_file"), str(directory / "git-relay-owner-token"))
 
 
 class TestScopedChildProjectBinding(unittest.TestCase):

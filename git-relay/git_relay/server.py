@@ -787,8 +787,7 @@ def _build_shared_verifier():
                         "GIT_RELAY_TOOLS_CREDENTIAL_FILE",
                         "",
                     )
-                    if os.environ.get("GIT_RELAY_TOOLS_CREDENTIAL_FILE")
-                    is not None
+                    if os.environ.get("GIT_RELAY_TOOLS_CREDENTIAL_FILE") is not None
                     else _credential_file_for(
                         "the App-credentials source",
                         "GIT_RELAY_APPS_CREDENTIAL_FILE",

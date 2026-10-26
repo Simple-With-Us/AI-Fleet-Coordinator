@@ -174,7 +174,9 @@ class FleetSecretsSource:
             self._missing.add(name)
             raise AppTokenError(f"fleet-secrets has no value for {name}")
         if result.returncode:
-            raise AppTokenError(f"fleet-secrets get-verified failed for {name}: exit {result.returncode}")
+            raise AppTokenError(
+                f"fleet-secrets get-verified failed for {name}: exit {result.returncode}"
+            )
         value = result.stdout.decode("utf-8", "replace").rstrip("\n")
         if not value:
             raise AppTokenError(f"fleet-secrets has no value for {name}")

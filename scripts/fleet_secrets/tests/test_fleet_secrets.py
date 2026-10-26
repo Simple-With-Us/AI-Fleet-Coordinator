@@ -1020,9 +1020,7 @@ class TestFetchVerified(unittest.TestCase):
 
         with mock.patch.object(core, "_api_json", fake_api_json):
             try:
-                value = core.fetch_verified(
-                    "GITHUB_TOKEN", self.PATH, self.ENV, token="tok"
-                )
+                value = core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV, token="tok")
                 return value, calls, None
             except core.SecretsError as exc:
                 return None, calls, exc
@@ -1130,13 +1128,9 @@ class TestFetchVerified(unittest.TestCase):
             mock.patch.object(core, "find_cli", lambda env: "/usr/bin/infisical"),
             mock.patch.object(core, "auth_mode", lambda env: "keychain"),
             mock.patch.object(core, "resolve_token", lambda env, cli, mode: "minted"),
-            mock.patch.object(
-                core, "_api_json", lambda *a, **k: (200, {"secret": self._secret()})
-            ),
+            mock.patch.object(core, "_api_json", lambda *a, **k: (200, {"secret": self._secret()})),
         ):
-            self.assertEqual(
-                core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV), "the-value"
-            )
+            self.assertEqual(core.fetch_verified("GITHUB_TOKEN", self.PATH, self.ENV), "the-value")
 
 
 class TestApiJsonBoundedRead(unittest.TestCase):
