@@ -83,6 +83,33 @@ of the session rather than a decision the Operator makes per message.
 
 ## 3. What does not exist, and the shape it should take
 
+### 3.0  What WISE and ECHO recommend
+
+Their input, recorded as theirs, in the topic "Operator role: listener, letters, relay and how it
+talks" on Oct 25, 2026.
+
+**Keep each seat's own records, and give the Operator the fleet view.**  The Operator answers a
+seat's questions, and a seat keeps what is already its own.  This answers Jay's "the Operator
+should have its eavesdropper on the server" without a seat losing its own ground.
+
+**The Operator's answer is a new post in the same topic, under its own identity, and never carries
+a seat's wake tag.**  That is the same shape Jay ruled, and it is also the shape that keeps the
+answer findable next to the question without the Operator ever replying to the post that asked.
+
+**The session summary carries purpose, the owning issue, the source thread, repository and pull
+request links, the current status, and a contact.**  A letter read six weeks later should still
+say what the conversation was for and who to ask.
+
+**Location is a coarse class plus a stable identifier, supplied by the session registration and
+never inferred.**  Server, Mac or cloud, and then the seat or instance that holds it.
+
+**The summary can be corrected later.**  A conversation changes what it is about, so the field
+has to be writable after the letter is issued.
+
+**An off-topic issue mention keeps its own attribution and link, and is never folded into the
+topic's standing comment.**  Batching those by issue may cut the noise, and that batch is kept
+distinct from the standing comment rather than merged into it.
+
 ### 3.1  The Operator as the listener with the eavesdropper
 
 The read API exists and the hosted Worker answers `eavesdropper_status`, `eavesdropper_inbox`,
@@ -141,6 +168,33 @@ and a short summary of what the conversation is about.  Both are new columns on 
 and both need a column on the Fleet Reference sheet, because the sheet is the registry the fleet
 reads.
 
+**The two proposed sheet columns**, on the Sessions tab beside the ones that already exist:
+
+| Column | Carries | Written by |
+| --- | --- | --- |
+| Location | the coarse class (server, Mac, cloud) and the stable seat or instance identifier, supplied by the session registration and never inferred | the registry, from the registration |
+| About | purpose, owning issue, source thread, repository and pull request links, current status and contact, correctable after the letter is issued | the registry, and whoever owns the conversation |
+
+**The sheet adapter is not in this repository.**  `scripts/agent_sync/operator_sheets_export.mjs`
+writes the Sessions and Events tabs and depends on an adapter surface  (`inspect()`,
+`validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`)  that its
+own header records as deliberately another seat's slice.  So the two new columns are a request to
+that adapter's owner, not a change made here, and the sheet's own header list and validation have
+to accept them before a row can carry them.
+
+**The citations for the pieces this discussion rests on.**
+
+*  The wake tag composer:  `scripts/agent_sync/wakes.py`, `"[%s·wake] re=%d\n%s"`.
+*  The owner-in-the-direct-message guard, merged Oct 25, 2026:  `scripts/agent_sync/zulip.py`,
+  `direct_recipient_sets()` and `check_dm_guard()`, and the client call site that runs the guard for
+  a POST and a PATCH.  Pull request 947, AFC-469.
+*  The Lark bridge:  `docs/protocols/lark-mm-bridge.md` and `scripts/lark-mm-bridge.py`, and the
+  Operator's signal path through `--signal`.
+*  The relay:  `scripts/agent_sync/linear_relay.py`, `find_issue_ids()` and `ledger_key()`.
+*  The registry and the letters:  `scripts/agent_sync/operator_registry.py`, the `sessions` and
+  `alias_assignments` tables.
+*  The exporter:  `scripts/agent_sync/operator_sheets_export.mjs`.
+
 ### 3.4  The Linear mirror, one message at a time
 
 The relay's key becomes two-keyed:  an issue named by the topic keeps the standing
@@ -158,6 +212,19 @@ the one-standing-comment behaviour for topic-named issues stay exactly as they a
     directly.
 *  Whether the per-message Linear post is one comment per message, or one comment per message
     grouped per issue.
+
+**What Jay has already ruled, so that nobody asks him again.**  All three of these have a main
+shape from Jay on Oct 25, 2026, and what is left is narrower than it looks.
+
+*  **The Operator holds the eavesdropper, on the server.**  What is open is the second half that
+    WISE and ECHO answered:  a seat keeps its own records and the Operator takes the fleet view.
+*  **The Operator asks its questions by direct message to the message's poster or sender, and the
+    direct message is the fleet's only exception.**  What is open is the audience, because the
+    owner-in-the-conversation guard merged today (AFC-469, pull request 947) requires Jay in a
+    direct message, so the fallback either carries him or the question goes to him instead.
+*  **A message that names an issue its topic does not gets its own Linear post.**  What is open is
+    the granularity WISE and ECHO raised:  one comment per message, or those batched by issue and
+    kept distinct from the topic's standing comment.
 
 **Tasks, once the decisions are made.**
 
@@ -203,13 +270,44 @@ the Operator issues one.  A direct message needs no letter.  The no-wake signal 
 unchanged:  a leading eyes emoji means never wake anyone, and it is a per-message signal on
 Zulip only.
 
-## 6. Open questions for WISE, ECHO and JET
+## 6.  Open questions, and which are answered
 
 1.  Does a seat need the eavesdropper for its own records once the Operator holds it for the
-    fleet, or is the Operator's answer enough?
+    fleet, or is the Operator's answer enough?  **Answered, in recommendation form, by WISE and
+    ECHO:**  keep each seat's own records, and give the Operator the fleet view.  Jay's call is
+    still needed on the shape, and this is the recommendation that goes with it.
 2.  Where should the Operator's posts live, so a seat that asks a question sees the answer in the
-    thread it asked in without the Operator ever replying to the post that asked?
+    thread it asked in without the Operator ever replying to the post that asked?  **Answered, in
+    recommendation form, by WISE and ECHO:**  a new post in the same topic, under the Operator's
+    own identity, with no seat's wake tag on it.
 3.  What belongs in the short summary of what a conversation is about, so that a letter read six
-    weeks later still says what it was for?
+    weeks later still says what it was for?  **Answered, in recommendation form, by WISE and
+    ECHO:**  purpose, owning issue, source thread, repository and pull request links, current
+    status and contact, and correctable later.
 4.  Is one Linear comment per message the right granularity when a topic is not about the issue, or
-    does that flood the issue?
+    does that flood the issue?  **Answered, in recommendation form, by WISE and ECHO:**  keep each
+    message's own attribution and link, never fold it into the topic's standing comment, and
+    batching those by issue is a separate thing that may cut the noise.
+
+**Still open, and only Jay can settle them.**
+
+*  Whether the seat keeps its own eavesdropper read, or the Operator becomes the single reader.
+*  Whether the Operator's fallback direct message carries Jay, or the question goes to him.
+*  Whether the off-topic issue messages are batched by issue or one comment each.
+*  Whether sending on WhatsApp is approved at all, which is the same approval AFC-545 waits on.
+
+## 7.  The rollout, and who holds each part
+
+*  **The Operator's own voice on the server.**  The Operator seat is already a service seat with
+    its credentials from Infisical and its identity read from the environment.  What is missing is
+    the Operator publishing its own threads rather than a seat reporting on them.
+*  **The Lark path.**  Built and running.  The Operator's signal reaches MM's Lark chat today.
+*  **The WhatsApp receive half.**  Owned by CODEX as the approved executor, with Jet owning the
+    subscription, the binding ceremony and the acceptance receipts.  Blocked on the deployed
+    Worker being behind the merged read-routing, on the poller being stopped with the binding
+    absent, and on the rollout approval.
+*  **The WhatsApp outbound half.**  AFC-545, the missing code.  Blocked on the approval to send
+    at all, which the current approval excludes in its own words.
+*  **The sheet columns.**  A request to the adapter's owner, because the exporter is written
+    against an adapter surface that is deliberately another seat's slice and is not in this
+    repository.
