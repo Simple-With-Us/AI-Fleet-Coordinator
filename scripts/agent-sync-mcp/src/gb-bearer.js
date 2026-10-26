@@ -12,7 +12,7 @@
 //           or the audit rows (which hold who, when and expiry only).
 
 import { GB_IDENTITIES } from "./delegated-identities.js";
-import { KNOWN_SEATS } from "./config.js";
+import { BEARER_SEATS } from "./bearer-identities.js";
 
 export const GB_BEARER_PREFIX = "gbb_";
 export const GB_BEARER_TTL_MS = 90 * 24 * 60 * 60 * 1000;
@@ -75,7 +75,7 @@ export async function newGbBearer(identity) {
 export const SBT_BEARER_PREFIX = "sbt_";
 
 const SBT_TOKEN_RE = /^sbt_([a-z][a-z0-9-]{1,19})_([A-Za-z0-9_-]{43})$/;
-const SEAT_SET = new Set(KNOWN_SEATS);
+const SEAT_SET = new Set(BEARER_SEATS);
 
 /** The seat a token names (for example "JET-CHAT") and the token, or null for a malformed one. */
 export function parseSbtBearer(raw) {
