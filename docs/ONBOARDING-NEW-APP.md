@@ -6,7 +6,7 @@ Usage-Monitor, and DealDex.
 
 **GitHub:** https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
 **Sibling (new seat):** [ONBOARDING-NEW-AGENT.md](ONBOARDING-NEW-AGENT.md) · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
-**Protocol:** `/Users/jay/apps/FLEET-PROTOCOL.md` · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md  
+**Protocol:** `/Users/jay/apps/FLEET-PROTOCOL.md`  
 Copy `TEMPLATE-AGENTS.md` into the new repo (includes Delegation & model economics + this start-here table).
 
 **Run the script first, then finish the checklist.** The script does the

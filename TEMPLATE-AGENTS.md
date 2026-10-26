@@ -571,7 +571,7 @@ is the replacement.
 
 | What | Live / repo path | GitHub |
 |------|------------------|--------|
-| Protocol | `/Users/jay/apps/FLEET-PROTOCOL.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md |
+| Protocol | `/Users/jay/apps/FLEET-PROTOCOL.md` | (none until the root mirror is renamed) |
 | Effort logs (retired stub) | `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/EFFORT-LOG-PROTOCOL.md |
 | New app | `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-APP.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md |
 | DNS / registrars | `/Users/jay/Code/AI-Fleet-Coordinator/docs/DNS-AND-REGISTRARS.md` (new app zone on **account** Usage.Jays.Services, not hostname `usage.jays.services`) | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/DNS-AND-REGISTRARS.md |

@@ -5,7 +5,7 @@ Antigravity, Monet, Kimi, Copilot, or a future seat) to this fleet.
 
 **GitHub:** https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md  
 **Sibling (new app):** [ONBOARDING-NEW-APP.md](ONBOARDING-NEW-APP.md) · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md  
-**Protocol:** `/Users/jay/apps/FLEET-PROTOCOL.md` · https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md
+**Protocol:** `/Users/jay/apps/FLEET-PROTOCOL.md`
 
 **Run the script to register the seat, then finish the checklist.**
 
