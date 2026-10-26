@@ -56,7 +56,9 @@ def safe_error_diagnostics(headers=None, message=None):
     category = "unknown"
     if isinstance(message, str) and len(message) <= MAX_ERROR_PREVIEW:
         category = _ERROR_CATEGORIES.get(message, "unknown")
-        if re.fullmatch(r"API rate limit exceeded for (?:user|installation) ID [0-9]{1,20}\.", message):
+        if re.fullmatch(
+            r"API rate limit exceeded for (?:user|installation) ID [0-9]{1,20}\.", message
+        ):
             category = "rate_limit"
     result = {"category": category}
     request_id = headers.get("X-GitHub-Request-Id") if headers is not None else None
@@ -75,8 +77,12 @@ def safe_error_diagnostics(headers=None, message=None):
                 permissions = {}
                 for item in group.split(","):
                     pair = item.strip().split("=")
-                    if (len(pair) != 2 or pair[0] not in _DIAGNOSTIC_PERMISSIONS
-                            or pair[1] not in ("read", "write") or pair[0] in permissions):
+                    if (
+                        len(pair) != 2
+                        or pair[0] not in _DIAGNOSTIC_PERMISSIONS
+                        or pair[1] not in ("read", "write")
+                        or pair[0] in permissions
+                    ):
                         break
                     permissions[pair[0]] = pair[1]
                 else:
@@ -133,11 +139,15 @@ class RelayGitHubError(Exception):
         alternatives = source.get("accepted_permission_sets")
         groups = [perms] if perms is not None and alternatives is None else alternatives
         if isinstance(groups, list) and 1 <= len(groups) <= 4:
-            if all(isinstance(group, dict) and 1 <= len(group) <= len(_DIAGNOSTIC_PERMISSIONS)
-                   and all(isinstance(k, str) and isinstance(v, str)
-                           for k, v in group.items()) for group in groups):
+            if all(
+                isinstance(group, dict)
+                and 1 <= len(group) <= len(_DIAGNOSTIC_PERMISSIONS)
+                and all(isinstance(k, str) and isinstance(v, str) for k, v in group.items())
+                for group in groups
+            ):
                 hdrs["X-Accepted-GitHub-Permissions"] = ";".join(
-                    ",".join(k + "=" + v for k, v in group.items()) for group in groups)
+                    ",".join(k + "=" + v for k, v in group.items()) for group in groups
+                )
         self.diagnostics = safe_error_diagnostics(hdrs)
         if isinstance(source.get("category"), str) and source["category"] in set(
             _ERROR_CATEGORIES.values()
