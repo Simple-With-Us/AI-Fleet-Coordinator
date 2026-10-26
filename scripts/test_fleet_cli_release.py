@@ -374,10 +374,11 @@ class ReleaseTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"FLEET_LANES_ROOT": str(lanes)}):
             self.receive()
         text = (self.home / ".local/bin/lane").read_text()
-        self.assertIn(
-            f"os.environ.setdefault('FLEET_LANES_ROOT', {str(lanes)!r})", text
+        self.assertIn(f"os.environ.setdefault('FLEET_LANES_ROOT', {str(lanes)!r})", text)
+        self.assertNotIn(
+            f"os.environ.setdefault('FLEET_LANES_ROOT', {str(self.home / 'apps' / 'lanes')!r})",
+            text,
         )
-        self.assertNotIn(f"os.environ.setdefault('FLEET_LANES_ROOT', {str(self.home / 'apps' / 'lanes')!r})", text)
 
     def test_the_lane_wrapper_carries_no_lanes_root_the_host_does_not_name(self):
         self.receive()
