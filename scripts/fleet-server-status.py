@@ -130,9 +130,7 @@ def utc_now() -> str:
 
 
 def iso_from_timestamp(value: float) -> str:
-    return datetime.datetime.fromtimestamp(value, datetime.UTC).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    return datetime.datetime.fromtimestamp(value, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def run(command, timeout=30):
