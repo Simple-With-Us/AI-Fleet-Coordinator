@@ -1021,7 +1021,6 @@ class GuardIntegration(unittest.TestCase):
         repaired = sorted(json.loads(c["stdin"])["labels"][0] for c in label_posts)
         self.assertEqual(repaired, ["do-not-automerge", "do-not-merge"])
 
-
     def test_repair_recheck_cache_write_failure_red_job(self):
         # Kody r4374043272: a failed cache write must not leave the PR
         # marked fresh-ok for a stale file to be trusted - error + red job
