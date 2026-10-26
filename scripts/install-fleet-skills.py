@@ -31,6 +31,7 @@ import zipfile
 
 from fleet_skill_identity import (
     NEVER_INSTALL,
+    RENAMED_SKILL_OLD_NAMES,
     catalog_seats,
     catalog_skill_names,
     platform_installs,
@@ -91,7 +92,7 @@ def _zip_skill(zip_path: str, skill_name: str, md_path: str) -> bool:
 def _purge_retired(dest_base: str) -> None:
     if not dest_base or not os.path.isdir(dest_base):
         return
-    for name in NEVER_INSTALL:
+    for name in sorted(NEVER_INSTALL | RENAMED_SKILL_OLD_NAMES):
         path = os.path.join(dest_base, name)
         if os.path.isdir(path):
             shutil.rmtree(path)

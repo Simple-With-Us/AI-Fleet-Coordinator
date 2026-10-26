@@ -1320,6 +1320,24 @@ class InstallerRepoOnlyTests(unittest.TestCase):
             for f in files
         )
 
+    def test_purge_removes_a_skill_left_under_a_renamed_old_name(self) -> None:
+        """TEMPORARY with RENAMED_SKILL_OLD_NAMES:  delete both when the rename is complete."""
+        from fleet_skill_identity import RENAMED_SKILL_OLD_NAMES
+
+        dest = self.home / ".claude" / "skills"
+        for name in RENAMED_SKILL_OLD_NAMES:
+            (dest / name).mkdir(parents=True)
+            (dest / name / "SKILL.md").write_text("stale\n", encoding="utf-8")
+            (dest / f"{name}.zip").write_bytes(b"stale")
+        keep = dest / "session-start"
+        keep.mkdir(parents=True)
+        (keep / "SKILL.md").write_text("keep\n", encoding="utf-8")
+        self.installer._purge_retired(str(dest))
+        for name in RENAMED_SKILL_OLD_NAMES:
+            self.assertFalse((dest / name).exists(), name)
+            self.assertFalse((dest / f"{name}.zip").exists(), name)
+        self.assertTrue((keep / "SKILL.md").is_file())
+
     def test_repo_only_renders_platform_copies_and_skips_home(self) -> None:
         out = self._run(["--repo-only"])
         for tree in (".claude", ".cursor", ".grok"):
