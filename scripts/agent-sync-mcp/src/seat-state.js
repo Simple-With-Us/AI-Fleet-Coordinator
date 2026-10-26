@@ -1228,7 +1228,7 @@ const GB_MISMATCH_KEY = "gb_bearer_mismatches";
 
 /**
  * Count one wrong-secret presentation against the identity it CLAIMED (kody
- * 4373163328:  a guessing storm was invisible;  gbBearerCheck deliberately
+ * The narrowing review verdict:  a guessing storm was invisible;  gbBearerCheck deliberately
  * writes nothing on mismatch to protect the capped audit log).  Counts and a
  * last-seen time only - never a hash, a token, or an audit row.
  *

@@ -182,7 +182,7 @@ function gbBearerSection(rows, csrf, mintId = "") {
       const mcpState = st.active || st.expired ? (st.mcp_accept ? "also accepted on /mcp" : "GR-MCP only") : "";
       const detail = st.created_at ? `minted ${escapeHtml(ownerTime(st.created_at))}, expires ${escapeHtml(ownerTime(st.expires_at))}${st.last_used_at ? `, last used ${escapeHtml(ownerTime(st.last_used_at))}` : ", never used"}` : "";
       // Wrong-secret presentations against this identity:  counts and a time,
-      // never a hash (kody 4373163328:  make a guessing storm visible here).
+      // never a hash (the narrowing review verdict:  make a guessing storm visible here).
       // A failed read is NOT a zero:  say so instead of hiding it (Tailnet
       // review of the metric, 2026-10-25).  Counts are lifetime per identity,
       // kept only while the identity stays configured;  they do not reset.

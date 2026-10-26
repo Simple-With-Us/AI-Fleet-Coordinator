@@ -59,6 +59,33 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
+  // The per-identity bearer mismatch counters (the wrong-secret storm
+  // signal):  present (small and seven-figure), read-unavailable, and inert
+  // zero in one table.  ownerTime is fixed-zone, so a fixed stamp renders
+  // deterministically and no mask is needed.
+  test(`ST-MCP Admin bearer mismatch counters ${viewport.width}`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const response = adminPage({ ...facts, gbBearers: [
+      { identity: 'JET', kind: 'seat', credentials: true,
+        status: { active: true, expired: false, created_at: stamp - 86400000, expires_at: stamp + 86400000, last_used_at: stamp - 60000, mcp_accept: true },
+        mismatches: { count: 3, last_at: stamp - 120000 } },
+      { identity: 'CLAUDE', kind: 'seat', credentials: true,
+        status: { active: true, expired: false, created_at: stamp - 86400000, expires_at: stamp + 86400000, mcp_accept: false },
+        mismatches: { count: 1234567, last_at: stamp - 30000 } },
+      { identity: 'CURSOR', kind: 'seat', credentials: true, status: null, mismatchesUnavailable: true },
+      { identity: 'GB-FIXER', kind: 'persona', credentials: true, status: { active: false, expired: false }, mismatches: null },
+    ] });
+    const html = await response.text();
+    await page.route('https://visual-tests.invalid/admin', route => route.fulfill({ status: 200, contentType: 'text/html', body: html, headers: Object.fromEntries(response.headers) }));
+    await page.goto('/admin');
+    await expect(page.getByText('3 wrong-secret attempts', { exact: false })).toBeVisible();
+    await expect(page.getByText('1234567 wrong-secret attempts', { exact: false })).toBeVisible();
+    await expect(page.getByText('wrong-secret counter read unavailable')).toBeVisible();
+    const section = page.locator('table', { has: page.getByText('1234567 wrong-secret attempts') }).first();
+    await expect(section).toHaveScreenshot(`agent-sync-bearer-mismatches-${viewport.width}.png`, { animations: 'disabled', maxDiffPixels: 0 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+
   test(`ST-MCP Admin manual seats populated ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     // All three redirect-status variants: configured, configured+shared, none yet.

@@ -442,8 +442,6 @@ async function serveGbBearerMcp(request, env, token) {
   // listed only once the bearer has matched.
   await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
   const roles = (await resolveDelegatedCredentials(env)).roles;
-  const credentials = roles.get(identity);
-  if (!credentials) return refuse();
   const identityGate = gate(env, identity);
   const checked = await identityGate.gbBearerCheck(await sha256Hex(parsed.token));
   if (!checked.ok) {
@@ -453,10 +451,15 @@ async function serveGbBearerMcp(request, env, token) {
     if (checked.reason === "expired") {
       try { await identityGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
     } else if (checked.reason === "mismatch") {
-      try { await identityGate.gbBearerMismatch(identity, new Set(roles.keys())); } catch { /* A counter is observability, never the security path. */ }
+      // Static configured set, not roles.keys():  the counter must still
+      // work during a delegated-credential outage, when the roles map is
+      // incomplete - an attacker's guesses do not pause for our outage.
+      try { await identityGate.gbBearerMismatch(identity, new Set(GB_IDENTITIES)); } catch { /* A counter is observability, never the security path. */ }
     }
     return refuse();
   }
+  const credentials = roles.get(identity);
+  if (!credentials) return refuse();
   const state = await identityGate.getState();
   if (state.paused) return invalidToken("This identity is paused.");
   const scopes = ["zulip:read", "zulip:write"];
@@ -520,12 +523,6 @@ async function serveSbtBearerMcp(request, env, token) {
   const { identity: seat } = parsed;
   if (!config.hostedSeats.includes(seat)) return refuse();
   await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
-  const secretNames = SEAT_SECRETS[seat];
-  // The seat key resolves through Infisical when INFISICAL_MODE allows;  in off
-  // mode the legacy binding still answers, exactly as the env read did before.
-  const key = secretNames ? String(await resolveSecret(env, { name: secretNames.infisical.name, path: secretNames.infisical.path, envName: secretNames.key, optional: true }) ?? "").trim() : "";
-  const email = config.botEmails[seat];
-  if (!key || !email) return refuse();
   const seatGate = gate(env, seat);
   const checked = await seatGate.gbBearerCheck(await sha256Hex(parsed.token));
   if (!checked.ok) {
@@ -535,10 +532,17 @@ async function serveSbtBearerMcp(request, env, token) {
     if (checked.reason === "expired") {
       try { await seatGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
     } else if (checked.reason === "mismatch") {
-      try { await seatGate.gbBearerMismatch(seat, new Set(Object.keys(SEAT_SECRETS))); } catch { /* A counter is observability, never the security path. */ }
+      // Static seat set for the same outage reason as the persona path.
+      try { await seatGate.gbBearerMismatch(seat, new Set(KNOWN_SEATS)); } catch { /* A counter is observability, never the security path. */ }
     }
     return refuse();
   }
+  const secretNames = SEAT_SECRETS[seat];
+  // The seat key resolves through Infisical when INFISICAL_MODE allows;  in off
+  // mode the legacy binding still answers, exactly as the env read did before.
+  const key = secretNames ? String(await resolveSecret(env, { name: secretNames.infisical.name, path: secretNames.infisical.path, envName: secretNames.key, optional: true }) ?? "").trim() : "";
+  const email = config.botEmails[seat];
+  if (!key || !email) return refuse();
   if (checked.mcp_accept !== true) return refuse();
   const state = await seatGate.getState();
   if (state.paused) return invalidToken("This identity is paused.");
