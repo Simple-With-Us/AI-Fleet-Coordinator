@@ -77,7 +77,9 @@ DATED_RECORDS = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
 # The mirror is still the file every seat reads first, so it does not stay a blind
 # exemption:  GeneratedMirrorTests below asserts every mirror this registry names, so a
 # mirror added here is asserted too and not silently left unchecked.
-GENERATED_MIRRORS = ("AGENT-SYNC.md",)
+# The document is being renamed:  both names are generated mirrors, and exactly one exists at a time.
+# Remove the old name when the rename is complete.
+GENERATED_MIRRORS = ("AGENT-SYNC.md", "FLEET-PROTOCOL.md")
 
 # This file holds the checks themselves, so the sweep below finds its own command
 # templates.  A checker is not guidance.
@@ -777,8 +779,9 @@ class GeneratedMirrorTests(unittest.TestCase):
     """
 
     # The mirrors come from the registry, so a mirror added to it is asserted here too
-    # and not silently left unchecked.
-    MIRRORS = tuple(ROOT / rel for rel in GENERATED_MIRRORS)
+    # and not silently left unchecked.  Exactly one of the two names exists during the
+    # rename, so the absent one is skipped;  a checkout with neither fails below.
+    MIRRORS = tuple(ROOT / rel for rel in GENERATED_MIRRORS if (ROOT / rel).is_file())
 
     # The converter the mirror ships until the upstream sync rewrites it.  The mirror is
     # built from the Fleet-OPS handbook, so it lags the one home by one sync:  this is the
@@ -797,6 +800,14 @@ class GeneratedMirrorTests(unittest.TestCase):
         "job writes the mirror from the merge.  A hand edit is refused by "
         "scripts/check-generated-mirror.py."
     )
+
+    def test_a_generated_mirror_exists(self) -> None:
+        """Exactly one protocol name exists during the rename;  neither is a failure."""
+        self.assertTrue(
+            self.MIRRORS,
+            "no generated mirror exists under %s;  the mirror is the file every seat "
+            "reads first, so it is asserted, not skipped.  %s" % (GENERATED_MIRRORS, self.POINTER),
+        )
 
     def _mirror_texts(self) -> list[tuple[str, str]]:
         """Every mirror in the registry, with the text it holds."""

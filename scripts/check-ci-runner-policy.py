@@ -22,6 +22,7 @@ Usage:
 
 See board item 7fa3b630 (fleet-infra) for the finding this responds to.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,21 +31,27 @@ import re
 import sys
 
 DEFAULT_INVENTORY = pathlib.Path("~/apps/MAC-LOCAL-PROCESSES.md").expanduser()
-DEFAULT_POLICY = pathlib.Path(__file__).resolve().parent.parent / "AGENT-SYNC.md"
+# The protocol document is being renamed;  the mirror holds it under exactly one of the two names (check-generated-mirror.py).
+# Remove the old name when the rename is complete.
+_ROOT = pathlib.Path(__file__).resolve().parent.parent
+DEFAULT_POLICY = next(
+    (_ROOT / n for n in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md") if (_ROOT / n).is_file()),
+    _ROOT / "FLEET-PROTOCOL.md",
+)
 
 RUNNER_ROW_RE = re.compile(
-    r"actions\.runner|self-hosted runner|mac-xcode|trading-live-mac", re.I
+    r"actions\.runner|self-hosted runner|mac-xcode|trading-live-mac", re.IGNORECASE
 )
-LIVE_STATUS_RE = re.compile(r"\b(Always-on|Up|Running|Enabled)\b", re.I)
+LIVE_STATUS_RE = re.compile(r"\b(Always-on|Up|Running|Enabled)\b", re.IGNORECASE)
 DEAD_STATUS_RE = re.compile(
     r"Retired|Disabled|Uninstalled|Banned|de-registered|deregistered|Old Mac CI label",
-    re.I,
+    re.IGNORECASE,
 )
 
 
 POLICY_BAN_RE = re.compile(
     r"Local Mac (?:(?:self-hosted )?runners? are permanently banned|Runner PERMANENTLY BANNED)",
-    re.I,
+    re.IGNORECASE,
 )
 
 

@@ -62,6 +62,15 @@ def _notes() -> str:
         return f.read()
 
 
+def _protocol_doc_path() -> Path:
+    """The protocol document is being renamed:  the mirror holds it under exactly one of the two names.
+    Remove the old name when the rename is complete."""
+    for name in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md"):
+        if Path(ROOT, name).is_file():
+            return Path(ROOT, name)
+    return Path(ROOT, "FLEET-PROTOCOL.md")
+
+
 def _coord() -> str:
     with open(COORD, encoding="utf-8") as f:
         return f.read()
@@ -581,7 +590,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertEqual(tags["DSH"]["notesName"], "DeepSeek Harness")
         self.assertNotIn("MINIMAX", tags)
         self.assertNotIn("DEEPSEEK", tags)
-        text = Path(os.path.join(ROOT, "AGENT-SYNC.md")).read_text(encoding="utf-8")
+        text = _protocol_doc_path().read_text(encoding="utf-8")
         # The Oct 7 rewrite moved the seat roster into the Active Seats
         # table (MM is a row) and the Availability list (DSH is retired).
         self.assertIn("| MM | `MiniMax` | `minimax/` |", text)
@@ -597,7 +606,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertNotIn("DeepSeek: `[DEEPSEEK]`", coord)
 
     def test_agent_sync_self_id_is_afc_not_fleet(self) -> None:
-        text = Path(os.path.join(ROOT, "AGENT-SYNC.md")).read_text(encoding="utf-8")
+        text = _protocol_doc_path().read_text(encoding="utf-8")
         self.assertIn("| `AFC` |", text)
         self.assertIn("Simple-With-Us/AI-Fleet-Coordinator", text)
         self.assertIn("[AFC] sync-N", text)
@@ -1521,7 +1530,7 @@ class AgentSyncRosterTests(unittest.TestCase):
         return data["seats"]
 
     def _text(self) -> str:
-        return Path(ROOT, "AGENT-SYNC.md").read_text(encoding="utf-8")
+        return _protocol_doc_path().read_text(encoding="utf-8")
 
     def _section(self, start_marker: str, end_marker: str) -> str:
         text = self._text()

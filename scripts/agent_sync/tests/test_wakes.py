@@ -214,7 +214,17 @@ class ContractTests(unittest.TestCase):
                 )
 
     def protocol(self) -> str:
-        path = os.path.join(os.path.dirname(W.CONTRACT_PATH), "..", "..", "..", "AGENT-SYNC.md")
+        # The protocol document is being renamed:  read whichever name the mirror holds.  Remove the old name
+        # when the rename is complete.
+        root = os.path.join(os.path.dirname(W.CONTRACT_PATH), "..", "..", "..")
+        path = next(
+            (
+                os.path.join(root, n)
+                for n in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md")
+                if os.path.isfile(os.path.join(root, n))
+            ),
+            os.path.join(root, "FLEET-PROTOCOL.md"),
+        )
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 

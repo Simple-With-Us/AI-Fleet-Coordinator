@@ -43,6 +43,7 @@ Usage:
 Exit codes:  0 clean, 1 a rule failed (one `error:` line each), 2 a usage or git problem.  A base that
 does not resolve is a problem, never a pass, so a shallow clone that lacks it fails closed.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -79,11 +80,21 @@ class GeneratedPath:
     # reverts to the pinned text (rule 3 alone would let it through, because the pin exemption accepts header-less
     # bytes and the mirror branch is exempt from rule 3's branch attribution check).
     pre_flip_sha256: str | None
+    # Migration scaffolding for a rename:  the other name of the same document.  Exactly one of the two must exist
+    # (the sync job's mirror pull request adds one and deletes the other in a single commit), and whichever exists
+    # is held to every rule below.  None for a path that is not being renamed.  Remove with the old name.
+    alternate: str | None = None
 
 
 # Fleet-OPS handbook/README.md records this hash as the verbatim import of AGENT-SYNC.md at AFC #476 (fa7daadb).
 GENERATED_PATHS: tuple[GeneratedPath, ...] = (
-    GeneratedPath("AGENT-SYNC.md", "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef"),
+    GeneratedPath(
+        "AGENT-SYNC.md",
+        "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef",
+        alternate="FLEET-PROTOCOL.md",
+    ),
+    # The new name, mid-rename:  the first header-bearing copy arrives by the mirror pull request, never by hand.
+    GeneratedPath("FLEET-PROTOCOL.md", None, alternate="AGENT-SYNC.md"),
     # Phase B (U9) adds the Zulip guide here, in an ordinary PR, with the pin set to the guide's sha256 at that
     # commit;  the first header then arrives by the mirror PR, as it does for AGENT-SYNC.md.  Listed now it would
     # fail, because the guide is hand-written.
@@ -106,7 +117,9 @@ def content_problems(spec: GeneratedPath, data: bytes) -> tuple[list[str], str]:
         if spec.pre_flip_sha256 is not None and digest == spec.pre_flip_sha256:
             return [], f"pre-flip text (sha256 {digest[:12]}), no GENERATED header yet"
         if spec.pre_flip_sha256 is None:
-            return ["has no GENERATED header on line 1;  it is generated from Fleet-OPS handbook/, so open a PR there"], ""
+            return [
+                "has no GENERATED header on line 1;  it is generated from Fleet-OPS handbook/, so open a PR there"
+            ], ""
         return [
             "has no GENERATED header and is not the pinned pre-flip text "
             f"(sha256 {digest}, pinned {spec.pre_flip_sha256});  it is generated from Fleet-OPS handbook/, "
@@ -132,8 +145,13 @@ def content_problems(spec: GeneratedPath, data: bytes) -> tuple[list[str], str]:
     return [], f"GENERATED header valid, body sha256 {actual[:12]}"
 
 
-def branch_problems(spec: GeneratedPath, base: bytes | None, head: bytes | None, head_branch: str,
-                    mirror_branch: str) -> list[str]:
+def branch_problems(
+    spec: GeneratedPath,
+    base: bytes | None,
+    head: bytes | None,
+    head_branch: str,
+    mirror_branch: str,
+) -> list[str]:
     """Rule 3:  only the mirror branch may change a path that carries a header.
 
     The pin exemption in rule 1 accepts an unheadered file whose bytes match the pre-flip text, and the
@@ -144,15 +162,21 @@ def branch_problems(spec: GeneratedPath, base: bytes | None, head: bytes | None,
     strip refusal here.  The pin still excuses a header-less file before the first mirror PR lands.
     """
     if head_branch == mirror_branch:
-        if has_header(base) and not has_header(head):
+        # A deletion is not a strip when the path has an alternate:  during a rename the old name is removed in the
+        # commit that adds the new one, and check() fails the pair unless exactly one of them exists.
+        if (
+            has_header(base)
+            and not has_header(head)
+            and not (head is None and spec.alternate is not None)
+        ):
             return [
-                f"strips the GENERATED header;  the base already has it, and on the mirror branch rule 3 would "
-                f"otherwise pass the change.  Removing it leaves main without the invariant this gate enforces, "
-                f"so even the sync job must rewrite the body without stripping the header"
+                "strips the GENERATED header;  the base already has it, and on the mirror branch rule 3 would "
+                "otherwise pass the change.  Removing it leaves main without the invariant this gate enforces, "
+                "so even the sync job must rewrite the body without stripping the header"
             ]
         return []
     if not (has_header(head) or has_header(base)):
-        return []      # hand-written on both sides;  rule 1 holds the text to the pin
+        return []  # hand-written on both sides;  rule 1 holds the text to the pin
     return [
         f"is changed by this pull request, and the head branch is '{head_branch}', not '{mirror_branch}';  this file is "
         "generated from Fleet-OPS handbook/, so only the sync job's mirror pull request may change it"
@@ -165,7 +189,9 @@ class GitError(RuntimeError):
 
 def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
     try:
-        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False, timeout=60)
+        return subprocess.run(
+            ["git", "-C", str(root), *args], capture_output=True, check=False, timeout=60
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise GitError(f"git {' '.join(args)}: {exc}") from exc
 
@@ -173,8 +199,10 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess:
 def resolve_base(root: Path, rev: str) -> str:
     done = _git(root, "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}")
     if done.returncode != 0:
-        raise GitError(f"--base {rev!r} is not a commit in this checkout (in CI, fetch it first: "
-                       "git fetch --no-tags --depth=1 origin <sha>)")
+        raise GitError(
+            f"--base {rev!r} is not a commit in this checkout (in CI, fetch it first: "
+            "git fetch --no-tags --depth=1 origin <sha>)"
+        )
     return done.stdout.decode().strip()
 
 
@@ -184,7 +212,9 @@ def base_bytes(root: Path, commit: str, path: str) -> bytes | None:
         return None
     done = _git(root, "show", f"{commit}:{path}")
     if done.returncode != 0:
-        raise GitError(f"git show {commit}:{path} failed: {done.stderr.decode(errors='replace').strip()}")
+        raise GitError(
+            f"git show {commit}:{path} failed: {done.stderr.decode(errors='replace').strip()}"
+        )
     return done.stdout
 
 
@@ -197,8 +227,13 @@ def changed_paths(root: Path, commit: str) -> set[str]:
     return {p for p in done.stdout.decode("utf-8", "surrogateescape").split("\0") if p}
 
 
-def check(root: Path, specs: tuple[GeneratedPath, ...], base: str | None, head_branch: str | None,
-          mirror_branch: str = MIRROR_BRANCH) -> tuple[list[tuple[str, str]], list[str]]:
+def check(
+    root: Path,
+    specs: tuple[GeneratedPath, ...],
+    base: str | None,
+    head_branch: str | None,
+    mirror_branch: str = MIRROR_BRANCH,
+) -> tuple[list[tuple[str, str]], list[str]]:
     """Returns (problems as (path, message), notes)."""
     problems: list[tuple[str, str]] = []
     notes: list[str] = []
@@ -209,8 +244,26 @@ def check(root: Path, specs: tuple[GeneratedPath, ...], base: str | None, head_b
     for spec in specs:
         target = root / spec.path
         data = target.read_bytes() if target.is_file() else None
-        if data is None:
-            problems.append((spec.path, "is missing;  a generated path must exist"))
+        if spec.alternate is not None and data is not None and (root / spec.alternate).is_file():
+            problems.append(
+                (
+                    spec.path,
+                    f"exists together with {spec.alternate};  during a rename exactly one of the "
+                    "two may exist, so the mirror pull request must delete the old name",
+                )
+            )
+        if data is None and spec.alternate is not None and (root / spec.alternate).is_file():
+            notes.append(
+                f"{spec.path}: absent while {spec.alternate} holds the document (rename in flight)"
+            )
+        elif data is None:
+            problems.append(
+                (
+                    spec.path,
+                    "is missing;  a generated path must exist"
+                    + (f" (nor is {spec.alternate})" if spec.alternate else ""),
+                )
+            )
         else:
             found, note = content_problems(spec, data)
             problems += [(spec.path, m) for m in found]
@@ -218,27 +271,47 @@ def check(root: Path, specs: tuple[GeneratedPath, ...], base: str | None, head_b
                 notes.append(f"{spec.path}: {note}")
         if changed is not None and spec.path in changed:
             prior = base_bytes(root, commit, spec.path)
-            problems += [(spec.path, m) for m in branch_problems(spec, prior, data, head_branch, mirror_branch)]
+            problems += [
+                (spec.path, m)
+                for m in branch_problems(spec, prior, data, head_branch, mirror_branch)
+            ]
     if changed is not None and head_branch == mirror_branch:
         stray = sorted(changed - {s.path for s in specs})
         if stray:
             shown = ", ".join(stray[:5]) + (f" (+{len(stray) - 5} more)" if len(stray) > 5 else "")
-            problems.append((stray[0], f"is changed by the branch '{mirror_branch}', which may change generated paths "
-                                       f"only;  it also changes {shown}"))
+            problems.append(
+                (
+                    stray[0],
+                    f"is changed by the branch '{mirror_branch}', which may change generated paths "
+                    f"only;  it also changes {shown}",
+                )
+            )
     return problems, notes
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="Check the generated mirrors (GENERATED header, body hash, who changed them).")
-    ap.add_argument("--root", type=Path, default=ROOT, help="repository checkout to check (default: this one)")
-    ap.add_argument("--base", help="the pull request's base commit;  with --head-branch it turns the branch rules on")
-    ap.add_argument("--head-branch", help="the pull request's head branch;  write fork:<owner/repo>:<branch> for a fork")
+    ap = argparse.ArgumentParser(
+        description="Check the generated mirrors (GENERATED header, body hash, who changed them)."
+    )
+    ap.add_argument(
+        "--root", type=Path, default=ROOT, help="repository checkout to check (default: this one)"
+    )
+    ap.add_argument(
+        "--base",
+        help="the pull request's base commit;  with --head-branch it turns the branch rules on",
+    )
+    ap.add_argument(
+        "--head-branch",
+        help="the pull request's head branch;  write fork:<owner/repo>:<branch> for a fork",
+    )
     ap.add_argument("--mirror-branch", default=MIRROR_BRANCH, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
     if args.head_branch is not None and not args.base:
         ap.error("--head-branch needs --base")
     try:
-        problems, notes = check(args.root, GENERATED_PATHS, args.base, args.head_branch, args.mirror_branch)
+        problems, notes = check(
+            args.root, GENERATED_PATHS, args.base, args.head_branch, args.mirror_branch
+        )
     except GitError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
