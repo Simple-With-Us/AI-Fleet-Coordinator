@@ -135,5 +135,14 @@ esac
         self.assertEqual(self.run_disarm(mode="response_lost")[0], 0)
 
 
+class RelayWorkflowContainment(unittest.TestCase):
+    def test_relay_does_not_publish_secret(self):
+        source = (Path(__file__).resolve().parents[1] / ".github/workflows/auto-merge-reusable.yml").read_text()
+        self.assertNotIn("WISE_MERGE_TOKEN", source)
+        self.assertNotIn("--github-env", source)
+        self.assertIn("python3 - -- bash", source)
+        self.assertIn("GH_TOKEN: ${{ github.token }}", source)
+
+
 if __name__ == "__main__":
     unittest.main()

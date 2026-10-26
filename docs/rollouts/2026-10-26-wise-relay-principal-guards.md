@@ -19,3 +19,7 @@ ST automation must use swu-wise[bot], never a personal-account fallback. This so
 ## Adoption requirements
 
 Dedicated purpose-scoped read-only Infisical token, provisioned Wise shared bearer, reviewed additive deployed policy and checks-read capability, exact bot principal/read-only canary, then caller repin. Do not force shared guard onto unqualified callers. No personal fallback on failure. Deployed runtime and custody owners coordinate their own changes. This PR does not claim fleetwide enforcement or live migration completion.
+
+## Review fixes
+
+Job-local mint now execs trusted probe/principal/arm logic in the same step, without GITHUB_ENV or job-output persistence. The legacy path is explicitly skipped for relay consumers. Repository classify/disarm use github.token. Service token binds Infisical project, no project UUID in source. Null/malformed GitHub viewer responses refuse cleanly; explicit client User-Agent is shared by embedded and standalone code. Adapter11, principal/workflow containment14 and existing armer29 cases pass.

@@ -101,6 +101,26 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaises(w.Refused):
                 self.run_mint(**kwargs)
 
+    def test_null_and_malformed_viewer_refused(self):
+        for response in [None, {}, {"data": None}, {"data": []},
+                         {"data": {"viewer": None}}, {"data": {"viewer": []}},
+                         {"errors": ["denied"]}]:
+            calls = []
+            def request(url, headers, body):
+                calls.append(url)
+                if len(calls) == 1:
+                    return {"app_slug": "swu-wise", "token": "ghs_fake", "expires_in_seconds": 3590}
+                return response
+            with self.assertRaises(w.Refused):
+                w.mint_verified(self.config(), request)
+
+    def test_source_keeps_secret_in_memory(self):
+        source = Path(w.__file__).read_text()
+        self.assertNotIn("GITHUB_ENV", source)
+        self.assertNotIn("--github-env", source)
+        self.assertNotIn("--projectId", source)
+        self.assertNotIn("8dae6d03", source)
+
 
 if __name__ == "__main__":
     unittest.main()

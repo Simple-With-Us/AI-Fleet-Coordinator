@@ -15,7 +15,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-PROJECT = "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5"
 FOLDER = "/gr-front/wise-st"
 REPO = "Simple-With-Us/Socratic-Trade"
 ACTOR = "swu-wise[bot]"
@@ -134,19 +133,17 @@ def mint_verified(config, request=request_json):
         {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"},
         {"query": "query { viewer { login } }"},
     )
-    if (
-        not isinstance(viewer, dict)
-        or viewer.get("errors")
-        or viewer.get("data", {}).get("viewer", {}).get("login") != ACTOR
-    ):
+    data = viewer.get("data") if isinstance(viewer, dict) else None
+    user = data.get("viewer") if isinstance(data, dict) else None
+    if (not isinstance(viewer, dict) or viewer.get("errors")
+            or not isinstance(user, dict) or user.get("login") != ACTOR):
         raise Refused("GitHub principal mismatch")
     return token
 
 
 def main():
-    github_env = sys.argv[1:] == ["--github-env"]
-    if not github_env and (len(sys.argv) < 3 or sys.argv[1] != "--"):
-        raise Refused("usage: wise-relay-exec.py -- command [args] | --github-env")
+    if len(sys.argv) < 3 or sys.argv[1] != "--":
+        raise Refused("usage: wise-relay-exec.py -- command [args]")
     env = dict(os.environ)
     if not env.get("INFISICAL_TOKEN", "").startswith("st."):
         raise Refused("dedicated Infisical service token required")
@@ -168,8 +165,6 @@ def main():
             [
                 "infisical",
                 "export",
-                "--projectId",
-                PROJECT,
                 "--env",
                 "prod",
                 "--path",
@@ -194,15 +189,6 @@ def main():
     except (subprocess.SubprocessError, OSError, ValueError):
         raise Refused("Infisical dedicated-folder fetch failed") from None
     token = mint_verified(config)
-    if github_env:
-        # Workflow file is trusted base source; never write to job outputs.
-        destination = os.environ.get("GITHUB_ENV")
-        if not destination:
-            raise Refused("GitHub environment file missing")
-        print("::add-mask::" + token)
-        with open(destination, "a") as output:
-            output.write("WISE_MERGE_TOKEN=" + token + "\n")
-        return
     # Do not pass bearer or Infisical bootstrap to the consumer command.
     env.pop("INFISICAL_TOKEN", None)
     env["GH_TOKEN"] = token
