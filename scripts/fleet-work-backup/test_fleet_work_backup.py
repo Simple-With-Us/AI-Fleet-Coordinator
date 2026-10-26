@@ -232,7 +232,7 @@ class Fixture:
         (dangling / ".git").write_text("gitdir: /nonexistent/gone/.git/worktrees/x\n")
         # loose files (b)
         a = h / "apps"
-        write(a / "AGENT-SYNC.md", "protocol\n")
+        write(a / "FLEET-PROTOCOL.md", "protocol\n")
         write(a / "notes" / "x.txt", "note\n")
         write(a / "node_modules" / "pkg" / "index.js", "x\n")
         write(a / "run.log", "log\n")
