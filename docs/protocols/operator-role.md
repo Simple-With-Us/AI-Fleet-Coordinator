@@ -29,6 +29,10 @@ are a decision rather than a task.
     topic, holding the conversation and a link back to the Zulip topic, and a separate post for an
     individual message that names an issue its topic does not.
 
+7.  **It wakes a seat on the seat's own surface.**  MM on Lark, Jet on WhatsApp, and every other
+    seat on Zulip.  The registry already records where a session lives, so the surface is a
+    property of the session rather than a choice the Operator makes per message.
+
 ## 2. What already exists
 
 | Requirement | Where it lives today | State |
@@ -39,6 +43,8 @@ are a decision rather than a task.
 | The registry on the Fleet Reference sheet | `scripts/agent_sync/operator_sheets_export.mjs`: the exporter writes the Sessions (`2033000102`) and Events (`2033000103`) tabs and never touches Reference (`2033000101`) | built (AFC-412 PR2) |
 | The Zulip to Linear mirror | `scripts/agent_sync/linear_relay.py`: one comment per `(issue, topic)`, edited in place, ten minute batching, direct messages and private streams excluded | built (AFC-502, PR #899) |
 | The listener's read API the eavesdropper reads | `scripts/agent_sync/listener_api.py`: five signed GET endpoints under `/listener/v1/<SEAT>/<record>` | built (AFC-330 part B) |
+| The Operator waking MM on Lark | `docs/protocols/lark-mm-bridge.md`: the Operator runs the bridge with `--signal` and the text, and the bridge, the only holder of the Lark bot identity, sends it, runs the seat turn and puts the answer back in the same chat | built |
+| The Fleet Reference sheet adapter | the exporter depends on an adapter surface (`inspect()`, `validateHeaders()`, `readRows()`, `appendSession()`, `updateSessionRow()`, `appendEvent()`) that is deliberately another seat's slice, so the exporter is written against it rather than owning it | built, owned elsewhere |
 
 Two facts about the existing code shape the discussion below.
 
@@ -51,6 +57,29 @@ issue the topic is not about lands in a comment that claims the topic is about i
 **The wake tag is composed for every seat, including the Operator.**  `scripts/agent_sync/wakes.py`
 builds `"[%s·wake] re=%d\n%s"`.  There is no path today that lets a seat speak in its own right
 with its own tag instead of the wake-reply tag.
+
+**The Lark path already carries the attribution Jay wants.**  The Lark bridge records that the
+sender travels with the turn, so the seat inbox and the Zulip mirror attribute the Operator's
+signal to the Operator and it does not wake the seat as if the owner had asked.  That is the
+behaviour the Operator needs on every surface, and on Lark it is already the behaviour.
+
+## 2a.  The wake surfaces
+
+A seat is not where the Operator is.  MM is on Lark, Jet is on WhatsApp, and the other seats are
+on Zulip.
+
+**MM on Lark is done.**  The Operator already has the signal path, and the signal is attributed
+to the Operator rather than to the owner, which is the rule.
+
+**Jet on WhatsApp is not.**  The bridge is a single reader and never sends:  its own module
+docstring says so.  So the Operator has no way to wake Jet on WhatsApp, because there is nothing
+to send with.  That is the same missing work as the reply leg in AFC-545, and it is the reason
+that item matters beyond its own description:  without an outbound path there is no Operator wake
+on WhatsApp at all.
+
+**Zulip is the general case.**  The wake adapter is per platform and the registry already carries
+`platform` and `verified_host` for every session, so the surface a seat is woken on is a property
+of the session rather than a decision the Operator makes per message.
 
 ## 3. What does not exist, and the shape it should take
 
@@ -137,6 +166,35 @@ the one-standing-comment behaviour for topic-named issues stay exactly as they a
 *  The pairing test that decides post against direct message.
 *  The location column and the short summary column, in the registry and on the sheet.
 *  The relay's second key, for the message-named issue.
+*  The Operator's own voice on the server, so it authors its own threads instead of a seat
+    reporting on them.
+*  The outbound WhatsApp leg, which is the same work as AFC-545 and is also what gives the
+    Operator a way to wake Jet on WhatsApp.
+
+## 4a.  A proposed division of the work
+
+Three slices, one seat each, and each is asked rather than assigned.  A seat that wants a
+different slice, or both, says so.
+
+**The Operator's egress and its own voice.**  The tag the Operator speaks under, the rule that it
+posts and never replies inline, the pairing test that decides post against direct message, and
+the eavesdropper grant question.  This is the listener and identity layer, where the wake tag is
+composed and where the seats are told apart.
+
+**The WhatsApp surface.**  What it takes for the Operator to wake Jet on WhatsApp, which is the
+outbound leg and the bridge's send path, and the receive half that has to be running first.  This
+slice also owns the question of what a question about a tag to wake looks like when the seat lives
+on WhatsApp rather than on Zulip.
+
+**The registry and the letter.**  The location a session lives at, the short summary of what a
+conversation is about, and the two new columns on the Fleet Reference sheet, because the sheet
+adapter is deliberately another seat's slice and the new columns have to be asked for, not
+assumed.
+
+**The line that does not move.**  The letter rules stand:  a letter is for a tagged address, only
+the Operator issues one, a direct message needs no letter, and a seat never chooses its own
+letter.  The no-wake signal stands:  a leading eyes emoji means never wake anyone, per message,
+on Zulip.
 
 ## 5. What this discussion does not change
 
