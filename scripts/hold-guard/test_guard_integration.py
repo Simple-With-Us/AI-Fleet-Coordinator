@@ -8,8 +8,10 @@ with spaces (no word-splitting), merge_group PR mapping, multi-page event
 pagination, error fail-closed behavior, and the check-run payload shape.
 """
 
+import glob
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -1025,14 +1027,19 @@ class GuardIntegration(unittest.TestCase):
         # Kody r4374043272: a failed cache write must not leave the PR
         # marked fresh-ok for a stale file to be trusted - error + red job
         self._held_scenario()
-        # a directory at the deterministic cache path makes the write fail
-        if os.path.isfile("/tmp/hold-guard-fresh-repair-3.json"):
-            os.unlink("/tmp/hold-guard-fresh-repair-3.json")
-        os.makedirs("/tmp/hold-guard-fresh-repair-3.json")
+        # a directory at the cache path inside a caller-provided scratch
+        # dir makes the write fail (r4374207226 moved scratch per-run)
+        scratch = tempfile.mkdtemp(prefix="hold-guard-test-")
+        os.makedirs(os.path.join(scratch, "fresh-repair-3.json"))
         try:
-            p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+            p = self.run_guard(
+                PR="3",
+                PR_URL="u",
+                EVENT_NAME="pull_request_target",
+                HOLD_GUARD_SCRATCH=scratch,
+            )
         finally:
-            os.rmdir("/tmp/hold-guard-fresh-repair-3.json")
+            shutil.rmtree(scratch)
         self.assertEqual(p.returncode, 3)
         self.assertIn("pre-repair re-check cache write failed", p.stdout)
         self.assertFalse(
@@ -1048,6 +1055,47 @@ class GuardIntegration(unittest.TestCase):
             if any(a.endswith("/check-runs") for a in c["argv"]) and "POST" in c["argv"]
         ]
         self.assertEqual(json.loads(checks[0]["stdin"])["conclusion"], "failure")
+
+
+    def test_concurrent_run_snapshot_survives_this_run(self):
+        # Kody r4374207226: a concurrent guard run on the same reused
+        # runner must not lose its snapshot to this run's startup cleanup.
+        # Sentinels at the OLD shared paths simulate that concurrent run's
+        # in-use files; this run must neither delete nor trust them, must
+        # succeed from its own per-run scratch, and must leave no files at
+        # the shared paths (its own scratch is trap-cleaned).
+        self._held_scenario()
+        sentinels = [
+            "/tmp/hold-guard-fresh-repair-3.json",
+            "/tmp/hold-guard-fresh-repair-99.json",
+            "/tmp/hold-guard-combined.json",
+        ]
+        for path in sentinels:
+            with open(path, "w") as f:
+                f.write("concurrent-run-data")
+        before = set(glob.glob("/tmp/hold-guard-run.*"))
+        try:
+            p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+            for path in sentinels:
+                with open(path) as f:
+                    self.assertEqual(f.read(), "concurrent-run-data", path)
+            self.assertEqual(sorted(glob.glob("/tmp/hold-guard-fresh-repair-*")), sentinels[:2])
+        finally:
+            for path in sentinels:
+                os.unlink(path)
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        # the run's own mktemp scratch dir is trap-cleaned on exit
+        self.assertEqual(set(glob.glob("/tmp/hold-guard-run.*")), before)
+        # the repair still happened (run trusted only its own snapshot)
+        label_posts = [
+            c
+            for c in self.calls()
+            if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
+        ]
+        self.assertEqual(len(label_posts), 1)
+        self.assertEqual(
+            json.loads(label_posts[0]["stdin"])["labels"], ["do-not-automerge"]
+        )
 
 
 if __name__ == "__main__":

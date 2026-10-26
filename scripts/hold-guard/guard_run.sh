@@ -24,13 +24,29 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${GUARD_APP_SLUG:=github-actions}"
 : "${REPO:?REPO required}" "${HEAD_SHA:?HEAD_SHA required}"
 
-ERR=/tmp/hold-guard-errors; : > "$ERR"
-PF=/tmp/hold-guard-patch-fail; : > "$PF"
-REPAIRED=/tmp/hold-guard-repaired; : > "$REPAIRED"
-# The repair re-check cache paths are deterministic per PR: drop any file a
-# prior run on a reused runner left behind (Kody r4374043272 - a failed
-# write must never leave a stale snapshot for the jq parse to trust).
-rm -f /tmp/hold-guard-fresh-repair-*.json
+# Per-run scratch dir (Kody r4374207226): any deterministic path under
+# shared /tmp is a cross-run namespace.  A startup glob scoped per PR still
+# collides when the SAME PR is evaluated by two concurrent runs on a reused
+# runner (queued synchronize/labeled events): run B's startup can delete
+# run A's snapshot between its write and jq parse, turning a valid repair
+# into a spurious parse/repair error and red job.  A unique mktemp dir per
+# run removes the shared namespace entirely - no startup cleanup is needed
+# (no stale file can ever be trusted, which also keeps the r4374043272
+# property), and the trap removes only our own files.  mktemp failure is a
+# critical startup failure (red, fail closed); trap cleanup failure is
+# benign temp residue.  HOLD_GUARD_SCRATCH overrides the dir for tests;
+# caller-provided dirs are caller-cleaned.
+SCRATCH="${HOLD_GUARD_SCRATCH:-}"
+if [ -z "$SCRATCH" ]; then
+  if ! SCRATCH="$(mktemp -d /tmp/hold-guard-run.XXXXXX)"; then
+    echo "::error::could not create per-run scratch dir"
+    exit 3
+  fi
+  trap 'rm -rf -- "$SCRATCH"' EXIT
+fi
+ERR="$SCRATCH/errors"; : > "$ERR"
+PF="$SCRATCH/patch-fail"; : > "$PF"
+REPAIRED="$SCRATCH/repaired"; : > "$REPAIRED"
 any_error=0
 read_error=""
 
@@ -76,7 +92,7 @@ for pr in "${prs[@]}"; do
       out="$(jq -cn --arg rc "$rc" --arg e "$out" '{state:"error",error:("hold_guard rc=" + $rc + ": " + $e)}')"
     fi
   fi
-  echo "$out" > "/tmp/hold-guard-$pr.json"
+  echo "$out" > "$SCRATCH/hold-guard-$pr.json"
   combined="$(jq -s --arg pr "$pr" '.[0] + [ .[1].holds[]? | . + {pr: $pr} ]' <(echo "$combined") <(echo "$out"))"
 done
 
@@ -107,7 +123,7 @@ printf '%s' "$combined" | jq -c '.[] | select(.needs_reapply)' | while IFS= read
       # Kody r4374043272: mark fresh-ok ONLY after the cache write itself
       # succeeds; a failed write with a stale leftover would make the later
       # jq parse trust old state (silent skip or resurrected hold, no red).
-      if printf '%s' "$fresh1" > "/tmp/hold-guard-fresh-repair-$pr.json"; then
+      if printf '%s' "$fresh1" > "$SCRATCH/fresh-repair-$pr.json"; then
         fresh_repair_ok[$pr]=1
       else
         echo "::error::pre-repair re-check cache write failed on #$pr - skipping repair"
@@ -121,7 +137,7 @@ printf '%s' "$combined" | jq -c '.[] | select(.needs_reapply)' | while IFS= read
     fi
   fi
   [ "${fresh_repair_ok[$pr]}" = "1" ] || continue
-  if ! still="$(jq --arg l "$label" '[.holds[]? | select(.label == $l and .needs_reapply)] | length' < "/tmp/hold-guard-fresh-repair-$pr.json")"; then
+  if ! still="$(jq --arg l "$label" '[.holds[]? | select(.label == $l and .needs_reapply)] | length' < "$SCRATCH/fresh-repair-$pr.json")"; then
     echo "::error::pre-repair re-check parse failed on #$pr - skipping repair"
     echo repair >> "$ERR"
     continue
@@ -164,7 +180,7 @@ for pr in "${prs[@]}"; do
     any_error=1; read_error="evaluation error"
   fi
 done
-echo "$fresh" > /tmp/hold-guard-combined.json
+echo "$fresh" > "$SCRATCH/combined.json"
 
 # 5. Publish the merge-gate conclusion (always attempted).
 #    The check-run listing is the LAST read; it happens BEFORE the payload
@@ -190,7 +206,7 @@ elif [ "$(printf '%s' "$fresh" | jq 'length')" -eq 0 ]; then
   summary="All holds were released by their setters."
 else
   conclusion=failure; title="merge-gate: active merge holds"
-  summary="$(jq -r '[.[] | "- `\(.label)` (PR #\(.pr)) set by \(.owner_login // "unknown")\(if .unknown then " - owner unknown, needs escalation" else "" end)"] | join("\n")' /tmp/hold-guard-combined.json)"
+  summary="$(jq -r '[.[] | "- `\(.label)` (PR #\(.pr)) set by \(.owner_login // "unknown")\(if .unknown then " - owner unknown, needs escalation" else "" end)"] | join("\n")' "$SCRATCH/combined.json")"
 fi
 payload="$(jq -n --arg sha "$HEAD_SHA" --arg c "$conclusion" --arg t "$title" --arg s "$summary" \
   '{name: "merge-gate", head_sha: $sha, status: "completed", conclusion: $c, output: {title: $t, summary: $s}}')"
