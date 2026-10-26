@@ -788,7 +788,7 @@ def from_env() -> Relay:
         )
     except PolicyError as exc:
         raise SystemExit(f"git-relay config: {exc}") from exc
-    client = GitHubClient(os.environ.get("GITHUB_TOKEN", ""))
+    client = GitHubClient(_owner_token_from_cli())
     # An explicitly configured path is the operator's business:  adoption only
     # covers the built-in defaults.
     audit_path = (
@@ -833,6 +833,31 @@ def from_env() -> Relay:
         except AppTokenError as exc:
             raise SystemExit(f"git-relay config: {exc}") from exc
     return Relay(policy, client, audit, app_minter=app_minter, outcomes=outcomes)
+
+
+def _owner_token_from_cli() -> str:
+    """The owner PAT for open_pr, read once at startup through `fleet-secrets
+    get-verified` at its fixed folder (/git-relay-owner):  the CLI proves the
+    value came from that exact folder before answering.  Never the process
+    environment - an ambient GITHUB_TOKEN is IGNORED, and there is no other
+    fallback source (owner direction 2026-10-21 + the /git-relay-owner
+    custody move 2026-10-25).  The relay refuses to start without it,
+    exactly as it refused to start with an empty GITHUB_TOKEN before.
+    GIT_RELAY_OWNER_CREDENTIAL_FILE points the
+    source at the folder scope's protected credential file (systemd
+    LoadCredential);  without it the CLI child inherits the environment -
+    the transitional shape until the host unit ships the files.
+    """
+    from .app_tokens import AppTokenError, FleetSecretsSource
+
+    try:
+        source = FleetSecretsSource(
+            path="/git-relay-owner",
+            credential_file=os.environ.get("GIT_RELAY_OWNER_CREDENTIAL_FILE") or None,
+        )
+        return source.verified_secret("GITHUB_TOKEN")
+    except AppTokenError as exc:
+        raise RuntimeError(f"git-relay config: owner token:  {exc}") from None
 
 
 def main() -> None:

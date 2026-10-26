@@ -112,6 +112,14 @@ class FleetSecretsSource:
     GH_APP_<SLUG>_PRIVATE_KEY pairs actually live (verified live
     2026-10-23):  without it `fleet-secrets get` reads the project root
     and every App-key lookup misses.
+
+    `credential_file`, when set, names a protected file (systemd
+    LoadCredential, root 0600) holding the ONE Infisical token for this
+    source's folder scope:  it is read at call time and passed to the CLI
+    child with an allowlist environment, so no co-located secret in the
+    relay's own environment (seat tokens, another scope's token) is ever
+    inherited.  When unset the child inherits the process environment - the
+    transitional shape until the host unit ships the credential files.
     """
 
     def __init__(
@@ -119,9 +127,13 @@ class FleetSecretsSource:
         executable: str = "fleet-secrets",
         runner=subprocess.run,
         path: str = "/github-apps",
+        credential_file: str | None = None,
+        environ=os.environ,
     ):
         if not _PATH_RE.fullmatch(path or "") or ".." in path.split("/"):
             raise AppTokenError(f"fleet-secrets path is not a usable folder path: {path!r}")
+        self._credential_file = credential_file
+        self._environ = environ
         self._exe = executable
         self._run = runner
         self._path = path
@@ -130,6 +142,42 @@ class FleetSecretsSource:
 
     def secret(self, name: str) -> str:
         return self.secrets([name])[name]
+
+    def verified_secret(self, name: str) -> str:
+        """One folder-PROVEN secret via `fleet-secrets get-verified`.
+
+        Unlike `secret`, the CLI answers only when the REST raw-secret row's
+        own secretPath is exactly this source's folder:  a legacy-scoped
+        token whose --path clamps to another folder fails closed instead of
+        returning the wrong scope's value.  Exit 3 (absent) is remembered for
+        the process lifetime, like `secret`;  every other failure raises.
+        """
+        if not name or not re.fullmatch(r"[A-Za-z0-9_]+", name):
+            raise AppTokenError(f"not a usable secret name: {name!r}")
+        if name in self._cache:
+            return self._cache[name]
+        if name in self._missing:
+            raise AppTokenError(f"fleet-secrets has no value for {name}")
+        try:
+            result = self._run_scoped([self._exe, "get-verified", name, "--path", self._path])
+        except subprocess.TimeoutExpired:
+            raise AppTokenError(f"fleet-secrets lookup timed out for {name}") from None
+        except FileNotFoundError:
+            raise AppTokenError("fleet-secrets executable not found") from None
+        except OSError as exc:
+            raise AppTokenError(
+                f"fleet-secrets lookup failed for {name}: {type(exc).__name__}"
+            ) from None
+        if result.returncode == 3:
+            self._missing.add(name)
+            raise AppTokenError(f"fleet-secrets has no value for {name}")
+        if result.returncode:
+            raise AppTokenError(f"fleet-secrets get-verified failed for {name}: exit {result.returncode}")
+        value = result.stdout.decode("utf-8", "replace").rstrip("\n")
+        if not value:
+            raise AppTokenError(f"fleet-secrets has no value for {name}")
+        self._cache[name] = value
+        return value
 
     def secrets(self, names) -> dict:
         """Read several names in one CLI invocation (one folder export)."""
@@ -142,13 +190,35 @@ class FleetSecretsSource:
             self._fetch(wanted)
         return {n: self._cache[n] for n in names}
 
+    # Child-environment allowlist for scoped reads:  what the CLI needs to
+    # run, plus the one token from the credential file.  Nothing else in the
+    # relay's environment is the CLI's business.
+    _CHILD_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ")
+
+    def _child_env(self):
+        if self._credential_file is None:
+            return None  # transitional: inherit (see the class docstring)
+        try:
+            with open(self._credential_file, "r", encoding="utf-8") as fh:
+                token = fh.read().strip()
+        except OSError:
+            raise AppTokenError(f"credential file unreadable for {self._path}") from None
+        if not token:
+            raise AppTokenError(f"credential file empty for {self._path}")
+        env = {k: self._environ[k] for k in self._CHILD_ENV_KEYS if k in self._environ}
+        env["INFISICAL_TOKEN"] = token
+        return env
+
+    def _run_scoped(self, argv):
+        kwargs = {}
+        env = self._child_env()
+        if env is not None:
+            kwargs["env"] = env
+        return self._run(argv, capture_output=True, timeout=30, **kwargs)
+
     def _fetch(self, wanted) -> None:
         try:
-            result = self._run(
-                [self._exe, "get", *wanted, "--path", self._path],
-                capture_output=True,
-                timeout=30,
-            )
+            result = self._run_scoped([self._exe, "get", *wanted, "--path", self._path])
         except subprocess.TimeoutExpired:
             raise AppTokenError(f"fleet-secrets lookup timed out for {wanted[0]}") from None
         except FileNotFoundError:

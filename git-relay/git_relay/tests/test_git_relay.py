@@ -6,6 +6,7 @@ tests bind an ephemeral port on 127.0.0.1 with a stubbed client.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import io
 import json
@@ -2268,12 +2269,29 @@ class LegacyStateAdoption(unittest.TestCase):
         origin = pathlib.Path.cwd()
 
         def build(**overrides):
+            from git_relay import server
+
             env = dict(os.environ)
             env["GIT_RELAY_SEATS_JSON"] = policy
             env["GIT_RELAY_APP_MINT"] = "0"
-            env["GITHUB_TOKEN"] = "t" * 40
             env.update(overrides)
-            return unittest.mock.patch.dict(os.environ, env, clear=True)
+            return contextlib.ExitStack()
+
+        def build(**overrides):
+            from git_relay import server
+
+            env = dict(os.environ)
+            env["GIT_RELAY_SEATS_JSON"] = policy
+            env["GIT_RELAY_APP_MINT"] = "0"
+            env.update(overrides)
+            stack = contextlib.ExitStack()
+            stack.enter_context(unittest.mock.patch.dict(os.environ, env, clear=True))
+            stack.enter_context(
+                unittest.mock.patch.object(
+                    server, "_owner_token_from_cli", return_value="t" * 40
+                )
+            )
+            return stack
 
         with build():
             os.chdir(directory)
@@ -2306,12 +2324,20 @@ class LegacyStateAdoption(unittest.TestCase):
                 }
             }
         )
+        from git_relay import server
+
         env = dict(os.environ)
         env["GIT_RELAY_SEATS_JSON"] = policy
-        env["GITHUB_TOKEN"] = "t" * 40
         env.pop("GIT_RELAY_APP_MINT", None)
         env.update(overrides)
-        return unittest.mock.patch.dict(os.environ, env, clear=True)
+        stack = contextlib.ExitStack()
+        stack.enter_context(unittest.mock.patch.dict(os.environ, env, clear=True))
+        stack.enter_context(
+            unittest.mock.patch.object(
+                server, "_owner_token_from_cli", return_value="t" * 40
+            )
+        )
+        return stack
 
     def test_from_env_honors_the_configured_secrets_path(self):
         from git_relay import app_tokens, server
@@ -2359,3 +2385,195 @@ class LegacyStateAdoption(unittest.TestCase):
             finally:
                 os.chdir(origin)
         self.assertIn("GIT_RELAY_SECRETS_PATH", str(ctx.exception))
+
+
+class TestOwnerTokenFromCli(unittest.TestCase):
+    """The open_pr owner token comes ONLY from `fleet-secrets get-verified`
+    at /git-relay-owner;  an ambient GITHUB_TOKEN is never consulted."""
+
+    def _fake_source(self, captured, value=None, error=None):
+        def factory(**kwargs):
+            captured.update(kwargs)
+
+            class _Source:
+                def verified_secret(self, name):
+                    captured["name"] = name
+                    if error is not None:
+                        raise error
+                    return value
+
+            return _Source()
+
+        return factory
+
+    def test_reads_the_fixed_folder_and_ignores_the_environment(self):
+        from git_relay import app_tokens, server
+
+        captured = {}
+        with (
+            unittest.mock.patch.dict(
+                os.environ, {"GITHUB_TOKEN": "ambient-must-not-be-used"}, clear=True
+            ),
+            unittest.mock.patch.object(
+                app_tokens, "FleetSecretsSource", self._fake_source(captured, "cli-value")
+            ),
+        ):
+            self.assertEqual(server._owner_token_from_cli(), "cli-value")
+        self.assertEqual(captured.get("path"), "/git-relay-owner")
+        self.assertIsNone(captured.get("credential_file"))
+        self.assertEqual(captured.get("name"), "GITHUB_TOKEN")
+
+    def test_credential_file_binding_comes_from_the_environment(self):
+        from git_relay import app_tokens, server
+
+        captured = {}
+        with (
+            unittest.mock.patch.dict(
+                os.environ,
+                {"GIT_RELAY_OWNER_CREDENTIAL_FILE": "/run/credentials/owner-token"},
+                clear=True,
+            ),
+            unittest.mock.patch.object(
+                app_tokens, "FleetSecretsSource", self._fake_source(captured, "v")
+            ),
+        ):
+            server._owner_token_from_cli()
+        self.assertEqual(captured.get("credential_file"), "/run/credentials/owner-token")
+
+    def test_a_failed_read_is_a_startup_error_with_no_value_in_it(self):
+        from git_relay import app_tokens, server
+
+        captured = {}
+        with (
+            unittest.mock.patch.dict(os.environ, {}, clear=True),
+            unittest.mock.patch.object(
+                app_tokens,
+                "FleetSecretsSource",
+                self._fake_source(
+                    captured, error=app_tokens.AppTokenError("the-value-must-not-appear")
+                ),
+            ),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                server._owner_token_from_cli()
+        # AppTokenError messages name keys/folders only; the relay adds no values.
+        self.assertIn("owner token", str(ctx.exception))
+
+
+class TestVerifiedSecret(unittest.TestCase):
+    def _source(self, result=None, raises=None, **kwargs):
+        from git_relay.app_tokens import FleetSecretsSource
+
+        captured = {}
+
+        def runner(argv, **run_kwargs):
+            captured["argv"] = list(argv)
+            captured["run_kwargs"] = run_kwargs
+            if raises is not None:
+                raise raises
+            return result
+
+        return FleetSecretsSource(runner=runner, **kwargs), captured
+
+    def _result(self, code=0, stdout=b"v\n", stderr=b""):
+        return subprocess.CompletedProcess(["x"], code, stdout, stderr)
+
+    def test_uses_the_get_verified_command_at_the_source_folder(self):
+        source, captured = self._source(result=self._result())
+        self.assertEqual(source.verified_secret("GITHUB_TOKEN"), "v")
+        self.assertEqual(captured["argv"][0:2], ["fleet-secrets", "get-verified"])
+        self.assertEqual(captured["argv"][2], "GITHUB_TOKEN")
+        self.assertIn("--path", captured["argv"])
+        # transitional mode: no env= kwarg, the legacy call shape is byte-identical
+        self.assertNotIn("env", captured["run_kwargs"])
+
+    def test_absent_is_remembered_and_other_failures_are_not(self):
+        from git_relay.app_tokens import AppTokenError
+
+        source, _ = self._source(result=self._result(code=3))
+        with self.assertRaises(AppTokenError) as ctx:
+            source.verified_secret("MISSING")
+        self.assertIn("MISSING", str(ctx.exception))
+        self.assertIn("MISSING", source._missing)
+
+        source, _ = self._source(result=self._result(code=1))
+        with self.assertRaises(AppTokenError):
+            source.verified_secret("OTHER")
+        with self.assertRaises(AppTokenError):
+            source.verified_secret("OTHER")  # not cached absent: raises, no retry state
+
+    def test_empty_stdout_is_an_error_not_a_value(self):
+        from git_relay.app_tokens import AppTokenError
+
+        source, _ = self._source(result=self._result(code=0, stdout=b"\n"))
+        with self.assertRaises(AppTokenError):
+            source.verified_secret("EMPTY")
+
+    def test_credential_file_scopes_the_child_environment(self):
+        from git_relay.app_tokens import FleetSecretsSource
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        creds = directory / "owner-token"
+        creds.write_text("scoped-token\n", encoding="utf-8")
+
+        captured = {}
+
+        def runner(argv, **run_kwargs):
+            captured.update(run_kwargs)
+            return self._result()
+
+        environ = {
+            "PATH": "/usr/bin",
+            "HOME": "/home/x",
+            "INFISICAL_TOKEN": "ambient-must-not-leak",
+            "GIT_RELAY_SEATS_JSON": "co-located-must-not-leak",
+        }
+        source = FleetSecretsSource(
+            runner=runner,
+            path="/git-relay-owner",
+            credential_file=str(creds),
+            environ=environ,
+        )
+        source.verified_secret("GITHUB_TOKEN")
+        child = captured["env"]
+        self.assertEqual(child["INFISICAL_TOKEN"], "scoped-token")
+        self.assertEqual(child["PATH"], "/usr/bin")
+        self.assertNotIn("GIT_RELAY_SEATS_JSON", child)
+        self.assertNotIn("HOME_EXTRA", child)
+
+    def test_unreadable_credential_file_fails_closed(self):
+        from git_relay.app_tokens import AppTokenError, FleetSecretsSource
+
+        source = FleetSecretsSource(
+            runner=lambda *a, **k: None,
+            path="/git-relay-owner",
+            credential_file="/nonexistent/credential",
+        )
+        with self.assertRaises(AppTokenError) as ctx:
+            source.verified_secret("GITHUB_TOKEN")
+        self.assertNotIn("credential-value", str(ctx.exception))
+
+    def test_scoped_env_applies_to_app_key_reads_too(self):
+        from git_relay.app_tokens import FleetSecretsSource
+
+        directory = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, directory, True)
+        creds = directory / "apps-token"
+        creds.write_text("apps-scoped\n", encoding="utf-8")
+
+        captured = {}
+
+        def runner(argv, **run_kwargs):
+            captured.update(run_kwargs)
+            return self._result(
+                stdout=b'{"GH_APP_X_ID": "1", "GH_APP_X_PRIVATE_KEY": "k"}'
+            )
+
+        source = FleetSecretsSource(
+            runner=runner,
+            credential_file=str(creds),
+            environ={"PATH": "/usr/bin"},
+        )
+        source.secrets(["GH_APP_X_ID", "GH_APP_X_PRIVATE_KEY"])
+        self.assertEqual(captured["env"]["INFISICAL_TOKEN"], "apps-scoped")
