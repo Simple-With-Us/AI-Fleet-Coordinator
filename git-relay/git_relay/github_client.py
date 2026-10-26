@@ -25,10 +25,19 @@ MAX_DISPATCH_INPUT_VALUE = 1024
 
 # Never retain arbitrary upstream text. Request IDs are GitHub's bounded
 # hexadecimal correlation IDs; permission metadata is parsed, not copied.
-_DIAGNOSTIC_PERMISSIONS = frozenset({
-    "actions", "administration", "checks", "contents", "issues", "metadata",
-    "pull_requests", "statuses", "workflows",
-})
+_DIAGNOSTIC_PERMISSIONS = frozenset(
+    {
+        "actions",
+        "administration",
+        "checks",
+        "contents",
+        "issues",
+        "metadata",
+        "pull_requests",
+        "statuses",
+        "workflows",
+    }
+)
 _ERROR_CATEGORIES = {
     "Resource not accessible by integration": "resource_not_accessible",
     "Resource not accessible by personal access token": "resource_not_accessible",
@@ -44,21 +53,27 @@ def safe_error_diagnostics(headers=None, message=None):
     Unknown/hostile bodies cannot become a diagnostic string. This does not
     change retry classification, request permissions, or request behavior.
     """
-    result = {"category": _ERROR_CATEGORIES.get(message, "unknown")
-              if isinstance(message, str) else "unknown"}
+    result = {
+        "category": _ERROR_CATEGORIES.get(message, "unknown")
+        if isinstance(message, str)
+        else "unknown"
+    }
     request_id = headers.get("X-GitHub-Request-Id") if headers is not None else None
     if isinstance(request_id, str) and re.fullmatch(
         r"[0-9A-Fa-f]{4,8}(?::[0-9A-Fa-f]{4,8}){3}", request_id
     ):
         result["request_id"] = request_id
     raw = headers.get("X-Accepted-GitHub-Permissions") if headers is not None else None
-    if (isinstance(raw, str) and 0 < len(raw) <= 512
-            and all(32 <= ord(char) < 127 for char in raw)):
+    if isinstance(raw, str) and 0 < len(raw) <= 512 and all(32 <= ord(char) < 127 for char in raw):
         permissions = {}
         for item in raw.split(","):
             pair = item.strip().split("=")
-            if (len(pair) != 2 or pair[0] not in _DIAGNOSTIC_PERMISSIONS
-                    or pair[1] not in ("read", "write") or pair[0] in permissions):
+            if (
+                len(pair) != 2
+                or pair[0] not in _DIAGNOSTIC_PERMISSIONS
+                or pair[1] not in ("read", "write")
+                or pair[0] in permissions
+            ):
                 break
             permissions[pair[0]] = pair[1]
         else:
@@ -108,10 +123,12 @@ class RelayGitHubError(Exception):
         if isinstance(perms, dict) and len(perms) <= len(_DIAGNOSTIC_PERMISSIONS):
             if all(isinstance(k, str) and isinstance(v, str) for k, v in perms.items()):
                 hdrs["X-Accepted-GitHub-Permissions"] = ",".join(
-                    k + "=" + v for k, v in perms.items())
+                    k + "=" + v for k, v in perms.items()
+                )
         self.diagnostics = safe_error_diagnostics(hdrs)
-        if (isinstance(source.get("category"), str)
-                and source["category"] in set(_ERROR_CATEGORIES.values()) | {"unknown"}):
+        if isinstance(source.get("category"), str) and source["category"] in set(
+            _ERROR_CATEGORIES.values()
+        ) | {"unknown"}:
             self.diagnostics["category"] = source["category"]
 
 
