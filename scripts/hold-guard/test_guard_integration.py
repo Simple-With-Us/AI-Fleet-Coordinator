@@ -8,7 +8,6 @@ with spaces (no word-splitting), merge_group PR mapping, multi-page event
 pagination, error fail-closed behavior, and the check-run payload shape.
 """
 
-import glob
 import json
 import os
 import shutil
@@ -1060,31 +1059,56 @@ class GuardIntegration(unittest.TestCase):
         # Kody r4374207226: a concurrent guard run on the same reused
         # runner must not lose its snapshot to this run's startup cleanup.
         # Sentinels at the OLD shared paths simulate that concurrent run's
-        # in-use files; this run must neither delete nor trust them, must
-        # succeed from its own per-run scratch, and must leave no files at
-        # the shared paths (its own scratch is trap-cleaned).
+        # in-use files; this run must neither delete nor trust them.
+        # Assertion boundary is test-owned state only (Kody r4374404625 -
+        # exact globs over shared /tmp are flaky and pollute): planted
+        # sentinel survival + the contents of a caller-provided scratch
+        # dir prove confinement; no global glob asserts.
         self._held_scenario()
+        # Sentinels match the OLD glob pattern (a reintroduced startup glob
+        # would delete them) but carry this process's pid, so parallel test
+        # processes never share a path: no collision, no overwrite of
+        # foreign files, by construction (Kody r4374404625).  O_EXCL makes
+        # any residual collision a loud failure instead of a clobber.
+        pid = os.getpid()
         sentinels = [
-            "/tmp/hold-guard-fresh-repair-3.json",
-            "/tmp/hold-guard-fresh-repair-99.json",
-            "/tmp/hold-guard-combined.json",
+            f"/tmp/hold-guard-fresh-repair-{pid}-3.json",
+            f"/tmp/hold-guard-fresh-repair-{pid}-99.json",
         ]
         for path in sentinels:
-            with open(path, "w") as f:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            with os.fdopen(fd, "w") as f:
                 f.write("concurrent-run-data")
-        before = set(glob.glob("/tmp/hold-guard-run.*"))
+        scratch = tempfile.mkdtemp(prefix="hold-guard-test-")
         try:
-            p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+            p = self.run_guard(
+                PR="3",
+                PR_URL="u",
+                EVENT_NAME="pull_request_target",
+                HOLD_GUARD_SCRATCH=scratch,
+            )
             for path in sentinels:
                 with open(path) as f:
                     self.assertEqual(f.read(), "concurrent-run-data", path)
-            self.assertEqual(sorted(glob.glob("/tmp/hold-guard-fresh-repair-*")), sentinels[:2])
+            # the run confined ALL of its scratch to its own dir: markers,
+            # per-PR evaluation dump, repair cache, combined fence
+            for name in (
+                "errors",
+                "patch-fail",
+                "repaired",
+                "hold-guard-3.json",
+                "fresh-repair-3.json",
+                "combined.json",
+            ):
+                self.assertTrue(
+                    os.path.isfile(os.path.join(scratch, name)),
+                    name + " missing from run scratch",
+                )
         finally:
             for path in sentinels:
                 os.unlink(path)
+            shutil.rmtree(scratch)
         self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
-        # the run's own mktemp scratch dir is trap-cleaned on exit
-        self.assertEqual(set(glob.glob("/tmp/hold-guard-run.*")), before)
         # the repair still happened (run trusted only its own snapshot)
         label_posts = [
             c
@@ -1092,7 +1116,99 @@ class GuardIntegration(unittest.TestCase):
             if any(a.endswith("/labels") for a in c["argv"]) and "-X" in c["argv"]
         ]
         self.assertEqual(len(label_posts), 1)
-        self.assertEqual(json.loads(label_posts[0]["stdin"])["labels"], ["do-not-automerge"])
+        self.assertEqual(
+            json.loads(label_posts[0]["stdin"])["labels"], ["do-not-automerge"]
+        )
+
+    def test_marker_append_failure_after_init_red_job(self):
+        # Root-cause follow-up to Kody r4374404410: init-time validation
+        # cannot catch a scratch that breaks AFTER init (disk full).  The
+        # errors marker is a symlink to /dev/full: the init truncation
+        # succeeds, the post-init append fails with ENOSPC.  The guard must
+        # still exit red - signalled without writing to the broken marker.
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {
+                    "3": [
+                        [
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            ),
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *WISE,
+                                "2026-10-25T02:00:00Z",
+                            ),
+                        ]
+                    ]
+                },
+                "fail": {"labels-post/3": {"rc": 1, "stderr": "boom 500"}},
+            }
+        )
+        scratch = tempfile.mkdtemp(prefix="hold-guard-test-")
+        os.symlink("/dev/full", os.path.join(scratch, "errors"))
+        try:
+            p = self.run_guard(
+                PR="3",
+                PR_URL="u",
+                EVENT_NAME="pull_request_target",
+                HOLD_GUARD_SCRATCH=scratch,
+            )
+        finally:
+            shutil.rmtree(scratch)
+        # init truncation on /dev/full succeeded, so the run proceeded; the
+        # failed repair POST forced an errors append, which failed - and
+        # the job is red anyway, with the failure narrated on stdout
+        self.assertEqual(p.returncode, 3, p.stderr + p.stdout)
+        self.assertIn("failed to re-apply label", p.stdout)
+        self.assertIn("repair loop or its error accounting failed", p.stdout)
+
+    def test_scratch_override_invalid_red_job(self):
+        # Kody r4374404410: an unusable HOLD_GUARD_SCRATCH must fail closed
+        # (red), never silently swallow error markers and exit 0.
+        # nonexistent path
+        p = self.run_guard(
+            PR="3",
+            PR_URL="u",
+            EVENT_NAME="pull_request_target",
+            HOLD_GUARD_SCRATCH="/tmp/hold-guard-test-does-not-exist",
+        )
+        self.assertEqual(p.returncode, 3, p.stderr + p.stdout)
+        self.assertIn("not a writable directory", p.stdout)
+        # a regular file is not a directory
+        fd, file_path = tempfile.mkstemp(prefix="hold-guard-test-")
+        os.close(fd)
+        try:
+            p = self.run_guard(
+                PR="3",
+                PR_URL="u",
+                EVENT_NAME="pull_request_target",
+                HOLD_GUARD_SCRATCH=file_path,
+            )
+            self.assertEqual(p.returncode, 3, p.stderr + p.stdout)
+            self.assertIn("not a writable directory", p.stdout)
+        finally:
+            os.unlink(file_path)
+        # an unwritable directory
+        scratch = tempfile.mkdtemp(prefix="hold-guard-test-")
+        os.chmod(scratch, 0o555)
+        try:
+            p = self.run_guard(
+                PR="3",
+                PR_URL="u",
+                EVENT_NAME="pull_request_target",
+                HOLD_GUARD_SCRATCH=scratch,
+            )
+            self.assertEqual(p.returncode, 3, p.stderr + p.stdout)
+            self.assertIn("not a writable directory", p.stdout)
+        finally:
+            os.chmod(scratch, 0o755)
+            os.rmdir(scratch)
 
 
 if __name__ == "__main__":

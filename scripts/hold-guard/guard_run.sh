@@ -35,7 +35,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # property), and the trap removes only our own files.  mktemp failure is a
 # critical startup failure (red, fail closed); trap cleanup failure is
 # benign temp residue.  HOLD_GUARD_SCRATCH overrides the dir for tests;
-# caller-provided dirs are caller-cleaned.
+# caller-provided dirs are validated writable below (red exit otherwise)
+# and are caller-cleaned.
 SCRATCH="${HOLD_GUARD_SCRATCH:-}"
 if [ -z "$SCRATCH" ]; then
   if ! SCRATCH="$(mktemp -d /tmp/hold-guard-run.XXXXXX)"; then
@@ -43,10 +44,25 @@ if [ -z "$SCRATCH" ]; then
     exit 3
   fi
   trap 'rm -rf -- "$SCRATCH"' EXIT
+else
+  # Caller-provided override must be validated BEFORE any marker relies on
+  # it (Kody r4374404410): a missing or unwritable override made every
+  # marker truncation and append fail silently - with no set -e, the failed
+  # writes leave no file, [ -s "$ERR" ] stays false, and a failed repair
+  # exits 0 instead of red (fail-open).
+  if [ ! -d "$SCRATCH" ] || [ ! -w "$SCRATCH" ]; then
+    echo "::error::HOLD_GUARD_SCRATCH is not a writable directory: $SCRATCH"
+    exit 3
+  fi
 fi
-ERR="$SCRATCH/errors"; : > "$ERR"
-PF="$SCRATCH/patch-fail"; : > "$PF"
-REPAIRED="$SCRATCH/repaired"; : > "$REPAIRED"
+# The initial marker truncations are the first fail-closed writability
+# check.  Post-init write failures (disk full mid-run) cannot be recorded
+# by writing another marker: every append below is instead guarded by a
+# subshell exit, and each pipeline is checked in the MAIN shell where
+# any_error=1 turns the job red without touching the filesystem.
+ERR="$SCRATCH/errors"; : > "$ERR"   || { echo "::error::cannot initialize marker file in $SCRATCH"; exit 3; }
+PF="$SCRATCH/patch-fail"; : > "$PF"   || { echo "::error::cannot initialize marker file in $SCRATCH"; exit 3; }
+REPAIRED="$SCRATCH/repaired"; : > "$REPAIRED"   || { echo "::error::cannot initialize marker file in $SCRATCH"; exit 3; }
 any_error=0
 read_error=""
 
@@ -127,19 +143,19 @@ printf '%s' "$combined" | jq -c '.[] | select(.needs_reapply)' | while IFS= read
         fresh_repair_ok[$pr]=1
       else
         echo "::error::pre-repair re-check cache write failed on #$pr - skipping repair"
-        echo repair >> "$ERR"
+        echo repair >> "$ERR" || exit 4
         fresh_repair_ok[$pr]=0
       fi
     else
       echo "::error::pre-repair re-check failed on #$pr - skipping repair"
-      echo repair >> "$ERR"
+      echo repair >> "$ERR" || exit 4
       fresh_repair_ok[$pr]=0
     fi
   fi
   [ "${fresh_repair_ok[$pr]}" = "1" ] || continue
   if ! still="$(jq --arg l "$label" '[.holds[]? | select(.label == $l and .needs_reapply)] | length' < "$SCRATCH/fresh-repair-$pr.json")"; then
     echo "::error::pre-repair re-check parse failed on #$pr - skipping repair"
-    echo repair >> "$ERR"
+    echo repair >> "$ERR" || exit 4
     continue
   fi
   if [ "$still" != "1" ]; then
@@ -149,12 +165,20 @@ printf '%s' "$combined" | jq -c '.[] | select(.needs_reapply)' | while IFS= read
   if printf '%s' "$h" | jq -c '{labels: [.label]}' \
     | gh api "repos/$REPO/issues/$pr/labels" -X POST --input - >/dev/null; then
     echo "::notice::re-applied $(printf '%s' "$h" | jq -r .label) on #$pr"
-    printf '%s\n' "$h" >> "$REPAIRED"
+    # a lost narration entry means the successful repair is never commented
+    # and later marker writes are broken too - fail the loop, not silently
+    printf '%s\n' "$h" >> "$REPAIRED" || exit 4
   else
     echo "::error::failed to re-apply label on #$pr"
-    echo repair >> "$ERR"
+    echo repair >> "$ERR" || exit 4
   fi
-done
+done || {
+  # subshell exit 4 = marker write failed post-init; a jq/selection failure
+  # lands here too.  Either way error accounting is degraded: red job,
+  # signalled in the main shell without writing to the broken marker.
+  echo "::error::repair loop or its error accounting failed"
+  any_error=1
+}
 # Comments narrate ACTUAL repairs only: the entry lands in $REPAIRED after
 # a successful re-apply POST, so a failed repair never produces a "the
 # hold is back on" comment, and a hold already repaired in an earlier run
@@ -164,8 +188,11 @@ jq -c 'select((.illegitimate_removals // []) | length > 0)' "$REPAIRED" | while 
   pr=$(printf '%s' "$h" | jq -r .pr)
   body=$(printf '%s' "$h" | jq -r '"Hold `\(.label)` was removed by \([.illegitimate_removals[]? | . // "unknown"] | join(", ")). Only its setter (\(.owner_login // "unknown")) can release it - the hold is back on."')
   gh pr comment "$pr" --repo "$REPO" --body "$body" >/dev/null \
-    || { echo "::error::failed to comment on #$pr"; echo comment >> "$ERR"; }
-done
+    || { echo "::error::failed to comment on #$pr"; echo comment >> "$ERR" || exit 4; }
+done || {
+  echo "::error::comment loop or its error accounting failed"
+  any_error=1
+}
 [ -s "$ERR" ] && any_error=1
 
 # 4. Fresh-state fence: re-evaluate IMMEDIATELY before publishing so the
@@ -180,7 +207,10 @@ for pr in "${prs[@]}"; do
     any_error=1; read_error="evaluation error"
   fi
 done
-echo "$fresh" > "$SCRATCH/combined.json"
+# diagnostic snapshot (checked: a post-init scratch failure must turn the
+# job red, not pass silently - same accounting contract as the markers)
+echo "$fresh" > "$SCRATCH/combined.json" \
+  || { echo "::error::could not write combined fence snapshot"; any_error=1; }
 
 # 5. Publish the merge-gate conclusion (always attempted).
 #    The check-run listing is the LAST read; it happens BEFORE the payload
@@ -206,7 +236,9 @@ elif [ "$(printf '%s' "$fresh" | jq 'length')" -eq 0 ]; then
   summary="All holds were released by their setters."
 else
   conclusion=failure; title="merge-gate: active merge holds"
-  summary="$(jq -r '[.[] | "- `\(.label)` (PR #\(.pr)) set by \(.owner_login // "unknown")\(if .unknown then " - owner unknown, needs escalation" else "" end)"] | join("\n")' "$SCRATCH/combined.json")"
+  # summary is built from the in-memory fence result, not the snapshot
+  # file, so a snapshot write failure cannot degrade the payload
+  summary="$(printf '%s' "$fresh" | jq -r '[.[] | "- `\(.label)` (PR #\(.pr)) set by \(.owner_login // "unknown")\(if .unknown then " - owner unknown, needs escalation" else "" end)"] | join("\n")')"
 fi
 payload="$(jq -n --arg sha "$HEAD_SHA" --arg c "$conclusion" --arg t "$title" --arg s "$summary" \
   '{name: "merge-gate", head_sha: $sha, status: "completed", conclusion: $c, output: {title: $t, summary: $s}}')"
@@ -216,10 +248,13 @@ payload="$(jq -n --arg sha "$HEAD_SHA" --arg c "$conclusion" --arg t "$title" --
 printf '%s\n' "$owned" | while IFS= read -r run_id; do
   [ -z "$run_id" ] && continue
   if ! printf '%s' "$payload" | gh api "repos/$REPO/check-runs/$run_id" -X PATCH --input - >/dev/null; then
-    echo fail >> "$PF"
+    echo fail >> "$PF" || exit 4
     echo "::error::failed to patch owned merge-gate run $run_id"
   fi
-done
+done || {
+  echo "::error::patch loop or its error accounting failed"
+  any_error=1
+}
 [ -s "$PF" ] && any_error=1
 # POST when we own no run on this SHA OR any owned PATCH failed, so our
 # identity carries the current conclusion whenever the API allows it.
