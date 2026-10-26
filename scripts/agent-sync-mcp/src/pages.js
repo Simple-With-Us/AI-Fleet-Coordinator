@@ -250,7 +250,7 @@ export function gbBearerRevealPage({ identity, token, expiresAt, kind = "persona
   const body = `<h1>Bearer For ${escapeHtml(identity)}</h1>
 <p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only its hash, so it cannot show it again.", "Refreshing or resubmitting cannot mint a replacement by accident:  this form was single-use, so a resubmit only shows this bearer's details again (never the token) and the bearer stays exactly as it is.", "To replace it on purpose, mint a new one from the admin page.")}</p>
 <p><code id="gb-bearer-token">${escapeHtml(token)}</code></p>
-<p>${sentences(`Expires ${ownerTime(expiresAt)}.`, send)}</p>
+<p>${sentences(`Expires ${ownerTime(expiresAt)}.`)}${SENTENCE_GAP}${gapped(send)}</p>
 <p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
   return htmlResponse(`Bearer For ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }

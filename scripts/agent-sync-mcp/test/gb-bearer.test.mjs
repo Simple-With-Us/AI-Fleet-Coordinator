@@ -681,3 +681,17 @@ test("alarm composition: a throwing sweep still reschedules for the buffered tai
   assert.equal(scheduled[0], t0 + S.GB_MISMATCH_FLUSH_MS, "the orphaned-tail case now wakes at the counter deadline, not never");
   assert.equal(buf.pending.get("JET").count, 1, "the tail was not flushed early (not due) and survives for the rescheduled alarm");
 });
+
+test("bearer reveal copy preserves every internal rendered sentence gap in all mint modes", async () => {
+  for (const [kind, mcpAccept] of [["persona", true], ["seat", true], ["seat", false]]) {
+    const html = await gbBearerRevealPage({ identity: "ECHO", token: "offline-preview", expiresAt: NOW, kind, mcpAccept }).text();
+    const copy = html.match(/<p>Expires [\s\S]*?<\/p>/)?.[0];
+    assert.ok(copy, "the reveal has expiry and send copy");
+    assert.ok(copy.includes(".\u00a0 A fleet tool"), "the new fleet-tool sentence keeps its rendered gap");
+    assert.ok(!/\. +[A-Z]/.test(copy), "no internal ASCII-only sentence gap may collapse in HTML");
+    if (kind === "seat" && !mcpAccept) {
+      assert.ok(copy.includes(".\u00a0 ST-MCP"));
+      assert.ok(copy.includes(".\u00a0 If this seat"));
+    }
+  }
+});
