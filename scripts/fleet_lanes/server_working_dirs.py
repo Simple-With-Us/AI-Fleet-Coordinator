@@ -21,6 +21,10 @@ backup next to every file it touches, and returns nonzero when a knob is still
 off afterwards, so automation can tell that the policy did not take.  `--verify`
 reports each knob and exits nonzero when one of them is off.
 
+An apply never rewrites the identity of a unit the operator set up:  the account
+the unit runs as, the command it runs and the environment that account reads are
+the operator's own, and the template only fills in what they left out.
+
 Usage:
 
     python3 scripts/fleet_lanes/server_working_dirs.py --apply
@@ -870,26 +874,110 @@ def environment_assignments(line: str) -> list[tuple[str, str]]:
     return assignments
 
 
-def carried_directives(text: str, body: str) -> list[str]:
+# The variables the script owns in a unit:  the canonical roots.  An operator's own
+# value for one of them is dropped, because the rewrite exists to point the unit at
+# the fleet's roots and not at a tree that is no longer there.
+OWNED_ENVIRONMENT = (
+    "FLEET_CODE_ROOT", "FLEET_APPS_ROOT", "FLEET_LANES_ROOT", "FLEET_SERVER_VOLUME"
+)
+
+# The directives that carry the identity of a unit:  the account it runs as and the
+# command it runs.  The template carries a default for each of them, and an operator
+# who set one keeps their own value:  a unit that runs as another user, or runs
+# another binary, is not the unit the operator set up.
+IDENTITY_DIRECTIVES = ("User", "Group", "ExecStart")
+
+# The environment the account reads.  Like the identity directives, the operator's own
+# value wins over the template's default.
+IDENTITY_ENVIRONMENT = ("HOME", "PATH")
+
+# The placeholder the template carries where the binary goes.  It is resolved only
+# when the template's own ExecStart survives the merge, so a unit that names its own
+# command never needs the template's binary to exist on the host.
+BINARY_MARKER = "@@fleet-binary@@"
+
+
+def unit_directives(text: str, name: str) -> list[str]:
+    """The lines of a unit that set `name`, in the order they appear."""
+    prefix = name + "="
+    return [line.strip() for line in (text or "").splitlines() if line.strip().startswith(prefix)]
+
+
+def unit_environment(text: str) -> dict[str, list[str]]:
+    """The environment variables a unit sets, each with the assignments it wrote."""
+    found: dict[str, list[str]] = {}
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Environment="):
+            continue
+        for name, raw in environment_assignments(stripped):
+            found.setdefault(name, []).append(raw)
+    return found
+
+
+def service_end(lines: list[str]) -> int:
+    """The index of the first line after the [Service] section of a unit."""
+    start = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if start is None:
+            if stripped == "[Service]":
+                start = index
+            continue
+        if stripped.startswith("["):
+            return index
+    return len(lines)
+
+
+def replace_identity_environment(lines: list[str], existing: str) -> tuple[list[str], set[str]]:
+    """The body lines with the operator's own HOME and PATH in place of the template's.
+
+    The template's line for a variable the operator set is replaced and not kept next
+    to it, so the unit carries one value for it and the template's default is gone.
+    The variables placed this way are returned, so they are not carried over twice.
+    """
+    operator = unit_environment(existing)
+    placed: set[str] = set()
+    out: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped.startswith("Environment="):
+            out.append(line)
+            continue
+        assignments = environment_assignments(stripped)
+        replaced = {
+            name for name, _ in assignments
+            if name in IDENTITY_ENVIRONMENT and operator.get(name)
+        }
+        if not replaced:
+            out.append(line)
+            continue
+        placed.update(replaced)
+        payload = [
+            operator[name][-1] if name in replaced else raw
+            for name, raw in assignments
+        ]
+        out.append("Environment=" + " ".join(payload))
+    return out, placed
+
+
+def carried_directives(text: str, body: str, placed: set[str] | None = None) -> list[str]:
     """The unit directives this script does not own, taken from the unit it replaces.
 
-    The template owns WorkingDirectory, ExecStart, the HOME/PATH environment and
-    the restart policy.  An `EnvironmentFile=` the operator added, and an
-    `Environment=` the template does not set, belong to the operator, so they are
-    carried over instead of silently dropped by the rewrite.
+    An `EnvironmentFile=` the operator added, and an `Environment=` the template does
+    not set, belong to the operator, so they are carried over instead of silently
+    dropped by the rewrite.
 
-    A variable the template sets is the template's:  systemd takes the last
-    assignment for a variable, and the carried line lands after the template's,
-    so a line that still sets it would run the unit with the older value.  That
-    assignment is dropped, and the rest of the line is carried over.
+    A root the script owns is the script's:  systemd takes the last assignment for a
+    variable, and the carried line lands after the template's, so a line that still
+    sets it would run the unit with the older value.  That assignment is dropped, and
+    the rest of the line is carried over.  A variable that was placed in place of the
+    template's own line is not carried over a second time.
     """
     if not text:
         return []
-    owned: set[str] = set()
-    for line in body.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("Environment="):
-            owned.update(name for name, _ in environment_assignments(stripped))
+    owned = set(OWNED_ENVIRONMENT)
+    done = set(placed or ())
     carried: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -904,7 +992,7 @@ def carried_directives(text: str, body: str) -> list[str]:
         if not assignments:
             carried.append(stripped)
             continue
-        keep = [(name, raw) for name, raw in assignments if name not in owned]
+        keep = [(name, raw) for name, raw in assignments if name not in owned and name not in done]
         if not keep:
             continue
         if len(keep) == len(assignments):
@@ -914,18 +1002,62 @@ def carried_directives(text: str, body: str) -> list[str]:
     return carried
 
 
-def apply_unit(path: Path, body: str) -> bool:
-    text = read(path)
-    carried = carried_directives(text, body)
+def merge_unit(body: str, existing: str) -> str:
+    """The template body with the operator's own settings kept.
+
+    The operator's identity directives win over the template's defaults:  the account
+    the unit runs as, the command it runs and the environment that account reads.  A
+    directive the operator did not set keeps the template's value.
+
+    The operator's ExecStart lines replace the template's line and never sit next to
+    it:  systemd runs every ExecStart line of a unit, so a second one would run the
+    command twice.
+
+    The canonical roots are the script's own:  an operator's stale value for one of
+    them is dropped, because the rewrite exists to point the unit at the fleet's roots.
+    """
+    lines = body.splitlines()
+    for name in IDENTITY_DIRECTIVES:
+        theirs = unit_directives(existing, name)
+        if not theirs:
+            continue
+        indexes = [i for i, line in enumerate(lines) if line.strip().startswith(name + "=")]
+        if indexes:
+            first = indexes[0]
+            for index in reversed(indexes):
+                del lines[index]
+            lines[first:first] = theirs
+        else:
+            at = service_end(lines)
+            lines[at:at] = theirs
+    lines, placed = replace_identity_environment(lines, existing)
+    carried = carried_directives(existing, body, placed)
     if carried:
-        lines = body.splitlines()
         after = [i for i, line in enumerate(lines) if line.startswith(("Environment=", "EnvironmentFile="))]
-        lines[max(after) + 1 : max(after) + 1] = carried
-        body = "\n".join(lines) + "\n"
-    if text == body:
+        at = max(after) + 1 if after else len(lines)
+        lines[at:at] = carried
+    return "\n".join(lines) + "\n"
+
+
+def apply_unit(path: Path, body: str, tool: str = "") -> bool:
+    """Replace a unit with the template, keeping the operator's own settings.
+
+    The operator's identity directives win over the template's defaults, so an apply
+    never rewrites the account a unit runs as, the command it runs or the environment
+    that account reads.
+
+    `tool` names the binary the template's own ExecStart runs.  It is resolved only
+    when that line survives the merge:  a unit that already names its command keeps
+    it, and the host need not carry the template's binary at all.
+    """
+    text = read(path)
+    merged = merge_unit(body, text)
+    if tool and BINARY_MARKER in merged:
+        merged = merged.replace(BINARY_MARKER, which(tool))
+    if text == merged:
         return False
     backup(path)
-    write(path, body)
+    write(path, merged)
     return True
 
 
@@ -947,18 +1079,18 @@ def apply(root: Path) -> int:
         elif label.startswith("opencode"):
             flags = opencode_server_flags() or unit_execstart_flags(read(path))
             body = OPENCODE_UNIT.format(
-                lanes=root, home=HOME, opencode=which("opencode"), flags=flags,
+                lanes=root, home=HOME, opencode=BINARY_MARKER, flags=flags,
                 **unit_environments(root),
             )
-            touched = apply_unit(path, body)
+            touched = apply_unit(path, body, "opencode")
             if touched:
                 restart.append("opencode-server.service")
         else:
             body = CLAUDE_UNIT.format(
-                lanes=root, home=HOME, claude=which("claude"),
+                lanes=root, home=HOME, claude=BINARY_MARKER,
                 **unit_environments(root),
             )
-            touched = apply_unit(path, body)
+            touched = apply_unit(path, body, "claude")
             if touched:
                 restart.append("claude-remote-control.service")
         changed += 1 if touched else 0
