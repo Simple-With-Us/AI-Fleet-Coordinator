@@ -33,6 +33,7 @@ if argv and argv[0] == 'api':
         n = parts[4]; fail(f'labels/{n}')
         out(scenario.get('labels', {}).get(n, []))
     if path.endswith('/labels') and '-X' in argv:
+        n = parts[4]; fail(f'labels-post/{n}')
         out({})
     if path.endswith('/events'):
         n = parts[4]; fail(f'events/{n}')
@@ -60,10 +61,13 @@ if argv and argv[0] == 'api':
         out({'check_runs': runs})
     if '/check-runs/' in path and '-X' in argv and 'PATCH' in argv:
         run_id = int(path.split('/check-runs/')[1])
+        fail(f'patch/{run_id}')
         for runs in scenario.get('check_runs', {}).values():
             for r in runs:
                 if r['id'] == run_id:
-                    if r.get('app', 'github-actions') != 'github-actions':
+                    app = r.get('app', 'github-actions')
+                    slug = app.get('slug') if isinstance(app, dict) else app
+                    if slug != 'github-actions':
                         sys.stderr.write('Resource not accessible by integration\n')
                         sys.exit(1)
                     out(r)
@@ -74,6 +78,17 @@ if argv and argv[0] == 'api':
         out({'id': 1001})
     out({})
 if argv and argv[0] == 'pr':
+    if argv[1] == 'view':
+        # gh pr view <url> --json autoMergeRequest --jq ...
+        # fleet disarm contract: state read defines success, not the
+        # mutation exit code (ST scripts/disable-pr-automerge.sh)
+        fail('pr_view')
+        print('armed' if scenario.get('armed', False) else 'off')
+        sys.exit(0)
+    if argv[1] == 'comment':
+        n = argv[2] if len(argv) > 2 else '?'
+        fail(f'comment/{n}')
+        out({})
     if argv[1] == 'merge':
         # enforce the real contract (cli.github.com/manual/gh_pr_merge):
         # --disable-auto disables; --auto arms.  Unknown/legacy flags fail.

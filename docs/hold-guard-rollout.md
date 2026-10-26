@@ -27,11 +27,13 @@ per-setter holds; the suffix is a display hint, never the ownership source.
 
 ## Verified capabilities
 
-- Disarm contract: `gh pr merge --disable-auto <pr>` (observed:
-  https://cli.github.com/manual/gh_pr_merge; matches the fleet armer's own
-  usage).  Integration fake enforces the real flag set - the previously
-  drafted `gh pr merge --auto --disable` is invalid and is now rejected by
-  the test double.
+- Disarm contract: `gh pr merge --disable-auto <pr>` followed by a state
+  read (`gh pr view <pr> --json autoMergeRequest`); success = state "off",
+  matching the fleet's own disable-pr-automerge.sh contract (already-off
+  is benign; armed/unreadable after the attempt is a critical failure).
+  Integration fake enforces the real flag set - the previously drafted
+  `gh pr merge --auto --disable` is invalid and is now rejected by the
+  test double.
 - Hold label families covered: do-not-merge[:*] (Jay's literal ask),
   do-not-automerge[:*], needs-human-merge (fleet-documented).
 
@@ -71,7 +73,29 @@ per-setter holds; the suffix is a display hint, never the ownership source.
   required check narrows the window and gates manual merges at steady state
   but does not remove the window.
 - Fail-closed applies to evaluation ERRORS only (API/eval failure ->
-  armer does not arm; guard posts a failure check and exits 3).
+  armer does not arm; guard publishes a failure conclusion when the API
+  allows and exits 3).
+- ERROR PROPAGATION (guard): every critical failure turns the guard JOB
+  red (exit 3): disarm unconfirmed, evaluation error, label re-apply
+  failure, comment failure, check-run list/patch/create failure.
+  - Disarm success is defined by the post-attempt STATE READ
+    (`gh pr view --json autoMergeRequest`): off = benign (covers both
+    "was armed, now disarmed" and "was never armed" - the disable mutation
+    failing with "not enabled" is not an error); armed or unreadable =
+    critical failure.  This mirrors the fleet's own contract (ST
+    scripts/disable-pr-automerge.sh, ported inline into the AFC reusable
+    workflow's disarm job); no blanket `|| true` anywhere.
+  - Check publication: a failed PATCH of an owned run forces a fresh
+    owned POST so our identity still carries the current conclusion; a
+    failed list (GET) still attempts the POST best-effort; a failed POST
+    is reported.  All three turn the job red.
+- RESIDUAL (stated, not claimed away): when GitHub API WRITES themselves
+  fail, the guard cannot force a red check onto the PR - a previously
+  green merge-gate on an unchanged head can persist.  The failure signal
+  in that case is the RED GUARD JOB plus error notices in the log, not a
+  guaranteed red check; the armer-side hold gate re-evaluates
+  independently at arm time (slice 2), so the arm path does not depend on
+  the guard's writes having landed.
 - merge-gate as github-actions[bot] is forgeable by a same-repo workflow
   author with checks: write; binding the required check to a dedicated App
   narrows that to the App's key holders.
@@ -129,13 +153,17 @@ per-setter holds; the suffix is a display hint, never the ownership source.
 
 ## Tests
 
-- scripts/hold-guard/test_hold_guard.py - 16 unit tests (canned runner)
-- scripts/hold-guard/test_guard_integration.py - 11 integration tests that
+- scripts/hold-guard/test_hold_guard.py - 17 unit tests (canned runner)
+- scripts/hold-guard/test_guard_integration.py - 22 integration tests that
   execute the shipped shell (guard_run.sh, armer_hold_check.sh) against
   fake_gh.py: call ordering (disarm first), request-body exactness, labels
-  with spaces, merge_group mapping, pagination, error fail-closed.
-- All suites PASS on this branch (17 unit + 14 integration + 7 static = 38).  These are SOURCE fixtures; a later LIVE
-  test on a scoped throwaway PR is a separate, not-yet-authorized step.
+  with spaces, pagination, evaluation fail-closed, and every realistic
+  HTTP/gh failure path (disarm armed-after-attempt, disarm state
+  unreadable, not-armed benign, owned-PATCH failure forcing fresh POST,
+  check-run GET/POST failure, label repair failure, comment failure).
+- All suites PASS on this branch (17 unit + 22 integration + 7 static =
+  46).  These are SOURCE fixtures; a later LIVE test on a scoped
+  throwaway PR is a separate, not-yet-authorized step.
 
 ### Slice 0.5: merge_group support - REMOVED from slice 1, needs default-branch-pinned execution design for queue refs before any repo with a queue adopts the guard.
 

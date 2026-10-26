@@ -226,5 +226,90 @@ class GuardIntegration(unittest.TestCase):
         for c in patches:
             self.assertEqual(json.loads(c['stdin'])['conclusion'], 'success')
 
+
+    def _held_scenario(self):
+        # active hold needing repair (illegitimate removal by WISE)
+        self.scenario({
+            'labels': {'3': []},
+            'events': {'3': [[ev('labeled', 'do-not-automerge', *ECHO, '2026-10-25T01:00:00Z'),
+                              ev('unlabeled', 'do-not-automerge', *WISE, '2026-10-25T02:00:00Z')]]},
+        })
+
+    def test_disarm_unconfirmed_state_red_job(self):
+        # armed and the disable mutation is refused; state read still says
+        # armed -> critical failure (fleet contract: fail closed on state)
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       'armed': True,
+                       'fail': {'pr_merge': {'rc': 1, 'stderr': 'Resource not accessible by integration'}}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 3)
+        self.assertIn('auto-merge state after disarm', p.stdout)
+
+    def test_disarm_state_unreadable_red_job(self):
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       'fail': {'pr_view': {'rc': 1, 'stderr': 'boom 500'}}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 3)
+        self.assertIn('unreadable', p.stdout)
+
+    def test_disarm_not_armed_is_benign(self):
+        # disable attempt errors with "not enabled" but the state read says
+        # off -> success, no red job (the fleet's own already-off case)
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)), 'armed': False})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+
+    def test_owned_patch_failure_posts_fresh_and_red_job(self):
+        sha = 'deadbeef' * 5
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       'check_runs': {sha: [{'id': 555, 'app': {'slug': 'github-actions'}}]},
+                       'fail': {'patch/555': {'rc': 1, 'stderr': 'boom 500'}}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 3)
+        posts = [c for c in self.calls() if 'POST' in c['argv']
+                 and any(a.endswith('/check-runs') for a in c['argv'])]
+        self.assertEqual(len(posts), 1)  # fresh owned run carries the state
+        self.assertEqual(json.loads(posts[0]['stdin'])['conclusion'], 'success')
+
+    def test_check_post_failure_red_job(self):
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       'fail': {'check-runs': {'rc': 1, 'stderr': 'boom 500'}}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 3)
+        self.assertIn('failed to create merge-gate check run', p.stdout)
+
+    def test_checkruns_get_failure_still_posts_and_red_job(self):
+        sha = 'deadbeef' * 5
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       'fail': {f'sha-checks/{sha}': {'rc': 1, 'stderr': 'boom 500'}}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 3)
+        self.assertIn('could not list merge-gate runs', p.stdout)
+        posts = [c for c in self.calls() if 'POST' in c['argv']
+                 and any(a.endswith('/check-runs') for a in c['argv'])]
+        self.assertEqual(len(posts), 1)  # best-effort conclusion still published
+
+    def test_repair_label_post_failure_red_job(self):
+        self._held_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       'fail': {'labels-post/3': {'rc': 1, 'stderr': 'boom 500'}}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 3)
+        self.assertIn('failed to re-apply label', p.stdout)
+
+    def test_comment_failure_red_job(self):
+        self._held_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       'fail': {'comment/3': {'rc': 1, 'stderr': 'boom 500'}}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 3)
+        self.assertIn('failed to comment', p.stdout)
+
 if __name__ == '__main__':
     unittest.main()
