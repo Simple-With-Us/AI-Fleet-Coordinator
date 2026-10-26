@@ -1278,9 +1278,10 @@ export async function gbBearerMismatch(store, identity, configured, now = Date.n
  */
 export const GB_MISMATCH_FLUSH_MS = 60_000;
 
-/** The per-instance buffer a gate holds:  pending deltas + the last flush. */
+/** The per-instance buffer a gate holds:  pending deltas, the last flush,
+ * the configured set to prune with, and the in-flight flush guard. */
 export function gbMismatchBuffer() {
-  return { pending: new Map(), lastFlush: 0, configured: new Set() };
+  return { pending: new Map(), lastFlush: 0, configured: new Set(), flushing: false };
 }
 
 /**
@@ -1298,8 +1299,41 @@ export async function gbMismatchCount(store, buffer, identity, configured, now =
   row.last_at = ts;
   buffer.pending.set(identity, row);
   if (buffer.lastFlush !== 0 && ts - buffer.lastFlush < flushMs) return false;
-  await gbMismatchFlush(store, buffer, configured, ts);
-  return true;
+  return gbMismatchFlushGuarded(store, buffer, ts);
+}
+
+/**
+ * Flush under the in-memory guard.  lastFlush advances only AFTER the
+ * transaction resolves, so two calls racing a cold start (the DO input gate
+ * serializes each synchronous section but awaits interleave) must not both
+ * write:  the first sets buffer.flushing in its synchronous section and the
+ * second sees it and keeps buffering.  Exactly one write per flush window
+ * per instance, demonstrated by the overlapping-calls unit test.
+ */
+export async function gbMismatchFlushGuarded(store, buffer, now = Date.now()) {
+  if (buffer.flushing || buffer.pending.size === 0) return false;
+  buffer.flushing = true;
+  try {
+    return await gbMismatchFlush(store, buffer, buffer.configured, now).then(() => true);
+  } finally {
+    buffer.flushing = false;
+  }
+}
+
+/**
+ * The alarm time that guarantees a buffered tail persists within flushMs of
+ * the last flush, or null when no (re)schedule is needed.  An EXISTING
+ * earlier alarm (e.g. the wa sweep's 1s busy chain) already covers the
+ * buffer - alarm() flushes it first - so it must not be pushed later;  an
+ * existing LATER alarm (the sweep's hourly idle) must be pulled earlier to
+ * keep the minute guarantee.  A cold instance with a flush in flight
+ * (lastFlush 0) asks for now, so a failed cold flush retries immediately.
+ */
+export function gbMismatchAlarmDeadline(buffer, existingAlarm, now = Date.now(), flushMs = GB_MISMATCH_FLUSH_MS) {
+  if (buffer.pending.size === 0) return null;
+  const deadline = buffer.lastFlush === 0 ? now : buffer.lastFlush + flushMs;
+  if (existingAlarm !== null && existingAlarm <= deadline) return null;
+  return deadline;
 }
 
 /**

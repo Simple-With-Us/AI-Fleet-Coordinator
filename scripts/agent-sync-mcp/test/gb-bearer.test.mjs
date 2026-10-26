@@ -524,3 +524,38 @@ test("the flush applies the configured-set prune and keeps last_at monotonic", a
   assert.equal(map.JET.count, 3);
   assert.equal(map.JET.last_at, 900_000, "last_at stays monotonic");
 });
+
+test("gbMismatchAlarmDeadline pulls a later alarm in, leaves an earlier one, skips when empty", async () => {
+  const buf = S.gbMismatchBuffer();
+  assert.equal(S.gbMismatchAlarmDeadline(buf, null, 1_000_000), null, "nothing pending: no alarm work");
+  await S.gbMismatchCount(S.memoryStore(), buf, "JET", new Set(["JET"]), 1_000_000); // cold flush: lastFlush=1_000_000
+  await S.gbMismatchCount(S.memoryStore(), buf, "JET", new Set(["JET"]), 1_000_001); // buffered
+  const deadline = 1_000_000 + S.GB_MISMATCH_FLUSH_MS;
+  assert.equal(S.gbMismatchAlarmDeadline(buf, null, 1_000_002), deadline, "no alarm pending: schedule the deadline");
+  assert.equal(S.gbMismatchAlarmDeadline(buf, deadline - 1000, 1_000_002), null, "an earlier existing alarm covers the tail");
+  assert.equal(S.gbMismatchAlarmDeadline(buf, deadline + 3_600_000, 1_000_002), deadline, "the wa sweep's idle hour is pulled to the deadline");
+  const cold = S.gbMismatchBuffer();
+  cold.pending.set("JET", { count: 1, last_at: 5 });
+  assert.equal(S.gbMismatchAlarmDeadline(cold, null, 2_000_000), 2_000_000, "cold with a failed first flush: retry now");
+});
+
+test("overlapping cold calls produce exactly one storage write (no assumed serialization)", async () => {
+  // A deferred transaction gate lets two calls interleave their awaits the
+  // way the DO input gate does:  each synchronous section is atomic, but the
+  // awaits overlap.  The in-memory guard must collapse them to ONE write.
+  const store = S.memoryStore();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const realTxn = store.transaction;
+  let txnCalls = 0;
+  store.transaction = (cb) => { txnCalls += 1; return gate.then(() => realTxn(cb)); };
+  const buf = S.gbMismatchBuffer();
+  const seats = new Set(["JET"]);
+  const a = S.gbMismatchCount(store, buf, "JET", seats, 1_000_000);
+  const b = S.gbMismatchCount(store, buf, "JET", seats, 1_000_001);
+  release();
+  const [flushedA, flushedB] = await Promise.all([a, b]);
+  assert.equal(txnCalls, 1, "exactly one transaction ran");
+  assert.equal((await S.gbBearerMismatches(store)).JET.count, 2, "both increments landed in the one flush");
+  assert.equal([flushedA, flushedB].filter(Boolean).length, 1, "one call flushed, the other buffered through it");
+});

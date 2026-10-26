@@ -28,7 +28,7 @@ export class SeatGate extends DurableObject {
     // A mismatch flush the counter buffered since the last write (best
     // effort:  a failed flush keeps the buffer for the next alarm).
     if (this._mmBuf?.pending.size) {
-      try { await state.gbMismatchFlush(this.store, this._mmBuf, this._mmBuf.configured); } catch { /* retried on the next alarm. */ }
+      try { await state.gbMismatchFlushGuarded(this.store, this._mmBuf); } catch { /* the buffer keeps the deltas for the next alarm or call. */ }
     }
     const more = await wa.sweep(this.store);
     await this.store.setAlarm(Date.now() + (more ? 1000 : 3600000));
@@ -181,8 +181,14 @@ export class SeatGate extends DurableObject {
   // one probe and then silence - persists within the interval;  an existing
   // alarm (the wa sweep's) covers it without a second scheduling write.
   async gbBearerMismatch(identity, configured) {
-    const flushed = await state.gbMismatchCount(this.store, (this._mmBuf ??= state.gbMismatchBuffer()), identity, configured);
-    if (!flushed && await this.store.getAlarm() === null) await this.store.setAlarm(Date.now() + state.GB_MISMATCH_FLUSH_MS);
+    const buf = (this._mmBuf ??= state.gbMismatchBuffer());
+    const flushed = await state.gbMismatchCount(this.store, buf, identity, configured);
+    if (!flushed) {
+      // Earlier-of semantics:  an existing earlier alarm covers the tail;
+      // a later one (the wa sweep's idle hour) is pulled to the deadline.
+      const setAt = state.gbMismatchAlarmDeadline(buf, await this.store.getAlarm());
+      if (setAt !== null) await this.store.setAlarm(setAt);
+    }
     return flushed;
   }
 
