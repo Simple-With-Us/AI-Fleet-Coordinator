@@ -198,6 +198,30 @@ if [[ "$SKIP_PUSH" -eq 1 ]]; then
   exit 0
 fi
 
+# Nothing to publish:  the remote already carries this version.  A pull
+# request for an unchanged manifest is noise, and the fleet's merge queue is
+# small.  The build is part of the comparison when one was passed, because a
+# ship that re-records the same marketing version with a NEW build is a real
+# change:  the version a tester installs is the build, not the label.
+#
+# This check runs BEFORE the credential is resolved.  A ship that has nothing
+# to publish must not need a token, and it must not reach the network at all;
+# a run that only re-records the version already on main leaves no pull
+# request behind and says so.
+read -r REMOTE_VERSION REMOTE_BUILD < <(python3 - "$BASE_JSON" "$BUNDLE_ID" <<'PY'
+import json, sys
+path, bundle = sys.argv[1:3]
+with open(path, "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+entry = (data.get("apps") or {}).get(bundle) or {}
+print(entry.get("marketingVersion") or "", entry.get("build") or "")
+PY
+)
+if [[ "$REMOTE_VERSION" == "$VERSION" && ( -z "$BUILD" || "$REMOTE_BUILD" == "$BUILD" ) ]]; then
+  echo "version-manifest: ${BUNDLE_ID} ${VERSION}${BUILD:+ build ${BUILD}} is already recorded"
+  exit 0
+fi
+
 # The credential is resolved before any API call, so a run that cannot
 # possibly publish says why, instead of failing later on an authorization
 # error that reads like a branch rule.
@@ -210,22 +234,6 @@ fi
 if ! command -v gh >/dev/null 2>&1; then
   echo "gh not installed; local manifest only" >&2
   exit 1
-fi
-# Nothing to publish:  the remote already carries this version.  A pull
-# request for an unchanged manifest is noise, and the fleet's merge queue is
-# small.
-REMOTE_VERSION="$(python3 - "$BASE_JSON" "$BUNDLE_ID" <<'PY'
-import json, sys
-path, bundle = sys.argv[1:3]
-with open(path, "r", encoding="utf-8") as fh:
-    data = json.load(fh)
-entry = (data.get("apps") or {}).get(bundle) or {}
-print(entry.get("marketingVersion") or "")
-PY
-)"
-if [[ "$REMOTE_VERSION" == "$VERSION" && -z "$BUILD" ]]; then
-  echo "version-manifest: ${BUNDLE_ID} ${VERSION} is already the recorded version"
-  exit 0
 fi
 
 PR_BRANCH="${PR_BRANCH_PREFIX}/$(printf '%s' "$BUNDLE_ID" | tr -c 'A-Za-z0-9._-' '-')"
