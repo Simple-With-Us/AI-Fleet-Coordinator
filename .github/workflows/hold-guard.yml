@@ -1,0 +1,75 @@
+name: Hold guard
+# Thin caller: ALL logic lives in scripts/hold-guard/guard_run.sh (checked
+# out from the BASE branch below - reviewed code, never PR-head code) so the
+# integration tests execute the same artifact that ships.
+#
+# Enforced: a hold label is released only by the identity that set it
+# (timeline ownership rule; unauthorized removals are re-applied and
+# reported; the repair never steals ownership).  Publishes the `merge-gate`
+# check: success iff no active holds.
+#
+# Stated limits (not bugs, not fail-closed claims):
+#   - Enforcement is ASYNCHRONOUS.  A hold placed while a merge is already
+#     in GitHub's auto-merge pipeline can complete before this run's disarm
+#     lands; a previously-green merge-gate on an unchanged head SHA stays
+#     green until this run rewrites it.  The window is Actions scheduling
+#     latency; wiring merge-gate as a required check narrows the window and
+#     gates manual merges at steady state but does not remove the window.
+#   - merge-gate written by github-actions[bot] is forgeable by a same-repo
+#     workflow author with checks: write; binding the required check to a
+#     dedicated App (settings change) narrows that to the App's key holders.
+# Error contract: every critical READ error (evaluation, fresh-state
+# fence, check-run listing) is settled before the check payload is built
+# and forces a FAILURE conclusion - a degraded guard never publishes
+# green.  Every critical failure of any kind also makes this job RED.
+# When API writes themselves fail, no red check can be forced onto the PR -
+# the red job + error notices are the signal (docs/hold-guard-rollout.md).
+on:
+  # merge_group deliberately ABSENT in slice 1: queue refs are built from
+  # base + PR heads, so the workflow file on a queue ref is not
+  # default-branch-only trusted code.  None of the four target repos has a
+  # merge queue (live ruleset read 2026-10-25); a safe queue design is a
+  # future slice (docs/hold-guard-rollout.md).
+  pull_request_target:
+    # auto_merge_enabled included (Kody r4373585289): an auto-merge armed
+    # after this workflow's latest run would otherwise stay armed until an
+    # unrelated label/synchronize event; this type re-fires the disarm at
+    # the arming moment (remaining window: Actions scheduling latency).
+    types: [opened, labeled, unlabeled, synchronize, ready_for_review, auto_merge_enabled]
+
+permissions:
+  contents: read
+  pull-requests: write   # disarm auto-merge
+  issues: write          # re-apply labels, comment
+  checks: write          # merge-gate check run
+
+concurrency:
+  group: hold-guard-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: false   # never drop a disarm/re-apply behind a newer run
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout hold-guard from default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7 (SHA-pinned 2026-10-25)
+        with:
+          # ALWAYS the default branch.  pull_request_target runs the workflow
+          # file from the default branch of the base repository (docs:
+          # events-that-trigger-workflows#pull_request_target) - and the
+          # scripts it executes must come from the same trusted ref.  A PR's
+          # base branch is NOT trusted: any repo writer can create a branch
+          # with doctored scripts and target a PR at it.
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/hold-guard
+          fetch-depth: 1
+
+      - name: Run hold guard
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: bash scripts/hold-guard/guard_run.sh

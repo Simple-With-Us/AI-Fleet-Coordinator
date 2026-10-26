@@ -99,6 +99,14 @@ jobs:
     - name: Lane doctor and tmp guard tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_lanes/tests -t . -v
+    # hold-guard (Kody r4373587808 on #964):  unit, integration (the shipped
+    # shell against a fake gh) and workflow-static suites.  Unwired tests are
+    # decoration:  regressions would ship under a green CI.  PyYAML is needed
+    # by test_workflow_static.py.
+    - name: hold-guard tests
+      run: |
+        pip install PyYAML
+        cd scripts/hold-guard && python3 -m unittest discover -s . -t . -v
     # pr-sweep (docs/PR-SWEEP.md):  a fake gh, fake agents and a fake lane tool, so nothing reaches GitHub or runs
     # an agent;  includes the check that no adapter, skill or doc carries a copy of a rule from rules.md.
     - name: pr-sweep tests
