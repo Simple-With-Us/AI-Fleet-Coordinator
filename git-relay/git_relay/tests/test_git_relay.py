@@ -697,7 +697,7 @@ class TestAppActions(unittest.TestCase):
 
     def test_comment_pr_uses_only_pull_request_permission(self):
         # A PR-only ceiling is enough, even though GitHub's comment endpoint
-        # uses /issues/:number/comments. No Issues permission is required.
+        # uses /issues/:number/comments.  No Issues permission is required.
         with tempfile.TemporaryDirectory() as tmp:
             relay = self._relay(tmp)
             relay.policy = SeatPolicy(
