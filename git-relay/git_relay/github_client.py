@@ -23,7 +23,7 @@ MAX_DISPATCH_INPUTS = 32
 MAX_DISPATCH_INPUT_VALUE = 1024
 
 
-# Never retain arbitrary upstream text. Request IDs are GitHub's bounded
+# Never retain arbitrary upstream text.  Request IDs are GitHub's bounded
 # hexadecimal correlation IDs; permission metadata is parsed, not copied.
 _DIAGNOSTIC_PERMISSIONS = frozenset(
     {
@@ -50,7 +50,7 @@ _ERROR_CATEGORIES = {
 def safe_error_diagnostics(headers=None, message=None):
     """Capture only bounded, validated metadata and fixed categories.
 
-    Unknown/hostile bodies cannot become a diagnostic string. This does not
+    Unknown/hostile bodies cannot become a diagnostic string.  This does not
     change retry classification, request permissions, or request behavior.
     """
     category = "unknown"
@@ -70,7 +70,7 @@ def safe_error_diagnostics(headers=None, message=None):
     if isinstance(raw, str) and 0 < len(raw) <= 512 and all(32 <= ord(char) < 127 for char in raw):
         groups = raw.split(";")
         sets = []
-        # Reject the whole header on an anomaly. Partial alternatives could
+        # Reject the whole header on an anomaly.  Partial alternatives could
         # misrepresent upstream requirements; unknown metadata is safer.
         if len(groups) <= 4:
             for group in groups:
