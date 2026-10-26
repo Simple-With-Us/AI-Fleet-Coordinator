@@ -15,6 +15,14 @@ import * as state from "./seat-state.js";
 import * as wa from "./wa/state.js";
 
 export class SeatGate extends DurableObject {
+  // AFC-545: the WhatsApp send switch and the owner binding are Worker
+  // bindings, and the Durable Object is the one place both the tool path and
+  // the signed outbox route can read them the same way.
+  constructor(ctx, env, ...rest) {
+    super(ctx, env, ...rest);
+    this.env = env;
+  }
+
   get store() {
     return this.ctx.storage;
   }
@@ -50,6 +58,13 @@ export class SeatGate extends DurableObject {
     }
   }
   waRead(options) { return wa.read(this.store, options); }
+  // AFC-545: the outbound leg.  The send switch and the binding come from
+  // the Worker bindings, so the tool path and the signed outbox route always
+  // agree on them.
+  waReply(options) { return wa.reply(this.store, { ...options, sendEnabled: wa.sendEnabled(this.env), binding: wa.bindingIdentity(this.env) }); }
+  waSendStatus(options) { return wa.sendStatus(this.store, { ...options, sendEnabled: wa.sendEnabled(this.env) }); }
+  waOutboxClaim(options) { return wa.outboxClaim(this.store, { ...options, sendEnabled: wa.sendEnabled(this.env), binding: wa.bindingIdentity(this.env) }); }
+  waOutboxResult(options) { return wa.outboxResult(this.store, { ...options, binding: wa.bindingIdentity(this.env) }); }
   async waOperator(options) {
     const result = await wa.operator(this.store, options);
     if (result.ok && await this.store.getAlarm() === null) await this.store.setAlarm(Date.now() + 3600000);

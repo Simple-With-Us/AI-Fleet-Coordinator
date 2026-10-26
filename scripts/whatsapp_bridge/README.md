@@ -11,6 +11,7 @@ The poller runs independently of Operator.  It sends signed batches to the Worke
 - `bridge.py`: standard-library sole long-poller, local flock, SQLite FULL synchronous offset, bounded schema validation, HMAC ingestion, exponential backoff and explicit processed-batch acknowledgments.  Offsets retain all signed 64 bits and advance only on an exact string match.  Startup uses offset 0 and the Worker's verified binding cutoff suppresses history.
 - `binding.py`: a supervised one-time-code plus Meta creator-check helper and temporary binding mode.  `python3 -m whatsapp_bridge.binding` temporarily owns the same poller lock, requires the long-running bridge to be stopped, and leaves the durable cursor unchanged.  Running its read-receipt check live requires action-time approval.
 - `operator_wake.py`: an explicit, content-free Operator doorbell with its own HMAC key and stable request UUID.  The Operator can call `python3 -m whatsapp_bridge.operator_wake <request-uuid>` from `scripts/` after its binding is approved.  Reusing the UUID is idempotent; there is no automatic retry loop.
+- `outbound.py`: the outbound leg of the reply work.  It pulls one queued reply from the Worker, sends it to the bound conversation, and records the outcome in the local write-ahead ledger.  It never resends: an unknown outcome stays unknown for good.
 - `../agent-sync-mcp/src/wa/`: authenticated ingestion, private read/ack tool, transactional 35-day replay tombstones, pending doorbells, content-free event delivery and body retention.
 
 ```sh
@@ -38,6 +39,23 @@ The Worker atomically stores each message, its dedupe tombstone and its pending 
 There is no new daily or hourly wake quota.  Meta's 30-day buffer, the callback's subscription expiry (24 hours by default in this connector), callback service limits, Worker resource/binding limits and deployment approval are real operational constraints.  A functioning bridge retries pending deliveries on its next poll; bridge downtime delays recovery.  No Worker cron or persistent service is installed by this change.
 
 This unit implements receiving, waking and reading.  It deliberately exposes no WhatsApp reply/send tool and performs no outbound message sends, so it cannot blindly retry an ambiguous outbound message.  The design's reply outbox, send ledger, media fetching and admin binding UI remain separate work under AFC-477.
+
+## The Outbound Leg
+
+AFC-545 implements the reply half of the plan, which Jay approved.  The reply has no recipient argument: the binding is the only conversation it can reach, and the bridge never guesses an address.
+
+- `whatsapp_reply(text, client_ref, reply_to_seq?, ack_through?)` queues one reply and returns its intent id and state.  It is idempotent on `client_ref`, and the id is hashed exactly as it arrives, so two ids that differ only in punctuation never share one bucket.  A repeat after a definite refusal makes a new attempt linked to the refused one.  A repeat after an unknown outcome is refused, and a new reply with the same text as an unknown reply is refused too.
+- `whatsapp_send_status(intent_id?, action?)` lists the recent replies and their states, and takes `release` or `cancel` on a held reply.  The state never carries the reply text.
+- Only a message `whatsapp_read` returned can be acknowledged, and a reply with a secret shape is refused with `secret_in_text` and the rule name.
+- The Worker holds the reply text until the reply is final, and keeps the send ledger for 35 days.  A held reply expires unsent after 24 hours.  A claim whose lease ends with no result is unknown for good.
+
+The bridge pulls one reply at a time from the signed outbox route, writes `claimed` and then `sending` to its own state with fsync before the POST, and records the outcome.  A restart finds `claimed` and queues the reply again, because the POST never started, and finds `sending` and marks the reply unknown, because the POST may have gone out.  The outcomes are the plan's table: a 2xx with a message id is `sent`, a 429 and a 503 with 131016 are retried within a cap of three and refused after it, any other 4xx is `refused` with its code, a 500 and a 503 without 131016 are unknown, and a connection that never opened goes back to the queue.  An unknown reply is never sent again, and there is no resend.
+
+While the SEND switch is off, the Worker's outbox hands out nothing, the queued replies are held, and a new reply is recorded as held.  A held reply is never sent automatically when the switch comes back on: Jet releases it or cancels it.  A decline from the bridge is a result, so a reply that never left the bridge is held and never unknown.
+
+The switch has two sources and both must say on: the Worker's `WHATSAPP_BRIDGE_SEND_ENABLED` binding and the bridge's own value from `/jet`.  A missing, stale or unreadable value counts as off.  The bridge's local `disabled` file stops the outbound leg as well as the poller.
+
+The reply text never reaches Zulip, and the raw WhatsApp ids stay in the bridge: the Worker only ever sees keyed hashes.
 
 ## Approved Deployment Scope (Pending Readiness)
 

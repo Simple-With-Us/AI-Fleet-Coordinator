@@ -19,6 +19,9 @@ POLL_NAMES = (
     "WA_AGENT_HASH_JET",
     "WA_SENDER_HASH_JET",
     "WHATSAPP_BRIDGE_ENABLED",
+    # AFC-545: the SEND switch, off by default.  A missing or stale value
+    # counts as off, so the bridge fails closed.
+    "WHATSAPP_BRIDGE_SEND_ENABLED",
 )
 BIND_NAMES = ("WHATSAPP_API_KEY", "WA_BRIDGE_HMAC_KEY_JET", "WA_STATE_DIRECTORY")
 OPERATOR_NAMES = ("WA_OPERATOR_HMAC_KEY_JET", "WA_WORKER_URL")
