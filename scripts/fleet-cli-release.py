@@ -312,10 +312,13 @@ def expand(candidate: str, home: Path) -> Path:
     """A path the host named, with `~` expanded against the given home.
 
     The home is the one the release runs under, and a test runs inside a throwaway
-    home, so a `~` never resolves against the real one.
+    home, so a `~` never resolves against the real one.  A `~user` spelling names
+    another account's home, and it is left exactly as it was named.
     """
     text = candidate.strip()
-    if text.startswith("~"):
+    if text == "~":
+        text = str(home)
+    elif text.startswith("~/"):
         text = str(home) + text[1:]
     return Path(text)
 
@@ -334,7 +337,7 @@ def host_root(home: Path, name: str) -> str:
     because the release payload ships no fleet_lanes module, and the two must
     agree.
     """
-    configured = os.environ.get(ENV_CODE_ROOT if name == "Code" else ENV_APPS_ROOT)
+    configured = (os.environ.get(ENV_CODE_ROOT if name == "Code" else ENV_APPS_ROOT) or "").strip()
     if configured:
         return str(expand(configured, home))
     local = home / name

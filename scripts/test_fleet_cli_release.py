@@ -417,6 +417,27 @@ class ReleaseTests(unittest.TestCase):
         for line in roots:
             self.assertIn(str(self.home), line)
 
+    def test_a_whitespace_only_root_is_not_a_relative_path(self) -> None:
+        # A value of spaces must not become "." and point the lane tools at the
+        # caller's working directory.
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "   "}):
+            self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertNotIn("os.environ.setdefault('FLEET_CODE_ROOT', '.')", text)
+        self.assertIn(
+            f"os.environ.setdefault('FLEET_CODE_ROOT', {str(self.home / 'Code')!r})", text
+        )
+
+    def test_a_tilde_user_root_is_left_alone(self) -> None:
+        # A ~user spelling names another account's home:  the wrapper carries it as it
+        # was named, and the tool that reads it resolves it.
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "~otheruser/Code"}):
+            self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertIn(
+            "os.environ.setdefault('FLEET_CODE_ROOT', '~otheruser/Code')", text
+        )
+
     def old_bundle(self):
         """A release as installed before AFC-331:  only the base files."""
         bundle = make_bundle("old")
