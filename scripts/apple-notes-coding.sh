@@ -288,7 +288,7 @@ if writes and E("_NL_LINKS_FILE"):
     try:
         with open(E("_NL_LINKS_FILE")) as fh:
             issues, prs = fh.read().split()
-        if "reformatted" not in entry:
+        if not entry.get("reformatted"):
             entry["reformatted"] = {}
         entry["reformatted"]["links"] = {"issues": int(issues), "prs": int(prs)}
     except (OSError, ValueError, TypeError, AttributeError):
@@ -1405,7 +1405,12 @@ forced_repo = _env("NOTES_LINKIFY_FORCE_REPO", "")
 workspace = _env("NOTES_LINEAR_WORKSPACE", "simple-with-us")
 keys_raw = _env("NOTES_LINEAR_TEAM_KEYS", "AFC,OPS,ST,CT,UM,CTS,DD,PS,AR,CL,BF,HH,C,CC,FL,SWU")
 keyset = set(k.strip() for k in keys_raw.split(",") if k.strip())
-ctx_chars = int(_env("NOTES_LINKIFY_CONTEXT_CHARS", "60") or 60)
+try:
+    ctx_chars = int(_env("NOTES_LINKIFY_CONTEXT_CHARS", "60") or 60)
+except ValueError:
+    #  A bad value must never cost the note its body:  the helper would exit with a traceback and
+    #  the linkified HTML would come back empty, so the body would be written blank.
+    ctx_chars = 60
 debug = _env("NOTES_LINKIFY_DEBUG", "")
 
 #  A repository that is not under the default owner.
@@ -1476,6 +1481,52 @@ TOKEN_TO_REPO = {
     "sim-idle-reaper": "AI-Fleet-Coordinator",
     "mac-process-watch": "AI-Fleet-Coordinator",
 }
+
+
+def _pairs(text):
+    """The KEY=value pairs in a comma separated list, as a dict."""
+    out = {}
+    for pair in text.split(","):
+        pair = pair.strip()
+        if "=" in pair:
+            key, value = pair.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and value:
+                out[key] = value
+    return out
+
+
+#  The maps can be overridden, so a test does not have to carry the names of the repositories of
+#  the fleet to prove that the resolution works.
+#    NOTES_LINKIFY_TEAM_REPOS=KEY=repo,KEY=repo+other
+#      KEY is a team key, and the names after it are the repositories that team works in.
+#    NOTES_LINKIFY_REPO_OWNERS=repo=owner
+#      A repository that does not live under the default owner.
+_team_overrides = _pairs(_env("NOTES_LINKIFY_TEAM_REPOS", ""))
+if _team_overrides:
+    TEAM_TO_REPO = dict(TEAM_TO_REPO)
+    TOKEN_TO_REPO = dict(TOKEN_TO_REPO)
+    _extra = {}
+    for _key, _value in _team_overrides.items():
+        _names = [n.strip() for n in _value.split("+") if n.strip()]
+        if not _names:
+            continue
+        _upper = _key.upper()
+        if _upper in TEAM_TO_REPO:
+            TEAM_TO_REPO[_upper] = _names[0]
+            if len(_names) > 1:
+                _extra[_upper] = _names[1:]
+        else:
+            TOKEN_TO_REPO[_key.lower()] = _names[0]
+    if _extra:
+        TEAM_EXTRA_REPOS = dict(TEAM_EXTRA_REPOS)
+        TEAM_EXTRA_REPOS.update(_extra)
+
+_owner_overrides = _pairs(_env("NOTES_LINKIFY_REPO_OWNERS", ""))
+if _owner_overrides:
+    REPO_OWNER = dict(REPO_OWNER)
+    REPO_OWNER.update(_owner_overrides)
 
 _counts = {"issues": 0, "prs": 0}
 _unresolved = []
@@ -1555,20 +1606,26 @@ def _gh_has_pr(repo, num):
     if gh:
         url = "repos/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/pulls/" + num
         try:
+            _timeout = float(_env("NOTES_LINKIFY_GH_TIMEOUT_S", "10") or 10)
+        except ValueError:
+            _timeout = 10.0
+        try:
             with tempfile.TemporaryFile() as err:
                 with open(os.devnull, "w") as devnull:
                     rc = subprocess.call(
-                        [gh, "api", "--silent", url], stdout=devnull, stderr=err
+                        [gh, "api", "--silent", url], stdout=devnull, stderr=err, timeout=_timeout
                     )
                 err.seek(0)
                 said = err.read().decode("utf-8", "replace")
             if rc == 0:
                 result = True
-            elif "Not Found" in said or "404" in said:
+            elif "HTTP 404" in said or ("Not Found" in said and re.search(r"\b404\b", said) is not None):
                 result = False
             else:
                 result = None
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired):
+            #  A gh that hangs must not hang the note save:  the timeout above ends it, and a gh
+            #  that cannot be run at all is the same answer, that the question was not answered.
             result = None
     _gh_cache[key] = result
     return result
@@ -1642,7 +1699,9 @@ def _resolve(pos, mentions, is_row, title_repo, num=""):
             if key:
                 return _team_repo(key, num)
     if soft_before and pos - soft_before[-1][1] <= 16:
-        near = [m for m in soft if pos - m[1] <= ctx_chars]
+        #  Only a mention that comes before the reference can describe it:  a team key further
+        #  down the block says nothing about what came before it.
+        near = [m for m in soft if 0 <= pos - m[1] <= ctx_chars]
         key = _soft_team(near or soft_before)
         if key:
             return _team_repo(key, num)
@@ -1652,7 +1711,13 @@ def _resolve(pos, mentions, is_row, title_repo, num=""):
     if len(hard_repos) == 1:
         return next(iter(hard_repos))
     soft_repos = set(m[2] for m in soft)
+    soft_keys = set(m[4] for m in soft)
     if not hard_repos and len(soft_repos) == 1:
+        if len(soft_keys) == 1:
+            #  One team, named a long way from the reference:  it is asked of GitHub which of the
+            #  repositories that team works in holds the number, exactly as the near and the row
+            #  paths do, so a team with several repositories is not decided by distance alone.
+            return _team_repo(next(iter(soft_keys)), num)
         return next(iter(soft_repos))
     if title_repo:
         return title_repo
@@ -1782,7 +1847,9 @@ def _process_unit(unit_html, is_row, title_repo):
                         repo = TEAM_TO_REPO.get(qual.upper())
                     if repo:
                         _counts["prs"] += 1
-                        edits.append((r, m.start(), m.end(), _a(_issue_url(repo, m.group("qnum")), qual + "#" + m.group("qnum"))))
+                        #  A pound sign names a pull request, so the link is the pull request and
+                        #  not the issue that shares its number.
+                        edits.append((r, m.start(), m.end(), _a(_pull_url(repo, m.group("qnum")), qual + "#" + m.group("qnum"))))
                         continue
                     if qual.upper() != "PR":
                         continue
@@ -1882,7 +1949,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
     main()
 '
 }

@@ -9,7 +9,7 @@ What is pinned here:
 
   a Linear issue identifier (OPS-1000) becomes a link to that issue in the fleet workspace;
   a pull request reference (PR #957) becomes a link to the pull request, and the text is normalised to the house form;
-  a qualified reference (AFC#957) links to the repository it names;
+  a qualified reference (AFC#957) links to the pull request it names in the repository it names;
   a list of pull requests (PRs #380, #386 and #389) becomes one link per number, and a file count that follows a
   list is not one of them;
   the repository a pull request belongs to is read from the block it sits in:  a repository named next to it, the
@@ -20,7 +20,8 @@ What is pinned here:
   an identifier that is not a Linear issue (SRV-S07) is left alone;
   code, a fenced block, a hand-written link and an identifier inside a URL are left exactly as they were;
   NOTES_LINKIFY=0 turns the whole step off;
-  the count of conversions reaches the action log.
+  the count of conversions reaches the action log, and it reaches it even when the date counts are missing;
+  a network error that only looks like a 404 is not a missing pull request:  the repository of the team is the answer.
 
 The script runs with `osascript`, `shortcuts`, `open`, `pgrep` and `sleep` stubbed on PATH, as in
 test_apple_notes_actions.py, so nothing reaches Notes.  The link assertions use the preview hook
@@ -41,7 +42,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from test_apple_notes_actions import (
+from test_apple_notes_actions import (  # noqa: E402  (the stubs live with the AFC-486 test)
     NOT_FOUND,
     NOTES,
     OPEN_STUB,
@@ -57,7 +58,8 @@ LINEAR = "https://linear.app/simple-with-us/issue/"
 
 #  A stand-in for the gh CLI, which the helper asks which repository holds a pull request.  It says
 #  every repository holds every pull request unless GH_STUB_MISSING names one that does not, or is
-#  the star for all of them.
+#  the star for all of them.  GH_STUB_ERROR makes it fail the way a broken network does, which is
+#  not the same thing as a pull request that is not there.
 GH_STUB = """#!/bin/sh
 url=""
 for arg in "$@"; do
@@ -65,6 +67,10 @@ for arg in "$@"; do
     repos/*) url="$arg" ;;
   esac
 done
+if [ -n "${GH_STUB_ERROR:-}" ]; then
+  printf '%s\\n' "$GH_STUB_ERROR" >&2
+  exit 1
+fi
 if [ "${GH_STUB_MISSING:-}" = "*" ]; then
   echo "gh: Not Found (HTTP 404)" >&2
   exit 1
@@ -76,6 +82,19 @@ case ",${GH_STUB_MISSING:-}," in
     ;;
 esac
 exit 0
+"""
+
+#  A stand-in for mktemp that cannot make the file the date counts are written to.  The helper then
+#  reads no date counts at all, and the action log has to keep the link counts anyway.
+MTEMP_STUB = """#!/bin/sh
+case "$1" in
+  *changes*) exit 1 ;;
+esac
+for p in /usr/bin/mktemp /bin/mktemp /usr/local/bin/mktemp; do
+  [ -x "$p" ] && exec "$p" "$@"
+done
+echo "mktemp: no usable copy" >&2
+exit 1
 """
 
 
@@ -252,6 +271,9 @@ class LinkifyTests(LinkifyTestCase):
         self.assertIn("notes: linkified:", p.stderr)
         self.assertIn("1 project reference", p.stderr)
         self.assertIn("1 pull request reference", p.stderr)
+        #  and it says it once:  a second pass over the same body would double the summary
+        self.assertEqual(p.stderr.count("notes: linkified:"), 1, p.stderr)
+        self.assertEqual(p.stderr.count("notes: left as text:"), 0, p.stderr)
 
     def test_the_count_of_conversions_reaches_the_action_log(self):
         p = self.run_script(
@@ -265,6 +287,36 @@ class LinkifyTests(LinkifyTestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         (line,) = self.log_lines()
         self.assertEqual(line["reformatted"]["links"], {"issues": 2, "prs": 1}, line["reformatted"])
+
+    def test_the_log_keeps_the_link_counts_when_the_date_counts_are_missing(self):
+        #  the file the date counts are written to could not be made, so the log has no dates to
+        #  record:  the link counts still belong in it
+        stub = self.bindir / "mktemp"
+        stub.write_text(MTEMP_STUB)
+        stub.chmod(0o700)
+        p = self.run_script(
+            "--update",
+            "--existing-only",
+            "--session",
+            SESSION,
+            NOTES[2]["title"],
+            "Filed as OPS-1000 and AFC-547 and shipped in PR #957.",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        (line,) = self.log_lines()
+        self.assertEqual(line["reformatted"]["links"], {"issues": 2, "prs": 1}, line["reformatted"])
+
+    def test_a_network_error_that_only_looks_like_a_404_is_not_a_missing_pull_request(self):
+        #  "pulls/1404" is not a 404:  GitHub was never asked, so the repository of the team is the
+        #  best answer available, and a reference is not lost to a number that merely looks like one
+        out = self.html(
+            "[AFC, MM] Notes",
+            "OPS-1000 in PR #957.",
+            GH_STUB_ERROR="gh: could not resolve host (pulls/1404)",
+        )
+        self.assertIn(
+            '<a href="https://github.com/jaywedgeworth22/Fleet-OPS/pull/957">PR #957</a>', out
+        )
 
     def test_a_repository_named_next_to_the_reference_picks_the_repository(self):
         #  the title says Socratic-Trade and the reference names AI-Fleet-Coordinator
@@ -285,14 +337,27 @@ class LinkifyTests(LinkifyTestCase):
         )
 
     def test_a_qualified_reference_links_to_the_repository_it_names(self):
+        #  a pound sign names a pull request, so the link is the pull request
         out = self.html("[AFC, MM] Notes", "Fixed by BotFleet#1282 and AFC#957.")
         self.assertIn(
-            '<a href="https://github.com/Simple-With-Us/BotFleet/issues/1282">BotFleet#1282</a>',
+            '<a href="https://github.com/Simple-With-Us/BotFleet/pull/1282">BotFleet#1282</a>',
             out,
         )
         self.assertIn(
-            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/issues/957">AFC#957</a>',
+            '<a href="https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957">AFC#957</a>',
             out,
+        )
+
+    def test_the_repositories_of_the_teams_can_be_overridden(self):
+        #  a test does not have to carry the names of the repositories of the fleet
+        out = self.html(
+            "[AFC, MM] Notes",
+            "OPS-1000 in PR #957.",
+            NOTES_LINKIFY_TEAM_REPOS="OPS=Some-Other-Repo",
+            NOTES_LINKIFY_REPO_OWNERS="Some-Other-Repo=someone-else",
+        )
+        self.assertIn(
+            '<a href="https://github.com/someone-else/Some-Other-Repo/pull/957">PR #957</a>', out
         )
 
     def test_a_team_key_names_the_repository_of_that_team(self):
