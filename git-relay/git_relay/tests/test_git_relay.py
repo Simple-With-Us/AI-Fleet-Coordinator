@@ -689,36 +689,60 @@ class TestAppActions(unittest.TestCase):
             )
             self.assertEqual(status, 200)
             self.assertEqual(
-                relay.app_minter.calls, [("swu-echo", "example/x", {"issues": "write"})]
+                relay.app_minter.calls, [("swu-echo", "example/x", {"pull_requests": "write"})]
+            )
+            self.assertEqual(
+                relay.client.calls, [("comment_pr", "example/x", 1, "b", "MINTED-FAKE-TOKEN")]
+            )
+
+    def test_comment_pr_uses_only_pull_request_permission(self):
+        # A PR-only ceiling is enough, even though GitHub's comment endpoint
+        # uses /issues/:number/comments. No Issues permission is required.
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            relay.policy = SeatPolicy(json.dumps({
+                "swu-echo": {
+                    "token": SEAT_TOKEN,
+                    "actions": ["comment_pr"],
+                    "repos": ["example/*"],
+                    "app_slug": "swu-echo",
+                    "mint_permissions": {"pull_requests": "write"},
+                }
+            }))
+            status, _ = relay.handle(
+                SEAT_TOKEN, "comment_pr", {"repo": "example/x", "number": 1, "body": "b"}
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                relay.app_minter.calls, [("swu-echo", "example/x", {"pull_requests": "write"})]
             )
             self.assertEqual(
                 relay.client.calls, [("comment_pr", "example/x", 1, "b", "MINTED-FAKE-TOKEN")]
             )
 
     def test_comment_pr_beyond_ceiling_is_denied(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            relay = Relay(
-                SeatPolicy(
-                    json.dumps(
-                        {
-                            "swu-echo": {
-                                "token": SEAT_TOKEN,
-                                "actions": ["comment_pr"],
-                                "repos": ["example/*"],
-                                "app_slug": "swu-echo",
-                                "mint_permissions": {"pull_requests": "write"},
-                            }
+        for ceiling in ({"issues": "write"}, {"pull_requests": "read"}, {"contents": "read"}):
+            with self.subTest(ceiling=ceiling), tempfile.TemporaryDirectory() as tmp:
+                relay = Relay(
+                    SeatPolicy(json.dumps({
+                        "swu-echo": {
+                            "token": SEAT_TOKEN,
+                            "actions": ["comment_pr"],
+                            "repos": ["example/*"],
+                            "app_slug": "swu-echo",
+                            "mint_permissions": ceiling,
                         }
-                    )
-                ),
-                StubClient(),
-                AuditLog(os.path.join(tmp, "a.jsonl")),
-                app_minter=FakeMinter(),
-            )
-            status, _ = relay.handle(
-                SEAT_TOKEN, "comment_pr", {"repo": "example/x", "number": 1, "body": "b"}
-            )
-            self.assertEqual(status, 403)
+                    })),
+                    StubClient(),
+                    AuditLog(os.path.join(tmp, "a.jsonl")),
+                    app_minter=FakeMinter(),
+                )
+                status, _ = relay.handle(
+                    SEAT_TOKEN, "comment_pr", {"repo": "example/x", "number": 1, "body": "b"}
+                )
+                self.assertEqual(status, 403)
+                self.assertEqual(relay.app_minter.calls, [])
+                self.assertEqual(relay.client.calls, [])
 
 
 class TestMinter(unittest.TestCase):

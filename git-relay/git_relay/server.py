@@ -205,11 +205,11 @@ ACTION_REQUIRED_PERMISSIONS = {
     "merge_pr": {"contents": "write", "pull_requests": "write"},
     "workflow_dispatch": {"actions": "write"},
     "resolve_thread": {"pull_requests": "write"},
-    # A PR edit and a review-comment reply write the pull;  a PR conversation
-    # comment writes the issue side of the same number.
+    # Use the PR-specific permission for these PR-only actions, including
+    # conversation comments whose GitHub endpoint uses /issues/:number.
     "edit_pr": {"pull_requests": "write"},
     "reply_thread": {"pull_requests": "write"},
-    "comment_pr": {"issues": "write"},
+    "comment_pr": {"pull_requests": "write"},
 }
 
 
