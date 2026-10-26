@@ -20,21 +20,17 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "::group::hold-guard run (event=$EVENT_NAME repo=$REPO sha=$HEAD_SHA pr=${PR:-none})"
 
 # 1. Disarm any armed auto-merge FIRST (disarming never merges).
-if [ "$EVENT_NAME" = "pull_request_target" ] && [ -n "$PR" ]; then
-  gh pr merge --auto --disable "$PR_URL" || true
-fi
-
-# 2. Which PRs to evaluate.
-prs=()
+#    Real gh contract (cli.github.com/manual/gh_pr_merge): `gh pr merge
+#    --disable-auto <pr>`.  Exits nonzero when no auto-merge is armed -
+#    tolerated, but logged, never silently assumed.
 if [ -n "$PR" ]; then
-  prs=("$PR")
-else
-  # merge_group: map the group head SHA back to its PRs
-  mapfile -t prs < <(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" --jq '.[].number')
+  gh pr merge --disable-auto "$PR_URL" 2>&1 | head -3 || true
 fi
-if [ "${#prs[@]}" -eq 0 ]; then
-  echo "::notice::no PRs resolved for $HEAD_SHA - nothing to evaluate"
+if [ -z "$PR" ]; then
+  echo "::error::PR is required (merge_group support removed in slice 1)"
+  exit 3
 fi
+prs=("$PR")
 
 # 3. Evaluate each PR (fail-closed per PR on error).
 any_error=0
@@ -69,7 +65,29 @@ printf '%s' "$combined" | jq -c '.[] | select((.illegitimate_removals // []) | l
     || echo "::error::failed to comment on #$pr"
 done
 
-# 5. Publish the merge-gate conclusion (always attempted).
+# 5. Fresh-state fence: re-evaluate IMMEDIATELY before publishing so the
+#    written conclusion reflects state at write time (seconds), not the
+#    start of this run.  A still-later change is covered by the next queued
+#    run; per-run freshness is the strongest asynchronous guarantee here.
+fresh='[]'
+fresh_error=0
+for pr in "${prs[@]}"; do
+  if fout="$(python3 "$DIR/hold_guard.py" "$REPO" "$pr")"; then
+    fresh="$(jq -s '.[0] + [ .[1].holds[]? | . + {pr: $pr} ]' --arg pr "$pr" <(echo "$fresh") <(echo "$fout"))"
+  else
+    fresh_error=1
+  fi
+done
+if [ "$fresh_error" -eq 1 ]; then
+  any_error=1
+elif [ "$(printf '%s' "$fresh" | jq 'length')" -eq 0 ]; then
+  any_held=0
+else
+  any_held=1
+fi
+echo "$fresh" > /tmp/hold-guard-combined.json
+
+# 6. Publish the merge-gate conclusion (always attempted).
 #    GitHub's selection among multiple same-name check runs on one SHA is
 #    not doc-verified, so this does NOT rely on "latest run wins": every
 #    existing merge-gate run on this SHA created by our identity is PATCHED
@@ -88,19 +106,20 @@ else
 fi
 payload="$(jq -n --arg sha "$HEAD_SHA" --arg c "$conclusion" --arg t "$title" --arg s "$summary" \
   '{name: "merge-gate", head_sha: $sha, status: "completed", conclusion: $c, output: {title: $t, summary: $s}}')"
-existing="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=merge-gate" --jq '.check_runs[].id' 2>/dev/null || true)"
-patch_fail=/tmp/hold-guard-patch-fail
-: > "$patch_fail"
-printf '%s\n' "$existing" | while IFS= read -r run_id; do
+# Only runs owned by OUR app identity are eligible to PATCH (no foreign
+# probing: a 403 we never trigger is a mutation we never attempt).
+# GUARD_APP_SLUG defaults to github-actions (GITHUB_TOKEN); slice 4 sets it
+# to the guard App's slug when the dedicated identity lands.
+: "${GUARD_APP_SLUG:=github-actions}"
+owned="$(gh api "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=merge-gate" \
+  | jq -r --arg s "$GUARD_APP_SLUG" '.check_runs[] | select(.app.slug == $s) | .id')"
+printf '%s\n' "$owned" | while IFS= read -r run_id; do
   [ -z "$run_id" ] && continue
-  if ! printf '%s' "$payload" | gh api "repos/$REPO/check-runs/$run_id" -X PATCH --input - >/dev/null 2>&1; then
-    echo fail >> "$patch_fail"
-    echo "::notice::merge-gate run $run_id not patchable by this identity (foreign app?) - left as-is"
-  fi
+  printf '%s' "$payload" | gh api "repos/$REPO/check-runs/$run_id" -X PATCH --input - >/dev/null \
+    || echo "::error::failed to patch owned merge-gate run $run_id"
 done
-# POST a fresh run when none existed OR any existing run rejected our PATCH,
-# so our identity always carries the current conclusion on this SHA.
-if [ -z "$(printf '%s' "$existing" | tr -d '[:space:]')" ] || [ -s "$patch_fail" ]; then
+# POST only when we own no run on this SHA - foreign runs stay untouched.
+if [ -z "$(printf '%s' "$owned" | tr -d '[:space:]')" ]; then
   printf '%s' "$payload" | gh api "repos/$REPO/check-runs" -X POST --input - >/dev/null \
     || echo "::error::failed to create merge-gate check run"
 fi

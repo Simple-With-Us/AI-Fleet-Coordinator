@@ -28,7 +28,11 @@ Exit: 0 evaluated (held or clear); 3 evaluation error.
 """
 import json, re, subprocess, sys
 
-HOLD_RE = re.compile(r'^(do-not-automerge(:.*)?|needs-human-merge)$')
+# Grounded hold families: the fleet's documented do-not-automerge /
+# needs-human-merge, plus the literal do-not-merge family Jay named.
+# Per-setter variants carry a :<login> suffix (display hint only).
+HOLD_RE = re.compile(
+    r'^(do-not-merge(:.*)?|do-not-automerge(:.*)?|needs-human-merge)$')
 
 
 def gh_json(args):

@@ -36,6 +36,15 @@ if argv and argv[0] == 'api':
         out({})
     if path.endswith('/events'):
         n = parts[4]; fail(f'events/{n}')
+        seq = scenario.get('events_seq', {}).get(n)
+        if seq:
+            # position persists across invocations in a side file
+            posfile = os.environ['FAKE_GH_SCENARIO'] + f'.seqpos-{n}'
+            pos = 0
+            if os.path.exists(posfile):
+                pos = int(open(posfile).read() or 0)
+            open(posfile, 'w').write(str(pos + 1))
+            out(seq[min(pos, len(seq) - 1)])
         out(scenario.get('events', {}).get(n, [[]]))
     if '/commits/' in path and path.endswith('/pulls'):
         sha = parts[4]; fail(f'pulls/{sha}')
@@ -48,10 +57,6 @@ if argv and argv[0] == 'api':
     if '/commits/' in path and 'check-runs' in path and '-X' not in argv:
         sha = parts[4]; fail(f'sha-checks/{sha}')
         runs = scenario.get('check_runs', {}).get(sha, [])
-        if '--jq' in argv and argv[argv.index('--jq') + 1] == '.check_runs[].id':
-            for r in runs:
-                print(r['id'])
-            sys.exit(0)
         out({'check_runs': runs})
     if '/check-runs/' in path and '-X' in argv and 'PATCH' in argv:
         run_id = int(path.split('/check-runs/')[1])
@@ -69,9 +74,21 @@ if argv and argv[0] == 'api':
         out({'id': 1001})
     out({})
 if argv and argv[0] == 'pr':
-    # `gh pr merge --auto --disable URL` exits 1 when nothing armed; scenario
-    # controls via fail.pr_merge
     if argv[1] == 'merge':
+        # enforce the real contract (cli.github.com/manual/gh_pr_merge):
+        # --disable-auto disables; --auto arms.  Unknown/legacy flags fail.
+        known = {'--auto', '--disable-auto', '--match-head-commit',
+                 '--squash', '--merge', '--rebase', '-d', '--delete-branch'}
+        for a in argv[2:]:
+            if a.startswith('-') and a not in known:
+                sys.stderr.write(f'unknown flag: {a}\n')
+                sys.exit(1)
+        if '--disable' in argv:
+            sys.stderr.write('unknown flag: --disable\n')
+            sys.exit(1)
+        if '--disable-auto' in argv and not scenario.get('armed', False):
+            sys.stderr.write('auto-merge is not enabled for this pull request\n')
+            sys.exit(1)
         fail('pr_merge')
         out({})
     out({})

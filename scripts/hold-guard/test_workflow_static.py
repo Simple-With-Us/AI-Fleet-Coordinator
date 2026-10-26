@@ -60,5 +60,14 @@ class WorkflowStatic(unittest.TestCase):
         runs = [s['run'] for s in steps if 'run' in s]
         self.assertEqual(runs, ['bash scripts/hold-guard/guard_run.sh'])
 
+    def test_no_merge_group_trigger(self):
+        # removed in slice 1: queue refs carry PR-head content, so the
+        # workflow file there is not default-branch-only trusted code
+        on = self.doc.get('on', self.doc.get(True))  # YAML 1.1 parses on: as True
+        if isinstance(on, dict):
+            self.assertNotIn('merge_group', on)
+        else:
+            self.fail(f'unexpected on: structure {on!r}')
+
 if __name__ == '__main__':
     unittest.main()

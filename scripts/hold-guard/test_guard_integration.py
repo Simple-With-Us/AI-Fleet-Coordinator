@@ -67,7 +67,7 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         kinds = [(' '.join(c['argv'][:3])) for c in self.calls()]
         # order: disarm -> labels GET -> events -> label re-apply -> comment -> check
-        self.assertEqual(kinds[0], 'pr merge --auto')
+        self.assertEqual(kinds[0], 'pr merge --disable-auto')
         label_posts = [c for c in self.calls() if c['argv'][0] == 'api'
                        and any(a.endswith('/labels') for a in c['argv']) and '-X' in c['argv']]
         self.assertEqual(len(label_posts), 1)
@@ -85,7 +85,7 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(payload['head_sha'], 'deadbeef' * 5)
         self.assertIn('swu-echo[bot]', payload['output']['summary'])
         # disarm strictly before repair and check
-        self.assertLess(kinds.index('pr merge --auto'),
+        self.assertLess(kinds.index('pr merge --disable-auto'),
                         max(i for i, c in enumerate(self.calls())
                             if any(a.endswith('/check-runs') for a in c['argv'])))
 
@@ -109,23 +109,59 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(payload['conclusion'], 'failure')
         self.assertIn('evaluation error', payload['output']['title'])
 
-    def test_merge_group_maps_prs_and_aggregates(self):
-        self.scenario({
-            'pulls': {'deadbeef' * 5: [{'number': 3}, {'number': 4}]},
-            'labels': {'3': [], '4': []},
-            'events': {'3': [[ev('labeled', 'do-not-automerge', *ECHO, '2026-10-25T01:00:00Z'),
-                              ev('unlabeled', 'do-not-automerge', *ECHO, '2026-10-25T02:00:00Z')]],
-                       '4': [[ev('labeled', 'needs-human-merge', *WISE, '2026-10-25T01:00:00Z')]]},
-        })
-        p = self.run_guard(PR='', EVENT_NAME='merge_group')
+    def test_missing_pr_fails_closed(self):
+        self.scenario({'labels': {}, 'events': {}})
+        p = self.run_guard(PR='', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 3)
+
+    def test_disarm_uses_real_gh_contract(self):
+        self.scenario({'labels': {'3': []}, 'events': {'3': [[]]}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
         self.assertEqual(p.returncode, 0, p.stderr)
-        checks = [c for c in self.calls() if any(a.endswith('/check-runs') for a in c['argv'])]
-        payload = json.loads(checks[0]['stdin'])
-        self.assertEqual(payload['conclusion'], 'failure')
-        self.assertIn('needs-human-merge', payload['output']['summary'])
-        self.assertIn('#4', payload['output']['summary'])
-        # no disarm attempted under merge_group
-        self.assertFalse([c for c in self.calls() if c['argv'][:2] == ['pr', 'merge']])
+        disarm = self.calls()[0]
+        self.assertEqual(disarm['argv'], ['pr', 'merge', '--disable-auto', 'u'])
+
+    def test_do_not_merge_family_enforced(self):
+        self.scenario({'labels': {'3': [{'name': 'do-not-merge'}]},
+                       'events': {'3': [[ev('labeled', 'do-not-merge', *ECHO, '2026-10-25T01:00:00Z')]]}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        checks = [c for c in self.calls() if any(a.endswith('/check-runs') for a in c['argv'])
+                  and 'POST' in c['argv']]
+        self.assertEqual(json.loads(checks[0]['stdin'])['conclusion'], 'failure')
+
+    def test_fresh_fence_reevaluates_before_publish(self):
+        # first evaluation: held; owner releases mid-run; the conclusion
+        # published must come from the SECOND (write-time) evaluation
+        sha = 'deadbeef' * 5
+        self.scenario({
+            'labels': {'3': []},
+            'events_seq': {'3': [
+                [[ev('labeled', 'do-not-automerge', *ECHO, '2026-10-25T01:00:00Z'),
+                  ev('unlabeled', 'do-not-automerge', *WISE, '2026-10-25T02:00:00Z')]],
+                [[ev('labeled', 'do-not-automerge', *ECHO, '2026-10-25T01:00:00Z'),
+                  ev('unlabeled', 'do-not-automerge', *WISE, '2026-10-25T02:00:00Z'),
+                  ev('labeled', 'do-not-automerge', *ECHO, '2026-10-25T02:00:05Z'),
+                  ev('unlabeled', 'do-not-automerge', *ECHO, '2026-10-25T03:00:00Z')]],
+            ]},
+        })
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        checks = [c for c in self.calls() if any(a.endswith('/check-runs') for a in c['argv'])
+                  and 'POST' in c['argv']]
+        self.assertEqual(json.loads(checks[0]['stdin'])['conclusion'], 'success')
+
+    def test_foreign_run_never_probed_or_patched(self):
+        sha = 'deadbeef' * 5
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)),
+                       'check_runs': {sha: [{'id': 777, 'app': {'slug': 'swu-wise'}}]}})
+        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
+        self.assertEqual(p.returncode, 0, p.stderr)
+        patches = [c for c in self.calls() if 'PATCH' in c['argv']]
+        self.assertEqual(len(patches), 0)  # zero mutation attempts on foreign runs
+        posts = [c for c in self.calls() if 'POST' in c['argv']
+                 and any(a.endswith('/check-runs') for a in c['argv'])]
+        self.assertEqual(len(posts), 1)  # our identity posts its own current run
 
     def test_label_with_spaces_reapplied_intact(self):
         spaced = 'do-not-automerge:hold please'
@@ -178,8 +214,8 @@ class GuardIntegration(unittest.TestCase):
         sha = 'deadbeef' * 5
         self._clear_scenario()
         self.scenario({**json.load(open(self.scenario_path)),
-                       'check_runs': {sha: [{'id': 555, 'app': 'github-actions'},
-                                            {'id': 556, 'app': 'github-actions'}]}})
+                       'check_runs': {sha: [{'id': 555, 'app': {'slug': 'github-actions'}},
+                                            {'id': 556, 'app': {'slug': 'github-actions'}}]}})
         p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
         self.assertEqual(p.returncode, 0, p.stderr)
         patches = [c for c in self.calls() if 'PATCH' in c['argv']]
@@ -189,19 +225,6 @@ class GuardIntegration(unittest.TestCase):
         self.assertEqual(len(posts), 0)
         for c in patches:
             self.assertEqual(json.loads(c['stdin'])['conclusion'], 'success')
-
-    def test_foreign_app_run_tolerated_and_fresh_run_posted(self):
-        sha = 'deadbeef' * 5
-        self._clear_scenario()
-        self.scenario({**json.load(open(self.scenario_path)),
-                       'check_runs': {sha: [{'id': 777, 'app': 'swu-wise'}]}})
-        p = self.run_guard(PR='3', PR_URL='u', EVENT_NAME='pull_request_target')
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn('not patchable', p.stderr + p.stdout)
-        posts = [c for c in self.calls() if 'POST' in c['argv']
-                 and any(a.endswith('/check-runs') for a in c['argv'])]
-        self.assertEqual(len(posts), 1)  # our identity carries current state
-        self.assertEqual(json.loads(posts[0]['stdin'])['conclusion'], 'success')
 
 if __name__ == '__main__':
     unittest.main()

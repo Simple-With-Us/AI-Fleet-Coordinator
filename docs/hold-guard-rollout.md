@@ -27,6 +27,14 @@ per-setter holds; the suffix is a display hint, never the ownership source.
 
 ## Verified capabilities
 
+- Disarm contract: `gh pr merge --disable-auto <pr>` (observed:
+  https://cli.github.com/manual/gh_pr_merge; matches the fleet armer's own
+  usage).  Integration fake enforces the real flag set - the previously
+  drafted `gh pr merge --auto --disable` is invalid and is now rejected by
+  the test double.
+- Hold label families covered: do-not-merge[:*] (Jay's literal ask),
+  do-not-automerge[:*], needs-human-merge (fleet-documented).
+
 - GITHUB_TOKEN `checks: write` permits creating a check run:
   https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions
 - Checks API write is GitHub-Apps-only (OAuth/classic PAT cannot create or
@@ -80,10 +88,13 @@ per-setter holds; the suffix is a display hint, never the ownership source.
   PR's base branch, which any repo writer can create with doctored content.
   actions/checkout is SHA-pinned (3d3c42e5... = v7, observed
   https://api.github.com/repos/actions/checkout/git/refs/tags/v7).
-- merge_group: GitHub builds the queue ref from base + PR heads, so the
-  workflow file there is not default-branch-only.  The four target repos
-  have NO merge queue (live ruleset read 2026-10-25); merge_group support
-  stays inert and unclaimed until a queue repo is in scope.
+- merge_group REMOVED from slice 1 (trigger and script path): GitHub
+  builds queue refs from base + PR heads, so the workflow file on a queue
+  ref is not default-branch-only trusted code.  "No queue exists on the
+  four target repos" is not a justification for shipping an active unsafe
+  trigger; a safe queue design (default-branch-pinned execution on
+  merge_group, PR mapping, group-SHA check targeting) is a future slice.
+  Enforced by test_workflow_static.py::test_no_merge_group_trigger.
 - Enforced by test_workflow_static.py: SHA-pinned checkout, default-branch
   ref, no pull_request.base/head refs anywhere (head.sha allowed only as
   check-target data), minimal permissions, serialized concurrency,
@@ -96,14 +107,22 @@ per-setter holds; the suffix is a display hint, never the ownership source.
   group is canceled and replaced" by the newest queued run, and runs in a
   group are serialized one at a time (observed:
   https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
-  Effect: stale intermediate evaluations never complete - the last
-  completing run always evaluated the newest state.
+  The same doc states ordering is NOT guaranteed (FIFO by wait-start, not
+  dispatch time), so no newest-last claim is made.
+- FRESH-STATE FENCE: the guard re-evaluates holds from the API immediately
+  before writing the check, so the published conclusion reflects state at
+  write time (seconds), not run start.  Tested:
+  test_fresh_fence_reevaluates_before_publish.  A change landing after the
+  fence is covered by the next queued run; this is eventual consistency
+  within Actions latency - the honest asynchronous residue.
 - GitHub's selection among multiple same-NAME completed check runs on one
   SHA is NOT doc-verified, so the design does not rely on it: the guard
-  PATCHes every existing merge-gate run on the SHA it owns and only POSTs a
-  new run when none exist or a foreign-app run rejected PATCH (403, logged,
-  tolerated).  Tested: test_existing_runs_patched_no_duplicate_no_stale,
-  test_foreign_app_run_tolerated_and_fresh_run_posted.
+  PATCHes every merge-gate run on the SHA OWNED BY ITS OWN APP IDENTITY
+  (app.slug == GUARD_APP_SLUG, default github-actions) and POSTs a new run
+  only when it owns none.  Foreign-app runs are never probed or mutated -
+  they are filtered out of the GET response before any write.  Tested:
+  test_existing_runs_patched_no_duplicate_no_stale,
+  test_foreign_run_never_probed_or_patched.
 - RESIDUE (unchanged): the async placement window from the limits section;
   a foreign identity posting its own merge-gate run is only resolvable by
   the slice-4 App binding.
@@ -115,8 +134,10 @@ per-setter holds; the suffix is a display hint, never the ownership source.
   execute the shipped shell (guard_run.sh, armer_hold_check.sh) against
   fake_gh.py: call ordering (disarm first), request-body exactness, labels
   with spaces, merge_group mapping, pagination, error fail-closed.
-- All suites PASS on this branch (16 + 11 + 6 static workflow assertions).  These are SOURCE fixtures; a later LIVE
+- All suites PASS on this branch (17 unit + 14 integration + 7 static = 38).  These are SOURCE fixtures; a later LIVE
   test on a scoped throwaway PR is a separate, not-yet-authorized step.
+
+### Slice 0.5: merge_group support - REMOVED from slice 1, needs default-branch-pinned execution design for queue refs before any repo with a queue adopts the guard.
 
 ## Next slices (SPEC ONLY - nothing below is executable in this branch)
 

@@ -139,6 +139,14 @@ class HoldGuardTests(unittest.TestCase):
         self.assertTrue(by['do-not-automerge']['needs_reapply'])
         self.assertEqual(by['needs-human-merge']['owner_id'], WISE[0])
 
+    def test_do_not_merge_family_and_suffix(self):
+        pages = [[ev('labeled', 'do-not-merge', *ECHO, '2026-10-25T01:00:00Z'),
+                  ev('labeled', 'do-not-merge:swu-wise[bot]', *WISE, '2026-10-25T01:05:00Z'),
+                  ev('unlabeled', 'do-not-merge', *ECHO, '2026-10-25T02:00:00Z')]]
+        r = hold_guard.evaluate('o/r', 1, make_runner(['do-not-merge:swu-wise[bot]'], pages))
+        self.assertEqual(len(r['holds']), 1)
+        self.assertEqual(r['holds'][0]['owner_id'], WISE[0])
+
     def test_unrelated_labels_ignored(self):
         pages = [[ev('labeled', 'bug', *ECHO, '2026-10-25T01:00:00Z')]]
         self.assertEqual(hold_guard.evaluate('o/r', 1, make_runner(['bug', 'priority'], pages))['state'], 'clear')
