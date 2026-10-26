@@ -286,16 +286,17 @@ housekeeper_record_state() {
 #
 # It is the same rule the watcher applies, and it is deliberately
 # conservative -- exit 0 (the holder is gone) ONLY when the file names a dead
-# pid on THIS host and was written after the lock directory it sits beside.
-# Anything else exits 1 and the caller falls back to the age rule, which is
-# what this script relies on for its own holder:  it writes no owner file.
+# pid on THIS host, or a pid this host has since handed to somebody else, and
+# was written after the lock directory it sits beside.  Anything else exits 1
+# and the caller falls back to the age rule, which is what this script relies
+# on for its own holder:  it writes no owner file.
 #
 # The argument is the lock directory to judge, which is the canonical lock at
 # the first gate and the moved-aside copy at the second.  The owner file is a
 # SIBLING of the canonical lock, so the second gate reads the same file.
 housekeeper_owner_is_gone() {
     python3 - "$1" <<'PY'
-import errno, json, os, socket, sys
+import errno, json, math, os, socket, subprocess, sys
 
 lock_path = sys.argv[1]
 # The moved-aside copy is named `<lock>.stale-<pid>.<uuid>`, so the owner file
@@ -305,6 +306,39 @@ canonical = os.path.join(
     os.path.dirname(lock_path), os.path.basename(lock_path).split(".stale-")[0]
 )
 owner_path = canonical + ".owner"
+
+# The exact shape of an owner record.  The Python watcher in this repo
+# (scripts/mac-resource-watch.py) enforces the SAME shape, and the two
+# implementations of this protocol have to agree:  a record one of them calls
+# malformed and the other calls usable leaves them with conflicting ownership
+# decisions about the same lock and the same file.
+OWNER_KEYS = {"pid", "host", "acquired_at", "lock", "start"}
+
+
+def process_start_token(pid):
+    """The start time of the process a pid names, as an opaque string.
+
+    A pid alone does not name a process:  the kernel hands the same number to
+    somebody else once the original exits, and a reused pid that is ALIVE
+    looks exactly like a holder that is still running.  The start time tells
+    the two apart.
+
+    The token is an opaque string, compared and never parsed, and the C
+    locale is forced so that this reader and the watcher produce the SAME
+    string for the same process.
+    """
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=10, check=False, env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
 
 try:
     lock_mtime = os.stat(lock_path).st_mtime
@@ -318,10 +352,28 @@ try:
         owner = json.load(handle)
 except (OSError, ValueError):
     sys.exit(1)                      # unreadable or malformed: the age rule decides
-if not isinstance(owner, dict) or owner.get("host") != socket.gethostname():
+if not isinstance(owner, dict) or set(owner) != OWNER_KEYS:
+    sys.exit(1)                      # not the record this protocol publishes
+host = owner["host"]
+if not isinstance(host, str) or not host or host != socket.gethostname():
     sys.exit(1)                      # another host's pid says nothing about this one
-pid = owner.get("pid")
+pid = owner["pid"]
 if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+    sys.exit(1)
+acquired_at = owner["acquired_at"]
+if isinstance(acquired_at, bool) or not isinstance(acquired_at, (int, float)):
+    sys.exit(1)
+try:
+    finite = math.isfinite(acquired_at)
+except OverflowError:
+    sys.exit(1)                      # a hundreds-of-digits int is not a timestamp
+if not finite:
+    sys.exit(1)
+lock = owner["lock"]
+if not isinstance(lock, str) or not lock:
+    sys.exit(1)
+start = owner["start"]
+if not isinstance(start, str) or not start:
     sys.exit(1)
 try:
     os.kill(pid, 0)
@@ -331,7 +383,13 @@ except OSError as exc:
     # A permission error means the process exists and is merely not ours to
     # signal; only ESRCH is proof that it is gone.
     sys.exit(1 if exc.errno != errno.ESRCH else 0)
-sys.exit(1)                          # the pid is alive:  the age rule decides
+# The pid is ALIVE.  It is the holder only when it is the SAME process:  a
+# reused pid looks exactly like a live holder, and believing it would leave a
+# dead holder's lock in place until the whole stale window expires.
+current = process_start_token(pid)
+if not current:
+    sys.exit(1)                      # the start time could not be read:  the age rule decides
+sys.exit(0 if current != start else 1)
 PY
 }
 
