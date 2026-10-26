@@ -404,7 +404,9 @@ def main() -> int:
     errors.extend(agent_sync_errors(apps, agent_sync, "coordinator AGENT-SYNC.md"))
     if live_sync.is_file():
         errors.extend(
-            agent_sync_errors(apps, live_sync.read_text(), "~/apps/FLEET-PROTOCOL.md", fold_repo=True)
+            agent_sync_errors(
+                apps, live_sync.read_text(), "~/apps/FLEET-PROTOCOL.md", fold_repo=True
+            )
         )
 
     errors.extend(zulip_errors(data))
