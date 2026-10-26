@@ -326,7 +326,11 @@ class SessionIdTests(unittest.TestCase):
             body=body,
         )
         self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("Session: the board claim was AFC-123", p.stdout)
+        #  the prose survives as prose, and the Linear id inside it is linked by
+        #  the linkifier (AFC-547) rather than being left bare -- either way it
+        #  is content, not the stamped row
+        self.assertIn("Session: the board claim was", p.stdout)
+        self.assertIn('href="https://linear.app/simple-with-us/issue/AFC-123"', p.stdout)
         self.assertEqual(
             p.stdout.count("Session:"), 2, p.stdout
         )  #  the prose one and the stamped row
