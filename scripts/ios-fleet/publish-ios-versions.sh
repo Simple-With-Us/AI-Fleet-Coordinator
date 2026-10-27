@@ -140,8 +140,10 @@ fetch_json_at() {
   # alphabet intact (unlike packing sha+content through @tsv).
   json="$(gh api "repos/${REPO}/contents/${REMOTE_PATH}?ref=${ref}" 2>/dev/null || true)"
   [[ -n "$json" ]] || return 1
-  sha="$(printf '%s' "$json" | jq -r '.sha // empty')"
-  b64="$(printf '%s' "$json" | jq -r '.content // empty')"
+  # Parse with python3 (already required for the base64 decode below) so hosts
+  # with gh but no system jq do not fail with a misleading network error.
+  sha="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha") or "")')"
+  b64="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("content") or "")')"
   FETCHED_SHA="$sha"
   [[ -n "$FETCHED_SHA" && -n "$b64" && "$b64" != "null" ]] || return 1
   python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode("".join(sys.argv[1].split())))' "$b64" >"$dest"
