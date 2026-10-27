@@ -69,18 +69,20 @@ class InstallationOwnerTests(unittest.TestCase):
         for repo in (ORG, PERSONAL):
             with self.subTest(repo=repo):
                 minter, calls = self.build(wrong_owner=True)
-                with self.assertRaises(AppTokenError):
+                with self.assertRaisesRegex(AppTokenError, "missing, suspended, or on another"):
                     minter.token_for("swu-wise", repo, {"pull_requests": "write"})
+                self.assertIn(("GET", "/repos/" + repo + "/installation", None), calls)
                 self.assertFalse(any(c[0] == "POST" for c in calls))
 
     def test_suspended_installation_is_refused_before_token_post(self):
         minter, calls = self.build(suspended=True)
-        with self.assertRaises(AppTokenError):
+        with self.assertRaisesRegex(AppTokenError, "missing, suspended, or on another"):
             minter.token_for("swu-wise", PERSONAL, {"pull_requests": "write"})
+        self.assertIn(("GET", "/repos/" + PERSONAL + "/installation", None), calls)
         self.assertFalse(any(c[0] == "POST" for c in calls))
 
     def test_permission_ceiling_still_refuses_admin(self):
         minter, calls = self.build()
-        with self.assertRaises(AppTokenError):
+        with self.assertRaisesRegex(AppTokenError, "outside the mint ceiling"):
             minter.token_for("swu-wise", PERSONAL, {"administration": "write"})
         self.assertEqual(calls, [])
