@@ -16,6 +16,16 @@ class TypedGateway:
         self.policy, self.client, self.minter = policy, client, minter
         self.audit, self.outcomes = audit, outcomes
 
+    def _release_prewrite(self, key):
+        if key is None:
+            return True
+        try:
+            self.outcomes.finish(key, "refused")
+            return True
+        except Exception:
+            # Reservation stays held when durability cannot be confirmed.
+            return False
+
     def handle(self, token, action, args):
         seat = self.policy.authenticate(token)
         if seat is None:
@@ -77,17 +87,19 @@ class TypedGateway:
             result = "ok"
             return 200, payload
         except RateLimited:
+            if not self._release_prewrite(key):
+                return 502, {"error": "reservation release unavailable", "outcome": "unknown", "retryable": False}
             result = "rate_limited"
             return 429, {"error": "typed quota exhausted", "retryable": True}
         except PreflightUnavailable:
-            if key is not None:
-                self.outcomes.finish(key, "refused")
-                key = None
+            if not self._release_prewrite(key):
+                return 502, {"error": "reservation release unavailable", "outcome": "unknown", "retryable": False}
+            key = None
             result = "unavailable"
             return 503, {"error": "preflight unavailable", "retryable": True}
         except Refused:
-            if key is not None:
-                self.outcomes.finish(key, "refused")
+            if not self._release_prewrite(key):
+                return 502, {"error": "reservation release unavailable", "outcome": "unknown", "retryable": False}
             return 403, {"error": "typed request refused", "retryable": False}
         except Exception:
             if key is not None:

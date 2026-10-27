@@ -69,3 +69,9 @@ test('closed disarm receipt is rejected, retryable preflight stays safe and no r
   const r=await t.call('gr_v1_pr_automerge_disable',args);
   assert.ok(r.isError);assert.equal(count,1);assert.match(r.content[0].text,/Nothing was written/);
 });
+
+test('typed quota429 stays retryable through hosted dispatch',async()=>{
+ const t=harness(async()=>new Response(JSON.stringify({error:'quota',retryable:true}),{status:429}));
+ const r=await t.call('gr_v1_pr_state',args);
+ assert.ok(r.isError);assert.match(r.content[0].text,/rate_limited/);
+});

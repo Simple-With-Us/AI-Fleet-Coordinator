@@ -1339,6 +1339,7 @@ export class HostedTools {
     // relay_refused is reserved for 4xx (kody discussion_r4372747157):  the
     // relay's deliberate verdicts (allowlist, replay refusals, terminal
     // GitHub refusals) - definite, no hidden side effect.
+    if (status === 429 && body?.retryable === true) throw new ToolError("rate_limited", "git-relay quota is exhausted.  Retry after the quota window.", {retryable:true});
     if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
     // A successful call still must answer with a plain JSON object;  anything
     // else is a mis-answering upstream, not a result.

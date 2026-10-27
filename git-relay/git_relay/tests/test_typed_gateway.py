@@ -107,6 +107,25 @@ class Tests(unittest.TestCase):
         self.assertTrue(body["retryable"])
         self.assertEqual(len(self.client.calls), count)
 
+    def test_release_failure_returns_sanitized_unknown(self):
+        self.client.replies = [TimeoutError()]
+        self.gateway.outcomes.finish = lambda *args: (_ for _ in ()).throw(OSError("private path"))
+        status, body = self.gateway.handle(TOKEN, "pr_automerge_disable", ARGS)
+        self.assertEqual(status, 502)
+        self.assertEqual(body["outcome"], "unknown")
+        self.assertNotIn("private path", json.dumps(body))
+
+    def test_rate_limited_after_reservation_releases_it(self):
+        from unittest.mock import patch
+        from git_relay.typed_disarm import RateLimited
+
+        with patch("git_relay.typed_disarm.TypedDisarm.disable", side_effect=RateLimited()):
+            status, body = self.gateway.handle(TOKEN, "pr_automerge_disable", ARGS)
+        self.assertEqual(status, 429)
+        self.assertTrue(body["retryable"])
+        row = OutcomeStore(self.path).begin(key_for("swu-wise", "pr_automerge_disable", ARGS))
+        self.assertIsNone(row)
+
     def test_unknown_survives_restart(self):
         self.client.replies = [state(), TimeoutError(), TimeoutError()]
         self.assertEqual(self.gateway.handle(TOKEN, "pr_automerge_disable", ARGS)[0], 502)
