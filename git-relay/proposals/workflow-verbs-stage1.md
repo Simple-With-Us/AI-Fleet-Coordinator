@@ -10,3 +10,5 @@ Fifteen `wf_*` verbs (a sixteenth, `wf_checks`, is refused until a seat ceiling 
 Known limits: no check-run reads (needs checks:read); no job logs (GitHub serves logs by redirect and the client refuses redirects); no auto-merge verbs here (#992); file put is a per-file commit, not a multi-file push.
 
 Before exposure: an authenticated broker must be the only `for_action` caller; add policy action names and `ACTION_REQUIRED_PERMISSIONS`, durable outcomes and audit like #992's gateway for the writes, Worker/tool registration, HTTP contract tests and host qualification. Canonical per-bot identities (including Echo) are policy entries only; none are added here.
+
+Stage 2c adds `wf_files_put` (contents:write): one commit over up to 20 files via git-data (blobs, tree, commit, fast-forward ref update). Non-default branch only, workflow paths refused, atomic on `expected_head_sha` (a moved branch is refused, and the ref update is never forced), credential-shaped content refused, and an existing file's mode (for example an executable bit) is preserved.
