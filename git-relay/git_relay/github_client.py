@@ -293,7 +293,9 @@ class GitHubClient:
                         r"bytes (\d+)-\d+/",
                         (getattr(resp, "headers", None) or {}).get("Content-Range", ""),
                     )
-                    return data, bool(match and int(match.group(1)) > 0)
+                    # Only a parsed range starting at byte 0 proves the log is complete; a
+                    # missing or unparseable Content-Range is reported as truncated.
+                    return data, not (match and int(match.group(1)) == 0)
                 data = resp.read(full_cap + 1)
                 if len(data) > full_cap:
                     raise RelayGitHubError(0, "log too large to tail")

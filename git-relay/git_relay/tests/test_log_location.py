@@ -122,6 +122,18 @@ class LogLocationTests(unittest.TestCase):
             (b"tail", True),
         )
 
+        def garbled(req, timeout=None):
+            return Resp(b"tail", 206, {"Content-Range": "garbage"})
+
+        def missing(req, timeout=None):
+            return Resp(b"tail", 206, {})
+
+        for op in (garbled, missing):
+            self.assertEqual(
+                self.client(op).fetch_public_tail("https://x.blob.core.windows.net/l", 10),
+                (b"tail", True),
+            )
+
         def unsatisfiable(req, timeout=None):
             raise urllib.error.HTTPError("https://x", 416, "range", {}, None)
 
