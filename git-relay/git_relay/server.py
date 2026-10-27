@@ -111,6 +111,8 @@ def _validate_args(action: str, args: dict) -> dict:
         raise ValueError(f"unknown action {action!r}")
     if action in SeatPolicy.REGISTERED_ACTIONS:
         raise ValueError(f"action {action!r} is registered but not implemented yet")
+    if action in SeatPolicy.WORKFLOW_ACTIONS:
+        raise ValueError(f"action {action!r} is registered but not wired into the relay yet")
     specs: dict = {"repo": ("text", True)}
     if action == "open_pr":
         specs.update(
