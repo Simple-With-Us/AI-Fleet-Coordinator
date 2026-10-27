@@ -284,7 +284,7 @@ class GitHubClient:
         )
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
-                status = getattr(resp, "status", 200)
+                status = getattr(resp, "status", None) or getattr(resp, "getcode", lambda: 200)()
                 if status == 206:
                     data = resp.read(window + 1)
                     if len(data) > window:
@@ -299,8 +299,6 @@ class GitHubClient:
                     raise RelayGitHubError(0, "log too large to tail")
                 return data[-window:], len(data) > window
         except urllib.error.HTTPError as exc:
-            if exc.code == 416:
-                return b"", False
             raise RelayGitHubError(exc.code, "log fetch refused") from exc
         except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             raise RelayGitHubError(0, "connection failed") from exc

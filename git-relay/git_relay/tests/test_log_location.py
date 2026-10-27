@@ -99,5 +99,35 @@ class LogLocationTests(unittest.TestCase):
             )
 
 
+    def test_status_falls_back_to_getcode_and_416_is_a_refusal(self):
+        class Resp(io.BytesIO):
+            def __init__(self, data, code, headers):
+                super().__init__(data)
+                self._code, self.headers = code, headers
+
+            def getcode(self):
+                return self._code
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def ranged(req, timeout=None):
+            return Resp(b"tail", 206, {"Content-Range": "bytes 90-93/94"})
+
+        self.assertEqual(
+            self.client(ranged).fetch_public_tail("https://x.blob.core.windows.net/l", 10),
+            (b"tail", True),
+        )
+
+        def unsatisfiable(req, timeout=None):
+            raise urllib.error.HTTPError("https://x", 416, "range", {}, None)
+
+        with self.assertRaises(RelayGitHubError):
+            self.client(unsatisfiable).fetch_public_tail("https://x.blob.core.windows.net/l", 10)
+
+
 if __name__ == "__main__":
     unittest.main()
