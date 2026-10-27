@@ -239,12 +239,15 @@ class Remote(unittest.TestCase):
         self.assertEqual([c["name"] for c in calls], ["linear_whoami"])
 
     def test_by_mismatch_names_the_seat_the_server_reported(self):
-        _, _, err, _ = self.run_writes(["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.WHO)])
+        _, _, err, _ = self.run_writes(
+            ["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.WHO)]
+        )
         self.assertIn("(CODEX)", err)
 
     def test_a_credential_shaped_comment_is_refused_before_any_write(self):
         code, _, err, calls = self.run_writes(
-            ["comment", "AFC-1", "--by", "CODEX", "--text", "token ghp_" + "A1b2C3d4E5" * 4], [rpc(self.WHO)]
+            ["comment", "AFC-1", "--by", "CODEX", "--text", "token ghp_" + "A1b2C3d4E5" * 4],
+            [rpc(self.WHO)],
         )
         self.assertEqual([c["name"] for c in calls], ["linear_whoami"])
         self.assertIn("secret_scan:body", err)

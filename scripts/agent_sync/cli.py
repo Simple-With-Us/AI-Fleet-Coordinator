@@ -3001,7 +3001,9 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
         exc.close()
         return exc.code, "", b""
     except urllib.error.URLError as exc:
-        unsent = isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError, ssl.SSLCertVerificationError))
+        unsent = isinstance(
+            exc.reason, (socket.gaierror, ConnectionRefusedError, ssl.SSLCertVerificationError)
+        )
         raise _TransportError(not unsent, "unreachable") from None
     except _TransportError:
         raise
@@ -3064,7 +3066,7 @@ def _remote_events(ctype: str, raw: bytes) -> list[str]:
                 current = []
         elif line.startswith("data:"):
             value = line[5:]
-            current.append(value[1:] if value.startswith(" ") else value)
+            current.append(value.removeprefix(" "))
     if current:
         events.append("\n".join(current))
     return events
@@ -3104,7 +3106,9 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     if "error" in msg:
         err = msg["error"]
         code = _remote_code(err.get("code")) if isinstance(err, dict) else "error"
-        return None, "the hosted endpoint refused the call" + ("" if code == "error" else f" ({code})")
+        return None, "the hosted endpoint refused the call" + (
+            "" if code == "error" else f" ({code})"
+        )
     result = msg.get("result")
     if not isinstance(result, dict):
         return None, "the hosted endpoint sent no result" + unknown
@@ -3112,7 +3116,10 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     sc = result.get("structuredContent")
     if (
         (content is not None and not isinstance(content, list))
-        or any(not isinstance(p, dict) or ("text" in p and not isinstance(p["text"], str)) for p in content or [])
+        or any(
+            not isinstance(p, dict) or ("text" in p and not isinstance(p["text"], str))
+            for p in content or []
+        )
         or (sc is not None and not isinstance(sc, dict))
         or not isinstance(result.get("isError", False), bool)
     ):
@@ -3120,15 +3127,23 @@ def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
     if result.get("isError"):
         code = _remote_code((sc or {}).get("code"))
         retry = (sc or {}).get("retry_after")
-        after = f", retry after {retry}s" if isinstance(retry, int) and not isinstance(retry, bool) and 0 <= retry <= 86400 else ""
+        after = (
+            f", retry after {retry}s"
+            if isinstance(retry, int) and not isinstance(retry, bool) and 0 <= retry <= 86400
+            else ""
+        )
         note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
         return None, f"{tool} failed on the hosted server: {code}{after}{note}"
     return result, ""
 
 
-def _remote_failure(exc: "_TransportError", write: bool) -> str:
+def _remote_failure(exc: _TransportError, write: bool) -> str:
     if write and exc.sent:
-        return "the hosted endpoint did not answer" + _REMOTE_UNKNOWN + " (no direct fallback in remote mode)"
+        return (
+            "the hosted endpoint did not answer"
+            + _REMOTE_UNKNOWN
+            + " (no direct fallback in remote mode)"
+        )
     return "the hosted endpoint could not be reached (no direct fallback in remote mode)"
 
 
