@@ -377,7 +377,9 @@ class WorkflowVerbs:
         _only(args, ("repo", "job_id", "tail_bytes"))
         job_id = _int(args, "job_id")
         tail = _int(args, "tail_bytes", 1, LOG_TAIL_BYTES) if "tail_bytes" in args else 16 * 1024
-        location = self.client.log_location(f"/repos/{repo}/actions/jobs/{job_id}/logs", self.bearer)
+        location = self.client.log_location(
+            f"/repos/{repo}/actions/jobs/{job_id}/logs", self.bearer
+        )
         parts = urlsplit(location) if isinstance(location, str) else None
         host = (parts.hostname or "") if parts else ""
         if (

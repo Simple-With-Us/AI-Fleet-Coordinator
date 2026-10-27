@@ -29,7 +29,9 @@ class LogLocationTests(unittest.TestCase):
             c.log_location("/repos/o/r/actions/jobs/1/logs", "app-bearer"),
             "https://x.blob.core.windows.net/log?sig=1",
         )
-        self.assertEqual(seen, [("https://api.github.com/repos/o/r/actions/jobs/1/logs", "Bearer app-bearer")])
+        self.assertEqual(
+            seen, [("https://api.github.com/repos/o/r/actions/jobs/1/logs", "Bearer app-bearer")]
+        )
 
     def test_non_redirect_and_empty_bearer_are_refused(self):
         def opener(req, timeout=None):
