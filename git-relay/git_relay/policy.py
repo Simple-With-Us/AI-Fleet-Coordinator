@@ -60,6 +60,9 @@ class SeatPolicy:
     # Known but not implemented:  accepted in seat config, refused at dispatch
     # until their implementation and per-action policy land.
     REGISTERED_ACTIONS = (
+        "pr_state",
+        "pr_hold_state",
+        "pr_automerge_disable",
         "create_release",
         "rerun_workflow",
         "cancel_workflow",
@@ -131,7 +134,13 @@ class SeatPolicy:
             mint_perms = cfg.get("mint_permissions") or {}
             if not isinstance(mint_perms, dict):
                 raise PolicyError(f"seat {seat!r}: mint_permissions must be an object")
-            wants_app = any(a in self.APP_ACTIONS or a in self.WORKFLOW_ACTIONS for a in actions)
+            # Inactive typed actions require the same own-App startup
+            # contract, without adding them to live APP dispatch.
+            typed_app_actions = ("pr_state", "pr_hold_state", "pr_automerge_disable")
+            wants_app = any(
+                a in self.APP_ACTIONS or a in self.WORKFLOW_ACTIONS or a in typed_app_actions
+                for a in actions
+            )
             if wants_app and not app_slug:
                 raise PolicyError(f"seat {seat!r}: app actions need an app_slug")
             if app_slug is not None:
