@@ -4778,7 +4778,7 @@ def main(argv: list[str] | None = None) -> int:
         if any(a in WRITE_VERBS for a in argv[:1]):
             die(f"`{argv[0]}` is a write, and BOARD_BACKEND=mac-collab runs the old board CLI, which cannot prove "
                 "a seat from a bearer.  Writes only run as the bearer-verified seat:  unset BOARD_BACKEND.", EXIT_AUTH)
-        old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "mac-collab" / "board")).expanduser()
+        old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "_retired" / "mac-collab-20261019" / "board")).expanduser()
         if not old.is_file():
             die(f"BOARD_BACKEND=mac-collab, but the archived old board CLI is not at {old} "
                 "(set BOARD_MAC_COLLAB_CLI to the frozen archive)")

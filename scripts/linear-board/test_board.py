@@ -1757,8 +1757,9 @@ class SafetyTests(BoardTest):
         self.assertEqual(self.mock.ops, [])
 
     def test_mac_collab_backend_refuses_the_write_verbs(self):
-        # The archived findings.db is frozen and read-only, so a write verb must be
-        # refused before the archived CLI runs, not fail inside it with a sqlite error.
+        # Writes must die with EXIT_AUTH before the archived CLI runs: the rollback
+        # backend cannot prove a bearer-verified seat (same contract as
+        # test_backend_fallback_execs_old_cli).
         old = self.tmp / "old-board"
         old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
         extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
@@ -1768,8 +1769,8 @@ class SafetyTests(BoardTest):
             ["status", "OPS-10", "completed"],
             ["comment", "OPS-10", "--by", "X", "--text", "hi"],
         ):
-            p = self.board(*args, extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), code=2)
-            self.assertIn("reads only", p.stderr, args)
+            p = self.board(*args, extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), code=6)
+            self.assertIn("bearer-verified seat", p.stderr, args)
             self.assertNotIn("OLD BOARD", p.stdout, args)
 
     def test_source_never_reads_admin_or_personal_keys(self):
