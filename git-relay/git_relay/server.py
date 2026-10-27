@@ -275,6 +275,10 @@ class Relay:
                     if not isinstance(args.get("repo"), str) or not args["repo"]:
                         raise ValueError("repo is required")
                     canonical = dict(args)
+                    # Shape-check before any policy quota, outcome row or upstream call.
+                    from .workflow_verbs import WorkflowVerbs
+
+                    WorkflowVerbs.check_shape(action, canonical, canonical["repo"])
                 else:
                     canonical = _validate_args(action, args)
                 denial = self.policy.authorize(seat, action, canonical["repo"])
@@ -364,6 +368,21 @@ class Relay:
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 503, payload
+                if key is None and exc.status in (0, 408, 429) or (
+                    key is None and exc.status >= 500
+                ):
+                    # A workflow READ changed nothing upstream: a transient failure is a
+                    # plain retryable error, not an unknown outcome.
+                    outcome = "github_retryable"
+                    detail = {"status": exc.status}
+                    payload = {
+                        "error": "github call failed; safe to retry",
+                        "github_status": exc.status,
+                        "retryable": True,
+                    }
+                    payload["github_diagnostics"] = dict(exc.diagnostics)
+                    detail["github_diagnostics"] = dict(exc.diagnostics)
+                    return (429 if exc.status == 429 else 502), payload
                 if exc.status in (0, 408) or exc.status >= 500:
                     # Transport failure, timeout, or 5xx:  GitHub may have accepted
                     # the write.  The outcome is unknown;  the key is held and

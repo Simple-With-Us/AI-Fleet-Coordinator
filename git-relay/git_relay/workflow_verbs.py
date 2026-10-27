@@ -179,6 +179,37 @@ class WorkflowVerbs:
         self.action, self.repo = action, repo
 
     @classmethod
+    def check_shape(cls, action, args, repo):
+        """Run a verb's own argument checks with no network, before any durable state.
+
+        The verb is run against a probe client that stops at its first upstream call, so a
+        malformed request raises Refused here and a well-formed one passes without a mint,
+        an outcome row or an upstream call.
+        """
+        if action not in SPECS or not isinstance(args, dict):
+            raise Refused("unsupported workflow action")
+        if not isinstance(repo, str) or not _REPO.fullmatch(repo):
+            raise Refused("invalid repository")
+
+        class _Reached(Exception):
+            pass
+
+        class _Probe:
+            def __getattr__(self, name):
+                def stop(*a, **k):
+                    raise _Reached
+
+                return stop
+
+        handle = cls.__new__(cls)
+        handle.client, handle.policy, handle.seat, handle.bearer = _Probe(), None, "probe", "probe"
+        handle.action, handle.repo = action, repo
+        try:
+            handle.run(action, args)
+        except _Reached:
+            return
+
+    @classmethod
     def for_action(cls, client, policy, minter, seat, action, repo, preauthorized=False):
         """Seat is already authenticated by the broker; authorize once, mint least permission.
 

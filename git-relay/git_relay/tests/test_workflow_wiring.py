@@ -99,7 +99,7 @@ class WorkflowWiringTests(unittest.TestCase):
     def test_unlisted_action_and_other_repo_are_denied_before_any_mint(self):
         with tempfile.TemporaryDirectory() as tmp:
             r = relay(tmp)
-            self.assertEqual(r.handle(TOKEN, "wf_tree", {"repo": "example/x"})[0], 403)
+            self.assertEqual(r.handle(TOKEN, "wf_pr_list", {"repo": "example/x"})[0], 403)
             self.assertEqual(r.handle(TOKEN, "wf_runs", {"repo": "other/x"})[0], 403)
             self.assertEqual(r.app_minter.calls, [])
 
@@ -151,6 +151,28 @@ class WorkflowWiringTests(unittest.TestCase):
             self.assertEqual(body["outcome"], "unknown")
             again = r.handle(TOKEN, "wf_run_rerun", {"repo": "example/x", "run_id": 5})
             self.assertEqual(again[0], 409)
+
+    def test_malformed_write_leaves_no_outcome_row_and_no_quota(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store_path = os.path.join(tmp, "o.json")
+            from git_relay.outcomes import OutcomeStore
+
+            r = relay(tmp)
+            r.outcomes = OutcomeStore(store_path)
+            bad = {"repo": "example/x", "run_id": "five", "junk": 1}
+            self.assertEqual(r.handle(TOKEN, "wf_run_rerun", bad)[0], 400)
+            self.assertFalse(os.path.exists(store_path) and open(store_path).read().strip("{} \n"))
+            self.assertEqual((r.client.calls, r.app_minter.calls), ([], []))
+            self.assertEqual(r.handle(TOKEN, "wf_run_rerun", {"repo": "example/x", "run_id": 5})[0], 200)
+
+    def test_read_upstream_failure_is_retryable_not_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = relay(tmp, client=Client(fail=RelayGitHubError(503, "x")))
+            status, body = r.handle(TOKEN, "wf_runs", {"repo": "example/x"})
+            self.assertEqual(status, 502)
+            self.assertTrue(body["retryable"])
+            self.assertNotIn("outcome", body)
+            self.assertEqual(r.handle(TOKEN, "wf_runs", {"repo": "example/x"})[0], 502)
 
 
 if __name__ == "__main__":
