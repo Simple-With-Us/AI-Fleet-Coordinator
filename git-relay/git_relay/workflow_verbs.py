@@ -134,6 +134,15 @@ def _arr(data):
     return data
 
 
+def _dicts(value):
+    """Entries of an upstream list; a non-list or a non-object entry is a refusal."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
+        raise Refused("unexpected upstream shape")
+    return value
+
+
 def _only(args, allowed):
     extra = set(args) - set(allowed)
     if extra:
@@ -331,7 +340,7 @@ class WorkflowVerbs:
                         "created_at",
                     )
                 }
-                for r in ((data or {}).get("workflow_runs") or [])[:MAX_PROJECT]
+                for r in _dicts((data or {}).get("workflow_runs"))[:MAX_PROJECT]
             ],
             "complete": False,
         }
@@ -349,10 +358,10 @@ class WorkflowVerbs:
                     "conclusion": j.get("conclusion"),
                     "steps": [
                         {k: s.get(k) for k in ("name", "status", "conclusion")}
-                        for s in (j.get("steps") or [])[:100]
+                        for s in _dicts(j.get("steps"))[:100]
                     ],
                 }
-                for j in ((data or {}).get("jobs") or [])[:MAX_PROJECT]
+                for j in _dicts((data or {}).get("jobs"))[:MAX_PROJECT]
             ],
             "complete": False,
         }
@@ -373,7 +382,7 @@ class WorkflowVerbs:
         return {
             "checks": [
                 {k: c.get(k) for k in ("id", "name", "status", "conclusion", "completed_at")}
-                for c in ((data or {}).get("check_runs") or [])[:MAX_PROJECT]
+                for c in _dicts((data or {}).get("check_runs"))[:MAX_PROJECT]
             ],
             "complete": False,
         }

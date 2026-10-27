@@ -270,6 +270,18 @@ class Tests(unittest.TestCase):
         with self.assertRaises(Refused):
             s.run("wf_checks", {"repo": REPO, "ref": "../x"})
 
+    def test_non_object_upstream_entries_are_a_controlled_refusal(self):
+        for action, args, bad in (
+            ("wf_checks", {"repo": REPO, "ref": SHA}, {"check_runs": ["x"]}),
+            ("wf_runs", {"repo": REPO}, {"workflow_runs": [1]}),
+            ("wf_run_jobs", {"repo": REPO, "run_id": 1}, {"jobs": [None]}),
+            ("wf_run_jobs", {"repo": REPO, "run_id": 1}, {"jobs": [{"steps": ["s"]}]}),
+            ("wf_checks", {"repo": REPO, "ref": SHA}, {"check_runs": "nope"}),
+        ):
+            s, _ = svc(bad)
+            with self.assertRaises(Refused, msg=action):
+                s.run(action, args)
+
 
 if __name__ == "__main__":
     unittest.main()
