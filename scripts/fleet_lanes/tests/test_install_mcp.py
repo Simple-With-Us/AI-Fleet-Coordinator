@@ -343,6 +343,19 @@ class AgentSyncTests(HomeCase):
         self.assertNotIn("mcp-agent-sync", new)
         self.assertEqual(new.count("fleet:begin mcp-simple-chat"), 1)
 
+    def test_apply_retires_the_pre_rename_block_when_the_new_block_is_already_current(self) -> None:
+        self.mkdir(".clutch/dsh")
+        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
+        path = ".clutch/dsh/cordis.patch.yml"
+        current = self.read(path)
+        legacy = current.replace("mcp-simple-chat", "mcp-agent-sync")
+        self.write(path, current + legacy)    # both mounts present, the new one already up to date
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
+        self.assertEqual(code, M.EXIT_OK, out)
+        new = self.read(path)
+        self.assertNotIn("mcp-agent-sync", new)
+        self.assertEqual(new.count("fleet:begin mcp-simple-chat"), 1)
+
     def test_without_the_flag_agent_sync_is_never_written(self) -> None:
         self.mkdir(*TOOL_DIRS.values())
         self.run_cli("apply", "muse", "minimax", "fx")

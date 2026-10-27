@@ -381,10 +381,15 @@ def edit_clutch_patch(text: Optional[str], argv: List[str], action: str) -> Tupl
             return Outcome(CLUTCH_KEY, name, "skipped-bad-shape",
                            "the cordis patch is not a top-level list; left alone"), None, False
         if action == "add":
-            if text is not None and CP.remove(text, LEGACY_CLUTCH_BLOCK)[1] != "none":
-                text = CP.remove(text, LEGACY_CLUTCH_BLOCK)[0] or None    # retire the pre-rename block
+            retired = False
+            if text is not None:
+                stripped, legacy_act = CP.remove(text, LEGACY_CLUTCH_BLOCK)
+                if legacy_act != "none":
+                    text, retired = stripped or None, True                # retire the pre-rename block
             new, act = CP.upsert(text, CLUTCH_BLOCK, TOOL, clutch_block_body(argv))
             if act == "none":
+                if retired:    # the new block was already current:  the removal is the whole change, so write it
+                    return Outcome(CLUTCH_KEY, name, "added", "pre-rename block removed"), text, False
                 return Outcome(CLUTCH_KEY, name, "unchanged"), None, False
             return Outcome(CLUTCH_KEY, name, "added", "block replaced in place" if act == "replace" else ""), new, False
         if text is None:
