@@ -235,6 +235,8 @@ class State:
             " body_hash TEXT NOT NULL, message_id TEXT, attempts INTEGER NOT NULL DEFAULT 0,"
             " created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
         )
+        if "claim_token" not in {row[1] for row in self.db.execute("PRAGMA table_info(send_ledger)")}:
+            self.db.execute("ALTER TABLE send_ledger ADD COLUMN claim_token TEXT")
         self.db.execute(
             "CREATE TABLE IF NOT EXISTS recipient (id INTEGER PRIMARY KEY CHECK(id=1),"
             " value TEXT NOT NULL, updated_at INTEGER NOT NULL)"
@@ -319,6 +321,14 @@ class State:
                 " updated_at=excluded.updated_at",
                 (intent_id, state, body_hash, message_id, int(now), int(now)),
             )
+
+    def ledger_token(self, intent_id):
+        row = self.db.execute("SELECT claim_token FROM send_ledger WHERE intent_id=?", (intent_id,)).fetchone()
+        return row[0] if row else None
+
+    def ledger_set_token(self, intent_id, token):
+        with self.db:
+            self.db.execute("UPDATE send_ledger SET claim_token=? WHERE intent_id=?", (token, intent_id))
 
     def ledger_pending(self):
         return self.db.execute(
@@ -430,6 +440,10 @@ def send_enabled(state_directory):
 
 
 def main():
+    # runpy executes this module as __main__; alias its canonical import so
+    # outbound shares these exact exception classes instead of loading twice.
+    if __name__ == "__main__":
+        sys.modules.setdefault((__package__ + ".bridge") if __package__ else "bridge", sys.modules[__name__])
     if __package__:
         from . import outbound
     else:

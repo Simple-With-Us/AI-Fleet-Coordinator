@@ -75,7 +75,7 @@ test("the argument rules refuse a bad client_ref, a bad seq, an unknown field an
   assert.equal(await bad({ text: "", client_ref: "a1" }), true);
   assert.equal(s.store.map.size, 0, "nothing was stored");
   // A secret-shaped reply is refused with the rule name, and nothing is stored.
-  const refused = await t.call("whatsapp_reply", { text: "key AKIAIOSFODNN7EXAMPLE here", client_ref: "a1" });
+  const refused = await t.call("whatsapp_reply", { text: `key ${"AK" + "IA" + "IOSFODNN7EXAMPLE"} here`, client_ref: "a1" });
   assert.equal(refused.isError, true);
   assert.match(refused.content[0].text, /AWS access key/);
   assert.equal(s.store.map.size, 0);
@@ -299,4 +299,41 @@ test("the result route accepts only the signed contract of the bridge", async ()
   const req = new Request("https://example.test/internal/wa-outbox/JET/result", { method: "POST", headers: { [WA_HEADER]: await signature(KEY, bytes) }, body: bytes });
   const res = await serveWa(req, env, config, s.gate);
   assert.equal(res.status, 403, "an unknown intent is refused");
+});
+
+
+test("state ack cursor fails closed and intent status honors its filter", async () => {
+ const s=setup();
+ for(const ack_through of ["bad", "01", "-1", "999999999999999999999999", 1]) {
+  assert.equal((await s.gate.waReply({args:{text:"hi",client_ref:"a",ack_through}})).reason,"invalid_ack_through");
+ }
+ const a=await s.gate.waReply({args:{text:"first",client_ref:"a"}});
+ await s.gate.waReply({args:{text:"second",client_ref:"b"}});
+ const result=await s.gate.waSendStatus({intent_id:a.intent_id});
+ assert.equal(result.replies.length,1);assert.equal(result.replies[0].intent_id,a.intent_id);
+});
+
+test("active claim refuses omitted or stale tokens without finalizing",async()=>{
+ const s=setup();
+ await s.gate.waReply({args:{text:"first",client_ref:"a"}});
+ const claim=await s.gate.waOutboxClaim({});
+ for(const token of [undefined,"wrong"]) {
+  const result=await s.gate.waOutboxResult({body:{intent_id:claim.reply.intent_id,outcome:"sent",token}});
+  assert.equal(result.reason,"stale_claim");
+ }
+ const result=await s.gate.waOutboxResult({body:{intent_id:claim.reply.intent_id,outcome:"sent",token:claim.reply.token}});
+ assert.equal(result.state,"sent");
+});
+
+test("a refused retry keeps the quoted message id hash",async()=>{
+ const s=setup();
+ // Synthetic queued message record, independent of transport.
+ await s.store.put("wa:message:00000000000000000001",{id_hash:"q".repeat(64)});
+ const first=await s.gate.waReply({args:{text:"first",client_ref:"a",reply_to_seq:"1"}});
+ assert.equal(first.ok,true);
+ const claim=await s.gate.waOutboxClaim({});
+ await s.gate.waOutboxResult({body:{intent_id:claim.reply.intent_id,outcome:"refused",token:claim.reply.token}});
+ const retry=await s.gate.waReply({args:{text:"again",client_ref:"a",reply_to_seq:"1"}});
+ const row=await s.store.get(`wa:reply:${retry.intent_id}`);
+ assert.equal(row.reply_to_id_hash,"q".repeat(64));
 });

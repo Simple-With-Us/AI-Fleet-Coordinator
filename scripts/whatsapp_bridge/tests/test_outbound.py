@@ -333,5 +333,29 @@ class OutboundTests(unittest.TestCase):
         self.assertNotIn("a private reply", json.dumps([list(row) for row in rows]))
 
 
+    def test_failed_requeue_report_retains_ledger_and_claim_token(self):
+        worker = FakeWorker([reply()])
+        box = self.outbox(worker)
+        box._sent_at = [1792700000] * 10
+        def failing(url, *args, **kwargs):
+            if url.endswith("/result"):
+                raise outbound.BridgeError("not acknowledged")
+            return worker(url, *args, **kwargs)
+        box.request = failing
+        with self.assertRaises(outbound.BridgeError): box.step()
+        self.assertEqual(self.state.ledger_pending()[0][1], "claimed")
+        self.assertEqual(self.state.ledger_token(reply()["intent_id"]), reply()["token"])
+        box.request = worker
+        box.recover()
+        self.assertEqual(worker.results[-1]["token"], reply()["token"])
+        self.assertEqual(self.state.ledger_pending(), [])
+
+    def test_failed_restart_report_does_not_erase_claimed_ledger(self):
+        self.state.ledger_put(reply()["intent_id"], "claimed", body_hash("hi"), None, 1792700000)
+        box = self.outbox(lambda *a, **k: (_ for _ in ()).throw(outbound.BridgeError("offline")))
+        with self.assertRaises(outbound.BridgeError): box.recover()
+        self.assertEqual(len(self.state.ledger_pending()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

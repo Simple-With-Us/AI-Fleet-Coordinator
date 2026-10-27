@@ -224,7 +224,6 @@ class Outbox:
         for intent_id, state, digest in self.state.ledger_pending():
             if state == "claimed":
                 # The POST never started, so the reply goes back to the queue.
-                self.state.ledger_delete(intent_id)
                 report(
                     self.worker_url,
                     self.signing_key,
@@ -232,10 +231,11 @@ class Outbox:
                     "requeue",
                     self.clock,
                     self.request,
+                    token=self.state.ledger_token(intent_id),
                 )
+                self.state.ledger_delete(intent_id)
             else:
                 # The POST may have gone out: unknown for good, never resent.
-                self.state.ledger_put(intent_id, "outcome_unknown", digest, None, self.now())
                 report(
                     self.worker_url,
                     self.signing_key,
@@ -244,7 +244,9 @@ class Outbox:
                     self.clock,
                     self.request,
                     error="bridge_restart",
+                    token=self.state.ledger_token(intent_id),
                 )
+                self.state.ledger_put(intent_id, "outcome_unknown", digest, None, self.now())
 
     def rate_ok(self):
         """At most ten sends a minute, and the window is the last minute."""
@@ -260,13 +262,14 @@ class Outbox:
         # The write-ahead: claimed, then sending, before the POST.  A restart
         # reads these two states and never guesses.
         self.state.ledger_put(intent_id, "claimed", digest, None, self.now())
+        self.state.ledger_set_token(intent_id, token)
         if not self.enabled():
             # The switch flipped before the POST: a decline is a result, so
             # the reply goes back to held and never becomes unknown.
-            self.state.ledger_delete(intent_id)
             report(
-                self.worker_url, self.signing_key, intent_id, "declined", self.clock, self.request
+                self.worker_url, self.signing_key, intent_id, "declined", self.clock, self.request, token=token
             )
+            self.state.ledger_delete(intent_id)
             return {"state": "declined"}
         context_id = None
         if reply.get("reply_to_id_hash"):
@@ -275,10 +278,10 @@ class Outbox:
         if not self.rate_ok():
             # The claim is given back: the reply is queued again and nothing
             # is sent this minute.
-            self.state.ledger_delete(intent_id)
             report(
-                self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request
+                self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request, token=token
             )
+            self.state.ledger_delete(intent_id)
             return {"state": "rate_limited"}
         self._sent_at.append(self.clock())
         self.state.ledger_put(intent_id, "sending", digest, None, self.now())
@@ -315,10 +318,10 @@ class Outbox:
             )
             return {"state": "refused"}
         if outcome == "requeue":
-            self.state.ledger_delete(intent_id)
             report(
-                self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request
+                self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request, token=token
             )
+            self.state.ledger_delete(intent_id)
             return {"state": "requeue"}
         # Unknown: it stays unknown for good, and it is never sent again.
         self.state.ledger_put(intent_id, "outcome_unknown", digest, None, self.now())

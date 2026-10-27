@@ -270,9 +270,16 @@ export async function reply(store, { args, known = [], sendEnabled = false, bind
   if (rule) return { ok: false, reason: "secret_in_text", rule };
   return store.transaction(async tx => {
     if (args.ack_through !== undefined) {
+      if (typeof args.ack_through !== "string" || !/^[1-9][0-9]{0,15}$/.test(args.ack_through)) return { ok: false, reason: "invalid_ack_through" };
       const surfaced = (await tx.get("wa:surfaced")) ??  0;
       if (BigInt(args.ack_through) > BigInt(surfaced)) return { ok: false, reason: "not_surfaced" };
       await applyAck(tx, args.ack_through, (await tx.get("wa:ack")) ??  0, now);
+    }
+    let replyToIdHash = null;
+    if (args.reply_to_seq !== undefined) {
+      const message = await tx.get(key(args.reply_to_seq));
+      if (!message) return { ok: false, reason: "unknown_seq" };
+      replyToIdHash = message.id_hash ?? null;
     }
     const mapping = await tx.get(clientRefKey(refHash));
     if (mapping) {
@@ -282,7 +289,7 @@ export async function reply(store, { args, known = [], sendEnabled = false, bind
       } else if (prior.state === "refused") {
         // A definite refusal releases the bucket: the next attempt is a new
         // intent, linked to the refused one, which stays in the ledger.
-        return createIntent(tx, { text: args.text, bodyHash, refHash, replyToSeq: args.reply_to_seq, replyToIdHash: null, now, sendEnabled, suspect: await suspectHeld(tx, binding, now), binding, previousIntentId: prior.intent_id });
+        return createIntent(tx, { text: args.text, bodyHash, refHash, replyToSeq: args.reply_to_seq, replyToIdHash, now, sendEnabled, suspect: await suspectHeld(tx, binding, now), binding, previousIntentId: prior.intent_id });
       } else if (prior.state === "outcome_unknown") {
         // Unknown for good: nothing is sent, and nothing is queued.
         return { ok: false, reason: "outcome_unknown", intent_id: prior.intent_id, state: prior.state };
@@ -293,12 +300,6 @@ export async function reply(store, { args, known = [], sendEnabled = false, bind
     // A reply whose text is identical to an unknown-outcome reply is refused:
     // the system never sends that text again.
     if (await tx.get(unknownBodyKey(bodyHash))) return { ok: false, reason: "same_text_as_unknown" };
-    let replyToIdHash = null;
-    if (args.reply_to_seq !== undefined) {
-      const message = await tx.get(key(args.reply_to_seq));
-      if (!message) return { ok: false, reason: "unknown_seq" };
-      replyToIdHash = message.id_hash ?? null;
-    }
     return createIntent(tx, { text: args.text, bodyHash, refHash, replyToSeq: args.reply_to_seq, replyToIdHash, now, sendEnabled, suspect: await suspectHeld(tx, binding, now), binding, previousIntentId: null });
   });
 }
@@ -324,6 +325,11 @@ export async function sendStatus(store, { intent_id, action, sendEnabled = false
       await tx.put(replyKey(intent_id), settled);
       await tx.put(queueKey(row.queued_at, intent_id), {});
       return { ok: true, intent_id, state: "queued", reply: publicReply(settled) };
+    }
+    if (intent_id !== undefined) {
+      const row = await tx.get(replyKey(intent_id));
+      if (!row) return { ok: false, reason: "unknown_intent" };
+      return { ok: true, replies: [publicReply(row)] };
     }
     const recent = (await tx.get("wa:reply_recent")) ??  [];
     const replies = [];
@@ -409,7 +415,7 @@ export async function outboxResult(store, { body, binding = null }, now = Date.n
   return store.transaction(async tx => {
     const row = await tx.get(replyKey(intent_id));
     if (!row) return { ok: false, reason: "unknown_intent" };
-    if (row.token && body.token && row.token !== body.token) return { ok: false, reason: "stale_claim" };
+    if (row.token && row.token !== body.token) return { ok: false, reason: "stale_claim" };
     if (FINAL_STATES.includes(row.state)) {
       await tx.delete(inflightKey(intent_id));
       return { ok: true, state: row.state, duplicate: true };
