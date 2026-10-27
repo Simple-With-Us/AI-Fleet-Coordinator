@@ -163,7 +163,9 @@ class WorkflowWiringTests(unittest.TestCase):
             self.assertEqual(r.handle(TOKEN, "wf_run_rerun", bad)[0], 400)
             self.assertFalse(os.path.exists(store_path) and open(store_path).read().strip("{} \n"))
             self.assertEqual((r.client.calls, r.app_minter.calls), ([], []))
-            self.assertEqual(r.handle(TOKEN, "wf_run_rerun", {"repo": "example/x", "run_id": 5})[0], 200)
+            self.assertEqual(
+                r.handle(TOKEN, "wf_run_rerun", {"repo": "example/x", "run_id": 5})[0], 200
+            )
 
     def test_read_upstream_failure_is_retryable_not_unknown(self):
         with tempfile.TemporaryDirectory() as tmp:

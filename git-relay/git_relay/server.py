@@ -368,8 +368,10 @@ class Relay:
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 503, payload
-                if key is None and exc.status in (0, 408, 429) or (
-                    key is None and exc.status >= 500
+                if (
+                    key is None
+                    and exc.status in (0, 408, 429)
+                    or (key is None and exc.status >= 500)
                 ):
                     # A workflow READ changed nothing upstream: a transient failure is a
                     # plain retryable error, not an unknown outcome.
