@@ -60,7 +60,9 @@ class LogLocationTests(unittest.TestCase):
             seen.append((req.get_header("Authorization"), req.get_header("Range")))
             return Resp(b"0123456789" * 10)
 
-        data, truncated = self.client(full).fetch_public_tail("https://x.blob.core.windows.net/l", 15)
+        data, truncated = self.client(full).fetch_public_tail(
+            "https://x.blob.core.windows.net/l", 15
+        )
         self.assertEqual((data, truncated), (b"567890123456789"[-15:], True))
         self.assertEqual(seen, [(None, "bytes=-15")])
 
@@ -76,7 +78,8 @@ class LogLocationTests(unittest.TestCase):
             return Resp(b"all", 206, {"Content-Range": "bytes 0-2/3"})
 
         self.assertEqual(
-            self.client(whole).fetch_public_tail("https://x.blob.core.windows.net/l", 10), (b"all", False)
+            self.client(whole).fetch_public_tail("https://x.blob.core.windows.net/l", 10),
+            (b"all", False),
         )
 
     def test_a_server_that_ignores_range_on_a_huge_log_is_refused_not_misread(self):
@@ -91,7 +94,9 @@ class LogLocationTests(unittest.TestCase):
             return Resp(b"z" * 100)
 
         with self.assertRaises(RelayGitHubError):
-            self.client(opener).fetch_public_tail("https://x.blob.core.windows.net/l", 10, full_cap=50)
+            self.client(opener).fetch_public_tail(
+                "https://x.blob.core.windows.net/l", 10, full_cap=50
+            )
 
 
 if __name__ == "__main__":

@@ -290,7 +290,8 @@ class GitHubClient:
                     if len(data) > window:
                         raise RelayGitHubError(0, "log fetch returned more than requested")
                     match = re.match(
-                        r"bytes (\d+)-\d+/", (getattr(resp, "headers", None) or {}).get("Content-Range", "")
+                        r"bytes (\d+)-\d+/",
+                        (getattr(resp, "headers", None) or {}).get("Content-Range", ""),
                     )
                     return data, bool(match and int(match.group(1)) > 0)
                 data = resp.read(full_cap + 1)
