@@ -1,4 +1,4 @@
-"""`agent-sync mcp`:  the stdio MCP server, over real pipes, against the fake Zulip server.
+"""`simple-chat mcp`:  the stdio MCP server, over real pipes, against the fake Zulip server.
 
 Protocol (both eras, framing, errors), the tool contract (tools.json, schemas, annotations), each
 tool, the untrusted fence, the shared golden fixtures, idempotency and reconcile, write spacing,

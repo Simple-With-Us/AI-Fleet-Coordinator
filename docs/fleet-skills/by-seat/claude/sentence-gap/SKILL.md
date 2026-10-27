@@ -503,7 +503,7 @@ and never the value, a prefix of it, or the matched text, because a refusal can 
 refusal is not something to work around:  do not split the secret, do not edit it, and do not relay
 it in a different surface.
 
-The `simple-chat` / `agent-sync` CLI is already covered:  `_scan_refusal` in
+The `simple-chat` CLI is already covered:  `_scan_refusal` in
 `scripts/agent_sync/cli.py` refuses a secret-shaped body, topic or channel before the post goes
 out.  A `gh pr create --body-file` or `gh pr comment --body-file` relay bypasses that CLI, so the
 scan still has to run *before* the `gh` relay.

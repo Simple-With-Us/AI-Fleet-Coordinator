@@ -8,8 +8,10 @@
 #      $FLEET_RAG_HOME (default $HOME/apps/fleet-rag/) and creates state/ cache/ logs/ there.
 #   2. Symlinks $HOME/.local/bin/recall -> <install root>/recall and $HOME/.local/bin/recall-tunnel
 #      -> <install root>/recall-tunnel, always.  It also links $HOME/apps/mac-collab/{recall,
-#      recall-tunnel} when that directory already exists (agent shells prepend ~/apps/mac-collab;
-#      board is ~/.local/bin/board) and skips it otherwise.
+#      recall-tunnel} when that directory already exists (agent shells used to prepend
+#      ~/apps/mac-collab;  the board is ~/.local/bin/simple-board) and skips it otherwise.  The
+#      directory itself was retired on 2026-10-19 (AFC-363) and moved to
+#      $HOME/apps/_retired/mac-collab-20261019/, so the extra link is normally skipped.
 #   3. Registers a stdio MCP server "fleet-recall"
 #        {command: "python3", args: ["<install root>/fleet-recall-mcp.py"]}
 #      in ~/.claude.json, ~/.cursor/mcp.json, ~/.gemini/config/mcp_config.json,
@@ -17,7 +19,7 @@
 #      The harnesses with a different config format (OpenCode, Kimi Code, Copilot CLI, Muse Code, MiniMax, fx)
 #      go through `python3 -m fleet_lanes.install_mcp`, which this script calls with --home "$HOME"; it writes
 #      each tool's native shape, skips a tool that is not installed, and leaves a hand-registered entry alone.
-#      Clutch is not touched here: it carries fleet-recall as a native agent preset.  agent-sync is not
+#      Clutch is not touched here: it carries fleet-recall as a native agent preset.  the local ST-MCP server is not
 #      registered here (run install_mcp with --with-agent-sync; docs/protocols/agent-sync-mcp.md).
 #   4. With --with-seat-mcp, also copies seat_mcp/tools.py + recall_bridge.py into
 #      $HOME/apps/seat-mcp/seat_mcp/ and prints the pm2 restart command (does not run it).
