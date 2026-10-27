@@ -133,5 +133,18 @@ class RemoteRecall(unittest.TestCase):
             self.assertFalse(recall.remote_selected())
 
 
+class TransportErrors(unittest.TestCase):
+    def test_a_truncated_or_malformed_http_answer_is_a_clean_error(self):
+        import http.client
+
+        class Op:
+            def open(self, *a, **k):
+                raise http.client.IncompleteRead(b"x")
+
+        with mock.patch.object(recall.urllib.request, "build_opener", return_value=Op()):
+            with self.assertRaises(recall.FleetRagError):
+                recall._remote_post("https://agents.simplewithus.com/mcp", {}, b"{}", 1)
+
+
 if __name__ == "__main__":
     unittest.main()

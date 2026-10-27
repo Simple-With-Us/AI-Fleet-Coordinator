@@ -138,6 +138,19 @@ class RemoteRead(unittest.TestCase):
         self.assertEqual(calls, [])
 
 
+class TransportErrors(unittest.TestCase):
+    def test_a_truncated_or_malformed_http_answer_is_a_clean_error(self):
+        import http.client
+
+        class Op:
+            def open(self, *a, **k):
+                raise http.client.IncompleteRead(b"x")
+
+        with mock.patch.object(cli.urllib.request, "build_opener", return_value=Op()):
+            with self.assertRaises(cli.RemoteError):
+                cli._remote_post("https://agents.simplewithus.com/mcp", {}, b"{}", 1)
+
+
 class EntrypointTrap(unittest.TestCase):
     """The real scripts/simple-chat file in a subprocess:  its own attach/detach fast path must not run."""
 

@@ -25,6 +25,7 @@ import contextlib
 import datetime as dt
 import difflib
 import functools
+import http.client
 import json
 import os
 import re
@@ -2926,7 +2927,7 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
             return r.status, r.headers.get("Content-Type", ""), r.read(4_000_000)
     except urllib.error.HTTPError as exc:
         return exc.code, "", b""
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
         raise RemoteError(
             "the hosted endpoint could not be reached (no direct fallback in remote mode)"
         ) from None
