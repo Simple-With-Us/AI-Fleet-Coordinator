@@ -63,6 +63,7 @@ import {
   RECALL_MARKER_END,
 } from "./recall.js";
 import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES } from "./gr-tools.js";
+import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
 import { WF_V1_ACTIONS, WF_V1_TOOLS, validWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS } from "./gr-workflow-v1.js";
 import {
   FLEETLINK_TOOLS,
@@ -162,7 +163,7 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
 // (every tools.json tool after the first ten, as zulip_<name>) and the read-only listener tools
 // after those, so every earlier tool keeps its place.
-export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...WF_V1_TOOLS]);
+export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...TYPED_V1_TOOLS, ...WF_V1_TOOLS]);
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
 export const HOSTED_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])));
 // Every hosted tool is classified here, explicitly, as a read or a write (AFC-331:  a write must name its
@@ -175,8 +176,8 @@ const ZULIP_WRITE_NAMES = [...WRITE_TOOLS, ...DM_WRITE_TOOLS].map(publicZulip);
 const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
 const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
-export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
-export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
+export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
+export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
 // a seat inside Linear's request budget, short enough that a team rename or a
@@ -1335,9 +1336,9 @@ export class HostedTools {
    * mis-answering upstream becomes a ToolError.  The relay's error string is
    * capped:  it is meant for the caller, but it is still another service's
    * text. */
-  async grCall(action, args, workflow = false) {
+  async grCall(action, args, {typedPrincipal = null, workflow = false} = {}) {
     const client = this.requireGr();
-    const { status, body } = await (workflow ? client.callWorkflow(action, args) : client.call(action, args));
+    const { status, body } = await (typedPrincipal ? client.callTyped(action, args, typedPrincipal) : workflow ? client.callWorkflow(action, args) : client.call(action, args));
     if (status === 0) throw new ToolError("unavailable", "GR-MCP could not reach git-relay.  Try again shortly;  if it persists, the relay host is down.");
     // The relay uses 502 for a write whose outcome is UNKNOWN (GitHub may have
     // accepted;  replay is refused until resolved) - never misread it as an
@@ -1371,6 +1372,7 @@ export class HostedTools {
     // relay_refused is reserved for 4xx (kody discussion_r4372747157):  the
     // relay's deliberate verdicts (allowlist, replay refusals, terminal
     // GitHub refusals) - definite, no hidden side effect.
+    if (status === 429 && body?.retryable === true) throw new ToolError("rate_limited", "git-relay quota is exhausted.  Retry after the quota window.", {retryable:true});
     if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
     // A successful call still must answer with a plain JSON object;  anything
     // else is a mis-answering upstream, not a result.
@@ -1977,6 +1979,17 @@ export function seatProblem(me, { seat, email, ownerUserId = null }) {
   return null;
 }
 
+
+// Server-owned expected App principal must be supplied for the selected identity.
+// No seat-name-to-App guessing, caller override, minting or live policy change.
+for (const action of TYPED_V1_ACTIONS) {
+  HostedTools.prototype[`tool_gr_v1_${action}`] = async function(args) {
+    const principal = this.config?.grTypedPrincipals?.[this.seat];
+    if (this.config?.grTypedEnabled !== true || !/^swu-[a-z0-9-]+\[bot\]$/.test(principal ?? ""))
+      throw new ToolError("not_configured", "Typed git-relay tools are not configured for this identity.");
+    return this.grCall(action, args, {typedPrincipal: principal});
+  };
+}
 // gr_wf_* : same relay transport as the seven gr_ tools (POST /v1/<action>, caller bearer, Access
 // headers, grCall error mapping incl. outcome_unknown on 5xx).  The relay owns outcome/idempotency
 // (durable outcome rows, replay refusal) and head fences travel in the args.  Default off.
@@ -1986,6 +1999,6 @@ for (const action of WF_V1_ACTIONS) {
       throw new ToolError("not_configured", "The git-relay workflow tools are not enabled on this server.  The other tools still work.");
     }
     if (!validWfV1Args(action, args)) throw new ToolError("invalid_argument", `Invalid arguments for gr_${action}.`);
-    return this.grCall(action, args, true);
+    return this.grCall(action, args, {workflow:true});
   };
 }
