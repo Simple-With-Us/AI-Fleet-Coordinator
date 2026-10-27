@@ -898,7 +898,7 @@ def current_seat(required: bool = True) -> str:
     """The seat this run acts as, proven by the admin-minted bearer at
     SIMPLE_BOARD_BEARER_LOCATOR (owner direction 2026-10-26:  the bearer
     identifies the agent;  there is no identity picker).  AGENT_SEAT is never
-    consulted.  The four write verbs require a verified seat, because every
+    consulted.  The five write verbs require a verified seat, because every
     write is signed with it and the CLI never guesses;  with no locator they
     refuse with EXIT_AUTH.  Reads (list, show, stats, whoami) run without one:
     they write nothing, and a locator is absent in plain shells, in `zsh -lic`,
