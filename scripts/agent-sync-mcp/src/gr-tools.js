@@ -130,6 +130,8 @@ export class GrRelayClient {
         return {status:200,body};
       }
       if (response.status < 400 || response.status > 599 || !body || typeof body!=="object" || Array.isArray(body)) return unavailable();
+      const errorShape = z.object({error:z.string().max(1000),retryable:z.boolean().optional(),outcome:z.enum(['pending','unknown','refused']).optional()}).strict().safeParse(body);
+      if(!errorShape.success) return unavailable();
       // Never reflect upstream error prose; a duplicate can be pending/unknown.
       if(response.status===409 && ['pending','unknown'].includes(body.outcome))
         return {status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false}};

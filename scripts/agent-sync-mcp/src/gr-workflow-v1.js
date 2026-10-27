@@ -9,7 +9,7 @@ const REPO = { type: 'string', pattern: '^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Z
 const SHA = { type: 'string', pattern: '^[0-9a-f]{40}$' };
 const INT = { type: 'integer', minimum: 1, maximum: 1e12 };
 const PER_PAGE = { type: 'integer', minimum: 1, maximum: 50 };
-const CONTENT = { type: 'string', minLength: 1, maxLength: 256 * 1024 };
+const CONTENT = { type: 'string', minLength: 1, maxLength: 60000 };
 const PATH = {type:'string', maxLength:1024, pattern:'^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$'};
 const REF = {type:'string', maxLength:200, pattern:'^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$'};
 const STR = { type: 'string', maxLength: 500 };
@@ -97,7 +97,8 @@ export function validWfV1Response(action, body) {
   for (const k of ['pulls','files','entries','branches','commits','items','runs','jobs','checks']) {
     if (k in body && !(action === 'wf_files_put' && k === 'files') && !Array.isArray(body[k])) return false;
   }
-  if ('complete' in body && body.complete !== false) return false;
+  if ('complete' in body && typeof body.complete !== 'boolean') return false;
+  if (action === 'wf_files_put' && (!Number.isInteger(body.files) || body.files < 1 || body.files > 20 || typeof body.branch !== 'string')) return false;
   if ('truncated' in body && typeof body.truncated !== 'boolean') return false;
   if (action === 'wf_merge_guarded') return body.merged === true && /^[0-9a-f]{40}$/.test(body.sha);
   if (action === 'wf_update_branch') return body.accepted === true && typeof body.message === 'string';

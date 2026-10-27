@@ -91,7 +91,7 @@ test('write failures never retry or claim no write; read failures are retryable'
 test('read success, malformed receipts and streamed caps',async()=>{
   const good=harness(async()=>new Response(JSON.stringify({runs:[],complete:false})));
   assert.ok(!(await good.call('gr_wf_runs',{repo})).isError);
-  for(const body of [{unexpected:'field'}, {runs:[],complete:true}, 'x'.repeat(1048577),{runs:['private-access-secret'],complete:false}]) {
+  for(const body of [{unexpected:'field'}, 'x'.repeat(1048577),{runs:['private-access-secret'],complete:false}]) {
     const t=harness(async()=>new Response(typeof body==='string'?body:JSON.stringify(body)));
     assert.ok((await t.call('gr_wf_runs',{repo})).isError);
   }
@@ -123,4 +123,17 @@ test('path/ref/repo traversal and structural bombs fail closed',async()=>{
   const t=harness(async()=>{throw Error('no network');});
   assert.ok((await t.call('gr_wf_runs',args)).isError);
  }
+});
+
+test('success completion, file-count receipts and malformed failure metadata',async()=>{
+ const complete=harness(async()=>new Response(JSON.stringify({runs:[],complete:true})));
+ assert.ok(!(await complete.call('gr_wf_runs',{repo})).isError);
+ const bad=harness(async()=>new Response(JSON.stringify({error:'x',retryable:'yes'}),{status:503}));
+ const r=await bad.call('gr_wf_run_cancel',{repo,run_id:1});assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);
+ const args={repo,branch:'b',message:'m',expected_head_sha:'a'.repeat(40),files:[{path:'x',content_b64:'QQ=='}]};
+ for(const files of [null,{},[],0,21,'1']) {
+   const t=harness(async()=>new Response(JSON.stringify({branch:'b',commit:'a'.repeat(40),files})));
+   assert.ok((await t.call('gr_wf_files_put',args)).isError);
+ }
+ assert.ok(!validWfV1Args('wf_file_put',{repo,path:'a',branch:'b',message:'m',content_b64:'A'.repeat(60001)}));
 });
