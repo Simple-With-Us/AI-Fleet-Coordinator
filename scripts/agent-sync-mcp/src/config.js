@@ -336,6 +336,8 @@ export function loadConfig(env) {
     whatsappEnabled: String(env.WHATSAPP_BRIDGE_ENABLED ?? "").trim() === "on",
     grTypedPrincipals: Object.freeze({...grTypedPrincipals}),
     grTypedEnabled: String(env.GR_TYPED_TOOLS ?? "").trim() === "on",
+    // Default off: the gr_wf_ workflow verb tools are neither listed nor callable until the owner sets GR_WORKFLOW_TOOLS=on.
+    grWorkflowEnabled: String(env.GR_WORKFLOW_TOOLS ?? "").trim() === "on",
     whatsappWakeEnabled: String(env.WHATSAPP_BRIDGE_WAKE_ENABLED ?? "").trim() === "on",
     spikeExtraEvents: String(env.SPIKE_EXTRA_EVENTS ?? "").trim() === "on",
   });
