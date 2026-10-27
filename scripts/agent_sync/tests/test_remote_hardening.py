@@ -402,12 +402,24 @@ class Stall(unittest.TestCase):
 class DeadlineArithmetic(unittest.TestCase):
     """The total budget covers the open and every read, including the final empty (EOF) read, on a mocked clock."""
 
+    class Sock:
+        def settimeout(self, value):
+            self.last = value
+
+    class Raw:
+        def __init__(self):
+            self._sock = DeadlineArithmetic.Sock()
+
+    class Fp:
+        def __init__(self):
+            self.raw = DeadlineArithmetic.Raw()
+
     class Resp:
         status = 200
         headers = {"Content-Type": "application/json"}
-        fp = None
 
         def __init__(self, chunks):
+            self.fp = DeadlineArithmetic.Fp()
             self.chunks = list(chunks)
 
         def __enter__(self):
@@ -445,6 +457,22 @@ class DeadlineArithmetic(unittest.TestCase):
                 with self.assertRaises(ad.module._TransportError):
                     self.run_with_clock(ad.module, [0.0, 1.2], [b"{}"])
 
+    def test_a_response_with_no_socket_to_bound_is_refused_not_read_unbounded(self):
+        for ad in ADAPTERS:
+            with self.subTest(transport=ad.name):
+                resp = self.Resp([b"{}"])
+                resp.fp = None
+
+                class Op:
+                    def open(self, *a, **k):
+                        return resp
+
+                with mock.patch.object(ad.module.urllib.request, "build_opener", return_value=Op()):
+                    with self.assertRaises(ad.module._TransportError) as ctx:
+                        ad.module._remote_post("https://agents.simplewithus.com/mcp", {}, b"{}", 1)
+                self.assertTrue(ctx.exception.sent)
+                self.assertEqual(resp.chunks, [b"{}"], "the body was read without a bounded socket")
+
     def test_a_read_that_finishes_inside_the_budget_succeeds(self):
         for ad in ADAPTERS:
             with self.subTest(transport=ad.name):
@@ -461,6 +489,50 @@ class DeadlineArithmetic(unittest.TestCase):
 
                 _, err = ad.call("zulip_post", {"text": "hi"}, True, post)
                 self.assertIn("may or may not have been applied", err)
+
+
+@contextlib.contextmanager
+def scanner_missing():
+    """`from . import secretscan` fails as it would if the file were absent from the release."""
+    import agent_sync
+
+    saved = getattr(agent_sync, "secretscan", None)
+    if saved is not None:
+        del agent_sync.secretscan
+    try:
+        with mock.patch.dict("sys.modules", {"agent_sync.secretscan": None}):
+            yield
+    finally:
+        if saved is not None:
+            agent_sync.secretscan = saved
+
+
+class ScannerImport(unittest.TestCase):
+    def test_a_missing_scanner_in_simple_chat_is_a_clean_refusal_not_a_traceback(self):
+        sent = []
+        with scanner_missing(), mock.patch.object(cli, "_remote_post", lambda *a: sent.append(a)):
+            with self.assertRaises(cli.RemoteError) as ctx:
+                cli._remote_call({"SIMPLE_TOOLS_BEARER": BEARER}, "whoami", {}, False)
+        self.assertIn("secret scanner is not available", str(ctx.exception))
+        self.assertEqual(sent, [])
+
+    def test_the_cli_entrypoint_exits_2_with_no_traceback_when_the_scanner_is_missing(self):
+        import tempfile
+
+        out, err = io.StringIO(), io.StringIO()
+        with tempfile.TemporaryDirectory() as home, scanner_missing():
+            code = cli.main(
+                ["whoami"],
+                prog="simple-chat",
+                env={"SIMPLE_CHAT_REMOTE": "1", "SIMPLE_TOOLS_BEARER": BEARER},
+                stdout=out,
+                stderr=err,
+                stdin=io.StringIO(),
+                home=Path(home),
+            )
+        self.assertEqual(code, 2)
+        self.assertNotIn("Traceback", err.getvalue())
+        self.assertIn("secret scanner is not available", err.getvalue())
 
 
 class CodeAllowList(unittest.TestCase):

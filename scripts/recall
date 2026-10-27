@@ -522,12 +522,15 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
         with op.open(req, timeout=timeout) as r:
             chunks, total = [], 0
             sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
+            if sock is None:
+                # Without the socket the remaining budget cannot be applied to each read, so a stalled body could
+                # outlast the deadline:  fail closed rather than read unbounded.
+                raise _TransportError(True, "transport")
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise _TransportError(True, "deadline")
-                if sock is not None:
-                    sock.settimeout(remaining)
+                sock.settimeout(remaining)
                 chunk = r.read1(65536)
                 if time.monotonic() > deadline:
                     raise _TransportError(True, "deadline")

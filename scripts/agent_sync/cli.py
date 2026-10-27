@@ -2981,12 +2981,15 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
         with op.open(req, timeout=timeout) as r:
             chunks, total = [], 0
             sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
+            if sock is None:
+                # Without the socket the remaining budget cannot be applied to each read, so a stalled body could
+                # outlast the deadline:  fail closed rather than read unbounded.
+                raise _TransportError(True, "transport")
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise _TransportError(True, "deadline")
-                if sock is not None:
-                    sock.settimeout(remaining)
+                sock.settimeout(remaining)
                 chunk = r.read1(65536)
                 if time.monotonic() > deadline:
                     raise _TransportError(True, "deadline")
@@ -3189,8 +3192,12 @@ def _remote_call(
         raise RemoteError(
             f"{REMOTE_BEARER_ENV} is not a bearer token (unexpected characters or length)"
         )
-    from . import secretscan
-
+    try:
+        from . import secretscan
+    except (ImportError, OSError):
+        raise RemoteError(
+            "the secret scanner is not available, so nothing was sent (remote mode has no unscanned route)"
+        ) from None
     hit = _remote_scan_arguments(secretscan, arguments, bearer)
     if hit:
         raise RemoteError(f"refused before sending: {hit}")
