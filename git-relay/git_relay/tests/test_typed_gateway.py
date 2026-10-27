@@ -87,8 +87,14 @@ class Tests(unittest.TestCase):
                 return "test-installation", 999999999
 
         for enabled in (False, True):
-            relay = Relay(self.policy, self.client, self.audit, app_minter=Minter(),
-                          outcomes=OutcomeStore(self.path), typed_disarm_enabled=enabled)
+            relay = Relay(
+                self.policy,
+                self.client,
+                self.audit,
+                app_minter=Minter(),
+                outcomes=OutcomeStore(self.path),
+                typed_disarm_enabled=enabled,
+            )
             status, body = relay.handle(TOKEN, "pr_state", ARGS)
             self.assertEqual(status, 200 if enabled else 400)
         self.assertEqual(len(self.client.calls), 1)
