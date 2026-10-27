@@ -111,7 +111,7 @@ def seat_pin_block(seat: Seat) -> str:
         # A retired seat is never anyone's default:  the arm fails instead.
         return _seat_block(
             f'"${{AGENT_SEAT:?{seat.tag} is retired; take no work as {seat.tag}}}"',
-            f"you have no seat here:  {seat.tag} is retired and is no platform's default.",
+            "you have no seat here — a retired catalog pack is never a platform default.",
             prefix_line,
         )
     bot = _bot_address(seat)
