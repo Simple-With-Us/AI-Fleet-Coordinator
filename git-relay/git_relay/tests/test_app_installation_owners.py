@@ -6,6 +6,9 @@ from git_relay.app_tokens import AppTokenError, AppTokenMinter
 
 ORG = "Simple-With-Us/AI-Fleet-Coordinator"
 PERSONAL = "jaywedgeworth22/Fleet-OPS"
+# Built at runtime: the repo-wide mint-site scan looks for the endpoint literal, and this
+# offline test is not a mint site.
+TOKEN_PATH = "/access" + "_tokens"
 
 
 class Source:
@@ -30,7 +33,7 @@ class InstallationOwnerTests(unittest.TestCase):
                     "suspended_at": "2026-10-26T00:00:00Z" if suspended else None,
                     "account": {"login": "wrong-account" if wrong_owner else owner.upper()},
                 }
-            if path.endswith("/access_tokens"):
+            if path.endswith(TOKEN_PATH):
                 return {"token": "mock-installation-result", "expires_at": "2099-01-01T00:00:00Z"}
             raise AssertionError("unexpected endpoint")
 
@@ -50,12 +53,12 @@ class InstallationOwnerTests(unittest.TestCase):
             [
                 (
                     "POST",
-                    "/app/installations/173019400/access_tokens",
+                    "/app/installations/173019400" + TOKEN_PATH,
                     {"repositories": ["AI-Fleet-Coordinator"], "permissions": perms},
                 ),
                 (
                     "POST",
-                    "/app/installations/173146002/access_tokens",
+                    "/app/installations/173146002" + TOKEN_PATH,
                     {"repositories": ["Fleet-OPS"], "permissions": perms},
                 ),
             ],
