@@ -1,4 +1,4 @@
-"""The test harness:  a temp world with a fake `board` and a fake `agent-sync` on PATH.
+"""The test harness:  a temp world with a fake `simple-board` and a fake `simple-chat` on PATH.
 
     world = World(self)
     code, out, err = world.run("file", "--by", "CLAUDE", ...)

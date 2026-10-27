@@ -1,4 +1,4 @@
-<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:76be5422913ac624164d14570c460e74f65ccbcf0d9934281d462fcde31bf8d4 -->
+<!-- GENERATED from Simple-With-Us/Fleet-OPS handbook/.  Do not edit here; open a PR to handbook/.  body-sha256:ec0f18bc1f164c00a69475da25388a074036ffe59209fabdec0107833104f3e4 -->
 # AGENT-SYNC — Fleet Coordination Protocol
 
 This is the protocol every AI agent seat follows when it works on the owner's apps:  who each seat is, how work is claimed, landed, and closed out in Linear, how seats talk in Zulip, and the standing rules for secrets, delegation, owner-facing writing, and the Mac.  It exists so parallel seats never collide on, duplicate, or silently drop the same work.
@@ -1181,6 +1181,18 @@ One limit is worth knowing:  a sentence end inside an inline code span is still 
 - Title: `[APP, Agent] short topic`, app acronyms first, then the agent in Title Case (owner 2026-08-09).  Example: `[UM, Grok] TestFlight first ship`.  Never put a date or the word "session" in the title.
 - The second body row is the local create or update stamp, for example `Sun, Aug 9, 3:52pm`, refreshed on every edit.  The helper writes it.
 - Full standard, binding and unchanged: `docs/protocols/apple-notes-title-structure.md` in AI-Fleet-Coordinator, or `recall "Title + structure standard"`.
+
+### Links In Notes
+
+- The helper links project and pull request references for you (owner 2026-10-25:  "links everywhere and prefer apple notes have them even").  Write the reference the way you would say it and the note carries the link:  `OPS-1000` becomes a link to that Linear issue, `PR #957` becomes a link to that pull request, and the text is normalised to the house form `PR #N`.  A list works too:  `PRs #380, #386 and #389` becomes one link per number, and a file count that follows a list is not one of them.
+- This is a third automatic rewrite in the helper, beside the fleet dates and the sentence gaps.  It runs on the finished HTML, so it covers the body and the date row's PR suffix alike.
+- A pound sign means a pull request and a hyphen means a Linear issue, so `AFC#957` is a pull request in `AI-Fleet-Coordinator` and `AFC-547` is the Linear issue of that team.  There is one Linear team per repository:  `AFC` is `AI-Fleet-Coordinator`, `OPS` is `Fleet-OPS`, `CTS` is `congress-trading-shared`.
+- A bare `PR #N` is read from the block it sits in:  a repository named next to it, the subject of a table row, the one team the block names, the nearest repository named near it, the team key in the note title, and the fallback repository.  When the block names two repositories and the reference names none of them, it stays plain text, because a link to the wrong repository is worse than no link.
+- A `CTS` issue is implemented in `Congress.Trade`, `Socratic-Trade` and `Usage-Monitor` as well, so the helper asks GitHub which of them holds the number, and leaves the reference alone when none of them does.
+- What is left alone:  code spans, fenced blocks, an identifier inside a URL, a hand-written link (it is never doubled), and an identifier that is not a Linear issue, such as `SRV-S07`.  The helper only links the sixteen real Linear team keys.
+- The helper says what it linked on stderr (`notes: linkified:  2 project references and 1 pull request reference became links`) and records the counts in the action log under `reformatted.links`.
+- Turn the step off for one run with `NOTES_LINKIFY=0`.
+- Writing the reference by hand still works.  The helper only fills in what you left bare.
 
 ### Completion Notes
 

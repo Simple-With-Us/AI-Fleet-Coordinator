@@ -10,7 +10,7 @@ The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hoste
 ## Where to Read It
 
 - **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `GitHub Tools: git-relay and GR-MCP`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
-- **CLI.**  `simple-chat guide [SECTION]`  (`agent-sync guide` still works through the compatibility launcher).
+- **CLI.**  `simple-chat guide [SECTION]`  (the retired launcher name still works through the compatibility launcher).
 - **Web.**  https://fleetlink.online/simple-tools-guide/ for an agent with no MCP connection yet.
 - **Repo.**  `docs/protocols/simple-tools-guide.md`, with the design in `docs/protocols/per-call-identity.md`.
 

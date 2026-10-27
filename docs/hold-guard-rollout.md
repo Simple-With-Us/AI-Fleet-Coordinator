@@ -111,6 +111,13 @@ per-setter holds; the suffix is a display hint, never the ownership source.
     critical failure.  This mirrors the fleet's own contract (ST
     scripts/disable-pr-automerge.sh, ported inline into the AFC reusable
     workflow's disarm job); no blanket `|| true` anywhere.
+  - An unconfirmed disarm also settles the CHECK conclusion as a failure
+    (AFC-553): the guard does not know that auto-merge is off, so it cannot
+    vouch for a pull request that may still merge itself, whatever the hold
+    state says.  The gate publishes red and says why, instead of publishing
+    green over a known-unresolved condition.  The seat that armed auto-merge
+    can always disarm it with its own token, and the git relay is meant to
+    give the workflow a token allowed to make the mutation.
   - Check publication: the check-run listing (GET) is the last read and
     happens before the payload is built, so its failure recomputes the
     payload to failure; the POST is still attempted best-effort.  A
@@ -127,6 +134,35 @@ per-setter holds; the suffix is a display hint, never the ownership source.
 - merge-gate as github-actions[bot] is forgeable by a same-repo workflow
   author with checks: write; binding the required check to a dedicated App
   narrows that to the App's key holders.
+
+## Observed production behavior (first live run, 2026-10-26)
+
+Run 40322235405 (PR 944, pull_request_target, head 63795aed) completed
+green on the unheld/off path: event trigger, base-branch checkout of the
+merged code, live-API evaluation and merge-gate publication (check
+121569862840, SUCCESS on the exact head) are verified working in
+production.  The disarm mutation was refused for this run's token
+("Resource not accessible by integration" on disablePullRequestAutoMerge);
+the independent state read returned off, so the run was benign under the
+fleet contract (the state read, not the mutation exit code, defines
+success).
+
+Limits of this observation:
+
+- The available filtered timeline for PR 944 showed no hold/automerge
+  events.  That is not proof the PR was never held or armed, and not
+  contemporaneous event state.
+- One refused mutation shows this run's token could not disarm.  It does
+  not establish that a given identity can never disarm - no capability
+  grounding beyond this single observation exists.
+- In the predicted armed path the guard DETECTS and ERRORS (red job,
+  error notices, merge-gate still publishing the evaluated hold state).
+  It does not prevent an armed merge: with merge-gate not wired as a
+  required check (slice 4), an armed auto-merge may still complete.
+
+Unobserved in production: successful armed disarm, hold detection and
+repair on a held PR, setter-only release behavior.  Hard enforcement
+remains absent until slice 4.
 
 ## Privileged-workflow trust boundary (resolved 2026-10-25 review)
 

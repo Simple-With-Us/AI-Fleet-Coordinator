@@ -26,7 +26,7 @@ OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
 LOG_DIR="${HOME}/Library/Logs/mac-seat-claim"
 GROK_BIN="${GROK_BIN:-/Users/jay/.grok/bin/grok}"
 CURSOR_AGENT="${CURSOR_AGENT:-cursor-agent}"
-# Zulip posting needs no shared secret: the agent-sync CLI reads the seat's own
+# Zulip posting needs no shared secret: the simple-chat CLI reads the seat's own
 # Zulip credential (Infisical Fleet-OPS /zulip).  The old AGENT_SYNC_ENV / AGENT_SYNC_POST_URL
 # relay is retired and deliberately not referenced here.
 ZULIP_CHANNEL="${ZULIP_CHANNEL:-Work-In-Progress}"
@@ -117,21 +117,21 @@ PY
 }
 
 post_agent_sync() {
-  # Post to Zulip with the seat's own bot via the agent-sync CLI.
+  # Post to Zulip with the seat's own bot via the simple-chat CLI.
   # The CLI resolves that seat's own Zulip credential (Infisical /zulip) itself, so
   # there is no shared bearer token to parse, rotate, or leak in this script.
   # (The old relay POST is retired; see AGENT-SYNC.md.)
   local text="$1"
   local topic="${2:-mac seat claims}"
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'DRY: agent-sync post --as %s --channel %s --topic %q: %s\n' "$BY" "$ZULIP_CHANNEL" "$topic" "$text"
+    printf 'DRY: simple-chat post --as %s --channel %s --topic %q: %s\n' "$BY" "$ZULIP_CHANNEL" "$topic" "$text"
     return 0
   fi
-  command -v agent-sync >/dev/null 2>&1 || {
-    echo "mac-seat-claim: agent-sync not on PATH; skipping Zulip post" >&2
+  command -v simple-chat >/dev/null 2>&1 || {
+    echo "mac-seat-claim: simple-chat not on PATH; skipping Zulip post" >&2
     return 0
   }
-  agent-sync post --as "$BY" --channel "$ZULIP_CHANNEL" --topic "$topic" "$text" >/dev/null 2>&1 || true
+  simple-chat post --as "$BY" --channel "$ZULIP_CHANNEL" --topic "$topic" "$text" >/dev/null 2>&1 || true
 }
 
 spawn_local_agent() {

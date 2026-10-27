@@ -1,7 +1,7 @@
 """Files shared by the listener daemon, the session hooks and the CLI:  leases, live inboxes,
 claiming, the live budget, untrusted wrapping and the light config read.
 
-This module sits on the hook fast path (`agent-sync attach --hook ...` runs on every prompt and
+This module sits on the hook fast path (`simple-chat attach --hook ...` runs on every prompt and
 Stop), so it imports only light standard-library modules:  no subprocess, no urllib, no
 zoneinfo, no tempfile, no dataclasses, and nothing from `cli`, `zulip` or `state`.  The test
 suite checks that list.
@@ -884,7 +884,7 @@ def claim(
     notes: list[str] = []
     if omitted:
         notes.append(
-            "%d older omitted, use agent-sync read --since %s"
+            "%d older omitted, use simple-chat read --since %s"
             % (len(omitted), omitted[0].get("id"))
         )
     if stale:

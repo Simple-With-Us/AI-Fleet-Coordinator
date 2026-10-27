@@ -1,8 +1,8 @@
-// Hosted agent-sync MCP Worker (docs/protocols/agent-sync-mcp.md section 3):
+// Hosted ST-MCP Worker (docs/protocols/agent-sync-mcp.md section 3):
 // OAuth 2.1 with CIMD for ChatGPT and Grok, hand-registered public PKCE
 // clients bound to one seat each (manual forms, the Instinct app's loopback
 // callback), arming, a consent page behind Cloudflare
-// Access, a per-seat epoch and pause switch (Phase 0), and the seven agent-sync
+// Access, a per-seat epoch and pause switch (Phase 0), and the seven chat
 // tools from tools.json, each seat posting as its own Zulip bot (Phase 2).
 //
 // Request order, outermost first:
@@ -62,6 +62,7 @@ import {
 import { verifyAccessJwt } from "./access.js";
 import { consentPage, noConnectionPage, errorPage, adminPage, htmlResponse, sentences, withReferrerPolicy, gbBearerMintCompletedPage, gbBearerRevealPage, gbBearerMintRefusedPage } from "./pages.js";
 import { gbBearerFromRequest, sbtBearerFromRequest, parseGbBearer, parseSbtBearer, newGbBearer, newSeatBearer, sha256Hex, GB_BEARER_TTL_MS } from "./gb-bearer.js";
+import { BEARER_SEATS, ADDITIONAL_BEARER_SEATS, resolveBearerSeatCredentials } from "./bearer-identities.js";
 import { serveGrBearerVerify } from "./gr-verify.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
 import { serveMcpRequest } from "./mcp.js";
@@ -521,7 +522,6 @@ async function serveSbtBearerMcp(request, env, token) {
   const parsed = parseSbtBearer(token);
   if (!parsed) return refuse();
   const { identity: seat } = parsed;
-  if (!config.hostedSeats.includes(seat)) return refuse();
   await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
   const seatGate = gate(env, seat);
   const checked = await seatGate.gbBearerCheck(await sha256Hex(parsed.token));
@@ -533,16 +533,13 @@ async function serveSbtBearerMcp(request, env, token) {
       try { await seatGate.audit({ event: "gb_bearer_refused", reason: checked.reason }); } catch { /* A missing row is a gap in the log, not a hole. */ }
     } else if (checked.reason === "mismatch") {
       // Static seat set for the same outage reason as the persona path.
-      try { await seatGate.gbBearerMismatch(seat, new Set(KNOWN_SEATS)); } catch { /* A counter is observability, never the security path. */ }
+      try { await seatGate.gbBearerMismatch(seat, new Set(BEARER_SEATS)); } catch { /* A counter is observability, never the security path. */ }
     }
     return refuse();
   }
-  const secretNames = SEAT_SECRETS[seat];
-  // The seat key resolves through Infisical when INFISICAL_MODE allows;  in off
-  // mode the legacy binding still answers, exactly as the env read did before.
-  const key = secretNames ? String(await resolveSecret(env, { name: secretNames.infisical.name, path: secretNames.infisical.path, envName: secretNames.key, optional: true }) ?? "").trim() : "";
-  const email = config.botEmails[seat];
-  if (!key || !email) return refuse();
+  const credentials = await resolveBearerSeatCredentials(env, config, seat);
+  if (!credentials) return refuse();
+  const { key, email } = credentials;
   if (checked.mcp_accept !== true) return refuse();
   const state = await seatGate.getState();
   if (state.paused) return invalidToken("This identity is paused.");
@@ -550,7 +547,7 @@ async function serveSbtBearerMcp(request, env, token) {
   const grantRef = await sha256Ref(`sbt-bearer:${seat}`);
   await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
-  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
+  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...BEARER_SEATS, ...GB_IDENTITIES]);
   const recallSecrets = await resolveRecallSecrets(env);
   // The listener key resolves through Infisical too (optional:  no wake key
   // means no listener tools, never a 500 - src/eavesdropper.js).
@@ -567,7 +564,7 @@ async function serveSbtBearerMcp(request, env, token) {
     clientId: "sbt-bearer",
     grantRef,
     paused: false,
-    config,
+    config: { ...config, botEmails: { ...config.botEmails, [seat]: email } },
     // Same pass-through as the persona path:  the relay authenticates this
     // bearer and enforces the seat's own allowlist.
     gr: grClientFromResolved(grSecrets, env, { bearer: token }),
@@ -578,7 +575,8 @@ async function serveSbtBearerMcp(request, env, token) {
     recall: recallClientFromResolved(recallSecrets, env),
     linear: linearClientFromPair(await resolveLinearPair(env, seatTagForSeat(seat)), seat, { gate: seatGate }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
-    fleetlink: fleetlinkClientFromSecret(fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
+    // Additional identities never fall back to the shared FleetLink credential.
+    fleetlink: fleetlinkClientFromSecret(Object.hasOwn(ADDITIONAL_BEARER_SEATS, seat) ? "" : fleetlinkSecret, env, { resolvedTokens: fleetlinkTokens }),
     listener: listenerClientFromEnv(env, seat, { wakeKey: listenerWakeKey }),
     notes: operatorNotesClientFromEnv(env),
   });
@@ -1137,19 +1135,18 @@ async function serveAdmin(request, env, config, oauth, email) {
       }),
       // Every seat may hold a bearer too (owner direction 2026-10-23:  all apps in
       // this panel, one credential per identity, honored by ST-MCP and GR-MCP).
-      // Mintable only while the seat is hosted and its Zulip key is configured;
+      // OAuth seats retain hosting checks; bearer-only bots need their own Zulip bundle.
       // resolved through Infisical (optional read), so a genuine miss reports
       // not-installed, never a 500.
-      ...KNOWN_SEATS.map(async (identity) => {
+      ...BEARER_SEATS.map(async (identity) => {
         let status = null;
         let mismatches = null;
         let mismatchesUnavailable = false;
         const g = gate(env, identity);
         try { status = await g.gbBearerStatus(); } catch { /* Shown as unknown. */ }
         try { mismatches = (await g.gbBearerMismatches())[identity] ?? null; } catch { mismatchesUnavailable = true; }
-        const names = SEAT_SECRETS[identity];
-        const key = names ? await resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key, optional: true }) : "";
-        return { identity, kind: "seat", credentials: config.hostedSeats.includes(identity) && Boolean(key), status, mismatches, mismatchesUnavailable };
+        const credentials = await resolveBearerSeatCredentials(env, config, identity);
+        return { identity, kind: "seat", credentials: Boolean(credentials), status, mismatches, mismatchesUnavailable };
       }),
     ]);
     // Observability for the Infisical transition (kody 4365623014):  the mode
@@ -1248,7 +1245,7 @@ async function serveAdmin(request, env, config, oauth, email) {
       }
       case "mint_gb_bearer": {
         const identity = parsed.data.identity ?? "";
-        if (!GB_IDENTITIES.includes(identity) && !KNOWN_SEATS.includes(identity)) return errorPage("Request Refused", "Unknown identity.", 400);
+        if (!GB_IDENTITIES.includes(identity) && !BEARER_SEATS.includes(identity)) return errorPage("Request Refused", "Unknown identity.", 400);
         const mintId = parsed.data.mint_id ?? "";
         const expiresAt = Date.now() + GB_BEARER_TTL_MS;
         let token, mcpAccept, kind;
@@ -1259,11 +1256,9 @@ async function serveAdmin(request, env, config, oauth, email) {
           // A persona's bearer is its only credential:  accepted on /mcp by design.
           mcpAccept = true; kind = "persona";
         } else {
-          const names = SEAT_SECRETS[identity];
           await prefetchFolder(env, "/zulip");
-          const seatKey = names ? String(await resolveSecret(env, { name: names.infisical.name, path: names.infisical.path, envName: names.key, optional: true }) ?? "").trim() : "";
-          if (!config.hostedSeats.includes(identity) || !seatKey) {
-            return errorPage("Request Refused", "That seat is not hosted or its credentials are not loaded.", 400);
+          if (!await resolveBearerSeatCredentials(env, config, identity)) {
+            return errorPage("Request Refused", "That identity's own credentials are not loaded.", 400);
           }
           ({ token } = await newSeatBearer(identity));
           // The owner's per-seat consent choice travels with the mint and is
@@ -1283,7 +1278,7 @@ async function serveAdmin(request, env, config, oauth, email) {
       }
       case "revoke_gb_bearer": {
         const identity = parsed.data.identity ?? "";
-        if (!GB_IDENTITIES.includes(identity) && !KNOWN_SEATS.includes(identity)) return errorPage("Request Refused", "Unknown identity.", 400);
+        if (!GB_IDENTITIES.includes(identity) && !BEARER_SEATS.includes(identity)) return errorPage("Request Refused", "Unknown identity.", 400);
         await gate(env, identity).gbBearerRevoke({ by: email });
         break;
       }
