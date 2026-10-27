@@ -140,6 +140,16 @@ def _obj(data):
     return data
 
 
+def _sub(data, key):
+    """A nested upstream object; any other shape is a refusal, not an exception."""
+    value = data.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise Refused("unexpected upstream shape")
+    return value
+
+
 def _arr(data):
     if not isinstance(data, list):
         raise Refused("unexpected upstream shape")
@@ -522,11 +532,9 @@ class WorkflowVerbs:
         if not default or branch == default:
             raise Refused("default branch is not writable")
         ref = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"))
-        if (ref.get("object") or {}).get("sha") != head:
+        if _sub(ref, "object").get("sha") != head:
             raise Refused("branch head moved")
-        base_tree = (_obj(self._get(f"/repos/{repo}/git/commits/{head}")).get("tree") or {}).get(
-            "sha"
-        )
+        base_tree = _sub(_obj(self._get(f"/repos/{repo}/git/commits/{head}")), "tree").get("sha")
         if not isinstance(base_tree, str) or not _SHA.fullmatch(base_tree):
             raise Refused("unexpected upstream shape")
         cache, entries = {}, []
@@ -545,7 +553,11 @@ class WorkflowVerbs:
             blob_sha = blob.get("sha")
             if not isinstance(blob_sha, str) or not _SHA.fullmatch(blob_sha):
                 raise Refused("unexpected upstream shape")
-            mode = self._entry_mode(repo, base_tree, path, cache) or "100644"
+            existing = self._entry_mode(repo, base_tree, path, cache)
+            if existing not in (None, "100644", "100755"):
+                # A symlink or submodule is never silently replaced by file content.
+                raise Refused("existing entry is not a regular file")
+            mode = existing or "100644"
             entries.append({"path": path, "mode": mode, "type": "blob", "sha": blob_sha})
         tree = _obj(
             self.client._call(
@@ -555,11 +567,14 @@ class WorkflowVerbs:
                 bearer=self.bearer,
             )
         )
+        tree_sha = tree.get("sha")
+        if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
+            raise Refused("unexpected upstream shape")
         commit = _obj(
             self.client._call(
                 "POST",
                 f"/repos/{repo}/git/commits",
-                {"message": message, "tree": tree.get("sha"), "parents": [head]},
+                {"message": message, "tree": tree_sha, "parents": [head]},
                 bearer=self.bearer,
             )
         )

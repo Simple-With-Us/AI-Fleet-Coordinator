@@ -373,6 +373,40 @@ class Tests(unittest.TestCase):
         refused(message="")
         refused(extra=1)
 
+    def test_wf_files_put_upstream_shape_and_special_entries(self):
+        files = [{"path": "scripts/run.sh", "content_b64": "eA=="}]
+        args = {"repo": REPO, "branch": "feat/x", "message": "m", "expected_head_sha": SHA, "files": files}
+
+        def routed(patch):
+            c = self._git_data_client()
+            base = c._call
+
+            def call(method, path, payload=None, bearer=None):
+                for (m, suffix), reply in patch.items():
+                    if method == m and path.endswith(suffix):
+                        c.calls.append((method, path, payload, bearer))
+                        return reply
+                return base(method, path, payload, bearer)
+
+            c._call = call
+            return c
+
+        for patch in (
+            {("GET", "/git/ref/heads/feat/x"): {"object": "x"}},
+            {("GET", f"/git/commits/{SHA}"): {"tree": "x"}},
+            {("POST", "/git/trees"): {"sha": "not-a-sha"}},
+            {("POST", "/git/trees"): {}},
+        ):
+            c = routed(patch)
+            with self.assertRaises(Refused, msg=str(patch)):
+                Multi(c).run("wf_files_put", args)
+            self.assertFalse([1 for m, p, *_ in c.calls if m == "PATCH"], "no ref update")
+        # An existing symlink (or submodule) at the path is refused, not overwritten.
+        c = routed({("GET", f"/git/trees/{'c' * 40}"): {"tree": [{"path": "run.sh", "type": "blob", "sha": "d" * 40, "mode": "120000"}]}})
+        with self.assertRaises(Refused):
+            Multi(c).run("wf_files_put", args)
+        self.assertFalse([1 for m, p, *_ in c.calls if m == "PATCH"])
+
 
 if __name__ == "__main__":
     unittest.main()
