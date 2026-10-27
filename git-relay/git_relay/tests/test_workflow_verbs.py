@@ -162,7 +162,10 @@ class Tests(unittest.TestCase):
         s.run("wf_run_approve", {"repo": REPO, "run_id": 5})
         self.assertEqual(
             [p for _, p, _, _ in c.calls],
-            [f"/repos/{REPO}/actions/runs/5/{x}" for x in ("rerun-failed-jobs", "cancel", "approve")],
+            [
+                f"/repos/{REPO}/actions/runs/5/{x}"
+                for x in ("rerun-failed-jobs", "cancel", "approve")
+            ],
         )
         for bad in (0, -1, True, "5", 1.5):
             with self.assertRaises(Refused):
