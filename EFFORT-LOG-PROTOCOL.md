@@ -13,7 +13,7 @@ Current rules live in `AGENT-SYNC.md` § Linear and the Claim Lifecycle:
 
 - The live effort logs, `/Users/jay/apps/<APP>-EFFORT-LOG.md`, and each repo's `docs/EFFORT-LOG.md`.  Each carries an "Archived" header that names the app's Linear team.  Do not edit them, and do not add a row for new work.
 - The two-file system, the repo mirror row, and the rule to land the mirror in the app PR.
-- THE BOARD server (`mac-collab`) as a write surface, and its pm2 jobs `mac-collab-sync` and `mac-collab-writeback`.  The server is a read-only archive until about day 30 after the cutover.
+- THE BOARD server (`mac-collab`) as a write surface, and its pm2 jobs `mac-collab-sync` and `mac-collab-writeback`.  The server itself was retired on 2026-10-19 (AFC-363) and its tracked source removed from this repo;  what is left is a frozen, read-only archive (path below).
 - The GitHub issues mirror:  `scripts/sync-effort-issues.py` and `.github/workflows/effort-issues-sync.yml` are disabled in every repo that had them (they may be deleted from a repo at its next convenient PR).
 - The `scripts/claude-hooks/board-check.sh` push hook in Socratic.Trade.  Once `~/.fleet/effort-log-retired` exists, the user-level hook skips it everywhere.
 - The triple claim and triple closeout.  Claims and closeouts are the Linear issue, the linked PR, and a Zulip post.
@@ -32,7 +32,7 @@ Every item in the logs was imported into Linear (items that neither a board row 
 ## Reading history
 
 - Linear:  `simple-board list --app <app> --search "<words>"` or the app's team in the browser.
-- The old board's database is archived at `~/apps/mac-collab/findings.db` (read-only, replicated by litestream), and the old board id of an imported row is still a valid `simple-board show` id.
+- The old board's database is archived at `~/apps/_retired/mac-collab-20261019/findings.db` (read-only and frozen; the litestream replica was retired with the server), and the old board id of an imported row is still a valid `simple-board show` id.
 - Git history of `docs/EFFORT-LOG.md` and the archived files under `~/apps/` are the original text.
 
 ## Registry

@@ -1,4 +1,4 @@
-"""Seat precedence and the bot check, shared by every agent-sync entry point.
+"""Seat precedence and the bot check, shared by every simple-chat entry point.
 
 AGENT-SYNC § Identity Rules (owner 2026-10-09) says a session's seat is the first of:
 
@@ -30,11 +30,13 @@ key a command authenticates with must be that seat's own bot (users/me, through 
 Standard library only and light (os, re, tomllib, no dataclasses):  the Claude hooks import it on
 every prompt.
 """
+
 from __future__ import annotations
 
 import os
 import re
-from typing import Any, Mapping, NamedTuple
+from collections.abc import Mapping
+from typing import Any, NamedTuple
 
 try:
     import tomllib
@@ -93,6 +95,7 @@ def canonical_seat(raw: Any) -> str:
     upper = text.upper()
     return SEAT_NAME_ALIASES.get(upper, upper)
 
+
 # Bot email local parts (minus the "-bot" Zulip appends) whose seat tag is not just the upper-cased
 # local part.  Display names are cosmetic (owner 2026-10-07), so labels come from emails, never names.
 EMAIL_TAG_OVERRIDES = {
@@ -111,8 +114,7 @@ def seat_tag_for(user: Mapping[str, Any]) -> str:
         first = (str(user.get("full_name") or "").split() or ["USER"])[0]
         return first.upper()
     local = str(user.get("email") or "").split("@", 1)[0].lower()
-    if local.endswith("-bot"):
-        local = local[: -len("-bot")]
+    local = local.removesuffix("-bot")
     if local in EMAIL_TAG_OVERRIDES:
         return EMAIL_TAG_OVERRIDES[local]
     if local.endswith("-grok"):
@@ -124,10 +126,12 @@ def seat_tag_for(user: Mapping[str, Any]) -> str:
 # Seat precedence
 # --------------------------------------------------------------------------------------------
 
+
 class Resolution(NamedTuple):
     """The outcome of resolve_seat.  `seat` is upper-cased but not validated as a name (callers
     run their own check, which decides the exit code).  `problem` says why there is no seat when
     the session must not act at all; a session with no seat and no problem simply named none."""
+
     seat: str | None
     source: str  # launcher, --as, AGENT_SEAT, AGENT_TAG, default, none
     launcher: str | None = None
@@ -148,8 +152,13 @@ def launched(env: Mapping[str, str]) -> bool:
     return bool(launcher_of(env) or _clean(env.get(ENV_LAUNCH_SEAT)))
 
 
-def resolve_seat(env: Mapping[str, str], *, flag: str | None = None, default: str | None = None,
-                 use_tag: bool = True) -> Resolution:
+def resolve_seat(
+    env: Mapping[str, str],
+    *,
+    flag: str | None = None,
+    default: str | None = None,
+    use_tag: bool = True,
+) -> Resolution:
     """Apply the seat precedence.  `flag` is an explicit --as; `default` is the platform default the
     caller knows (never used under a launcher); `use_tag` reads AGENT_TAG as well as AGENT_SEAT."""
     # Every name is canonicalized first (GROK-BUILD in any spelling is GROK), on both sides of the
@@ -162,15 +171,27 @@ def resolve_seat(env: Mapping[str, str], *, flag: str | None = None, default: st
     if launch_seat:
         for label, raw in named:
             if raw and canonical_seat(raw) != launch_seat:
-                return Resolution(None, "none", who, (
-                    "launcher %s assigned %s, but %s names %s; a launched session keeps its launcher's seat "
-                    "(Jay reassigns it in the launcher), so nothing was done"
-                    % (who or "(unnamed)", launch_seat, label, canonical_seat(raw))))
+                return Resolution(
+                    None,
+                    "none",
+                    who,
+                    (
+                        "launcher %s assigned %s, but %s names %s; a launched session keeps its launcher's seat "
+                        "(Jay reassigns it in the launcher), so nothing was done"
+                        % (who or "(unnamed)", launch_seat, label, canonical_seat(raw))
+                    ),
+                )
         return Resolution(launch_seat, "launcher", who)
     if who:
-        return Resolution(None, "none", who, (
-            "no seat assigned by %s:  AGENT_LAUNCHER is set but AGENT_LAUNCH_SEAT is not, so this launched "
-            "session takes no fleet action (no platform default applies under a launcher)" % who))
+        return Resolution(
+            None,
+            "none",
+            who,
+            (
+                "no seat assigned by %s:  AGENT_LAUNCHER is set but AGENT_LAUNCH_SEAT is not, so this launched "
+                "session takes no fleet action (no platform default applies under a launcher)" % who
+            ),
+        )
     for label, raw in named + [("default", _clean(default))]:
         if raw:
             return Resolution(canonical_seat(raw), label)
@@ -221,9 +242,16 @@ class UnknownSeat(ValueError):
         self.seat = seat
         self.retired = retired
         shown = seat if len(seat) <= 40 else seat[:40] + "..."
-        super().__init__("%r is %s" % (shown, "a retired seat in %s" % APPS_JSON_NAME if retired else
-                                       "not a live seat in %s (seats, seatApps.extraSeats or seatApps.patterns)"
-                                       % APPS_JSON_NAME))
+        super().__init__(
+            "%r is %s"
+            % (
+                shown,
+                "a retired seat in %s" % APPS_JSON_NAME
+                if retired
+                else "not a live seat in %s (seats, seatApps.extraSeats or seatApps.patterns)"
+                % APPS_JSON_NAME,
+            )
+        )
 
 
 class SeatRegistryError(RuntimeError):
@@ -234,13 +262,15 @@ class SeatRegistryError(RuntimeError):
 
 class SeatPattern(NamedTuple):
     """One `seatApps.patterns` row:  `match` (BF-*) compiled to `regex`, and the app it gives."""
-    regex: "re.Pattern[str]"
+
+    regex: re.Pattern[str]
     app: str
     match: str
 
 
 class SeatRegistry(NamedTuple):
     """The parts of fleet-apps.json that strict_seat and seat_app read."""
+
     live: frozenset[str]
     retired: frozenset[str]
     by_seat: Mapping[str, str]
@@ -249,16 +279,20 @@ class SeatRegistry(NamedTuple):
     source: str = ""
 
 
-def _pattern_regex(match: str) -> "re.Pattern[str]":
+def _pattern_regex(match: str) -> re.Pattern[str]:
     """`BF-*` -> BF- followed by a non-empty token.  Only A-Z, 0-9, _, - and * are allowed in a match."""
     if not _PATTERN_RE.fullmatch(match):
-        raise SeatRegistryError("seatApps.patterns match %r may hold only A-Z, 0-9, _, - and *" % match)
+        raise SeatRegistryError(
+            "seatApps.patterns match %r may hold only A-Z, 0-9, _, - and *" % match
+        )
     return re.compile("".join(_ROLE_CHARS if ch == "*" else re.escape(ch) for ch in match))
 
 
 def _app_name(where: str, value: Any) -> str:
     if not isinstance(value, str) or not _APP_RE.fullmatch(value):
-        raise SeatRegistryError("%s must be a lowercase app name like claude-code, not %r" % (where, value))
+        raise SeatRegistryError(
+            "%s must be a lowercase app name like claude-code, not %r" % (where, value)
+        )
     return value
 
 
@@ -266,8 +300,14 @@ def parse_seat_registry(data: Any, source: str = "") -> SeatRegistry:
     """Build a SeatRegistry from already-loaded fleet-apps.json.  Strict about `seatApps` (a malformed
     key raises SeatRegistryError) and tolerant of everything else in the file."""
     if not isinstance(data, Mapping):
-        raise SeatRegistryError("%s: expected a JSON object at the top level" % (source or APPS_JSON_NAME))
-    rows = [r for r in (data.get("seats") if isinstance(data.get("seats"), list) else []) if isinstance(r, Mapping)]
+        raise SeatRegistryError(
+            "%s: expected a JSON object at the top level" % (source or APPS_JSON_NAME)
+        )
+    rows = [
+        r
+        for r in (data.get("seats") if isinstance(data.get("seats"), list) else [])
+        if isinstance(r, Mapping)
+    ]
     live: set[str] = set()
     retired: set[str] = set()
     for row in rows:
@@ -282,8 +322,10 @@ def parse_seat_registry(data: Any, source: str = "") -> SeatRegistry:
         raw_map = apps.get(key)
         if not isinstance(raw_map, Mapping):
             raise SeatRegistryError("seatApps.%s must be an object" % key)
-        maps[key] = {str(tag).strip().upper(): _app_name("seatApps.%s.%s" % (key, tag), app)
-                     for tag, app in raw_map.items()}
+        maps[key] = {
+            str(tag).strip().upper(): _app_name("seatApps.%s.%s" % (key, tag), app)
+            for tag, app in raw_map.items()
+        }
     raw_patterns = apps.get("patterns")
     if not isinstance(raw_patterns, list):
         raise SeatRegistryError("seatApps.patterns must be a list")
@@ -291,10 +333,21 @@ def parse_seat_registry(data: Any, source: str = "") -> SeatRegistry:
     for item in raw_patterns:
         if not isinstance(item, Mapping) or not isinstance(item.get("match"), str):
             raise SeatRegistryError("every seatApps.patterns entry needs a match string and an app")
-        patterns.append(SeatPattern(_pattern_regex(item["match"]),
-                                    _app_name("seatApps.patterns %s" % item["match"], item.get("app")), item["match"]))
-    return SeatRegistry(frozenset(live), frozenset(retired), maps["bySeat"], maps["extraSeats"],
-                        tuple(patterns), source)
+        patterns.append(
+            SeatPattern(
+                _pattern_regex(item["match"]),
+                _app_name("seatApps.patterns %s" % item["match"], item.get("app")),
+                item["match"],
+            )
+        )
+    return SeatRegistry(
+        frozenset(live),
+        frozenset(retired),
+        maps["bySeat"],
+        maps["extraSeats"],
+        tuple(patterns),
+        source,
+    )
 
 
 _registry_cache: dict[str, tuple[tuple[int, int], SeatRegistry]] = {}
@@ -303,22 +356,29 @@ _registry_cache: dict[str, tuple[tuple[int, int], SeatRegistry]] = {}
 def seat_registry_path(env: Mapping[str, str] | None = None) -> str:
     """FLEET_APPS_JSON when set, else fleet-apps.json at the repo root."""
     env = os.environ if env is None else env
-    return os.path.expanduser(_clean(env.get(ENV_APPS_JSON)) or os.path.join(REPO_ROOT, APPS_JSON_NAME))
+    return os.path.expanduser(
+        _clean(env.get(ENV_APPS_JSON)) or os.path.join(REPO_ROOT, APPS_JSON_NAME)
+    )
 
 
-def load_seat_registry(path: str | None = None, env: Mapping[str, str] | None = None) -> SeatRegistry:
+def load_seat_registry(
+    path: str | None = None, env: Mapping[str, str] | None = None
+) -> SeatRegistry:
     """The registry at `path` (default:  seat_registry_path), read again only when the file changes.
     Raises SeatRegistryError when it cannot be read or `seatApps` is malformed."""
     target = path or seat_registry_path(env)
     try:
         stat = os.stat(target)
     except OSError as exc:
-        raise SeatRegistryError("cannot read %s: %s" % (target, exc.strerror or type(exc).__name__)) from None
+        raise SeatRegistryError(
+            "cannot read %s: %s" % (target, exc.strerror or type(exc).__name__)
+        ) from None
     stamp = (stat.st_mtime_ns, stat.st_size)
     cached = _registry_cache.get(target)
     if cached and cached[0] == stamp:
         return cached[1]
     import json  # only here:  the Claude hooks import this module on every prompt and never need it
+
     try:
         with open(target, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -363,7 +423,10 @@ def seat_app(seat: Any, *, registry: SeatRegistry | None = None) -> str:
     name = strict_seat(seat, registry=reg)
     app = reg.by_seat.get(name) or reg.extra.get(name) or _pattern_app(name, reg)
     if not app:
-        raise SeatRegistryError("%s lists no app for the seat %s (seatApps.bySeat)" % (reg.source or APPS_JSON_NAME, name))
+        raise SeatRegistryError(
+            "%s lists no app for the seat %s (seatApps.bySeat)"
+            % (reg.source or APPS_JSON_NAME, name)
+        )
     return app
 
 
@@ -371,19 +434,28 @@ def seat_app(seat: Any, *, registry: SeatRegistry | None = None) -> str:
 # The bot check
 # --------------------------------------------------------------------------------------------
 
+
 def check_bot(me: Mapping[str, Any], seat: str, email: str) -> str | None:
     """None when users/me (`me`) is `seat`'s own bot and answers for the credential's `email`,
     else why not.  The text names accounts and seats, never a key."""
     answered = _clean(me.get("email"))
     if me.get("is_bot") is not True:
-        return ("the credential (%s) authenticates as %s, which is not a bot account; a seat posts only as its "
-                "own bot, never as a person" % (email, answered or "an unknown user"))
+        return (
+            "the credential (%s) authenticates as %s, which is not a bot account; a seat posts only as its "
+            "own bot, never as a person" % (email, answered or "an unknown user")
+        )
     if answered.casefold() != _clean(email).casefold():
-        return ("users/me answered as %s, but the credential names %s; refusing it" % (answered or "nobody", email))
+        return "users/me answered as %s, but the credential names %s; refusing it" % (
+            answered or "nobody",
+            email,
+        )
     tag = seat_tag_for(me)
     if tag != seat.upper():
-        return ("the credential authenticates as %s (%s), not %s; a seat posts only as its own bot, so nothing "
-                "was done.  Use %s's own credential, or check AGENT_SEAT, --as and ZULIP_RC" % (tag, answered, seat, seat))
+        return (
+            "the credential authenticates as %s (%s), not %s; a seat posts only as its own bot, so nothing "
+            "was done.  Use %s's own credential, or check AGENT_SEAT, --as and ZULIP_RC"
+            % (tag, answered, seat, seat)
+        )
     return None
 
 
@@ -391,8 +463,11 @@ def check_bot(me: Mapping[str, Any], seat: str, email: str) -> str | None:
 # Seat partition (which listener instance serves a seat)
 # --------------------------------------------------------------------------------------------
 
+
 def partition_path(env: Mapping[str, str], repo_root: str = REPO_ROOT) -> str:
-    return os.path.expanduser(_clean(env.get(ENV_PARTITION)) or os.path.join(repo_root, PARTITION_RELPATH))
+    return os.path.expanduser(
+        _clean(env.get(ENV_PARTITION)) or os.path.join(repo_root, PARTITION_RELPATH)
+    )
 
 
 def partition_instance(seat: str, env: Mapping[str, str]) -> tuple[str | None, str | None]:
@@ -433,6 +508,12 @@ def served_here(seat: str, env: Mapping[str, str]) -> tuple[bool, str]:
     if instance == here:
         return True, ""
     if instance is None:
-        return False, "seat %s is not in the seat partition, so no listener serves it; no inbox here" % seat
+        return (
+            False,
+            "seat %s is not in the seat partition, so no listener serves it; no inbox here" % seat,
+        )
     return False, "seat %s is not served by the %s listener (partition:  %s); no inbox here" % (
-        seat, "Mac" if here == "mac" else here, instance)
+        seat,
+        "Mac" if here == "mac" else here,
+        instance,
+    )

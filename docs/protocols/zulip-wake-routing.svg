@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 900" role="img" aria-labelledby="title desc">
   <title id="title">Zulip message and wake routing</title>
-  <desc id="desc">A direct message or bot mention reaches either BotFleet's native listener or the Agent-Sync listener. Agent-Sync records it in the addressed bot's inbox, then a Muse-enabled seat can inspect bounded chat metadata and request a wake-capable existing chat. Unsupported or unsafe deliveries remain in the inbox. Codex has no native listener.</desc>
+  <desc id="desc">A direct message or bot mention reaches either BotFleet's native listener or the Operator. The Operator records it in the addressed bot's inbox, then a Muse-enabled seat can inspect bounded chat metadata and request a wake-capable existing chat. Unsupported or unsafe deliveries remain in the inbox. Codex has no native listener.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0 0 L10 5 L0 10 z" fill="#536579"/></marker>
     <marker id="dash-arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth"><path d="M0 0 L10 5 L0 10 z" fill="#8a5b00"/></marker>
@@ -29,7 +29,7 @@
   <path d="M600 174 V198 H300 V218" class="arrow"/>
   <path d="M600 174 V198 H900 V218" class="arrow"/>
   <text x="70" y="226" class="lane">BotFleet role bot</text>
-  <text x="670" y="226" class="lane">Agent-Sync seat bot</text>
+  <text x="670" y="226" class="lane">Operator seat bot</text>
 
   <rect x="52" y="246" width="496" height="86" rx="14" class="bf"/>
   <text x="300" y="280" text-anchor="middle" class="box-title">BotFleet native event queue</text>
@@ -50,10 +50,10 @@
 
   <rect x="652" y="246" width="496" height="86" rx="14" class="as"/>
   <text x="900" y="280" text-anchor="middle" class="box-title">Addressed seat's durable inbox</text>
-  <text x="900" y="307" text-anchor="middle" class="body">Agent-Sync records the message under that bot's identity</text>
+  <text x="900" y="307" text-anchor="middle" class="body">The Operator records the message under that bot's identity</text>
   <path d="M900 332 V366" class="arrow"/>
   <rect x="652" y="370" width="496" height="100" rx="14" class="as"/>
-  <text x="900" y="407" text-anchor="middle" class="box-title">Agent-Sync listener → Muse wake router</text>
+  <text x="900" y="407" text-anchor="middle" class="box-title">Operator listener → Muse wake router</text>
   <text x="900" y="435" text-anchor="middle" class="body">Owner policy: every DM or explicit bot mention enters Muse</text>
   <path d="M900 470 V504" class="arrow"/>
   <rect x="652" y="508" width="496" height="100" rx="14" class="as"/>
