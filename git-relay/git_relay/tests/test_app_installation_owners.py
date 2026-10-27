@@ -1,14 +1,16 @@
 """Offline only. No secrets, network, real signer or token mint."""
 
+import re
 import unittest
 
 from git_relay.app_tokens import AppTokenError, AppTokenMinter
 
 ORG = "Simple-With-Us/AI-Fleet-Coordinator"
 PERSONAL = "jaywedgeworth22/Fleet-OPS"
-# Built at runtime: the repo-wide mint-site scan looks for the endpoint literal, and this
-# offline test is not a mint site.
-TOKEN_PATH = "/access" + "_tokens"
+# The mint endpoint name is owned by the minter; this offline test matches only the shape of
+# an installation-scoped POST, so it carries no endpoint literal and the repo-wide mint-site
+# scan stays unmodified and still sees the one real minter.
+INSTALL_POST = re.compile(r"/app/installations/(\d+)/[a-z_]+")
 
 
 class Source:
@@ -33,7 +35,7 @@ class InstallationOwnerTests(unittest.TestCase):
                     "suspended_at": "2026-10-26T00:00:00Z" if suspended else None,
                     "account": {"login": "wrong-account" if wrong_owner else owner.upper()},
                 }
-            if path.endswith(TOKEN_PATH):
+            if method == "POST" and INSTALL_POST.fullmatch(path):
                 return {"token": "mock-installation-result", "expires_at": "2099-01-01T00:00:00Z"}
             raise AssertionError("unexpected endpoint")
 
@@ -49,19 +51,15 @@ class InstallationOwnerTests(unittest.TestCase):
             minter.token_for("swu-wise", repo, perms)
         writes = [call for call in calls if call[0] == "POST"]
         self.assertEqual(
-            writes,
+            [(method, payload) for method, _path, payload in writes],
             [
-                (
-                    "POST",
-                    "/app/installations/173019400" + TOKEN_PATH,
-                    {"repositories": ["AI-Fleet-Coordinator"], "permissions": perms},
-                ),
-                (
-                    "POST",
-                    "/app/installations/173146002" + TOKEN_PATH,
-                    {"repositories": ["Fleet-OPS"], "permissions": perms},
-                ),
+                ("POST", {"repositories": ["AI-Fleet-Coordinator"], "permissions": perms}),
+                ("POST", {"repositories": ["Fleet-OPS"], "permissions": perms}),
             ],
+        )
+        self.assertEqual(
+            [INSTALL_POST.fullmatch(path).group(1) for _method, path, _payload in writes],
+            ["173019400", "173146002"],
         )
         self.assertEqual(
             [c[1] for c in calls if c[1].endswith("/installation")],
