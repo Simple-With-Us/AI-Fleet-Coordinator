@@ -315,7 +315,8 @@ elif path.endswith("/git/trees"):
 elif path.endswith("/git/commits"):
     sys.stdin.read(); print("commit2")
 elif "/pulls?head=" in path:
-    if S.get("prOpen"): print(1)
+    if S.get("prOpen"): print(json.dumps([{"number": 1}]))
+    else: print("[]")
 elif path.endswith("/pulls") and method == "POST":
     S["prOpen"] = True; save(); print("https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1")
 sys.exit(0)
@@ -545,7 +546,7 @@ test("the sheet sync runs after the publish, a failure fails the run, a missing 
   assert.match(failed.stderr, /sheet sync failed/);
   const skipped = publish(stub, [], { FLEET_SHEET_SYNC: join(tmpdir(), "afc-no-shim.mjs") });
   assert.equal(skipped.status, 0, skipped.stderr);
-  assert.match(skipped.stdout, /not present, skipped/);
+  assert.match(skipped.stdout, /not present|HOME unset|skipped/);
   rmSync(stub, { recursive: true, force: true });
   rmSync(ok.dir, { recursive: true, force: true });
   rmSync(bad.dir, { recursive: true, force: true });

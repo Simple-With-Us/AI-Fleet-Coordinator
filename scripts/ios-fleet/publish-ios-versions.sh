@@ -131,14 +131,27 @@ resolve_token() {
 # Read the manifest at a ref (branch or commit) into a file.  Sets FETCHED_SHA
 # to the file's blob sha.
 fetch_json_at() {
-  local ref="$1" dest="$2" meta b64
+  local ref="$1" dest="$2" sha b64 meta
   command -v gh >/dev/null 2>&1 || return 1
-  meta="$(gh api "repos/${REPO}/contents/${REMOTE_PATH}?ref=${ref}" --jq '[.sha, .content] | @tsv' 2>/dev/null || true)"
-  [[ -n "$meta" ]] || return 1
-  FETCHED_SHA="${meta%%$'\t'*}"
-  b64="${meta#*$'\t'}"
-  [[ -n "$b64" ]] || return 1
-  python3 -c 'import base64,sys; sys.stdout.write(base64.b64decode("".join(sys.argv[1].split())).decode())' "$b64" >"$dest"
+  # Prefer separate .sha / .content reads.  jq's @tsv escapes embedded newlines
+  # in base64 as literal \n and corrupts the alphabet on a live Contents API
+  # payload, so a packed TSV decode fails against real GitHub.
+  sha="$(gh api "repos/${REPO}/contents/${REMOTE_PATH}?ref=${ref}" --jq .sha 2>/dev/null || true)"
+  b64="$(gh api "repos/${REPO}/contents/${REMOTE_PATH}?ref=${ref}" --jq .content 2>/dev/null || true)"
+  # A stub that ignores --jq may still return "sha<TAB>b64" for every call.
+  if [[ "$sha" == *$'	'* ]]; then
+    b64="${sha#*$'	'}"
+    sha="${sha%%$'	'*}"
+  fi
+  if [[ -z "$sha" || "$sha" == "null" || -z "$b64" || "$b64" == "null" ]]; then
+    meta="$(gh api "repos/${REPO}/contents/${REMOTE_PATH}?ref=${ref}" --jq '[.sha, .content] | @tsv' 2>/dev/null || true)"
+    [[ -n "$meta" ]] || return 1
+    sha="${meta%%$'	'*}"
+    b64="${meta#*$'	'}"
+  fi
+  FETCHED_SHA="$sha"
+  [[ -n "$FETCHED_SHA" && -n "$b64" && "$b64" != "null" ]] || return 1
+  python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode("".join(sys.argv[1].split())))' "$b64" >"$dest"
 }
 
 fetch_remote_json() {
@@ -198,7 +211,11 @@ entry["marketingVersion"] = version
 if build:
     entry["build"] = build
 if apple_id:
-    entry["appleId"] = int(apple_id)
+    try:
+        entry["appleId"] = int(apple_id)
+    except ValueError:
+        print("error: --apple-id must be numeric", file=sys.stderr)
+        sys.exit(1)
 if display:
     entry["displayName"] = display
 apps[bundle] = entry
@@ -432,9 +449,16 @@ if [[ "$PUBLISHED" -ne 1 ]]; then
 fi
 
 # 3.  The pull request.  The open one for the shared branch is reused.
-PR_NUMBER="$(gh api "repos/${REPO}/pulls?head=${REPO%%/*}:${PR_BRANCH}&state=open" --jq '.[0].number' 2>/dev/null || true)"
-if [[ -n "$PR_NUMBER" && "$PR_NUMBER" != "null" ]]; then
-  gh api --method PATCH "repos/${REPO}/pulls/${PR_NUMBER}" -f title="$PR_TITLE" -f body="$PR_BODY" >/dev/null
+PR_LIST_JSON="$(gh api "repos/${REPO}/pulls?head=${REPO%%/*}:${PR_BRANCH}&state=open" 2>/dev/null)" || {
+  echo "error: could not list open pull requests for ${PR_BRANCH}" >&2
+  exit 1
+}
+PR_NUMBER="$(printf '%s' "$PR_LIST_JSON" | jq -r '.[0].number // empty')"
+if [[ -n "$PR_NUMBER" ]]; then
+  gh api --method PATCH "repos/${REPO}/pulls/${PR_NUMBER}" -f title="$PR_TITLE" -f body="$PR_BODY" >/dev/null || {
+    echo "error: could not update pull request #${PR_NUMBER}" >&2
+    exit 1
+  }
   PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
 else
   PR_URL="$(gh api --method POST "repos/${REPO}/pulls" -f title="$PR_TITLE" -f body="$PR_BODY" -f head="$PR_BRANCH" -f base="$BASE_BRANCH" --jq .html_url)" || {
@@ -453,7 +477,7 @@ write_local "$MERGED_B"
 RC=0
 if [[ "$AUTO_MERGE" == "1" ]]; then
   PR_NUM="${PR_URL##*/}"
-  if gh pr merge "$PR_NUM" --repo "$REPO" --squash --auto >/dev/null 2>&1; then
+  if gh pr merge --repo="$REPO" --squash --auto -- "$PR_NUM" >/dev/null 2>&1; then
     echo "version-manifest: auto-merge armed on ${PR_URL}"
   else
     echo "error: version-manifest auto-merge could not be armed on ${PR_URL}" >&2
@@ -466,8 +490,14 @@ echo "version-manifest-pr ${PR_URL}"
 # Sheet sync: the Fleet Reference Sheet follows the manifest.  The shim runs
 # the registry sync only from a clean checkout at origin/main; a host without
 # the shim skips it, a failing shim fails the run.
-SHEET_SYNC="${FLEET_SHEET_SYNC:-$HOME/apps/fleet-apps-sheet-sync.mjs}"
-if [[ -f "$SHEET_SYNC" ]]; then
+if [[ -n "${FLEET_SHEET_SYNC:-}" ]]; then
+  SHEET_SYNC="$FLEET_SHEET_SYNC"
+elif [[ -n "${HOME:-}" ]]; then
+  SHEET_SYNC="${HOME}/apps/fleet-apps-sheet-sync.mjs"
+else
+  SHEET_SYNC=""
+fi
+if [[ -n "$SHEET_SYNC" && -f "$SHEET_SYNC" ]]; then
   if node "$SHEET_SYNC" >&2; then
     echo "sheet-sync: done"
   else
@@ -475,6 +505,6 @@ if [[ -f "$SHEET_SYNC" ]]; then
     RC=1
   fi
 else
-  echo "sheet-sync: shim ${SHEET_SYNC} not present, skipped"
+  echo "sheet-sync: shim ${SHEET_SYNC:-unset} not present or HOME unset, skipped"
 fi
 exit "$RC"
