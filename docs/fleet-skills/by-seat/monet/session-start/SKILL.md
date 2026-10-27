@@ -117,7 +117,7 @@ A new owner message **adds** work unless they explicitly cancel or replace the o
 
 ## Canon
 
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — identity, Linear and the claim lifecycle, Zulip, prior-messages, always-commit
+- `/Users/jay/apps/FLEET-PROTOCOL.md` — identity, Linear and the claim lifecycle, Zulip, prior-messages, always-commit (owner handbook; not checked into this repository)
 - `docs/protocols/zulip-fleet-guide.md` — channels, topics, envelope, `simple-chat`, credentials
 - `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` — retired stub:  the effort logs are archived
 - `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-AGENT.md`
