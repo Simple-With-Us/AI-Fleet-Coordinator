@@ -36,10 +36,13 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import errno
 import json
 import os
 import pwd
 import socket
+import re
+import stat
 import subprocess
 import sys
 import tempfile
@@ -126,11 +129,11 @@ COOLIFY_TYPES = ("application", "service", "database", "standalone")
 
 def utc_now() -> str:
     """The time this report was made,  in the spelling the doctor uses."""
-    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def iso_from_timestamp(value: float) -> str:
-    return datetime.datetime.fromtimestamp(value, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def run(command, timeout=30):
@@ -202,19 +205,36 @@ def parse_size(text):
 def is_secret_path(path) -> bool:
     """Whether a path looks like a credential:  it is never hashed and never listed."""
     lowered = str(path).lower()
-    return any(marker in lowered for marker in SECRET_MARKERS)
+    return any(
+        re.search(r"(?:^|[./_\-])" + re.escape(marker) + r"(?:s|ed)?(?:$|[./_\-])", lowered)
+        for marker in SECRET_MARKERS
+    )
 
 
 def digest_of(path):
     """The first sixteen hex characters of a file's digest,  or None when it cannot be read."""
+    descriptor = None
     try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 4 * 1024 * 1024:
+            return None
         hasher = hashlib.sha256()
-        with open(path, "rb") as handle:
-            for chunk in iter(lambda: handle.read(65536), b""):
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            remaining = 4 * 1024 * 1024 + 1
+            while remaining:
+                chunk = handle.read(min(65536, remaining))
+                if not chunk:
+                    return hasher.hexdigest()[:16]
+                remaining -= len(chunk)
                 hasher.update(chunk)
+        return None
     except OSError:
         return None
-    return hasher.hexdigest()[:16]
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 # MARK: - Coolify
@@ -258,6 +278,10 @@ def resource_identity(fields):
     return uuid, name
 
 
+class ResourceRows(list):
+    complete = True
+
+
 def collect_coolify(run_command=run):
     """Every container on the host,  with what Docker knows about it.
 
@@ -266,10 +290,13 @@ def collect_coolify(run_command=run):
     """
     listed = run_command(["docker", "ps", "-a", "--format", "{{.ID}}"])
     if listed is None:
-        return []
+        rows = ResourceRows()
+        rows.complete = False
+        return rows
     ids = [line.strip() for line in listed.splitlines() if line.strip()]
     if not ids:
         return []
+    complete = True
     inspected = run_command(["docker", "inspect", "--format", INSPECT_FORMAT] + ids)
     if inspected is None:
         # A container that was removed between the two calls fails the whole batch,
@@ -279,11 +306,14 @@ def collect_coolify(run_command=run):
         for identifier in ids:
             answer = run_command(["docker", "inspect", "--format", INSPECT_FORMAT, identifier])
             if answer is None:
+                complete = False
                 continue
             lines.append(answer.strip())
         inspected = "\n".join(lines)
     if not inspected:
-        return []
+        rows = ResourceRows()
+        rows.complete = complete
+        return rows
 
     stats = {}
     stats_text = run_command(
@@ -299,10 +329,12 @@ def collect_coolify(run_command=run):
             if name:
                 stats[name] = (parse_percent(parts[1]), parse_size(parts[2]))
 
-    rows = []
+    rows = ResourceRows()
+    rows.complete = complete
     for line in inspected.splitlines():
         parts = line.split("\x1f")
         if len(parts) < 13:
+            rows.complete = False
             continue
         fields = {
             "id": parts[0].strip(),
@@ -351,12 +383,8 @@ def disambiguate(rows):
     are the same for every service of that application,  so the service name is added
     to keep one row per container.
     """
-    counts = {}
     for row in rows:
-        key = (row["uuid"], row["name"])
-        counts[key] = counts.get(key, 0) + 1
-    for row in rows:
-        if counts[(row["uuid"], row["name"])] > 1:
+        if row.get("_service") and row["_service"] != row["name"]:
             row["name"] = "%s (%s)" % (row["name"], row["_service"])
         row.pop("_service", None)
     return rows
@@ -560,8 +588,12 @@ def collect_files(code_root, previous, limit=200):
     paths, total = watched_paths(code_root, limit=limit)
     for path in paths:
         try:
+            resolved = path.resolve()
+            resolved.relative_to(code_root.resolve())
+            if is_secret_path(resolved):
+                continue
             info = path.stat()
-        except OSError:
+        except (OSError, ValueError):
             continue
         digest = digest_of(path)
         if digest is None:
@@ -577,8 +609,18 @@ def collect_files(code_root, previous, limit=200):
             }
         )
     for path in sorted(previous):
-        if path in present:
+        if path in present or is_secret_path(path):
             continue
+        candidate = Path(path)
+        try:
+            candidate.relative_to(code_root)
+            candidate.lstat()
+            continue
+        except ValueError:
+            continue
+        except OSError as error:
+            if error.errno != errno.ENOENT:
+                continue
         rows.append({"path": path, "drift": "missing"})
     return rows, total
 
@@ -659,20 +701,20 @@ def build_report(
     """The report,  as Muster reads it."""
     resources = []
     seen = set()
-    for row in coolify:
+    for row in coolify or []:
         key = (row["uuid"], row["name"])
         seen.add(key)
         resources.append(row)
     for key, before in sorted(previous_resources_map.items()):
         if key in seen:
             continue
-        # It was there and it is gone now:  that is provable,  and it is not a zero.
+        # Failed inspection is unknown, not evidence that resources vanished.
         resources.append(
             {
                 "uuid": key[0],
                 "name": key[1],
                 "type": before.get("type", "standalone"),
-                "status": "absent",
+                "status": "unknown" if not getattr(coolify, "complete", True) else "absent",
             }
         )
     return {
@@ -690,10 +732,6 @@ def write_report(path, document):
     """Atomic and private:  a 0600 temporary file in the same folder,  fsynced,  then
     renamed over.  The folder is created 0700 when it is absent."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        os.chmod(path.parent, 0o700)
-    except OSError:
-        pass
     handle, temporary = tempfile.mkstemp(
         prefix=".server-status.", suffix=".tmp", dir=str(path.parent)
     )
