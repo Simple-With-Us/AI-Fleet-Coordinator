@@ -294,11 +294,9 @@ jobs:
     - name: CI runner policy lint tracks AGENT-SYNC ban text
       run: python3 scripts/test_check_ci_runner_policy.py
     # GROK-BUILD in any spelling is an alias for GROK (owner 2026-10-10).  The standalone runtimes (the
-    # board scripts, recall) carry a copy of the registry's aliasPattern;  these fail when a copy drifts.
-    - name: Seat alias parity (board scripts)
-      run: |
-        python3 scripts/mac-collab/test_seat_alias.py
-        python3 scripts/linear-board/test_board.py SeatAliasTests
+    # Linear board, recall) carry a copy of the registry's aliasPattern;  these fail when a copy drifts.
+    - name: Seat alias parity (linear-board)
+      run: python3 scripts/linear-board/test_board.py SeatAliasTests
     # AFC-361:  board writes, notes_create/notes_update and apple-notes-coding.sh carry a session id and refuse
     # without one (single-thread seats exempt).  The parity test keeps every copy of fleet-apps.json
     # `sessionIds` equal;  the other two run the board verbs against the mock Linear and the notes script with
@@ -372,10 +370,6 @@ jobs:
       uses: actions/setup-node@v7
       with:
         node-version: '24'
-    - name: Verify board new-item composer
-      run: |
-        node --test scripts/mac-collab/test_board_composer.cjs
-        python3 scripts/mac-collab/test_app_normalization.py
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
     # Shared alert ingress: state transitions, vendor normalization, and the

@@ -419,7 +419,10 @@ def main() -> int:
         print(f"  saved {zip_out.name} ({count} files, {size_mb:.2f} MB)")
         backed_up.append(repo)
 
-    findings_db = Path.home() / "apps" / "mac-collab" / "findings.db"
+    # mac-collab was retired on 2026-10-19 (AFC-363):  the live tree moved to
+    # ~/apps/_retired/mac-collab-20261019/.  The old path no longer exists, so the
+    # snapshot below was silently skipped until this was pointed at the archive.
+    findings_db = Path.home() / "apps" / "_retired" / "mac-collab-20261019" / "findings.db"
     if findings_db.is_file():
         if args.dry_run:
             print(f"would save findings-{DATE_STR}.db (findings.db SQLite snapshot)")
