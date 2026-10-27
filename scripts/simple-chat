@@ -22,7 +22,13 @@ if sys.version_info < (3, 11):
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 
-if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] in ("attach", "detach"):
+# SIMPLE_CHAT_REMOTE=1 never runs listener verbs locally:  skip the fast path so cli.main refuses them.
+if (
+    __name__ == "__main__"
+    and len(sys.argv) > 1
+    and sys.argv[1] in ("attach", "detach")
+    and os.environ.get("SIMPLE_CHAT_REMOTE", "").strip() != "1"
+):
     from agent_sync.attach import main as attach_main  # noqa: E402
 
     sys.exit(attach_main(sys.argv[2:], command=sys.argv[1]))
