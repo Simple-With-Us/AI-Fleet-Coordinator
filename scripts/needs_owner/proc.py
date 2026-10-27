@@ -1,8 +1,8 @@
-"""Running `board` and `agent-sync`.
+"""Running `board` and `simple-chat`.
 
 Both are run as argv lists (never through a shell), with the verified seat as `AGENT_SEAT` in the child's
 environment.  Free text never rides on argv:  the board reads a description or a comment from a private
-temp file (mode 0600, removed afterwards) and `agent-sync` reads a message from standard input, so
+temp file (mode 0600, removed afterwards) and `simple-chat` reads a message from standard input, so
 nothing a filer wrote shows up in `ps` or in a shell history.  Each tool is looked up on PATH, then in
 ~/.local/bin (a routine's PATH can be short).
 """

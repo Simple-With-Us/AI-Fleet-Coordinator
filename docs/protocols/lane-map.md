@@ -208,7 +208,7 @@ Owner decision 2026-10-09: the existing lanes move to the v2 tree in one pass, a
 - The old shapes keep working until then: `lane ls` reports them as `legacy (migrate)` with their new path, and `lane new` finds a lane that has not moved yet.
 - A moved lane leaves a symlink at its old path, pointing at the new one.  The symlinks stay for 7 days (the removal date is written to the migration log) so a shell or an editor that still has the old path keeps working, then `lanes-v2-migrate.py --remove-links` deletes only those symlinks.
 - Lanes with a running process, uncommitted changes, a lock or another checkout below them (a gitignored `.claude/worktrees/<name>`) are skipped and listed; run the script again when they are free.
-- `_managed` and `_review` disappear with their last entry.  The agent-sync runtime checkout under `_managed/fleet` is live infrastructure, so the script skips it and it needs its own step (owner decision pending).
+- `_managed` and `_review` disappear with their last entry.  The runtime checkout under `_managed/fleet` is live infrastructure, so the script skips it and it needs its own step (owner decision pending).
 - Bot lanes (BotFleet `kody`, `fixer`, `designer`, `compiler`) have no seat row in the registry; they are reported as `BOT-LANE` until the owner registers a scheme.
 
 ## Enforcement

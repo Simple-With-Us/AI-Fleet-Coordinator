@@ -345,7 +345,7 @@ class ActualRuntime(unittest.TestCase):
         self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "agent-sync")
         # What the real server serves:  tools.json, eavesdropper-tools.json (AFC-330), notes-tools.json and
         # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs, then
-        # fleetlink-tools.json.  Every file must ship, or `agent-sync mcp` fails at startup on the server (it
+        # fleetlink-tools.json.  Every file must ship, or `simple-chat mcp` fails at startup on the server (it
         # did, 2026-10-16).
         mcp = self.release / "scripts/agent_sync/mcp"
         served = []

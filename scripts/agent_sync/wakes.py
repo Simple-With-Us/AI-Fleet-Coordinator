@@ -476,7 +476,7 @@ class LoopGuard:
         return self.enabled and self.count(key, now) >= self.LIMIT
 
     def holding(self, now: float | None = None) -> list[dict[str, Any]]:
-        """The topics at their limit, for `agent-sync status` (AFC-255):  the channel, the topic, the
+        """The topics at their limit, for `simple-chat status` (AFC-255):  the channel, the topic, the
         count that holds each and whether that count rolls (a bot DM, where it ages out) or waits for
         the owner however long that takes.  A guard that blocks silently looked like a working one, so
         status names every topic it is holding and why it is still holding it."""

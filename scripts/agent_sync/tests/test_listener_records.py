@@ -1,4 +1,4 @@
-"""AFC-330 part B:  `agent-sync listener ...` over this seat's own records, and the server listener's
+"""AFC-330 part B:  `simple-chat listener ...` over this seat's own records, and the server listener's
 signed read API (listener_api.py) that the hosted Worker's listener_* tools call."""
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-// Configuration for the hosted agent-sync MCP Worker (Phase 0 OAuth, Phase 2 tools).
+// Configuration for the hosted ST-MCP Worker (Phase 0 OAuth, Phase 2 tools).
 //
 // Pure module:  no `cloudflare:` imports, so `node --test` can load it in CI
 // without `npm ci`.  Every value comes from wrangler.jsonc `vars`.  A missing

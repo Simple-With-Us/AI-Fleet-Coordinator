@@ -1,8 +1,8 @@
-// Hosted agent-sync MCP Worker (docs/protocols/agent-sync-mcp.md section 3):
+// Hosted ST-MCP Worker (docs/protocols/agent-sync-mcp.md section 3):
 // OAuth 2.1 with CIMD for ChatGPT and Grok, hand-registered public PKCE
 // clients bound to one seat each (manual forms, the Instinct app's loopback
 // callback), arming, a consent page behind Cloudflare
-// Access, a per-seat epoch and pause switch (Phase 0), and the seven agent-sync
+// Access, a per-seat epoch and pause switch (Phase 0), and the seven chat
 // tools from tools.json, each seat posting as its own Zulip bot (Phase 2).
 //
 // Request order, outermost first:
