@@ -2927,7 +2927,9 @@ def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[
     except urllib.error.HTTPError as exc:
         return exc.code, "", b""
     except (urllib.error.URLError, OSError, ValueError):
-        raise RemoteError("the hosted endpoint could not be reached (no direct fallback in remote mode)") from None
+        raise RemoteError(
+            "the hosted endpoint could not be reached (no direct fallback in remote mode)"
+        ) from None
 
 
 class RemoteError(Exception):
@@ -2937,18 +2939,38 @@ class RemoteError(Exception):
 def _remote_call(env: Mapping[str, str], tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
     bearer = str(env.get(REMOTE_BEARER_ENV, "")).strip()
     if not bearer:
-        raise RemoteError(f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
-                          "to direct credentials")
+        raise RemoteError(
+            f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
+            "to direct credentials"
+        )
     if not REMOTE_BEARER_RE.fullmatch(bearer):
-        raise RemoteError(f"{REMOTE_BEARER_ENV} is not a bearer token (unexpected characters or length)")
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": tool, "arguments": arguments}}).encode()
-    status, ctype, raw = _remote_post(REMOTE_MCP_URL, {
-        "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
-        "MCP-Protocol-Version": "2025-06-18", "Authorization": "Bearer " + bearer,
-        "User-Agent": "simple-chat-remote/1"}, body, REMOTE_TIMEOUT_S)
+        raise RemoteError(
+            f"{REMOTE_BEARER_ENV} is not a bearer token (unexpected characters or length)"
+        )
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        }
+    ).encode()
+    status, ctype, raw = _remote_post(
+        REMOTE_MCP_URL,
+        {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": "2025-06-18",
+            "Authorization": "Bearer " + bearer,
+            "User-Agent": "simple-chat-remote/1",
+        },
+        body,
+        REMOTE_TIMEOUT_S,
+    )
     if status in (401, 403):
-        raise RemoteError("the hosted endpoint refused this bearer (not valid, expired, paused or not accepted for MCP)")
+        raise RemoteError(
+            "the hosted endpoint refused this bearer (not valid, expired, paused or not accepted for MCP)"
+        )
     if status != 200:
         raise RemoteError(f"the hosted endpoint answered HTTP {status}")
     text = raw.decode("utf-8", "replace")
@@ -2958,24 +2980,44 @@ def _remote_call(env: Mapping[str, str], tool: str, arguments: dict[str, Any]) -
         msg = json.loads(text)
     except ValueError:
         raise RemoteError("the hosted endpoint sent an unreadable answer") from None
-    if not isinstance(msg, dict) or isinstance(msg.get("error"), dict) or not isinstance(msg.get("result"), dict):
+    if (
+        not isinstance(msg, dict)
+        or isinstance(msg.get("error"), dict)
+        or not isinstance(msg.get("result"), dict)
+    ):
         raise RemoteError("the hosted endpoint refused or did not answer the call")
     result = msg["result"]
     if result.get("isError"):
-        sc = result.get("structuredContent") if isinstance(result.get("structuredContent"), dict) else {}
-        raise RemoteError(f"{tool} failed on the hosted server: " + str(sc.get("code") or "error")[:120])
+        sc = (
+            result.get("structuredContent")
+            if isinstance(result.get("structuredContent"), dict)
+            else {}
+        )
+        raise RemoteError(
+            f"{tool} failed on the hosted server: " + str(sc.get("code") or "error")[:120]
+        )
     return result
 
 
-def _remote_write_args(rt: Runtime, cmd: str, args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+def _remote_write_args(
+    rt: Runtime, cmd: str, args: argparse.Namespace
+) -> tuple[str, dict[str, Any]]:
     """post / reply / react / dm to the hosted zulip_* tool of the same meaning.  A write needs its own switch
     (SIMPLE_CHAT_REMOTE_WRITES=1) on top of SIMPLE_CHAT_REMOTE=1;  the hosted server still applies its own
     tagging, secret scan, recipient rules and rate limits.  Options with no hosted equivalent are refused."""
     if str(rt.env.get("SIMPLE_CHAT_REMOTE_WRITES", "")).strip() != "1":
-        raise RemoteError(f"`{cmd}` is a write:  set SIMPLE_CHAT_REMOTE_WRITES=1 as well as SIMPLE_CHAT_REMOTE=1 "
-                          "to send it to the hosted server (it is not sent directly instead)")
-    for flag, bad in (("--fleet", "fleet"), ("--to-owner", "to_owner"), ("--no-tag", "no_tag"),
-                      ("--quiet", "quiet"), ("--owner", "owner"), ("--body-file", "body_file")):
+        raise RemoteError(
+            f"`{cmd}` is a write:  set SIMPLE_CHAT_REMOTE_WRITES=1 as well as SIMPLE_CHAT_REMOTE=1 "
+            "to send it to the hosted server (it is not sent directly instead)"
+        )
+    for flag, bad in (
+        ("--fleet", "fleet"),
+        ("--to-owner", "to_owner"),
+        ("--no-tag", "no_tag"),
+        ("--quiet", "quiet"),
+        ("--owner", "owner"),
+        ("--body-file", "body_file"),
+    ):
         if getattr(args, bad, False):
             raise RemoteError(f"{flag} has no hosted equivalent in remote mode")
     if cmd == "react":
@@ -2997,8 +3039,10 @@ def _remote_write_args(rt: Runtime, cmd: str, args: argparse.Namespace) -> tuple
     ids = [t for t in args.to if t.isdigit()]
     emails = [t for t in args.to if "@" in t]
     if not args.to or len(ids) + len(emails) != len(args.to):
-        raise RemoteError("remote dm needs --to with numeric user ids or emails (names, seat tags and the "
-                          "owner default are not resolved in remote mode)")
+        raise RemoteError(
+            "remote dm needs --to with numeric user ids or emails (names, seat tags and the "
+            "owner default are not resolved in remote mode)"
+        )
     targs = {"text": text}
     if ids:
         targs["user_ids"] = [int(i) for i in ids]
@@ -3013,12 +3057,20 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
     cmd = getattr(args, "command", None) or getattr(args, "cmd", None)
     try:
         if cmd not in REMOTE_VERBS:
-            raise RemoteError(f"`{cmd}` is not available in remote mode (SIMPLE_CHAT_REMOTE=1 supports only "
-                              f"{', '.join(REMOTE_VERBS)}); it is not run directly either")
-        for flag, bad in (("--as", getattr(args, "as_seat", None)), ("--default-seat", getattr(args, "default_seat", None)),
-                          ("--rc", getattr(args, "rc", None)), ("--session", getattr(args, "session", None))):
+            raise RemoteError(
+                f"`{cmd}` is not available in remote mode (SIMPLE_CHAT_REMOTE=1 supports only "
+                f"{', '.join(REMOTE_VERBS)}); it is not run directly either"
+            )
+        for flag, bad in (
+            ("--as", getattr(args, "as_seat", None)),
+            ("--default-seat", getattr(args, "default_seat", None)),
+            ("--rc", getattr(args, "rc", None)),
+            ("--session", getattr(args, "session", None)),
+        ):
             if bad:
-                raise RemoteError(f"{flag} has no meaning in remote mode:  the hosted server fixes the seat from the bearer")
+                raise RemoteError(
+                    f"{flag} has no meaning in remote mode:  the hosted server fixes the seat from the bearer"
+                )
         if cmd == "whoami":
             tool, targs = "whoami", {}
         elif cmd == "channels":
@@ -3027,8 +3079,13 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
             tool, targs = "zulip_topics", {"channel": args.channel, "limit": args.limit}
         elif cmd == "read":
             if getattr(args, "new", False):
-                raise RemoteError("--new uses a local cursor and has no hosted equivalent in remote mode")
-            tool, targs = "zulip_read_topic", {"channel": args.channel, "topic": args.topic, "limit": args.limit}
+                raise RemoteError(
+                    "--new uses a local cursor and has no hosted equivalent in remote mode"
+                )
+            tool, targs = (
+                "zulip_read_topic",
+                {"channel": args.channel, "topic": args.topic, "limit": args.limit},
+            )
             if getattr(args, "since", None) is not None:
                 targs["since_id"] = args.since
             if getattr(args, "include_self", False):
@@ -3037,17 +3094,26 @@ def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
             tool, targs = _remote_write_args(rt, cmd, args)
         else:
             if getattr(args, "local", False):
-                raise RemoteError("--local reads the listener's local files and has no hosted equivalent")
+                raise RemoteError(
+                    "--local reads the listener's local files and has no hosted equivalent"
+                )
             if not getattr(args, "peek", False):
-                raise RemoteError("remote inbox cannot advance the local cursor:  pass --peek to read without it")
+                raise RemoteError(
+                    "remote inbox cannot advance the local cursor:  pass --peek to read without it"
+                )
             tool, targs = "zulip_inbox", {"limit": args.limit}
         result = _remote_call(rt.env, tool, targs)
     except RemoteError as exc:
         print(f"{rt.prog}: {exc}", file=rt.stderr)
         return 2
     if getattr(args, "json", False):
-        print(json.dumps({"structured": result.get("structuredContent"), "content": result.get("content")}, indent=2),
-              file=rt.stdout)
+        print(
+            json.dumps(
+                {"structured": result.get("structuredContent"), "content": result.get("content")},
+                indent=2,
+            ),
+            file=rt.stdout,
+        )
         return 0
     printed = False
     for part in result.get("content") or []:
@@ -3089,10 +3155,17 @@ def main(
     # The hook fast path belongs to `simple-chat` alone:  attach/detach are listener verbs, so a
     # command that does not own them (simple-notes) must fall through to the parser and be refused.
     spec = COMMAND_SPECS.get(prog)
-    if prog == "simple-chat" and str(rt.env.get("SIMPLE_CHAT_REMOTE", "")).strip() == "1" and argv \
-            and argv[0] in HOOK_VERBS:
-        print(f"{prog}: `{argv[0]}` is a local listener verb and is not available in remote mode "
-              "(SIMPLE_CHAT_REMOTE=1); it is not run locally either", file=rt.stderr)
+    if (
+        prog == "simple-chat"
+        and str(rt.env.get("SIMPLE_CHAT_REMOTE", "")).strip() == "1"
+        and argv
+        and argv[0] in HOOK_VERBS
+    ):
+        print(
+            f"{prog}: `{argv[0]}` is a local listener verb and is not available in remote mode "
+            "(SIMPLE_CHAT_REMOTE=1); it is not run locally either",
+            file=rt.stderr,
+        )
         return 2
     if argv and argv[0] in HOOK_VERBS and spec is not None and argv[0] in spec["listener"]:
         from . import attach
