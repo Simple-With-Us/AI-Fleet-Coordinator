@@ -176,6 +176,28 @@ class WorkflowWiringTests(unittest.TestCase):
             self.assertNotIn("outcome", body)
             self.assertEqual(r.handle(TOKEN, "wf_runs", {"repo": "example/x"})[0], 502)
 
+    def test_read_429_keeps_the_retry_after_hint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exc = RelayGitHubError(429, "slow down")
+            exc.retry_after = 17
+            r = relay(tmp, client=Client(fail=exc))
+            status, body = r.handle(TOKEN, "wf_runs", {"repo": "example/x"})
+            self.assertEqual((status, body["retry_after_seconds"], body["retryable"]), (429, 17, True))
+
+    def test_malformed_prior_sha_is_refused_before_any_upstream_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            r = relay(tmp)
+            args = {
+                "repo": "example/x",
+                "path": "docs/a.md",
+                "branch": "wise/x",
+                "message": "m",
+                "content_b64": "aGVsbG8=",
+                "prior_sha": "not-a-sha",
+            }
+            self.assertEqual(r.handle(TOKEN, "wf_file_put", args)[0], 400)
+            self.assertEqual((r.client.calls, r.app_minter.calls), ([], []))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -490,13 +490,13 @@ class WorkflowVerbs:
             raise Refused("invalid content") from None
         if find_secret(message) or find_secret(raw.decode("utf-8", "replace")):
             raise Refused("credential-shaped content refused")
+        payload = {"message": message, "content": content, "branch": branch}
+        if "prior_sha" in args:
+            payload["sha"] = _sha(args, "prior_sha")
         repo_info = _obj(self._get(f"/repos/{repo}"))
         default = repo_info.get("default_branch")
         if not isinstance(default, str) or not default or branch == default:
             raise Refused("default branch is not writable")
-        payload = {"message": message, "content": content, "branch": branch}
-        if "prior_sha" in args:
-            payload["sha"] = _sha(args, "prior_sha")
         data = self.client._call(
             "PUT", f"/repos/{repo}/contents/{quote(path, safe='/')}", payload, bearer=self.bearer
         )

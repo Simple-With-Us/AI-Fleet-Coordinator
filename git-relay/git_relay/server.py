@@ -382,6 +382,8 @@ class Relay:
                         "github_status": exc.status,
                         "retryable": True,
                     }
+                    if exc.retry_after is not None:
+                        payload["retry_after_seconds"] = detail["retry_after_seconds"] = exc.retry_after
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return (429 if exc.status == 429 else 502), payload
