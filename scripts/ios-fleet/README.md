@@ -44,8 +44,9 @@ node scripts/fleet-apps-sheet-sync.mjs             # backs up the workbook, then
 
 Then run the ops half from a Fleet-OPS lane:  `node scripts/fleet-sheet/fleet-ops-sheet-sync.mjs`.
 
-The Mac runtime copy at `~/apps/ios-fleet/publish-ios-versions.sh` calls
-`~/apps/fleet-apps-sheet-sync.mjs` after a successful manifest push.  That file is a guarded
+`publish-ios-versions.sh` (this canonical script, and every byte-identical copy) calls
+`~/apps/fleet-apps-sheet-sync.mjs` after a successful manifest publish (override with
+`FLEET_SHEET_SYNC`; a host without the shim skips it, a failing shim fails the run).  That file is a guarded
 shim:  it runs `~/Code/AI-Fleet-Coordinator/scripts/fleet-apps-sheet-sync.mjs` only when that
 tree is clean and at origin/main, and otherwise exits non-zero with the lane command.
 
@@ -73,8 +74,13 @@ Two rules the copy must keep:
 1. **Seed from the live remote, never from the vendored snapshot.**  The `ios-app-versions.json`
    checked into a shipping repo is a stale snapshot; publishing from it would drop fleet apps
    and roll other apps' versions backwards.
-2. **Never publish a one-app or empty-apps document over a multi-app remote.**  That is the
-   same class as DealDex #173.
+   There is no local-snapshot fallback: if the live manifest cannot be read, pass `--base-json`
+   or the run fails.
+2. **Never publish a document that drops an app the live remote has.**  The live manifest is
+   re-read right before the write, and if it moved since the base was read (a concurrent
+   publish) the run fails instead of overwriting.  Same class as DealDex #173.
+3. **The credential is `GH_TOKEN` (the fleet GH_PAT) or `fleet-secrets get GH_PAT`.**  A bare
+   `gh` login is never used.  A failure to arm auto-merge exits non-zero.
 
 ## Why the rules block is generated
 
