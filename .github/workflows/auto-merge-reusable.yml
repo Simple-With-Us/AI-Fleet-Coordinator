@@ -16,8 +16,8 @@ name: Auto-merge reusable (fleet)
 # A merge attributed to github-actions[bot] dispatches nothing -- no CI, no
 # ship workflows on main.  So the merge token must be a PAT or a GitHub App
 # installation token.  Without one this workflow no-ops LOUDLY (notice + arm
-# skipped); it never falls back to GITHUB_TOKEN for arming.  Disarming may
-# fall back, because disabling never merges.
+# skipped); it never falls back to GITHUB_TOKEN for arming.  Disarming uses
+# only the verified repository GITHUB_TOKEN, never a personal credential.
 #
 # The presence guard is not enough on its own:  a revoked or expired token is
 # present and then 401s mid-step (Socratic-Trade ST-4393, 2026-10-08).  The
@@ -30,6 +30,14 @@ name: Auto-merge reusable (fleet)
 on:
   workflow_call:
     inputs:
+      use_wise_relay:
+        description: Fetch a dedicated Infisical credential and mint inside this job
+        type: boolean
+        default: false
+      expected_merge_actor:
+        description: Exact approved bot login used for merge arming, never a personal account
+        type: string
+        default: ""
       require_codeowners_gate:
         description: >-
           When true, PRs touching paths in the base branch's .github/CODEOWNERS
@@ -91,6 +99,9 @@ on:
         type: boolean
         default: true
     secrets:
+      wise_infisical_token:
+        description: Dedicated read-only service token for Fleet-OPS prod /gr-front/wise-st
+        required: false
       merge_token:
         description: >-
           PAT or GitHub App installation token with contents + pull-requests
@@ -126,7 +137,7 @@ jobs:
       - name: Classify PR for auto-merge eligibility
         id: check
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
@@ -298,13 +309,298 @@ jobs:
 
   arm:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.use_wise_relay && 'merge-shepherd' || '' }}
     needs: classify
     if: needs.classify.outputs.skip == 'false'
     permissions:
       contents: write
       pull-requests: write
     steps:
+      - name: Fetch Wise relay token in this job
+        if: inputs.use_wise_relay
+        env:
+          INFISICAL_TOKEN: ${{ secrets.WISE_RELAY_INFISICAL_TOKEN || secrets.wise_infisical_token }}
+          EXPECTED_MERGE_ACTOR: ${{ inputs.expected_merge_actor }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          DELETE_BRANCH: ${{ inputs.delete_branch }}
+        run: |
+          set -euo pipefail
+          install_dir="$(mktemp -d)"
+          trap 'rm -rf "$install_dir"' EXIT
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            https://github.com/Infisical/cli/releases/download/v0.43.141/cli_0.43.141_linux_amd64.tar.gz \
+            --output "$install_dir/cli.tar.gz"
+          printf '%s  %s\n' d93a9b5ae46c6097889926b95c1c09992f44619053793eaa61d66884726c95e5 "$install_dir/cli.tar.gz" | sha256sum --check --status
+          tar -xzf "$install_dir/cli.tar.gz" -C "$install_dir" infisical
+          export PATH="$install_dir:$PATH"
+          cat > "$install_dir/arm.sh" <<'WISE_ARM_SH'
+          set -euo pipefail
+          case "$EXPECTED_MERGE_ACTOR" in
+            *'[bot]') ;;
+            *) echo "::error::An explicit bot merge principal is required; personal-account arming is forbidden."; exit 1 ;;
+          esac
+          if ! actual="$(gh api graphql -f query='query { viewer { login } }' --jq '.data.viewer.login' 2>/dev/null)"; then
+            echo "::error::Cannot verify merge credential principal; refusing to arm."
+            exit 1
+          fi
+          if [ "$actual" != "$EXPECTED_MERGE_ACTOR" ]; then
+            echo "::error::Merge credential does not match the configured bot principal; refusing to arm."
+            exit 1
+          fi
+          echo "Configured bot merge principal verified."
+
+          set -euo pipefail
+          args=(--auto --squash)
+          [ "$DELETE_BRANCH" = "true" ] && args+=(--delete-branch)
+          echo "Enabling auto-merge (${args[*]}) for $PR_URL"
+          out="$(gh pr merge "${args[@]}" "$PR_URL" 2>&1)" && { echo "auto_merge_command status=success"; exit 0; }
+          echo "auto_merge_command status=failed code=outcome_unknown request_id=unavailable"
+          if echo "$out" | grep -qiE 'delete-branch.*when merge queue enabled'; then
+            # A merge queue refuses --delete-branch: the flag flips the repository's
+            # delete-branch-on-merge setting, and a queue cannot have both.  The
+            # queue's own "delete head branches" setting owns that job from there on,
+            # so arm again without the flag instead of failing the step for every PR
+            # in the repo (AFC-413).
+            echo "::notice::the merge queue refuses --delete-branch; arming without it"
+            out="$(gh pr merge --auto --squash "$PR_URL" 2>&1)" && { echo "auto_merge_command status=success"; exit 0; }
+            echo "auto_merge_command status=failed code=outcome_unknown request_id=unavailable"
+          fi
+          if echo "$out" | grep -qiE 'already enabled|Auto merge is already'; then
+            echo "Auto-merge already armed."; exit 0
+          fi
+          if echo "$out" | grep -qiE 'Pull request is in clean status'; then
+            if gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest' | grep -vq null; then
+              echo "Auto-merge armed (clean status)."; exit 0
+            fi
+            echo "::error::PR reports clean status but auto-merge is not armed - not treating as armed."
+            exit 1
+          fi
+          if echo "$out" | grep -qiE 'is not mergeable|not mergeable|merge conflict|required status check|Review required'; then
+            if gh pr view "$PR_URL" --json autoMergeRequest --jq '.autoMergeRequest' | grep -vq null; then
+              echo "Auto-merge armed despite pending checks."; exit 0
+            fi
+            echo "::notice::Auto-merge not armed: the PR is not ready"; exit 0
+          fi
+          echo "::error::Failed to enable auto-merge for $PR_URL"
+          exit 1
+          WISE_ARM_SH
+          python3 - -- bash "$install_dir/arm.sh" <<'WISE_RELAY_PY'
+          #!/usr/bin/env python3
+          """Fetch purpose-scoped Infisical config, relay-mint, verify principal, exec.
+
+          No personal token fallback. Values stay in subprocess memory. The only
+          persistent bootstrap is the consuming platform's Infisical service token.
+          The folder's repository config is ST-specific even when relay permits more.
+          """
+
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          FOLDER = "/gr-front/wise-st"
+          REPO = "Simple-With-Us/Socratic-Trade"
+          ACTOR = "swu-wise[bot]"
+          PERMISSIONS = {
+              "contents": "write",
+              "pull_requests": "write",
+              "issues": "write",
+              "actions": "write",
+              "checks": "read",
+              "metadata": "read",
+          }
+          KEYS = {
+              "WISE_GIT_RELAY_BEARER",
+              "WISE_GIT_RELAY_URL",
+              "WISE_GIT_RELAY_REPOSITORY",
+              "WISE_GIT_RELAY_EXPECTED_ACTOR",
+              "WISE_GIT_RELAY_PERMISSIONS",
+          }
+
+
+          class Refused(Exception):
+              pass
+
+
+          def configuration(export):
+              # Infisical CLI versions emit either a name/value map or secret records.
+              if isinstance(export, list):
+                  values = {}
+                  for item in export:
+                      if (
+                          not isinstance(item, dict)
+                          or not isinstance(item.get("key"), str)
+                          or not isinstance(item.get("value"), str)
+                      ):
+                          raise Refused("malformed Infisical export")
+                      if item["key"] in values:
+                          raise Refused("duplicate Infisical key")
+                      values[item["key"]] = item["value"]
+              elif isinstance(export, dict):
+                  values = export
+              else:
+                  raise Refused("malformed Infisical export")
+              if set(values) != KEYS or any(not isinstance(v, str) or not v for v in values.values()):
+                  raise Refused("missing, unexpected or empty dedicated-folder configuration")
+              if (
+                  values["WISE_GIT_RELAY_REPOSITORY"] != REPO
+                  or values["WISE_GIT_RELAY_EXPECTED_ACTOR"] != ACTOR
+              ):
+                  raise Refused("consumer repo or principal configuration mismatch")
+              try:
+                  perms = json.loads(values["WISE_GIT_RELAY_PERMISSIONS"])
+              except (ValueError, TypeError):
+                  raise Refused("invalid permission configuration") from None
+              if perms != PERMISSIONS:
+                  raise Refused("unexpected permission configuration")
+              url = urllib.parse.urlsplit(values["WISE_GIT_RELAY_URL"])
+              if (
+                  url.scheme != "https"
+                  or not url.hostname
+                  or url.username
+                  or url.password
+                  or url.query
+                  or url.fragment
+                  or url.path not in ("", "/")
+              ):
+                  raise Refused("relay requires a plain HTTPS origin")
+              return values
+
+
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  raise Refused("redirect refused")
+
+
+          def request_json(url, headers, body=None):
+              req = urllib.request.Request(
+                  url,
+                  data=json.dumps(body).encode() if body is not None else None,
+                  headers={
+                      "User-Agent": "wise-relay-exec/1.0",
+                      **headers,
+                      "Content-Type": "application/json",
+                  },
+              )
+              try:
+                  with urllib.request.build_opener(NoRedirect).open(req, timeout=30) as response:
+                      raw = response.read(1048577)
+                      if len(raw) > 1048576:
+                          raise Refused("response too large")
+                      return json.loads(raw)
+              except (urllib.error.URLError, ValueError, OSError):
+                  # Never echo provider errors: they may contain headers or credentials.
+                  raise Refused("authenticated service request failed") from None
+
+
+          def mint_verified(config, request=request_json):
+              result = request(
+                  config["WISE_GIT_RELAY_URL"].rstrip("/") + "/v1/mint_token",
+                  {"Authorization": "Bearer " + config["WISE_GIT_RELAY_BEARER"]},
+                  {"repo": REPO, "permissions": PERMISSIONS},
+              )
+              if not isinstance(result, dict) or result.get("app_slug") != "swu-wise":
+                  raise Refused("relay App identity mismatch")
+              token = result.get("token")
+              ttl = result.get("expires_in_seconds")
+              if (
+                  not isinstance(token, str)
+                  or not re.fullmatch(r"ghs_[A-Za-z0-9_]+", token)
+                  or not isinstance(ttl, int)
+                  or isinstance(ttl, bool)
+                  or not 120 <= ttl <= 3600
+              ):
+                  raise Refused("relay token or expiry malformed")
+              viewer = request(
+                  "https://api.github.com/graphql",
+                  {"Authorization": "Bearer " + token, "Accept": "application/vnd.github+json"},
+                  {"query": "query { viewer { login } }"},
+              )
+              data = viewer.get("data") if isinstance(viewer, dict) else None
+              user = data.get("viewer") if isinstance(data, dict) else None
+              if (not isinstance(viewer, dict) or viewer.get("errors")
+                      or not isinstance(user, dict) or user.get("login") != ACTOR):
+                  raise Refused("GitHub principal mismatch")
+              return token
+
+
+          def main():
+              if len(sys.argv) < 3 or sys.argv[1] != "--":
+                  raise Refused("usage: wise-relay-exec.py -- command [args]")
+              env = dict(os.environ)
+              if not env.get("INFISICAL_TOKEN", "").startswith("st."):
+                  raise Refused("dedicated Infisical service token required")
+              for key in (
+                  "INFISICAL_CLIENT_ID",
+                  "INFISICAL_CLIENT_SECRET",
+                  "INFISICAL_AUTOMATION_CLIENT_ID",
+                  "INFISICAL_AUTOMATION_CLIENT_SECRET",
+                  "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+                  "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+                  "GH_TOKEN",
+                  "GITHUB_TOKEN",
+                  "GH_ENTERPRISE_TOKEN",
+                  "GITHUB_ENTERPRISE_TOKEN",
+              ):
+                  env.pop(key, None)
+              try:
+                  run = subprocess.run(
+                      [
+                          "infisical",
+                          "export",
+                          "--env",
+                          "prod",
+                          "--path",
+                          FOLDER,
+                          "--format",
+                          "json",
+                          "--expand=false",
+                          "--include-imports=false",
+                          "--secret-overriding=false",
+                          "--silent",
+                          "--telemetry=false",
+                      ],
+                      env=env,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.DEVNULL,
+                      timeout=40,
+                      check=True,
+                  )
+                  if len(run.stdout) > 65536:
+                      raise Refused("configuration too large")
+                  config = configuration(json.loads(run.stdout))
+              except (subprocess.SubprocessError, OSError, ValueError):
+                  raise Refused("Infisical dedicated-folder fetch failed") from None
+              # The caller's configured merge principal must be the relay principal; never overwrite it silently.
+              if os.environ.get("EXPECTED_MERGE_ACTOR", ACTOR) != ACTOR:
+                  raise Refused("caller merge principal does not match the relay principal")
+              token = mint_verified(config)
+              if os.environ.get("GITHUB_ACTIONS") == "true":
+                  print("::add-mask::" + token, flush=True)
+              # Do not pass bearer or Infisical bootstrap to the consumer command.
+              env.pop("INFISICAL_TOKEN", None)
+              env["GH_TOKEN"] = token
+              env["SHEPHERD_EXPECTED_ACTOR"] = ACTOR
+              env["EXPECTED_MERGE_ACTOR"] = ACTOR
+              env["GITHUB_REPOSITORY"] = REPO
+              env["SHEPHERD_HAS_PAT"] = "1"  # App writes trigger CI; no personal credential.
+              os.execvpe(sys.argv[2], sys.argv[2:], env)
+
+
+          if __name__ == "__main__":
+              try:
+                  main()
+              except Refused as error:
+                  print("wise relay refused: " + str(error), file=sys.stderr)
+                  sys.exit(1)
+          WISE_RELAY_PY
+
       - name: Require an elevated token before arming auto-merge
+        if: ${{ !inputs.use_wise_relay }}
         id: token-gate
         env:
           MERGE_TOKEN: ${{ secrets.merge_token }}
@@ -322,7 +618,7 @@ jobs:
           echo "armed=true" >> "$GITHUB_OUTPUT"
 
       - name: Probe the merge token (presence is not validity - ST-4393)
-        if: steps.token-gate.outputs.armed == 'true'
+        if: ${{ !inputs.use_wise_relay && steps.token-gate.outputs.armed == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.merge_token }}
         run: |
@@ -335,8 +631,29 @@ jobs:
           echo "::error::merge token probe failed unexpectedly: $(printf '%s' "$out" | head -1)"
           exit 1
 
+      - name: Require the configured bot principal before arming
+        if: ${{ !inputs.use_wise_relay && steps.token-gate.outputs.armed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.merge_token }}
+          EXPECTED_MERGE_ACTOR: ${{ inputs.expected_merge_actor }}
+        run: |
+          set -euo pipefail
+          case "$EXPECTED_MERGE_ACTOR" in
+            *'[bot]') ;;
+            *) echo "::error::An explicit bot merge principal is required; personal-account arming is forbidden."; exit 1 ;;
+          esac
+          if ! actual="$(gh api graphql -f query='query { viewer { login } }' --jq '.data.viewer.login' 2>/dev/null)"; then
+            echo "::error::Cannot verify merge credential principal; refusing to arm."
+            exit 1
+          fi
+          if [ "$actual" != "$EXPECTED_MERGE_ACTOR" ]; then
+            echo "::error::Merge credential does not match the configured bot principal; refusing to arm."
+            exit 1
+          fi
+          echo "Configured bot merge principal verified."
+
       - name: Enable auto-merge (squash + delete branch)
-        if: steps.token-gate.outputs.armed == 'true'
+        if: ${{ !inputs.use_wise_relay && steps.token-gate.outputs.armed == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.merge_token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
@@ -387,36 +704,28 @@ jobs:
     steps:
       - name: Disable any armed auto-merge (inline port of disable-pr-automerge.sh)
         env:
-          MERGE_TOKEN: ${{ secrets.merge_token }}
-          FALLBACK_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
           REASON: ${{ needs.classify.outputs.reason }}
         run: |
           set -euo pipefail
           echo "PR ineligible ($REASON); ensuring auto-merge is off for $PR_URL"
-          read_state() { GH_TOKEN="$1" gh pr view "$PR_URL" --json autoMergeRequest --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || true; }
-          check_state() {
-            local s t
-            for t in "$primary" "$fallback"; do
-              [ -n "$t" ] || continue
-              s="$(read_state "$t")"
-              [ -n "$s" ] && { echo "$s"; return; }
-            done
-            echo unreadable
-          }
-          primary="${MERGE_TOKEN:-}"; fallback="${FALLBACK_TOKEN:-}"
-          [ -n "$primary" ] || { primary="$fallback"; fallback=""; }
-          state="$(check_state)"
+          if ! actor="$(gh api graphql -f query='query { viewer { login } }' --jq '.data.viewer.login' 2>/dev/null)"; then
+            echo "::error::Cannot verify repository token principal; refusing disarm write."
+            exit 1
+          fi
+          if [ "$actor" != 'github-actions[bot]' ]; then
+            echo "::error::Disarm requires the repository Actions bot; no elevated credential fallback."
+            exit 1
+          fi
+          read_state() { gh pr view "$PR_URL" --json autoMergeRequest --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || true; }
+          state="$(read_state)"
           if [ "$state" = "off" ]; then echo "auto-merge already off."; exit 0; fi
-          for token in "$primary" "$fallback"; do
-            [ -n "$token" ] || continue
-            if GH_TOKEN="$token" gh pr merge --disable-auto "$PR_URL"; then
-              echo "auto-merge disabled."; exit 0
-            fi
-          done
-          state="$(check_state)"
+          # A failed response may follow a successful write. Read back either way.
+          gh pr merge --disable-auto "$PR_URL" >/dev/null 2>&1 || true
+          state="$(read_state)"
           case "$state" in
             off) echo "auto-merge disabled."; exit 0;;
-            armed) echo "::error::auto-merge still armed for $PR_URL and every credential was rejected"; exit 1;;
-            *) echo "::error::disable attempts failed and auto-merge state is unreadable for $PR_URL - failing closed"; exit 1;;
+            armed) echo "::error::auto-merge still armed for $PR_URL; repository bot could not disable it"; exit 1;;
+            *) echo "::error::auto-merge state is unreadable for $PR_URL - failing closed"; exit 1;;
           esac
