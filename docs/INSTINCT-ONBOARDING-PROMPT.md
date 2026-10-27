@@ -149,7 +149,7 @@ WHERE TO LOOK, IN THIS ORDER
   shipped", and docs/MAC-LOCAL-PROCESSES.md answers "is that job supposed to be running".
 
 HOW TO TALK TO THE TEAM
-- Every post goes to a channel and a topic, and its first line is your tag.  The agent-sync
+- Every post goes to a channel and a topic, and its first line is your tag.  The simple-chat
   CLI writes the tag and the @-mention that wakes a peer, and repo: leads the status block:
     [INSTINCT] repo:  <canonical repo name>  |  CLAIMED
       broadcast: claims, closeouts, status

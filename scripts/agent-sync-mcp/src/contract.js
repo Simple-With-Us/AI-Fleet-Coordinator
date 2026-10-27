@@ -1,4 +1,4 @@
-// The agent-sync MCP tool contract, shared with the stdio server
+// The ST-MCP tool contract, shared with the stdio server
 // (docs/protocols/agent-sync-mcp.md section 1).  A port of the pure parts of
 // scripts/agent_sync/mcp/tools.py, live.py, secretscan.py and wakes.py:  the
 // schema check, the untrusted envelope, the error model, the secret scanner,

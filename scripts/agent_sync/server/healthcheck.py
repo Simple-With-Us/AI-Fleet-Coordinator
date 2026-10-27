@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Container health check for the agent-sync server instance.
+"""Container health check for the Operator's server instance.
 
 Healthy (exit 0) while the listener keeps rewriting <state>/listener/status.json, which it does
 every 2 seconds from its main loop.  Unhealthy (exit 1) when the file is older than 60 seconds
@@ -9,6 +9,7 @@ reads only the file's modification time, never its contents.
 
 Python 3.9+, standard library only.
 """
+
 import os
 import sys
 import time
@@ -19,7 +20,9 @@ DEFAULT_MAX_AGE = 60.0
 def main(env=None, now=None, out=None):
     env = os.environ if env is None else env
     out = out or sys.stdout
-    root = env.get("AGENT_SYNC_STATE_DIR") or os.path.join(env.get("HOME") or os.path.expanduser("~"), ".agent-sync")
+    root = env.get("AGENT_SYNC_STATE_DIR") or os.path.join(
+        env.get("HOME") or os.path.expanduser("~"), ".agent-sync"
+    )
     try:
         max_age = float(env.get("AGENT_SYNC_HEALTH_MAX_AGE") or DEFAULT_MAX_AGE)
     except ValueError:

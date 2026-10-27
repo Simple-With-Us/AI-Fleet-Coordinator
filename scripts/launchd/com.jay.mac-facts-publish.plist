@@ -56,12 +56,12 @@
   <string>/Users/jay/Library/Logs/mac-facts-publish.log</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <!-- The tools it runs (gh, infisical, open-loops, board, agent-sync, lane) live in ~/.local/bin and /opt/homebrew/bin. -->
+    <!-- The tools it runs (gh, infisical, open-loops, board, simple-chat, lane) live in ~/.local/bin and /opt/homebrew/bin. -->
     <key>PATH</key>
     <string>/Users/jay/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>/Users/jay</string>
-    <!-- The seat the full list's Zulip reads run as (open-loops gather reads claimants' topic posts through agent-sync).
+    <!-- The seat the full list's Zulip reads run as (open-loops gather reads claimants' topic posts through simple-chat).
          Only CLAUDE runs this job, and AGENT_LAUNCHER is deliberately not set. -->
     <key>AGENT_SEAT</key>
     <string>CLAUDE</string>

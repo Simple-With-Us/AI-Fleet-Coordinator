@@ -1239,15 +1239,28 @@ class SafetyTests(BoardTest):
         old = self.tmp / "old-board"
         old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
         p = self.board(
-            "claim",
-            "abc",
-            "--by",
-            "X",
+            "list",
             drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"),
             extra={"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)},
         )
-        self.assertEqual(p.stdout.strip(), "OLD BOARD ['claim', 'abc', '--by', 'X']")
+        self.assertEqual(p.stdout.strip(), "OLD BOARD ['list']")
         self.assertEqual(self.mock.ops, [])
+
+    def test_mac_collab_backend_refuses_the_write_verbs(self):
+        # The archived findings.db is frozen and read-only, so a write verb must be
+        # refused before the archived CLI runs, not fail inside it with a sqlite error.
+        old = self.tmp / "old-board"
+        old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
+        extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
+        for args in (
+            ["file", "--title", "x", "--desc", "d"],
+            ["claim", "abc", "--by", "X"],
+            ["status", "OPS-10", "completed"],
+            ["comment", "OPS-10", "--by", "X", "--text", "hi"],
+        ):
+            p = self.board(*args, extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), code=2)
+            self.assertIn("reads only", p.stderr, args)
+            self.assertNotIn("OLD BOARD", p.stdout, args)
 
     def test_source_never_reads_admin_or_personal_keys(self):
         for path in (CLI, RELABEL):
@@ -3429,6 +3442,8 @@ class FlatLabelTests(BoardTest):
             p = self.board(*args, extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), code=2)
             self.assertIn("Linear only", p.stderr, args)
             self.assertNotIn("OLD BOARD", p.stdout, args)
+        # A write verb with no Linear-only flag still does not reach the archived CLI:
+        # the frozen findings.db is read-only, so the backend refuses it first.
         p = self.board(
             "file",
             "--title",
@@ -3439,10 +3454,10 @@ class FlatLabelTests(BoardTest):
             "f",
             extra=extra,
             drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"),
+            code=2,
         )
-        self.assertEqual(
-            p.stdout.strip(), "OLD BOARD ['file', '--title', 'x', '--desc', 'd', '--fix', 'f']"
-        )
+        self.assertIn("reads only", p.stderr)
+        self.assertNotIn("OLD BOARD", p.stdout)
         self.assertEqual(self.mock.ops, [])
 
 

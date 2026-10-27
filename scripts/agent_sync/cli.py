@@ -1,4 +1,4 @@
-"""agent-sync: the fleet's Zulip coordination CLI (argparse front end).
+"""simple-chat: the fleet's Zulip coordination CLI (argparse front end).
 
 `main(argv) -> int` is the whole program; scripts/agent-sync just calls it.  Everything that
 touches the outside world is injectable, so the tests drive it with a fake environment and fake
@@ -1984,7 +1984,7 @@ def _int_or_none(value: Any) -> int | None:
 
 
 def _dm_rule(agent: Agent, args: argparse.Namespace, to: DmRecipients) -> None:
-    """The DM rule (owner decision, Oct 22 2026):  `agent-sync dm` may not open a new direct message.
+    """The DM rule (owner decision, Oct 22 2026):  `simple-chat dm` may not open a new direct message.
 
     A reply inside a conversation Operator already opened is still allowed, so the existing messages
     are read first.  A refusal is audited (ids and the reason only) and then raised as the policy's own
@@ -2643,7 +2643,7 @@ def _on_sigterm(signum: int, frame: Any) -> None:
 
 
 def cmd_identities(rt: Runtime, args: argparse.Namespace) -> int:
-    """`agent-sync identities`:  the allowed set and the default (AFC-331), from the files on this host.
+    """`simple-chat identities`:  the allowed set and the default (AFC-331), from the files on this host.
     A launcher's seat narrows the set to itself."""
     from . import identities as X
 
