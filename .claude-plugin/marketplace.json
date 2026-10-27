@@ -6,8 +6,8 @@
   },
   "plugins": [
     {
-      "name": "agent-sync",
-      "source": "./plugins/agent-sync",
+      "name": "simple-chat",
+      "source": "./plugins/simple-chat",
       "description": "Zulip listener hooks for Claude Code sessions (leases, passive headlines, rewake for interrupts).",
       "version": "1.0.0"
     }

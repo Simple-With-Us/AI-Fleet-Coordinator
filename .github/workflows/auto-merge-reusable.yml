@@ -77,6 +77,23 @@ on:
           change, not a silent gap.
         type: string
         default: "Kody Code Review"
+      require_current_approval:
+        description: >-
+          When true (the default), a PR is armed only while the fleet reviewer
+          has an APPROVED review on the PR's CURRENT head commit, and any armed
+          merge is disabled otherwise.  A skipped or missing review check, a
+          COMMENTED review, or an approval on an older commit does not count.
+          There is no implicit exemption: restrict_to_pattern matches a PR title,
+          which any author controls, so a dependency-bump caller that wants no
+          review gate must set this to false explicitly.
+        type: boolean
+        default: true
+      approval_reviewer:
+        description: >-
+          Login of the reviewer whose APPROVED review on the head commit
+          qualifies a PR for arming.
+        type: string
+        default: "kody-ai[bot]"
       delete_branch:
         description: Delete the head branch after merge.
         type: boolean
@@ -128,6 +145,8 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           KODY_CHECK_NAME: ${{ inputs.kody_check_name }}
+          REQUIRE_APPROVAL: ${{ inputs.require_current_approval }}
+          APPROVAL_REVIEWER: ${{ inputs.approval_reviewer }}
           MERGE_TOKEN: ${{ secrets.merge_token }}
           RESTRICT: ${{ inputs.restrict_to_pattern }}
           SELF_GUARD: ${{ inputs.self_guard_paths }}
@@ -209,6 +228,31 @@ jobs:
           done
           if jq -e --argjson pr "$PR_NUMBER" 'select(.path == ".github/workflows/autofix.yml" or .path == ".github/workflows/claude-code-autofix.yml" or .path == ".github/workflows/kody-fleet-autofix.yml") | select(.prs | index($pr) != null)' "$runs_out" > /dev/null 2>&1; then
             skip "autofix run queued or in progress for PR #$PR_NUMBER"
+          fi
+
+          # Qualified current review: a green CI plus a skipped or stale review check
+          # must not arm a merge.  Only an APPROVED review by the fleet reviewer on
+          # this exact head commit qualifies; a newer push makes the old approval
+          # not count, and the next pull_request or pull_request_review event
+          # re-evaluates.  No implicit lane exemption (the lane pattern matches a
+          # title the author controls); callers opt out with the input.  The
+          # lookup fails closed.
+          if [ "${REQUIRE_APPROVAL:-true}" = "true" ]; then
+            reviews_out="$RUNNER_TEMP/reviews.txt"
+            reviews_raw="$RUNNER_TEMP/reviews.json"
+            if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" --method GET --paginate \
+                 > "$reviews_raw" 2>"$RUNNER_TEMP/reviews.err" \
+               || ! jq -r --arg who "$APPROVAL_REVIEWER" --arg head "$HEAD" \
+                 '.[] | select(.user.login == $who and .commit_id == $head and (.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) | .state' \
+                 "$reviews_raw" > "$reviews_out" 2>>"$RUNNER_TEMP/reviews.err"; then
+              cat "$RUNNER_TEMP/reviews.err" >&2
+              skip "review lookup failed - fail closed"
+            fi
+            latest="$(tail -n 1 "$reviews_out" || true)"
+            if grep -qx 'CHANGES_REQUESTED' "$reviews_out" && [ "$latest" != "APPROVED" ]; then
+              skip "changes requested on head $HEAD"
+            fi
+            [ "$latest" = "APPROVED" ] || skip "no current-head approval from $APPROVAL_REVIEWER on $HEAD"
           fi
 
           # Lane restriction (dependency-bump callers)

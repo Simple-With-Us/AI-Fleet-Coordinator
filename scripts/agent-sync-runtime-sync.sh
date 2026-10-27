@@ -12,7 +12,7 @@
 #      origin/main detached;
 #   3. smoke-tests the new code (`simple-chat --version`); on failure it goes back to the old commit and
 #      remembers the bad commit so it is not retried until origin/main moves again;
-#   4. if the change touched scripts/agent_sync/, scripts/simple-chat, plugins/agent-sync/, .claude-plugin/
+#   4. if the change touched scripts/agent_sync/, scripts/simple-chat, plugins/simple-chat/, .claude-plugin/
 #      or docs/protocols/agent-sync-partition.toml, kickstarts the listener so it loads the new code.
 # A dirty runtime worktree is logged and skipped.  It is never reset, cleaned or stashed.
 #
@@ -32,8 +32,8 @@ PAUSE_FILE="$STATE_DIR/runtime-sync.pause"
 BAD_FILE="$STATE_DIR/runtime-sync.bad-sha"
 LOG="${AGENT_SYNC_RUNTIME_SYNC_LOG:-$HOME/apps/logs/agent-sync-runtime-sync.log}"
 GIT_TIMEOUT=60
-RESTART_RE='^(scripts/agent_sync/|scripts/simple-chat$|plugins/agent-sync/|\.claude-plugin/|docs/protocols/agent-sync-partition\.toml$)'
-PLUGIN_RE='^(plugins/agent-sync/|\.claude-plugin/)'
+RESTART_RE='^(scripts/agent_sync/|scripts/simple-chat$|plugins/simple-chat/|\.claude-plugin/|docs/protocols/agent-sync-partition\.toml$)'
+PLUGIN_RE='^(plugins/simple-chat/|\.claude-plugin/)'
 
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 

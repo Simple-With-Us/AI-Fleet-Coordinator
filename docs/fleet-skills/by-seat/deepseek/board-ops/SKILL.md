@@ -17,7 +17,7 @@ Humans use Linear in the browser.  Agents use the `simple-board` CLI, which is t
 ```bash
 simple-board stats
 simple-board list --status open,in_progress --severity P0,P1
-simple-board list --app congress-trade --mine "$AGENT_SEAT"
+simple-board list --app congress-trade --mine <YOUR_TAG>
 simple-board show <id>
 ```
 
@@ -27,7 +27,7 @@ The CLI reads the Fleet app's credentials from Infisical Fleet-OPS (`fleet-secre
 
 Some agent CLIs only allowlist a stable command prefix.  `simple-board stats` allowlists.  `B=…/simple-board; $B stats`, `$(…)`, pipes, and `&&` chains do not.
 
-**Writes need `AGENT_SEAT` and `LINEAR_BOARD_WRITES=1`.**  `file`, `claim`, `status` and `comment` exit 2 without the seat, and `--by` must equal it.  They exit 7 without `LINEAR_BOARD_WRITES=1`, while the reads (`list`, `show`, `stats`, `whoami`) need no seat and work as they are.  The `board` name on PATH is the pre-cutover name and still works:  it is a wrapper that exports `LINEAR_BOARD_WRITES=1` and runs the same program, so `board claim` is the same command as `LINEAR_BOARD_WRITES=1 simple-board claim`.  `simple-board whoami` prints whether writes are on.  Your shell may not keep exports between commands, so set them in the same command, from the seat you verified in `session-start`.  `--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`DSH` in an ordinary DeepSeek Harness session).
+**Your seat is proven by your own bearer, never chosen.**  `simple-board` reads the seat bearer at the `SIMPLE_BOARD_BEARER_LOCATOR` your launcher bound to this run (a `FOLDER:KEY_NAME` location, never a value) and the fleet verifier names the seat.  There is no seat picker:  `AGENT_SEAT`, `AGENT_LAUNCH_SEAT` and any other variable are ignored.  With no readable bearer the four writes (`file`, `claim`, `status`, `comment`) exit 6, and the reads (`list`, `show`, `stats`) run without an identity.  `--by` is only a check and must equal the verified seat (a mismatch exits 2).  Writes also need `LINEAR_BOARD_WRITES=1` (exit 7 without it).  `simple-board whoami` prints the verified seat (`bearer-verified`) and whether writes are on.  The `board` name on PATH is the pre-cutover wrapper;  use `simple-board`.  Your shell may not keep exports between commands, so set `LINEAR_BOARD_WRITES=1` in the same command.  `--env` is only `Mac` or `cloud`.  `--by` for this seat is your verified seat (`DSH` in an ordinary DeepSeek Harness session).
 
 **Pass your session id.**  Every `simple-board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `simple-notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own session variable, which your global rules file names.  Where a platform sets none that is known to be set (FX, Clutch, Antigravity, Muse Code, Grok Web), pass `--session <id>` or export `AGENT_SESSION`, using the id your app shows for the current chat.  An MCP server may not inherit the platform variable, so pass `session` explicitly on `notes_create` / `notes_update`;  cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot, MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.
 
@@ -35,12 +35,12 @@ Some agent CLIs only allowlist a stable command prefix.  `simple-board stats` al
 
 ```bash
 simple-board file --title "Scout drops Senate rows on 502" --app congress-trade \
-  --severity P1 --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
+  --severity P1 --by <YOUR_TAG> --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>" \
   --desc "path:line + repro"
 
-simple-board claim <id> --by "$AGENT_SEAT" --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
+simple-board claim <id> --by <YOUR_TAG> --env Mac --where "~/apps/lanes/Congress.Trade/<seat>-fix @ <branch>"
 
-simple-board comment <id> --by "$AGENT_SEAT" --text "Verified on main; the shared helper is right."
+simple-board comment <id> --by <YOUR_TAG> --text "Verified on main; the shared helper is right."
 
 simple-board status <id> completed --resolution "Landed in #2894."
 ```
@@ -57,7 +57,7 @@ The full verb table, id forms and exit codes are in `scripts/linear-board/README
 ## What you owe Linear
 
 1. **Before substantial work:** list the app.  Claim the existing issue or file then claim.  Name the branch `<seat>/<id>-<slug>` (`deepseek/afc-123-zulip-cutover`).
-2. **While working:** keep `--by "$AGENT_SEAT"`, `--env Mac`, and `--where "lane path @ branch"` accurate.
+2. **While working:** keep `--by <YOUR_TAG>`, `--env Mac`, and `--where "lane path @ branch"` accurate.
 3. **In the PR:** put `Fixes <ID>` in the body when the PR finishes the issue, and `Refs <ID>` for partial work.  A `Refs` PR never closes it, even with the id in the branch name.  Once Linear's GitHub automation is on (Jay enables it right after the cutover), a merge moves a `Fixes` issue to Done by itself;  `simple-board status <id> completed` does the same by hand, works before then, and is always safe to run.
 4. **When done:** `completed`, or `deployed` only after the production check, with a resolution that names the PR and what changed.  Do not leave `in_progress` after you stopped.
 5. **On a peer's item:** comment with evidence.  Reviewing fixes here is expected.

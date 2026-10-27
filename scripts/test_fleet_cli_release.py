@@ -444,9 +444,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(parsed["model"], "existing-worker")
         self.assertEqual(parsed["features"], {"foo": True})
         self.assertTrue(
-            parsed["mcp_servers"]["agent-sync"]["command"].endswith("simple-chat-codex-mcp")
+            parsed["mcp_servers"]["simple-chat"]["command"].endswith("simple-chat-codex-mcp")
         )
-        self.assertNotIn("env", parsed["mcp_servers"]["agent-sync"])
+        self.assertNotIn("env", parsed["mcp_servers"]["simple-chat"])
         wrapper = (self.home / ".local/bin/simple-chat-codex-mcp").read_text()
         self.assertIn("--codex-thread-meta", wrapper)
         self.assertNotIn("--codex-thread-meta", (self.home / ".local/bin/simple-chat").read_text())
@@ -477,10 +477,11 @@ class ReleaseTests(unittest.TestCase):
         parsed = tomllib.loads(config.read_text())
         self.assertEqual(parsed["model"], "existing-worker")
         self.assertEqual(
-            parsed["mcp_servers"]["agent-sync"]["command"],
+            parsed["mcp_servers"]["simple-chat"]["command"],
             str(self.home / ".local/bin/simple-chat-codex-mcp"),
         )
-        self.assertNotIn("agent-sync-codex-mcp", config.read_text())
+        self.assertNotIn("agent-sync", config.read_text())
+        self.assertNotIn("agent-sync", parsed["mcp_servers"])
 
     def test_update_path_migrates_the_prerenamed_codex_registration_too(self):
         self.receive()
@@ -495,9 +496,25 @@ class ReleaseTests(unittest.TestCase):
         )
         self.receive(make_bundle("two"), install=False)
         self.assertEqual(
-            tomllib.loads(config.read_text())["mcp_servers"]["agent-sync"]["command"],
+            tomllib.loads(config.read_text())["mcp_servers"]["simple-chat"]["command"],
             str(self.home / ".local/bin/simple-chat-codex-mcp"),
         )
+
+    def test_a_renamed_wrapper_under_the_old_key_is_migrated_to_the_new_key(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        command = str(self.home / ".local/bin/simple-chat-codex-mcp")
+        config.write_bytes(
+            (
+                '[mcp_servers.agent-sync]\ncommand = "%s"\n'
+                'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
+                ' "AGENT_SESSION"]\n' % command
+            ).encode()
+        )
+        self.receive()
+        parsed = tomllib.loads(config.read_text())
+        self.assertEqual(list(parsed["mcp_servers"]), ["simple-chat"])
+        self.assertEqual(parsed["mcp_servers"]["simple-chat"]["command"], command)
 
     def test_a_hand_edited_codex_registration_is_still_refused(self):
         config = self.home / ".codex/config.toml"
@@ -505,6 +522,57 @@ class ReleaseTests(unittest.TestCase):
         config.write_bytes(b'[mcp_servers.agent-sync]\ncommand = "/owner/custom"\n')
         with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
             self.receive()
+
+    def test_non_table_codex_shapes_are_refused_not_an_internal_error(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        for text, code in (
+            ('mcp_servers = "x"\n', "invalid_codex_config"),
+            ('[mcp_servers]\nagent-sync = "x"\n', "existing_agent_sync_mcp_conflict"),
+            ('[mcp_servers]\nsimple-chat = "x"\n', "existing_simple_chat_mcp_conflict"),
+        ):
+            with self.subTest(text=text):
+                config.write_bytes(text.encode())
+                with self.assertRaisesRegex(release.Refused, code):
+                    self.receive()
+
+    def test_migrate_refuses_non_table_mcp_servers_directly(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b'mcp_servers = "x"\n')
+        with self.assertRaisesRegex(release.Refused, "invalid_codex_config"):
+            release.migrate_codex_mcp(self.home, {})
+
+    def test_update_path_refuses_non_table_shapes(self):
+        self.receive()
+        config = self.home / ".codex/config.toml"
+        for text, code in (
+            ('mcp_servers = "x"\n', "invalid_codex_config"),
+            ('[mcp_servers]\nagent-sync = "x"\n', "existing_agent_sync_mcp_conflict"),
+        ):
+            with self.subTest(text=text):
+                config.write_bytes(text.encode())
+                with self.assertRaisesRegex(release.Refused, code):
+                    self.receive(make_bundle("two"), install=False)
+
+    def test_legacy_table_with_extra_key_is_a_conflict_not_a_migration(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        expected = release.codex_mcp_expected(self.home / ".local/bin")
+        text = (
+            "[mcp_servers.agent-sync]\ncommand = " + json.dumps(expected["command"]) + "\n"
+            "env_vars = " + json.dumps(expected["env_vars"]) + "\ntimeout = 30\n"
+        ).encode()
+        config.write_bytes(text)
+        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
+            self.receive()
+        self.assertEqual(config.read_bytes(), text)
+        config.unlink()
+        self.receive()
+        config.write_bytes(text)
+        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
+            self.receive(make_bundle("two"), install=False)
+        self.assertEqual(config.read_bytes(), text)
 
     def test_update_keeps_configuration_and_wrappers_untouched(self):
         self.receive()

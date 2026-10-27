@@ -34,6 +34,18 @@ B = importlib.util.module_from_spec(_spec)
 _loader.exec_module(B)
 
 
+def _fake_verified_seat():
+    """The test launcher's binding stands in for the ST-MCP verifier (import-only seam, like the real
+    suite's BEARER_TRANSPORT):  FAKE_BEARER_SEAT is the seat the bearer at the locator proves."""
+    seat = os.environ.get("FAKE_BEARER_SEAT", "")
+    if not seat:
+        B.die("no seat bearer is readable at its locator; refusing to act without a verified identity", B.EXIT_AUTH)
+    return seat
+
+
+B.bearer_verified_seat = _fake_verified_seat
+
+
 def load():
     if os.path.exists(BOARD_JSON):
         with open(BOARD_JSON, encoding="utf-8") as fh:
@@ -73,7 +85,8 @@ def issue_by_ref(world, ref):
 
 
 def record_call(argv, files):
-    entry = {"tool": "simple-board", "argv": argv, "seat": os.environ.get("AGENT_SEAT"),
+    entry = {"tool": "simple-board", "argv": argv, "seat": os.environ.get("FAKE_BEARER_SEAT"),
+             "env_seat": os.environ.get("AGENT_SEAT"),
              "launch_seat": os.environ.get("AGENT_LAUNCH_SEAT"), "launcher": os.environ.get("AGENT_LAUNCHER"),
              "files": files}
     with open(CALLS, "a", encoding="utf-8") as fh:
@@ -112,9 +125,13 @@ def show_json(world, node):
 
 def main():
     argv = sys.argv[1:]
+    a = B.build_parser().parse_args(argv)
+    if a.cmd == "whoami":  # the seat probe:  the verified seat line only, not recorded as a board call
+        seat = B.current_seat(required=False)
+        print("seat:        %s (bearer-verified)" % seat if seat else "seat:        (no bearer: reads run without an identity, the four write verbs refuse)")
+        return 0
     files = snapshot_files(argv)
     record_call(argv, files)
-    a = B.build_parser().parse_args(argv)
     write = a.cmd in B.WRITE_VERBS
     if write and os.environ.get("FAKE_BOARD_WRITES_OFF") == "1":
         B.die("`board %s` is a write, and writes to Linear are off" % a.cmd, B.EXIT_WRITES_OFF)
