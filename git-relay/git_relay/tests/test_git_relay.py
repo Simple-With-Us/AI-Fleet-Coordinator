@@ -657,7 +657,9 @@ class TestAppActions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             relay = self._relay(tmp)
             relay.client.resolve_thread = lambda thread_id, bearer: {"resolved": True}
-            status, _ = relay.handle(SEAT_TOKEN, "resolve_thread", {"repo": "example/x", "thread_id": thread})
+            status, _ = relay.handle(
+                SEAT_TOKEN, "resolve_thread", {"repo": "example/x", "thread_id": thread}
+            )
             self.assertEqual(status, 200)
             self.assertEqual(
                 relay.app_minter.calls,
@@ -682,7 +684,9 @@ class TestAppActions(unittest.TestCase):
                 )
             )
             relay.client.resolve_thread = lambda thread_id, bearer: {"resolved": True}
-            status, _ = relay.handle(SEAT_TOKEN, "resolve_thread", {"repo": "example/x", "thread_id": thread})
+            status, _ = relay.handle(
+                SEAT_TOKEN, "resolve_thread", {"repo": "example/x", "thread_id": thread}
+            )
             self.assertEqual(status, 403)
             self.assertEqual(relay.app_minter.calls, [])
 
