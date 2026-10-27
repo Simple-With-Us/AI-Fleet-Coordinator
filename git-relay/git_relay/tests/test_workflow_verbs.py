@@ -284,41 +284,49 @@ class Tests(unittest.TestCase):
 
     def test_wf_job_log_single_hop_bounded_and_host_checked(self):
         class LogClient(Client):
-            def __init__(self, location, body):
+            def __init__(self, location, body, truncated=False):
                 super().__init__()
-                self.location, self.body, self.fetched = location, body, []
+                self.location, self.body, self.trunc, self.fetched = location, body, truncated, []
 
             def log_location(self, path, bearer):
                 self.calls.append(("GET", path, None, bearer))
                 return self.location
 
-            def fetch_public_tail(self, url, max_bytes):
-                self.fetched.append((url, max_bytes))
-                return self.body
+            def fetch_public_tail(self, url, window):
+                self.fetched.append((url, window))
+                return self.body[-window:], self.trunc
 
         ok = "https://productionresultssa1.blob.core.windows.net/x/log?sig=abc"
-        c = LogClient(ok, b"line1\n" + b"x" * 100 + b"\nlast line")
+        body = b"partial-first-line\nline2\n" + b"x" * 40 + b"\nlast line"
+        c = LogClient(ok, body, truncated=True)
         out = Multi(c).run("wf_job_log", {"repo": REPO, "job_id": 5, "tail_bytes": 20})
         self.assertTrue(out["log_tail"].endswith("last line"))
-        self.assertEqual(len(out["log_tail"].encode()), 20)
+        self.assertNotIn("partial-first-line", out["log_tail"])
         self.assertTrue(out["truncated"])
         self.assertEqual(c.calls[0][1], f"/repos/{REPO}/actions/jobs/5/logs")
         self.assertEqual(c.calls[0][3], "opaque")
-        self.assertEqual(len(c.fetched), 1)
+        # A tiny tail asks for a small window (tail + scan margin), not the whole log.
+        self.assertEqual(c.fetched, [(ok, 20 + 1024)])
+        small = LogClient(ok, b"a\nb", truncated=False)
+        out = Multi(small).run("wf_job_log", {"repo": REPO, "job_id": 5})
+        self.assertEqual((out["log_tail"], out["truncated"]), ("a\nb", False))
         for bad in (
             "http://x.blob.core.windows.net/l",
             "https://evil.example.com/l",
             "https://user:pw@x.blob.core.windows.net/l",
             "https://x.blob.core.windows.net:8443/l",
+            "https://x.blob.core.windows.net:notaport/l",
             "https://blob.core.windows.net.evil.com/l",
         ):
             c = LogClient(bad, b"x")
             with self.assertRaises(Refused, msg=bad):
                 Multi(c).run("wf_job_log", {"repo": REPO, "job_id": 5})
             self.assertEqual(c.fetched, [])
-        c = LogClient(ok, b"token ghp_" + b"A" * 30)
+        # A credential straddling the returned cut is seen whole by the scan.
+        secret = b"ghp_" + b"A" * 30
+        c = LogClient(ok, b"x\n" + secret + b"\n" + b"y" * 10, truncated=True)
         with self.assertRaises(Refused):
-            Multi(c).run("wf_job_log", {"repo": REPO, "job_id": 5})
+            Multi(c).run("wf_job_log", {"repo": REPO, "job_id": 5, "tail_bytes": 15})
         with self.assertRaises(Refused):
             Multi(LogClient(ok, b"")).run("wf_job_log", {"repo": REPO, "job_id": 0})
         with self.assertRaises(Refused):

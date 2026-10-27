@@ -42,9 +42,44 @@ class LogLocationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.client(opener).log_location("/p", "")
 
-    def test_public_fetch_sends_no_credential_and_caps_the_read(self):
+    def test_public_fetch_sends_range_no_credential_and_returns_the_true_tail(self):
         seen = []
 
+        class Resp(io.BytesIO):
+            def __init__(self, data, status=200, headers=None):
+                super().__init__(data)
+                self.status, self.headers = status, headers or {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def full(req, timeout=None):  # server ignores Range
+            seen.append((req.get_header("Authorization"), req.get_header("Range")))
+            return Resp(b"0123456789" * 10)
+
+        data, truncated = self.client(full).fetch_public_tail("https://x.blob.core.windows.net/l", 15)
+        self.assertEqual((data, truncated), (b"567890123456789"[-15:], True))
+        self.assertEqual(seen, [(None, "bytes=-15")])
+
+        def ranged(req, timeout=None):
+            return Resp(b"tail-bytes", 206, {"Content-Range": "bytes 90-99/100"})
+
+        self.assertEqual(
+            self.client(ranged).fetch_public_tail("https://x.blob.core.windows.net/l", 10),
+            (b"tail-bytes", True),
+        )
+
+        def whole(req, timeout=None):
+            return Resp(b"all", 206, {"Content-Range": "bytes 0-2/3"})
+
+        self.assertEqual(
+            self.client(whole).fetch_public_tail("https://x.blob.core.windows.net/l", 10), (b"all", False)
+        )
+
+    def test_a_server_that_ignores_range_on_a_huge_log_is_refused_not_misread(self):
         class Resp(io.BytesIO):
             def __enter__(self):
                 return self
@@ -53,12 +88,10 @@ class LogLocationTests(unittest.TestCase):
                 return False
 
         def opener(req, timeout=None):
-            seen.append(req.get_header("Authorization"))
-            return Resp(b"y" * 100)
+            return Resp(b"z" * 100)
 
-        data = self.client(opener).fetch_public_tail("https://x.blob.core.windows.net/l", 10)
-        self.assertEqual(len(data), 11)
-        self.assertEqual(seen, [None])
+        with self.assertRaises(RelayGitHubError):
+            self.client(opener).fetch_public_tail("https://x.blob.core.windows.net/l", 10, full_cap=50)
 
 
 if __name__ == "__main__":

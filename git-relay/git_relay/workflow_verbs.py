@@ -47,6 +47,7 @@ MAX_FILE_B64 = 256 * 1024
 MAX_PAGE = 50
 MAX_PROJECT = 100
 LOG_TAIL_BYTES = 64 * 1024
+LOG_SCAN_MARGIN = 1024
 # Signed log URLs GitHub issues for Actions logs; nothing else is ever fetched.
 _LOG_HOSTS = (".blob.core.windows.net", ".githubusercontent.com")
 
@@ -380,23 +381,38 @@ class WorkflowVerbs:
         location = self.client.log_location(
             f"/repos/{repo}/actions/jobs/{job_id}/logs", self.bearer
         )
-        parts = urlsplit(location) if isinstance(location, str) else None
+        try:
+            parts = urlsplit(location) if isinstance(location, str) else None
+            port = parts.port if parts else None
+        except ValueError:
+            raise Refused("unexpected log location") from None
         host = (parts.hostname or "") if parts else ""
         if (
             parts is None
             or parts.scheme != "https"
             or parts.username
             or parts.password
-            or parts.port not in (None, 443)
+            or port not in (None, 443)
             or not any(host.endswith(h) for h in _LOG_HOSTS)
         ):
             raise Refused("unexpected log location")
-        raw = self.client.fetch_public_tail(location, LOG_TAIL_BYTES * 16)
-        truncated = len(raw) > LOG_TAIL_BYTES * 16
-        text = raw[-tail:].decode("utf-8", "replace")
+        # Fetch a window wider than the answer, scan all of it, then trim: a credential
+        # straddling the cut is still seen whole by the scan, and the partial first line
+        # is dropped so no credential fragment starts the returned text.
+        window = tail + LOG_SCAN_MARGIN
+        raw, truncated = self.client.fetch_public_tail(location, window)
+        text = raw.decode("utf-8", "replace")
         if find_secret(text):
             raise Refused("log text withheld: looks like it holds a credential")
-        return {"job_id": job_id, "log_tail": text, "truncated": truncated or len(raw) > tail}
+        if truncated or len(raw) > tail:
+            if truncated and "\n" in text:
+                text = text.split("\n", 1)[1]
+            cut = text.encode("utf-8")[-tail:].decode("utf-8", "ignore")
+            if len(cut.encode("utf-8")) < len(text.encode("utf-8")) and "\n" in cut:
+                cut = cut.split("\n", 1)[1]
+            text = cut
+            truncated = True
+        return {"job_id": job_id, "log_tail": text, "truncated": truncated}
 
     def wf_checks(self, repo, args):
         """Check runs for one commit (Kody, Seer, merge-gate and Actions jobs alike)."""

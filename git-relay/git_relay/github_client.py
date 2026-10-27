@@ -269,13 +269,37 @@ class GitHubClient:
             raise RelayGitHubError(0, "connection failed") from exc
         raise RelayGitHubError(0, "log location unavailable")
 
-    def fetch_public_tail(self, url: str, max_bytes: int) -> bytes:
-        """One unauthenticated, non-redirecting GET of a signed log URL; at most max_bytes."""
-        req = urllib.request.Request(url, method="GET", headers={"User-Agent": "swu-git-relay"})
+    def fetch_public_tail(self, url: str, window: int, full_cap: int = 4 * 1024 * 1024):
+        """Last `window` bytes of a signed log URL, as (data, truncated).
+
+        One unauthenticated, non-redirecting GET with a suffix Range, so a small tail
+        never downloads the whole log.  A server that ignores Range and returns the
+        full body is read only up to full_cap; a larger log is refused rather than
+        returning the wrong part of it.
+        """
+        req = urllib.request.Request(
+            url,
+            method="GET",
+            headers={"User-Agent": "swu-git-relay", "Range": f"bytes=-{int(window)}"},
+        )
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
-                return resp.read(max_bytes + 1)
+                status = getattr(resp, "status", 200)
+                if status == 206:
+                    data = resp.read(window + 1)
+                    if len(data) > window:
+                        raise RelayGitHubError(0, "log fetch returned more than requested")
+                    match = re.match(
+                        r"bytes (\d+)-\d+/", (getattr(resp, "headers", None) or {}).get("Content-Range", "")
+                    )
+                    return data, bool(match and int(match.group(1)) > 0)
+                data = resp.read(full_cap + 1)
+                if len(data) > full_cap:
+                    raise RelayGitHubError(0, "log too large to tail")
+                return data[-window:], len(data) > window
         except urllib.error.HTTPError as exc:
+            if exc.code == 416:
+                return b"", False
             raise RelayGitHubError(exc.code, "log fetch refused") from exc
         except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
             raise RelayGitHubError(0, "connection failed") from exc
