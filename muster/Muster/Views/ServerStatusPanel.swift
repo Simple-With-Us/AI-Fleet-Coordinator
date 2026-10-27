@@ -28,6 +28,8 @@ struct ServerStatusPanel: View {
                     reportLine(reading)
                     if let problem = reading.problem {
                         problemBox(problem)
+                    } else if !reading.isCurrent {
+                        problemBox("This report is stale. Refresh after the collector writes a new report; old rows are not current health evidence.")
                     } else {
                         coolifySection(reading)
                         processesSection(reading)
@@ -137,7 +139,7 @@ struct ServerStatusPanel: View {
 
     private func coolifySection(_ reading: ServerStatusReading) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Coolify", reading.coolifyState, "\(reading.coolify.count) resources")
+            sectionHeader("Coolify", reading.coolifyState, "\(reading.coolify.count) \(reading.coolify.count == 1 ? "resource" : "resources")")
             if reading.coolify.isEmpty {
                 Text("The report names no Coolify resources.")
                     .font(.callout)
@@ -159,6 +161,8 @@ struct ServerStatusPanel: View {
                     .truncationMode(.middle)
                 HStack(spacing: 6) {
                     Text(resource.resourceType.rawValue)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 5)
@@ -196,7 +200,7 @@ struct ServerStatusPanel: View {
 
     private func processesSection(_ reading: ServerStatusReading) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionHeader("Top Processes", reading.processState, "\(reading.processes.count) processes")
+            sectionHeader("Top Processes", reading.processState, "\(reading.processes.count) \(reading.processes.count == 1 ? "process" : "processes")")
             if reading.processes.isEmpty {
                 Text("The report names no processes.")
                     .font(.callout)
@@ -242,7 +246,7 @@ struct ServerStatusPanel: View {
             sectionHeader(
                 "Config Drift",
                 reading.configState,
-                "\(reading.driftedFiles.count) of \(reading.files.count) files drifted"
+                "\(reading.driftedFiles.count) of \(reading.files.count) \(reading.files.count == 1 ? "file" : "files") drifted"
             )
             if reading.files.isEmpty {
                 Text("The report watches no files.")
