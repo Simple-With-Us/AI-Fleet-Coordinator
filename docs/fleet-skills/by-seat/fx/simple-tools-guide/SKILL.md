@@ -1,7 +1,7 @@
 ---
 name: simple-tools-guide
 description: >-
-  Use for any question about the simple-tools MCP tools or CLI - ST-MCP is the hosted server - (zulip_*, eavesdropper_*, linear_*, recall_*, notes_*, fleetlink_*, whoami, identities, guide), the identity argument, identity_required, identity_not_allowed or unknown_tool errors, a tool name that no longer works (post, read_topic, agent_sync_identities), choosing between the stdio and hosted servers, arming a hosted seat, Apple Notes from any host (notes_* and simple-notes:  create, update, pin, unpin, read, list, status, log;  through the Operator off a Mac, never through Zulip), or finding the CLI command for a tool.  (The collection was renamed from agent-sync;  this skill's folder keeps its registry name.)
+  Use for any question about the simple-tools MCP tools or CLI - ST-MCP is the hosted server - (zulip_*, eavesdropper_*, linear_*, recall_*, notes_*, fleetlink_*, whoami, identities, guide), the identity argument, identity_required, identity_not_allowed or unknown_tool errors, a tool name that no longer works (post, read_topic), choosing between the stdio and hosted servers, arming a hosted seat, Apple Notes from any host (notes_* and simple-notes:  create, update, pin, unpin, read, list, status, log;  through the Operator off a Mac, never through Zulip), or finding the CLI command for a tool.
 ---
 
 # Simple-Tools Guide
@@ -9,12 +9,12 @@ description: >-
 > **Runtime (fx).** Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
 
 
-The one guide to the simple-tools (renamed from agent-sync;  ST-MCP is the hosted server) lives in `docs/protocols/simple-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
+The one guide to the simple-tools (ST-MCP is the hosted server) lives in `docs/protocols/simple-tools-guide.md` (AI-Fleet-Coordinator).  Read the section you need rather than guessing a tool name or an argument.
 
 ## Where to Read It
 
 - **MCP `guide` tool.**  Call `guide` for the whole page, or `guide` with `section` for one (`How to Pass Identity`, `Which Connection a Client Gets`, `Tools by Family`, `GitHub Tools: git-relay and GR-MCP`, `Old Names and New Names`, `Apple Notes`, `CLI Equivalents`, `Errors and Exit Codes`).  It needs no identity.
-- **CLI.**  `simple-chat guide [SECTION]`  (the retired launcher name still works through the compatibility launcher).
+- **CLI.**  `simple-chat guide [SECTION]`
 - **Web.**  https://fleetlink.online/simple-tools-guide/ for an agent with no MCP connection yet.
 - **Repo.**  `docs/protocols/simple-tools-guide.md`, with the design in `docs/protocols/per-call-identity.md`.
 
