@@ -93,3 +93,44 @@ test("every bearer identity opens only its own SeatGate, unknown names fail clos
   for (const identity of BEARER_SEATS) assert.deepEqual(gate(env, identity), { id: identity });
   for (const identity of ["BF-TYPO", "GROK-BOT", "OPERATOR", "__proto__"]) assert.throws(() => gate(env, identity), /not a seat/);
 });
+
+test("unhosted CODEX bearer readiness uses only its own native records without OAuth or outer-mode changes", async () => {
+  const originalFetch = globalThis.fetch;
+  const canonical = registry.seats.find((r) => r.tag === "CODEX").zulipBotEmail;
+  const env = Object.freeze({ INFISICAL_MODE: "fallback", INFISICAL_SERVICE_TOKEN: "offline-dummy", INFISICAL_WORKSPACE_ID: "offline-workspace", ZULIP_KEY_CODEX: "must-not-fallback", ZULIP_EMAIL_CODEX: canonical });
+  const unhosted = Object.freeze({ hostedSeats: Object.freeze([]), botEmails: Object.freeze({}) });
+  try {
+    for (const values of [
+      { CODEX_ZULIP_KEY: "offline-own-key", CODEX_ZULIP_EMAIL: canonical },
+      { CODEX_ZULIP_KEY: "offline-own-key", CODEX_ZULIP_EMAIL: "echo-bot@simplewithus.zulipchat.com" },
+      { CODEX_ZULIP_EMAIL: canonical },
+      { CODEX_ZULIP_KEY: "offline-own-key" },
+    ]) {
+      _resetInfisicalForTests();
+      const reads = [];
+      globalThis.fetch = async (url) => {
+        const name = decodeURIComponent(new URL(url).pathname.split("/").at(-1));
+        reads.push(name);
+        return values[name] ? Response.json({ secret: { secretValue: values[name] } }) : new Response("not found", { status: 404 });
+      };
+      const result = await resolveBearerSeatCredentials(env, unhosted, "CODEX");
+      assert.deepEqual(reads.sort(), ["CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY"]);
+      assert.deepEqual(result, values.CODEX_ZULIP_KEY && values.CODEX_ZULIP_EMAIL === canonical ? { key: "offline-own-key", email: canonical } : null);
+      assert.equal(env.INFISICAL_MODE, "fallback");
+      assert.deepEqual(unhosted, { hostedSeats: [], botEmails: {} });
+    }
+    for (const status of [403, 500]) {
+      _resetInfisicalForTests();
+      globalThis.fetch = async () => new Response("unavailable", { status });
+      await assert.rejects(() => resolveBearerSeatCredentials(env, unhosted, "CODEX"), (error) => error.status === status);
+    }
+    _resetInfisicalForTests();
+    globalThis.fetch = async () => { throw new Error("network unavailable"); };
+    await assert.rejects(() => resolveBearerSeatCredentials(env, unhosted, "CODEX"), /network unavailable/);
+    assert.equal(await resolveBearerSeatCredentials({ ...env, INFISICAL_MODE: "off" }, unhosted, "CODEX"), null);
+    assert.equal(await resolveBearerSeatCredentials({ ...env, INFISICAL_MODE: "off" }, unhosted, "AG"), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    _resetInfisicalForTests();
+  }
+});
