@@ -79,13 +79,8 @@ app's writes are refused when Linear names another app as the viewer
 (swapped credentials).  A claim is a claimed:<TAG> label on the issue;
 seat:<TAG> labels only say who reported or touched it (the import put them on
 reporters too), so they are never read as a claim.  Writes are off unless
-<<<<<<< HEAD
 LINEAR_BOARD_WRITES=1.  BOARD_BACKEND=mac-collab runs the old board CLI
 instead for reads (rollback);  it never carries a write, which needs the bearer-verified seat.
-=======
-LINEAR_BOARD_WRITES=1.  BOARD_BACKEND=mac-collab runs the archived old board
-CLI instead (rollback);  the archive holds the only surviving copy of it.
->>>>>>> origin/main
 
 Stdlib only, so cloud seats, the Grok Bot VM and BotFleet containers can run
 it from any AI-Fleet-Coordinator checkout: python3 scripts/linear-board/board.
@@ -1194,12 +1189,7 @@ def resolve_identity(seat: str = "") -> Identity:
                     f"LINEAR_{k}_CLIENT_ID", f"LINEAR_{k}_CLIENT_SECRET"]
     die(f"no Fleet credentials: FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET are missing from Infisical "
         f"Fleet-OPS {FLEET_OPS_LINEAR_PATH} (`fleet-secrets get`), and LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are not "
-<<<<<<< HEAD
         f"set{seat_part}.  Check `fleet-secrets doctor`.", EXIT_NO_CREDS,
-=======
-        f"set{seat_part}.  Check `fleet-secrets doctor`.  Until then use BOARD_BACKEND=mac-collab, which runs the "
-        "archived old CLI.", EXIT_NO_CREDS,
->>>>>>> origin/main
         credential_field=",".join(missing))
 
 
@@ -4783,22 +4773,12 @@ def main(argv: list[str] | None = None) -> int:
         if linear_only:
             die(f"`{linear_only}` is Linear only:  BOARD_BACKEND=mac-collab runs the old board CLI, which has "
                 "no such flag or verb.  Unset BOARD_BACKEND to use it.", EXIT_USAGE)
-<<<<<<< HEAD
         # The rollback backend runs the old CLI, which has no bearer-verified identity:  it never gets a write
         # through this entry point, so no environment variable can route a write around the bearer.
         if any(a in WRITE_VERBS for a in argv[:1]):
             die(f"`{argv[0]}` is a write, and BOARD_BACKEND=mac-collab runs the old board CLI, which cannot prove "
                 "a seat from a bearer.  Writes only run as the bearer-verified seat:  unset BOARD_BACKEND.", EXIT_AUTH)
         old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "mac-collab" / "board")).expanduser()
-=======
-        # The archived findings.db is frozen and read-only, so a write verb would
-        # fail inside the archived CLI with a raw sqlite error.  Refuse it here.
-        if argv[:1] and argv[0] in WRITE_VERBS:
-            die(f"`board {argv[0]}` is a write, and BOARD_BACKEND=mac-collab runs the archived old CLI against the "
-                "frozen, read-only findings.db;  that backend serves reads only.  Unset BOARD_BACKEND to use it.",
-                EXIT_USAGE)
-        old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "_retired" / "mac-collab-20261019" / "board")).expanduser()
->>>>>>> origin/main
         if not old.is_file():
             die(f"BOARD_BACKEND=mac-collab, but the archived old board CLI is not at {old} "
                 "(set BOARD_MAC_COLLAB_CLI to the frozen archive)")

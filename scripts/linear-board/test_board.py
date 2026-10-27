@@ -1745,7 +1745,6 @@ class SafetyTests(BoardTest):
         old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
         extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
         p = self.board(
-<<<<<<< HEAD
             "list", "--app", "AFC", drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), extra=extra
         )
         self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
@@ -1755,13 +1754,6 @@ class SafetyTests(BoardTest):
             p = self.board(verb, "abc", "--by", "X", extra=extra, code=6)
             self.assertIn("bearer-verified seat", p.stderr, verb)
             self.assertNotIn("OLD BOARD", p.stdout, verb)
-=======
-            "list",
-            drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"),
-            extra={"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)},
-        )
-        self.assertEqual(p.stdout.strip(), "OLD BOARD ['list']")
->>>>>>> origin/main
         self.assertEqual(self.mock.ops, [])
 
     def test_mac_collab_backend_refuses_the_write_verbs(self):
@@ -3965,25 +3957,9 @@ class FlatLabelTests(BoardTest):
         # A write verb with no Linear-only flag still does not reach the archived CLI:
         # the frozen findings.db is read-only, so the backend refuses it first.
         p = self.board(
-<<<<<<< HEAD
             "list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES")
         )
         self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
-=======
-            "file",
-            "--title",
-            "x",
-            "--desc",
-            "d",
-            "--fix",
-            "f",
-            extra=extra,
-            drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"),
-            code=2,
-        )
-        self.assertIn("reads only", p.stderr)
-        self.assertNotIn("OLD BOARD", p.stdout)
->>>>>>> origin/main
         self.assertEqual(self.mock.ops, [])
 
 
