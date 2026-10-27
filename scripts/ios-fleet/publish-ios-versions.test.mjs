@@ -93,6 +93,14 @@ test("empty base is refused so a missing local file cannot wipe the fleet", () =
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("the merge keeps the manifest's own schemaVersion", () => {
+  const { dir, base, out } = fixture("afc-ios-versions-schema-", { ...FLEET, schemaVersion: 2 });
+  const res = run(["--bundle-id", "com.socratictrade.ios", "--version", "1.0.69", "--base-json", base, "--out-json", out, "--skip-push", "--skip-local-write"]);
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  assert.equal(JSON.parse(readFileSync(out, "utf8")).schemaVersion, 2);
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("a single-app base stays a single-app document", () => {
   const { dir, base, out } = fixture("afc-ios-versions-one-app-", {
     schemaVersion: 1,

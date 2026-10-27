@@ -208,7 +208,7 @@ if lost:
     print("error: merge dropped apps: " + ", ".join(lost), file=sys.stderr)
     sys.exit(1)
 data["apps"] = apps
-data["schemaVersion"] = 1
+data.setdefault("schemaVersion", 1)
 data["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 json.dump(data, sys.stdout, indent=2)
 sys.stdout.write("\n")
