@@ -11,7 +11,7 @@ Verbs (action names carry the wf_ prefix so they cannot collide with registered 
   reads   wf_pr_list wf_pr_files wf_file_get wf_tree wf_branches wf_commits wf_code_search
           wf_runs wf_run_jobs wf_checks (needs checks:read, refused unless the ceiling carries it)
   writes  wf_update_branch (atomic expected_head_sha), wf_run_rerun, wf_run_cancel,
-          wf_run_approve, wf_file_put (non-default branch only), wf_merge_guarded
+          wf_run_approve, wf_file_put and wf_files_put (non-default branch only; the multi-file one is one commit through git-data, atomic on expected_head_sha), wf_merge_guarded
           (atomic expected_head_sha)
 Check-run reads (wf_checks) need the checks permission, which is outside the shared
 ceiling, so that verb is refused until a seat's ceiling carries checks:read; without it
@@ -44,6 +44,8 @@ _REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
 MAX_FILE_B64 = 256 * 1024
 MAX_PAGE = 50
 MAX_PROJECT = 100
+MAX_FILES = 20
+MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
@@ -64,6 +66,7 @@ SPECS = {
     "wf_run_cancel": ({"actions": "write"}, True),
     "wf_run_approve": ({"actions": "write"}, True),
     "wf_file_put": ({"contents": "write"}, True),
+    "wf_files_put": ({"contents": "write"}, True),
     "wf_merge_guarded": ({"contents": "write", "pull_requests": "write"}, True),
 }
 ACTIONS = tuple(SPECS)
@@ -448,6 +451,118 @@ class WorkflowVerbs:
             "branch": branch,
             "commit": ((data or {}).get("commit") or {}).get("sha"),
         }
+
+    def _entry_mode(self, repo, tree_sha, path, cache):
+        """Mode of an existing blob at path, so an update never resets an executable bit."""
+        sha = tree_sha
+        parts = path.split("/")
+        for i, part in enumerate(parts):
+            if sha not in cache:
+                cache[sha] = _obj(self._get(f"/repos/{repo}/git/trees/{sha}"))
+            entries = {e.get("path"): e for e in _dicts(cache[sha].get("tree"))}
+            entry = entries.get(part)
+            if entry is None:
+                return None
+            last = i == len(parts) - 1
+            if last:
+                return entry.get("mode") if entry.get("type") == "blob" else None
+            if entry.get("type") != "tree" or not _SHA.fullmatch(str(entry.get("sha"))):
+                return None
+            sha = entry["sha"]
+        return None
+
+    def wf_files_put(self, repo, args):
+        """One commit changing several files on a non-default branch, via git-data."""
+        _only(args, ("repo", "branch", "message", "expected_head_sha", "files"))
+        branch, head = _ref(args, "branch"), _sha(args, "expected_head_sha")
+        message = args.get("message")
+        if not isinstance(message, str) or not 1 <= len(message) <= 500 or "\x00" in message:
+            raise Refused("invalid message")
+        files = args.get("files")
+        if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES:
+            raise Refused("invalid files")
+        seen, plan, total = set(), [], 0
+        for f in files:
+            if not isinstance(f, dict) or set(f) - {"path", "content_b64", "delete"}:
+                raise Refused("invalid files")
+            path = _path(f)
+            if path in seen or path.startswith(".github/workflows/"):
+                raise Refused("duplicate or workflow path refused")
+            seen.add(path)
+            if f.get("delete") is True:
+                if "content_b64" in f:
+                    raise Refused("invalid files")
+                plan.append((path, None))
+                continue
+            content = f.get("content_b64")
+            if not isinstance(content, str) or not content or "delete" in f:
+                raise Refused("invalid files")
+            total += len(content)
+            if total > MAX_FILES_B64:
+                raise Refused("files too large")
+            try:
+                raw = base64.b64decode(content, validate=True)
+            except (binascii.Error, ValueError):
+                raise Refused("invalid content") from None
+            if find_secret(raw.decode("utf-8", "replace")):
+                raise Refused("credential-shaped content refused")
+            plan.append((path, content))
+        if find_secret(message):
+            raise Refused("credential-shaped content refused")
+        default = _obj(self._get(f"/repos/{repo}")).get("default_branch")
+        if not default or branch == default:
+            raise Refused("default branch is not writable")
+        ref = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"))
+        if (ref.get("object") or {}).get("sha") != head:
+            raise Refused("branch head moved")
+        base_tree = (_obj(self._get(f"/repos/{repo}/git/commits/{head}")).get("tree") or {}).get("sha")
+        if not isinstance(base_tree, str) or not _SHA.fullmatch(base_tree):
+            raise Refused("unexpected upstream shape")
+        cache, entries = {}, []
+        for path, content in plan:
+            if content is None:
+                entries.append({"path": path, "mode": "100644", "type": "blob", "sha": None})
+                continue
+            blob = _obj(
+                self.client._call(
+                    "POST",
+                    f"/repos/{repo}/git/blobs",
+                    {"content": content, "encoding": "base64"},
+                    bearer=self.bearer,
+                )
+            )
+            blob_sha = blob.get("sha")
+            if not isinstance(blob_sha, str) or not _SHA.fullmatch(blob_sha):
+                raise Refused("unexpected upstream shape")
+            mode = self._entry_mode(repo, base_tree, path, cache) or "100644"
+            entries.append({"path": path, "mode": mode, "type": "blob", "sha": blob_sha})
+        tree = _obj(
+            self.client._call(
+                "POST",
+                f"/repos/{repo}/git/trees",
+                {"base_tree": base_tree, "tree": entries},
+                bearer=self.bearer,
+            )
+        )
+        commit = _obj(
+            self.client._call(
+                "POST",
+                f"/repos/{repo}/git/commits",
+                {"message": message, "tree": tree.get("sha"), "parents": [head]},
+                bearer=self.bearer,
+            )
+        )
+        new_sha = commit.get("sha")
+        if not isinstance(new_sha, str) or not _SHA.fullmatch(new_sha):
+            raise Refused("unexpected upstream shape")
+        # Fast-forward only: a branch that moved since the read is refused upstream.
+        self.client._call(
+            "PATCH",
+            f"/repos/{repo}/git/refs/heads/{quote(branch, safe='/')}",
+            {"sha": new_sha, "force": False},
+            bearer=self.bearer,
+        )
+        return {"branch": branch, "commit": new_sha, "files": len(plan)}
 
     def wf_merge_guarded(self, repo, args):
         _only(args, ("repo", "number", "method", "expected_head_sha"))

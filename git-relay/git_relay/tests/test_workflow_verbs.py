@@ -72,7 +72,7 @@ class Tests(unittest.TestCase):
     def test_every_action_has_a_handler_and_spec(self):
         for action in ACTIONS:
             self.assertTrue(callable(getattr(WorkflowVerbs, action)))
-        self.assertEqual(len(ACTIONS), 16)
+        self.assertEqual(len(ACTIONS), 17)
 
     def test_least_permission_minted_and_ceiling_enforced(self):
         minter = Minter()
@@ -281,6 +281,77 @@ class Tests(unittest.TestCase):
             s, _ = svc(bad)
             with self.assertRaises(Refused, msg=action):
                 s.run(action, args)
+
+    def _git_data_client(self, head=SHA, default="main"):
+        T0, T1 = "b" * 40, "c" * 40
+        routes = {
+            ("GET", f"/repos/{REPO}"): {"default_branch": default},
+            ("GET", f"/repos/{REPO}/git/ref/heads/feat/x"): {"object": {"sha": head}},
+            ("GET", f"/repos/{REPO}/git/commits/{SHA}"): {"tree": {"sha": T0}},
+            ("GET", f"/repos/{REPO}/git/trees/{T0}"): {
+                "tree": [{"path": "scripts", "type": "tree", "sha": T1, "mode": "040000"}]
+            },
+            ("GET", f"/repos/{REPO}/git/trees/{T1}"): {
+                "tree": [{"path": "run.sh", "type": "blob", "sha": "d" * 40, "mode": "100755"}]
+            },
+            ("POST", f"/repos/{REPO}/git/blobs"): {"sha": "e" * 40},
+            ("POST", f"/repos/{REPO}/git/trees"): {"sha": "f" * 40},
+            ("POST", f"/repos/{REPO}/git/commits"): {"sha": "1" * 40},
+            ("PATCH", f"/repos/{REPO}/git/refs/heads/feat/x"): {},
+        }
+
+        class Routed(Client):
+            def _call(self, method, path, payload=None, bearer=None):
+                self.calls.append((method, path, payload, bearer))
+                return routes[(method, path)]
+
+        return Routed()
+
+    def test_wf_files_put_one_fast_forward_commit_preserving_exec_bit(self):
+        c = self._git_data_client()
+        files = [
+            {"path": "scripts/run.sh", "content_b64": base64.b64encode(b"echo hi").decode()},
+            {"path": "docs/new.md", "content_b64": base64.b64encode(b"x").decode()},
+            {"path": "old.txt", "delete": True},
+        ]
+        out = Multi(c).run(
+            "wf_files_put",
+            {"repo": REPO, "branch": "feat/x", "message": "m", "expected_head_sha": SHA, "files": files},
+        )
+        self.assertEqual(out, {"branch": "feat/x", "commit": "1" * 40, "files": 3})
+        tree = next(p for m, path, p, b in c.calls if path.endswith("/git/trees") and m == "POST")
+        by_path = {e["path"]: e for e in tree["tree"]}
+        self.assertEqual(by_path["scripts/run.sh"]["mode"], "100755")
+        self.assertEqual(by_path["docs/new.md"]["mode"], "100644")
+        self.assertIsNone(by_path["old.txt"]["sha"])
+        self.assertEqual(tree["base_tree"], "b" * 40)
+        commit = next(p for m, path, p, b in c.calls if path.endswith("/git/commits") and m == "POST")
+        self.assertEqual(commit["parents"], [SHA])
+        patch = c.calls[-1]
+        self.assertEqual((patch[0], patch[2]), ("PATCH", {"sha": "1" * 40, "force": False}))
+        self.assertTrue(all(b == "opaque" for *_, b in c.calls))
+
+    def test_wf_files_put_refusals(self):
+        ok = [{"path": "a.md", "content_b64": base64.b64encode(b"x").decode()}]
+        base = {"repo": REPO, "branch": "feat/x", "message": "m", "expected_head_sha": SHA, "files": ok}
+
+        def refused(**over):
+            c = self._git_data_client(**{k: over.pop(k) for k in ("head", "default") if k in over})
+            with self.assertRaises(Refused, msg=str(over)):
+                Multi(c).run("wf_files_put", {**base, **over})
+            self.assertFalse([1 for m, *_ in c.calls if m != "GET"], "no write on refusal")
+
+        refused(head="9" * 40)  # branch moved since the caller read it
+        refused(default="feat/x")  # default branch never writable
+        refused(files=[{"path": ".github/workflows/ci.yml", "content_b64": "eA=="}])
+        refused(files=ok + ok)  # duplicate path
+        refused(files=[{"path": "../x", "content_b64": "eA=="}])
+        refused(files=[{"path": "a", "content_b64": "eA==", "delete": True}])
+        refused(files=[{"path": "a", "content_b64": base64.b64encode(b"ghp_" + b"A" * 30).decode()}])
+        refused(files=[])
+        refused(files=[{"path": f"f{i}", "content_b64": "eA=="} for i in range(21)])
+        refused(message="")
+        refused(extra=1)
 
 
 if __name__ == "__main__":
