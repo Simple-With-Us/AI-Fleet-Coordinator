@@ -67,7 +67,7 @@ GB-ENGINEER = "server"
 
 # BotFleet role bots.  The ten seats below are "none" (no listener holds them).  Earlier versions
 # of this comment said BotFleet handled them natively; it does not yet.  BotFleet's source has no
-# wake path, no agent-sync reference and no Linear integration, so nothing wakes those ten today
+# wake path, no simple-chat reference and no Linear integration, so nothing wakes those ten today
 # and the owner has to prompt them by hand (owner, Mon, Oct 13).  BotFleet still assigns the
 # BF-<ROLE> seat at launch, which is the part that is native to it.
 #

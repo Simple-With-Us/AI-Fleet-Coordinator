@@ -247,7 +247,7 @@ def finish(
         )
         if notice.linkback == "failed":
             io.warn(
-                "the reply with the Linear link in the mirrored topic failed;  post it with agent-sync reply"
+                "the reply with the Linear link in the mirrored topic failed;  post it with simple-chat reply"
             )
     else:
         io.say(

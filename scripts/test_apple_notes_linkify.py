@@ -8,6 +8,10 @@ belongs to the same place and the same shape:  a rewrite the writer does, counte
 What is pinned here:
 
   a Linear issue identifier (OPS-1000) becomes a link to that issue in the fleet workspace;
+  a Linear project reference (P-ST-9) becomes a link to that project, and a project is coded by hand
+  because a project URL carries a slug and a hash that nothing can derive from the reference;
+  a project reference is never read as an issue, so the number inside it never becomes an issue link;
+  a project reference that names no known project stays plain text;
   a pull request reference (PR #957) becomes a link to the pull request, and the text is normalised to the house form;
   a qualified reference (AFC#957) links to the pull request it names in the repository it names;
   a list of pull requests (PRs #380, #386 and #389) becomes one link per number, and a file count that follows a
@@ -126,6 +130,10 @@ def gh_path(repo: str, num: str, owner: str = GITHUB_OWNER) -> str:
 
 
 LINEAR_URL = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/issue/"
+
+#  A project the fixture codes by hand.  A project URL carries a slug and a hash, so a project is
+#  named in full:  the reference a writer types, and the URL of that project.
+PROJECT_URL = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/project/fixture-project-abc123"
 
 #  A stand-in for the gh CLI, which the helper asks which repository holds a pull request.  It says
 #  every repository holds every pull request unless GH_STUB_MISSING names one that does not, or is
@@ -273,6 +281,69 @@ class LinkifyTests(LinkifyTestCase):
         self.assertIn(f'<a href="{LINEAR_URL}OPS-1000">OPS-1000</a>', out)
         self.assertIn(f'<a href="{LINEAR_URL}AFC-547">AFC-547</a>', out)
 
+    def test_a_coded_project_reference_becomes_a_link_to_that_project(self):
+        #  a project has no URL that can be derived from its reference, so it is coded:  the
+        #  reference a writer types, and the URL of that project
+        out = self.html(
+            "[AFC, MM] Notes",
+            "The rewrite is P-ST-9.",
+            NOTES_LINEAR_PROJECTS="P-ST-9=" + PROJECT_URL,
+        )
+        self.assertIn(f'<a href="{PROJECT_URL}">P-ST-9</a>', out)
+
+    def test_the_projects_in_the_table_link_into_the_configured_workspace(self):
+        #  the project the fleet names, built from the host and the workspace the note is written
+        #  for, so a note written for another workspace links into that one
+        out = self.html("[AFC, MM] Notes", "The rewrite is P-BF-6.")
+        self.assertIn('href="https://' + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/project/", out)
+        self.assertIn(">P-BF-6</a>", out)
+
+    def test_a_project_reference_is_never_read_as_an_issue(self):
+        #  the number in a project reference is a project number, so it never becomes an issue link
+        out = self.html("[AFC, MM] Notes", "The rewrite is P-BF-6 and the other is P-ST-8.")
+        self.assertNotIn("/issue/BF-6", out)
+        self.assertNotIn("/issue/ST-8", out)
+        self.assertIn("P-BF-6", out)
+        self.assertIn("P-ST-8", out)
+
+    def test_a_short_project_reference_is_never_read_as_an_issue(self):
+        #  a writer may leave the team out of a project reference, and the number in it is still a
+        #  project number, so the short form is claimed as a project and never becomes an issue
+        out = self.html("[AFC, MM] Notes", "The rewrite is P-6 and the issue is BF-6.")
+        self.assertNotIn("/issue/6", out)
+        self.assertNotIn(">P-6</a>", out)
+        self.assertIn("P-6", out)
+        self.assertIn(f'<a href="{LINEAR_URL}BF-6">BF-6</a>', out)
+
+    def test_a_short_project_reference_can_be_coded_too(self):
+        #  the short form is a reference of its own, so it links only when it is coded, exactly
+        #  like the long form
+        out = self.html(
+            "[AFC, MM] Notes",
+            "The rewrite is P-6.",
+            NOTES_LINEAR_PROJECTS="P-6=" + PROJECT_URL,
+        )
+        self.assertIn(f'<a href="{PROJECT_URL}">P-6</a>', out)
+
+    def test_a_project_reference_that_is_not_coded_stays_plain_text(self):
+        #  a project that is not in the table is left alone:  a link to the wrong thing is worse
+        #  than no link, and the reference is never guessed at
+        out = self.html("[AFC, MM] Notes", "The rewrite is P-ST-8.")
+        self.assertNotIn("<a href=", out.split("<h1>")[1].split("</h1>")[1].split("</p>")[2])
+        self.assertIn("P-ST-8", out)
+
+    def test_the_writer_counts_a_project_reference_as_a_project(self):
+        p = self.run_script(
+            "--session",
+            SESSION,
+            "[AFC, MM] Notes",
+            "The rewrite is P-BF-6.",
+            APPLE_NOTES_PRINT_HTML="1",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("1 project reference", p.stderr)
+        self.assertIn("0 issue references", p.stderr)
+
     def test_a_pull_request_reference_becomes_a_link_and_keeps_the_house_form(self):
         out = self.html("[AFC, MM] Notes", "Shipped in PR #957 and PR 958.")
         self.assertIn(f'<a href="{gh_url(FLEET_REPO, "957")}">PR #957</a>', out)
@@ -348,7 +419,8 @@ class LinkifyTests(LinkifyTestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("notes: linkified:", p.stderr)
-        self.assertIn("1 project reference", p.stderr)
+        self.assertIn("1 issue reference", p.stderr)
+        self.assertIn("0 project references", p.stderr)
         self.assertIn("1 pull request reference", p.stderr)
         #  and it says it once:  a second pass over the same body would double the summary
         self.assertEqual(p.stderr.count("notes: linkified:"), 1, p.stderr)
@@ -365,7 +437,11 @@ class LinkifyTests(LinkifyTestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         (line,) = self.log_lines()
-        self.assertEqual(line["reformatted"]["links"], {"issues": 2, "prs": 1}, line["reformatted"])
+        self.assertEqual(
+            line["reformatted"]["links"],
+            {"issues": 2, "prs": 1, "projects": 0},
+            line["reformatted"],
+        )
 
     def test_the_log_keeps_the_link_counts_when_the_date_counts_are_missing(self):
         #  the file the date counts are written to could not be made, so the log has no dates to
@@ -383,7 +459,11 @@ class LinkifyTests(LinkifyTestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         (line,) = self.log_lines()
-        self.assertEqual(line["reformatted"]["links"], {"issues": 2, "prs": 1}, line["reformatted"])
+        self.assertEqual(
+            line["reformatted"]["links"],
+            {"issues": 2, "prs": 1, "projects": 0},
+            line["reformatted"],
+        )
 
     def test_a_network_error_that_only_looks_like_a_404_is_not_a_missing_pull_request(self):
         #  "pulls/1404" is not a 404:  GitHub was never asked, so the repository of the team is the

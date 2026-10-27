@@ -797,7 +797,7 @@ None.
 | `L1427-tier1-macro` | 1427 | Multi-room & active collaboration (slack-collab) | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
 | `L1428-tier2-app-channels` | 1428 | Multi-room & active collaboration (slack-collab) | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
 | `L1428-use-threads` | 1428 | Multi-room & active collaboration (slack-collab) | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
-| `L1431-slack-collab-mcp` | 1431 | Multi-room & active collaboration (slack-collab) | retired:  The slack-collab MCP server is retired by the hard cut and replaced by the agent-sync CLI (L1432-cli-helper). |
+| `L1431-slack-collab-mcp` | 1431 | Multi-room & active collaboration (slack-collab) | retired:  The slack-collab MCP server is retired by the hard cut and replaced by the simple-chat CLI (L1432-cli-helper). |
 | `L1432-cli-helper` | 1432 | Multi-room & active collaboration (slack-collab) | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
 | `L1433-relay-daemon` | 1433 | Multi-room & active collaboration (slack-collab) | retired:  The pm2 agent-sync-push relay is retired by the hard cut.  Zulip server push plus `simple-chat listen` replaces it. |
 | `L1438-header-plain` | 1438-1440 | Header | [Posting](../../AGENT-SYNC.md#posting) |
@@ -843,8 +843,8 @@ None.
 | `L1531-react-coordinate` | 1531 | Reactions | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1532-react-merge` | 1532 | Reactions | [Posting](../../AGENT-SYNC.md#posting) |
 | `L1533-react-warn` | 1533 | Reactions | [Posting](../../AGENT-SYNC.md#posting) |
-| `L1540-with-slack` | 1539-1540 | Access & Reading | retired:  Slack app or CLI access is retired by the hard cut.  Seats use the agent-sync CLI with their own Zulip bot credentials (L1421-auth-mac). |
-| `L1543-tunnel-post` | 1543-1546 | Access & Reading | retired:  The agent-sync.jays.services Slack tunnel POST endpoint is retired by the hard cut.  Cloud seats use ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_SITE with the agent-sync CLI. |
+| `L1540-with-slack` | 1539-1540 | Access & Reading | retired:  Slack app or CLI access is retired by the hard cut.  Seats use the simple-chat CLI with their own Zulip bot credentials (L1421-auth-mac). |
+| `L1543-tunnel-post` | 1543-1546 | Access & Reading | retired:  The agent-sync.jays.services Slack tunnel POST endpoint is retired by the hard cut.  Cloud seats use ZULIP_EMAIL, ZULIP_API_KEY and ZULIP_SITE with the simple-chat CLI. |
 | `L1546-tunnel-token-isolation` | 1546-1548 | Access & Reading | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
 | `L1549-local-helper` | 1549-1551 | Access & Reading | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
 | `L1552-direct-api-last-resort` | 1552-1553 | Access & Reading | retired:  Direct Slack API posting with SLACK_BOT_TOKEN is retired by the hard cut. |
@@ -874,7 +874,7 @@ None.
 | `L1646-poll-loop-mode` | 1645-1646 | Real-time Sync | retired:  The shell loop around agent-sync-poll.py is retired.  `simple-chat listen` or `simple-chat wait` replaces it. |
 | `L1647-poll-turn-mode` | 1647-1649 | Real-time Sync | [Reading and Listening](../../AGENT-SYNC.md#reading-and-listening) |
 | `L1650-poll-cloud-mode` | 1650-1651 | Real-time Sync | [Chat: The Zulip Contract](../../AGENT-SYNC.md#chat-the-zulip-contract) |
-| `L1653-poller-truncation` | 1653-1654 | Real-time Sync | retired:  The poller's 600-character truncation note is moot because the poller is retired.  Full reads go through the agent-sync CLI. |
+| `L1653-poller-truncation` | 1653-1654 | Real-time Sync | retired:  The poller's 600-character truncation note is moot because the poller is retired.  Full reads go through the simple-chat CLI. |
 | `L1660-peer-not-owner` | 1660 | Conflict Resolution | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |
 | `L1662-contradiction-no-execute` | 1660-1665 | Conflict Resolution | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |
 | `L1665-surface-conflict` | 1665-1666 | Conflict Resolution | [Absolute Rules and Authority](../../AGENT-SYNC.md#absolute-rules-and-authority) |

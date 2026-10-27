@@ -13,7 +13,7 @@ or POSTed to BotFleet.  This checker keeps a text safe to run unattended.  Rules
   single-space-gap  a sentence boundary with one ASCII space (the fleet writes two spaces, a non-breaking space plus a space,
                     or the non-breaking-space entity plus a space)
   reminder-missing  the owner's standing reminder is not quoted
-  secret-shaped     a secret-shaped string (the agent-sync secret scanner, plus the F3 prefixes held locally)
+  secret-shaped     a secret-shaped string (the simple-chat secret scanner, plus the F3 prefixes held locally)
   gb-label          a Grok Bot text (`gb-<role>.md`) without its own `[GB-<ROLE>]` label or `<role>-grok-bot@` email,
                     carrying another role's label or email, or a text that is not a GB text carrying any GB label
   placeholder       (only with --no-placeholders) a leftover `<C2 ID>`, `<C5 ID>`, TODO or FIXME

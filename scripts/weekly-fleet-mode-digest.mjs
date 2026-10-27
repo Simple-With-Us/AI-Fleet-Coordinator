@@ -32,7 +32,7 @@
 // Posting (no --dry-run): shells out to the canonical Mac-local relay
 // helper, per AGENT-SYNC.md -- never hand-rolls a Zulip client call and
 // never reads a bot key directly:
-//   agent-sync post --as CLAUDE --topic "fleet-mode digest" "<message>"
+//   simple-chat post --as CLAUDE --topic "fleet-mode digest" "<message>"
 //
 // SECRETS: USAGE_READ_TOKEN and SENTRY_AUTH_TOKEN_FULLSCOPE are loaded
 // value-blind from environment first, then `fleet-secrets get NAME` (OPS-818;
@@ -402,7 +402,7 @@ function composeMessage({ umResult, sentryResult, now = new Date() }) {
 // ---------------------------------------------------------------- post ---
 
 function postToZulip(text) {
-  // Posts through the agent-sync CLI as the CLAUDE seat, which resolves that
+  // Posts through the simple-chat CLI as the CLAUDE seat, which resolves that
   // seat's own Zulip credential (Infisical /zulip).  No token is read here.
   // Zulip needs a channel AND a topic on every message, so the topic is passed
   // explicitly rather than left to the transport.

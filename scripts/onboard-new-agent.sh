@@ -109,7 +109,7 @@ if [ -n "$APP" ] && ! printf '%s' "$APP" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$'; 
   exit 1
 fi
 
-# The credential file code comes from the rule the agent-sync CLI itself uses, so the
+# The credential file code comes from the rule the simple-chat CLI itself uses, so the
 # file this script names is the file the CLI will look for.  The bot email is the short
 # name plus -bot@ plus the realm host (the registry's zulipRealm).
 zulip_ids="$(python3 - "$here" "$TAG" "$ZULIP_SHORT" <<'PY'
@@ -228,13 +228,13 @@ echo "       c. Jay stores the three values in Infisical /zulip and deletes ~/.a
 echo "          Check the file mode (expect 600) before that and the identity (it must show $BOT_EMAIL) after."
 echo "          Neither prints the key:"
 echo "            stat -f '%Lp' ~/.agent-sync/provisioned/$FILE_CODE-zuliprc"
-echo "            AGENT_SEAT=$TAG agent-sync whoami"
+echo "            AGENT_SEAT=$TAG simple-chat whoami"
 echo "       d. Subscribe at setup, not ad hoc (a typo cannot create a channel with --must-exist):"
-echo "            AGENT_SEAT=$TAG agent-sync subscribe --channel work-in-progress --channel builds --must-exist"
+echo "            AGENT_SEAT=$TAG simple-chat subscribe --channel work-in-progress --channel builds --must-exist"
 echo "  5. Intro, once per session, before the first claim:"
-echo "       AGENT_SEAT=$TAG agent-sync post --topic \"roll call\" \"online  |  <platform>  |  cadence:  <listen|wait|per-turn read>"
+echo "       AGENT_SEAT=$TAG simple-chat post --topic \"roll call\" \"online  |  <platform>  |  cadence:  <listen|wait|per-turn read>"
 echo "       can:  <what this session can do>\""
-echo "     The CLI writes the [${TAG}·session8] tag itself.  Read the room first:  agent-sync inbox"
+echo "     The CLI writes the [${TAG}·session8] tag itself.  Read the room first:  simple-chat inbox"
 echo "  6. Listener: docs/protocols/agent-sync-partition.toml must list $TAG as mac or server, in the"
 echo "     PR that enables it and with Jay's OK.  A listener refuses a seat the file does not give to"
 echo "     its own instance, and a seat must never be in both."
