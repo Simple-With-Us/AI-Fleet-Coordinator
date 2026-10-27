@@ -79,7 +79,7 @@ _QUOTE_LINE_RE = re.compile(r"(?m)^\s*>.*$")
 # The OWNER-topic rule.  Zulip groups topic names without case, and its resolved check mark sits in front of the name.
 OWNER_TOPIC_PREFIX = "owner "
 _RESOLVED_MARKS = ("\u2714\ufe0f", "\u2714")
-# The notifier's directed note (`agent-sync --as CLAUDE --session needsown post --to SEAT`) is tagged `[CLAUDE\u00b7needsown\u2192SEAT]`.
+# The notifier's directed note (`simple-chat --as CLAUDE --session needsown post --to SEAT`) is tagged `[CLAUDE\u00b7needsown\u2192SEAT]`.
 NOTE_SENDER_SEAT = "CLAUDE"
 _NOTE_TAG_RE = re.compile(r"^\s*\[CLAUDE\u00b7needsown(?:\u2192|->)")
 
@@ -92,7 +92,7 @@ NO_WAKE_MARKER = ":eyes:"
 NO_WAKE_MARKERS = (":eyes:", "\U0001f440")
 _NO_WAKE_RE = re.compile(r"^\s*(?:%s)" % "|".join(re.escape(m) for m in NO_WAKE_MARKERS))
 #: One leading bracket seat tag (`[MM\u00b7session8] `, `[CLAUDE\u00b7needsown\u2192SEAT] `).  The
-#: marker may follow it, because `agent-sync post` prepends that tag to whatever the agent wrote.
+#: marker may follow it, because `simple-chat post` prepends that tag to whatever the agent wrote.
 #: The session part is optional:  a seat with no session tag writes `[MM] `, and a labelled post
 #: writes `[MM\u2192CODEX] `, so the tag is the seat name, then optionally a `\u00b7` session, then
 #: optionally a `\u2192` label list, then the closing bracket.

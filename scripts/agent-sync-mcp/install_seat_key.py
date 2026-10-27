@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install a hosted seat's Zulip bot key into the agent-sync MCP Worker's secrets.
+"""Install a hosted seat's Zulip bot key into the ST-MCP Worker's secrets.
 
     python3 -I install_seat_key.py GROK-WEB            # checks only, changes nothing
     python3 -I install_seat_key.py GROK-WEB --apply    # wrangler secret put ZULIP_KEY_GROK_WEB
