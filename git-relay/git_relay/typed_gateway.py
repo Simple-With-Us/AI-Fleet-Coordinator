@@ -3,8 +3,8 @@
 Injected only in offline contract tests until review and host qualification.
 """
 
-from .outcomes import key_for
-from .typed_disarm import Refused, TypedDisarm
+from .outcomes import OutcomeStoreError, key_for
+from .typed_disarm import PreflightUnavailable, Refused, TypedDisarm
 
 ACTIONS = ("pr_state", "pr_hold_state", "pr_automerge_disable")
 
@@ -42,8 +42,15 @@ class TypedGateway:
             )
             self.audit.record(seat, action, repo, "intent", {})
             if action == "pr_automerge_disable":
-                key = key_for(seat, action, args)
-                prior = self.outcomes.begin(key)
+                candidate = key_for(seat, action, args)
+                # Only a successful reservation belongs to this request.  A
+                # full or failing store must never acquire a row via finish().
+                try:
+                    prior = self.outcomes.begin(candidate)
+                except OutcomeStoreError:
+                    result = "unavailable"
+                    return 503, {"error": "outcome store unavailable", "retryable": True}
+                key = candidate
                 if prior is not None:
                     # Never replay an old "disabled" receipt: autoMerge may
                     # have been re-enabled. Caller must freshly read/reconcile.
@@ -69,6 +76,12 @@ class TypedGateway:
             )
             result = "ok"
             return 200, payload
+        except PreflightUnavailable:
+            if key is not None:
+                self.outcomes.finish(key, "refused")
+                key = None
+            result = "unavailable"
+            return 503, {"error": "preflight unavailable", "retryable": True}
         except Refused:
             if key is not None:
                 self.outcomes.finish(key, "refused")

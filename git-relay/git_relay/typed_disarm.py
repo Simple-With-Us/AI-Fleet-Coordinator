@@ -41,6 +41,10 @@ class Unknown(RuntimeError):
     """Fixed public error, never wraps upstream text or credentials."""
 
 
+class PreflightUnavailable(Unknown):
+    """Read-only preflight failed before any mutation could be attempted."""
+
+
 class TypedDisarm:
     def __init__(self, client, policy, seat, bearer, app_slug, action_scope, clock=time.monotonic):
         # Scope and ceiling bind on every construction; for_action is the
@@ -196,7 +200,10 @@ class TypedDisarm:
 
     def disable(self, args):
         repo, number, head = self._validate("pr_automerge_disable", args)
-        before = self._state(repo, number, head)
+        try:
+            before = self._state(repo, number, head)
+        except Unknown:
+            raise PreflightUnavailable("preflight unavailable") from None
         if before["state"] != "OPEN":
             raise Refused("PR is not open")
         # Disable is safety-only and never edits/removes hold labels or comments.

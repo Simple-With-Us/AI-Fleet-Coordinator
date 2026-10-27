@@ -230,6 +230,7 @@ class Relay:
         app_minter=None,
         outcomes: OutcomeStore | None = None,
         workflow_verbs_enabled: bool = False,
+        typed_disarm_enabled: bool = False,
     ):
         # Off unless the operator turns it on: with it off every wf_ action is refused
         # as registered-not-wired, exactly as before the wiring existed.
@@ -239,8 +240,20 @@ class Relay:
         self.audit = audit
         self.app_minter = app_minter
         self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
+        self.typed_gateway = None
+        if typed_disarm_enabled:
+            from .typed_gateway import TypedGateway
+
+            self.typed_gateway = TypedGateway(policy, client, app_minter, audit, self.outcomes)
 
     def handle(self, token: str, action: str, args: dict) -> tuple[int, dict]:
+        # A separate audited gateway charges policy once and keeps disarm
+        # receipts fresh.  Default-off; no generic write-replay path is used.
+        if self.typed_gateway is not None:
+            from .typed_gateway import ACTIONS
+
+            if action in ACTIONS:
+                return self.typed_gateway.handle(token, action, args)
         seat = self.policy.authenticate(token)
         if seat is None:
             return 401, {"error": "unauthenticated"}
@@ -992,6 +1005,7 @@ def from_env() -> Relay:
         app_minter=app_minter,
         outcomes=outcomes,
         workflow_verbs_enabled=os.environ.get("GIT_RELAY_ENABLE_WORKFLOW_VERBS") == "1",
+        typed_disarm_enabled=os.environ.get("GIT_RELAY_ENABLE_TYPED_DISARM") == "1",
     )
 
 

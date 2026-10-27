@@ -57,6 +57,42 @@ class Tests(unittest.TestCase):
         self.assertEqual([r["result"] for r in rows], ["intent", "confirmed"])
         self.assertNotIn("test-installation", json.dumps(rows))
 
+    def test_preflight_failure_releases_key_without_poisoning(self):
+        self.policy._rate_per_hour = 10
+        self.client.replies = [TimeoutError(), state(), {"data": {}}, state(False)]
+        status, body = self.gateway.handle(TOKEN, "pr_automerge_disable", ARGS)
+        self.assertEqual(status, 503)
+        self.assertTrue(body["retryable"])
+        self.assertEqual(len(self.client.calls), 1)
+        self.assertEqual(self.gateway.handle(TOKEN, "pr_automerge_disable", ARGS)[0], 200)
+
+    def test_capacity_refusal_does_not_finish_unreserved_key(self):
+        from git_relay.outcomes import OutcomeStoreError
+
+        def full(key):
+            raise OutcomeStoreError("full")
+
+        self.gateway.outcomes.begin = full
+        self.gateway.outcomes.finish = lambda *args: self.fail("unreserved key finished")
+        status, body = self.gateway.handle(TOKEN, "pr_automerge_disable", ARGS)
+        self.assertEqual(status, 503)
+        self.assertTrue(body["retryable"])
+        self.assertEqual(self.client.calls, [])
+
+    def test_real_relay_dispatch_default_off_then_on(self):
+        from git_relay.server import Relay
+
+        class Minter:
+            def token_for(self, *args):
+                return "test-installation", 999999999
+
+        for enabled in (False, True):
+            relay = Relay(self.policy, self.client, self.audit, app_minter=Minter(),
+                          outcomes=OutcomeStore(self.path), typed_disarm_enabled=enabled)
+            status, body = relay.handle(TOKEN, "pr_state", ARGS)
+            self.assertEqual(status, 200 if enabled else 400)
+        self.assertEqual(len(self.client.calls), 1)
+
     def test_unknown_survives_restart(self):
         self.client.replies = [state(), TimeoutError(), TimeoutError()]
         self.assertEqual(self.gateway.handle(TOKEN, "pr_automerge_disable", ARGS)[0], 502)
