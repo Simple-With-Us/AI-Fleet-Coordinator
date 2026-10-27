@@ -36,7 +36,7 @@ If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_S
 
 Prefer live `GET /api/v1/applications` (via a helper that reads the token itself, or Coolify MCP) over memorized UUIDs.
 
-FLEET-PROTOCOL.md's "sanctioned deploy path" table still names ST uuid `<OLD_ST_COOLIFY_APP_UUID>`, CT Worker `deploy.yml`, and UM Render — **stale**.  Prefer this table + `~/apps/COOLIFY.md` (top Hetzner section only; the Oracle body below the cut is historical).
+The live sanctioned deploy paths are in `docs/protocols/production-deploys.md` (and this table + `~/apps/COOLIFY.md`, top Hetzner section only; the Oracle body below the cut is historical).  Do not look for a deploy-path table inside FLEET-PROTOCOL.md — that file is not in this repository.
 
 Steady state: ST/CT/UM auto-deploy via Coolify webhook; DealDex via Vercel; AFC digest via Pages; CTS via tag.  Announce-then-deploy (~10 min, one deployer) only for a **manual** Coolify/API click.  Do not double-trigger: Coolify cancel is unreliable.
 
@@ -138,7 +138,8 @@ Move the Linear issue to **Deployed** (`simple-board status <id> deployed --reso
 
 - `/Users/jay/apps/COOLIFY.md`
 - `~/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Production deploys; Coolify tokens; Releases, Versioning, and Brand Assets
+- `docs/protocols/production-deploys.md` — sanctioned deploy paths and Coolify tokens
+- `/Users/jay/apps/FLEET-PROTOCOL.md` — Releases, Versioning, and Brand Assets (owner copy)
 - ST `docs/rollouts/2026-08-07-hetzner-fleet-cutover.md`
 - ST `docs/rollouts/2026-07-10-auto-deploy-on.md` (mechanism; UUIDs/IPs in that note may be pre-cutover)
 - Skills: `secret-handoff`, `closeout`, `land-lane`
