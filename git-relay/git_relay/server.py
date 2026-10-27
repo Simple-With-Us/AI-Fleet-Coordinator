@@ -529,7 +529,7 @@ def _is_workflow_read(self, action: str) -> bool:
 
 def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> dict:
     # Imported here: workflow_verbs imports this module.
-    from .workflow_verbs import Refused, Unknown, WorkflowVerbs
+    from .workflow_verbs import CeilingDenied, Unknown, WorkflowVerbs
 
     if self.app_minter is None:
         raise ServerUnavailable("app-token minting is not configured on this relay")
@@ -543,10 +543,8 @@ def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> d
         return handle.run(action, args)
     except Unknown:
         raise ServerUnavailable("the seat's own App credential is unavailable") from None
-    except Refused as exc:
-        if str(exc) == "seat permission ceiling insufficient":
-            raise PolicyDenied(str(exc)) from None
-        raise
+    except CeilingDenied as exc:
+        raise PolicyDenied(str(exc)) from None
 
 
 Relay._is_workflow_read = _is_workflow_read

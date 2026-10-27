@@ -33,6 +33,10 @@ class Refused(ValueError):
     """Fixed public refusal; never wraps upstream text."""
 
 
+class CeilingDenied(Refused):
+    """The seat's App ceiling does not cover the verb's permissions (a 403, not a bad request)."""
+
+
 class Unknown(RuntimeError):
     """Own App credential unavailable."""
 
@@ -226,7 +230,7 @@ class WorkflowVerbs:
         required = dict(SPECS[action][0])
         required.setdefault("metadata", "read")
         if _perm_within_ceiling(required, ceiling):
-            raise Refused("seat permission ceiling insufficient")
+            raise CeilingDenied("seat permission ceiling insufficient")
         try:
             token, _ = minter.token_for(app_slug, repo, required)
         except Exception:
