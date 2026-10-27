@@ -137,3 +137,10 @@ test('success completion, file-count receipts and malformed failure metadata',as
  }
  assert.ok(!validWfV1Args('wf_file_put',{repo,path:'a',branch:'b',message:'m',content_b64:'A'.repeat(60001)}));
 });
+
+test('valid refusal context is stripped without losing status or retry semantics',async()=>{
+ for(const status of [403,429,503]) {
+  const gr=new GrRelayClient({baseUrl:'https://broker.invalid',bearer:'own',fetch:async()=>new Response(JSON.stringify({error:'private denial prose',retryable:true,context:{reason:'private-context'}}),{status})});
+  assert.deepEqual(await gr.callWorkflow('wf_runs',{repo}),{status,body:{error:'workflow_request_refused',retryable:true}});
+ }
+});
