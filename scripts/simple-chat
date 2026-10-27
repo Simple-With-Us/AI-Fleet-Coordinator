@@ -33,6 +33,11 @@ if (
 
     sys.exit(attach_main(sys.argv[2:], command=sys.argv[1]))
 
+# Deterministic handbook service is not a roster seat or an admin API escape hatch.
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "handbook-service":
+    from agent_sync.handbook_service import main as handbook_main
+    sys.exit(handbook_main(sys.argv[2:]))
+
 from agent_sync.cli import main  # noqa: E402
 
 if __name__ == "__main__":
