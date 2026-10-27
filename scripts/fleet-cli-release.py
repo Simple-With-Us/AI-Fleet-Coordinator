@@ -446,8 +446,10 @@ def migrate_codex_mcp(home: Path, files: dict) -> None:
     if not isinstance(present, dict):
         raise Refused("existing_agent_sync_mcp_conflict")
     legacy_command = str(bin_dir / LEGACY_CODEX_MCP)
-    if present.get("command") not in (legacy_command, expected["command"]) or (
-        present.get("env_vars") != expected["env_vars"]
+    if (
+        set(present) != {"command", "env_vars"}
+        or present.get("command") not in (legacy_command, expected["command"])
+        or present.get("env_vars") != expected["env_vars"]
     ):
         raise Refused("existing_agent_sync_mcp_conflict")
     old_header = ("[mcp_servers." + LEGACY_CODEX_KEY + "]").encode()
@@ -503,7 +505,10 @@ def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
         before = tomllib.loads(original.decode())
     except (ValueError, UnicodeError):
         raise Refused("invalid_codex_config") from None
-    present = before.get("mcp_servers", {}).get(CODEX_KEY)
+    servers = before.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        raise Refused("invalid_codex_config")
+    present = servers.get(CODEX_KEY)
     if present is None and config not in files:
         addition = (
             "\n# Local CODEX-only fleet MCP (simple-chat mcp); no credentials or pinned seat.\n"

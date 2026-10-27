@@ -536,6 +536,42 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(release.Refused, code):
                     self.receive()
 
+    def test_migrate_refuses_non_table_mcp_servers_directly(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b'mcp_servers = "x"\n')
+        with self.assertRaisesRegex(release.Refused, "invalid_codex_config"):
+            release.migrate_codex_mcp(self.home, {})
+
+    def test_update_path_refuses_non_table_shapes(self):
+        self.receive()
+        config = self.home / ".codex/config.toml"
+        for text, code in (('mcp_servers = "x"\n', "invalid_codex_config"),
+                           ('[mcp_servers]\nagent-sync = "x"\n', "existing_agent_sync_mcp_conflict")):
+            with self.subTest(text=text):
+                config.write_bytes(text.encode())
+                with self.assertRaisesRegex(release.Refused, code):
+                    self.receive(make_bundle("two"), install=False)
+
+    def test_legacy_table_with_extra_key_is_a_conflict_not_a_migration(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        expected = release.codex_mcp_expected(self.home / ".local/bin")
+        text = (
+            "[mcp_servers.agent-sync]\ncommand = " + json.dumps(expected["command"]) + "\n"
+            "env_vars = " + json.dumps(expected["env_vars"]) + "\ntimeout = 30\n"
+        ).encode()
+        config.write_bytes(text)
+        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
+            self.receive()
+        self.assertEqual(config.read_bytes(), text)
+        config.unlink()
+        self.receive()
+        config.write_bytes(text)
+        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
+            self.receive(make_bundle("two"), install=False)
+        self.assertEqual(config.read_bytes(), text)
+
     def test_update_keeps_configuration_and_wrappers_untouched(self):
         self.receive()
         config = self.home / ".codex/config.toml"
