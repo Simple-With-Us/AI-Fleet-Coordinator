@@ -68,7 +68,7 @@ Standing procedure (policy + checklist + scripts).  Do not invent a one-off join
 | New GitHub repo / `~/Code` folder joining the fleet | [`docs/ONBOARDING-NEW-APP.md`](docs/ONBOARDING-NEW-APP.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md)) | `scripts/onboard-new-app.sh` |
 | DNS / registrars (new app zone on **account** Usage.Jays.Services, not hostname `usage.jays.services`) | [`docs/DNS-AND-REGISTRARS.md`](docs/DNS-AND-REGISTRARS.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/DNS-AND-REGISTRARS.md)) | — |
 | New coding seat (Claude, Grok, Codex, …) | [`docs/ONBOARDING-NEW-AGENT.md`](docs/ONBOARDING-NEW-AGENT.md) ([GitHub](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-AGENT.md)) | `scripts/onboard-new-agent.sh` |
-| Binding protocol (Linear + Zulip + model economics) | [`FLEET-PROTOCOL.md`](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/e68ffde1af8b62d391f709cb919474e735c84724/FLEET-PROTOCOL.md) § Linear and the Claim Lifecycle, § Delegation & model economics | — |
+| Binding protocol (Linear + Zulip + model economics) | [`FLEET-PROTOCOL.md`](FLEET-PROTOCOL.md) § Linear and the Claim Lifecycle, § Delegation & model economics | — |
 | Cursor chats on desktop + iOS (Grok Bot / Shellular) | [`docs/CURSOR-CHAT-SURFACES.md`](docs/CURSOR-CHAT-SURFACES.md) | `scripts/cursor_chat_surfaces.py` |
 | Universal fleet-ops skills catalog | [`docs/fleet-skills/README-add-in-app.md`](docs/fleet-skills/README-add-in-app.md) | `scripts/install-fleet-skills.py` |
 | Sweep and land the open PRs from any platform (Claude, Codex, Cursor, Grok, ...) | [`docs/PR-SWEEP.md`](docs/PR-SWEEP.md) | `scripts/pr-sweep` |
