@@ -51,7 +51,7 @@ from pathlib import Path
 
 TOOL = "fleet-server-status"
 SCHEMA_VERSION = 1
-DEFAULT_CODE_ROOT = Path(os.environ.get("FLEET_CODE_ROOT") or (Path.home() / "apps"))
+DEFAULT_CODE_ROOT = Path.home() / "apps"
 
 # The instruction and settings files that carry a repo's config surface.
 WATCHED_FILES = (
