@@ -118,6 +118,13 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 mod.log = lambda msg: None
 
+# The hostname is STUBBED:  a fixture that embeds the runner's real machine
+# hostname makes the test depend on the machine it runs on and puts the
+# machine's name into the repository.  The original lookup is restored once
+# the host-sensitive cases are done.
+original_gethostname = mod.socket.gethostname
+mod.socket.gethostname = lambda: "test-host"
+
 scratch = Path(tempfile.mkdtemp(prefix="hk-lock-"))
 try:
     state = scratch / ".claude-disk-janitor"
@@ -126,17 +133,41 @@ try:
     mod.HOUSEKEEPER_LOCK = lock
     mod._HOUSEKEEPER_LOCK_INODE = None
 
+    def start_token(pid):
+        """The start time of a pid, read the way the protocol reads it.
+
+        The test reads it ITSELF rather than asking the module, so the
+        record it builds pins the format the protocol publishes:  a change
+        to the implementation's own reading would show up here as a
+        mismatch instead of quietly changing both sides at once.
+        """
+        env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(pid)],
+                capture_output=True, text=True, timeout=10, check=False, env=env,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return result.stdout.strip() if result.returncode == 0 else ""
+
     def owner_record(pid, **overrides):
         """An owner record in the shape the protocol publishes.
 
         The owner file is shared state, so the reader accepts the declared
-        shape and nothing else:  these four keys, these types, these bounds.
+        shape and nothing else:  these five keys, these types, these bounds.
         """
         record = {
             "pid": pid,
             "host": "test-host",
             "acquired_at": 1700000000.0,
             "lock": str(lock),
+            # The start time of the process the record names, read the way
+            # the implementation reads it:  a pid alone does not name a
+            # process.  A pid that has already exited has no start time any
+            # more, and the record keeps a synthetic one -- a dead holder is
+            # recognised by its pid, not by its start time.
+            "start": start_token(pid) or "Mon Jan  1 00:00:00 2024",
         }
         record.update(overrides)
         return record
@@ -553,6 +584,9 @@ try:
     rejects(dict(good, acquired_at=float("inf")), "an infinite acquired_at must be rejected")
     rejects(dict(good, lock=""), "an empty lock must be rejected")
     rejects(dict(good, lock=None), "a non-string lock must be rejected")
+    rejects(dict(good, start=""), "an empty start must be rejected")
+    rejects(dict(good, start="x" * 200),
+            "a start token longer than the bound must be rejected")
     for raw in ("", "null", "42", '"a string"', "{}", '[1, 2, 3]', "{not json",
                 '{"pid": true}', '{"pid": 1, "host": null, "acquired_at": 0, "lock": "x"}'):
         assert parse(raw) is None, "a malformed record must be rejected, not accepted: %r" % raw
@@ -742,7 +776,8 @@ try:
     #     falls back to the age rule so a live holder is never displaced.
     gone = subprocess.Popen([sys.executable, "-c", "pass"])
     gone.wait()
-    host = mod.socket.gethostname()
+    host = "test-host"
+    assert mod.socket.gethostname() == host, "the hostname stub must be in place"
 
     assert mod._pid_alive(os.getpid()) is True, "this process must look alive"
     assert mod._pid_alive(gone.pid) is False, "an exited pid must not look alive"
@@ -789,8 +824,26 @@ try:
     fresh_lock(owner_record(gone.pid, host="some-other-host"))
     assert mod._acquire_housekeeper_lock() is False, (
         "another host's pid says nothing about a lock on this one")
+    fresh_lock(owner_record(gone.pid, host=host, start="x" * 200))
+    assert mod._acquire_housekeeper_lock() is False, (
+        "an overlong start token is not an owner record this protocol "
+        "publishes, so the age rule decides instead of the record")
+
+    # A LIVE pid whose start time does not match the record:  the kernel has
+    # handed that number to somebody else since the record was written, so
+    # the holder is gone even though the pid is alive.  Without the start
+    # time this case is indistinguishable from a live holder, and the lock
+    # waits out the whole stale window for a holder that is not there.
+    fresh_lock(owner_record(os.getpid(), host=host, start="Mon Jan  1 00:00:00 2024"))
+    assert mod._acquire_housekeeper_lock() is True, (
+        "a reused pid must not keep a dead holder's lock until the stale "
+        "window expires")
+    mod._release_housekeeper_lock()
     shutil.rmtree(lock, ignore_errors=True)
     owner.unlink(missing_ok=True)
+    # The synthetic hostname has done its work:  the original lookup is
+    # restored, so nothing after this point depends on the stub.
+    mod.socket.gethostname = original_gethostname
 
 finally:
     shutil.rmtree(scratch, ignore_errors=True)

@@ -9,7 +9,7 @@
 The default set is MINIMAL on purpose (each registered server is a process per session, and this Mac has been
 through an MCP fan-out overload):  `fleet-recall` only, which is the stdio server that
 `scripts/install-fleet-rag.sh` installs under ~/apps/fleet-rag.  `--with-agent-sync` also registers
-`agent-sync mcp --default-seat <SEAT>` for the targets that have a FIXED seat (opencode OPENCODE, muse MC,
+`simple-chat mcp --default-seat <SEAT>` for the targets that have a FIXED seat (opencode OPENCODE, muse MC,
 minimax MM, fx FX, clutch CLUTCH).  A tool with no default seat (Kimi, Copilot CLI) never gets it: the
 registration has to name a seat, and these tools have none.  Never a pinned AGENT_SEAT in env (a launcher's seat must still win,
 AGENT-SYNC § Identity Rules), and never a token anywhere.
@@ -27,7 +27,7 @@ tool already holds, on a throwaway home):
     minimax   ~/.minimax/mcp.json                mcpServers.<name> = {type: stdio, enabled, configured, builtin: false, command, args}
     fx        ~/.fx/mcp.json                     mcp.<name> = {type: local, command: [argv...], enabled}
     clutch    ~/.clutch/dsh/cordis.patch.yml     a marked `- insert:` block that mounts @deepseek-ai/dsh-mcp-client
-              (agent-sync only: Clutch already carries fleet-recall as a native agent preset, and a second copy
+              (the local ST-MCP server only: Clutch already carries fleet-recall as a native agent preset, and a second copy
               would double it)
 
 Rules for a config this tool does not own:
@@ -52,7 +52,7 @@ and `apply` prints each profile's mode.  `python3 -m fleet_lanes.install_tools v
 
 `verify --probe` also starts each registered command and sends it MCP `initialize` and `tools/list` (stdio, one
 JSON object per line).  Nothing is called, so nothing reaches Zulip or the recall service.  The probe's environment
-has no seat, launcher or Zulip credential variable.  An `agent-sync` entry is probed only from a session that IS its
+has no seat, launcher or Zulip credential variable.  The local ST-MCP server's entry is probed only from a session that IS its
 seat (`AGENT_SEAT`, or a launcher's seat, equals the registration's); from any other session that probe is a SKIP,
 because `--default-seat S` reads S's credential file and acts as S's bot.
 
@@ -177,7 +177,7 @@ class JsonTarget:
     servers_path: Tuple[str, ...]       # keys from the document root to the {name: entry} object
     build: Build
     argv_of: ArgvOf
-    seat: Optional[str] = None          # fixed default seat, for agent-sync; None = the tool has no default seat
+    seat: Optional[str] = None          # fixed default seat, for the local ST-MCP server; None = the tool has no default seat
     note: str = ""
 
 
@@ -569,7 +569,7 @@ class Check:
         return ("%-5s %-9s %-12s %s" % (self.status, self.target, self.server, self.detail)).rstrip()
 
 
-# What a probe must not inherit.  A caller's seat variables would make `agent-sync mcp --default-seat S` serve the
+# What a probe must not inherit.  A caller's seat variables would make `simple-chat mcp --default-seat S` serve the
 # CALLER's seat (AGENT_SEAT beats --default-seat), and a launcher variable can make it refuse to start; a Zulip
 # credential variable would send it to another bot's account.  The server then resolves its seat the way the client
 # that registered it would.
@@ -696,7 +696,7 @@ def verify_target(key: str, home: str, with_agent_sync: bool, *, probe: bool = F
                 argv = server_argv(o.server, home, t.seat, env)
                 probe_env = probe_environment(os.environ)
                 if o.server == AGENT_SYNC:
-                    # `agent-sync mcp --default-seat S` reads S's credential file and calls the realm as S's bot.  A
+                    # `simple-chat mcp --default-seat S` reads S's credential file and calls the realm as S's bot.  A
                     # probe is allowed only from a session that IS that seat, never as another seat's bot.
                     mine = caller_seat(os.environ)
                     if mine != (t.seat or "").upper():

@@ -72,8 +72,8 @@ app's writes are refused when Linear names another app as the viewer
 (swapped credentials).  A claim is a claimed:<TAG> label on the issue;
 seat:<TAG> labels only say who reported or touched it (the import put them on
 reporters too), so they are never read as a claim.  Writes are off unless
-LINEAR_BOARD_WRITES=1.  BOARD_BACKEND=mac-collab runs the old board CLI
-instead (rollback).
+LINEAR_BOARD_WRITES=1.  BOARD_BACKEND=mac-collab runs the archived old board
+CLI instead (rollback);  the archive holds the only surviving copy of it.
 
 Stdlib only, so cloud seats, the Grok Bot VM and BotFleet containers can run
 it from any AI-Fleet-Coordinator checkout: python3 scripts/linear-board/board.
@@ -1016,7 +1016,8 @@ def resolve_identity(seat: str = "") -> Identity:
                     f"LINEAR_{k}_CLIENT_ID", f"LINEAR_{k}_CLIENT_SECRET"]
     die(f"no Fleet credentials: FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET are missing from Infisical "
         f"Fleet-OPS {FLEET_OPS_LINEAR_PATH} (`fleet-secrets get`), and LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are not "
-        f"set{seat_part}.  Check `fleet-secrets doctor`.  Until then use BOARD_BACKEND=mac-collab.", EXIT_NO_CREDS,
+        f"set{seat_part}.  Check `fleet-secrets doctor`.  Until then use BOARD_BACKEND=mac-collab, which runs the "
+        "archived old CLI.", EXIT_NO_CREDS,
         credential_field=",".join(missing))
 
 
@@ -2839,7 +2840,7 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
 
 
 # ----------------------------------------------------------------- Agent-Sync parity:  catalogs
-# The hosted Agent-Sync MCP server (scripts/agent-sync-mcp) serves Linear as 175 named commands,
+# The hosted ST-MCP server (scripts/agent-sync-mcp) serves Linear as 175 named commands,
 # general linear_schema/linear_query/linear_mutation tools and 11 proxied official Linear MCP tools.
 # `board commands`, `board run`, `board api` and `board mcp` give a seat the same tools from a shell.
 # The catalogs are JSON exported from the server's own JavaScript, never retyped here:
@@ -4600,9 +4601,16 @@ def main(argv: list[str] | None = None) -> int:
         if linear_only:
             die(f"`{linear_only}` is Linear only:  BOARD_BACKEND=mac-collab runs the old board CLI, which has "
                 "no such flag or verb.  Unset BOARD_BACKEND to use it.", EXIT_USAGE)
-        old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "mac-collab" / "board")).expanduser()
+        # The archived findings.db is frozen and read-only, so a write verb would
+        # fail inside the archived CLI with a raw sqlite error.  Refuse it here.
+        if argv[:1] and argv[0] in WRITE_VERBS:
+            die(f"`board {argv[0]}` is a write, and BOARD_BACKEND=mac-collab runs the archived old CLI against the "
+                "frozen, read-only findings.db;  that backend serves reads only.  Unset BOARD_BACKEND to use it.",
+                EXIT_USAGE)
+        old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "_retired" / "mac-collab-20261019" / "board")).expanduser()
         if not old.is_file():
-            die(f"BOARD_BACKEND=mac-collab, but the old board CLI is not at {old} (set BOARD_MAC_COLLAB_CLI)")
+            die(f"BOARD_BACKEND=mac-collab, but the archived old board CLI is not at {old} "
+                "(set BOARD_MAC_COLLAB_CLI to the frozen archive)")
         sys.stdout.flush()
         os.execv(sys.executable, [sys.executable, str(old), *argv])
     a = build_parser().parse_args(argv)
@@ -4616,8 +4624,8 @@ def main(argv: list[str] | None = None) -> int:
     if writes and env("LINEAR_BOARD_WRITES") != "1":
         verb = {"run": f"run {getattr(a, 'name', '')}", "api": "api mutation",
                 "mcp": f"mcp call {getattr(a, 'tool', '')}"}.get(a.cmd, a.cmd)
-        die(f"`board {verb}` is a write, and writes to Linear are off until cutover.  Use the mac-collab "
-            "board for writes until then; at cutover the CLI runs with LINEAR_BOARD_WRITES=1.", EXIT_WRITES_OFF)
+        die(f"`board {verb}` is a write, and writes to Linear are off unless LINEAR_BOARD_WRITES=1.  "
+            "The installed `~/.local/bin/board` wrapper sets it;  set it yourself for a direct run.", EXIT_WRITES_OFF)
     for flag, val in (("--by", getattr(a, "reported_by", None)), ("--by", getattr(a, "addressed_by", None)),
                       ("--by", getattr(a, "author", None))):
         if val is not None:

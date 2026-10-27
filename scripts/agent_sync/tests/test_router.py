@@ -624,7 +624,7 @@ class NoWakeTests(unittest.TestCase):
                 self.assertTrue(d.seat_inbox, "the mention still reaches the seat")
 
     def test_a_marker_after_the_seat_tag_suppresses(self) -> None:
-        # `agent-sync post` prepends the seat tag to whatever the agent wrote, so the marker lands
+        # `simple-chat post` prepends the seat tag to whatever the agent wrote, so the marker lands
         # after it.
         c, d = self.route(msg(content="%s%s@**Claude** please look" % (SEAT_TAG, MARKER), flags=["mentioned"]))
         self.assertTrue(c.no_wake)
