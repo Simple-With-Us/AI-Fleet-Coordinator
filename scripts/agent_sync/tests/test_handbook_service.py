@@ -107,6 +107,34 @@ class Tests(unittest.TestCase):
             self.assertEqual(fetch.call_args.args[3], "/zulip_operator")
         self.assertFalse(self.c.posts)
 
+    def test_reservation_completion_race_returns_cached_id(self):
+        def raced(path, key, now):
+            H.record(path, key, {"at": now, "state": "ok", "message_id": 88})
+            return False
+
+        with patch.object(H, "reserve", side_effect=raced):
+            self.assertEqual(self.run_service(), {"id": 88})
+        self.assertFalse(self.c.posts)
+
+    def test_stat_rejects_oversized_file_before_open(self):
+        self.body.write_bytes(b"x" * 40001)
+        with (
+            patch.object(Path, "open", side_effect=AssertionError("must not read")),
+            self.assertRaises(ValueError),
+        ):
+            self.run_service()
+        self.assertFalse(self.c.posts)
+
+    def test_boolean_ids_refused_before_api(self):
+        for name in ("owner_id", "operator_id", "message_id"):
+            original = getattr(self.a, name)
+            self.a.action = "read"
+            setattr(self.a, name, True)
+            with self.assertRaises(ValueError):
+                self.run_service()
+            setattr(self.a, name, original)
+        self.assertFalse(self.c.posts)
+
     def test_real_client_get_contract(self):
         real = Z.ZulipClient(self.creds, self.a.site)
         with patch.object(real, "request", return_value={"messages": []}) as request:

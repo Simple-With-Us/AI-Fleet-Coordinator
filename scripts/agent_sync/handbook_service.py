@@ -96,7 +96,13 @@ def execute(args, *, env=None, client=None, credentials=None):
         or env.get("AGENT_LAUNCH_SEAT")
     ):
         raise ValueError("handbook service is local unattended automation, not a launched seat")
-    if args.owner_id <= 0 or args.operator_id <= 0 or "@" not in args.operator_email:
+    if (
+        any(
+            isinstance(x, bool) or not isinstance(x, int) or x <= 0
+            for x in (args.owner_id, args.operator_id)
+        )
+        or "@" not in args.operator_email
+    ):
         raise ValueError("owner and Operator identity pins are required")
     if not args.site.startswith("https://"):
         raise ValueError("Operator requires an HTTPS realm")
@@ -123,7 +129,11 @@ def execute(args, *, env=None, client=None, credentials=None):
     if not SI.operator_bot(client.get("users/me"), env, args.owner_id):
         raise ValueError("authenticated bot does not match pinned Operator and owner")
     if args.action == "read":
-        if args.message_id <= 0:
+        if (
+            isinstance(args.message_id, bool)
+            or not isinstance(args.message_id, int)
+            or args.message_id <= 0
+        ):
             raise ValueError("positive message id required")
         message = client.get(f"messages/{args.message_id}").get("message")
         if not isinstance(message, dict):
@@ -141,7 +151,15 @@ def execute(args, *, env=None, client=None, credentials=None):
         raise ValueError("only post/read are allowed")
     if args.repo != "jaywedgeworth22/Fleet-OPS":
         raise ValueError("invalid repository slug")
-    raw = Path(args.body_file).read_text(encoding="utf-8")
+    body_path = Path(args.body_file)
+    if body_path.stat().st_size > 40000:
+        raise ValueError("body file exceeds bounded UTF-8 input")
+    # Bounded read also closes the stat/read growth race.
+    with body_path.open("rb") as body_stream:
+        encoded = body_stream.read(40001)
+    if len(encoded) > 40000:
+        raise ValueError("body file grew beyond bounded input")
+    raw = encoded.decode("utf-8")
     hidden = list(secretscan.basic_forms(credentials.email, credentials.key))
     if secretscan.scan(raw, hidden):
         raise ValueError("handbook body matched the secret scanner")
@@ -171,6 +189,18 @@ def execute(args, *, env=None, client=None, credentials=None):
         record(ledger_path, fingerprint, {"at": now, "state": "ok", "message_id": mid})
         return {"id": mid}
     if not reserve(ledger_path, fingerprint, now):
+        # Another process may have completed after our first read.  Return that cached
+        # successful id, otherwise keep the in-flight/unknown result blocked.
+        with L.locked(ledger_path):
+            raced = ledger._sends(ledger_path).get(fingerprint, {})
+            mid = raced.get("message_id")
+            if (
+                raced.get("state") == ledger.DELIVERY_OK
+                and isinstance(mid, int)
+                and not isinstance(mid, bool)
+                and mid > 0
+            ):
+                return {"id": mid}
         raise ValueError("handbook delivery is already reserved")
     try:
         result = client.post(
