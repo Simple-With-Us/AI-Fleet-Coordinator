@@ -105,6 +105,34 @@ def arguments(mode, release, request_id=None):
     ]
 
 
+def run_poll_with_optional_send(command, prepared):
+    # Same isolated /jet service scope and fixed allowlist as cmd_run. SEND is
+    # the only optional entry, and absent means off; required secrets stay strict.
+    from fleet_secrets import core
+    from fleet_secrets.cli import SecretsError
+
+    secrets = core.fetch_all(core.check_path("/jet"), prepared)
+    chosen = {}
+    for name in POLL_NAMES:
+        if name == "WHATSAPP_BRIDGE_SEND_ENABLED":
+            chosen[name] = secrets.get(name, "off")
+        elif name not in secrets:
+            raise SecretsError("key {} is not in Infisical at /jet".format(name), 3)
+        else:
+            chosen[name] = secrets[name]
+    core.reject_unresolved(chosen)
+    child = {k: v for k, v in prepared.items() if k not in core.AUTH_ENV_VARS}
+    child.update(chosen)
+    executable = command[command.index("--") + 1:]
+    try:
+        os.execvpe(executable[0], executable, child)
+    except FileNotFoundError:
+        raise SecretsError("command not found", 127) from None
+    except OSError:
+        raise SecretsError("could not start poll bridge", 126) from None
+    return 0
+
+
 class CredentialSourceError(ValueError):
     pass
 
@@ -139,6 +167,8 @@ def main(argv=None, environment=None):
     sys.path.insert(0, str(release / "lib"))
     from fleet_secrets.cli import cmd_run
 
+    if mode == "poll":
+        return run_poll_with_optional_send(command, prepared)
     return cmd_run(command, prepared, sys.stderr)
 
 
