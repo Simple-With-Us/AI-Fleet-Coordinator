@@ -76,7 +76,9 @@ class WorkflowWiringTests(unittest.TestCase):
             for _ in range(2):
                 status, _ = r.handle(TOKEN, "wf_runs", {"repo": "example/x"})
                 self.assertEqual(status, 200)
-            self.assertEqual(len(r.client.calls), 2, "reads are not replayed from the outcome store")
+            self.assertEqual(
+                len(r.client.calls), 2, "reads are not replayed from the outcome store"
+            )
             self.assertEqual(r.app_minter.calls[0][2], {"actions": "read", "metadata": "read"})
             self.assertEqual(r.client.calls[0][3], "MINTED-FAKE-TOKEN")
 
