@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { webcrypto } from "node:crypto";
+import { z } from "zod";
 import { BEARER_ONLY_SEATS, BF_BEARER_SEATS, ADDITIONAL_BEARER_SEATS, BEARER_SEATS, resolveBearerSeatCredentials } from "../src/bearer-identities.js";
 import { gate } from "../src/gate.js";
 import { KNOWN_SEATS } from "../src/config.js";
@@ -11,7 +12,14 @@ import { wakeSignature } from "../src/wake.js";
 import { _resetInfisicalForTests } from "../src/infisical.js";
 
 globalThis.crypto ??= webcrypto;
-const registry = JSON.parse(readFileSync(new URL("../../../fleet-apps.json", import.meta.url)));
+const registry = z.object({
+  seats: z.array(z.object({
+    tag: z.string(),
+    zulipBotEmail: z.string().email().nullish(),
+    zulipFileCode: z.string().optional(),
+    retired: z.boolean().optional(),
+  })),
+}).parse(JSON.parse(readFileSync(new URL("../../../fleet-apps.json", import.meta.url))));
 const config = { hostedSeats: [], botEmails: {} };
 
 test("all active ordinary registry bots have canonical bearer identities without adding OAuth seats", () => {
@@ -96,7 +104,9 @@ test("every bearer identity opens only its own SeatGate, unknown names fail clos
 
 test("unhosted CODEX bearer readiness uses only its own native records without OAuth or outer-mode changes", async () => {
   const originalFetch = globalThis.fetch;
-  const canonical = registry.seats.find((r) => r.tag === "CODEX").zulipBotEmail;
+  const codex = registry.seats.find((r) => r.tag === "CODEX");
+  const canonical = z.string().email().parse(codex?.zulipBotEmail);
+  assert.equal(canonical, "codex-bot@simplewithus.zulipchat.com");
   const env = Object.freeze({ INFISICAL_MODE: "fallback", INFISICAL_SERVICE_TOKEN: "offline-dummy", INFISICAL_WORKSPACE_ID: "offline-workspace", ZULIP_KEY_CODEX: "must-not-fallback", ZULIP_EMAIL_CODEX: canonical });
   const unhosted = Object.freeze({ hostedSeats: Object.freeze([]), botEmails: Object.freeze({}) });
   try {
