@@ -43,7 +43,7 @@ class LaunchAgentTests(unittest.TestCase):
         env = self.plist["EnvironmentVariables"]
         self.assertEqual(env["AGENT_SEAT"], "CLAUDE")
         self.assertEqual(sorted(env), ["AGENT_SEAT", "HOME", "PATH"])
-        self.assertTrue(env["PATH"].startswith("/Users/jay/.local/bin:/opt/homebrew/bin"), "simple-board and simple-chat live in ~/.local/bin")
+        self.assertTrue(env["PATH"].startswith(f"{env['HOME']}/.local/bin:/opt/homebrew/bin"), "simple-board and simple-chat live in ~/.local/bin")
         self.assertEqual(env["HOME"], "/Users/jay")
 
     def test_it_logs_to_one_file_of_ids(self) -> None:

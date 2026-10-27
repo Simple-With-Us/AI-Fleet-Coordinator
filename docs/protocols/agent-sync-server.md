@@ -154,7 +154,7 @@ Infisical (project "AI Fleet Coordinator", environment `prod`, folder `/zulip`) 
 
 - `ZULIP_SITE`, a plain value:  `https://simplewithus.zulipchat.com`
 - `JET_ROUTINE_URL` (`https://agents.simplewithus.com/internal/wake/JET`) and `JET_ROUTINE_KEY` (the shared HMAC key, in Infisical Fleet-OPS as `JET_ROUTINE_KEY` and installed as the Worker secret `WAKE_HMAC_KEY_JET`).  Until both are set, each JET wake is logged as `routine-unready` and dropped, and capture is unchanged
-- `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID` (`9bf7417a-fbbb-42ca-870c-2b45207233f5`).  Since Sat, Oct 10 the id and secret are the fleet automation identity's (`INFISICAL_AUTOMATION_CLIENT_ID` and `_SECRET` from Infisical Fleet-OPS;  read them on the Mac with `fleet-secrets get`), by owner choice
+- `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID` (the AI Fleet Coordinator project id is in [INFISICAL.md](../../INFISICAL.md)).  Since Sat, Oct 10 the id and secret are the fleet automation identity's (`INFISICAL_AUTOMATION_CLIENT_ID` and `_SECRET` from Infisical Fleet-OPS;  read them on the Mac with `fleet-secrets get`), by owner choice
 
 The seat variables (from Infisical, or Coolify copies without the identity):
 
@@ -264,7 +264,7 @@ Added Sat, Oct 10.  When Coolify sets `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_S
 
 It logs one line:  `simple-chat: loaded N variables from Infisical (prod /zulip; ...)`.  On any failure (login refused, network, a bad response) it logs `simple-chat: Infisical load failed (<stage>: HTTP <status>); starting with the container environment`, never a body or a value, and starts with whatever Coolify holds.  A partial trio logs `Infisical not used` and does the same.  No value is ever printed.
 
-It talks to the Infisical API directly, with the Python standard library, rather than installing the Infisical CLI and running `infisical run`.  That way nothing is downloaded at build time (no binary or checksum to maintain), and `agent-sync` stays PID 1, which the redeploy lock handover and queue cleanup depend on (Coolify Setup, step 8).
+It talks to the Infisical API directly, with the Python standard library, rather than installing the Infisical CLI and running `infisical run`.  That way nothing is downloaded at build time (no binary or checksum to maintain), and `simple-chat` stays PID 1, which the redeploy lock handover and queue cleanup depend on (Coolify Setup, step 8).
 
 **Which identity (Sat, Oct 10).**  Jay chose the fleet automation identity for this app ("Use the automation machine identity"), so the dedicated identity below was not created.  The automation identity can read more than `/zulip`, but the loader asks only for `prod` `/zulip` and copies only the allowlisted names, so the container still sees only its own seats' variables.  To narrow it later, create the dedicated identity below and swap the two Coolify values, then restart.
 
@@ -273,7 +273,7 @@ It talks to the Infisical API directly, with the Python standard library, rather
 1. Infisical > Organization > Access Control > Identities > **Create Identity**.  Name `agent-sync-listener-server`, organization role **No Access** (or the narrowest available).
 2. On the identity, keep **Universal Auth**.  Set the access token TTL to 7200 seconds, and optionally pin **Client Secret Trusted IPs** to the Hetzner box's address.  **Create Client Secret** (no expiry, or a long one with a calendar reminder).  Copy the client id and the client secret once, straight into Coolify (step 4 below), never into chat.
 3. Project "AI Fleet Coordinator" > Access Control > Machine Identities > **Add Identity**, role **No Access** (or a custom role with no permissions).  Then on that membership add an **additional privilege**:  subject Secrets, actions **Read** (and Describe) only, conditions environment equals `prod` and secret path glob `/zulip` (`/zulip/**` if subfolders appear).  The identity can then read that one folder and nothing else.
-4. In Coolify (the production Operator application) add `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID` = `9bf7417a-fbbb-42ca-870c-2b45207233f5`, runtime only (untick **Available during build**).
+4. In Coolify (the production Operator application) add `INFISICAL_CLIENT_ID`, `INFISICAL_CLIENT_SECRET` and `INFISICAL_PROJECT_ID` = the AI Fleet Coordinator project id from [INFISICAL.md](../../INFISICAL.md), runtime only (untick **Available during build**).
 5. Restart the app.  The first log line names how many variables came from Infisical.  After a clean start, the hand-copied Coolify seat variables can be deleted (keep `ZULIP_SITE`, `JET_ROUTINE_URL`, `JET_ROUTINE_KEY` and the trio).
 
 To revoke:  delete the client secret (or the identity) in Infisical.  The next restart then logs `Infisical load failed (login: HTTP 401)` and falls back to the Coolify copies, if any remain.
