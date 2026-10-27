@@ -337,3 +337,14 @@ test("a refused retry keeps the quoted message id hash",async()=>{
  const row=await s.store.get(`wa:reply:${retry.intent_id}`);
  assert.equal(row.reply_to_id_hash,"q".repeat(64));
 });
+
+
+test("provider backoff waits in Worker queue instead of bridge sleep",async()=>{
+ let now=NOW; const s=setup(()=>now);
+ await s.gate.waReply({args:{text:"first",client_ref:"a"}});
+ const claim=await s.gate.waOutboxClaim({});
+ await s.gate.waOutboxResult({body:{intent_id:claim.reply.intent_id,outcome:"requeue",token:claim.reply.token,retry_after_s:3600}});
+ assert.equal((await s.gate.waOutboxClaim({})).reply,null);
+ now+=3600*1000;
+ assert.ok((await s.gate.waOutboxClaim({})).reply);
+});

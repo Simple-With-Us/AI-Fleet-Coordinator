@@ -357,5 +357,14 @@ class OutboundTests(unittest.TestCase):
         self.assertEqual(len(self.state.ledger_pending()), 1)
 
 
+    def test_long_retry_after_requeues_without_parking_inbound_loop(self):
+        worker = FakeWorker([reply()])
+        with patch.object(outbound, "send", lambda *a, **k: {"outcome": "retry", "status": 429, "retry_after_s": 3600}):
+            result = self.outbox(worker).step()
+        self.assertEqual(result["state"], "requeue")
+        self.assertEqual(self.slept, [])
+        self.assertEqual(worker.results[0]["retry_after_s"], 3600)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -116,7 +116,7 @@ export async function claim(store, { destination = "", source } = {}, now = Date
       if (row.lease_until > now) continue;
       if (row.source === "authenticated_owner" && (ownerGate.next_at > now || (ownerGate.destination === destination && ownerGate.blocked))) continue;
       if (row.next_ring_at > now || (row.destination === destination && row.blocked)) continue;
-      const token = crypto.randomUUID();
+    const token = crypto.randomUUID();
       const wake_id = row.wake_id ?? row.id;
       const keys = [];
       for (const [candidate, item] of rows) {
@@ -370,6 +370,7 @@ export async function outboxClaim(store, { sendEnabled = false, binding = null }
     const intentId = queueKeyValue.split(":").pop();
     const row = await tx.get(replyKey(intentId));
     if (!row || row.state !== "queued") { await tx.delete(queueKeyValue); return { ok: true, reply: null }; }
+    if ((row.not_before ?? 0) > now) return { ok: true, reply: null };
     const token = crypto.randomUUID();
     const claimed = { ...row, state: "claimed", updated_at: now, lease_until: now + OUTBOX_LEASE_MS, token, attempts: (row.attempts ??  0) + 1 };
     await tx.put(replyKey(intentId), claimed);
@@ -466,7 +467,8 @@ export async function outboxResult(store, { body, binding = null }, now = Date.n
       await tx.put(clientRefKey(row.client_ref_hash), { intent_id, released: true, created_at: now });
       return { ok: true, state: "refused" };
     }
-    const settled = { ...row, state: "queued", reason: null, updated_at: now, token: null, lease_until: 0, attempts: row.attempts ??  0 };
+    const delay = Number.isInteger(body.retry_after_s) ? Math.max(0, Math.min(3600, body.retry_after_s)) : 0;
+    const settled = { ...row, state: "queued", reason: null, updated_at: now, token: null, lease_until: 0, attempts: row.attempts ?? 0, not_before: now + delay * 1000 };
     await tx.put(replyKey(intent_id), settled);
     await tx.delete(inflightKey(intent_id));
     await tx.put(queueKey(row.queued_at, intent_id), {});

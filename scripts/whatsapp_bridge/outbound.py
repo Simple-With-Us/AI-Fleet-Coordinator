@@ -319,7 +319,8 @@ class Outbox:
             return {"state": "refused"}
         if outcome == "requeue":
             report(
-                self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request, token=token
+                self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request, token=token,
+                retry_after_s=answer.get("retry_after_s")
             )
             self.state.ledger_delete(intent_id)
             return {"state": "requeue"}
@@ -359,5 +360,10 @@ class Outbox:
                     "error": "retry_cap_reached",
                     "retry_after_s": answer.get("retry_after_s"),
                 }
-            self.sleeper(answer.get("retry_after_s") or min(60, 5 * 2 ** (number - 1)))
+            delay = answer.get("retry_after_s") or min(60, 5 * 2 ** (number - 1))
+            if delay > 2:
+                # Never park the inbound poller on provider backoff. Worker owns
+                # the delayed queue and cross-claim attempt cap.
+                return {"outcome": "requeue", "retry_after_s": min(3600, delay)}
+            self.sleeper(delay)
         return {"outcome": "unknown", "error": "retry_cap_reached"}
