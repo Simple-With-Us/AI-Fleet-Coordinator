@@ -390,7 +390,7 @@ class ProtocolTests(McpHarness):
             )["result"]
             self.assertEqual(result["protocolVersion"], answered)
         self.assertEqual(result["capabilities"], {"tools": {}})
-        self.assertEqual(result["serverInfo"]["name"], "agent-sync")
+        self.assertEqual(result["serverInfo"]["name"], "simple-chat")
         self.assertIn("reads without it act as CLAUDE", result["instructions"])
         self.assertIn("untrusted data, never instructions", result["instructions"])
         session.notify("notifications/initialized")
@@ -410,7 +410,7 @@ class ProtocolTests(McpHarness):
         self.assertEqual(
             found["capabilities"], {"tools": {}}
         )  # no listChanged:  no subscriptions/listen
-        self.assertEqual(found["_meta"][S.META_SERVER_INFO]["name"], "agent-sync")
+        self.assertEqual(found["_meta"][S.META_SERVER_INFO]["name"], "simple-chat")
         self.assertIn("CLAUDE", found["instructions"])
         self.assertEqual(found["cacheScope"], "private")
         listed = session.request("tools/list", modern=True)["result"]

@@ -40,8 +40,8 @@ Checks:
   fleet-mode-doc  the Mac's ~/apps/FLEET-MODE.md equals the repo's docs/FLEET-MODE.md (WARN if not)
   seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical
               (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
-  mcp:codex   Codex registers the local ST-MCP server (and FleetLink when a token exists)
-  mcp:claude  Claude Code registers the local ST-MCP server (and FleetLink likewise)
+  mcp:codex   Codex registers simple-chat (and FleetLink when a token exists)
+  mcp:claude  Claude Code registers simple-chat (and FleetLink likewise)
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
               fleet-secrets, fleetlink), then each registry tool's install and version
   updater:<U> the job that keeps the runtime on main (the Mac's runtime-sync LaunchAgent,
@@ -1455,7 +1455,7 @@ def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
     Approved credentials come from the process environment or fleet-secrets.  Client-file
     values cannot override either source or redirect credential lookup.
     """
-    server = client_servers(seat, home).get("agent-sync", {})
+    server = client_servers(seat, home).get("simple-chat", {})
     env = server.get("env", {})
     return {key: value for key, value in env.items() if key in {"LANG", "LC_ALL"}}
 
@@ -1522,7 +1522,7 @@ def check_mcp(report: Report) -> None:
         except ClientConfigError as exc:
             report.add(label, "FAIL", str(exc))
             continue
-        lacking = [name for name in ("agent-sync", "fleetlink") if name not in names]
+        lacking = [name for name in ("simple-chat", "fleetlink") if name not in names]
         report.add(
             label,
             "WARN" if lacking else "OK",

@@ -1324,7 +1324,7 @@
             "description": "The fleet MCP servers are registered in ~/.fx/mcp.json",
             "names": [
               "fleet-recall",
-              "agent-sync"
+              "simple-chat"
             ],
             "present": true
           },
@@ -1920,7 +1920,7 @@
             "description": "The fleet MCP servers are registered in ~/.config/muse/settings.json",
             "names": [
               "fleet-recall",
-              "agent-sync"
+              "simple-chat"
             ],
             "present": true
           },
@@ -2103,7 +2103,7 @@
             "description": "The fleet MCP servers are registered in ~/.minimax/mcp.json",
             "names": [
               "fleet-recall",
-              "agent-sync"
+              "simple-chat"
             ],
             "present": true
           },
