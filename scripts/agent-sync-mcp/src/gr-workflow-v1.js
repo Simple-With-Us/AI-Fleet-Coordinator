@@ -26,6 +26,7 @@ const SPECS = {
   wf_code_search: ['Search code in the repository.', obj(['repo', 'term'], { repo: REPO, term: STR, per_page: PER_PAGE })],
   wf_runs: ['List workflow runs.', obj(['repo'], { repo: REPO, branch: REF, head_sha: SHA, status: STR, per_page: PER_PAGE })],
   wf_run_jobs: ['List jobs of a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT, per_page: PER_PAGE })],
+  wf_job_log: ['Read a bounded tail of one workflow job log.', obj(['repo', 'job_id'], { repo: REPO, job_id: INT, tail_bytes: {type:'integer', minimum:1, maximum:60000} })],
   wf_checks: ['List check runs for a ref (needs checks:read in the seat ceiling).', obj(['repo', 'ref'], { repo: REPO, ref: REF, per_page: PER_PAGE })],
   wf_update_branch: ['Update a PR branch, fenced on its head.', obj(['repo', 'number', 'expected_head_sha'], { repo: REPO, number: INT, expected_head_sha: SHA })],
   wf_run_rerun: ['Re-run a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
@@ -38,7 +39,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_job_log','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -84,7 +85,7 @@ const RESPONSE_KEYS = {
   wf_file_get: ['path','sha','size','encoding','content'], wf_tree: ['sha','truncated','entries'],
   wf_branches: ['branches','complete'], wf_commits: ['commits','complete'],
   wf_code_search: ['total','items','complete'], wf_runs: ['runs','complete'],
-  wf_run_jobs: ['jobs','complete'], wf_checks: ['checks','complete'],
+  wf_run_jobs: ['jobs','complete'], wf_job_log: ['job_id','log_tail','truncated'], wf_checks: ['checks','complete'],
   wf_update_branch: ['accepted','message'], wf_run_rerun: ['requested','run_id'],
   wf_run_cancel: ['requested','run_id'], wf_run_approve: ['requested','run_id'],
   wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
@@ -106,6 +107,7 @@ export function validWfV1Response(action, body) {
     const suffix = {wf_run_rerun:'rerun-failed-jobs',wf_run_cancel:'cancel',wf_run_approve:'approve'};
     return body.requested === suffix[action] && Number.isInteger(body.run_id);
   }
+  if (action === 'wf_job_log') return Number.isInteger(body.job_id) && body.job_id > 0 && typeof body.log_tail === 'string' && new TextEncoder().encode(body.log_tail).length <= 65536;
   if ('commit' in body && !/^[0-9a-f]{40}$/.test(body.commit)) return false;
   return true;
 }
