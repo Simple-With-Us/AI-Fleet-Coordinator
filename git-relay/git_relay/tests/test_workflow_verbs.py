@@ -341,6 +341,33 @@ class Tests(unittest.TestCase):
         self.assertEqual((patch[0], patch[2]), ("PATCH", {"sha": "1" * 40, "force": False}))
         self.assertTrue(all(b == "opaque" for *_, b in c.calls))
 
+    def test_a_non_string_default_branch_fails_closed_in_both_write_verbs(self):
+        for bad in (None, 7, ["main"], {"n": "main"}, ""):
+            c = self._git_data_client(default=bad)
+            with self.assertRaises(Refused, msg=repr(bad)):
+                Multi(c).run(
+                    "wf_files_put",
+                    {
+                        "repo": REPO,
+                        "branch": "feat/x",
+                        "message": "m",
+                        "expected_head_sha": SHA,
+                        "files": [{"path": "a.md", "content_b64": base64.b64encode(b"x").decode()}],
+                    },
+                )
+            s, _ = svc({"default_branch": bad})
+            with self.assertRaises(Refused, msg=repr(bad)):
+                s.run(
+                    "wf_file_put",
+                    {
+                        "repo": REPO,
+                        "path": "docs/a.md",
+                        "branch": "wise/x",
+                        "message": "m",
+                        "content_b64": base64.b64encode(b"hello").decode(),
+                    },
+                )
+
     def test_wf_files_put_refusals(self):
         ok = [{"path": "a.md", "content_b64": base64.b64encode(b"x").decode()}]
         base = {
