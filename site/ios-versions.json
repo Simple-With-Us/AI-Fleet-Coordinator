@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-26T00:35:17Z",
+  "updatedAt": "2026-10-27T18:44:37Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -86,8 +86,8 @@
       "displayName": "Socratic-Trade"
     },
     "com.simplewithus.codecaps.ios": {
-      "marketingVersion": "1.0.264",
-      "build": "283",
+      "marketingVersion": "0.1.0",
+      "build": "0.1.0",
       "appleId": 6814623846,
       "displayName": "CodeCaps Companion"
     }
