@@ -45,10 +45,15 @@ class PreflightUnavailable(Unknown):
     """Read-only preflight failed before any mutation could be attempted."""
 
 
+_FACTORY_BINDING = object()
+
+
 class TypedDisarm:
-    def __init__(self, client, policy, seat, bearer, app_slug, action_scope, clock=time.monotonic):
+    def __init__(self, client, policy, seat, bearer, app_slug, action_scope, clock=time.monotonic, *, _binding=None):
         # Scope and ceiling bind on every construction; for_action is the
         # normal path, a direct caller must still name one action and repo.
+        if _binding is not _FACTORY_BINDING:
+            raise Refused("use authorized factory")
         self.client, self.policy, self.seat = client, policy, seat
         expected, ceiling = policy.app_identity(seat)
         if not bearer or app_slug != expected or app_slug != seat:
@@ -84,7 +89,7 @@ class TypedDisarm:
             token, _ = minter.token_for(app_slug, repo, required)
         except Exception:
             raise Unknown("own App credential unavailable") from None
-        return cls(client, policy, seat, token, app_slug, (action, repo))
+        return cls(client, policy, seat, token, app_slug, (action, repo), _binding=_FACTORY_BINDING)
 
     def _query(self, query, variables):
         try:

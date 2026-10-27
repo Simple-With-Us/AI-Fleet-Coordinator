@@ -52,9 +52,15 @@ class Client:
 class Tests(unittest.TestCase):
     def svc(self, replies, scope=("pr_automerge_disable", ARGS["repo"])):
         self.client = Client(replies)
-        return TypedDisarm(
-            self.client, Policy(), "swu-wise", "test-opaque-bearer", "swu-wise", scope
-        )
+        self.client._check_repo = lambda repo: None
+
+        class Minter:
+            def token_for(self, *args):
+                return "test-opaque-bearer", 999999999
+
+        if not isinstance(scope, tuple) or len(scope) != 2 or not isinstance(scope[1], str):
+            raise Refused("invalid scope")
+        return TypedDisarm.for_action(self.client, Policy(), Minter(), "swu-wise", *scope)
 
     def test_direct_construction_requires_scope_and_ceiling(self):
         for scope in (None, ("pr_merge", ARGS["repo"]), ("pr_state",), ("pr_state", 3)):
@@ -74,6 +80,11 @@ class Tests(unittest.TestCase):
                 "swu-wise",
                 ("pr_automerge_disable", ARGS["repo"]),
             )
+
+    def test_arbitrary_bearer_cannot_construct_even_with_scope(self):
+        with self.assertRaises(Refused):
+            TypedDisarm(Client([]), Policy(), "swu-wise", "caller-token", "swu-wise",
+                        ("pr_automerge_disable", ARGS["repo"]))
 
     def test_scope_mismatch_refused(self):
         with self.assertRaises(Refused):
