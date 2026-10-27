@@ -2,7 +2,7 @@
 
 Source only. Not registered in server startup, policy action lists, the Worker tool registry or any seat policy. No deployment, credential, bearer, installation or permission change. Existing seven live verbs and their schemas are untouched. Disarm and state reads stay with #992 (`typed_disarm.py`, `typed_gateway.py`); this module has no auto-merge verb and does not touch `policy.py` or `server.py`, so the two PRs have no file overlap.
 
-Fifteen `wf_*` verbs run as the seat's own App through the existing minter, each asking for only its own permissions inside the shared ceiling (contents, pull_requests, actions, metadata; checks is outside the ceiling and is not requested):
+Fifteen `wf_*` verbs (a sixteenth, `wf_checks`, is refused until a seat ceiling carries checks:read) run as the seat's own App through the existing minter, each asking for only its own permissions inside the shared ceiling (contents, pull_requests, actions, metadata; checks is outside the ceiling and is requested only by wf_checks, which is refused unless the ceiling carries it):
 
 - Reads: PR list, PR files, file get, tree, branches, commit history (optional path), code search scoped to one repo, workflow runs by branch/head sha/status, run jobs and steps. Bounded projections, never complete pagination (`complete: false`).
 - Writes: update_branch (GitHub `expected_head_sha`, atomic), rerun-failed-jobs, cancel, approve (run id), file put on a non-default branch (refuses default branch, `.github/workflows/`, credential-shaped content, bad paths), merge with GitHub `sha` (atomic head match).
