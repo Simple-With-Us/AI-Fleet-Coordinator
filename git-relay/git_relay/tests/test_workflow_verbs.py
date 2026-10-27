@@ -72,7 +72,7 @@ class Tests(unittest.TestCase):
     def test_every_action_has_a_handler_and_spec(self):
         for action in ACTIONS:
             self.assertTrue(callable(getattr(WorkflowVerbs, action)))
-        self.assertEqual(len(ACTIONS), 16)
+        self.assertEqual(len(ACTIONS), 17)
 
     def test_least_permission_minted_and_ceiling_enforced(self):
         minter = Minter()
@@ -281,6 +281,48 @@ class Tests(unittest.TestCase):
             s, _ = svc(bad)
             with self.assertRaises(Refused, msg=action):
                 s.run(action, args)
+
+    def test_wf_job_log_single_hop_bounded_and_host_checked(self):
+        class LogClient(Client):
+            def __init__(self, location, body):
+                super().__init__()
+                self.location, self.body, self.fetched = location, body, []
+
+            def log_location(self, path, bearer):
+                self.calls.append(("GET", path, None, bearer))
+                return self.location
+
+            def fetch_public_tail(self, url, max_bytes):
+                self.fetched.append((url, max_bytes))
+                return self.body
+
+        ok = "https://productionresultssa1.blob.core.windows.net/x/log?sig=abc"
+        c = LogClient(ok, b"line1\n" + b"x" * 100 + b"\nlast line")
+        out = Multi(c).run("wf_job_log", {"repo": REPO, "job_id": 5, "tail_bytes": 20})
+        self.assertTrue(out["log_tail"].endswith("last line"))
+        self.assertEqual(len(out["log_tail"].encode()), 20)
+        self.assertTrue(out["truncated"])
+        self.assertEqual(c.calls[0][1], f"/repos/{REPO}/actions/jobs/5/logs")
+        self.assertEqual(c.calls[0][3], "opaque")
+        self.assertEqual(len(c.fetched), 1)
+        for bad in (
+            "http://x.blob.core.windows.net/l",
+            "https://evil.example.com/l",
+            "https://user:pw@x.blob.core.windows.net/l",
+            "https://x.blob.core.windows.net:8443/l",
+            "https://blob.core.windows.net.evil.com/l",
+        ):
+            c = LogClient(bad, b"x")
+            with self.assertRaises(Refused, msg=bad):
+                Multi(c).run("wf_job_log", {"repo": REPO, "job_id": 5})
+            self.assertEqual(c.fetched, [])
+        c = LogClient(ok, b"token ghp_" + b"A" * 30)
+        with self.assertRaises(Refused):
+            Multi(c).run("wf_job_log", {"repo": REPO, "job_id": 5})
+        with self.assertRaises(Refused):
+            Multi(LogClient(ok, b"")).run("wf_job_log", {"repo": REPO, "job_id": 0})
+        with self.assertRaises(Refused):
+            Multi(LogClient(ok, b"")).run("wf_job_log", {"repo": REPO, "job_id": 1, "url": "x"})
 
 
 if __name__ == "__main__":

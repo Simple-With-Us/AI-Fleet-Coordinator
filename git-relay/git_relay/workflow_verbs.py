@@ -9,21 +9,23 @@ untrusted data. No credential leaves this module.
 
 Verbs (action names carry the wf_ prefix so they cannot collide with registered names):
   reads   wf_pr_list wf_pr_files wf_file_get wf_tree wf_branches wf_commits wf_code_search
-          wf_runs wf_run_jobs wf_checks (needs checks:read, refused unless the ceiling carries it)
+          wf_runs wf_run_jobs wf_job_log wf_checks (needs checks:read, refused unless the ceiling carries it)
   writes  wf_update_branch (atomic expected_head_sha), wf_run_rerun, wf_run_cancel,
           wf_run_approve, wf_file_put (non-default branch only), wf_merge_guarded
           (atomic expected_head_sha)
 Check-run reads (wf_checks) need the checks permission, which is outside the shared
 ceiling, so that verb is refused until a seat's ceiling carries checks:read; without it
 run and job conclusions (actions:read) are the check source and non-Actions checks are
-not covered. Job logs are zip redirects the client refuses to follow, so
-only job and step conclusions are returned.
+not covered. wf_job_log returns a bounded tail of one job's log through a relay-side single-hop
+fetch: the bearer goes to GitHub's API only, the signed https Location is fetched once
+without credentials and without redirects, and the text is refused if it looks like it
+holds a credential.
 """
 
 import base64
 import binascii
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from .secret_scan import find_secret
 from .server import _perm_within_ceiling
@@ -44,6 +46,9 @@ _REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
 MAX_FILE_B64 = 256 * 1024
 MAX_PAGE = 50
 MAX_PROJECT = 100
+LOG_TAIL_BYTES = 64 * 1024
+# Signed log URLs GitHub issues for Actions logs; nothing else is ever fetched.
+_LOG_HOSTS = (".blob.core.windows.net", ".githubusercontent.com")
 
 # action -> (permissions needed, writes)
 SPECS = {
@@ -56,6 +61,7 @@ SPECS = {
     "wf_code_search": ({"contents": "read"}, False),
     "wf_runs": ({"actions": "read"}, False),
     "wf_run_jobs": ({"actions": "read"}, False),
+    "wf_job_log": ({"actions": "read"}, False),
     # Needs checks:read, outside today's shared ceiling: refused at for_action until a
     # seat's ceiling explicitly carries it. Never widened here.
     "wf_checks": ({"checks": "read"}, False),
@@ -365,6 +371,30 @@ class WorkflowVerbs:
             ],
             "complete": False,
         }
+
+    def wf_job_log(self, repo, args):
+        """Tail of one job's log (text), fetched in a single bounded hop."""
+        _only(args, ("repo", "job_id", "tail_bytes"))
+        job_id = _int(args, "job_id")
+        tail = _int(args, "tail_bytes", 1, LOG_TAIL_BYTES) if "tail_bytes" in args else 16 * 1024
+        location = self.client.log_location(f"/repos/{repo}/actions/jobs/{job_id}/logs", self.bearer)
+        parts = urlsplit(location) if isinstance(location, str) else None
+        host = (parts.hostname or "") if parts else ""
+        if (
+            parts is None
+            or parts.scheme != "https"
+            or parts.username
+            or parts.password
+            or parts.port not in (None, 443)
+            or not any(host.endswith(h) for h in _LOG_HOSTS)
+        ):
+            raise Refused("unexpected log location")
+        raw = self.client.fetch_public_tail(location, LOG_TAIL_BYTES * 16)
+        truncated = len(raw) > LOG_TAIL_BYTES * 16
+        text = raw[-tail:].decode("utf-8", "replace")
+        if find_secret(text):
+            raise Refused("log text withheld: looks like it holds a credential")
+        return {"job_id": job_id, "log_tail": text, "truncated": truncated or len(raw) > tail}
 
     def wf_checks(self, repo, args):
         """Check runs for one commit (Kody, Seer, merge-gate and Actions jobs alike)."""

@@ -12,6 +12,7 @@ import http.client
 import json
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .secret_scan import mask_credential
@@ -237,6 +238,47 @@ class GitHubClient:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
             raise RelayGitHubError(0, "github response was not valid JSON") from exc
+
+    def log_location(self, path: str, bearer) -> str:
+        """First hop of a log download: GitHub answers 302 with a signed https URL.
+
+        The bearer is sent only to GitHub's API host.  The redirect is never followed
+        here; the Location is returned for one unauthenticated fetch of its own.
+        """
+        if not bearer:
+            raise ValueError("empty task credential; refusing to use the owner token")
+        req = urllib.request.Request(
+            f"{self._base}{path}",
+            method="GET",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "Authorization": f"Bearer {bearer}",
+                "User-Agent": "swu-git-relay",
+            },
+        )
+        try:
+            with self._opener(req, timeout=TIMEOUT_SECONDS):
+                pass
+        except urllib.error.HTTPError as exc:
+            if exc.code in (301, 302, 303, 307, 308):
+                location = exc.headers.get("Location") or ""
+                if location:
+                    return location
+            raise RelayGitHubError(exc.code, "log location unavailable") from exc
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            raise RelayGitHubError(0, "connection failed") from exc
+        raise RelayGitHubError(0, "log location unavailable")
+
+    def fetch_public_tail(self, url: str, max_bytes: int) -> bytes:
+        """One unauthenticated, non-redirecting GET of a signed log URL; at most max_bytes."""
+        req = urllib.request.Request(url, method="GET", headers={"User-Agent": "swu-git-relay"})
+        try:
+            with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
+                return resp.read(max_bytes + 1)
+        except urllib.error.HTTPError as exc:
+            raise RelayGitHubError(exc.code, "log fetch refused") from exc
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+            raise RelayGitHubError(0, "connection failed") from exc
 
     @staticmethod
     def _check_repo(repo: str) -> None:
