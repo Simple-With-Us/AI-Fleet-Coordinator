@@ -935,7 +935,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
 
 
 class AgentSeatPinTests(unittest.TestCase):
-    """The seat-precedence block (AGENT-SYNC § Identity Rules, owner 2026-10-09).
+    """The seat-precedence block (FLEET-PROTOCOL.md § Identity Rules, owner 2026-10-09).
 
     BotFleet runs Claude, Codex and other CLIs as engines for its own bots, and
     those engines load these skills.  A bare `export AGENT_SEAT=<PLATFORM>`

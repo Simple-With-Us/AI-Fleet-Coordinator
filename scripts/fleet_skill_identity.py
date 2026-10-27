@@ -25,7 +25,7 @@ SEAT_PIN_TOKEN = "@@SEAT_PIN_BLOCK@@"
 # The canonical pack's identity block is the retired MONET seat's own block,
 # exactly what seat_pin_block() renders for MONET (#405 made the canonical
 # carry the renderer's own output).  Every render swaps the whole block for the
-# destination seat's seat-precedence block (AGENT-SYNC § Identity Rules, owner
+# destination seat's seat-precedence block (FLEET-PROTOCOL.md § Identity Rules, owner
 # 2026-10-09):  a launcher's AGENT_LAUNCH_SEAT, no seat at all when a launcher
 # set none, then AGENT_SEAT, then the platform default.  The pattern also takes
 # the two older canonical shapes (a bare `export AGENT_SEAT=MONET`, and the
@@ -79,7 +79,7 @@ def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
         'export AGENT_SEAT="${AGENT_SEAT:-$SEAT}"\n'
         'simple-chat whoami --as "$SEAT"\n'
         "```\n\n"
-        "Your seat is the first of these that applies (AGENT-SYNC § Identity Rules):  "
+        "Your seat is the first of these that applies (FLEET-PROTOCOL.md § Identity Rules):  "
         "a seat Jay names to you in this conversation; a seat your launcher assigned "
         "(`AGENT_LAUNCH_SEAT` with `AGENT_LAUNCHER`, matching your launch prompt), "
         f"which beats this file whatever model you are; otherwise {ordinary}  "
@@ -126,8 +126,8 @@ def seat_pin_block(seat: Seat) -> str:
 def universal_pin_block() -> str:
     """Identity block for the neutral skills/ tree (no seat is known)."""
     return _seat_block(
-        '"${AGENT_SEAT:?set AGENT_SEAT to your platform default from AGENT-SYNC Identity Rules}"',
-        "take your platform's default from AGENT-SYNC § Identity Rules › Platform "
+        '"${AGENT_SEAT:?set AGENT_SEAT to your platform default from FLEET-PROTOCOL.md Identity Rules}"',
+        "take your platform's default from FLEET-PROTOCOL.md § Identity Rules › Platform "
         "Defaults (a platform with no default asks Jay).",
         f"  `{BRANCH_PREFIX}` below is your seat's branch prefix.",
     )
