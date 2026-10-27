@@ -40,7 +40,7 @@ If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_S
 
 Prefer live `GET /api/v1/applications` (via a helper that reads the token itself, or Coolify MCP) over memorized UUIDs.
 
-AGENT-SYNC's "sanctioned deploy path" table still names ST uuid `<OLD_ST_COOLIFY_APP_UUID>`, CT Worker `deploy.yml`, and UM Render — **stale**.  Prefer this table + `~/apps/COOLIFY.md` (top Hetzner section only; the Oracle body below the cut is historical).
+The live sanctioned deploy paths are in `docs/protocols/production-deploys.md` (and this table + `~/apps/COOLIFY.md`, top Hetzner section only; the Oracle body below the cut is historical).  Do not look for a deploy-path table inside FLEET-PROTOCOL.md — that file is not in this repository.
 
 Steady state: ST/CT/UM auto-deploy via Coolify webhook; DealDex via Vercel; AFC digest via Pages; CTS via tag.  Announce-then-deploy (~10 min, one deployer) only for a **manual** Coolify/API click.  Do not double-trigger: Coolify cancel is unreliable.
 
@@ -117,8 +117,8 @@ Exit 0 means current, so the deploy is verified.  Exit 1 means not yet:  `SHIPPI
 **When the check says behind**, look before you change anything:
 
 1. **Ship workflow run.**  `gh run list --repo Simple-With-Us/<repo> --workflow <file> --limit 5`.  A run for the merge SHA that failed: read the failing step (archive, signing, upload, ensure-tf-ready).  No run at all: a merge made by `github-actions[bot]` with `GITHUB_TOKEN` fires no `push` workflows, so only the cron backstop or a `workflow_dispatch` ships it.
-2. **Runner.**  A run stuck queued has no runner.  Read the job's `runs-on`: most ship jobs use hosted `macos-latest`, Clutch and BotFleet use `xcode-27`.  Do not turn on a Mac PR-check runner (banned in AGENT-SYNC § CI Runners) and do not run a local archive or `ship-testflight.sh` from a seat to catch up.  Re-ship through the repo's workflow.
-3. **Rate gate.**  A skip for the per-app minimum interval or for an unchanged git HEAD exits 0 and looks green, so it is not a failure and not a reason to force anything.  Read the live interval from `DEFAULT_MIN_INTERVAL_SEC` in `~/apps/ios-fleet/ship-testflight.sh`, because the README table has disagreed with the script.  Never set `IOS_TF_MIN_INTERVAL_SEC` as a standing workflow value.  Never force a ship past the gate (AGENT-SYNC); a per-run override is for when the owner says so for that run, preferably as a one-off `workflow_dispatch`.
+2. **Runner.**  A run stuck queued has no runner.  Read the job's `runs-on`: most ship jobs use hosted `macos-latest`, Clutch and BotFleet use `xcode-27`.  Do not turn on a Mac PR-check runner (banned in FLEET-PROTOCOL.md § CI Runners) and do not run a local archive or `ship-testflight.sh` from a seat to catch up.  Re-ship through the repo's workflow.
+3. **Rate gate.**  A skip for the per-app minimum interval or for an unchanged git HEAD exits 0 and looks green, so it is not a failure and not a reason to force anything.  Read the live interval from `DEFAULT_MIN_INTERVAL_SEC` in `~/apps/ios-fleet/ship-testflight.sh`, because the README table has disagreed with the script.  Never set `IOS_TF_MIN_INTERVAL_SEC` as a standing workflow value.  Never force a ship past the gate (FLEET-PROTOCOL.md); a per-run override is for when the owner says so for that run, preferably as a one-off `workflow_dispatch`.
 4. **Compile check.**  A red `ios-build.yml` on main usually means the archive fails too.  That is a code fix on main, not a ship fix.
 
 Per-app quirks (read the workflow on main before trusting this list):
@@ -128,9 +128,9 @@ Per-app quirks (read the workflow on main before trusting this list):
 - **Autorotate** was retired from TestFlight on 2026-10-10 and the freshness check does not list it.  Its `testflight.yml` is dispatch-only with a signing-ready attestation;  do not attest signing you have not verified.
 - **ContactLogo** `ios-testflight.yml` is the fleet pipeline (CL-204, 2026-10-17):  push to `main` on `Apps/ContactLogoiOS/**`, `Sources/ContactLogoKit/**` or `project.yml`, a path-gated twice-hourly catch-up, and `workflow_dispatch`.  It needs no repository variable (`CL_IOS_TESTFLIGHT_ENABLED` and `CL_APPLE_ID` are retired) and takes no required dispatch input.
 
-**Rules that matter** (AGENT-SYNC § Releases, Versioning, and Brand Assets):
+**Rules that matter** (FLEET-PROTOCOL.md § Releases, Versioning, and Brand Assets):
 
-- What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the AGENT-SYNC Appendix C template, a real U+00A0 plus a normal space between sentences, and the owner's 12-hour clock with am or pm and no zone abbreviation.  No seat, agent, or tool names, ever.
+- What to Test is mandatory on every upload and is published to App Store Connect, never dry-logged.  Use the FLEET-PROTOCOL.md Appendix C template, a real U+00A0 plus a normal space between sentences, and the owner's 12-hour clock with am or pm and no zone abbreviation.  No seat, agent, or tool names, ever.
 - The marketing version and the build number are both the repo's commit count, `1.0.<commit_count>` and `<commit_count>`, so the pair always describes one commit and no version string is ever reused.  UTC `YYYYMMDDHHmm` build stamps are retired.
 - The owner authorized TestFlight uploads.  App Store review submission and public release are not authorized; they stay an owner action.  Do not change external TestFlight groups or testers.
 
@@ -142,7 +142,8 @@ Move the Linear issue to **Deployed** (`simple-board status <id> deployed --reso
 
 - `/Users/jay/apps/COOLIFY.md`
 - `~/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
-- `/Users/jay/apps/FLEET-PROTOCOL.md` — Production deploys; Coolify tokens; Releases, Versioning, and Brand Assets
+- `docs/protocols/production-deploys.md` — sanctioned deploy paths and Coolify tokens
+- `/Users/jay/apps/FLEET-PROTOCOL.md` — Releases, Versioning, and Brand Assets (owner copy)
 - ST `docs/rollouts/2026-08-07-hetzner-fleet-cutover.md`
 - ST `docs/rollouts/2026-07-10-auto-deploy-on.md` (mechanism; UUIDs/IPs in that note may be pre-cutover)
 - Skills: `secret-handoff`, `closeout`, `land-lane`

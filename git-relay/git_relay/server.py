@@ -111,6 +111,8 @@ def _validate_args(action: str, args: dict) -> dict:
         raise ValueError(f"unknown action {action!r}")
     if action in SeatPolicy.REGISTERED_ACTIONS:
         raise ValueError(f"action {action!r} is registered but not implemented yet")
+    if action in SeatPolicy.WORKFLOW_ACTIONS:
+        raise ValueError(f"action {action!r} is registered but not wired into the relay yet")
     specs: dict = {"repo": ("text", True)}
     if action == "open_pr":
         specs.update(
@@ -204,7 +206,11 @@ class ServerUnavailable(Exception):
 ACTION_REQUIRED_PERMISSIONS = {
     "merge_pr": {"contents": "write", "pull_requests": "write"},
     "workflow_dispatch": {"actions": "write"},
-    "resolve_thread": {"pull_requests": "write"},
+    # GitHub gates resolveReviewThread at merge level for App tokens: pull_requests
+    # write alone returns FORBIDDEN, contents write with it succeeds (GitHub's PR team
+    # calls this intentional; reported at github/gh-aw#35726 and reproduced downstream).
+    # A seat whose ceiling lacks contents write is denied here, before any mint.
+    "resolve_thread": {"contents": "write", "pull_requests": "write"},
     # Use the PR-specific permission for these PR-only actions, including
     # conversation comments whose GitHub endpoint uses /issues/:number.
     "edit_pr": {"pull_requests": "write"},
@@ -223,7 +229,11 @@ class Relay:
         audit: AuditLog,
         app_minter=None,
         outcomes: OutcomeStore | None = None,
+        workflow_verbs_enabled: bool = False,
     ):
+        # Off unless the operator turns it on: with it off every wf_ action is refused
+        # as registered-not-wired, exactly as before the wiring existed.
+        self.workflow_verbs_enabled = workflow_verbs_enabled
         self.policy = policy
         self.client = client
         self.audit = audit
@@ -259,7 +269,18 @@ class Relay:
                 # Credential-shaped input is refused before any durable state
                 # or side effect (SecretInputError is a ValueError).
                 scan_args(args)
-                canonical = _validate_args(action, args)
+                if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
+                    # The verb layer owns per-field shape validation and rejects any field it
+                    # does not accept; here only the envelope (a repo string) is checked.
+                    if not isinstance(args.get("repo"), str) or not args["repo"]:
+                        raise ValueError("repo is required")
+                    canonical = dict(args)
+                    # Shape-check before any policy quota, outcome row or upstream call.
+                    from .workflow_verbs import WorkflowVerbs
+
+                    WorkflowVerbs.check_shape(action, canonical, canonical["repo"])
+                else:
+                    canonical = _validate_args(action, args)
                 denial = self.policy.authorize(seat, action, canonical["repo"])
                 if denial:
                     raise PolicyDenied(denial)
@@ -271,7 +292,7 @@ class Relay:
                 outcome = "bad_request"
                 detail = {"reason": str(exc)}
                 return 400, {"error": str(exc)}
-            if action != "mint_token":
+            if action != "mint_token" and not self._is_workflow_read(action):
                 # Idempotency gate for non-idempotent writes:  mint_token is exempt
                 # because it returns a credential (a replay could only be served
                 # by persisting that credential in the store, which is worse) and
@@ -347,6 +368,25 @@ class Relay:
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 503, payload
+                if (
+                    key is None
+                    and exc.status in (0, 408, 429)
+                    or (key is None and exc.status >= 500)
+                ):
+                    # A workflow READ changed nothing upstream: a transient failure is a
+                    # plain retryable error, not an unknown outcome.
+                    outcome = "github_retryable"
+                    detail = {"status": exc.status}
+                    payload = {
+                        "error": "github call failed; safe to retry",
+                        "github_status": exc.status,
+                        "retryable": True,
+                    }
+                    if exc.retry_after is not None:
+                        payload["retry_after_seconds"] = detail["retry_after_seconds"] = exc.retry_after
+                    payload["github_diagnostics"] = dict(exc.diagnostics)
+                    detail["github_diagnostics"] = dict(exc.diagnostics)
+                    return (429 if exc.status == 429 else 502), payload
                 if exc.status in (0, 408) or exc.status >= 500:
                     # Transport failure, timeout, or 5xx:  GitHub may have accepted
                     # the write.  The outcome is unknown;  the key is held and
@@ -402,7 +442,10 @@ class Relay:
                 return 400, payload
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
-            detail = {**canonical, **result}
+            if action in SeatPolicy.WORKFLOW_ACTIONS:
+                detail = _workflow_audit_detail(canonical, result)
+            else:
+                detail = {**canonical, **result}
             return 200, result
         except Exception as exc:
             # An unexpected relay failure:  whether GitHub was reached is
@@ -422,6 +465,8 @@ class Relay:
     def _dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         # handle() has already scanned, shape-validated, and authorized this
         # call (allowlist + hourly quota, once);  dispatch only executes.
+        if action in SeatPolicy.WORKFLOW_ACTIONS:
+            return self._dispatch_workflow(seat, action, args, repo)
         if action in SeatPolicy.APP_ACTIONS:
             return self._dispatch_app(seat, action, args, repo)
         if action == "open_pr":
@@ -434,6 +479,78 @@ class Relay:
             )
         # Every non-open_pr write is an APP_ACTION and never reaches here.
         raise ValueError(f"unknown owner-token action {action!r}")
+
+
+_WORKFLOW_AUDIT_SCALARS = (
+    "job_id",
+    "run_id",
+    "number",
+    "ref",
+    "branch",
+    "base",
+    "head",
+    "expected_head_sha",
+    "prior_sha",
+    "per_page",
+    "state",
+    "tail_bytes",
+    "method",
+    "path",
+)
+
+
+def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
+    """What a wf_ call may leave in the audit log: bounded identifiers and counts only.
+
+    Never file bytes, log text, commit messages, search text or any result body: a read
+    verb returns repository content and a write verb is given it.
+    """
+    detail: dict = {
+        k: canonical[k]
+        for k in _WORKFLOW_AUDIT_SCALARS
+        if isinstance(canonical.get(k), (int, str)) and not isinstance(canonical.get(k), bool)
+    }
+    if isinstance(canonical.get("files"), list):
+        detail["files"] = len(canonical["files"])
+    for key in ("commit", "sha", "merged", "files"):
+        value = result.get(key)
+        if isinstance(value, (int, bool)) or (isinstance(value, str) and len(value) <= 64):
+            detail[f"result_{key}"] = value
+    return detail
+
+
+def _is_workflow_read(self, action: str) -> bool:
+    """A wf_ verb that changes nothing upstream needs no idempotency key and holds no outcome."""
+    if action not in SeatPolicy.WORKFLOW_ACTIONS:
+        return False
+    from .workflow_verbs import SPECS
+
+    spec = SPECS.get(action)
+    return spec is not None and not spec[1]
+
+
+def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> dict:
+    # Imported here: workflow_verbs imports this module.
+    from .workflow_verbs import CeilingDenied, Unknown, WorkflowVerbs
+
+    if self.app_minter is None:
+        raise ServerUnavailable("app-token minting is not configured on this relay")
+    try:
+        # handle() has already run policy.authorize for this exact seat, action and repo
+        # (and counted its quota once); for_action then only checks the App ceiling and
+        # mints the least permission in SPECS.
+        handle = WorkflowVerbs.for_action(
+            self.client, self.policy, self.app_minter, seat, action, repo, preauthorized=True
+        )
+        return handle.run(action, args)
+    except Unknown:
+        raise ServerUnavailable("the seat's own App credential is unavailable") from None
+    except CeilingDenied as exc:
+        raise PolicyDenied(str(exc)) from None
+
+
+Relay._is_workflow_read = _is_workflow_read
+Relay._dispatch_workflow = _dispatch_workflow
 
 
 def _perm_within_ceiling(requested: dict, ceiling: dict) -> str | None:
@@ -868,7 +985,14 @@ def from_env() -> Relay:
             )
         except AppTokenError as exc:
             raise SystemExit(f"git-relay config: {exc}") from exc
-    return Relay(policy, client, audit, app_minter=app_minter, outcomes=outcomes)
+    return Relay(
+        policy,
+        client,
+        audit,
+        app_minter=app_minter,
+        outcomes=outcomes,
+        workflow_verbs_enabled=os.environ.get("GIT_RELAY_ENABLE_WORKFLOW_VERBS") == "1",
+    )
 
 
 def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | None:
