@@ -14,9 +14,10 @@ included) where the writers put one, so a comment typed or reflowed by hand stil
   owner replied:  comment <id>
 
 A reply record says that a reply exists.  It never holds the answer, and a consumer verifies before it
-acts:  `agent-sync verify-owner-msg` for a Zulip message, the reaction's user id for a tap, and a
+acts:  `simple-chat verify-owner-msg` for a Zulip message, the reaction's user id for a tap, and a
 comment author equal to OWNER_LINEAR_USER_ID for Linear.
 """
+
 from __future__ import annotations
 
 import re
@@ -28,15 +29,21 @@ REPLY_HEAD = "owner replied:"
 
 PENDING_REASONS = ("no_credential", "send_failed", "no_agent_sync", "unsent", "held")
 
-_NOTIFIED = re.compile(r"\A\s*\[needs-owner\]\s+notified\s+msg\s+([0-9]{1,12})\b(.*)\Z", re.I | re.S)
-_PENDING = re.compile(r"\A\s*\[needs-owner\]\s+notify_pending\b(.*)\Z", re.I | re.S)
-_BLOCK = re.compile(r"\A\s*\[needs-owner\]\s+block\b", re.I)
-_REPLY = re.compile(r"\A\s*(?:\[needs-owner\]\s*)?owner\s+replied:\s*(?P<what>.+)\Z", re.I | re.S)
-_REPLY_MSG = re.compile(r"msg\s+([0-9]{1,12})\b", re.I)
-_REPLY_COMMENT = re.compile(r"comment\s+(\S+)", re.I)
-_REPLY_REACTION = re.compile(r"reaction\s+(?:option\s+)?([1-9])\s+on\s+msg\s+([0-9]{1,12})\b", re.I)
-_TOPIC_LINE = re.compile(r"^topic:[ \t]*(\S.*?)[ \t]*$", re.I | re.M)
-_REASON_LINE = re.compile(r"^reason:[ \t]*([a-z_]{1,30})[ \t]*$", re.I | re.M)
+_NOTIFIED = re.compile(
+    r"\A\s*\[needs-owner\]\s+notified\s+msg\s+([0-9]{1,12})\b(.*)\Z", re.IGNORECASE | re.DOTALL
+)
+_PENDING = re.compile(r"\A\s*\[needs-owner\]\s+notify_pending\b(.*)\Z", re.IGNORECASE | re.DOTALL)
+_BLOCK = re.compile(r"\A\s*\[needs-owner\]\s+block\b", re.IGNORECASE)
+_REPLY = re.compile(
+    r"\A\s*(?:\[needs-owner\]\s*)?owner\s+replied:\s*(?P<what>.+)\Z", re.IGNORECASE | re.DOTALL
+)
+_REPLY_MSG = re.compile(r"msg\s+([0-9]{1,12})\b", re.IGNORECASE)
+_REPLY_COMMENT = re.compile(r"comment\s+(\S+)", re.IGNORECASE)
+_REPLY_REACTION = re.compile(
+    r"reaction\s+(?:option\s+)?([1-9])\s+on\s+msg\s+([0-9]{1,12})\b", re.IGNORECASE
+)
+_TOPIC_LINE = re.compile(r"^topic:[ \t]*(\S.*?)[ \t]*$", re.IGNORECASE | re.MULTILINE)
+_REASON_LINE = re.compile(r"^reason:[ \t]*([a-z_]{1,30})[ \t]*$", re.IGNORECASE | re.MULTILINE)
 
 
 def notified_text(msg_id: int, topic: str) -> str:

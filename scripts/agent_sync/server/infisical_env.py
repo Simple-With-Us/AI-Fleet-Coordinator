@@ -90,7 +90,7 @@ class LoadError(Exception):
 
 
 def log(message: str) -> None:
-    print("agent-sync: %s" % message, file=sys.stderr, flush=True)
+    print("simple-chat: %s" % message, file=sys.stderr, flush=True)
 
 
 def server_codes(partition_file: str) -> set[str]:

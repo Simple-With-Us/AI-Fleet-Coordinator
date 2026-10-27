@@ -195,7 +195,7 @@ def install(
                 4, "interpreter is older than Python 3.11; pass --python PATH (3.11 or newer)"
             )
     except InterpreterProbeFailure as error:
-        err.write("agent-sync: %s\n" % error)
+        err.write("simple-chat: %s\n" % error)
         return error.code
     data = unit_text(home, python, program or launchd.program_path(home), root=root, config=config)
     unit_dir = os.path.dirname(target)
@@ -235,7 +235,7 @@ def install(
                 os.fsync(fh.fileno())
             os.replace(temporary, target)
         except OSError:
-            err.write("agent-sync: could not write the user service\n")
+            err.write("simple-chat: could not write the user service\n")
             return 1
         finally:
             if temporary and os.path.exists(temporary):

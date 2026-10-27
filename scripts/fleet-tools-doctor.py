@@ -951,7 +951,7 @@ def check_mac_runtime(
     updater: dict | None = None,
     previous: dict | None = None,
 ) -> dict:
-    """The Mac's managed runtime (agent-sync, board, and the source of every Mac copy) against the tip.
+    """The Mac's managed runtime (simple-chat, board, and the source of every Mac copy) against the tip.
 
     Behind is amber only while the updater is healthy and has not yet had its chance:  it is loaded,
     not paused, exits cleanly, its run counter moved, the worktree has no tracked changes, and this
@@ -3060,7 +3060,7 @@ def run(
     if on_mac_runtime:
         updater = check_mac_updater(report, runner, previous)
     if on_mac_runtime:
-        # agent-sync, board and every Mac copy come from the managed runtime, so the Mac's rows are
+        # simple-chat, board and every Mac copy come from the managed runtime, so the Mac's rows are
         # always judged against it, even if an old release receipt is still on disk.
         rt = check_mac_runtime(report, runner, expected, updater, previous)
     else:

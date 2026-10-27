@@ -1,4 +1,4 @@
-"""Outbound text fix-ups for what agent-sync sends to Zulip.
+"""Outbound text fix-ups for what simple-chat sends to Zulip.
 
 `sentence_gap` is a safety net, not a substitute for writing the gap:  authors still write two
 spaces after a sentence, and Zulip's Markdown renderer then collapses them to one.  A real

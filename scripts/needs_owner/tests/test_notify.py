@@ -47,7 +47,7 @@ def quoted(body: str, message_id: int = 630000000) -> str:
 
 
 class Reader:
-    """A runner that answers `agent-sync read` with fixed rows (the real `message_json` keys)."""
+    """A runner that answers `simple-chat read` with fixed rows (the real `message_json` keys)."""
 
     def __init__(self, seat: str, rows: list) -> None:
         self.seat = seat

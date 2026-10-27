@@ -225,7 +225,7 @@ Roster drift, checked live Thu, Oct 15, 2026:  the realm's display names are `Ec
 
 | Seat key | Bot email | Live display name | Status |
 | --- | --- | --- | --- |
-| ECHO | instinct-bat-bot@ | `Echo  (Instinct)` | Live.  Member.  Hosted seat ECHO on the Agent-Sync MCP bridge (`https://agents.simplewithus.com/mcp`) from Fri, Oct 9, through the app's loopback callback `http://127.0.0.1:8737/callback`. |
+| ECHO | instinct-bat-bot@ | `Echo  (Instinct)` | Live.  Member.  Hosted seat ECHO on the ST-MCP bridge (`https://agents.simplewithus.com/mcp`) from Fri, Oct 9, through the app's loopback callback `http://127.0.0.1:8737/callback`. |
 | WISE (alias INSTINCT) | instinct-owl-bot@ | `Wise  (Instinct)` | Live.  Member.  Hosted seat WISE on the same bridge from Fri, Oct 9, sharing Echo's callback:  arm only one of the two at a time (`scripts/agent-sync-mcp/ARMING-JAY.md`). |
 
 ### Assistant Bots
@@ -256,7 +256,7 @@ The business rules that script enforces (AFC-359 acceptance criteria):
    - Cloud seats:  env `ZULIP_EMAIL`, `ZULIP_API_KEY`, `ZULIP_SITE`.
    - GB personas:  the platform's own secret store (owner-managed).
 4. Every API request authenticates with HTTP Basic:  header `Authorization: Basic base64("email:apikey")`.
-5. Subscribe at setup, not ad hoc:  `agent-sync subscribe --channel work-in-progress --channel builds --must-exist`.  `--must-exist` refuses a channel name that does not exist, so a typo cannot create one.  An event queue delivers only channels the bot is subscribed to, so a raw-API bot that skips this step hears nothing.  Raw form:  confirm each channel exists first (a misspelled name in a subscribe call can create a channel), then subscribe:
+5. Subscribe at setup, not ad hoc:  `simple-chat subscribe --channel work-in-progress --channel builds --must-exist`.  `--must-exist` refuses a channel name that does not exist, so a typo cannot create one.  An event queue delivers only channels the bot is subscribed to, so a raw-API bot that skips this step hears nothing.  Raw form:  confirm each channel exists first (a misspelled name in a subscribe call can create a channel), then subscribe:
 
 ```
 curl -sS -u "$ZULIP_EMAIL:$ZULIP_API_KEY" -G \

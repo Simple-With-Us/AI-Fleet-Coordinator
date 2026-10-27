@@ -324,7 +324,7 @@ def cmd_daemon(rt: Any, args: argparse.Namespace) -> int:
     if sub == "reload":
         pid = daemon_running(root)
         if not pid or pid < 0:
-            rt.err("agent-sync: the listener is not running")
+            rt.err("simple-chat: the listener is not running")
             return 1
         os.kill(pid, signal.SIGHUP)
         rt.out("sent SIGHUP to the listener (pid %d)\n" % pid)
@@ -546,7 +546,7 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             for i in L.read_jsonl(paths.seat_inbox)
             if (i.get("seq") or 0) > cursor and not i.get("delivered_to")
         )
-        lines.append("%s seat inbox: %d unread (agent-sync inbox --local)" % (seat, waiting))
+        lines.append("%s seat inbox: %d unread (simple-chat inbox --local)" % (seat, waiting))
     if probe_result is not None:
         lines.append(
             "probe: %s"
@@ -992,7 +992,7 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
             )
         rt.out(
             "PASS, NOT PINNED YET: read the result above (the reply must not obey the hostile messages).  If it "
-            "is right, pin %s with:\n  agent-sync daemon test-wake --seat %s --runtime %s --pin\n"
+            "is right, pin %s with:\n  simple-chat daemon test-wake --seat %s --runtime %s --pin\n"
             % (binary, seat, want)
         )
         return 0
@@ -1114,7 +1114,7 @@ def cmd_inbox_local(rt: Any, args: argparse.Namespace) -> int:
                     "class": "passive",
                     "channel": n.get("kind"),
                     "topic": n.get("title"),
-                    "sender": "agent-sync daemon",
+                    "sender": "simple-chat daemon",
                     "time": _when(n.get("ts")),
                     "owner": bool(n.get("owner")),
                     "trigger_sender_id": n.get("sender_id"),
@@ -1137,7 +1137,7 @@ def cmd_inbox_local(rt: Any, args: argparse.Namespace) -> int:
             )
         if shown:
             rt.out(
-                "[agent-sync inbox] %d item%s for %s\n%s\n%s\n%s\n"
+                "[simple-chat inbox] %d item%s for %s\n%s\n%s\n%s\n"
                 % (
                     len(shown),
                     "" if len(shown) == 1 else "s",
@@ -1148,7 +1148,7 @@ def cmd_inbox_local(rt: Any, args: argparse.Namespace) -> int:
                 )
             )
         if not notes and not shown:
-            rt.err("agent-sync: nothing new in the %s seat inbox" % seat)
+            rt.err("simple-chat: nothing new in the %s seat inbox" % seat)
     if not args.peek:
         if items:
             L.update_json(
@@ -1225,7 +1225,7 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
             return emit(view)
         if not view["items"]:
             rt.err(
-                "agent-sync: nothing in the %s seat inbox after seq %s"
+                "simple-chat: nothing in the %s seat inbox after seq %s"
                 % (seat, args.since_seq or view["cursor"])
             )
             return 0
@@ -1255,7 +1255,7 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
         view = LR.owner_queue_view(root, seat, all_notes=args.all, limit=args.limit)
         if as_json or not view["items"]:
             if not view["items"] and not as_json:
-                rt.err("agent-sync: nothing in the %s owner queue" % seat)
+                rt.err("simple-chat: nothing in the %s owner queue" % seat)
                 return 0
             return emit(view)
         _fenced(
@@ -1343,7 +1343,7 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
         if as_json:
             return emit(view)
         if not view["items"]:
-            rt.err("agent-sync: nothing pending in lease %s" % view["lease_id"])
+            rt.err("simple-chat: nothing pending in lease %s" % view["lease_id"])
             return 0
         _fenced(
             rt,
