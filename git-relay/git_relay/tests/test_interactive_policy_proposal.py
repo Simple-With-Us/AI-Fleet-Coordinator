@@ -26,6 +26,28 @@ SEVEN = {
     "resolve_thread",
 }
 
+EXPECTED_REPOS = {
+    "Simple-With-Us/AI-Fleet-Coordinator",
+    "Simple-With-Us/Autorotate",
+    "Simple-With-Us/BotFleet",
+    "Simple-With-Us/Clutch",
+    "Simple-With-Us/CodeCaps",
+    "Simple-With-Us/Congress.Trade",
+    "Simple-With-Us/ContactLogo",
+    "Simple-With-Us/DealDex",
+    "Simple-With-Us/FleetLink",
+    "Simple-With-Us/HogHunter",
+    "Simple-With-Us/Kodus-Config",
+    "Simple-With-Us/Personal-Site",
+    "Simple-With-Us/Simple-With-Us",
+    "Simple-With-Us/Socratic-Trade",
+    "Simple-With-Us/Usage-Monitor",
+    "Simple-With-Us/congress-trading-shared",
+    "Simple-With-Us/homebrew-tap",
+    "jaywedgeworth22/Fleet-OPS",
+}
+EXPECTED_SEAT_KEYS = {"auth", "identity", "actions", "repos", "app_slug", "mint_permissions"}
+
 
 class InteractivePolicyProposalTest(unittest.TestCase):
     def setUp(self):
@@ -43,6 +65,7 @@ class InteractivePolicyProposalTest(unittest.TestCase):
             self.assertNotIn(action, SeatPolicy.REGISTERED_ACTIONS)
 
     def test_one_seat_one_identity_shared_auth(self):
+        self.assertEqual(set(self.cfg), EXPECTED_SEAT_KEYS)
         self.assertEqual(list(json.loads(self.raw)), ["swu-wise"])
         self.assertEqual(self.cfg["auth"], "shared")
         self.assertEqual(self.cfg["identity"], "WISE")
@@ -51,6 +74,7 @@ class InteractivePolicyProposalTest(unittest.TestCase):
 
     def test_repos_are_the_org_repos_plus_the_one_personal_repo(self):
         repos = self.cfg["repos"]
+        self.assertEqual(set(repos), EXPECTED_REPOS)
         self.assertEqual(len(repos), 18)
         self.assertEqual(len(set(repos)), 18)
         personal = [r for r in repos if not r.startswith("Simple-With-Us/")]
