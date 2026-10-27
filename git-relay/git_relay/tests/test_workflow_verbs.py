@@ -72,7 +72,7 @@ class Tests(unittest.TestCase):
     def test_every_action_has_a_handler_and_spec(self):
         for action in ACTIONS:
             self.assertTrue(callable(getattr(WorkflowVerbs, action)))
-        self.assertEqual(len(ACTIONS), 15)
+        self.assertEqual(len(ACTIONS), 16)
 
     def test_least_permission_minted_and_ceiling_enforced(self):
         minter = Minter()
@@ -234,7 +234,27 @@ class Tests(unittest.TestCase):
 
     def test_spec_permissions_stay_inside_shared_ceiling(self):
         for action, (perms, _) in SPECS.items():
+            if action == "wf_checks":
+                continue  # deliberately outside the ceiling; see the next test
             self.assertEqual(set(perms) - set(CEILING), set(), action)
+
+    def test_wf_checks_is_refused_without_checks_read_and_never_widens(self):
+        with self.assertRaises(Refused):
+            WorkflowVerbs.for_action(Client(), Policy(), Minter(), "swu-wise", "wf_checks", REPO)
+        ceiling = dict(CEILING, checks="read")
+        minter = Minter()
+        h = WorkflowVerbs.for_action(Client(), Policy(ceiling), minter, "swu-wise", "wf_checks", REPO)
+        self.assertEqual(minter.calls[0][2], {"checks": "read", "metadata": "read"})
+        self.assertIsNotNone(h)
+
+    def test_wf_checks_reads_check_runs_for_a_ref(self):
+        s, c = svc({"check_runs": [{"id": 1, "name": "Kody Code Review", "status": "completed", "conclusion": "success", "extra": "x"}]})
+        out = s.run("wf_checks", {"repo": REPO, "ref": SHA})
+        self.assertEqual(out["checks"][0]["name"], "Kody Code Review")
+        self.assertNotIn("extra", out["checks"][0])
+        self.assertIn(f"/commits/{SHA}/check-runs", c.calls[0][1])
+        with self.assertRaises(Refused):
+            s.run("wf_checks", {"repo": REPO, "ref": "../x"})
 
 
 if __name__ == "__main__":

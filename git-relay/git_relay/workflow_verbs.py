@@ -9,13 +9,14 @@ untrusted data. No credential leaves this module.
 
 Verbs (action names carry the wf_ prefix so they cannot collide with registered names):
   reads   wf_pr_list wf_pr_files wf_file_get wf_tree wf_branches wf_commits wf_code_search
-          wf_runs wf_run_jobs
+          wf_runs wf_run_jobs wf_checks (needs checks:read, refused unless the ceiling carries it)
   writes  wf_update_branch (atomic expected_head_sha), wf_run_rerun, wf_run_cancel,
           wf_run_approve, wf_file_put (non-default branch only), wf_merge_guarded
           (atomic expected_head_sha)
-Check-run reads need the checks permission, which is outside the shared ceiling; run and
-job conclusions (actions:read) are the check source here, so required-check state beyond
-workflow jobs is not covered. Job logs are zip redirects the client refuses to follow, so
+Check-run reads (wf_checks) need the checks permission, which is outside the shared
+ceiling, so that verb is refused until a seat's ceiling carries checks:read; without it
+run and job conclusions (actions:read) are the check source and non-Actions checks are
+not covered. Job logs are zip redirects the client refuses to follow, so
 only job and step conclusions are returned.
 """
 
@@ -55,6 +56,9 @@ SPECS = {
     "wf_code_search": ({"contents": "read"}, False),
     "wf_runs": ({"actions": "read"}, False),
     "wf_run_jobs": ({"actions": "read"}, False),
+    # Needs checks:read, outside today's shared ceiling: refused at for_action until a
+    # seat's ceiling explicitly carries it. Never widened here.
+    "wf_checks": ({"checks": "read"}, False),
     "wf_update_branch": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_run_rerun": ({"actions": "write"}, True),
     "wf_run_cancel": ({"actions": "write"}, True),
@@ -349,6 +353,19 @@ class WorkflowVerbs:
                     ],
                 }
                 for j in ((data or {}).get("jobs") or [])[:MAX_PROJECT]
+            ],
+            "complete": False,
+        }
+
+    def wf_checks(self, repo, args):
+        """Check runs for one commit (Kody, Seer, merge-gate and Actions jobs alike)."""
+        _only(args, ("repo", "ref", "per_page"))
+        ref = _sha(args, "ref") if re.fullmatch(r"[0-9a-f]{40}", str(args.get("ref", ""))) else _ref(args, "ref")
+        data = _obj(self._get(f"/repos/{repo}/commits/{quote(ref, safe='')}/check-runs?per_page={_page(args)}"))
+        return {
+            "checks": [
+                {k: c.get(k) for k in ("id", "name", "status", "conclusion", "completed_at")}
+                for c in ((data or {}).get("check_runs") or [])[:MAX_PROJECT]
             ],
             "complete": False,
         }
