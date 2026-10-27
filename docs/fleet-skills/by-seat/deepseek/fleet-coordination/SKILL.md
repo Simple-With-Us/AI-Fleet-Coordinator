@@ -107,7 +107,7 @@ Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they ret
 Before starting substantial work, reserve your lane on two durable surfaces:
 
 1. **Linear issue (`simple-board claim`):**
-   - `simple-board list --app <app>`, then `simple-board claim <id> --by <YOUR_TAG> --env Mac --where "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>"`.  If nothing exists, `simple-board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
+   - `simple-board list --app <app>`, then `simple-board claim <id> --by <SEAT> --env Mac --where "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>"`.  If nothing exists, `simple-board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
    - Branch `<seat>/<id>-<slug>` (`deepseek/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
    - Linear is the only writable work tracker.  There is no separate GitHub issue leg or effort-log row; effort logs are archived history and must not be edited.
 2. **Zulip `#Work-In-Progress`, work topic (`<ID> <subject>`, at most 58 characters):**
