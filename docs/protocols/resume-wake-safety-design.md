@@ -1,6 +1,6 @@
 # Resume-Wake Safety Design (Draft for Owner Review)
 
-CLAUDE seat, Sun, Oct 18, 2026;  revised Mon, Oct 19 with the owner's decisions (section 12).  **Design only.**  Nothing here is built or switched on, and no config changed;  it stays a draft until Jay OKs the build.  It extends the Agent-Sync listener ([agent-sync-listener.md](agent-sync-listener.md)), the wake routing flow ([zulip-wake-routing.md](zulip-wake-routing.md)) and the Muse inbox bridge ([muse-inbox-bridge.md](muse-inbox-bridge.md), AFC-326, PR #578).
+CLAUDE seat, Sun, Oct 18, 2026;  revised Mon, Oct 19 with the owner's decisions (section 12).  **Design only.**  Nothing here is built or switched on, and no config changed;  it stays a draft until Jay OKs the build.  It extends the Operator ([agent-sync-listener.md](agent-sync-listener.md)), the wake routing flow ([zulip-wake-routing.md](zulip-wake-routing.md)) and the Muse inbox bridge ([muse-inbox-bridge.md](muse-inbox-bridge.md), AFC-326, PR #578).
 
 Owner request (Oct 18):  "when a seat has no live session, resume its last session for that topic headlessly with tools in its lane, under per-platform Infisical knob budgets.  Show me the safety design before turning it on."  Owner addenda, same day:  every seat may and should be resumed when "identified as the best recipient by headless muse or minimax code backup", with the router on "muse spark 1.3 contributor … or minimax m3.1 flash preview as backup".
 

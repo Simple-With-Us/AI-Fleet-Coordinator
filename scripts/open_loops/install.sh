@@ -9,7 +9,7 @@
 #   fleet_facts/*.py     the F6 gatherers it imports (without their tests and CI checker)
 #   agent_sync/           an empty __init__.py plus the three F3 helpers loaded by path:
 #                         textsafe.py (render_untrusted), secretscan.py (secret scan, redact_fields) and
-#                         textfmt.py (sentence_gap, the same gap rule agent-sync applies on the way out)
+#                         textfmt.py (sentence_gap, the same gap rule simple-chat applies on the way out)
 #   c2-id                 only with --c2-id:  the C2 umbrella issue id (such as AFC-123) the heartbeat topic
 #                         `<C2 ID> open-loops heartbeat` is named from.  A reinstall keeps the one already there.
 # and $HOME/.local/bin/open-loops is a symlink to the entry script.

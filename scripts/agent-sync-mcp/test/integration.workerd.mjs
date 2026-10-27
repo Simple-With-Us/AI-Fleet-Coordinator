@@ -24,6 +24,7 @@ import CONTRACT from "../../agent_sync/mcp/tools.json" with { type: "json" };
 import { ROOT, wranglerConfig, testEnv, browserPostOrigin, CHATGPT_CLIENT, CHATGPT_REDIRECT, RESOURCE } from "./helpers.mjs";
 import { FakeZulip, REALM, STREAMS, OWNER_ID, zulipShapedKey } from "./fake-zulip.mjs";
 import { GB_IDENTITIES, delegatedNames } from "../src/delegated-identities.js";
+import { ADDITIONAL_BEARER_SEATS } from "../src/bearer-identities.js";
 import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
@@ -58,7 +59,10 @@ const CURSOR_CIMD = {
 };
 const CLAUDE_KEY = zulipShapedKey(29);
 const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
+const bearerBots = Object.entries(ADDITIONAL_BEARER_SEATS).map(([seat, row], i) => ({ seat, ...row, key: zulipShapedKey(60 + i) }));
+let infisicalFixture = null;
 const zulip = new FakeZulip({ bots: [
+  ...bearerBots.map((b) => ({ email: b.email, key: b.key, full_name: b.seat })),
   // The borrowed-bot grant (JET-CHAT) needs the pinned owner (kody 4365848649):
   // the fake users/me carries the same owner id the committed var pins.
   { email: JET_EMAIL, full_name: "Jet", key: JET_KEY, bot_owner_id: Number(wranglerConfig().vars.OWNER_USER_ID) },
@@ -209,6 +213,13 @@ const outbound = [];
 let failChatgptCimd = 0;
 async function outboundFetch(request) {
   outbound.push(request.url);
+  if (request.url.startsWith("https://offline-infisical.example/api/v3/secrets/raw")) {
+    const url = new URL(request.url);
+    const secrets = infisicalFixture?.[url.searchParams.get("secretPath")] ?? [];
+    if (url.pathname.endsWith("/raw")) return Response.json({ secrets, totalCount: secrets.length });
+    const secret = secrets.find((row) => row.secretKey === decodeURIComponent(url.pathname.split("/").at(-1)));
+    return secret ? Response.json({ secret }) : new Response("not found", { status: 404 });
+  }
   if (request.url === `https://${TEAM}/cdn-cgi/access/certs`) return Response.json(jwks);
   if (request.url === CHATGPT_CLIENT) {
     if (failChatgptCimd > 0) {
@@ -2076,6 +2087,37 @@ try {
     const full = await (await postWa(maximum)).json();
     assert.equal(full.stored, 100, "maximum provider batch commits to real SQLite storage");
     assert.equal(full.delivered, 1, "maximum batch coalesces into one owner wake");
+  });
+
+  await step("all additional ordinary and BF bearers mint, isolate identity, serve MCP, rotate and revoke using their own Infisical credentials", async () => {
+    await mf.dispose();
+    infisicalFixture = { "/zulip": bearerBots.flatMap((b) => [
+      { secretKey: `${b.prefix}_ZULIP_KEY`, secretValue: b.key },
+      { secretKey: `${b.prefix}_ZULIP_EMAIL`, secretValue: b.email },
+    ]) };
+    mf = startWorker(HOST, { INFISICAL_MODE: "required", INFISICAL_SERVICE_TOKEN: "offline-fixture", INFISICAL_WORKSPACE_ID: "offline-workspace", INFISICAL_BASE_URL: "https://offline-infisical.example", INFISICAL_EXPECT: "/unused:UNUSED" });
+    const html = await (await browser("/admin")).text();
+    for (const b of bearerBots) {
+      assert.ok(html.includes(`<strong>${b.seat}</strong>`), b.seat);
+      const unticked = await adminAction("mint_gb_bearer", { identity: b.seat });
+      assert.equal(unticked.status, 200, b.seat);
+      const oldToken = (await unticked.text()).match(/sbt_[a-z0-9-]+_[A-Za-z0-9_-]{43}/)?.[0];
+      assert.ok(oldToken, b.seat);
+      assert.equal((await mcp(oldToken, "tools/list")).status, 401);
+      const minted = await adminAction("mint_gb_bearer", { identity: b.seat, mcp_accept: "1" });
+      assert.equal(minted.status, 200, b.seat);
+      const bearer = (await minted.text()).match(/sbt_[a-z0-9-]+_[A-Za-z0-9_-]{43}/)?.[0];
+      assert.ok(bearer && bearer !== oldToken);
+      assert.equal((await mcp(oldToken, "tools/list")).status, 401);
+      const who = await call(bearer, "whoami");
+      assert.equal(who.json.result.isError, undefined, summarize(who.json));
+      assert.equal(who.json.result.structuredContent.seat, b.seat);
+      const other = await call(bearer, "whoami", { identity: "ECHO" });
+      assert.equal(other.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
+      assert.equal((await adminAction("revoke_gb_bearer", { identity: b.seat })).status, 303);
+      assert.equal((await mcp(bearer, "tools/list")).status, 401);
+    }
+    assert.equal((await adminAction("mint_gb_bearer", { identity: "BF-TYPO" })).status, 400);
   });
 
   console.log(`\n${passed} passed`);

@@ -6463,5 +6463,435 @@ class MinimaxBundleTests(World):
         self.assertNotRegex(out, r"FAIL\s+minimax")
 
 
+TEXT_SUFFIXES = frozenset(
+    {".py", ".md", ".sh", ".json", ".yml", ".yaml", ".mjs", ".js", ".swift", ".plist", ".toml", ".txt"}
+)
+
+
+def _repo_text_files(root: Path):
+    """Every text file of the repository, the .git directory left out."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [
+            d for d in dirnames if d not in (".git", "node_modules", "__pycache__", ".venv", "dist")
+        ]
+        for name in sorted(filenames):
+            path = Path(dirpath) / name
+            if path.suffix in TEXT_SUFFIXES:
+                yield path
+
+
+class ServerRootResolutionTests(World):
+    """The generated hook shims resolve the fleet roots themselves, and the installed registry names this
+    host's roots.
+
+    A server host keeps the integration trees and the apps folder on the volume it names in
+    FLEET_SERVER_VOLUME, and the root account has no ~/Code and no ~/apps.  A hook process often inherits no
+    profile either, so the shim resolves the roots the way server_working_dirs.py resolves them:  the
+    environment, then the home directory, then the volume, and a candidate counts only when the directory is
+    there.  The registry that goes into the stable dir names the same roots, so the disk janitor looks for
+    checkouts where they are.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.volume = self.tmp / "volume"
+        (self.volume / "Code").mkdir(parents=True)
+        (self.volume / "apps" / "lanes").mkdir(parents=True)
+        # a fake python3 that prints the roots the shim exported
+        self.bin = self.tmp / "bin"
+        self.bin.mkdir()
+        fake = self.bin / "python3"
+        fake.write_text(
+            "#!/bin/sh\n"
+            "printf 'code=%s\\napps=%s\\nlanes=%s\\n' "
+            '"${FLEET_CODE_ROOT-}" "${FLEET_APPS_ROOT-}" "${FLEET_LANES_ROOT-}"\n',
+            encoding="utf-8",
+        )
+        os.chmod(fake, 0o755)
+
+    # -- helpers
+
+    def shim(self, text: str) -> Path:
+        path = self.tmp / "shim" / T.HOOK_NAME
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        os.chmod(path, 0o755)
+        return path
+
+    def roots(self, shim: Path, home: Path, **extra: str) -> dict:
+        """The roots the shim exported, read from the python3 it started."""
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(home)}
+        env.update(extra)
+        payload = json.dumps(
+            {"tool_name": "Bash", "tool_input": {"command": "git clone x y"}}
+        ).encode("utf-8")
+        rc, out, err = run_bytes([str(shim), "--format", "claude"], payload, env)
+        self.assertEqual(rc, 0, err)
+        got = {}
+        for line in out.decode("utf-8").splitlines():
+            key, _, value = line.partition("=")
+            got[key] = value
+        return got
+
+    # -- the shim
+
+    def test_every_hook_carries_the_root_resolution(self) -> None:
+        for text in (T.render_hook_shim(), T.render_fleet_hook_shim(), T.render_minimax_hook_shim()):
+            with self.subTest(shim=text.splitlines()[0]):
+                self.assertIn("_lg_root()", text)
+                self.assertIn("FLEET_SERVER_VOLUME", text)
+                self.assertIn('export FLEET_CODE_ROOT="$_lg_code"', text)
+                self.assertIn('export FLEET_APPS_ROOT="$_lg_apps"', text)
+                self.assertIn('export FLEET_LANES_ROOT="$_lg_lanes"', text)
+
+    def test_a_host_with_no_code_and_no_apps_uses_the_volume(self) -> None:
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(shim, self.home, FLEET_SERVER_VOLUME=str(self.volume))
+        self.assertEqual(got["code"], str(self.volume / "Code"))
+        self.assertEqual(got["apps"], str(self.volume / "apps"))
+        self.assertEqual(got["lanes"], str(self.volume / "apps" / "lanes"))
+
+    def test_the_home_wins_over_the_volume(self) -> None:
+        (self.home / "Code").mkdir()
+        (self.home / "apps" / "lanes").mkdir(parents=True)
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(shim, self.home, FLEET_SERVER_VOLUME=str(self.volume))
+        self.assertEqual(got["code"], str(self.home / "Code"))
+        self.assertEqual(got["apps"], str(self.home / "apps"))
+        self.assertEqual(got["lanes"], str(self.home / "apps" / "lanes"))
+
+    def test_the_environment_wins_over_both(self) -> None:
+        code = self.tmp / "elsewhere" / "Code"
+        code.mkdir(parents=True)
+        (self.home / "Code").mkdir()
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(
+            shim, self.home, FLEET_CODE_ROOT=str(code), FLEET_SERVER_VOLUME=str(self.volume)
+        )
+        self.assertEqual(got["code"], str(code))
+        self.assertEqual(got["apps"], str(self.volume / "apps"))
+
+    def test_a_configured_root_that_is_not_there_is_skipped(self) -> None:
+        """A candidate counts only when the directory is there, the rule server_working_dirs.py uses.
+
+        A stale setting must not point the guard at a path that is not on this host, so the next candidate
+        answers instead.
+        """
+        code = self.tmp / "elsewhere" / "Code"  # never created
+        (self.home / "Code").mkdir()
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(shim, self.home, FLEET_CODE_ROOT=str(code))
+        self.assertEqual(got["code"], str(self.home / "Code"))
+
+    def test_an_exported_volume_beats_the_baked_one(self) -> None:
+        """The volume is baked in as the default, so an environment that names another volume wins."""
+        other = self.tmp / "other-volume"
+        (other / "Code").mkdir(parents=True)
+        shim = self.shim(T.render_hook_shim(volume=str(self.volume)))
+        got = self.roots(shim, self.home, FLEET_SERVER_VOLUME=str(other))
+        self.assertEqual(got["code"], str(other / "Code"))
+
+    def test_the_volume_is_baked_in_for_a_process_that_inherits_nothing(self) -> None:
+        shim = self.shim(T.render_hook_shim(volume=str(self.volume)))
+        got = self.roots(shim, self.home)
+        self.assertEqual(got["code"], str(self.volume / "Code"))
+        self.assertEqual(got["apps"], str(self.volume / "apps"))
+        self.assertEqual(got["lanes"], str(self.volume / "apps" / "lanes"))
+
+    def test_the_shim_still_relocates_and_still_short_circuits(self) -> None:
+        # the roots block must not break the two properties the shim is built on
+        shim = self.shim(T.render_hook_shim())
+        moved = self.tmp / "moved"
+        moved.mkdir()
+        (moved / T.HOOK_NAME).write_bytes(shim.read_bytes())
+        os.chmod(moved / T.HOOK_NAME, 0o755)
+        got = self.roots(moved / T.HOOK_NAME, self.home, FLEET_SERVER_VOLUME=str(self.volume))
+        self.assertEqual(got["code"], str(self.volume / "Code"))
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)}
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls -la"}}).encode()
+        rc, out, err = run_bytes([str(shim), "--format", "claude"], payload, env)
+        self.assertEqual((rc, out), (0, b""), err)  # no trigger word, no Python
+
+    # -- the registry
+
+    def build_registry(self, env: dict) -> tuple:
+        with mock.patch.dict(os.environ, env, clear=True):
+            files = T.build_files(self.source, self.paths)
+        return json.loads(files["fleet-apps.json"].decode("utf-8")), files
+
+    def test_the_installed_registry_names_this_hosts_roots(self) -> None:
+        reg, files = self.build_registry(
+            {"HOME": str(self.home), "FLEET_SERVER_VOLUME": str(self.volume)}
+        )
+        self.assertEqual(reg["codeRoot"], str(self.volume / "Code"))
+        self.assertEqual(reg["appsRoot"], str(self.volume / "apps"))
+        self.assertNotIn("/Users/jay", files["fleet-apps.json"].decode("utf-8"))
+
+    def test_the_apps_and_the_seats_are_the_sources_own(self) -> None:
+        reg, files = self.build_registry(
+            {"HOME": str(self.home), "FLEET_SERVER_VOLUME": str(self.volume)}
+        )
+        source = json.loads(Path(self.source.registry).read_text(encoding="utf-8"))
+        self.assertEqual(reg["apps"], source["apps"])
+        self.assertEqual(reg["seats"], source["seats"])
+        self.assertEqual(sorted(reg), sorted(source))
+        # every byte but the two root values is the source's own
+        text = files["fleet-apps.json"].decode("utf-8")
+        self.assertEqual(
+            text.replace(str(self.volume / "Code"), source["codeRoot"]).replace(
+                str(self.volume / "apps"), source["appsRoot"]
+            ),
+            Path(self.source.registry).read_text(encoding="utf-8"),
+        )
+
+    def test_a_host_with_code_and_apps_keeps_them(self) -> None:
+        (self.home / "Code").mkdir()
+        (self.home / "apps").mkdir()
+        reg, _ = self.build_registry({"HOME": str(self.home)})
+        self.assertEqual(reg["codeRoot"], str(self.home / "Code"))
+        self.assertEqual(reg["appsRoot"], str(self.home / "apps"))
+
+    def test_the_installed_registry_names_a_configured_root(self) -> None:
+        """A root the host names is the root the registry names, the same one the shim exports."""
+        code = self.tmp / "elsewhere" / "Code"
+        apps = self.tmp / "elsewhere" / "apps"
+        code.mkdir(parents=True)
+        apps.mkdir(parents=True)
+        reg, _ = self.build_registry(
+            {"HOME": str(self.home), "FLEET_CODE_ROOT": str(code), "FLEET_APPS_ROOT": str(apps)}
+        )
+        self.assertEqual(reg["codeRoot"], str(code))
+        self.assertEqual(reg["appsRoot"], str(apps))
+
+    def test_the_installed_registry_skips_a_configured_root_that_is_not_there(self) -> None:
+        """A stale setting cannot point the janitor at a path that is not on this host."""
+        code = self.tmp / "elsewhere" / "Code"  # never created
+        (self.home / "Code").mkdir()
+        reg, _ = self.build_registry({"HOME": str(self.home), "FLEET_CODE_ROOT": str(code)})
+        self.assertEqual(reg["codeRoot"], str(self.home / "Code"))
+
+    def test_the_source_registry_is_never_rewritten(self) -> None:
+        before = Path(self.source.registry).read_bytes()
+        self.build_registry({"HOME": str(self.home), "FLEET_SERVER_VOLUME": str(self.volume)})
+        self.assertEqual(Path(self.source.registry).read_bytes(), before)
+
+    # -- the rule templates travel with the package
+
+    def source_with_the_rules(self) -> T.Source:
+        """A source package that carries the rule templates and the module that reads them.
+
+        The shared fixture is a small source tree on purpose, and it holds neither:  the real package has
+        both, and this is where the difference shows.
+        """
+        pkg = Path(self.source.scripts_dir) / "fleet_lanes"
+        shutil.copytree(REAL_PKG / "rules", pkg / "rules")
+        for module in ("install_rules.py", "doctor.py"):
+            shutil.copy(REAL_PKG / module, pkg / module)
+        return self.source
+
+    def test_the_installed_copy_carries_the_rule_templates(self) -> None:
+        """install_rules reads its templates beside itself, so the installed copy has to carry them.
+
+        Without them the tool cannot run from the stable dir at all:  it dies on the missing template.
+        """
+        files = T.build_files(self.source_with_the_rules(), self.paths)
+        rules = sorted(rel for rel in files if rel.startswith("fleet_lanes/rules/"))
+        self.assertEqual(
+            rules,
+            sorted(f"fleet_lanes/rules/{p.name}" for p in (REAL_PKG / "rules").iterdir() if p.is_file()),
+        )
+        for rel in rules:
+            self.assertEqual(files[rel], (REAL_PKG / "rules" / rel.rsplit("/", 1)[1]).read_bytes())
+
+    def test_the_installed_install_rules_finds_its_templates(self) -> None:
+        """The copy the stable dir holds runs the tool, and the tool finds the templates it reads."""
+        files = T.build_files(self.source_with_the_rules(), self.paths)
+        stable = self.tmp / "stable"
+        for rel, data in files.items():
+            path = stable / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        env = dict(os.environ)
+        env["FLEET_APPS_JSON"] = str(stable / "fleet-apps.json")
+        env["PYTHONPATH"] = str(stable)
+        proc = subprocess.run(
+            [sys.executable, "-m", "fleet_lanes.install_rules", "plan", "codex", "--home", str(self.home)],
+            env=env,
+            cwd=str(self.tmp),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=TIMEOUT,
+        )
+        out = proc.stdout.decode("utf-8", "replace")
+        err = proc.stderr.decode("utf-8", "replace")
+        self.assertNotIn("FileNotFoundError", err)
+        self.assertNotIn("Traceback", err)
+        self.assertIn("== codex", out)
+        self.assertEqual(proc.returncode, 0, err)
+
+    def test_an_installed_dir_with_the_rule_templates_plans_clean(self) -> None:
+        """The installed rule templates are this tool's own shape, not foreign extras.
+
+        The templates travel under fleet_lanes/rules/, so a second plan over an installed
+        dir must see them as ours:  extras here would refuse every later apply.
+        """
+        source = self.source_with_the_rules()
+        res = T.apply_tools(source, self.paths, probes=False)
+        self.assertTrue(res.ok, res)
+        plan = T.plan_tools(source, self.paths)
+        self.assertEqual((plan.state, plan.problems), ("current", []))
+
+    # -- the repository
+
+    def test_no_server_volume_path_is_written_in_the_repository(self) -> None:
+        """The volume's path is host configuration:  the host names it in the environment and a shim bakes
+        it in when it is generated, so the repository holds no volume path at all.
+
+        The needle is assembled from two halves, so this file does not hold it either.
+        """
+        needle = "/mnt/" + "fleet-extra"
+        for path in sorted(_repo_text_files(SCRIPTS_DIR.parent)):
+            self.assertNotIn(needle, path.read_text(encoding="utf-8", errors="replace"), str(path))
+
+    def test_the_lane_map_rule_templates_stay_plain_ascii(self) -> None:
+        """Every seat reads the rules on every platform, so they stay plain ASCII."""
+        for name in ("lane-map.full.md", "lane-map.minimal.md"):
+            text = (REAL_PKG / "rules" / name).read_text(encoding="utf-8")
+            self.assertEqual(text, text.encode("ascii").decode("ascii"), name)
+
+    def test_the_installed_rule_templates_are_not_foreign_files(self) -> None:
+        """A second run must not call the installed templates foreign and refuse.
+
+        build_files copies the rule templates into the stable dir, so scan_stable has to read them as files
+        this tool writes:  the shape check knew only the modules, and a template fell into the extras, which
+        is what `apply tools` refuses on.
+        """
+        files = T.build_files(self.source_with_the_rules(), self.paths)
+        stable = self.tmp / "stable"
+        for rel, data in files.items():
+            path = stable / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        found, extras = T.scan_stable(str(stable))
+        rules = sorted(rel for rel in found if rel.startswith("fleet_lanes/rules/"))
+        self.assertTrue(rules, "the rule templates were not read as files this tool writes")
+        self.assertEqual([e for e in extras if e.startswith("fleet_lanes/rules")], [])
+
+    def test_a_configured_apps_root_does_not_move_the_lanes_root(self) -> None:
+        """The host tools resolve the lanes root from FLEET_LANES_ROOT, the home and the volume.
+
+        They never derive it from the apps root, so a shim that offered that candidate would point the
+        guard at a different directory than the host tools read, and the two would disagree about where a
+        lane lives.
+        """
+        apps = self.tmp / "elsewhere" / "apps"
+        (apps / "lanes").mkdir(parents=True)
+        (self.home / "apps" / "lanes").mkdir(parents=True)
+        shim = self.shim(T.render_hook_shim())
+        got = self.roots(shim, self.home, FLEET_APPS_ROOT=str(apps))
+        self.assertEqual(got["apps"], str(apps))
+        self.assertEqual(got["lanes"], str(self.home / "apps" / "lanes"))
+
+    def test_a_relative_root_with_no_home_is_the_relative_path(self) -> None:
+        """A relative root is joined onto the home, and with no home there is nothing to join it onto.
+
+        Python reads it as os.path.join(home, raw), which with an empty home is the relative path itself,
+        so the shim has to read it the same way or the two disagree about where the trees are.
+        """
+        work = self.tmp / "work"
+        (work / "relcode").mkdir(parents=True)
+        shim = self.shim(T.render_hook_shim())
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": ""}
+        payload = json.dumps(
+            {"tool_name": "Bash", "tool_input": {"command": "git clone x y"}}
+        ).encode("utf-8")
+        rc, out, err = run_bytes(
+            [str(shim), "--format", "claude"],
+            payload,
+            dict(env, FLEET_CODE_ROOT="relcode"),
+            cwd=str(work),
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("code=relcode", out.decode("utf-8"))
+        rc, out, err = run_bytes(
+            [str(shim), "--format", "claude"],
+            payload,
+            dict(env, FLEET_CODE_ROOT="~/relcode"),
+            cwd=str(work),
+        )
+        self.assertEqual(rc, 0, err)
+        self.assertIn("code=relcode", out.decode("utf-8"))
+
+
+class VerifierShimVolumeTests(World):
+    """The copilot and opencode verifiers accept the shim the install wrote.
+
+    A shim carries the host's volume as its default, so a verify that runs in an environment the install
+    did not see has to accept that rendering too.  verify_tools and verify_minimax do; these two did not,
+    so an install on a server host failed its own verify.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.volume = self.tmp / "volume"
+        (self.volume / "Code").mkdir(parents=True)
+
+    def shim_with_the_volume(self) -> None:
+        facts = T.read_guard_facts(self.paths.stable)
+        shim = Path(self.paths.fleet_shim)
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text(T.render_fleet_hook_shim(facts, volume=str(self.volume)), encoding="utf-8")
+        os.chmod(shim, 0o755)
+
+    def test_the_copilot_verifier_accepts_a_shim_that_carries_the_volume(self) -> None:
+        self.shim_with_the_volume()
+        hooks = Path(self.paths.copilot_hooks)
+        hooks.parent.mkdir(parents=True, exist_ok=True)
+        hooks.write_text("{}\n", encoding="utf-8")
+        checks = T.verify_copilot(self.paths, minimal_path=False)
+        check = next(c for c in checks if c.name == "shim fleet-guard-hook")
+        self.assertEqual(check.status, "PASS", check.detail)
+
+    def test_the_opencode_verifier_accepts_a_shim_that_carries_the_volume(self) -> None:
+        self.shim_with_the_volume()
+        plugin = Path(self.paths.opencode_plugin)
+        plugin.parent.mkdir(parents=True, exist_ok=True)
+        plugin.write_text(T.render_opencode_plugin(), encoding="utf-8")
+        (Path(self.home) / ".config" / "opencode").mkdir(parents=True, exist_ok=True)
+        checks = T.verify_opencode(self.paths, minimal_path=False)
+        check = next(c for c in checks if c.name == "shim fleet-guard-hook")
+        self.assertEqual(check.status, "PASS", check.detail)
+
+
+class MinimaxProbeRootTests(World):
+    """The probe writes into the code root the guard watches.
+
+    The guard denies writes into the integration tree, so the probe has to write there.  On a server host
+    the trees live on the volume and the root account has no ~/Code, so a probe that wrote under the home
+    would test a path the guard does not watch:  the guard would allow that write, the probe would read the
+    allow as a failure to deny, and `apply tools` would refuse a correct install.
+    """
+
+    def test_the_probe_writes_into_the_volume_code_root(self) -> None:
+        volume = self.tmp / "volume"
+        (volume / "Code").mkdir(parents=True)
+        seen: list = []
+
+        def run(command, payload, env, timeout):
+            doc = json.loads(payload)
+            seen.append(doc["tool_input"].get("path", ""))
+            return T.RunResult(0, b"", b"")
+
+        with mock.patch.object(T, "registry_tree", return_value="ExampleRepo"):
+            with mock.patch.object(T, "run_shell", side_effect=run):
+                T.probe_minimax_files(
+                    "hook", str(self.home), "registry", 1, True, volume=str(volume)
+                )
+        self.assertTrue(seen)
+        self.assertIn(
+            os.path.join(str(volume), "Code", "ExampleRepo", "probe-placeholder"), seen
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
