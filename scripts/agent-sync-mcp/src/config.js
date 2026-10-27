@@ -275,6 +275,14 @@ export function loadConfig(env) {
   if (!/^[0-9a-f]{64}$/.test(accessAud)) accessMissing.push("ACCESS_AUD");
   if (ownerEmails.length === 0) accessMissing.push("OWNER_EMAILS");
 
+  // Deployment-owned binding for receipt verification.  No inferred mapping or
+  // caller-supplied principal; missing entry leaves that identity unconfigured.
+  const grTypedPrincipals = env.GR_TYPED_PRINCIPALS ? parseJsonVar(env, "GR_TYPED_PRINCIPALS") : {};
+  if (!grTypedPrincipals || typeof grTypedPrincipals !== "object" || Array.isArray(grTypedPrincipals) ||
+      Object.entries(grTypedPrincipals).some(([seat, principal]) => !/^[A-Za-z0-9_-]{1,100}$/.test(seat) ||
+        typeof principal !== "string" || !/^swu-[a-z0-9-]+\[bot\]$/.test(principal)))
+    throw new Error("config: invalid GR_TYPED_PRINCIPALS");
+
   return Object.freeze({
     host: PUBLIC_HOST,
     // The DM rule (owner decision, Oct 22 2026, hard cutover):  a seat may not open a new direct
@@ -326,6 +334,8 @@ export function loadConfig(env) {
     // Worker secret binding, not a var, so a later deploy from main does not
     // turn it off (DEPLOY.md, "AFC-477 second-event spike").
     whatsappEnabled: String(env.WHATSAPP_BRIDGE_ENABLED ?? "").trim() === "on",
+    grTypedPrincipals: Object.freeze({...grTypedPrincipals}),
+    grTypedEnabled: String(env.GR_TYPED_TOOLS ?? "").trim() === "on",
     // Default off: the gr_wf_ workflow verb tools are neither listed nor callable until the owner sets GR_WORKFLOW_TOOLS=on.
     grWorkflowEnabled: String(env.GR_WORKFLOW_TOOLS ?? "").trim() === "on",
     whatsappWakeEnabled: String(env.WHATSAPP_BRIDGE_WAKE_ENABLED ?? "").trim() === "on",

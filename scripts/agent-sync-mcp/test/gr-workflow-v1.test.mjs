@@ -144,3 +144,12 @@ test('valid refusal context is stripped without losing status or retry semantics
   assert.deepEqual(await gr.callWorkflow('wf_runs',{repo}),{status,body:{error:'workflow_request_refused',retryable:true}});
  }
 });
+
+test('typed and workflow discovery gates have independent cache keys',()=>{
+ const flags={grWorkflowEnabled:true,grTypedEnabled:true};
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,17);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
+ assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
+ assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
+ assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')||t.name.startsWith('gr_v1_pr_')));
+});

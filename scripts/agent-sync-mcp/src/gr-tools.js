@@ -17,6 +17,7 @@
 // relay's own error body;  no fallback, no retry storm, secrets never logged.
 
 import { z } from "zod";
+import { callTypedV1 } from "./gr-typed-v1.js";
 import { WF_V1_READ_ACTIONS, validWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
 
@@ -99,8 +100,13 @@ export class GrRelayClient {
     this.timeoutMs = timeoutMs;
   }
 
+  async callTyped(action, args, expectedPrincipal) {
+    return callTypedV1({action,args,baseUrl:this.#base,bearer:this.#secrets[2],
+      accessId:this.#secrets[0],accessSecret:this.#secrets[1],fetchImpl:this.fetch,expectedPrincipal});
+  }
+
   // Workflow verbs get a bounded stream, longer deadline and conservative write
-  // uncertainty. No automatic retries. Existing seven-action transport is unchanged.
+  // uncertainty.  No automatic retries.  Existing seven-action transport is unchanged.
   async callWorkflow(action, args) {
     if (!validWfV1Args(action, args)) return {status:400,body:{error:"invalid_workflow_args"}};
     const serialized = JSON.stringify(args);
