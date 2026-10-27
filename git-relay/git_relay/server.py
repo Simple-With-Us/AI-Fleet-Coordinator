@@ -204,7 +204,11 @@ class ServerUnavailable(Exception):
 ACTION_REQUIRED_PERMISSIONS = {
     "merge_pr": {"contents": "write", "pull_requests": "write"},
     "workflow_dispatch": {"actions": "write"},
-    "resolve_thread": {"pull_requests": "write"},
+    # GitHub gates resolveReviewThread at merge level for App tokens: pull_requests
+    # write alone returns FORBIDDEN, contents write with it succeeds (GitHub's PR team
+    # calls this intentional; reported at github/gh-aw#35726 and reproduced downstream).
+    # A seat whose ceiling lacks contents write is denied here, before any mint.
+    "resolve_thread": {"contents": "write", "pull_requests": "write"},
     # Use the PR-specific permission for these PR-only actions, including
     # conversation comments whose GitHub endpoint uses /issues/:number.
     "edit_pr": {"pull_requests": "write"},

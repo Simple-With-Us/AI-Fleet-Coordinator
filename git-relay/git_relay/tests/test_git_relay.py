@@ -651,6 +651,41 @@ class TestAppActions(unittest.TestCase):
             self.assertEqual(status, 503)
             self.assertIn("not configured", body["error"])
 
+    def test_resolve_thread_needs_contents_write_with_pull_requests_write(self):
+        # GitHub gates resolveReviewThread at merge level for App tokens.
+        thread = "PRRT_kwDOAbc-123_x"
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            relay.client.resolve_thread = lambda thread_id, bearer: {"resolved": True}
+            status, _ = relay.handle(SEAT_TOKEN, "resolve_thread", {"repo": "example/x", "thread_id": thread})
+            self.assertEqual(status, 200)
+            self.assertEqual(
+                relay.app_minter.calls,
+                [("swu-echo", "example/x", {"contents": "write", "pull_requests": "write"})],
+            )
+
+    def test_resolve_thread_denied_before_mint_when_ceiling_lacks_contents_write(self):
+        thread = "PRRT_kwDOAbc-123_x"
+        with tempfile.TemporaryDirectory() as tmp:
+            relay = self._relay(tmp)
+            relay.policy = SeatPolicy(
+                json.dumps(
+                    {
+                        "swu-echo": {
+                            "token": SEAT_TOKEN,
+                            "actions": ["resolve_thread"],
+                            "repos": ["example/*"],
+                            "app_slug": "swu-echo",
+                            "mint_permissions": {"pull_requests": "write"},
+                        }
+                    }
+                )
+            )
+            relay.client.resolve_thread = lambda thread_id, bearer: {"resolved": True}
+            status, _ = relay.handle(SEAT_TOKEN, "resolve_thread", {"repo": "example/x", "thread_id": thread})
+            self.assertEqual(status, 403)
+            self.assertEqual(relay.app_minter.calls, [])
+
     def test_edit_pr_uses_minted_bearer(self):
         with tempfile.TemporaryDirectory() as tmp:
             relay = self._relay(tmp)

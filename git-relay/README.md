@@ -66,7 +66,7 @@ is only a policy entry.
 | mint_token (per-repo, per-permission) | seat's App, relay-minted | implemented |
 | merge_pr (squash/merge/rebase) | seat's App (contents+pull_requests write) | implemented |
 | workflow_dispatch | seat's App (actions write) | implemented |
-| resolve_thread | seat's App (pull_requests write) | implemented |
+| resolve_thread | seat's App (contents write + pull_requests write) | implemented |
 | create_release, rerun_workflow, cancel_workflow, set_labels, create_issue_comment, request_reviewers, set_branch_protection, create_repo | seat's App | registered, refused until implemented |
 
 App-token minting:  GH_APP_<SLUG>_ID / GH_APP_<SLUG>_PRIVATE_KEY read together - one
