@@ -62,6 +62,7 @@ export const LINEAR_SECRETS = Object.freeze({
   WISE: Object.freeze({ clientId: "LINEAR_INSTINCT_CLIENT_ID", clientSecret: "LINEAR_INSTINCT_CLIENT_SECRET" }),
   CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
   CLAUDE: Object.freeze({ clientId: "LINEAR_CLAUDE_CLIENT_ID", clientSecret: "LINEAR_CLAUDE_CLIENT_SECRET" }),
+  CODEX: Object.freeze({ clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" }),
 });
 
 /** The Worker secret names for a seat, or null when the seat has no Linear app. */
@@ -83,6 +84,7 @@ export const LINEAR_INFISICAL = Object.freeze({
   WISE: Object.freeze({ clientId: "WISE_LINEAR_CLIENT_ID", clientSecret: "WISE_LINEAR_CLIENT_SECRET" }),
   CURSOR: Object.freeze({ clientId: "CURSOR_LINEAR_CLIENT_ID", clientSecret: "CURSOR_LINEAR_CLIENT_SECRET" }),
   CLAUDE: Object.freeze({ clientId: "CLAUDE_LINEAR_CLIENT_ID", clientSecret: "CLAUDE_LINEAR_CLIENT_SECRET" }),
+  CODEX: Object.freeze({ clientId: "CODEX_LINEAR_CLIENT_ID", clientSecret: "CODEX_LINEAR_CLIENT_SECRET" }),
 });
 
 /** Async: the seat's Linear pair resolved through Infisical when INFISICAL_MODE
@@ -115,7 +117,7 @@ export function linearClientFromPair(pair, seat, { gate, fetch: fetchImpl = glob
 // JET, ECHO, WISE and CLAUDE joined on 2026-10-16 (owner), each pair checked
 // first with `board whoami` against its own app.  JET-CHAT carries Jet's
 // normal access (owner, Oct 23 2026), so it is enabled with the Jet app.
-export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE"]);
+export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE", "CODEX"]);
 
 // ---------------------------------------------------------------- ported board rules
 
@@ -209,6 +211,7 @@ export const SEAT_APP_NAMES = Object.freeze({
   MA: "Muse Assist",
   CURSOR: "Cursor",
   CLAUDE: "Claude",
+  CODEX: "Codex",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),

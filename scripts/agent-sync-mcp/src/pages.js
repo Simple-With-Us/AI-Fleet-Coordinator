@@ -199,7 +199,9 @@ function gbBearerSection(rows, csrf, mintId = "") {
       const rotateDrops = r.kind === "seat" && (st.active || st.expired) && st.mcp_accept === true
         ? `<div class="warn bearer-warn">This bearer is currently accepted on /mcp.  Rotating without the box ticked removes that:  the new bearer will be GR-MCP only.</div>`
         : "";
-      const mint = !r.credentials
+      const mint = r.credentialsUnavailable
+        ? `<span class="warn">Credential readiness unknown (diagnostic read failed)</span>`
+        : !r.credentials
         ? `<span class="warn">No credentials loaded</span>`
         : r.kind === "seat"
           ? `${rotateDrops}<form class="inline bearer-form" method="post" action="/admin/action">${csrfField(csrf)}<input type="hidden" name="action" value="mint_gb_bearer"><input type="hidden" name="identity" value="${escapeHtml(r.identity)}">${mintIdField}<label class="bearer-accept"><input type="checkbox" name="mcp_accept" value="1"> Also accept this bearer on /mcp itself, in place of the consent flow</label><button type="submit">${escapeHtml(mintLabel)}</button></form>`
