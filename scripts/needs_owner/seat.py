@@ -7,10 +7,11 @@ whose `AGENT_SEAT` names another seat is refused here exactly as it would be the
 `AGENT_SEAT`, never `AGENT_LAUNCH_SEAT`, so every child process gets the verified seat as `AGENT_SEAT`
 and keeps the launcher variables as they were.
 """
+
 from __future__ import annotations
 
 import os
-from typing import Mapping
+from collections.abc import Mapping
 
 from . import f3
 from .errors import Refusal
@@ -23,14 +24,18 @@ def verified_seat(by: str, environ: Mapping[str, str] | None = None) -> str:
     if resolution.problem:
         raise Refusal(resolution.problem)
     if not resolution.seat:
-        raise Refusal("no seat:  AGENT_SEAT is not set and no launcher assigned one.  Export AGENT_SEAT=<your seat tag>")
+        raise Refusal(
+            "no seat:  AGENT_SEAT is not set and no launcher assigned one.  Export AGENT_SEAT=<your seat tag>"
+        )
     seat = f3.identity.valid_seat(resolution.seat)
     if not seat:
         raise Refusal("%r is not a seat tag" % resolution.seat[:40])
     wanted = f3.identity.canonical_seat(by)
     if wanted != seat:
-        raise Refusal("--by %s does not match this session's seat %s.  --by is only a check, never the source of identity" % (
-            wanted[:40], seat))
+        raise Refusal(
+            "--by %s does not match this session's seat %s.  --by is only a check, never the source of identity"
+            % (wanted[:40], seat)
+        )
     return seat
 
 

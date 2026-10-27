@@ -9,6 +9,7 @@ needs nothing else, and there is no second copy of either function in this packa
 If a helper cannot be found the gatherers refuse to produce output (`HelpersMissing`):  facts are never
 printed unredacted.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -17,7 +18,18 @@ import sys
 from pathlib import Path
 from typing import Any
 
-__all__ = ["HelpersMissing", "clean", "safe_ref", "safe_path", "safe_token", "redact", "render", "textsafe", "secretscan", "textfmt"]
+__all__ = [
+    "HelpersMissing",
+    "clean",
+    "redact",
+    "render",
+    "safe_path",
+    "safe_ref",
+    "safe_token",
+    "secretscan",
+    "textfmt",
+    "textsafe",
+]
 
 
 class HelpersMissing(RuntimeError):
@@ -36,7 +48,10 @@ def _load(name: str):
         return _loaded[name]
     path = _helper_dir() / (name + ".py")
     if not path.is_file():
-        raise HelpersMissing("the F3 helper %s.py was not found next to this package (looked in %s)" % (name, _helper_dir().name))
+        raise HelpersMissing(
+            "the F3 helper %s.py was not found next to this package (looked in %s)"
+            % (name, _helper_dir().name)
+        )
     module_name = "_fleet_facts_" + name
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
@@ -47,7 +62,9 @@ def _load(name: str):
         spec.loader.exec_module(module)
     except Exception as exc:  # a broken helper is a missing helper:  fail closed
         sys.modules.pop(module_name, None)
-        raise HelpersMissing("the F3 helper %s.py failed to load (%s)" % (name, type(exc).__name__)) from exc
+        raise HelpersMissing(
+            "the F3 helper %s.py failed to load (%s)" % (name, type(exc).__name__)
+        ) from exc
     _loaded[name] = module
     return module
 

@@ -24,4 +24,5 @@ Modules:
 
 Python 3.11 or newer, standard library only.  docs/protocols/needs-owner.md is the contract.
 """
+
 __version__ = "1.0.0"

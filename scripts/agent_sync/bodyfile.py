@@ -15,6 +15,7 @@ is wrong with the path and never repeats a byte of the file.
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import errno
@@ -44,8 +45,12 @@ def read_body_file(path: str) -> str:
         fd = os.open(path, flags)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
-            raise UsageError("--body-file %s is a symbolic link;  pass the real file" % shown) from None
-        raise UsageError("--body-file %s: cannot open it (%s)" % (shown, exc.strerror or type(exc).__name__)) from None
+            raise UsageError(
+                "--body-file %s is a symbolic link;  pass the real file" % shown
+            ) from None
+        raise UsageError(
+            "--body-file %s: cannot open it (%s)" % (shown, exc.strerror or type(exc).__name__)
+        ) from None
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
@@ -54,8 +59,10 @@ def read_body_file(path: str) -> str:
             raise UsageError("--body-file %s is not owned by you" % shown)
         mode = stat.S_IMODE(info.st_mode)
         if mode not in _ALLOWED_MODES:
-            raise UsageError("--body-file %s has mode %04o, not 0600 or 0400, so others may read or change it;  "
-                             "run chmod 600 on it first" % (shown, mode))
+            raise UsageError(
+                "--body-file %s has mode %04o, not 0600 or 0400, so others may read or change it;  "
+                "run chmod 600 on it first" % (shown, mode)
+            )
         if info.st_size > MAX_BYTES:
             raise UsageError("--body-file %s is larger than %d KB" % (shown, MAX_BYTES // 1024))
         data = b""
@@ -65,7 +72,9 @@ def read_body_file(path: str) -> str:
                 break
             data += chunk
     except OSError as exc:
-        raise UsageError("--body-file %s: cannot read it (%s)" % (shown, exc.strerror or type(exc).__name__)) from None
+        raise UsageError(
+            "--body-file %s: cannot read it (%s)" % (shown, exc.strerror or type(exc).__name__)
+        ) from None
     finally:
         os.close(fd)
     if len(data) > MAX_BYTES:
