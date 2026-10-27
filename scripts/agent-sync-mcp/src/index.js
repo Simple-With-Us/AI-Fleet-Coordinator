@@ -1145,8 +1145,11 @@ async function serveAdmin(request, env, config, oauth, email) {
         const g = gate(env, identity);
         try { status = await g.gbBearerStatus(); } catch { /* Shown as unknown. */ }
         try { mismatches = (await g.gbBearerMismatches())[identity] ?? null; } catch { mismatchesUnavailable = true; }
-        const credentials = await resolveBearerSeatCredentials(env, config, identity);
-        return { identity, kind: "seat", credentials: Boolean(credentials), status, mismatches, mismatchesUnavailable };
+        let credentials = null;
+        let credentialsUnavailable = false;
+        try { credentials = await resolveBearerSeatCredentials(env, config, identity); }
+        catch { credentialsUnavailable = true; }
+        return { identity, kind: "seat", credentials: Boolean(credentials), credentialsUnavailable, status, mismatches, mismatchesUnavailable };
       }),
     ]);
     // Observability for the Infisical transition (kody 4365623014):  the mode
