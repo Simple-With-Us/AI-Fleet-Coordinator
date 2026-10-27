@@ -49,12 +49,16 @@ class InteractivePolicyProposalTest(unittest.TestCase):
         self.assertEqual(self.cfg["app_slug"], "swu-wise")
         self.assertNotIn("token", self.cfg)
 
-    def test_repos_are_unique_org_repos(self):
+    def test_repos_are_the_org_repos_plus_the_one_personal_repo(self):
         repos = self.cfg["repos"]
-        self.assertEqual(len(repos), 17)
-        self.assertEqual(len(set(repos)), 17)
+        self.assertEqual(len(repos), 18)
+        self.assertEqual(len(set(repos)), 18)
+        personal = [r for r in repos if not r.startswith("Simple-With-Us/")]
+        self.assertEqual(personal, ["jaywedgeworth22/Fleet-OPS"])
+        org = [r for r in repos if r.startswith("Simple-With-Us/")]
+        self.assertEqual(len(org), 17)
         for repo in repos:
-            self.assertRegex(repo, r"^Simple-With-Us/[A-Za-z0-9._-]+$")
+            self.assertRegex(repo, r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
         self.assertNotIn("Simple-With-Us/Fleet-OPS", repos)
 
     def test_mint_ceiling_has_no_checks_or_admin(self):
