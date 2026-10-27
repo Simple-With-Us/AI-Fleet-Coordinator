@@ -165,8 +165,8 @@ class PathFilterTests(unittest.TestCase):
 
     def test_an_ordinary_path_is_not_a_secret(self):
         for path in (
-            "/mnt/fleet-extra/Code/AI-Fleet-Coordinator/AGENTS.md",
-            "/mnt/fleet-extra/Code/Fleet-OPS/AGENTS.md",
+            "/srv/example-code/AI-Fleet-Coordinator/AGENTS.md",
+            "/srv/example-code/example-repo/AGENTS.md",
         ):
             self.assertFalse(collector.is_secret_path(path), path)
 

@@ -64,7 +64,7 @@ final class ServerStatusReportTests: XCTestCase {
 
     /// One watched file.
     private func file(
-        path: String = "/mnt/fleet-extra/Code/example-repo/AGENTS.md",
+        path: String = "/srv/example-code/example-repo/AGENTS.md",
         bytes: String? = "5290",
         sha: String? = "ab12",
         drift: String = "unchanged"
@@ -253,13 +253,13 @@ final class ServerStatusReportTests: XCTestCase {
         let json = report(
             at: now,
             files: [
-                file(path: "/mnt/fleet-extra/Code/example-repo/AGENTS.md", drift: "changed"),
-                file(path: "/mnt/fleet-extra/Code/HogHunter/README.md", drift: "unchanged"),
+                file(path: "/srv/example-code/example-repo/AGENTS.md", drift: "changed"),
+                file(path: "/srv/example-code/HogHunter/README.md", drift: "unchanged"),
             ]
         )
         let reading = try read(json, now: now)
         XCTAssertEqual(reading.driftedFiles.count, 1)
-        XCTAssertEqual(reading.driftedFiles.first?.path, "/mnt/fleet-extra/Code/example-repo/AGENTS.md")
+        XCTAssertEqual(reading.driftedFiles.first?.path, "/srv/example-code/example-repo/AGENTS.md")
         XCTAssertEqual(reading.driftedFiles.first?.fileDrift, .changed)
         XCTAssertEqual(reading.driftedFiles.first?.state, .drift)
         XCTAssertEqual(reading.configState, .drift)
@@ -271,7 +271,7 @@ final class ServerStatusReportTests: XCTestCase {
         let now = Date()
         let json = report(
             at: now,
-            files: [file(path: "/mnt/fleet-extra/Code/example-repo/AGENTS.md", bytes: nil, sha: nil, drift: "missing")]
+            files: [file(path: "/srv/example-code/example-repo/AGENTS.md", bytes: nil, sha: nil, drift: "missing")]
         )
         let reading = try read(json, now: now)
         let gone = reading.files.first
