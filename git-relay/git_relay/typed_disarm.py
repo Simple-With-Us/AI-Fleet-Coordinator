@@ -37,6 +37,10 @@ class Refused(ValueError):
     pass
 
 
+class RateLimited(Refused):
+    """Policy quota exhausted before any upstream effect."""
+
+
 class Unknown(RuntimeError):
     """Fixed public error, never wraps upstream text or credentials."""
 
@@ -55,7 +59,10 @@ class TypedDisarm:
         if _binding is not _FACTORY_BINDING:
             raise Refused("use authorized factory")
         self.client, self.policy, self.seat = client, policy, seat
-        expected, ceiling = policy.app_identity(seat)
+        try:
+            expected, ceiling = policy.app_identity(seat)
+        except KeyError:
+            raise Refused("unknown seat") from None
         if not bearer or app_slug != expected or app_slug != seat:
             raise Refused("own App required")
         if (
@@ -79,9 +86,15 @@ class TypedDisarm:
             client._check_repo(repo)
         except ValueError:
             raise Refused("invalid repository") from None
-        if policy.authorize(seat, action, repo):
+        denial = policy.authorize(seat, action, repo)
+        if denial == "hourly rate limit reached for this seat":
+            raise RateLimited("quota exhausted")
+        if denial:
             raise Refused("action or repository denied")
-        app_slug, ceiling = policy.app_identity(seat)
+        try:
+            app_slug, ceiling = policy.app_identity(seat)
+        except KeyError:
+            raise Refused("unknown seat") from None
         required = _required_perms(action)
         if _perm_within_ceiling(required, ceiling):
             raise Refused("seat permission ceiling insufficient")

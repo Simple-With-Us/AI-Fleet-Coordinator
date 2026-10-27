@@ -58,7 +58,7 @@ export async function callTypedV1({action,args,baseUrl,bearer,accessId,accessSec
     if (response.status !== 200) {
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return unknown();
       if ([401,403].includes(response.status)) return {status:response.status,body:{error:'typed_request_refused',retryable:false}};
-      if (response.status === 503 && parsed.retryable === true) return {status:503,body:{error:'typed_preflight_unavailable',retryable:true}};
+      if ([429,503].includes(response.status) && parsed.retryable === true) return {status:response.status,body:{error:'typed_preflight_unavailable',retryable:true}};
       return unknown();
     }
     if (!validTypedV1Receipt(action,args,parsed) || parsed.principal !== expectedPrincipal) return unknown();

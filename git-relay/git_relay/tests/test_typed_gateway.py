@@ -99,6 +99,14 @@ class Tests(unittest.TestCase):
             self.assertEqual(status, 200 if enabled else 400)
         self.assertEqual(len(self.client.calls), 1)
 
+    def test_quota_denial_retryable_before_any_effect(self):
+        self.assertEqual(self.gateway.handle(TOKEN, "pr_state", ARGS)[0], 200)
+        count = len(self.client.calls)
+        status, body = self.gateway.handle(TOKEN, "pr_state", ARGS)
+        self.assertEqual(status, 429)
+        self.assertTrue(body["retryable"])
+        self.assertEqual(len(self.client.calls), count)
+
     def test_unknown_survives_restart(self):
         self.client.replies = [state(), TimeoutError(), TimeoutError()]
         self.assertEqual(self.gateway.handle(TOKEN, "pr_automerge_disable", ARGS)[0], 502)

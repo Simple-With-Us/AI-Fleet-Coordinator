@@ -86,6 +86,16 @@ class Tests(unittest.TestCase):
             TypedDisarm(Client([]), Policy(), "swu-wise", "caller-token", "swu-wise",
                         ("pr_automerge_disable", ARGS["repo"]))
 
+    def test_unknown_seat_lookup_maps_to_refused(self):
+        class Missing(Policy):
+            def app_identity(self, seat):
+                raise KeyError(seat)
+
+        client = Client([])
+        client._check_repo = lambda repo: None
+        with self.assertRaises(Refused):
+            TypedDisarm.for_action(client, Missing(), None, "missing", "pr_state", ARGS["repo"])
+
     def test_scope_mismatch_refused(self):
         with self.assertRaises(Refused):
             self.svc([], ("pr_state", ARGS["repo"])).disable(ARGS)

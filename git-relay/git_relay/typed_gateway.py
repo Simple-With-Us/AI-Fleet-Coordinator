@@ -4,7 +4,7 @@ Injected only in offline contract tests until review and host qualification.
 """
 
 from .outcomes import OutcomeStoreError, key_for
-from .typed_disarm import PreflightUnavailable, Refused, TypedDisarm
+from .typed_disarm import PreflightUnavailable, RateLimited, Refused, TypedDisarm
 
 ACTIONS = ("pr_state", "pr_hold_state", "pr_automerge_disable")
 
@@ -76,6 +76,9 @@ class TypedGateway:
             )
             result = "ok"
             return 200, payload
+        except RateLimited:
+            result = "rate_limited"
+            return 429, {"error": "typed quota exhausted", "retryable": True}
         except PreflightUnavailable:
             if key is not None:
                 self.outcomes.finish(key, "refused")
