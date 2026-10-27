@@ -533,6 +533,92 @@ class GuardIntegration(unittest.TestCase):
         p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
         self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
 
+    def test_disarm_unconfirmed_publishes_failure_not_green(self):
+        # AFC-553: the disarm mutation is refused for the workflow's own
+        # token, so auto-merge may still be armed.  The guard cannot vouch
+        # that a merge will not run past the hold check, so the merge-gate
+        # conclusion must be failure and must say so - a degraded guard
+        # never publishes green.
+        self._clear_scenario()
+        self.scenario(
+            {
+                **json.load(open(self.scenario_path)),
+                "armed": True,
+                "fail": {
+                    "pr_merge": {
+                        "rc": 1,
+                        "stderr": "Resource not accessible by integration",
+                    }
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 3)
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        self.assertEqual(len(checks), 1)
+        payload = json.loads(checks[0]["stdin"])
+        self.assertEqual(payload["conclusion"], "failure")
+        self.assertIn("disarm", payload["output"]["title"])
+        self.assertIn("armed", payload["output"]["summary"])
+
+    def test_disarm_not_armed_control_publishes_success(self):
+        # Control for the test above: with the SAME scenario and auto-merge
+        # off, the guard publishes green.  Without this the failure test
+        # could pass for the wrong reason (a broken fixture rather than the
+        # disarm).
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)), "armed": False})
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        self.assertEqual(len(checks), 1)
+        payload = json.loads(checks[0]["stdin"])
+        self.assertEqual(payload["conclusion"], "success")
+        self.assertIn("no active merge holds", payload["output"]["title"])
+
+    def test_disarm_unconfirmed_keeps_the_hold_list_in_the_summary(self):
+        # An active hold AND an unconfirmed disarm: the conclusion is
+        # failure, the title names the disarm, and the summary still names
+        # the hold, so neither reason is lost.
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {
+                    "3": [
+                        [
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            ),
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *WISE,
+                                "2026-10-25T02:00:00Z",
+                            ),
+                        ]
+                    ]
+                },
+                "armed": True,
+                "fail": {
+                    "pr_merge": {
+                        "rc": 1,
+                        "stderr": "Resource not accessible by integration",
+                    }
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 3)
+        checks = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        self.assertEqual(len(checks), 1)
+        payload = json.loads(checks[0]["stdin"])
+        self.assertEqual(payload["conclusion"], "failure")
+        self.assertIn("disarm", payload["output"]["title"])
+        self.assertIn("do-not-automerge", payload["output"]["summary"])
+
     def test_owned_patch_failure_posts_fresh_and_red_job(self):
         sha = "deadbeef" * 5
         self._clear_scenario()
