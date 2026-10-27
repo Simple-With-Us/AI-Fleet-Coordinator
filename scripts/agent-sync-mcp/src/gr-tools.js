@@ -106,7 +106,7 @@ export class GrRelayClient {
   }
 
   // Workflow verbs get a bounded stream, longer deadline and conservative write
-  // uncertainty. No automatic retries. Existing seven-action transport is unchanged.
+  // uncertainty.  No automatic retries.  Existing seven-action transport is unchanged.
   async callWorkflow(action, args) {
     if (!validWfV1Args(action, args)) return {status:400,body:{error:"invalid_workflow_args"}};
     const serialized = JSON.stringify(args);
