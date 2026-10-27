@@ -108,9 +108,7 @@ class Tests(unittest.TestCase):
 
     def test_handle_is_bound_to_its_action_and_repo(self):
         minter = Minter()
-        handle = WorkflowVerbs.for_action(
-            Client({}), Policy(), minter, "swu-wise", "wf_tree", REPO
-        )
+        handle = WorkflowVerbs.for_action(Client({}), Policy(), minter, "swu-wise", "wf_tree", REPO)
         handle.run("wf_tree", {"repo": REPO, "ref": "main"})
         with self.assertRaises(Refused):
             handle.run("wf_file_put", {"repo": REPO})
