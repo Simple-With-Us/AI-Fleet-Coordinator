@@ -42,11 +42,13 @@ extra trigger id becomes its own record and the counter becomes `lost`.
 
 Python 3.11+, standard library only.
 """
+
 from __future__ import annotations
 
 import os
 import re
-from typing import Any, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from typing import Any
 
 from . import live as L
 
@@ -54,14 +56,34 @@ from . import live as L
 # `usd_per_day` is gone with the dollar axis (owner 2026-10-13):  wake accounting is frequency-only,
 # so a dollar total can no longer produce a hold reason.  Kept out of the set deliberately -- a
 # reason nothing can emit is worse than no reason at all.
-HOLD_REASONS = frozenset({"wakes_per_hour", "wakes_per_day", "per_topic_per_hour", "owner_per_day",
-                          "owner_per_topic_per_hour", "overflow", "host_busy", "host_wake_slots"})
+HOLD_REASONS = frozenset(
+    {
+        "wakes_per_hour",
+        "wakes_per_day",
+        "per_topic_per_hour",
+        "owner_per_day",
+        "owner_per_topic_per_hour",
+        "overflow",
+        "host_busy",
+        "host_wake_slots",
+    }
+)
 FILE_NAME = "held-back.json"
 NAME_LIMIT = 100  # channel, topic and sender, as in the wake body
 LINK_LIMIT = 200  # a longer link is sent as "" (never cut):  the message id is enough to find it
 # What an overflow entry keeps:  enough to list it by id and to build a catch-up wake from it.
-COMPACT_KEYS = ("message_id", "seq", "at", "reason", "dm", "owner", "topic_key", "wake_ids", "route_tagged",
-                "no_primary")
+COMPACT_KEYS = (
+    "message_id",
+    "seq",
+    "at",
+    "reason",
+    "dm",
+    "owner",
+    "topic_key",
+    "wake_ids",
+    "route_tagged",
+    "no_primary",
+)
 # A catch-up wake that surfaced nothing waits before the next one:  15 minutes, doubling up to 4 hours,
 # and back to none once anything surfaces.  Bounded retries, on top of the budgets every wake obeys.
 CATCH_UP_FIRST_WAIT = 15 * 60.0
@@ -86,7 +108,11 @@ def _mark_closing(removed: list[dict[str, Any]], data: Mapping[str, Any]) -> Non
     """Inside the lock that removed them:  tag each removed entry with the wake ids it closes (no entry
     left in the file stands for them), so the daemon writes each wake's closing ledger row exactly
     once, with no second read of the file racing another thread's change."""
-    still = {w for e in list(data.get("records") or []) + list(data.get("overflow") or []) for w in wake_ids(e)}
+    still = {
+        w
+        for e in list(data.get("records") or []) + list(data.get("overflow") or [])
+        for w in wake_ids(e)
+    }
     claimed: set[str] = set()
     for entry in removed:
         closes = [w for w in wake_ids(entry) if w not in still and w not in claimed]
@@ -95,7 +121,11 @@ def _mark_closing(removed: list[dict[str, Any]], data: Mapping[str, Any]) -> Non
 
 
 def _entries(rows: Any) -> list[dict[str, Any]]:
-    return [r for r in rows if isinstance(r, dict) and _is_id(r.get("message_id"))] if isinstance(rows, list) else []
+    return (
+        [r for r in rows if isinstance(r, dict) and _is_id(r.get("message_id"))]
+        if isinstance(rows, list)
+        else []
+    )
 
 
 def _int(data: Mapping[str, Any], key: str) -> int:
@@ -122,9 +152,18 @@ def _normalize(data: dict[str, Any]) -> None:
         rep = record["message_id"]
         ids = [i for i in record.pop("trigger_ids", None) or [] if _is_id(i)]
         ids = ids if rep in ids else ids + [rep]  # the wake's order, oldest first
-        for entry in [record if i == rep else dict(record, message_id=i, owner=False, sender_full_name="",
-                                                   zulip_link=_relink(str(record.get("zulip_link") or ""), i))
-                      for i in ids]:
+        for entry in [
+            record
+            if i == rep
+            else dict(
+                record,
+                message_id=i,
+                owner=False,
+                sender_full_name="",
+                zulip_link=_relink(str(record.get("zulip_link") or ""), i),
+            )
+            for i in ids
+        ]:
             if entry["message_id"] not in seen:
                 seen.add(entry["message_id"])
                 records.append(entry)
@@ -173,8 +212,14 @@ def compact(record: Mapping[str, Any]) -> dict[str, Any]:
     return entry
 
 
-def hold(paths: L.SeatPaths, records: Mapping[str, Any] | Sequence[Mapping[str, Any]], *, cap: int,
-         overflow_cap: int = 1000, now: float) -> tuple[list[int], list[dict[str, Any]]]:
+def hold(
+    paths: L.SeatPaths,
+    records: Mapping[str, Any] | Sequence[Mapping[str, Any]],
+    *,
+    cap: int,
+    overflow_cap: int = 1000,
+    now: float,
+) -> tuple[list[int], list[dict[str, Any]]]:
     """Add records (one per message, oldest first) in one locked write.  Returns (the ids added, the
     entries lost past both caps).  A message already held back is not held twice (a catch-up wake the
     budget refused again, or a requeued trigger):  the existing entry only learns the new wake id, so
@@ -249,7 +294,9 @@ def expire(paths: L.SeatPaths, *, ttl: float, now: float) -> list[dict[str, Any]
     return out
 
 
-def wake_summary(paths: L.SeatPaths, *, exclude: Iterable[int], limit: int) -> tuple[dict[str, Any] | None, list[int], int]:
+def wake_summary(
+    paths: L.SeatPaths, *, exclude: Iterable[int], limit: int
+) -> tuple[dict[str, Any] | None, list[int], int]:
     """What one wake carries:  ({count, items} or None, the listed message ids, the lost count it
     reports).  `exclude` is the wake's own trigger ids:  those entries are the trigger, not held back.
     count is every other entry plus `lost`;  items are the OLDEST `limit` entries, overflow first, so
@@ -262,7 +309,11 @@ def wake_summary(paths: L.SeatPaths, *, exclude: Iterable[int], limit: int) -> t
     if count <= 0:
         return None, [], 0
     listed = ordered[: max(0, int(limit))]
-    return {"count": count, "items": [item(e) for e in listed]}, [e["message_id"] for e in listed], lost
+    return (
+        {"count": count, "items": [item(e) for e in listed]},
+        [e["message_id"] for e in listed],
+        lost,
+    )
 
 
 def item(record: Mapping[str, Any]) -> dict[str, Any]:
@@ -276,8 +327,15 @@ def item(record: Mapping[str, Any]) -> dict[str, Any]:
         "dm": dm,
         "channel": None if dm or bare else str(record.get("channel") or "")[:NAME_LIMIT],
         "topic": None if dm or bare else str(record.get("topic") or "")[:NAME_LIMIT],
-        "stream_id": (stream_id if not dm and not bare and isinstance(stream_id, int)
-                      and not isinstance(stream_id, bool) and stream_id > 0 else None),
+        "stream_id": (
+            stream_id
+            if not dm
+            and not bare
+            and isinstance(stream_id, int)
+            and not isinstance(stream_id, bool)
+            and stream_id > 0
+            else None
+        ),
         "sender_full_name": "" if bare else str(record.get("sender_full_name") or "")[:NAME_LIMIT],
         "zulip_link": "" if bare else display_link(str(record.get("zulip_link") or "")),
         "reason": str(record.get("reason") or ""),
@@ -285,7 +343,9 @@ def item(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def surface(paths: L.SeatPaths, *, message_ids: Iterable[int], lost: int = 0) -> list[dict[str, Any]]:
+def surface(
+    paths: L.SeatPaths, *, message_ids: Iterable[int], lost: int = 0
+) -> list[dict[str, Any]]:
     """Remove the entries a delivered wake surfaced (either tier) and lower `lost` by what it
     reported.  Returns the removed entries.  Anything surfacing ends a catch-up backoff."""
     wanted = set(message_ids)
@@ -319,6 +379,7 @@ def referenced_wake_ids(paths: L.SeatPaths) -> set[str]:
 def mark_no_primary(paths: L.SeatPaths, message_id: int, why: str) -> None:
     """A catch-up built on this entry cannot work (the routine refused its channel, or its trigger
     is gone):  never choose it as a catch-up trigger again.  It stays held back and listed."""
+
     def mutate(data: dict[str, Any]) -> None:
         _normalize(data)
         for entry in data["records"] + data["overflow"]:
@@ -340,6 +401,7 @@ def catch_up_due(data: Mapping[str, Any], now: float) -> bool:
 
 def note_catch_up(paths: L.SeatPaths, now: float) -> None:
     """A catch-up wake was queued:  it counts as a miss until something surfaces."""
+
     def mutate(data: dict[str, Any]) -> None:
         _normalize(data)
         data["catch_up_at"] = now
@@ -354,7 +416,9 @@ def digest_due(data: Mapping[str, Any], *, every: float, now: float) -> list[dic
     if every <= 0:
         return []
     rows = list(data.get("overflow") or []) + list(data.get("records") or [])
-    fresh = sorted((r for r in rows if _int(r, "seq") > _int(data, "digest_seq")), key=lambda r: _int(r, "seq"))
+    fresh = sorted(
+        (r for r in rows if _int(r, "seq") > _int(data, "digest_seq")), key=lambda r: _int(r, "seq")
+    )
     if not fresh or ("digest_at" in data and now - _num(data, "digest_at") < every):
         return []
     return fresh
@@ -363,6 +427,7 @@ def digest_due(data: Mapping[str, Any], *, every: float, now: float) -> list[dic
 def note_digest(paths: L.SeatPaths, *, upto: int, now: float, told: bool = False) -> None:
     """A digest went out for every entry up to seq `upto`.  `told` only when the owner was actually
     shown it (notify returned True on an instance with banners):  then those entries may expire."""
+
     def mutate(data: dict[str, Any]) -> None:
         _normalize(data)
         data["digest_at"] = now
@@ -374,7 +439,7 @@ def note_digest(paths: L.SeatPaths, *, upto: int, now: float, told: bool = False
 
 
 def summary(paths: L.SeatPaths, now: float) -> dict[str, Any]:
-    """For status and `agent-sync wakes`:  how many are held back now (both tiers), how many of them
+    """For status and `simple-chat wakes`:  how many are held back now (both tiers), how many of them
     are in overflow, the oldest one's age in seconds, the count per reason, `evicted` (ids lost past
     both caps, still owed) and the lifetime totals."""
     data = load(paths)
@@ -384,6 +449,11 @@ def summary(paths: L.SeatPaths, now: float) -> dict[str, Any]:
         reason = str(row.get("reason") or "?")
         reasons[reason] = reasons.get(reason, 0) + 1
     oldest = min((_num(r, "at") for r in rows), default=None)
-    return {"count": len(rows), "overflow": len(data["overflow"]), "evicted": _int(data, "lost"),
-            "oldest_age": round(now - oldest) if oldest is not None else None,
-            "reasons": dict(sorted(reasons.items())), "totals": _totals(dict(data))}
+    return {
+        "count": len(rows),
+        "overflow": len(data["overflow"]),
+        "evicted": _int(data, "lost"),
+        "oldest_age": round(now - oldest) if oldest is not None else None,
+        "reasons": dict(sorted(reasons.items())),
+        "totals": _totals(dict(data)),
+    }

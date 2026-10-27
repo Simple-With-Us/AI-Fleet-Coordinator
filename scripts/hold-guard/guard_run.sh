@@ -9,9 +9,12 @@
 #
 # Error contract: every critical READ error (evaluation, fresh-state fence,
 # check-run listing) is settled BEFORE the check payload is built and forces
-# a FAILURE conclusion - a degraded guard never publishes green.  Every
-# critical failure of any kind (read errors, disarm unconfirmed, label
-# repair, comment, check patch/create) also makes the JOB red (exit 3).
+# a FAILURE conclusion - a degraded guard never publishes green.  An
+# unconfirmed disarm settles the conclusion the same way: the guard does not
+# know that auto-merge is off, so it cannot vouch for a pull request that may
+# still merge itself, whatever the hold state says.  Every critical failure
+# of any kind (read errors, disarm unconfirmed, label repair, comment, check
+# patch/create) also makes the JOB red (exit 3).
 # What we cannot do (documented, not claimed): if GitHub API writes
 # themselves fail, no red check can be forced onto the PR - a previously
 # green merge-gate may persist; the red job + notices are the signal, and
@@ -79,16 +82,20 @@ prs=("$PR")
 #    AFC auto-merge-reusable.yml disarm job): success is defined by the
 #    STATE READ (`gh pr view --json autoMergeRequest`), not by the mutation
 #    exit code.  off = benign (disarmed or never armed); armed or
-#    unreadable after the attempt = critical failure (red job; the check
-#    still publishes the evaluated hold state below).
+#    unreadable after the attempt = critical failure.  The failure is kept in
+#    $disarm_error, which settles the published conclusion as well as the
+#    job: a pull request that can still merge itself is not one a green
+#    gate may vouch for, whatever the hold state says.
 gh pr merge --disable-auto "$PR_URL" 2>&1 | head -3 || true
 state="$(gh pr view "$PR_URL" --json autoMergeRequest \
   --jq 'if .autoMergeRequest == null then "off" else "armed" end' 2>/dev/null || true)"
 [ -n "$state" ] || state=unreadable
+disarm_error=""
 case "$state" in
   off) : ;;
   *) echo "::error::auto-merge state after disarm attempt: $state ($PR_URL)"
-     any_error=1 ;;
+     any_error=1
+     disarm_error="auto-merge is $state after the disarm attempt" ;;
 esac
 
 # 2. Evaluate holds (fail closed per PR).
@@ -231,6 +238,14 @@ fi
 if [ -n "$read_error" ]; then
   conclusion=failure; title="merge-gate: $read_error"
   summary="A guard read step failed (see workflow log). Failing closed - no green check from a degraded guard."
+elif [ -n "$disarm_error" ]; then
+  # The hold state may be clean, but the guard does not know that auto-merge
+  # is off, so it cannot say the pull request is safe to merge.  A green gate
+  # over a pull request that may still merge itself is the one answer this
+  # gate must never publish.
+  conclusion=failure; title="merge-gate: the disarm failed"
+  holds="$(printf '%s' "$fresh" | jq -r '[.[] | "- `\(.label)` (PR #\(.pr)) set by \(.owner_login // "unknown")\(if .unknown then " - owner unknown, needs escalation" else "" end)"] | join("\n")')"
+  summary="The guard could not disarm auto-merge on PR #$PR: $disarm_error.  The hold state was evaluated, but a green gate over a pull request that may still merge itself is not a safe answer, so this check stays red.  Holds evaluated: ${holds:-none}."
 elif [ "$(printf '%s' "$fresh" | jq 'length')" -eq 0 ]; then
   conclusion=success; title="merge-gate: no active merge holds"
   summary="All holds were released by their setters."

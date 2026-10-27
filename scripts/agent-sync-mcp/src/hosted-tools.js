@@ -6,7 +6,7 @@ import { parseArgs } from "./args.js";
 import { LINEAR_MCP_BY_NAME } from "./linear-mcp-specs.js";
 import { callLinearMcp } from "./linear-mcp.js";
 import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
-// The seven agent-sync tools for one hosted seat (spec sections 1, 3.6 to 3.9).
+// The seven chat tools for one hosted seat (spec sections 1, 3.6 to 3.9).
 // A port of scripts/agent_sync/mcp/tools.py over the Zulip REST API, with the
 // hosted rules on top:  the seat only from the grant, the channel rule (any
 // public channel the seat's bot is subscribed to, src/channels.js) by stream
