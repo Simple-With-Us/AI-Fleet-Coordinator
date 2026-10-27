@@ -1795,8 +1795,11 @@ LINEAR_RE = re.compile(
 
 #  A project reference:  P-BF-6, or P-6 where the team is named elsewhere.  The P is the marker and
 #  the rest is the reference, so the whole thing is matched here and never offered to the issue rule.
+#  The team segment is optional because a writer may leave it out, and because a project reference
+#  that is left out of the team segment is still a project reference.  Matching it here is what
+#  keeps it out of the issue rule, so it is matched whether or not it is one of the coded projects.
 PROJECT_RE = re.compile(
-    r"(?<![A-Za-z0-9_/-])(?P<ref>P-[A-Za-z0-9]{1,6}-\d+)(?![A-Za-z0-9_-])"
+    r"(?<![A-Za-z0-9_/-])(?P<ref>P-(?:[A-Za-z0-9]{1,6}-)?\d+)(?![A-Za-z0-9_-])"
 )
 
 

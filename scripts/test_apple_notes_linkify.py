@@ -306,6 +306,25 @@ class LinkifyTests(LinkifyTestCase):
         self.assertIn("P-BF-6", out)
         self.assertIn("P-ST-8", out)
 
+    def test_a_short_project_reference_is_never_read_as_an_issue(self):
+        #  a writer may leave the team out of a project reference, and the number in it is still a
+        #  project number, so the short form is claimed as a project and never becomes an issue
+        out = self.html("[AFC, MM] Notes", "The rewrite is P-6 and the issue is BF-6.")
+        self.assertNotIn("/issue/6", out)
+        self.assertNotIn(">P-6</a>", out)
+        self.assertIn("P-6", out)
+        self.assertIn(f'<a href="{LINEAR_URL}BF-6">BF-6</a>', out)
+
+    def test_a_short_project_reference_can_be_coded_too(self):
+        #  the short form is a reference of its own, so it links only when it is coded, exactly
+        #  like the long form
+        out = self.html(
+            "[AFC, MM] Notes",
+            "The rewrite is P-6.",
+            NOTES_LINEAR_PROJECTS="P-6=" + PROJECT_URL,
+        )
+        self.assertIn(f'<a href="{PROJECT_URL}">P-6</a>', out)
+
     def test_a_project_reference_that_is_not_coded_stays_plain_text(self):
         #  a project that is not in the table is left alone:  a link to the wrong thing is worse
         #  than no link, and the reference is never guessed at
