@@ -12,3 +12,5 @@ Known limits: no check-run reads (needs checks:read); no job logs (GitHub serves
 Before exposure: an authenticated broker must be the only `for_action` caller; add policy action names and `ACTION_REQUIRED_PERMISSIONS`, durable outcomes and audit like #992's gateway for the writes, Worker/tool registration, HTTP contract tests and host qualification. Canonical per-bot identities (including Echo) are policy entries only; none are added here.
 
 Stage 2b adds `wf_job_log` (actions:read): a bounded tail of one job's log. The relay asks GitHub for the log location with the seat's bearer, then fetches the signed https URL once, without credentials and without redirects, only from GitHub's log hosts, and withholds the text if it looks like a credential.
+
+Stage 2c adds `wf_files_put` (contents:write): one commit over up to 20 files via git-data (blobs, tree, commit, fast-forward ref update). Non-default branch only, workflow paths refused, atomic on `expected_head_sha` (a moved branch is refused, and the ref update is never forced), credential-shaped content refused, and an existing file's mode (for example an executable bit) is preserved.
