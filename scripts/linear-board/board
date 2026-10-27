@@ -2840,7 +2840,7 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
 
 
 # ----------------------------------------------------------------- Agent-Sync parity:  catalogs
-# The hosted Agent-Sync MCP server (scripts/agent-sync-mcp) serves Linear as 175 named commands,
+# The hosted ST-MCP server (scripts/agent-sync-mcp) serves Linear as 175 named commands,
 # general linear_schema/linear_query/linear_mutation tools and 11 proxied official Linear MCP tools.
 # `board commands`, `board run`, `board api` and `board mcp` give a seat the same tools from a shell.
 # The catalogs are JSON exported from the server's own JavaScript, never retyped here:

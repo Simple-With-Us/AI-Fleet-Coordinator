@@ -19,7 +19,7 @@
 #      The harnesses with a different config format (OpenCode, Kimi Code, Copilot CLI, Muse Code, MiniMax, fx)
 #      go through `python3 -m fleet_lanes.install_mcp`, which this script calls with --home "$HOME"; it writes
 #      each tool's native shape, skips a tool that is not installed, and leaves a hand-registered entry alone.
-#      Clutch is not touched here: it carries fleet-recall as a native agent preset.  agent-sync is not
+#      Clutch is not touched here: it carries fleet-recall as a native agent preset.  the local ST-MCP server is not
 #      registered here (run install_mcp with --with-agent-sync; docs/protocols/agent-sync-mcp.md).
 #   4. With --with-seat-mcp, also copies seat_mcp/tools.py + recall_bridge.py into
 #      $HOME/apps/seat-mcp/seat_mcp/ and prints the pm2 restart command (does not run it).

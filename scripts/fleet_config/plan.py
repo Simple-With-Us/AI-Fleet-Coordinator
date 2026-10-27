@@ -185,7 +185,7 @@ def _mcp_installer(platform: str, expected_names: tuple[str, ...] = ()) -> Insta
     argv = ["python3", "-m", "fleet_lanes.install_mcp", "apply", target]
     if "agent-sync" in expected_names and target != "opencode":
         # install_mcp registers fleet-recall only unless --with-agent-sync is given, so
-        # without it a rule that expects agent-sync can never reach PASS.  The
+        # without it a rule that expects the local ST-MCP server can never reach PASS.  The
         # installer's own note forbids the flag for opencode,  which registers its own.
         argv.append("--with-agent-sync")
     return Installer(

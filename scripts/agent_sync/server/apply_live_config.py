@@ -13,7 +13,7 @@ sample never reaches a live volume by itself.  This copies exactly the sample's 
 comment lines just above it, and a missing one is appended.  [listener_api] and [notes_queue] (AFC-486) are
 appended the same way when the live file has none, but one that is there is never changed:  its `enabled`
 and its seat lists are the operator's choice on that volume, and the sample ships both off.  [daemon]
-(owner_user_id and eligible_user_ids, pinned by `agent-sync daemon init`) and every other section stay byte
+(owner_user_id and eligible_user_ids, pinned by `simple-chat daemon init`) and every other section stay byte
 for byte.
 
 Before writing, the result is checked with the listener's own config parser and the seat partition;
@@ -22,7 +22,7 @@ then replaces it atomically with the same mode and owner.  A second run changes 
 backup.  The file holds variable names, never values, so the diff prints the keys as they are.
 
 Afterwards restart the app if a section names a variable the container did not start with (always the
-case for a newly enabled persona); otherwise `agent-sync daemon reload` is enough.
+case for a newly enabled persona); otherwise `simple-chat daemon reload` is enough.
 
 Exit codes:  0 done (or nothing to do), 1 a file is missing or unreadable, 2 the result would be refused.
 """
@@ -243,7 +243,7 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:
     stamp = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = write(live_path, new, stamp)
     print(
-        "wrote %s (backup %s).  Restart the app if a section names a new variable; else agent-sync daemon reload."
+        "wrote %s (backup %s).  Restart the app if a section names a new variable; else simple-chat daemon reload."
         % (live_path, backup),
         file=out,
     )

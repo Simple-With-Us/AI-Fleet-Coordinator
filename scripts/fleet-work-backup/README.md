@@ -248,7 +248,7 @@ LaunchAgent `com.jay.fleet-work-backup`, every 3 hours (`StartInterval` 10800), 
   and a note that says the first Plumber to reply "taking it" in the topic owns the fix and the other reviews it.
   The job posts as the CLAUDE bot, which is a different seat from both Plumbers, so its mention can wake them.
   BF-Plumber is woken by BotFleet's own Zulip listener and GB-Plumber through the Grok Bot routine webhook on the
-  agent-sync server (live and connected as of Oct 10, 2026 10:34pm by `simple-chat status` on the server).  Neither
+  Operator server (live and connected as of Oct 10, 2026 10:34pm by `simple-chat status` on the server).  Neither
   has posted yet, so the wake path is unproven end to end.  BotFleet caps peer wakes (6 per bot per hour, 2 per
   topic per hour, and after 4 peer wakes in one topic with no message from Jay the topic stops waking that bot
   until Jay speaks there), so a failure that lasts for days can stop waking BF-Plumber in this topic.  **The owner

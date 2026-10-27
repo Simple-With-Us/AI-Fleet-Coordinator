@@ -39,7 +39,7 @@ the contract (what counts as an answer, the caps, the pause, the Grok Bot block)
 cd scripts && python3 -m unittest discover -s needs_owner/tests -t . -v
 ```
 
-`tests/fake_board.py` and `tests/fake_agent_sync.py` stand in for `board` and `agent-sync` on PATH (the fake `agent-sync` also answers `read`, `whoami`,
+`tests/fake_board.py` and `tests/fake_agent_sync.py` stand in for `simple-board` and `simple-chat` on PATH (the fake `simple-chat` also answers `read`, `whoami`,
 `verify-owner-msg`, `topics` and `channels`, with the real reaction shape and the real `verify-owner-msg` rule;  it logs each call's exit code).  They parse
 argv with the real parsers (`scripts/linear-board/board`, `agent_sync.cli`), so a wrong flag, or a flag in
 the wrong place, fails in the tests as it would for real.  The fake `read --json` prints the
