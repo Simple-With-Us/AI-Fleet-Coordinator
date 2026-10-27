@@ -469,10 +469,10 @@ class LocalReadTests(ListenerHarness):
 
 class PluginTests(unittest.TestCase):
     def test_plugin_manifest_hooks_and_marketplace(self) -> None:
-        manifest = json.loads((REPO / "plugins/agent-sync/.claude-plugin/plugin.json").read_text())
-        self.assertEqual(manifest["name"], "agent-sync")
+        manifest = json.loads((REPO / "plugins/simple-chat/.claude-plugin/plugin.json").read_text())
+        self.assertEqual(manifest["name"], "simple-chat")
         self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+$")
-        hooks = json.loads((REPO / "plugins/agent-sync/hooks/hooks.json").read_text())["hooks"]
+        hooks = json.loads((REPO / "plugins/simple-chat/hooks/hooks.json").read_text())["hooks"]
         self.assertEqual(sorted(hooks), ["SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"])
         self.assertNotIn("PreToolUse", hooks, "no taint guard (owner decision 2026-10-07)")
         commands = [h for group in hooks.values() for entry in group for h in entry["hooks"]]
@@ -487,7 +487,7 @@ class PluginTests(unittest.TestCase):
         entry = market["plugins"][0]
         self.assertEqual(
             (entry["name"], entry["source"], entry["version"]),
-            ("agent-sync", "./plugins/agent-sync", manifest["version"]),
+            ("simple-chat", "./plugins/simple-chat", manifest["version"]),
         )
 
     def test_help_for_the_new_commands_through_the_entry_script(self) -> None:
