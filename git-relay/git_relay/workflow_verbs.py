@@ -33,6 +33,10 @@ class Refused(ValueError):
     """Fixed public refusal; never wraps upstream text."""
 
 
+class CeilingDenied(Refused):
+    """The seat's App ceiling does not cover the verb's permissions (a 403, not a bad request)."""
+
+
 class Unknown(RuntimeError):
     """Own App credential unavailable."""
 
@@ -116,11 +120,7 @@ def _path(args, key="path"):
 
 def _workflow_path(path):
     """A relay write targeting the workflows dir itself, its parent, or anything under it."""
-    return (
-        path == ".github"
-        or path == ".github/workflows"
-        or path.startswith(".github/workflows/")
-    )
+    return path == ".github" or path == ".github/workflows" or path.startswith(".github/workflows/")
 
 
 def _enum(args, key, allowed, default=None):
@@ -183,19 +183,54 @@ class WorkflowVerbs:
         self.action, self.repo = action, repo
 
     @classmethod
-    def for_action(cls, client, policy, minter, seat, action, repo):
-        """Seat is already authenticated by the broker; authorize once, mint least permission."""
+    def check_shape(cls, action, args, repo):
+        """Run a verb's own argument checks with no network, before any durable state.
+
+        The verb is run against a probe client that stops at its first upstream call, so a
+        malformed request raises Refused here and a well-formed one passes without a mint,
+        an outcome row or an upstream call.
+        """
+        if action not in SPECS or not isinstance(args, dict):
+            raise Refused("unsupported workflow action")
+        if not isinstance(repo, str) or not _REPO.fullmatch(repo):
+            raise Refused("invalid repository")
+
+        class _Reached(Exception):
+            pass
+
+        class _Probe:
+            def __getattr__(self, name):
+                def stop(*a, **k):
+                    raise _Reached
+
+                return stop
+
+        handle = cls.__new__(cls)
+        handle.client, handle.policy, handle.seat, handle.bearer = _Probe(), None, "probe", "probe"
+        handle.action, handle.repo = action, repo
+        try:
+            handle.run(action, args)
+        except _Reached:
+            return
+
+    @classmethod
+    def for_action(cls, client, policy, minter, seat, action, repo, preauthorized=False):
+        """Seat is already authenticated by the broker; authorize once, mint least permission.
+
+        preauthorized is for Relay.handle only: it has just run policy.authorize for this
+        exact seat, action and repo, and a second call would count the hourly quota twice.
+        """
         if action not in SPECS:
             raise Refused("unsupported workflow action")
         if not isinstance(repo, str) or not _REPO.fullmatch(repo):
             raise Refused("invalid repository")
-        if policy.authorize(seat, action, repo):
+        if not preauthorized and policy.authorize(seat, action, repo):
             raise Refused("action or repository denied")
         app_slug, ceiling = policy.app_identity(seat)
         required = dict(SPECS[action][0])
         required.setdefault("metadata", "read")
         if _perm_within_ceiling(required, ceiling):
-            raise Refused("seat permission ceiling insufficient")
+            raise CeilingDenied("seat permission ceiling insufficient")
         try:
             token, _ = minter.token_for(app_slug, repo, required)
         except Exception:
@@ -455,13 +490,13 @@ class WorkflowVerbs:
             raise Refused("invalid content") from None
         if find_secret(message) or find_secret(raw.decode("utf-8", "replace")):
             raise Refused("credential-shaped content refused")
+        payload = {"message": message, "content": content, "branch": branch}
+        if "prior_sha" in args:
+            payload["sha"] = _sha(args, "prior_sha")
         repo_info = _obj(self._get(f"/repos/{repo}"))
         default = repo_info.get("default_branch")
         if not isinstance(default, str) or not default or branch == default:
             raise Refused("default branch is not writable")
-        payload = {"message": message, "content": content, "branch": branch}
-        if "prior_sha" in args:
-            payload["sha"] = _sha(args, "prior_sha")
         data = self.client._call(
             "PUT", f"/repos/{repo}/contents/{quote(path, safe='/')}", payload, bearer=self.bearer
         )
