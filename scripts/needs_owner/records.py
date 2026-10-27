@@ -34,10 +34,14 @@ _NOTIFIED = re.compile(
 )
 _PENDING = re.compile(r"\A\s*\[needs-owner\]\s+notify_pending\b(.*)\Z", re.IGNORECASE | re.DOTALL)
 _BLOCK = re.compile(r"\A\s*\[needs-owner\]\s+block\b", re.IGNORECASE)
-_REPLY = re.compile(r"\A\s*(?:\[needs-owner\]\s*)?owner\s+replied:\s*(?P<what>.+)\Z", re.IGNORECASE | re.DOTALL)
+_REPLY = re.compile(
+    r"\A\s*(?:\[needs-owner\]\s*)?owner\s+replied:\s*(?P<what>.+)\Z", re.IGNORECASE | re.DOTALL
+)
 _REPLY_MSG = re.compile(r"msg\s+([0-9]{1,12})\b", re.IGNORECASE)
 _REPLY_COMMENT = re.compile(r"comment\s+(\S+)", re.IGNORECASE)
-_REPLY_REACTION = re.compile(r"reaction\s+(?:option\s+)?([1-9])\s+on\s+msg\s+([0-9]{1,12})\b", re.IGNORECASE)
+_REPLY_REACTION = re.compile(
+    r"reaction\s+(?:option\s+)?([1-9])\s+on\s+msg\s+([0-9]{1,12})\b", re.IGNORECASE
+)
 _TOPIC_LINE = re.compile(r"^topic:[ \t]*(\S.*?)[ \t]*$", re.IGNORECASE | re.MULTILINE)
 _REASON_LINE = re.compile(r"^reason:[ \t]*([a-z_]{1,30})[ \t]*$", re.IGNORECASE | re.MULTILINE)
 
