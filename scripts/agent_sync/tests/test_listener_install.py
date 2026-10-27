@@ -59,9 +59,13 @@ class InstallTests(ListenerHarness):
         )  # Background starves at startup under a heavy load
         self.assertEqual(data["StandardOutPath"], str(self.home / ".agent-sync/logs/launchd.out"))
         self.assertEqual(data["StandardErrorPath"], str(self.home / ".agent-sync/logs/launchd.err"))
-        self.assertNotIn(
-            "KEY", json.dumps(data["EnvironmentVariables"]).upper().replace("KEEPALIVE", "")
-        )
+        # Check the environment's own names and values, not the serialized text: the
+        # random temp-dir name in HOME and PATH can contain "KEY" by chance.
+        env = data["EnvironmentVariables"]
+        for env_name, env_value in env.items():
+            for secretish in ("KEY", "SECRET", "TOKEN", "PASSWORD"):
+                self.assertNotIn(secretish, env_name.upper())
+            self.assertNotIn("k" * 8, str(env_value))
         for name in ("launchd.out", "launchd.err"):
             self.assertEqual(mode_of(self.home / ".agent-sync/logs" / name), 0o600)
         self.assertEqual(mode_of(self.home / ".agent-sync/logs"), 0o700)
