@@ -114,6 +114,9 @@ class Tests(unittest.TestCase):
         self.assertEqual(status, 502)
         self.assertEqual(body["outcome"], "unknown")
         self.assertNotIn("private path", json.dumps(body))
+        with open(self.tmp.name + "/audit.jsonl") as stream:
+            rows = [json.loads(r) for r in stream]
+        self.assertEqual(rows[-1]["result"], "unknown")
 
     def test_rate_limited_after_reservation_releases_it(self):
         from unittest.mock import patch
