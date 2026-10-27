@@ -193,12 +193,12 @@ if [ "$NO_ZULIP" -eq 0 ]; then
   [ -n "$WORKTREE" ] && TEXT="${TEXT} | ${WORKTREE}"
   TEXT="${TEXT} | agent ${AGENT}"
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'DRY: agent-sync post --as %s --channel %s --topic %q: %s\n' \
+    printf 'DRY: simple-chat post --as %s --channel %s --topic %q: %s\n' \
       "$BY" "$ZULIP_CHANNEL" "needs-mac ${REPO_NAME}" "$TEXT"
-  elif ! command -v agent-sync >/dev/null 2>&1; then
-    echo "request-mac-seat: agent-sync not on PATH; skipping Zulip post (issue still filed)" >&2
+  elif ! command -v simple-chat >/dev/null 2>&1; then
+    echo "request-mac-seat: simple-chat not on PATH; skipping Zulip post (issue still filed)" >&2
   else
-    agent-sync post --as "$BY" --channel "$ZULIP_CHANNEL" \
+    simple-chat post --as "$BY" --channel "$ZULIP_CHANNEL" \
       --topic "needs-mac ${REPO_NAME}" "$TEXT" >/dev/null \
       || echo "request-mac-seat: Zulip post failed (issue still filed)" >&2
   fi

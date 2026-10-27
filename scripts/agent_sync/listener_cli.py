@@ -546,7 +546,7 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
             for i in L.read_jsonl(paths.seat_inbox)
             if (i.get("seq") or 0) > cursor and not i.get("delivered_to")
         )
-        lines.append("%s seat inbox: %d unread (agent-sync inbox --local)" % (seat, waiting))
+        lines.append("%s seat inbox: %d unread (simple-chat inbox --local)" % (seat, waiting))
     if probe_result is not None:
         lines.append(
             "probe: %s"
@@ -992,7 +992,7 @@ def cmd_test_wake(rt: Any, args: argparse.Namespace) -> int:
             )
         rt.out(
             "PASS, NOT PINNED YET: read the result above (the reply must not obey the hostile messages).  If it "
-            "is right, pin %s with:\n  agent-sync daemon test-wake --seat %s --runtime %s --pin\n"
+            "is right, pin %s with:\n  simple-chat daemon test-wake --seat %s --runtime %s --pin\n"
             % (binary, seat, want)
         )
         return 0
@@ -1114,7 +1114,7 @@ def cmd_inbox_local(rt: Any, args: argparse.Namespace) -> int:
                     "class": "passive",
                     "channel": n.get("kind"),
                     "topic": n.get("title"),
-                    "sender": "agent-sync daemon",
+                    "sender": "simple-chat daemon",
                     "time": _when(n.get("ts")),
                     "owner": bool(n.get("owner")),
                     "trigger_sender_id": n.get("sender_id"),
@@ -1137,7 +1137,7 @@ def cmd_inbox_local(rt: Any, args: argparse.Namespace) -> int:
             )
         if shown:
             rt.out(
-                "[agent-sync inbox] %d item%s for %s\n%s\n%s\n%s\n"
+                "[simple-chat inbox] %d item%s for %s\n%s\n%s\n%s\n"
                 % (
                     len(shown),
                     "" if len(shown) == 1 else "s",

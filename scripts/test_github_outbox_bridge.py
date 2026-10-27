@@ -53,7 +53,7 @@ class FakePoster:
 
     def post(self, text, topic):
         if self.fail:
-            raise bridge.BridgeError("agent-sync post exit 6: unreachable")
+            raise bridge.BridgeError("simple-chat post exit 6: unreachable")
         self.posts.append((text, topic))
         return {"ok": True}
 

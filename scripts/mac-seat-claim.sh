@@ -124,14 +124,14 @@ post_agent_sync() {
   local text="$1"
   local topic="${2:-mac seat claims}"
   if [ "$DRY_RUN" -eq 1 ]; then
-    printf 'DRY: agent-sync post --as %s --channel %s --topic %q: %s\n' "$BY" "$ZULIP_CHANNEL" "$topic" "$text"
+    printf 'DRY: simple-chat post --as %s --channel %s --topic %q: %s\n' "$BY" "$ZULIP_CHANNEL" "$topic" "$text"
     return 0
   fi
-  command -v agent-sync >/dev/null 2>&1 || {
-    echo "mac-seat-claim: agent-sync not on PATH; skipping Zulip post" >&2
+  command -v simple-chat >/dev/null 2>&1 || {
+    echo "mac-seat-claim: simple-chat not on PATH; skipping Zulip post" >&2
     return 0
   }
-  agent-sync post --as "$BY" --channel "$ZULIP_CHANNEL" --topic "$topic" "$text" >/dev/null 2>&1 || true
+  simple-chat post --as "$BY" --channel "$ZULIP_CHANNEL" --topic "$topic" "$text" >/dev/null 2>&1 || true
 }
 
 spawn_local_agent() {

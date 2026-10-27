@@ -22,7 +22,7 @@ then replaces it atomically with the same mode and owner.  A second run changes 
 backup.  The file holds variable names, never values, so the diff prints the keys as they are.
 
 Afterwards restart the app if a section names a variable the container did not start with (always the
-case for a newly enabled persona); otherwise `agent-sync daemon reload` is enough.
+case for a newly enabled persona); otherwise `simple-chat daemon reload` is enough.
 
 Exit codes:  0 done (or nothing to do), 1 a file is missing or unreadable, 2 the result would be refused.
 """
@@ -243,7 +243,7 @@ def main(argv: list[str] | None = None, out=sys.stdout) -> int:
     stamp = _dt.datetime.now(_dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = write(live_path, new, stamp)
     print(
-        "wrote %s (backup %s).  Restart the app if a section names a new variable; else agent-sync daemon reload."
+        "wrote %s (backup %s).  Restart the app if a section names a new variable; else simple-chat daemon reload."
         % (live_path, backup),
         file=out,
     )

@@ -1494,7 +1494,7 @@ def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.r
     else:
         first = (result.stderr or b"").decode("utf-8", "replace").strip().splitlines()[:1]
         why = first[0][:160] if first else f"exit {result.returncode}"
-        report.add(f"mcp-start:{seat}", "FAIL", f"agent-sync mcp did not list its tools:  {why}")
+        report.add(f"mcp-start:{seat}", "FAIL", f"simple-chat mcp did not list its tools:  {why}")
 
 
 def codex_mcp_names(text: str) -> list[str]:
@@ -3028,7 +3028,7 @@ def run(
     parser.add_argument(
         "--post",
         action="store_true",
-        help="when the set of failing checks changes, post it with agent-sync to #Work-In-Progress, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as agent-sync resolves it)",
+        help="when the set of failing checks changes, post it with simple-chat to #Work-In-Progress, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as simple-chat resolves it)",
     )
     parser.add_argument(
         "--no-registry",

@@ -549,7 +549,7 @@ def plan_one_lane(ctx: Ctx, cname: str, cpath: str, f: Facts, *, bucket_name: st
         return Item(SKIP, cpath, kind="folder", reasons=["not a checkout"])
     if cname == RUNTIME_NAME:
         it.action = SKIP
-        it.reasons.append("live infrastructure: the agent-sync listener, ~/.local/bin/agent-sync and the runtime-sync "
+        it.reasons.append("live infrastructure: the Operator, ~/.local/bin/agent-sync and the runtime-sync "
                           "LaunchAgent use this path, so it needs its own coordinated step and the owner's choice of a new path")
         return it
     if f.problems and f.main is None:

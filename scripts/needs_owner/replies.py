@@ -95,8 +95,8 @@ def typed_reply_text(option: int) -> str:
 
 def note_text(identifier: str, url: str, kind: str, ident: str) -> str:
     where = {"msg": "message %s in this topic", "reaction": "a reaction on message %s in this topic", "comment": "Linear comment %s"}[kind]
-    return ("Jay replied on %s:  %s  (%s).  Verify it before you act:  `agent-sync verify-owner-msg` for a message, the owner's "
-            "reaction (`agent-sync read --json` `reactions` and `whoami --json` `owner_user_id`) for a tap, the comment's author "
+    return ("Jay replied on %s:  %s  (%s).  Verify it before you act:  `simple-chat verify-owner-msg` for a message, the owner's "
+            "reaction (`simple-chat read --json` `reactions` and `whoami --json` `owner_user_id`) for a tap, the comment's author "
             "for Linear.  The item stays open;  close it yourself when you have acted." % (identifier, url, where % ident))
 
 
