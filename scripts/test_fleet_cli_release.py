@@ -546,8 +546,10 @@ class ReleaseTests(unittest.TestCase):
     def test_update_path_refuses_non_table_shapes(self):
         self.receive()
         config = self.home / ".codex/config.toml"
-        for text, code in (('mcp_servers = "x"\n', "invalid_codex_config"),
-                           ('[mcp_servers]\nagent-sync = "x"\n', "existing_agent_sync_mcp_conflict")):
+        for text, code in (
+            ('mcp_servers = "x"\n', "invalid_codex_config"),
+            ('[mcp_servers]\nagent-sync = "x"\n', "existing_agent_sync_mcp_conflict"),
+        ):
             with self.subTest(text=text):
                 config.write_bytes(text.encode())
                 with self.assertRaisesRegex(release.Refused, code):
