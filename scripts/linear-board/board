@@ -4601,6 +4601,12 @@ def main(argv: list[str] | None = None) -> int:
         if linear_only:
             die(f"`{linear_only}` is Linear only:  BOARD_BACKEND=mac-collab runs the old board CLI, which has "
                 "no such flag or verb.  Unset BOARD_BACKEND to use it.", EXIT_USAGE)
+        # The archived findings.db is frozen and read-only, so a write verb would
+        # fail inside the archived CLI with a raw sqlite error.  Refuse it here.
+        if argv[:1] and argv[0] in WRITE_VERBS:
+            die(f"`board {argv[0]}` is a write, and BOARD_BACKEND=mac-collab runs the archived old CLI against the "
+                "frozen, read-only findings.db;  that backend serves reads only.  Unset BOARD_BACKEND to use it.",
+                EXIT_USAGE)
         old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "_retired" / "mac-collab-20261019" / "board")).expanduser()
         if not old.is_file():
             die(f"BOARD_BACKEND=mac-collab, but the archived old board CLI is not at {old} "

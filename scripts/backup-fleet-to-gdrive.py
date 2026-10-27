@@ -431,7 +431,9 @@ def main() -> int:
                 import sqlite3
 
                 db_dest = dest_dir / f"findings-{DATE_STR}.db"
-                src_conn = sqlite3.connect(findings_db)
+                # The archive is frozen and read-only;  open it read-only, like every
+                # other reader of that file does, so it is never checkpointed or rewritten.
+                src_conn = sqlite3.connect(f"file:{findings_db}?mode=ro", uri=True)
                 dst_conn = sqlite3.connect(db_dest)
                 src_conn.backup(dst_conn)
                 dst_conn.close()
