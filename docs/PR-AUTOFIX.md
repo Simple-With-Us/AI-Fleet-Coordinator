@@ -137,4 +137,4 @@ The fleet runs three autofix bots (this PR Autofix, the Claude Code Autofix reus
 
 GitHub keeps one running and one pending run per group, and a newer pending run replaces the older one.
 
-Codex's own fix feature runs in Codex's cloud, outside this queue.  Agents never ask Codex to fix a PR unless Jay agrees first (FLEET-PROTOCOL.md, [Landing Work](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/e68ffde1af8b62d391f709cb919474e735c84724/FLEET-PROTOCOL.md#landing-work-commit-pr-review-merge-deploy)).  Asking Codex to *review* a PR stays allowed;  review findings are fixed by these fleet autofix bots or by the seat that owns the PR.
+Codex's own fix feature runs in Codex's cloud, outside this queue.  Agents never ask Codex to fix a PR unless Jay agrees first (FLEET-PROTOCOL.md, [Landing Work](../FLEET-PROTOCOL.md#landing-work-commit-pr-review-merge-deploy)).  Asking Codex to *review* a PR stays allowed;  review findings are fixed by these fleet autofix bots or by the seat that owns the PR.
