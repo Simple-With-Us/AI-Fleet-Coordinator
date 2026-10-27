@@ -998,7 +998,7 @@ class AgentSeatPinTests(unittest.TestCase):
                 continue
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
             if seat.retired:
-                self.assertIn(f"{seat.tag} is retired and is no platform's default", out, key)
+                self.assertIn("a retired catalog pack is never a platform default", out, key)
                 continue
             self.assertIn(_arm(seat.tag), self._block(out).splitlines(), key)
             self.assertIn(_ordinary(seat.notes, seat.tag), out, key)
