@@ -267,7 +267,13 @@ class Outbox:
             # The switch flipped before the POST: a decline is a result, so
             # the reply goes back to held and never becomes unknown.
             report(
-                self.worker_url, self.signing_key, intent_id, "declined", self.clock, self.request, token=token
+                self.worker_url,
+                self.signing_key,
+                intent_id,
+                "declined",
+                self.clock,
+                self.request,
+                token=token,
             )
             self.state.ledger_delete(intent_id)
             return {"state": "declined"}
@@ -279,7 +285,13 @@ class Outbox:
             # The claim is given back: the reply is queued again and nothing
             # is sent this minute.
             report(
-                self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request, token=token
+                self.worker_url,
+                self.signing_key,
+                intent_id,
+                "requeue",
+                self.clock,
+                self.request,
+                token=token,
             )
             self.state.ledger_delete(intent_id)
             return {"state": "rate_limited"}
@@ -319,8 +331,14 @@ class Outbox:
             return {"state": "refused"}
         if outcome == "requeue":
             report(
-                self.worker_url, self.signing_key, intent_id, "requeue", self.clock, self.request, token=token,
-                retry_after_s=answer.get("retry_after_s")
+                self.worker_url,
+                self.signing_key,
+                intent_id,
+                "requeue",
+                self.clock,
+                self.request,
+                token=token,
+                retry_after_s=answer.get("retry_after_s"),
             )
             self.state.ledger_delete(intent_id)
             return {"state": "requeue"}

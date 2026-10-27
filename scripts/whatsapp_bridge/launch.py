@@ -117,13 +117,13 @@ def run_poll_with_optional_send(command, prepared):
         if name == "WHATSAPP_BRIDGE_SEND_ENABLED":
             chosen[name] = secrets.get(name, "off")
         elif name not in secrets:
-            raise SecretsError("key {} is not in Infisical at /jet".format(name), 3)
+            raise SecretsError(f"key {name} is not in Infisical at /jet", 3)
         else:
             chosen[name] = secrets[name]
     core.reject_unresolved(chosen)
     child = {k: v for k, v in prepared.items() if k not in core.AUTH_ENV_VARS}
     child.update(chosen)
-    executable = command[command.index("--") + 1:]
+    executable = command[command.index("--") + 1 :]
     try:
         os.execvpe(executable[0], executable, child)
     except FileNotFoundError:

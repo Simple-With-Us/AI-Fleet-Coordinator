@@ -525,17 +525,27 @@ class LaunchTests(unittest.TestCase):
             self.assertEqual(children[0][1][-1], request_id)
 
     def test_missing_send_switch_defaults_off_without_weakening_required_keys(self):
-        from whatsapp_bridge import launch
         from fleet_secrets import core
+
+        from whatsapp_bridge import launch
+
         names = {n: "synthetic" for n in launch.POLL_NAMES if n != "WHATSAPP_BRIDGE_SEND_ENABLED"}
         command = launch.arguments("poll", __import__("pathlib").Path("/release"))
         children = []
-        with patch.object(core, "fetch_all", return_value=names), patch.object(launch.os, "execvpe", side_effect=lambda *a: children.append(a)):
-            launch.run_poll_with_optional_send(command, {"PATH": "/usr/bin", "INFISICAL_TOKEN": "synthetic"})
+        with (
+            patch.object(core, "fetch_all", return_value=names),
+            patch.object(launch.os, "execvpe", side_effect=lambda *a: children.append(a)),
+        ):
+            launch.run_poll_with_optional_send(
+                command, {"PATH": "/usr/bin", "INFISICAL_TOKEN": "synthetic"}
+            )
         self.assertEqual(children[0][2]["WHATSAPP_BRIDGE_SEND_ENABLED"], "off")
         self.assertNotIn("INFISICAL_TOKEN", children[0][2])
         del names["WHATSAPP_API_KEY"]
-        with patch.object(core, "fetch_all", return_value=names), patch.object(launch.os, "execvpe") as execute:
+        with (
+            patch.object(core, "fetch_all", return_value=names),
+            patch.object(launch.os, "execvpe") as execute,
+        ):
             with self.assertRaises(core.SecretsError):
                 launch.run_poll_with_optional_send(command, {})
             execute.assert_not_called()
