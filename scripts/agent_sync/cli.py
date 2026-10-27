@@ -25,14 +25,19 @@ import contextlib
 import datetime as dt
 import difflib
 import functools
+import http.client
 import json
 import os
 import re
 import shlex
 import signal
+import socket
+import ssl
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -2892,6 +2897,467 @@ def build_parser_for(
     )
 
 
+# ---------------------------------------------------------------- remote read transport (opt-in)
+#
+# SIMPLE_CHAT_REMOTE=1 sends a few READ verbs (whoami, channels, topics, read, inbox) to the hosted ST-MCP
+# endpoint with the bot's own bearer (SIMPLE_TOOLS_BEARER, process environment only).  The hosted server decides
+# the seat from the bearer; this client never names one, so --as and --default-seat are refused.  The endpoint is
+# the fixed constant below (no override), no Zulip key or rc file is read, and a failure never falls back to the
+# direct path.  Every other verb and every flag with no hosted equivalent is refused.  The hosted bearer holds
+# every hosted tool of its seat; calling only these reads is a client choice, not a server restriction.
+# This is the LOCAL simple-chat CLI calling the HOSTED ST-MCP server:  two different servers.
+REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
+REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
+REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
+REMOTE_TIMEOUT_S = 40
+REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox")
+REMOTE_WRITE_VERBS = ("post", "reply", "react", "dm")
+REMOTE_VERBS = REMOTE_READ_VERBS + REMOTE_WRITE_VERBS
+
+
+REMOTE_MAX_BYTES = 4_000_000
+REMOTE_MAX_DEPTH = 64
+REMOTE_MAX_NODES = 100_000
+# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src);  a test keeps
+# this list in step with that source.  Anything else, including a code that merely looks safe, prints as "error".
+_REMOTE_CODES = frozenset(
+    (
+        "invalid_argument",
+        "unavailable",
+        "upstream_error",
+        "not_authorized",
+        "rate_limited",
+        "not_configured",
+        "outcome_unknown",
+        "paused",
+        "linear_error",
+        "internal",
+        "response_too_large",
+        "refused_secret",
+        "not_found",
+        "channel_not_allowed",
+        "claim_held",
+        "zulip_error",
+        "writes_disabled",
+        "unknown_tool",
+        "session_required",
+        "relay_refused",
+        "identity_required",
+        "identity_not_allowed",
+        "forbidden",
+        "fleetlink_seat_disabled",
+        "fleetlink_refused",
+        "dm_not_allowed",
+        "budget_exhausted",
+    )
+)
+_REMOTE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_REMOTE_UNKNOWN = "; the write may or may not have been applied, check before sending it again"
+
+
+def _remote_visible(text: str) -> str:
+    """Hosted text with control characters (other than newline and tab) shown as \\xNN, so it cannot drive the terminal."""
+    return _REMOTE_CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), text)
+
+
+class _TransportError(Exception):
+    """The request did not produce an HTTP answer.  `sent` is False only when it provably never left
+    (name lookup, refused connection, certificate check);  every other stage is treated as sent."""
+
+    def __init__(self, sent: bool, reason: str = "") -> None:
+        super().__init__(reason)
+        self.sent = sent
+        self.reason = reason
+
+
+def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[int, str, bytes]:
+    """The one network call of the remote transport:  (status, content type, body).  Tests replace this.
+    Redirects are never followed (the Authorization header must not leave the fixed origin), the body is
+    read under one total deadline and one byte cap."""
+    deadline = time.monotonic() + timeout
+    op = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RemoteNoRedirect())
+    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    try:
+        with op.open(req, timeout=timeout) as r:
+            chunks, total = [], 0
+            sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
+            if sock is None:
+                # Without the socket the remaining budget cannot be applied to each read, so a stalled body could
+                # outlast the deadline:  fail closed rather than read unbounded.
+                raise _TransportError(True, "transport")
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _TransportError(True, "deadline")
+                sock.settimeout(remaining)
+                chunk = r.read1(65536)
+                if time.monotonic() > deadline:
+                    raise _TransportError(True, "deadline")
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > REMOTE_MAX_BYTES:
+                    raise _TransportError(True, "too large")
+                chunks.append(chunk)
+            return r.status, r.headers.get("Content-Type", ""), b"".join(chunks)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        return exc.code, "", b""
+    except urllib.error.URLError as exc:
+        unsent = isinstance(
+            exc.reason, (socket.gaierror, ConnectionRefusedError, ssl.SSLCertVerificationError)
+        )
+        raise _TransportError(not unsent, "unreachable") from None
+    except _TransportError:
+        raise
+    except (http.client.HTTPException, OSError, ValueError):
+        raise _TransportError(True, "transport") from None
+
+
+class _RemoteNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _remote_depth_ok(text: str) -> bool:
+    depth = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            if depth > REMOTE_MAX_DEPTH:
+                return False
+        elif ch in "]}":
+            depth -= 1
+    return True
+
+
+def _remote_nodes_ok(value) -> bool:
+    stack, count = [value], 0
+    while stack:
+        item = stack.pop()
+        count += 1
+        if count > REMOTE_MAX_NODES:
+            return False
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return True
+
+
+def _remote_events(ctype: str, raw: bytes) -> list[str]:
+    """The JSON texts of one answer:  the body itself, or each Server-Sent Event (its `data:` lines joined by a
+    newline, as the SSE format defines, comments and other fields ignored)."""
+    text = raw.decode("utf-8", "replace")
+    if "text/event-stream" not in ctype.lower():
+        return [text]
+    events, current = [], []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line == "":
+            if current:
+                events.append("\n".join(current))
+                current = []
+        elif line.startswith("data:"):
+            value = line[5:]
+            current.append(value.removeprefix(" "))
+    if current:
+        events.append("\n".join(current))
+    return events
+
+
+def _remote_code(value) -> str:
+    """A server error code, only when it is one of the codes the hosted server defines;  anything else is "error"."""
+    return value if isinstance(value, str) and value in _REMOTE_CODES else "error"
+
+
+def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
+    """The tools/call result of one answer, or (None, message).  Returns (result, "") on success.  Only an
+    allow-listed code and a bounded retry-after leave this function:  the server's own message text is
+    untrusted and can echo the caller's input, so it is never copied into an error."""
+    unknown = _REMOTE_UNKNOWN if write else ""
+    msg = None
+    for text in _remote_events(ctype, raw):
+        if not _remote_depth_ok(text):
+            return None, "the hosted endpoint sent an answer that nests too deeply" + unknown
+        try:
+            candidate = json.loads(text)
+        except (ValueError, RecursionError):
+            continue
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("jsonrpc") == "2.0"
+            and type(candidate.get("id")) is int
+            and candidate["id"] == 1
+            and ("result" in candidate) != ("error" in candidate)
+        ):
+            msg = candidate
+            break
+    if msg is None:
+        return None, "the hosted endpoint sent no readable answer to the call" + unknown
+    if not _remote_nodes_ok(msg):
+        return None, "the hosted endpoint sent an oversized answer" + unknown
+    if "error" in msg:
+        err = msg["error"]
+        code = _remote_code(err.get("code")) if isinstance(err, dict) else "error"
+        return None, "the hosted endpoint refused the call" + (
+            "" if code == "error" else f" ({code})"
+        )
+    result = msg.get("result")
+    if not isinstance(result, dict):
+        return None, "the hosted endpoint sent no result" + unknown
+    content = result.get("content")
+    sc = result.get("structuredContent")
+    if (
+        (content is not None and not isinstance(content, list))
+        or any(
+            not isinstance(p, dict) or ("text" in p and not isinstance(p["text"], str))
+            for p in content or []
+        )
+        or (sc is not None and not isinstance(sc, dict))
+        or not isinstance(result.get("isError", False), bool)
+    ):
+        return None, "the hosted endpoint sent a result in an unexpected shape" + unknown
+    if result.get("isError"):
+        code = _remote_code((sc or {}).get("code"))
+        retry = (sc or {}).get("retry_after")
+        after = (
+            f", retry after {retry}s"
+            if isinstance(retry, int) and not isinstance(retry, bool) and 0 <= retry <= 86400
+            else ""
+        )
+        note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
+        return None, f"{tool} failed on the hosted server: {code}{after}{note}"
+    return result, ""
+
+
+def _remote_failure(exc: _TransportError, write: bool) -> str:
+    if write and exc.sent:
+        return (
+            "the hosted endpoint did not answer"
+            + _REMOTE_UNKNOWN
+            + " (no direct fallback in remote mode)"
+        )
+    return "the hosted endpoint could not be reached (no direct fallback in remote mode)"
+
+
+def _remote_status_message(status: int, write: bool) -> str:
+    if status in (401, 403):
+        return "the hosted endpoint refused this bearer (not valid, expired, paused or not accepted for MCP)"
+    return f"the hosted endpoint answered HTTP {status}" + (
+        _REMOTE_UNKNOWN if write and (status >= 500 or status == 408) else ""
+    )
+
+
+def _remote_scan_arguments(scanner, arguments, bearer: str) -> str | None:
+    """The first argument field the fleet secret scanner flags, as `secret_scan:<field>` (the field name only,
+    never the text or any part of it), or None.  Every string at any depth is checked, and the bearer itself
+    always matches."""
+    stack = [("", arguments)]
+    while stack:
+        path, value = stack.pop()
+        if isinstance(value, str):
+            if scanner.scan(value, known=[bearer]) is not None:
+                return "secret_scan:" + (path or "arguments")
+        elif isinstance(value, dict):
+            stack.extend((f"{path}.{k}" if path else str(k), v) for k, v in value.items())
+        elif isinstance(value, (list, tuple)):
+            stack.extend((f"{path}[{i}]", v) for i, v in enumerate(value))
+    return None
+
+
+class RemoteError(Exception):
+    pass
+
+
+def _remote_call(
+    env: Mapping[str, str], tool: str, arguments: dict[str, Any], write: bool = False
+) -> dict[str, Any]:
+    bearer = str(env.get(REMOTE_BEARER_ENV, "")).strip()
+    if not bearer:
+        raise RemoteError(
+            f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
+            "to direct credentials"
+        )
+    if not REMOTE_BEARER_RE.fullmatch(bearer):
+        raise RemoteError(
+            f"{REMOTE_BEARER_ENV} is not a bearer token (unexpected characters or length)"
+        )
+    try:
+        from . import secretscan
+    except (ImportError, OSError):
+        raise RemoteError(
+            "the secret scanner is not available, so nothing was sent (remote mode has no unscanned route)"
+        ) from None
+    hit = _remote_scan_arguments(secretscan, arguments, bearer)
+    if hit:
+        raise RemoteError(f"refused before sending: {hit}")
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": tool, "arguments": arguments},
+        }
+    ).encode()
+    try:
+        status, ctype, raw = _remote_post(
+            REMOTE_MCP_URL,
+            {
+                "Content-Type": "application/json",
+                "Accept": "application/json, text/event-stream",
+                "MCP-Protocol-Version": "2025-06-18",
+                "Authorization": "Bearer " + bearer,
+                "User-Agent": "simple-chat-remote/1",
+            },
+            body,
+            REMOTE_TIMEOUT_S,
+        )
+    except _TransportError as exc:
+        raise RemoteError(_remote_failure(exc, write)) from None
+    if status != 200:
+        raise RemoteError(_remote_status_message(status, write))
+    result, problem = _remote_answer(ctype, raw, tool, write)
+    if problem:
+        raise RemoteError(problem)
+    return result
+
+
+def _remote_write_args(
+    rt: Runtime, cmd: str, args: argparse.Namespace
+) -> tuple[str, dict[str, Any]]:
+    """post / reply / react / dm to the hosted zulip_* tool of the same meaning.  A write needs its own switch
+    (SIMPLE_CHAT_REMOTE_WRITES=1) on top of SIMPLE_CHAT_REMOTE=1;  the hosted server still applies its own
+    tagging, secret scan, recipient rules and rate limits.  Options with no hosted equivalent are refused."""
+    if str(rt.env.get("SIMPLE_CHAT_REMOTE_WRITES", "")).strip() != "1":
+        raise RemoteError(
+            f"`{cmd}` is a write:  set SIMPLE_CHAT_REMOTE_WRITES=1 as well as SIMPLE_CHAT_REMOTE=1 "
+            "to send it to the hosted server (it is not sent directly instead)"
+        )
+    for flag, bad in (
+        ("--fleet", "fleet"),
+        ("--to-owner", "to_owner"),
+        ("--no-tag", "no_tag"),
+        ("--quiet", "quiet"),
+        ("--owner", "owner"),
+        ("--body-file", "body_file"),
+    ):
+        if getattr(args, bad, False):
+            raise RemoteError(f"{flag} has no hosted equivalent in remote mode")
+    if cmd == "react":
+        return "zulip_react", {"message_id": args.id, "emoji": args.emoji}
+    words = list(getattr(args, "text", None) or [])
+    text = rt.stdin.read() if words == ["-"] else " ".join(words)
+    if not text.strip():
+        raise RemoteError(f"`{cmd}` needs message text (an argument, or - for stdin)")
+    if cmd == "post":
+        targs: dict[str, Any] = {"channel": args.channel, "topic": args.topic, "text": text}
+        if args.to:
+            targs["to"] = list(args.to)
+        return "zulip_post", targs
+    if cmd == "reply":
+        targs = {"message_id": args.id, "text": text}
+        if args.to:
+            targs["to"] = list(args.to)
+        return "zulip_reply", targs
+    ids = [t for t in args.to if re.fullmatch(r"[0-9]+", t)]
+    emails = [t for t in args.to if "@" in t]
+    if not args.to or len(ids) + len(emails) != len(args.to):
+        raise RemoteError(
+            "remote dm needs --to with numeric user ids or emails (names, seat tags and the "
+            "owner default are not resolved in remote mode)"
+        )
+    targs = {"text": text}
+    if ids:
+        targs["user_ids"] = [int(i) for i in ids]
+    if emails:
+        targs["emails"] = emails
+    if getattr(args, "clarifying_question", False):
+        targs["clarifying_question"] = True
+    return "zulip_dm_send", targs
+
+
+def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
+    cmd = getattr(args, "command", None) or getattr(args, "cmd", None)
+    try:
+        if cmd not in REMOTE_VERBS:
+            raise RemoteError(
+                f"`{cmd}` is not available in remote mode (SIMPLE_CHAT_REMOTE=1 supports only "
+                f"{', '.join(REMOTE_VERBS)}); it is not run directly either"
+            )
+        for flag, bad in (
+            ("--as", getattr(args, "as_seat", None)),
+            ("--default-seat", getattr(args, "default_seat", None)),
+            ("--rc", getattr(args, "rc", None)),
+            ("--session", getattr(args, "session", None)),
+        ):
+            if bad:
+                raise RemoteError(
+                    f"{flag} has no meaning in remote mode:  the hosted server fixes the seat from the bearer"
+                )
+        if cmd == "whoami":
+            tool, targs = "whoami", {}
+        elif cmd == "channels":
+            tool, targs = "zulip_channels", {"all": bool(getattr(args, "all", False))}
+        elif cmd == "topics":
+            tool, targs = "zulip_topics", {"channel": args.channel, "limit": args.limit}
+        elif cmd == "read":
+            if getattr(args, "new", False):
+                raise RemoteError(
+                    "--new uses a local cursor and has no hosted equivalent in remote mode"
+                )
+            tool, targs = (
+                "zulip_read_topic",
+                {"channel": args.channel, "topic": args.topic, "limit": args.limit},
+            )
+            if getattr(args, "since", None) is not None:
+                targs["since_id"] = args.since
+            if getattr(args, "include_self", False):
+                targs["include_self"] = True
+        elif cmd in REMOTE_WRITE_VERBS:
+            tool, targs = _remote_write_args(rt, cmd, args)
+        else:
+            if getattr(args, "local", False):
+                raise RemoteError(
+                    "--local reads the listener's local files and has no hosted equivalent"
+                )
+            if not getattr(args, "peek", False):
+                raise RemoteError(
+                    "remote inbox cannot advance the local cursor:  pass --peek to read without it"
+                )
+            tool, targs = "zulip_inbox", {"limit": args.limit}
+        result = _remote_call(rt.env, tool, targs, write=cmd in REMOTE_WRITE_VERBS)
+    except RemoteError as exc:
+        print(f"{rt.prog}: {exc}", file=rt.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {"structured": result.get("structuredContent"), "content": result.get("content")},
+                indent=2,
+            ),
+            file=rt.stdout,
+        )
+        return 0
+    printed = False
+    for part in result.get("content") or []:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            print(_visible(part["text"]), file=rt.stdout)
+            printed = True
+    if not printed:
+        print(json.dumps(result.get("structuredContent"), indent=2), file=rt.stdout)
+    return 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -2922,6 +3388,18 @@ def main(
     # The hook fast path belongs to `simple-chat` alone:  attach/detach are listener verbs, so a
     # command that does not own them (simple-notes) must fall through to the parser and be refused.
     spec = COMMAND_SPECS.get(prog)
+    if (
+        prog == "simple-chat"
+        and str(rt.env.get("SIMPLE_CHAT_REMOTE", "")).strip() == "1"
+        and argv
+        and argv[0] in HOOK_VERBS
+    ):
+        print(
+            f"{prog}: `{argv[0]}` is a local listener verb and is not available in remote mode "
+            "(SIMPLE_CHAT_REMOTE=1); it is not run locally either",
+            file=rt.stderr,
+        )
+        return 2
     if argv and argv[0] in HOOK_VERBS and spec is not None and argv[0] in spec["listener"]:
         from . import attach
 
@@ -2941,6 +3419,8 @@ def main(
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 2)
 
     args = _resolve_channel_args(args, rt.env)
+    if prog == "simple-chat" and str(rt.env.get("SIMPLE_CHAT_REMOTE", "")).strip() == "1":
+        return _remote_main(rt, args)
 
     previous = None
     if threading.current_thread() is threading.main_thread():
