@@ -389,11 +389,11 @@ class RunTests(NotifierCase):
         self.assertEqual([e["event"] for e in result["events"]], ["start", "board-read-failed"])
         self.assertEqual(self.sent_by_notifier(), [])
 
-    def test_a_missing_board_is_a_failed_read_too(self) -> None:
+    def test_a_missing_board_refuses_before_any_read(self) -> None:
         self.w.remove_tool("simple-board")
         ran = self.w.notify()
-        self.assertEqual(ran.code, 0, ran.err)
-        self.assertIn("board-read-failed", [e["event"] for e in ran.json()["events"]])
+        self.assertEqual(ran.code, 2, "no board means no bearer to prove the seat:  the notifier refuses, it never acts unverified")
+        self.assertIn("simple-board", ran.err)
 
     def test_a_refused_or_broken_knob_stops_the_run_before_anything_is_sent(self) -> None:
         self.pending()

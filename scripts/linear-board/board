@@ -37,7 +37,8 @@ Agent-Sync parity (the hosted server's Linear tools, from catalog/*.json):
 `run` builds the same `AgentSyncNamed` document the hosted server builds and applies its guards:  one
 operation, depth 16, 500 fields, no protected or batch mutation roots, only public input fields, and
 no edits of claimed:, seat: or stale-claim labels (`board claim` owns those).  A write (a write
-command, `api mutation`, or a write `mcp call`) needs AGENT_SEAT, LINEAR_BOARD_WRITES=1 and
+command, `api mutation`, or a write `mcp call`) needs a bearer-verified seat,
+LINEAR_BOARD_WRITES=1 and
 --idempotency-key:  a retry with the same key returns the first result and never sends it twice, and
 an unknown outcome is never replayed automatically.  `mcp` proxies Linear's official MCP server
 (https://mcp.linear.app/mcp) with the same app token.
@@ -58,22 +59,28 @@ seat's session for a topic.  The id is --session, else AGENT_SESSION, else the s
 variable (CLAUDE_CODE_SESSION_ID, CODEX_THREAD_ID, CURSOR_CONVERSATION_ID, GROK_SESSION_ID,
 OPENCODE_SESSION_ID, __MAVIS_RUNTIME_SESSION_ID).  With none, these four verbs exit 2 before they
 write.  Grok bots (GROK-BOT, GB-*), MA, JET, WISE and ECHO have one thread with the owner and are
-exempt, decided from AGENT_SEAT and never from a flag.
+exempt, decided from the verified seat and never from a flag.
 
-Identity: a Linear app that mints its own token by OAuth client credentials
+Identity:  the run's seat is proven by an admin-minted bearer, verified against
+ST-MCP (gr-bearer-verify/1), never parsed from the token and never taken from
+the environment (owner direction 2026-10-26:  the bearer identifies the agent,
+on the server and the Mac alike;  there is no identity picker).  A trusted
+launcher binds the run to SIMPLE_BOARD_BEARER_LOCATOR, a non-secret
+FOLDER:KEY_NAME location;  with no locator the write verbs refuse and reads
+run without a seat.  The Linear side is a Linear app that mints its own token by OAuth client credentials
 (design section 2).  Each seat has its own app, named for the seat bot (CLAUDE
 signs as "Claude"), when its <SEAT>_LINEAR_CLIENT_ID and _SECRET are in Infisical Fleet-OPS /linear;
-a seat with no app yet, and every read without AGENT_SEAT, uses the shared
-"Fleet" app.  Each app has its own token, stored in Infisical (CACHE_<SEAT>).  The seat comes from
-AGENT_SEAT, which the five write verbs require and the read verbs do not.  The
-shared app cannot tell seats apart, so every issue and comment this CLI writes
+a seat with no app yet, and every read without a bearer, uses the shared
+"Fleet" app.  Each app has its own token, stored in Infisical (CACHE_<SEAT>).  The seat comes only from the
+verified bearer, which the five write verbs require and the read verbs do not.
+The shared app cannot tell seats apart, so every issue and comment this CLI writes
 starts with a seat tag line ([CLAUDE·6db9ee77]), with a seat app too.  A seat
 app's writes are refused when Linear names another app as the viewer
 (swapped credentials).  A claim is a claimed:<TAG> label on the issue;
 seat:<TAG> labels only say who reported or touched it (the import put them on
 reporters too), so they are never read as a claim.  Writes are off unless
-LINEAR_BOARD_WRITES=1.  BOARD_BACKEND=mac-collab runs the archived old board
-CLI instead (rollback);  the archive holds the only surviving copy of it.
+LINEAR_BOARD_WRITES=1.  BOARD_BACKEND=mac-collab runs the old board CLI
+instead for reads (rollback);  it never carries a write, which needs the bearer-verified seat.
 
 Stdlib only, so cloud seats, the Grok Bot VM and BotFleet containers can run
 it from any AI-Fleet-Coordinator checkout: python3 scripts/linear-board/board.
@@ -86,8 +93,10 @@ import errno
 import fcntl
 import fnmatch
 import hashlib
+import hmac
 import http.client
 import json
+import math
 import os
 import re
 import shutil
@@ -122,11 +131,11 @@ USER_AGENT = "swu-board-cli/1"
 LOOPBACK_RE = re.compile(r"http://127\.0\.0\.1:\d{1,5}(/[A-Za-z0-9._/-]*)?")
 
 EXIT_ERROR = 1
-EXIT_USAGE = 2          # bad flags, no AGENT_SEAT, --by mismatch, refused URL
+EXIT_USAGE = 2          # bad flags, --by mismatch, refused URL
 EXIT_CLAIM_HELD = 3     # another seat holds the claim
 EXIT_NO_CREDS = 4       # no Fleet credentials, or a write with another app's seat credentials
 EXIT_RATE_LIMIT = 5     # Linear rate limit outlasted LINEAR_BOARD_MAX_WAIT
-EXIT_AUTH = 6           # token refused, mint refused, or whoami check failed
+EXIT_AUTH = 6           # no verified seat, token refused, mint refused, or whoami check failed
 EXIT_WRITES_OFF = 7     # a write verb without LINEAR_BOARD_WRITES=1
 
 # Linear's client-credentials tokens last 30 days.  A cached token is re-minted
@@ -186,7 +195,7 @@ SEAT_ALIASES = {"MINIMAX": "MM", "MUSE": "MA", "GROK-BUILD": "GROK", "ANTIGRAVIT
                 "MUSE-ASSIST": "MA", "ROB": "MA", "ROB-MUSE": "MA", "MUSE-CODE": "MC",
                 "INSTINCT": "WISE", "WISE-INSTINCT": "WISE", "ECHO-INSTINCT": "WISE"}
 CLUTCH_LINEAGE = {"DSH", "DEEPSEEK", "HARNESS"}
-# Spellings of a seat tag that AGENT_SEAT and --by resolve to the tag the fleet signs with.  The tag is
+# Spellings of a seat tag that --by and bearer identities resolve to the tag the fleet signs with.  The tag is
 # WISE (owner 2026-10-15) and INSTINCT is the retired spelling, kept so existing references keep resolving.
 # Output uses the canonical key.
 SEAT_TAG_ALIASES = {"INSTINCT": "WISE"}
@@ -455,7 +464,7 @@ GROK_ALIAS_RE = re.compile(GROK_ALIAS_PATTERN, re.IGNORECASE | re.ASCII)
 
 
 def norm_seat(s: str | None) -> str:
-    """The seat tag a value stands for, upper-cased.  Every GROK-BUILD spelling is GROK, so AGENT_SEAT,
+    """The seat tag a value stands for, upper-cased.  Every GROK-BUILD spelling is GROK, so
     --by and --mine all resolve to the one seat that signs GROK."""
     v = (s or "").strip().strip("@[]<>`'\" ")
     upper = v.upper()
@@ -507,7 +516,7 @@ def central(when, with_day: bool = True) -> str:
 
 def session_exempt(seat: str) -> bool:
     """True for a seat with one thread with the owner (a Grok bot, MA, JET, WISE, ECHO), which has no session
-    id to pass.  Decided from the resolved seat (AGENT_SEAT), never from a flag."""
+    id to pass.  Decided from the resolved (verified) seat, never from a flag."""
     seat = norm_seat(seat)
     return seat in SESSION_EXEMPT_SEATS or any(fnmatch.fnmatchcase(seat, pat) for pat in SESSION_EXEMPT_PATTERNS)
 
@@ -725,31 +734,195 @@ class Infisical:
 INFISICAL_WHERE = "Infisical AI Fleet Coordinator prod /linear"
 
 
+# ----------------------------------------------------------------- bearer identity
+#
+# A run may prove its seat with an admin-minted bearer instead of the AGENT_SEAT
+# environment picker (owner direction 2026-10-26: the bearer identifies the agent, on
+# the server and the Mac alike).  A trusted launcher binds the run to a non-secret
+# credential LOCATOR (SIMPLE_BOARD_BEARER_LOCATOR, "FOLDER:KEY_NAME"); the locator
+# says where the credential lives and is never an identity claim.  The bearer bytes
+# are read through `fleet-secrets get`, only their SHA-256 leaves the process (inside
+# an HMAC-signed body to the ST-MCP verify route, the same gr-bearer-verify/1
+# contract git-relay uses), and the seat comes ONLY from the route's own answer.
+# Every failure refuses with EXIT_AUTH:  no environment fallback, no picker.
+
+BEARER_LOCATOR_ENV = "SIMPLE_BOARD_BEARER_LOCATOR"
+# The verify endpoint is a fixed trusted origin, never from the environment:  the caller
+# controls its own environment, and a caller-chosen endpoint would let the caller choose
+# the answer - the very identity picker the bearer removes.
+BEARER_VERIFY_URL = "https://agents.simplewithus.com/internal/gr-bearer-verify"
+BEARER_VERIFY_CONTRACT = "gr-bearer-verify/1"
+BEARER_SIGNATURE_HEADER = "X-Agent-Sync-Signature"
+BEARER_VERIFY_KEY_NAME = "GR_BEARER_VERIFY_KEY"
+BEARER_VERIFY_KEY_FOLDER = "/tools"
+BEARER_MAX_RESPONSE = 4096
+BEARER_TIMEOUT_S = 10
+# The admin-minted bearer families, mirroring git-relay/git_relay/shared_bearer.py:
+# gbb_<role>_<43 base64url> names GB-<ROLE>;  sbt_<seat>_<43> names its KNOWN_SEATS
+# seat (hyphen preserved).  New families join both resolvers together.
+BEARER_TOKEN_RES = (
+    re.compile(r"^gbb_([a-z][a-z0-9]{1,19})_([A-Za-z0-9_-]{43})\Z"),
+    re.compile(r"^sbt_([a-z][a-z0-9-]{1,19})_([A-Za-z0-9_-]{43})\Z"),
+)
+# FOLDER:KEY_NAME - a location, not a value.  One or more plain path segments:  no
+# dots (so no "." or ".."), no empty segments, no trailing slash, depth capped.
+BEARER_LOCATOR_RE = re.compile(
+    r"(/[A-Za-z0-9_-]{1,64}(?:/[A-Za-z0-9_-]{1,64}){0,7}):([A-Z][A-Z0-9_]{0,63})\Z")
+BEARER_REASON_RE = re.compile(r"[a-z_]{1,40}\Z")
+
+
+def parse_bearer_identity(token: str) -> str | None:
+    """The identity a bearer NAMES.  This is a claim, never proof:  only the
+    verify route's answer authenticates it, so nothing privileged may be
+    selected from this parse alone."""
+    m = BEARER_TOKEN_RES[0].match(token)
+    if m:
+        return "GB-" + m.group(1).upper()
+    m = BEARER_TOKEN_RES[1].match(token)
+    if m:
+        return m.group(1).upper()
+    return None
+
+
+def fleet_folder_secret(name: str, folder: str) -> str:
+    """One secret from an explicit Fleet-OPS folder through `fleet-secrets get`, or ""
+    when the tool is absent, the key is absent, or the call fails.  The value is
+    never printed, logged, passed on a command line, or written to disk."""
+    binary = fleet_secrets_bin()
+    if not binary:
+        return ""
+    try:
+        proc = subprocess.run([binary, "get", name, "--path", folder], capture_output=True,
+                              text=True, timeout=60, check=False, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _verify_reason(payload: bytes) -> str:
+    """The route's fixed reason code, or "" - only a safe allow-listed token, never body prose."""
+    try:
+        answer = json.loads(payload)
+    except ValueError:
+        return ""
+    if not isinstance(answer, dict):
+        return ""
+    reason = str(answer.get("reason") or "")
+    return reason if BEARER_REASON_RE.fullmatch(reason) else ""
+
+
+def _bearer_transport(url: str, headers: dict, body: bytes, timeout: int) -> bytes:
+    """POST the signed verify body and return the answer bytes.  Raises HTTPError for an
+    HTTP refusal, URLError/OSError when unreachable;  the caller maps both to EXIT_AUTH."""
+    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    with opener().open(req, timeout=timeout) as resp:
+        return resp.read(BEARER_MAX_RESPONSE + 1)
+
+
+# Import-only test seam:  tests inject a fake transport after importing the module
+# (mirroring SharedBearerVerifier's injectable transport).  The CLI binary has no
+# environment override for it or for BEARER_VERIFY_URL.
+BEARER_TRANSPORT = None
+
+
+def bearer_verified_seat() -> str:
+    """The seat PROVEN by the bearer at SIMPLE_BOARD_BEARER_LOCATOR, or die(EXIT_AUTH).
+
+    Order is load-bearing:  the bearer is verified against the ST-MCP SeatGate
+    before anything else in this run learns the seat, so no unverified value can
+    select a seat's Linear app, sign a write, or pick an allowed set."""
+    locator = env(BEARER_LOCATOR_ENV) or ""
+    m = BEARER_LOCATOR_RE.fullmatch(locator)
+    if not m:
+        die(f"{BEARER_LOCATOR_ENV} must name a non-secret FOLDER:KEY_NAME location", EXIT_AUTH)
+    folder, key_name = m.group(1), m.group(2)
+    token = fleet_folder_secret(key_name, folder)
+    if not token:
+        die("no seat bearer is readable at its locator; refusing to act without a verified identity", EXIT_AUTH)
+    claimed = parse_bearer_identity(token)
+    if claimed is None:
+        die("the value at the bearer locator is not an admin-minted bearer", EXIT_AUTH)
+    key = fleet_folder_secret(BEARER_VERIFY_KEY_NAME, BEARER_VERIFY_KEY_FOLDER)
+    if len(key) < 32:
+        die("bearer verification is not configured on this host", EXIT_AUTH)
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    body = json.dumps({"contract": BEARER_VERIFY_CONTRACT, "identity": claimed,
+                       "hash": digest, "sent_at": int(time.time())},
+                      separators=(",", ":")).encode()
+    signature = hmac.new(key.encode(), body, hashlib.sha256).hexdigest()
+    transport = BEARER_TRANSPORT or _bearer_transport
+    try:
+        payload = transport(BEARER_VERIFY_URL, {
+            "Content-Type": "application/json",
+            "User-Agent": "simple-board/1.0 (+fleet)",
+            BEARER_SIGNATURE_HEADER: signature}, body, BEARER_TIMEOUT_S)
+    except urllib.error.HTTPError as e:
+        try:
+            payload = e.read(BEARER_MAX_RESPONSE + 1)
+        except OSError:
+            payload = b""
+        reason = _verify_reason(payload) or "http_%d" % (e.code or 0)
+        die(f"bearer verification refused ({reason})", EXIT_AUTH)
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
+        die("bearer verification is unreachable; refusing to act without a verified identity", EXIT_AUTH)
+    if len(payload) > BEARER_MAX_RESPONSE:
+        die("bearer verification answer was oversized", EXIT_AUTH)
+    reason = _verify_reason(payload)
+    def _no_constant(name):  # NaN / Infinity / -Infinity are not JSON;  never let one reach a comparison
+        raise ValueError(name)
+    try:
+        answer = json.loads(payload, parse_constant=_no_constant)
+    except ValueError:
+        die("bearer verification answer was not JSON", EXIT_AUTH)
+    if not isinstance(answer, dict) or answer.get("ok") is not True:
+        die(f"bearer verification refused ({reason or 'bad_answer'})", EXIT_AUTH)
+    # The answer must name the identity asked about:  a route answering for a
+    # different identity is a bug or an attack, not auth (mirrors shared_bearer.py).
+    if answer.get("identity") != claimed:
+        die("bearer verification answered for a different identity", EXIT_AUTH)
+    expires = answer.get("expires_at")
+    if (isinstance(expires, bool) or not isinstance(expires, (int, float))
+            or not math.isfinite(expires) or expires <= time.time() * 1000):
+        die("the seat bearer is expired or carries no valid expiry", EXIT_AUTH)
+    seat = answer["identity"]
+    if not re.fullmatch(r"[A-Z][A-Z0-9-]{0,31}", seat):
+        die("bearer verification answered an invalid seat tag", EXIT_AUTH)
+    # The verifier names canonical seat tags (KNOWN_SEATS / GB-<ROLE>).  A verified identity is used
+    # exactly as answered, never re-mapped:  an alias spelling here would merge two identities.
+    if norm_seat(seat) != seat:
+        die("bearer verification answered a non-canonical seat tag", EXIT_AUTH)
+    return seat
+
+
 # ----------------------------------------------------------------- seat
 
 def current_seat(required: bool = True) -> str:
-    """The seat in AGENT_SEAT.  The four write verbs require it, because every
-    write is signed with it and the CLI never guesses.  Reads (list, show,
-    stats, whoami) do not: they write nothing, and AGENT_SEAT is unset in plain
-    shells, in `zsh -lic`, and under the listener's `env -i`."""
-    seat = norm_seat(os.environ.get("AGENT_SEAT"))
-    if not seat:
-        if not required:
-            return ""
-        die("AGENT_SEAT is not set.  The board CLI writes as the seat in AGENT_SEAT and refuses to "
-            "guess it; export AGENT_SEAT=<your seat tag> (AGENT-SYNC Identity Rules).  Reads "
-            "(list, show, stats, whoami) work without it.", EXIT_USAGE)
-    if not re.fullmatch(r"[A-Z][A-Z0-9-]{0,31}", seat):
-        die(f"AGENT_SEAT={seat!r} is not a seat tag", EXIT_USAGE)
-    return seat
+    """The seat this run acts as, proven by the admin-minted bearer at
+    SIMPLE_BOARD_BEARER_LOCATOR (owner direction 2026-10-26:  the bearer
+    identifies the agent;  there is no identity picker).  AGENT_SEAT is never
+    consulted.  The five write verbs require a verified seat, because every
+    write is signed with it and the CLI never guesses;  with no locator they
+    refuse with EXIT_AUTH.  Reads (list, show, stats, whoami) run without one:
+    they write nothing, and a locator is absent in plain shells, in `zsh -lic`,
+    and under the listener's `env -i`."""
+    if env(BEARER_LOCATOR_ENV):
+        # The verified route answer is the only seat source, so a stale
+        # environment cannot widen or redirect what the bearer proves.
+        return bearer_verified_seat()
+    if not required:
+        return ""
+    die(f"no verified seat:  {BEARER_LOCATOR_ENV} is not set.  The CLI writes only as a "
+        "bearer-verified seat and never takes an identity from the environment;  the trusted "
+        "launcher binds the run's bearer locator.  Reads (list, show, stats, whoami) work "
+        "without one.", EXIT_AUTH)
 
 
 def check_by(by: str | None, seat: str, flag: str = "--by") -> str:
     if by is None:
         return seat
     if norm_seat(by) != seat:
-        die(f"{flag} {by} does not match AGENT_SEAT={seat}.  --by is never the source of identity; "
-            "run as that seat or drop the flag.", EXIT_USAGE)
+        die(f"{flag} {by} does not match the verified seat {seat}.  --by is never the source of "
+            "identity;  run as that seat or drop the flag.", EXIT_USAGE)
     return seat
 
 
@@ -954,12 +1127,12 @@ def resolve_identity(seat: str = "") -> Identity:
     1. LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET in the environment (a cloud
        runtime's pair).  They may hold the seat's app or Fleet, so they have
        no shared token:  one is minted per run.
-    2. With AGENT_SEAT naming a seat in SEAT_APP_NAMES:  <SEAT>_LINEAR_CLIENT_ID
+    2. With a verified seat in SEAT_APP_NAMES:  <SEAT>_LINEAR_CLIENT_ID
        and <SEAT>_LINEAR_CLIENT_SECRET from Infisical Fleet-OPS prod /linear
        (`fleet-secrets`), read together with that app's token blob CACHE_<SEAT>;
        then LINEAR_<SEAT>_CLIENT_ID and _SECRET from the AI Fleet Coordinator
        /linear folder (AFC-348), then the same pair in the environment.
-    3. The shared Fleet app (every read without AGENT_SEAT, and a seat with no
+    3. The shared Fleet app (every read without a verified seat, and a seat with no
        app yet):  FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET plus
        CACHE_FLEET from Fleet-OPS /linear, then LINEAR_FLEET_CLIENT_ID and _SECRET
        from the AI Fleet Coordinator /linear folder."""
@@ -1018,8 +1191,7 @@ def resolve_identity(seat: str = "") -> Identity:
                     f"LINEAR_{k}_CLIENT_ID", f"LINEAR_{k}_CLIENT_SECRET"]
     die(f"no Fleet credentials: FLEET_LINEAR_CLIENT_ID and FLEET_LINEAR_CLIENT_SECRET are missing from Infisical "
         f"Fleet-OPS {FLEET_OPS_LINEAR_PATH} (`fleet-secrets get`), and LINEAR_CLIENT_ID and LINEAR_CLIENT_SECRET are not "
-        f"set{seat_part}.  Check `fleet-secrets doctor`.  Until then use BOARD_BACKEND=mac-collab, which runs the "
-        "archived old CLI.", EXIT_NO_CREDS,
+        f"set{seat_part}.  Check `fleet-secrets doctor`.", EXIT_NO_CREDS,
         credential_field=",".join(missing))
 
 
@@ -2801,8 +2973,8 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     else:
         identity = (f"{fleet} (the shared app{', from the environment' if ident.kind == 'env' else ''}"
                     f"{f'; fallback for {seat}' if seat else ''})")
-    print(f"seat:        {seat} (AGENT_SEAT)" if seat else
-          "seat:        (AGENT_SEAT is not set: reads work, the four write verbs refuse)")
+    print(f"seat:        {seat} (bearer-verified)" if seat else
+          "seat:        (no bearer: reads run without an identity, the four write verbs refuse)")
     print(f"identity:    {identity}")
     print(f"backend:     linear ({L.url})")
     print(f"writes:      {writes}")
@@ -4135,7 +4307,7 @@ def cmd_commands(a) -> int:
             print(f"\nwithout id:  {c['variants']['create']['name']};  with id:  {c['variants']['update']['name']}")
         print(f"\ndefault selection:  {c.get('selection') or '(none)'}")
         if c["kind"] == "write":
-            print("\nwrites need LINEAR_BOARD_WRITES=1, AGENT_SEAT and --idempotency-key")
+            print("\nwrites need a bearer-verified seat, LINEAR_BOARD_WRITES=1 and --idempotency-key")
         return 0
     if a.action is not None or a.name:
         die("usage:  board commands [--search WORD] [--kind read|write] [--json]  |  board commands show NAME",
@@ -5034,12 +5206,11 @@ def main(argv: list[str] | None = None) -> int:
         if linear_only:
             die(f"`{linear_only}` is Linear only:  BOARD_BACKEND=mac-collab runs the old board CLI, which has "
                 "no such flag or verb.  Unset BOARD_BACKEND to use it.", EXIT_USAGE)
-        # The archived findings.db is frozen and read-only, so a write verb would
-        # fail inside the archived CLI with a raw sqlite error.  Refuse it here.
-        if argv[:1] and argv[0] in WRITE_VERBS:
-            die(f"`board {argv[0]}` is a write, and BOARD_BACKEND=mac-collab runs the archived old CLI against the "
-                "frozen, read-only findings.db;  that backend serves reads only.  Unset BOARD_BACKEND to use it.",
-                EXIT_USAGE)
+        # The rollback backend runs the old CLI, which has no bearer-verified identity:  it never gets a write
+        # through this entry point, so no environment variable can route a write around the bearer.
+        if any(a in WRITE_VERBS for a in argv[:1]):
+            die(f"`{argv[0]}` is a write, and BOARD_BACKEND=mac-collab runs the old board CLI, which cannot prove "
+                "a seat from a bearer.  Writes only run as the bearer-verified seat:  unset BOARD_BACKEND.", EXIT_AUTH)
         old = Path(env("BOARD_MAC_COLLAB_CLI") or (Path.home() / "apps" / "_retired" / "mac-collab-20261019" / "board")).expanduser()
         if not old.is_file():
             die(f"BOARD_BACKEND=mac-collab, but the archived old board CLI is not at {old} "
