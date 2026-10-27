@@ -393,8 +393,10 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
 
 
 LEGACY_CODEX_MCP = "agent-sync-codex-mcp"
-LEGACY_CODEX_KEY = "agent-sync"     # the retired registration key; migrated, never written
-CODEX_KEY = "simple-chat"           # local stdio MCP mode of the simple-chat CLI (the hosted server is ST-MCP)
+LEGACY_CODEX_KEY = "agent-sync"  # the retired registration key; migrated, never written
+CODEX_KEY = (
+    "simple-chat"  # local stdio MCP mode of the simple-chat CLI (the hosted server is ST-MCP)
+)
 
 
 def codex_mcp_expected(bin_dir: Path) -> dict:
