@@ -36,7 +36,7 @@ export const BEARER_SEATS = Object.freeze([...KNOWN_SEATS, ...Object.keys(ADDITI
 // bearer-only seats use their own canonical Infisical records, never env keys or
 // another seat's bundle. Off/fallback modes cannot activate these new identities.
 export async function resolveBearerSeatCredentials(env, config, identity) {
-  // CODEX's bearer is independent of OAuth hosting. Its own canonical
+  // CODEX's bearer is independent of OAuth hosting.  Its own canonical
   // native records are already the credential source; do not enable an
   // OAuth seat or introduce a binding fallback just to make it mintable.
   // Keep this required-source view local: other seats retain their mode.
@@ -48,8 +48,9 @@ export async function resolveBearerSeatCredentials(env, config, identity) {
       resolveSecret(ownSource, { name: "CODEX_ZULIP_EMAIL", path: "/zulip", optional: true }),
     ]);
     const canonicalEmail = "codex-bot@simplewithus.zulipchat.com";
-    if (!key || String(email).trim().toLowerCase() !== canonicalEmail) return null;
-    return { key, email: canonicalEmail };
+    const nativeEmail = String(email ?? "").trim().toLowerCase();
+    if (!key || nativeEmail !== canonicalEmail) return null;
+    return { key, email: nativeEmail };
   }
   const row = Object.hasOwn(ADDITIONAL_BEARER_SEATS, identity) ? ADDITIONAL_BEARER_SEATS[identity] : null;
   if (row) {

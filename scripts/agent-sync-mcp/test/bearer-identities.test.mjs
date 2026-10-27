@@ -102,6 +102,7 @@ test("unhosted CODEX bearer readiness uses only its own native records without O
   try {
     for (const values of [
       { CODEX_ZULIP_KEY: "offline-own-key", CODEX_ZULIP_EMAIL: canonical },
+      { CODEX_ZULIP_KEY: "offline-own-key", CODEX_ZULIP_EMAIL: `  ${canonical.toUpperCase()}  ` },
       { CODEX_ZULIP_KEY: "offline-own-key", CODEX_ZULIP_EMAIL: "echo-bot@simplewithus.zulipchat.com" },
       { CODEX_ZULIP_EMAIL: canonical },
       { CODEX_ZULIP_KEY: "offline-own-key" },
@@ -115,7 +116,7 @@ test("unhosted CODEX bearer readiness uses only its own native records without O
       };
       const result = await resolveBearerSeatCredentials(env, unhosted, "CODEX");
       assert.deepEqual(reads.sort(), ["CODEX_ZULIP_EMAIL", "CODEX_ZULIP_KEY"]);
-      assert.deepEqual(result, values.CODEX_ZULIP_KEY && values.CODEX_ZULIP_EMAIL === canonical ? { key: "offline-own-key", email: canonical } : null);
+      assert.deepEqual(result, values.CODEX_ZULIP_KEY && String(values.CODEX_ZULIP_EMAIL).trim().toLowerCase() === canonical ? { key: "offline-own-key", email: canonical } : null);
       assert.equal(env.INFISICAL_MODE, "fallback");
       assert.deepEqual(unhosted, { hostedSeats: [], botEmails: {} });
     }
