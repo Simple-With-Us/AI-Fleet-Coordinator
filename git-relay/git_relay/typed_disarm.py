@@ -23,6 +23,16 @@ DISABLE_MUTATION = (
 )
 
 
+ACTIONS = ("pr_state", "pr_hold_state", "pr_automerge_disable")
+
+
+def _required_perms(action):
+    return {
+        "pull_requests": "write" if action == "pr_automerge_disable" else "read",
+        "issues": "read",
+    }
+
+
 class Refused(ValueError):
     pass
 
@@ -32,35 +42,45 @@ class Unknown(RuntimeError):
 
 
 class TypedDisarm:
-    def __init__(self, client, policy, seat, bearer, app_slug, clock=time.monotonic):
+    def __init__(self, client, policy, seat, bearer, app_slug, action_scope, clock=time.monotonic):
+        # Scope and ceiling bind on every construction; for_action is the
+        # normal path, a direct caller must still name one action and repo.
         self.client, self.policy, self.seat = client, policy, seat
-        expected, _ = policy.app_identity(seat)
+        expected, ceiling = policy.app_identity(seat)
         if not bearer or app_slug != expected or app_slug != seat:
             raise Refused("own App required")
+        if (
+            not isinstance(action_scope, tuple)
+            or len(action_scope) != 2
+            or action_scope[0] not in ACTIONS
+            or not isinstance(action_scope[1], str)
+        ):
+            raise Refused("action scope required")
+        if _perm_within_ceiling(_required_perms(action_scope[0]), ceiling):
+            raise Refused("seat permission ceiling insufficient")
+        self._action_scope = action_scope
         self.bearer, self.app_slug, self.clock = bearer, app_slug, clock
 
     @classmethod
     def for_action(cls, client, policy, minter, seat, action, repo):
         # Seat must already be resolved by the authenticated broker boundary.
-        if action not in ("pr_state", "pr_hold_state", "pr_automerge_disable"):
+        if action not in ACTIONS:
             raise Refused("unsupported typed action")
-        client._check_repo(repo)
+        try:
+            client._check_repo(repo)
+        except ValueError:
+            raise Refused("invalid repository") from None
         if policy.authorize(seat, action, repo):
             raise Refused("action or repository denied")
         app_slug, ceiling = policy.app_identity(seat)
-        required = {
-            "pull_requests": "write" if action == "pr_automerge_disable" else "read",
-            "issues": "read",
-        }
+        required = _required_perms(action)
         if _perm_within_ceiling(required, ceiling):
             raise Refused("seat permission ceiling insufficient")
         try:
             token, _ = minter.token_for(app_slug, repo, required)
         except Exception:
             raise Unknown("own App credential unavailable") from None
-        instance = cls(client, policy, seat, token, app_slug)
-        instance._action_scope = (action, repo)
-        return instance
+        return cls(client, policy, seat, token, app_slug, (action, repo))
 
     def _query(self, query, variables):
         try:
@@ -87,7 +107,7 @@ class TypedDisarm:
             raise Refused("invalid PR number")
         if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
             raise Refused("exact head SHA required")
-        if hasattr(self, "_action_scope") and self._action_scope != (action, repo):
+        if getattr(self, "_action_scope", None) is not None and self._action_scope != (action, repo):
             raise Refused("credential action scope mismatch")
         if not hasattr(self, "_action_scope") and self.policy.authorize(self.seat, action, repo):
             raise Refused("action or repository denied")
@@ -189,7 +209,11 @@ class TypedDisarm:
             after = self._state(repo, number, head)
         except (Unknown, Refused):
             raise Unknown("disable outcome unknown") from None
-        if after["auto_merge_enabled"] or after["pr_id"] != before["pr_id"]:
+        if (
+            after["state"] != "OPEN"
+            or after["auto_merge_enabled"]
+            or after["pr_id"] != before["pr_id"]
+        ):
             raise Unknown("disable outcome unknown")
         return {
             **after,

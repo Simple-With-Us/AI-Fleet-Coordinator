@@ -36,6 +36,21 @@ export const BEARER_SEATS = Object.freeze([...KNOWN_SEATS, ...Object.keys(ADDITI
 // bearer-only seats use their own canonical Infisical records, never env keys or
 // another seat's bundle. Off/fallback modes cannot activate these new identities.
 export async function resolveBearerSeatCredentials(env, config, identity) {
+  // Unhosted CODEX mints from its own Infisical /zulip records without an
+  // OAuth client.  A CODEX that is still listed in hostedSeats must keep the
+  // deployed env-binding / botEmails path below, or minting and verify break.
+  if (identity === "CODEX" && !config.hostedSeats.includes(identity)) {
+    if (infisicalMode(env) === "off") return null;
+    const ownSource = { ...env, INFISICAL_MODE: "required" };
+    const [key, email] = await Promise.all([
+      resolveSecret(ownSource, { name: "CODEX_ZULIP_KEY", path: "/zulip", optional: true }),
+      resolveSecret(ownSource, { name: "CODEX_ZULIP_EMAIL", path: "/zulip", optional: true }),
+    ]);
+    const canonicalEmail = "codex-bot@simplewithus.zulipchat.com";
+    const nativeEmail = String(email ?? "").trim().toLowerCase();
+    if (!key || nativeEmail !== canonicalEmail) return null;
+    return { key, email: nativeEmail };
+  }
   const row = Object.hasOwn(ADDITIONAL_BEARER_SEATS, identity) ? ADDITIONAL_BEARER_SEATS[identity] : null;
   if (row) {
     if (infisicalMode(env) !== "required") return null;

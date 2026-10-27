@@ -39,11 +39,10 @@ class LaunchAgentTests(unittest.TestCase):
         install = (SCRIPTS / "needs_owner" / "install.sh").read_text(encoding="utf-8")
         self.assertIn('dest="$HOME/apps/needs-owner"', install, "the plist runs the copy install.sh makes")
 
-    def test_it_acts_as_claude_and_carries_no_launcher_or_secret(self) -> None:
+    def test_it_carries_no_identity_variable_launcher_or_secret(self) -> None:
         env = self.plist["EnvironmentVariables"]
-        self.assertEqual(env["AGENT_SEAT"], "CLAUDE")
-        self.assertEqual(sorted(env), ["AGENT_SEAT", "HOME", "PATH"])
-        self.assertTrue(env["PATH"].startswith(f"{env['HOME']}/.local/bin:/opt/homebrew/bin"), "simple-board and simple-chat live in ~/.local/bin")
+        self.assertEqual(sorted(env), ["HOME", "PATH"], "no identity variable and no secret:  the seat comes from the bearer locator")
+        self.assertTrue(env["PATH"].startswith("/Users/jay/.local/bin:/opt/homebrew/bin"), "board and agent-sync live in ~/.local/bin")
         self.assertEqual(env["HOME"], "/Users/jay")
 
     def test_it_logs_to_one_file_of_ids(self) -> None:

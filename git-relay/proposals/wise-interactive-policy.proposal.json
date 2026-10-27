@@ -28,7 +28,8 @@
       "Simple-With-Us/Socratic-Trade",
       "Simple-With-Us/Usage-Monitor",
       "Simple-With-Us/congress-trading-shared",
-      "Simple-With-Us/homebrew-tap"
+      "Simple-With-Us/homebrew-tap",
+      "jaywedgeworth22/Fleet-OPS"
     ],
     "app_slug": "swu-wise",
     "mint_permissions": {

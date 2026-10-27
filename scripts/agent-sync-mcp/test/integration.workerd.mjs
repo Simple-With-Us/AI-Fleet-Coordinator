@@ -61,8 +61,10 @@ const CLAUDE_KEY = zulipShapedKey(29);
 const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 const bearerBots = Object.entries(ADDITIONAL_BEARER_SEATS).map(([seat, row], i) => ({ seat, ...row, key: zulipShapedKey(60 + i) }));
 let infisicalFixture = null;
+let infisicalUnavailable = false;
 const zulip = new FakeZulip({ bots: [
   ...bearerBots.map((b) => ({ email: b.email, key: b.key, full_name: b.seat })),
+  { email: "codex-bot@simplewithus.zulipchat.com", key: zulipShapedKey(90), full_name: "Codex" },
   // The borrowed-bot grant (JET-CHAT) needs the pinned owner (kody 4365848649):
   // the fake users/me carries the same owner id the committed var pins.
   { email: JET_EMAIL, full_name: "Jet", key: JET_KEY, bot_owner_id: Number(wranglerConfig().vars.OWNER_USER_ID) },
@@ -214,6 +216,7 @@ let failChatgptCimd = 0;
 async function outboundFetch(request) {
   outbound.push(request.url);
   if (request.url.startsWith("https://offline-infisical.example/api/v3/secrets/raw")) {
+    if (infisicalUnavailable) return new Response("unavailable", { status: 503 });
     const url = new URL(request.url);
     const secrets = infisicalFixture?.[url.searchParams.get("secretPath")] ?? [];
     if (url.pathname.endsWith("/raw")) return Response.json({ secrets, totalCount: secrets.length });
@@ -2118,6 +2121,39 @@ try {
       assert.equal((await mcp(bearer, "tools/list")).status, 401);
     }
     assert.equal((await adminAction("mint_gb_bearer", { identity: "BF-TYPO" })).status, 400);
+  });
+
+  await step("unhosted CODEX mints and authenticates its own bearer in fallback deployment without enabling OAuth hosting", async () => {
+    await mf.dispose();
+    infisicalFixture = { "/zulip": [
+      { secretKey: "CODEX_ZULIP_KEY", secretValue: zulipShapedKey(90) },
+      { secretKey: "CODEX_ZULIP_EMAIL", secretValue: "codex-bot@simplewithus.zulipchat.com" },
+    ] };
+    mf = startWorker(HOST, { INFISICAL_MODE: "fallback", INFISICAL_SERVICE_TOKEN: "offline-fixture", INFISICAL_WORKSPACE_ID: "offline-workspace", INFISICAL_BASE_URL: "https://offline-infisical.example", INFISICAL_EXPECT: "/unused:UNUSED" });
+    assert.equal((await adminAction("arm", { seat: "CODEX" })).status, 400, "no new OAuth admin seat");
+    assert.equal((await adminAction("create_manual_client", { seat: "CODEX" })).status, 400, "no new OAuth client");
+    const minted = await adminAction("mint_gb_bearer", { identity: "CODEX", mcp_accept: "1" });
+    assert.equal(minted.status, 200);
+    const bearer = (await minted.text()).match(/sbt_codex_[A-Za-z0-9_-]{43}/)?.[0];
+    assert.ok(bearer);
+    const who = await call(bearer, "whoami");
+    assert.equal(who.json.result.isError, undefined, summarize(who.json));
+    assert.equal(who.json.result.structuredContent.seat, "CODEX");
+    const other = await call(bearer, "whoami", { identity: "ECHO" });
+    assert.equal(other.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
+    assert.equal((await adminAction("revoke_gb_bearer", { identity: "CODEX" })).status, 303);
+    assert.equal((await mcp(bearer, "tools/list")).status, 401);
+    // Expire the one-minute native cache before the diagnostic outage check.
+    await mf.dispose();
+    infisicalUnavailable = true;
+    mf = startWorker(HOST, { INFISICAL_MODE: "fallback", INFISICAL_SERVICE_TOKEN: "offline-fixture", INFISICAL_WORKSPACE_ID: "offline-workspace", INFISICAL_BASE_URL: "https://offline-infisical.example", INFISICAL_EXPECT: "/unused:UNUSED" });
+    const unavailablePage = await browser("/admin");
+    assert.equal(unavailablePage.status, 200, "one unavailable native credential must not blank admin");
+    const unavailableHtml = await unavailablePage.text();
+    assert.ok(unavailableHtml.includes("Credential readiness unknown (diagnostic read failed)"));
+    assert.ok(unavailableHtml.includes("Per-Identity Bearers"));
+    assert.equal((await adminAction("mint_gb_bearer", { identity: "CODEX", mcp_accept: "1" })).status, 500, "mint still fails closed, no fallback credential");
+    infisicalUnavailable = false;
   });
 
   console.log(`\n${passed} passed`);

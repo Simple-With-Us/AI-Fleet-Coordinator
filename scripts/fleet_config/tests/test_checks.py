@@ -563,7 +563,7 @@ class McpTests(TempHome):
         rule = make_rule(
             CheckType.MCP_SERVERS_REGISTERED,
             "~/.claude.json",
-            expected=ExpectedState(description="d", names=("fleet-recall", "agent-sync")),
+            expected=ExpectedState(description="d", names=("fleet-recall", "simple-chat")),
             kind=ConfigKind.MCP,
         )
         result = check_mcp_servers_registered(rule, "claude", self.ctx)

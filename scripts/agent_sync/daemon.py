@@ -122,7 +122,7 @@ PROBE_TOPIC = "listener probe"
 PAUSE_COMMAND = "simple-chat pause"
 PAUSE_COMMANDS = frozenset((PAUSE_COMMAND, "agent-sync pause"))
 PLUGIN_MANIFEST = os.path.join(
-    A.REPO_ROOT, "plugins", "agent-sync", ".claude-plugin", "plugin.json"
+    A.REPO_ROOT, "plugins", "simple-chat", ".claude-plugin", "plugin.json"
 )
 # A process's environment is fixed when it starts:  `daemon reload` re-reads listener.toml only.
 ENV_RESTART_HINT = (
@@ -646,9 +646,11 @@ class Daemon:
         self.wake_path = wake_path or A.default_wake_path(self.home)
         self.agents_runner = agents_runner or self._run_agents
         self.board_runner = board_runner
-        self.board_bin = (
-            board_bin or shutil.which("simple-board", path=self.wake_path) or "simple-board"
-        )
+        # The board is the managed entry in this daemon's own ~/.local/bin, never a lookup along the wake PATH
+        # (its later folders, /opt/homebrew/bin among them, are not where the managed board lives).  Absent, the
+        # path still names that entry, so the run fails closed instead of finding another simple-board.
+        managed_board = os.path.join(self.home, ".local", "bin", "simple-board")
+        self.board_bin = board_bin or managed_board
         self.start_time = start_time or _process_start
         self.http_timeout = http_timeout
         self.events_timeout = events_timeout
@@ -5722,11 +5724,21 @@ class Daemon:
             trigger_id=trigger,
             url=url,
         )
-        # AGENT_SEAT: the Linear board CLI refuses a write without it, and `env -i` drops the inherited one.
+        # The board CLI proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT.
+        # The locator comes only from this seat's own trusted daemon config;  with none configured the seat files
+        # no board item (fail closed), and no AGENT_SEAT is ever offered as an identity.
         # LINEAR_BOARD_WRITES=1: the old ~/.local/bin/board wrapper exported it; simple-board is a
         # symlink to scripts/simple-board and sets nothing, so without this every `file` exits 7.
-        board_env = dict(A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat))
+        locator = getattr(runner.cfg, "bearer_locator", None)
+        if not locator:
+            return {"board_skipped": "no bearer_locator configured for this seat"}
+        board_env = {
+            k: v
+            for k, v in A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat).items()
+            if k not in ("AGENT_SEAT", "AGENT_LAUNCH_SEAT")
+        }
         board_env["LINEAR_BOARD_WRITES"] = "1"
+        board_env["SIMPLE_BOARD_BEARER_LOCATOR"] = locator
         ok, detail = A.run_board(
             argv,
             board_env,

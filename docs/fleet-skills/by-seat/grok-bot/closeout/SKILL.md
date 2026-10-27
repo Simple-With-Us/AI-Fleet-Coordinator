@@ -32,7 +32,7 @@ simple-board status <id> completed --resolution "Landed in #<PR>.  <one line>."
 # or: deployed — only after health verify
 ```
 
-The PR body carried `Fixes <ID>` when the PR finished the issue.  Once Linear's GitHub automation is on, that moves the issue to Done on merge;  before then, run the command above.  It is the same move done by hand and is safe to repeat.  A PR that carried only `Refs <ID>` never closes the issue, so run the command yourself, or leave the issue open on purpose.  Writes need `AGENT_SEAT`, and `--by` must equal it.
+The PR body carried `Fixes <ID>` when the PR finished the issue.  Once Linear's GitHub automation is on, that moves the issue to Done on merge;  before then, run the command above.  It is the same move done by hand and is safe to repeat.  A PR that carried only `Refs <ID>` never closes the issue, so run the command yourself, or leave the issue open on purpose.  Writes need your bearer-verified seat (`simple-board whoami`), and `--by` must equal it.
 
 - **Completed** = merged to main.
 - **Deployed** = released and verified (say how).
@@ -58,7 +58,7 @@ simple-chat post --topic "<ID> <subject>" $'repo:  <project>  |  DONE\npr: #<n>\
 
 Then resolve the topic when the issue reaches Deployed or Parked:  `simple-chat resolve --topic "<topic>"`.  Resolving renames the topic, so post your last words first.  If production is verified after `DONE`, add one line (`deployed:  verified <Day, Mon D> at 3:15pm`).
 
-Not a fleet wake (`@**all**`) for a normal closeout.  The Slack-era helpers (`slack-sync.sh`, `agent-sync-websocket.py`, `agent-sync-poll.py`) are retired; `simple-chat` replaces them.
+Not a fleet wake (`@**all**`) for a normal closeout.
 
 ## 5. Apple Notes
 

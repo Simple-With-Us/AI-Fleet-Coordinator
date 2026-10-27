@@ -31,7 +31,7 @@ def state(enabled=True):
 
 class Policy:
     def app_identity(self, seat):
-        return "swu-wise", {"pull_requests": "write"}
+        return "swu-wise", {"pull_requests": "write", "issues": "read"}
 
     def authorize(self, seat, action, repo):
         return None if repo == ARGS["repo"] else "denied"
@@ -50,9 +50,36 @@ class Client:
 
 
 class Tests(unittest.TestCase):
-    def svc(self, replies):
+    def svc(self, replies, scope=("pr_automerge_disable", ARGS["repo"])):
         self.client = Client(replies)
-        return TypedDisarm(self.client, Policy(), "swu-wise", "test-opaque-bearer", "swu-wise")
+        return TypedDisarm(
+            self.client, Policy(), "swu-wise", "test-opaque-bearer", "swu-wise", scope
+        )
+
+    def test_direct_construction_requires_scope_and_ceiling(self):
+        for scope in (None, ("pr_merge", ARGS["repo"]), ("pr_state",), ("pr_state", 3)):
+            with self.assertRaises(Refused):
+                self.svc([], scope)
+
+        class ReadOnly(Policy):
+            def app_identity(self, seat):
+                return "swu-wise", {"pull_requests": "read", "issues": "read"}
+
+        with self.assertRaises(Refused):
+            TypedDisarm(
+                Client([]), ReadOnly(), "swu-wise", "t", "swu-wise",
+                ("pr_automerge_disable", ARGS["repo"]),
+            )
+
+    def test_scope_mismatch_refused(self):
+        with self.assertRaises(Refused):
+            self.svc([], ("pr_state", ARGS["repo"])).disable(ARGS)
+
+    def test_pr_closed_between_reads_is_unknown(self):
+        closed = state(False)
+        closed["data"]["repository"]["pullRequest"]["state"] = "CLOSED"
+        with self.assertRaises(Unknown):
+            self.svc([state(), {"data": {}}, closed]).disable(ARGS)
 
     def test_confirmed_disable_preserves_hold(self):
         result = self.svc(
@@ -114,7 +141,7 @@ class Tests(unittest.TestCase):
         reply["data"]["repository"]["pullRequest"]["timelineItems"]["pageInfo"]["hasNextPage"] = (
             True
         )
-        result = self.svc([reply]).hold_state(ARGS)
+        result = self.svc([reply], ("pr_hold_state", ARGS["repo"])).hold_state(ARGS)
         self.assertFalse(result["complete"])
         self.assertEqual(result["hold_decision"], "not_evaluated")
 
@@ -133,11 +160,11 @@ class Tests(unittest.TestCase):
 
     def test_no_app_impersonation(self):
         with self.assertRaises(Refused):
-            TypedDisarm(Client([]), Policy(), "swu-wise", "test", "swu-echo")
+            TypedDisarm(Client([]), Policy(), "swu-wise", "test", "swu-echo", ("pr_state", ARGS["repo"]))
 
     def test_untrusted_failure_redacted(self):
         with self.assertRaisesRegex(Unknown, "^upstream result unavailable$"):
-            self.svc([ValueError("ghs_do_not_disclose")]).state(ARGS)
+            self.svc([ValueError("ghs_do_not_disclose")], ("pr_state", ARGS["repo"])).state(ARGS)
 
     def test_closed_no_write(self):
         reply = state()
@@ -149,7 +176,7 @@ class Tests(unittest.TestCase):
         reply = state()
         reply["data"]["repository"]["pullRequest"]["labels"]["nodes"] = [{"name": "x"}] * 51
         with self.assertRaises(Unknown):
-            self.svc([reply]).state(ARGS)
+            self.svc([reply], ("pr_state", ARGS["repo"])).state(ARGS)
 
 
 if __name__ == "__main__":

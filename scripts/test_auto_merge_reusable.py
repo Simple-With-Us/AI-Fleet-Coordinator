@@ -313,6 +313,20 @@ case "$*" in
     esac
     exit 0
     ;;
+  *pulls/1/reviews*)
+    H="1111111111111111111111111111111111111111"
+    case "$GH_FAKE_MODE" in
+      reviews_api_fails) echo "gh: api down" >&2; exit 1 ;;
+      approved_current) printf '%s\n' "[{\\\"user\\\":{\\\"login\\\":\\\"kody-ai[bot]\\\"},\\\"commit_id\\\":\\\"$H\\\",\\\"state\\\":\\\"APPROVED\\\"}]" ;;
+      approved_old_head) printf '%s\n' '[{"user":{"login":"kody-ai[bot]"},"commit_id":"2222222222222222222222222222222222222222","state":"APPROVED"}]' ;;
+      commented_current) printf '%s\n' "[{\\\"user\\\":{\\\"login\\\":\\\"kody-ai[bot]\\\"},\\\"commit_id\\\":\\\"$H\\\",\\\"state\\\":\\\"COMMENTED\\\"}]" ;;
+      changes_requested_current) printf '%s\n' "[{\\\"user\\\":{\\\"login\\\":\\\"kody-ai[bot]\\\"},\\\"commit_id\\\":\\\"$H\\\",\\\"state\\\":\\\"APPROVED\\\"},{\\\"user\\\":{\\\"login\\\":\\\"kody-ai[bot]\\\"},\\\"commit_id\\\":\\\"$H\\\",\\\"state\\\":\\\"CHANGES_REQUESTED\\\"}]" ;;
+      approved_then_commented) printf '%s\\n' "[{\\"user\\":{\\"login\\":\\"kody-ai[bot]\\"},\\"commit_id\\":\\"$H\\",\\"state\\":\\"APPROVED\\"},{\\"user\\":{\\"login\\":\\"kody-ai[bot]\\"},\\"commit_id\\":\\"$H\\",\\"state\\":\\"COMMENTED\\"}]" ;;
+      approved_by_other) printf '%s\n' "[{\\\"user\\\":{\\\"login\\\":\\\"someone\\\"},\\\"commit_id\\\":\\\"$H\\\",\\\"state\\\":\\\"APPROVED\\\"}]" ;;
+      *) printf '%s\n' '[]' ;;
+    esac
+    exit 0
+    ;;
   *compare*)
     echo "gh: compare exploded" >&2
     exit 1
@@ -323,7 +337,9 @@ exit 1
 """
 
 
-def run_classify(mode: str) -> tuple[int, str, str]:
+def run_classify(
+    mode: str, require_approval: str = "false", restrict: str = ""
+) -> tuple[int, str, str]:
     """Run the classify step with a fake `gh`; return (exit code, output, skip reason)."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -351,7 +367,9 @@ def run_classify(mode: str) -> tuple[int, str, str]:
                 "REPO": "Simple-With-Us/Example",
                 "PR_NUMBER": "1",
                 "KODY_CHECK_NAME": "Kody Code Review",
-                "RESTRICT": "",
+                "REQUIRE_APPROVAL": require_approval,
+                "APPROVAL_REVIEWER": "kody-ai[bot]",
+                "RESTRICT": restrict,
                 "SELF_GUARD": "",
                 "HOLD_LABELS": "do-not-automerge,needs-human-merge",
                 "LABELS_JSON": "[]",
@@ -436,6 +454,55 @@ class ClassifyInFlightGates(unittest.TestCase):
         code, output, reason = run_classify("runs_api_fails")
         self.assertEqual(code, 0, output)
         self.assertIn("fail closed", reason)
+
+
+class ClassifyCurrentApproval(unittest.TestCase):
+    """No arming without an APPROVED review on the current head commit."""
+
+    def run_mode(self, mode):
+        code, output, reason = run_classify(mode, "true")
+        self.assertEqual(code, 0, output)
+        return reason
+
+    def test_the_gate_is_in_the_classify_step(self):
+        self.assertIn("no current-head approval", step_script(CLASSIFY_STEP_NAME))
+
+    def test_a_current_head_approval_passes_the_gate(self):
+        self.assertIn("compare API failed", self.run_mode("approved_current"))
+
+    def test_no_review_at_all_blocks_and_disarms(self):
+        self.assertIn("no current-head approval", self.run_mode("clear"))
+
+    def test_an_approval_on_an_older_commit_does_not_count(self):
+        self.assertIn("no current-head approval", self.run_mode("approved_old_head"))
+
+    def test_a_trailing_comment_does_not_revoke_an_approval(self):
+        self.assertIn("compare API failed", self.run_mode("approved_then_commented"))
+
+    def test_the_review_lookup_is_an_explicit_get(self):
+        self.assertIn("--method GET", step_script(CLASSIFY_STEP_NAME))
+
+    def test_a_commented_review_does_not_count(self):
+        self.assertIn("no current-head approval", self.run_mode("commented_current"))
+
+    def test_an_approval_from_someone_else_does_not_count(self):
+        self.assertIn("no current-head approval", self.run_mode("approved_by_other"))
+
+    def test_a_later_changes_request_blocks(self):
+        self.assertIn("changes requested", self.run_mode("changes_requested_current"))
+
+    def test_the_review_lookup_fails_closed(self):
+        self.assertIn("fail closed", self.run_mode("reviews_api_fails"))
+
+    def test_the_gate_can_be_turned_off_by_the_caller(self):
+        code, output, reason = run_classify("clear", "false")
+        self.assertEqual(code, 0, output)
+        self.assertIn("compare API failed", reason)
+
+    def test_a_lane_match_does_not_exempt_the_approval_gate(self):
+        code, output, reason = run_classify("clear", "true", "feature")
+        self.assertEqual(code, 0, output)
+        self.assertIn("no current-head approval", reason)
 
 
 class GateSource(unittest.TestCase):

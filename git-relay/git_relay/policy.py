@@ -72,7 +72,30 @@ class SeatPolicy:
         "set_branch_protection",
         "create_repo",
     )
-    ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS
+    # Workflow verbs (workflow_verbs.SPECS): policy names a seat config may list, each
+    # authorized once per call by WorkflowVerbs.for_action and minted at the least
+    # permission in SPECS.  They need the seat's own App, like APP_ACTIONS, but are not
+    # wired into the HTTP dispatch: the server refuses them as registered-not-wired.
+    WORKFLOW_ACTIONS = (
+        "wf_pr_list",
+        "wf_pr_files",
+        "wf_file_get",
+        "wf_tree",
+        "wf_branches",
+        "wf_commits",
+        "wf_code_search",
+        "wf_runs",
+        "wf_run_jobs",
+        "wf_checks",
+        "wf_update_branch",
+        "wf_run_rerun",
+        "wf_run_cancel",
+        "wf_run_approve",
+        "wf_file_put",
+        "wf_files_put",
+        "wf_merge_guarded",
+    )
+    ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS + WORKFLOW_ACTIONS
 
     def __init__(self, seats_json: str, rate_per_hour: int = 120, verifier=None):
         if not seats_json:
@@ -114,7 +137,10 @@ class SeatPolicy:
             # Inactive typed actions require the same own-App startup
             # contract, without adding them to live APP dispatch.
             typed_app_actions = ("pr_state", "pr_hold_state", "pr_automerge_disable")
-            wants_app = any(a in self.APP_ACTIONS + typed_app_actions for a in actions)
+            wants_app = any(
+                a in self.APP_ACTIONS or a in self.WORKFLOW_ACTIONS or a in typed_app_actions
+                for a in actions
+            )
             if wants_app and not app_slug:
                 raise PolicyError(f"seat {seat!r}: app actions need an app_slug")
             if app_slug is not None:
