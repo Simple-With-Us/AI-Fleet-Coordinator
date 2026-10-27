@@ -35,13 +35,13 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import hashlib
 import errno
+import hashlib
 import json
 import os
 import pwd
-import socket
 import re
+import socket
 import stat
 import subprocess
 import sys
@@ -129,11 +129,13 @@ COOLIFY_TYPES = ("application", "service", "database", "standalone")
 
 def utc_now() -> str:
     """The time this report was made,  in the spelling the doctor uses."""
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def iso_from_timestamp(value: float) -> str:
-    return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.fromtimestamp(value, datetime.UTC).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
 
 
 def run(command, timeout=30):

@@ -535,8 +535,10 @@ class RepairRegressionTests(unittest.TestCase):
             root = Path(tmp)
             repo = root / "example"
             repo.mkdir()
-            a = repo / "AGENTS.md"; b = repo / "README.md"
-            a.write_text("a"); b.write_text("b")
+            a = repo / "AGENTS.md"
+            b = repo / "README.md"
+            a.write_text("a")
+            b.write_text("b")
             previous = {str(b): {"sha256": "before"}, str(repo / "secrets.json"): {}}
             rows, total = collector.collect_files(root, previous, limit=1)
             self.assertEqual(total, 2)  # Control: one existing file is out of budget.
@@ -549,19 +551,24 @@ class RepairRegressionTests(unittest.TestCase):
 
     def test_digest_refuses_symlink_fifo_and_large_file(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); target = root / "plain"
+            root = Path(tmp)
+            target = root / "plain"
             target.write_text("ok")
             self.assertIsNotNone(collector.digest_of(target))
-            link = root / "link"; link.symlink_to(target)
+            link = root / "link"
+            link.symlink_to(target)
             self.assertIsNone(collector.digest_of(link))
-            fifo = root / "fifo"; os.mkfifo(fifo)
+            fifo = root / "fifo"
+            os.mkfifo(fifo)
             self.assertIsNone(collector.digest_of(fifo))
-            with target.open("wb") as f: f.truncate(4 * 1024 * 1024 + 1)
+            with target.open("wb") as f:
+                f.truncate(4 * 1024 * 1024 + 1)
             self.assertIsNone(collector.digest_of(target))
 
     def test_write_does_not_chmod_existing_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp); root.chmod(0o755)
+            root = Path(tmp)
+            root.chmod(0o755)
             collector.write_report(root / "report.json", {})
             self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o755)
             self.assertEqual(stat.S_IMODE((root / "report.json").stat().st_mode), 0o600)
@@ -570,18 +577,24 @@ class RepairRegressionTests(unittest.TestCase):
         old = {("u", "Example"): {"type": "application"}}
         failed = collector.collect_coolify(run_command=lambda *a, **k: None)
         self.assertFalse(failed.complete)
-        self.assertEqual(collector.build_report(failed, [], [], old)["coolify"][0]["status"], "unknown")
+        self.assertEqual(
+            collector.build_report(failed, [], [], old)["coolify"][0]["status"], "unknown"
+        )
         self.assertEqual(collector.build_report([], [], [], old)["coolify"][0]["status"], "absent")
 
     def test_surviving_service_keeps_identity_when_peer_disappears(self):
         def row(service):
             return {"uuid": "u", "name": "Example", "status": "running", "_service": service}
+
         two = collector.disambiguate([row("web"), row("worker")])
         one = collector.disambiguate([row("web")])
         self.assertEqual(one[0]["name"], two[0]["name"])
         before = {(r["uuid"], r["name"]): r for r in two}
         report = collector.build_report(one, [], [], before)["coolify"]
-        self.assertEqual([(r["name"], r["status"]) for r in report], [("Example (web)", "running"), ("Example (worker)", "absent")])
+        self.assertEqual(
+            [(r["name"], r["status"]) for r in report],
+            [("Example (web)", "running"), ("Example (worker)", "absent")],
+        )
 
 
 if __name__ == "__main__":
