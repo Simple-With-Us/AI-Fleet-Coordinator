@@ -341,7 +341,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.gemini/skills",
             "names": [
-              "agent-sync-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -361,6 +360,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -523,7 +523,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.claude/skills",
             "names": [
-              "agent-sync-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -543,6 +542,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -670,7 +670,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.clutch/dsh/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "43336d60bf7287472d1c0c5ae4b57c30168d510de0f75abfe30465351e973861"
+            "sha256": "ab5d125be151a22411c334c4049a0b0fb815a69b2da3fcdbcf3da8ace53f3d25"
           },
           "id": "clutch-instructions-lane-map",
           "kind": "instructions",
@@ -721,7 +721,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.clutch/dsh/skills",
             "names": [
-              "agent-sync-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -741,6 +740,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -903,7 +903,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.codex/skills",
             "names": [
-              "agent-sync-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -923,6 +922,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -1120,7 +1120,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.cursor/skills",
             "names": [
-              "agent-sync-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1140,6 +1139,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -1212,27 +1212,27 @@
         {
           "kind": "instructions",
           "platforms": [],
-          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no rules file for it."
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no rules file for it."
         },
         {
           "kind": "hooks",
           "platforms": [],
-          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no hook config for it."
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no hook config for it."
         },
         {
           "kind": "mcp",
           "platforms": [],
-          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no MCP config for it."
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no MCP config for it."
         },
         {
           "kind": "skills",
           "platforms": [],
-          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no skills home for it."
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no skills home for it."
         },
         {
           "kind": "subagents",
           "platforms": [],
-          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no sub-agent definitions for it."
+          "reason": "Echo runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no sub-agent definitions for it."
         },
         {
           "kind": "permissions",
@@ -1350,7 +1350,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.fx/skills",
             "names": [
-              "agent-sync-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1370,6 +1369,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -1564,7 +1564,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.grok/skills",
             "names": [
-              "agent-sync-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1584,6 +1583,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -1946,7 +1946,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.config/muse/skills",
             "names": [
-              "agent-sync-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -1966,6 +1965,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -2129,7 +2129,6 @@
           "expected": {
             "description": "The fleet skill pack is installed in ~/.minimax/skills",
             "names": [
-              "agent-sync-tools-guide",
               "apple-notes",
               "board-ops",
               "closeout",
@@ -2149,6 +2148,7 @@
               "secret-handoff",
               "sentence-gap",
               "session-start",
+              "simple-tools-guide",
               "unstick-pr"
             ],
             "present": true
@@ -2290,7 +2290,7 @@
           "expected": {
             "description": "The fleet-lane-map block in ~/.config/opencode/AGENTS.md matches the installer template",
             "present": true,
-            "sha256": "5d067930c4dc25f3c972cf5bbd2b5994693f1f40a4f9d46b10d71ba5fbb72f74"
+            "sha256": "586630ae5a6dee0ff26a5b168983c29dc11fe203cc6c65fa0bddca860668d09a"
           },
           "id": "opencode-instructions-lane-map",
           "kind": "instructions",
@@ -2409,27 +2409,27 @@
         {
           "kind": "instructions",
           "platforms": [],
-          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no rules file for it."
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no rules file for it."
         },
         {
           "kind": "hooks",
           "platforms": [],
-          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no hook config for it."
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no hook config for it."
         },
         {
           "kind": "mcp",
           "platforms": [],
-          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no MCP config for it."
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no MCP config for it."
         },
         {
           "kind": "skills",
           "platforms": [],
-          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no skills home for it."
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no skills home for it."
         },
         {
           "kind": "subagents",
           "platforms": [],
-          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted agent-sync bridge, so this Mac holds no sub-agent definitions for it."
+          "reason": "Wise runs on the Instinct app's own computer and reaches the fleet through the hosted ST-MCP bridge, so this Mac holds no sub-agent definitions for it."
         },
         {
           "kind": "permissions",

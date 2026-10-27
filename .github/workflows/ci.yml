@@ -99,6 +99,14 @@ jobs:
     - name: Lane doctor and tmp guard tests
       run: |
         cd scripts && python3 -m unittest discover -s fleet_lanes/tests -t . -v
+    # hold-guard (Kody r4373587808 on #964):  unit, integration (the shipped
+    # shell against a fake gh) and workflow-static suites.  Unwired tests are
+    # decoration:  regressions would ship under a green CI.  PyYAML is needed
+    # by test_workflow_static.py.
+    - name: hold-guard tests
+      run: |
+        pip install PyYAML
+        cd scripts/hold-guard && python3 -m unittest discover -s . -t . -v
     # pr-sweep (docs/PR-SWEEP.md):  a fake gh, fake agents and a fake lane tool, so nothing reaches GitHub or runs
     # an agent;  includes the check that no adapter, skill or doc carries a copy of a rule from rules.md.
     - name: pr-sweep tests
@@ -317,6 +325,14 @@ jobs:
     - name: Notes read, list and action log (AFC-486)
       run: |
         cd scripts && python3 -m unittest test_apple_notes_actions
+    # AFC-547:  the helper turns a bare project or pull request reference into a link, the way the writer
+    # would write it by hand.  The same stubs stand in for Notes and the preview hook prints the HTML the
+    # note would get, so the assertions read the links and nothing touches Notes.  Each test runs the
+    # script once, and the script starts python a few times per run, so the step gets a budget of its own.
+    - name: Notes linkifier (AFC-547)
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_linkify
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is

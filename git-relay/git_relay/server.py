@@ -3,9 +3,9 @@
 Endpoints (all JSON in, JSON out):
     GET  /healthz
     POST /v1/open_pr           {repo, base, head, title, body}      (owner token)
-    POST /v1/edit_pr           {repo, number, title?, body?}        (owner token)
-    POST /v1/reply_thread      {repo, number, comment_id, body}     (owner token)
-    POST /v1/comment_pr        {repo, number, body}                 (owner token)
+    POST /v1/edit_pr           {repo, number, title?, body?}        (seat's App)
+    POST /v1/reply_thread      {repo, number, comment_id, body}     (seat's App)
+    POST /v1/comment_pr        {repo, number, body}                 (seat's App)
     POST /v1/mint_token        {repo, permissions}                  (seat's App)
     POST /v1/merge_pr          {repo, number, method?}              (seat's App)
     POST /v1/workflow_dispatch {repo, workflow, ref, inputs?}       (seat's App)
@@ -27,6 +27,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -38,6 +39,34 @@ from .policy import PolicyError, SeatPolicy
 from .secret_scan import find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
+
+
+def _positive_int(raw: str, default: int) -> int:
+    """An operator-tunable bound:  garbage, zero and negatives fall back."""
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 1 else default
+
+
+# Bounded inbound concurrency (Kody discussion_r4372744451):  the default one
+# thread per connection, with each authenticate able to block on a Worker
+# verify up to REQUEST_TIMEOUT_S, would let an unauthenticated spray of
+# unique wrong secrets fan out into unbounded threads AND unbounded
+# concurrent Worker calls.  A semaphore acquired BEFORE the handler thread is
+# spawned caps both;  excess connections wait in the TCP accept backlog and
+# are served in turn.  This bounds relay resources without an
+# application-level refusal - but it is not magic:  under a flood that
+# overruns the finite backlog the kernel turns new connections away, and a
+# queued client may give up waiting.  That is degraded availability under an
+# active flood, never an auth verdict on a bearer;  per-source fairness under
+# such a flood is an edge property (the relay listens on loopback behind
+# cloudflared).  The per-connection socket timeout below frees slots held by
+# clients that connect and then stall, so a slow-incomplete-client set cannot
+# pin every slot forever - and shutdown() returns within about one timeout.
+MAX_CONCURRENT_REQUESTS = _positive_int(os.environ.get("GIT_RELAY_MAX_CONCURRENT", ""), 8)
+REQUEST_SOCKET_TIMEOUT_S = _positive_int(os.environ.get("GIT_RELAY_SOCKET_TIMEOUT_S", ""), 30)
 MAX_TEXT_FIELD = 32 * 1024
 
 DEFAULT_HOST = "127.0.0.1"
@@ -93,6 +122,11 @@ def _validate_args(action: str, args: dict) -> dict:
             }
         )
     elif action == "edit_pr":
+        # An edit must change something:  with neither title nor body GitHub
+        # answers 422 after the call already left the fleet, which audits as a
+        # terminal refusal instead of the local 400 it should be.
+        if args.get("title") is None and args.get("body") is None:
+            raise ValueError("edit_pr: title or body is required")
         specs.update(
             {"number": ("number", True), "title": ("clean", False), "body": ("clean", False)}
         )
@@ -171,6 +205,11 @@ ACTION_REQUIRED_PERMISSIONS = {
     "merge_pr": {"contents": "write", "pull_requests": "write"},
     "workflow_dispatch": {"actions": "write"},
     "resolve_thread": {"pull_requests": "write"},
+    # Use the PR-specific permission for these PR-only actions, including
+    # conversation comments whose GitHub endpoint uses /issues/:number.
+    "edit_pr": {"pull_requests": "write"},
+    "reply_thread": {"pull_requests": "write"},
+    "comment_pr": {"pull_requests": "write"},
 }
 
 
@@ -305,6 +344,8 @@ class Relay:
                     if exc.credential_preview is not None:
                         payload["credential_preview"] = exc.credential_preview
                         detail["credential_preview"] = exc.credential_preview
+                    payload["github_diagnostics"] = dict(exc.diagnostics)
+                    detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 503, payload
                 if exc.status in (0, 408) or exc.status >= 500:
                     # Transport failure, timeout, or 5xx:  GitHub may have accepted
@@ -322,6 +363,8 @@ class Relay:
                     if exc.code is not None:
                         payload["github_code"] = exc.code
                         detail["github_code"] = exc.code
+                    payload["github_diagnostics"] = dict(exc.diagnostics)
+                    detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 502, payload
                 if exc.status == 429:
                     # Rate limited before the write ran:  a definite refusal.
@@ -338,6 +381,8 @@ class Relay:
                     if exc.retry_after is not None:
                         payload["retry_after_seconds"] = exc.retry_after
                         detail["retry_after_seconds"] = exc.retry_after
+                    payload["github_diagnostics"] = dict(exc.diagnostics)
+                    detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 429, payload
                 self._release(key, "refused")
                 outcome = "github_terminal"
@@ -352,6 +397,8 @@ class Relay:
                 if exc.credential_preview is not None:
                     payload["credential_preview"] = exc.credential_preview
                     detail["credential_preview"] = exc.credential_preview
+                payload["github_diagnostics"] = dict(exc.diagnostics)
+                detail["github_diagnostics"] = dict(exc.diagnostics)
                 return 400, payload
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
@@ -377,7 +424,6 @@ class Relay:
         # call (allowlist + hourly quota, once);  dispatch only executes.
         if action in SeatPolicy.APP_ACTIONS:
             return self._dispatch_app(seat, action, args, repo)
-        number = args.get("number")
         if action == "open_pr":
             return self.client.open_pr(
                 repo,
@@ -386,23 +432,8 @@ class Relay:
                 title=_clean_text(args.get("title"), "title"),
                 body=_clean_text(args.get("body"), "body"),
             )
-        if action == "edit_pr":
-            return self.client.edit_pr(
-                repo,
-                _number(number, "number"),
-                title=_clean_text(args.get("title"), "title", required=False),
-                body=_clean_text(args.get("body"), "body", required=False),
-            )
-        if action == "reply_thread":
-            return self.client.reply_thread(
-                repo,
-                _number(number, "number"),
-                _number(args.get("comment_id"), "comment_id"),
-                _clean_text(args.get("body"), "body"),
-            )
-        return self.client.comment_pr(
-            repo, _number(number, "number"), _clean_text(args.get("body"), "body")
-        )
+        # Every non-open_pr write is an APP_ACTION and never reaches here.
+        raise ValueError(f"unknown owner-token action {action!r}")
 
 
 def _perm_within_ceiling(requested: dict, ceiling: dict) -> str | None:
@@ -438,6 +469,29 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
     if missing:
         raise PolicyDenied(f"seat ceiling does not cover permission {missing!r}")
     token, _ = self.app_minter.token_for(app_slug, repo, dict(required))
+    if action == "edit_pr":
+        return self.client.edit_pr(
+            repo,
+            _number(args.get("number"), "number"),
+            title=_clean_text(args.get("title"), "title", required=False),
+            body=_clean_text(args.get("body"), "body", required=False),
+            bearer=token,
+        )
+    if action == "reply_thread":
+        return self.client.reply_thread(
+            repo,
+            _number(args.get("number"), "number"),
+            _number(args.get("comment_id"), "comment_id"),
+            _clean_text(args.get("body"), "body"),
+            bearer=token,
+        )
+    if action == "comment_pr":
+        return self.client.comment_pr(
+            repo,
+            _number(args.get("number"), "number"),
+            _clean_text(args.get("body"), "body"),
+            bearer=token,
+        )
     if action == "merge_pr":
         return self.client.merge_pr(
             repo,
@@ -457,6 +511,49 @@ def _app_dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
 
 
 Relay._dispatch_app = _app_dispatch
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a hard cap on in-flight requests.
+
+    The semaphore is acquired in the accept loop (process_request), so once
+    the slots are taken the kernel backlog - not a growing thread pile -
+    absorbs the burst.  request_queue_size is raised so the backlog actually
+    holds it.  Slots release when the request's thread finishes.
+    """
+
+    daemon_threads = True
+    request_queue_size = 128
+
+    def __init__(
+        self,
+        *args,
+        max_concurrent: int = MAX_CONCURRENT_REQUESTS,
+        socket_timeout_s: int = REQUEST_SOCKET_TIMEOUT_S,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self._slots = threading.BoundedSemaphore(max(1, max_concurrent))
+        self._socket_timeout_s = max(1, socket_timeout_s)
+
+    def process_request(self, request, client_address):
+        self._slots.acquire()
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        # A stalled or half-sent request must not hold its slot forever.
+        request.settimeout(self._socket_timeout_s)
+        try:
+            super().process_request_thread(request, client_address)
+        except (TimeoutError, OSError):
+            # socket.timeout subclasses OSError:  a stalled client is dropped.
+            pass
+        finally:
+            self._slots.release()
 
 
 def make_handler(relay: Relay):
@@ -659,15 +756,68 @@ def adopt_legacy_state(default_path: str) -> str:
     return default_path
 
 
+def _build_shared_verifier():
+    """The ST-MCP shared-bearer verifier, or None when not configured.
+
+    Set GIT_RELAY_VERIFY_URL to resolve admin-minted per-identity bearers
+    through the Worker's verify route.  The route key is a fleet-secrets read
+    like every other credential here;  a configured URL with an unreadable or
+    short key is a startup error, never silent unauthenticated operation.
+
+    The verify key lives in Fleet-OPS /tools (the same folder the Worker
+    resolves it from), NOT in /github-apps with the App credentials:
+    GIT_RELAY_VERIFY_KEY_PATH overrides the folder, default "/tools".
+    """
+    verify_url = os.environ.get("GIT_RELAY_VERIFY_URL", "").strip()
+    if not verify_url:
+        return None
+    if not shutil.which("fleet-secrets"):
+        raise SystemExit("git-relay config: fleet-secrets executable not found on PATH")
+    from .app_tokens import AppTokenError, FleetSecretsSource
+    from .shared_bearer import SharedBearerVerifier
+
+    raw_path = os.environ.get("GIT_RELAY_VERIFY_KEY_PATH")
+    try:
+        return SharedBearerVerifier(
+            url=verify_url,
+            key_name=os.environ.get("GIT_RELAY_VERIFY_KEY_NAME", "GR_BEARER_VERIFY_KEY"),
+            # The host plan provisions TWO scoped service tokens:  the
+            # owner-only /git-relay-owner token, and the existing App
+            # reader whose scope already covers /github-apps and /tools.
+            # The verify-key source therefore binds the App credential
+            # file by default;  GIT_RELAY_TOOLS_CREDENTIAL_FILE exists
+            # only for a future split.
+            key_source=FleetSecretsSource(
+                path=(raw_path or "/tools").strip(),
+                credential_file=(
+                    _credential_file_for(
+                        "the /tools verify-key source",
+                        "GIT_RELAY_TOOLS_CREDENTIAL_FILE",
+                        "",
+                    )
+                    if os.environ.get("GIT_RELAY_TOOLS_CREDENTIAL_FILE") is not None
+                    else _credential_file_for(
+                        "the App-credentials source",
+                        "GIT_RELAY_APPS_CREDENTIAL_FILE",
+                        "git-relay-apps-token",
+                    )
+                ),
+            ),
+        )
+    except (AppTokenError, ValueError) as exc:
+        raise SystemExit(f"git-relay config: {exc}") from exc
+
+
 def from_env() -> Relay:
     try:
         policy = SeatPolicy(
             os.environ.get("GIT_RELAY_SEATS_JSON", ""),
             rate_per_hour=int(os.environ.get("GIT_RELAY_RATE_PER_HOUR", "120")),
+            verifier=_build_shared_verifier(),
         )
     except PolicyError as exc:
         raise SystemExit(f"git-relay config: {exc}") from exc
-    client = GitHubClient(os.environ.get("GITHUB_TOKEN", ""))
+    client = GitHubClient(_owner_token_from_cli())
     # An explicitly configured path is the operator's business:  adoption only
     # covers the built-in defaults.
     audit_path = (
@@ -704,7 +854,14 @@ def from_env() -> Relay:
             )
         try:
             app_minter = AppTokenMinter(
-                FleetSecretsSource(path=(raw_secrets_path or "/github-apps").strip()),
+                FleetSecretsSource(
+                    path=(raw_secrets_path or "/github-apps").strip(),
+                    credential_file=_credential_file_for(
+                        "the App-credentials source",
+                        "GIT_RELAY_APPS_CREDENTIAL_FILE",
+                        "git-relay-apps-token",
+                    ),
+                ),
                 lambda method, path, bearer, payload=None: client._call(
                     method, path, payload, bearer=bearer
                 ),
@@ -714,11 +871,67 @@ def from_env() -> Relay:
     return Relay(policy, client, audit, app_minter=app_minter, outcomes=outcomes)
 
 
+def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | None:
+    """The protected Infisical-token file one fleet-secrets source runs under.
+
+    Production resolves it from systemd's CREDENTIALS_DIRECTORY (the unit's
+    LoadCredential keys are the default file names) or an explicit
+    GIT_RELAY_*_CREDENTIAL_FILE override;  a set-but-empty override is a
+    config error like any other.  With neither, startup REFUSES - the
+    process environment is never a secret source, and a CLI child that
+    inherits it would pick up co-located secrets (seat tokens, another
+    scope's token).  There is no inheritance escape:  tests and local
+    runs point the variables at their own files.  Names scopes and
+    variables only, never file contents.
+    """
+    explicit = os.environ.get(env_var)
+    if explicit is not None:
+        if not explicit.strip():
+            raise SystemExit(f"git-relay config: {env_var} is set but empty")
+        return explicit.strip()
+    creds = os.environ.get("CREDENTIALS_DIRECTORY", "").strip()
+    if creds:
+        return os.path.join(creds, default_name)
+    raise SystemExit(
+        f"git-relay config: no credential file binding for {scope}:  "
+        f"set {env_var} or run under systemd LoadCredential "
+        f"(CREDENTIALS_DIRECTORY/{default_name})"
+    )
+
+
+def _owner_token_from_cli() -> str:
+    """The owner PAT for open_pr, read once at startup through `fleet-secrets
+    get-verified` at its fixed folder (/git-relay-owner):  the CLI proves the
+    value came from that exact folder before answering.  Never the process
+    environment - an ambient GITHUB_TOKEN is IGNORED, and there is no other
+    fallback source (owner direction 2026-10-21 + the /git-relay-owner
+    custody move 2026-10-25).  The relay refuses to start without it,
+    exactly as it refused to start with an empty GITHUB_TOKEN before,
+    and it refuses to start without a credential file binding for the
+    folder scope (_credential_file_for):  no ambient inheritance in
+    production.
+    """
+    from .app_tokens import AppTokenError, FleetSecretsSource
+
+    source = FleetSecretsSource(
+        path="/git-relay-owner",
+        credential_file=_credential_file_for(
+            "the /git-relay-owner source",
+            "GIT_RELAY_OWNER_CREDENTIAL_FILE",
+            "git-relay-owner-token",
+        ),
+    )
+    try:
+        return source.verified_secret("GITHUB_TOKEN")
+    except AppTokenError as exc:
+        raise RuntimeError(f"git-relay config: owner token:  {exc}") from None
+
+
 def main() -> None:
     relay = from_env()
     host = os.environ.get("GIT_RELAY_HOST", DEFAULT_HOST)
     port = int(os.environ.get("GIT_RELAY_PORT", str(DEFAULT_PORT)))
-    server = ThreadingHTTPServer((host, port), make_handler(relay))
+    server = BoundedThreadingHTTPServer((host, port), make_handler(relay))
     print(f"git-relay listening on {host}:{port}")
     server.serve_forever()
 

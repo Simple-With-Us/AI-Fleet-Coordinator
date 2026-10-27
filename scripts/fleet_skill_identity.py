@@ -780,6 +780,12 @@ IDENTITY_SKILL_NAMES = {
 # ios-ship-now / --force-ship loop.
 NEVER_INSTALL = frozenset({"ios-ship"})
 
+# TEMPORARY rename scaffolding - remove when the rename is complete.  Skill directories that an earlier install left
+# under a name that no longer exists.  The installer deletes them (and their zip) from every install target, so a seat
+# never keeps a stale copy beside the renamed skill.  Delete this set, its use in install-fleet-skills.py and its test
+# once every seat home has been re-rendered.
+RENAMED_SKILL_OLD_NAMES = frozenset({"agent-sync-tools-guide"})
+
 # Optional allowlist of Seat.seat_key values.  A missing key means every
 # seat except NEVER_INSTALL.  Use this when a skill is only meaningful on
 # one harness.  `codex-triage` is not Codex-only — the name is historical;
@@ -898,7 +904,7 @@ def catalog_skill_names(docs_skills: str) -> list[str]:
         path = os.path.join(docs_skills, entry)
         if not os.path.isdir(path) or entry.startswith(".") or entry == "by-seat":
             continue
-        if entry in NEVER_INSTALL:
+        if entry in NEVER_INSTALL or entry in RENAMED_SKILL_OLD_NAMES:
             continue
         if os.path.isfile(os.path.join(path, "SKILL.md")):
             names.append(entry)

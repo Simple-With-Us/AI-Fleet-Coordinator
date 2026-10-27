@@ -1,5 +1,5 @@
 // The `guide` tool on the hosted server (AFC-331, docs/protocols/per-call-identity.md section 7).  The text is
-// docs/protocols/agent-sync-tools-guide.md, bundled as src/guide-text.js (scripts/export-guide.mjs writes it;
+// docs/protocols/simple-tools-guide.md, bundled as src/guide-text.js (scripts/export-guide.mjs writes it;
 // test/guide.test.mjs fails when it is stale).  Sections and lookup follow scripts/agent_sync/mcp/guide.py.
 
 import { z } from "zod";
@@ -9,7 +9,7 @@ import { parseArgs } from "./args.js";
 /** The guide tool's arguments:  an optional section name, nothing else. */
 export const GuideArgs = z.strictObject({ section: z.string().max(100).optional() });
 
-export const GUIDE_URL = "https://fleetlink.online/agent-sync-tools-guide/";
+export const GUIDE_URL = "https://fleetlink.online/simple-tools-guide/";
 
 /** [[heading, text]] for every `## ` section, from its heading line to the next one;  fenced blocks never start one. */
 export function splitSections(text) {

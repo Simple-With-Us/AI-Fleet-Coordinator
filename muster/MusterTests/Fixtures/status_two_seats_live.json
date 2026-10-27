@@ -114,13 +114,13 @@
    "platform": "claude",
    "kind": "skills",
    "state": "PASS",
-   "reason": "The skill 'agent-sync-tools-guide', 'apple-notes', 'board-ops', 'closeout', 'codex-triage', 'deploy-verify', 'dns-and-registrars', 'drive-grok-tui', 'fleet-coordination', 'fleet-infra', 'fleet-recall', 'housekeeper', 'land-lane', 'mac-cleanup', 'owner-copy', 'pickup-seat', 'pr-sweep', 'secret-handoff', 'sentence-gap', 'session-start', 'unstick-pr' is installed in ~/.claude/skills.  25 other skills are installed there.",
+   "reason": "The skill 'simple-tools-guide', 'apple-notes', 'board-ops', 'closeout', 'codex-triage', 'deploy-verify', 'dns-and-registrars', 'drive-grok-tui', 'fleet-coordination', 'fleet-infra', 'fleet-recall', 'housekeeper', 'land-lane', 'mac-cleanup', 'owner-copy', 'pickup-seat', 'pr-sweep', 'secret-handoff', 'sentence-gap', 'session-start', 'unstick-pr' is installed in ~/.claude/skills.  25 other skills are installed there.",
    "reasonCode": "ok",
    "expected": {
     "description": "The fleet skill pack is installed in ~/.claude/skills",
     "present": true,
     "names": [
-     "agent-sync-tools-guide",
+     "simple-tools-guide",
      "apple-notes",
      "board-ops",
      "closeout",
@@ -146,7 +146,7 @@
    "observed": {
     "present": true,
     "names": [
-     "agent-sync-tools-guide",
+     "simple-tools-guide",
      "apple-notes",
      "board-ops",
      "closeout",

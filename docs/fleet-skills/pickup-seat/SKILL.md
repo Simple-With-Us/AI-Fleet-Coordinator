@@ -88,7 +88,7 @@ Answer disambiguation pings fast.  Cede lanes the returning seat re-claims, espe
 
 ## Canon
 
-- `/Users/jay/apps/AGENT-SYNC.md` — handoff, seats, Mac local processes
+- `/Users/jay/apps/FLEET-PROTOCOL.md` — handoff, seats, Mac local processes
 - `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` — retired stub
 - Skills: `session-start`, `board-ops`, `land-lane`, `unstick-pr`, `closeout`
 

@@ -106,7 +106,7 @@ If the box is gating several lanes, announce the full gate in #builds topic `gat
 
 ## Canon
 
-- `/Users/jay/apps/AGENT-SYNC.md` — Always commit + land; merge requirements; branch/worktree naming
+- `/Users/jay/apps/FLEET-PROTOCOL.md` — Always commit + land; merge requirements; branch/worktree naming
 - App `AGENTS.md` Pre-Commit / Handoff + Verify before claiming done
 - `scripts/land.sh` when present
 - Skills: `session-start`, `unstick-pr`, `codex-triage`, `deploy-verify`, `closeout`, `owner-copy`

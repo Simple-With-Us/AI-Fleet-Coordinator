@@ -21,9 +21,21 @@ simple-notes log --since-hours 24
 
 - **Who may change what.**  A create's title carries your own agent name.  Update, pin, unpin, read and list work on any Coding note:  fixing formatting across other agents' notes is expected.  An update never creates a note whose title is not yours (a missing one answers `not_found`).
 - **Read before you rewrite.**  `read --format html` returns the content without the title, date and Session rows (the helper writes those on every save), ready to send back with `update --html`.
-- **The helper formats and logs every write**, wherever it came from (date row, Session row, sentence gaps, fleet dates).  `simple-notes log` shows who changed which note and what was reformatted.
+- **The helper formats and logs every write**, wherever it came from (date row, Session row, sentence gaps, fleet dates, links).  `simple-notes log` shows who changed which note and what was reformatted.
 
 Notes.app does not render raw Markdown.  The helper converts MD → HTML.  Pass `--html` only when you already have Notes-safe HTML.
+
+## Links (the helper does this for you)
+
+Write the reference the way you would say it and the helper links it (owner 2026-10-25:  "links everywhere and prefer apple notes have them even").
+
+- `OPS-1000` becomes a link to that Linear issue.  `PR #957` becomes a link to that pull request, and the text is normalised to the house form `PR #N`.  A list works too:  `PRs #380, #386 and #389` becomes one link per number, and a file count that follows a list is not one of them.
+- A pound sign means a pull request and a hyphen means a Linear issue, so `AFC#957` is a pull request in `AI-Fleet-Coordinator` and `AFC-547` is the Linear issue of that team.  There is one Linear team per repository:  `AFC` is `AI-Fleet-Coordinator`, `OPS` is `Fleet-OPS`, `CTS` is `congress-trading-shared`.
+- A bare `PR #N` is read from the block it sits in:  a repository named next to it, the subject of a table row, the one team the block names, the nearest repository named near it, the team key in the note title, and the fallback repository.  When the block names two repositories and the reference names none of them, it stays plain text, because a link to the wrong repository is worse than no link.
+- A `CTS` issue is implemented in `Congress.Trade`, `Socratic-Trade` and `Usage-Monitor` as well, so the helper asks GitHub which of them holds the number, and leaves the reference alone when none of them does.
+- Left alone:  code spans, fenced blocks, an identifier inside a URL, a hand-written link (never doubled), and an identifier that is not a Linear issue, such as `SRV-S07`.
+- The helper says what it linked on stderr (`notes: linkified:  2 project references and 1 pull request reference became links`) and logs the counts under `reformatted.links`.
+- `NOTES_LINKIFY=0` turns the step off for one run.
 
 ## Helper (the Mac)
 
@@ -108,7 +120,7 @@ Background-jobs inventory note is `⭐️ Background Jobs Master List` — refre
 
 ## Canon
 
-- `/Users/jay/apps/AGENT-SYNC.md` § Apple Notes
+- `/Users/jay/apps/FLEET-PROTOCOL.md` § Apple Notes
 - Skills: `closeout`, `owner-copy`
 
 ### Handoff Reports (Immediate & Living)

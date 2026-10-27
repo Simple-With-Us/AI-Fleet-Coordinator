@@ -51,7 +51,7 @@ class ContractTests(unittest.TestCase):
 
     def test_unknown_section_never_verdicts_pass(self):
         report = ok_report()
-        report.claims = Section(state="UNKNOWN", reason="board failed")
+        report.claims = Section(state="UNKNOWN", reason="simple-board failed")
         envelope = contract.build_envelope(report)
         self.assertEqual(envelope["summary"]["overallVerdict"], "UNKNOWN")
         self.assertEqual(contract.overall_verdict(report), "UNKNOWN")

@@ -74,7 +74,7 @@
 # 3 --pin-only / --unpin-only / --read / --update --existing-only found no note with that title, 4 --pin-only /
 # --unpin-only did not pin or unpin the note.  Anything else is a failure the script did not plan for (an
 # osascript error, say), and the code is the failing command's own.
-# Canonical policy: /Users/jay/apps/AGENT-SYNC.md § Apple Notes.
+# Canonical policy: /Users/jay/apps/FLEET-PROTOCOL.md § Apple Notes.
 
 set -euo pipefail
 
@@ -106,7 +106,7 @@ NOTES_APPLE_EVENT_TIMEOUT_S="${NOTES_APPLE_EVENT_TIMEOUT_S:-900}"
 NOTES_SHORTCUT_TIMEOUT_S="${NOTES_SHORTCUT_TIMEOUT_S:-30}"
 [[ "$NOTES_SHORTCUT_TIMEOUT_S" =~ ^[0-9]+$ ]] || NOTES_SHORTCUT_TIMEOUT_S=30
 # One pin or unpin Shortcut at a time across processes.  Every create and update ends in a pin, and
-# several seats call this helper at once from separate processes (the agent-sync relay serializes only
+# several seats call this helper at once from separate processes (the chat relay serializes only
 # its own calls).  Two overlapping runs of the Shortcut fight over the same Find Notes picker on the
 # owner's screen and make each other fail, so a run takes this lock first.  macOS has no flock(1), so the
 # lock is a directory made with mkdir, which is atomic, holding the owner's pid.  A lock whose pid is gone,
@@ -147,6 +147,7 @@ if [[ -z "$_LOG_T0" ]]; then
 fi
 _LOG_INPUT_BYTES=""
 _LOG_CHANGES_FILE=""
+_LOG_LINKS_FILE=""
 _NOTES_OUT=""
 _TMP_MADE=0
 _TITLE_REJECTED=0
@@ -207,7 +208,7 @@ _action_log_line() {  # $1 = the exit code the script is leaving with
   _NL_REQUESTER="${AGENT_NOTES_REQUESTER:-}" _NL_INPUT_BYTES="$_LOG_INPUT_BYTES" _NL_BODY_FILE="$body_file" \
   _NL_CHANGES_FILE="$_LOG_CHANGES_FILE" _NL_OUT_FILE="$_NOTES_OUT" _NL_PIN="$pin" _NL_NOTIFY="$WANT_NOTIFY" \
   _NL_NEEDS_OWNER="$NEEDS_OWNER" _NL_HTML="${HTML_PATH:+1}" _NL_EXISTING_ONLY="$EXISTING_ONLY" \
-  _NL_SUMMARY="${SUMMARY_TEXT:+1}" _NL_PR="$PR_NUMBERS" \
+  _NL_SUMMARY="${SUMMARY_TEXT:+1}" _NL_PR="$PR_NUMBERS" _NL_LINKS_FILE="$_LOG_LINKS_FILE" \
   /usr/bin/python3 -I -c '
 import fcntl, hashlib, json, os, signal, socket, time, uuid
 from datetime import datetime
@@ -282,6 +283,20 @@ if writes and E("_NL_CHANGES_FILE"):
             dates, gaps = fh.read().split()
         entry["reformatted"] = {"dates": int(dates), "gaps": int(gaps)}
     except (OSError, ValueError):
+        pass
+if writes and E("_NL_LINKS_FILE"):
+    try:
+        with open(E("_NL_LINKS_FILE")) as fh:
+            counts = fh.read().split()
+        if not entry.get("reformatted"):
+            entry["reformatted"] = {}
+        #  The counts are the issues, the pull requests and the projects that became links.  A file
+        #  written before projects were counted carries only the first two, so a missing third is
+        #  read as none rather than as a lost count.
+        links = {"issues": int(counts[0]), "prs": int(counts[1])}
+        links["projects"] = int(counts[2]) if len(counts) > 2 else 0
+        entry["reformatted"]["links"] = links
+    except (OSError, ValueError, TypeError, AttributeError, IndexError):
         pass
 if mode in ("read", "list"):
     key = "bytes" if mode == "read" else "count"
@@ -364,6 +379,7 @@ _on_exit() {
     rm -f "$TMP" "$TITLE_FILE" 2>/dev/null
   fi
   [[ -z "${_LOG_CHANGES_FILE:-}" ]] || rm -f "$_LOG_CHANGES_FILE" 2>/dev/null
+  [[ -z "${_LOG_LINKS_FILE:-}" ]] || rm -f "$_LOG_LINKS_FILE" 2>/dev/null
   [[ -z "${_NOTES_OUT:-}" ]] || rm -f "$_NOTES_OUT" 2>/dev/null
   exit "$rc"
 }
@@ -1085,10 +1101,17 @@ def inline(s: str) -> str:
         return "\x00code" + str(len(code_spans) - 1) + "\x00"
     s = re.sub(r"`[^`]+`", hold_code_span, s)
     # Notes.app is an HTML renderer — two ASCII spaces collapse.
-    # Sentence gap in HTML is the numeric reference `&#160; ` + space.
-    # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference renders
-    # as a real U+00A0 in Notes and adds no raw non-ASCII byte to the note HTML.
-    s = re.sub(r"([.!?]) {2,}", r"\1&#160; ", s)
+    # Sentence gap in HTML is the numeric reference for a NARROW NO-BREAK SPACE, `&#8239; ` + space.
+    # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
+    # raw non-ASCII byte to the note HTML.
+    # AFC-552:  the character the reference names decides whether the gap arrives.  Apple Notes
+    # normalises a NO-BREAK space away on import, so `&#160; ` came back as two ordinary spaces,
+    # which the renderer collapses to one, and the gap never reached the note at all.  The NARROW
+    # NO-BREAK SPACE survives the import unchanged.  Measured Oct 26, 2026 by writing ten candidate
+    # mechanisms into a real note and reading them back:  the no-break space, the named entity
+    # and two of them all come back as ordinary spaces, and the narrow no-break, en, em, thin and
+    # ideographic spaces all come back as themselves.
+    s = re.sub(r"([.!?]) {2,}", r"\1&#8239; ", s)
     s = re.sub(r"\x00code(\d+)\x00", lambda m: code_spans[int(m.group(1))], s)
     # links [text](url) — after escape brackets still match
     s = re.sub(
@@ -1305,9 +1328,13 @@ PY
 }
 
 # Notes.app collapses ASCII double spaces.  Turn leftover `.  ` / `!  ` / `?  `
-# into `&#160; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
-# Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference renders as
-# a real U+00A0 in Notes and adds no raw non-ASCII byte to the note HTML.
+# into `&#8239; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
+# Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
+# raw non-ASCII byte to the note HTML.
+# AFC-552:  the character the reference names decides whether the gap arrives.  Apple Notes
+# normalises a NO-BREAK space away on import, so `&#160; ` came back as two ordinary spaces,
+# which the renderer collapses to one, and the gap never reached the note at all.  The NARROW
+# NO-BREAK SPACE survives the import unchanged.
 # A sentence that ends INSIDE inline markup puts the closing tag between the punctuation
 # and the run of spaces (`Bold end.</b>  Next`), so the run never sits next to the
 # punctuation and the gap was lost.  The optional tag group carries the closing tag
@@ -1322,8 +1349,698 @@ for i, part in enumerate(parts):
     if i % 2 == 1:
         out.append(part)
         continue
-    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#160; ", part))
+    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#8239; ", part))
 sys.stdout.write("".join(out))
+'
+}
+
+# ---- The linkifier (owner 2026-10-25) --------------------------------------------------------------------------
+# A note body carries bare identifiers, so a reader cannot click through to the work they name.  The owner asked for
+# links everywhere, Apple Notes included, in the house linkifier style:
+#
+#   [PR #957](https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/957)
+#
+# The writer does the converting, so every seat gets it without every seat having to write it.  This is the third
+# automatic rewrite the helper owns, with the fleet dates and the sentence gaps, and it behaves like them:  it runs on
+# the HTML the note actually gets, it never touches code or an existing link, it counts what it changed, it says so on
+# stderr, and the count reaches the action log.
+#
+# What becomes a link:
+#
+#   * A Linear issue identifier, OPS-1000 or AFC-547, becomes a link to that issue in the fleet workspace.  The team
+#     key list is the Linear teams, so an identifier that is not a Linear issue (SRV-S07, MAC-P09) is left alone.
+#   * A Linear project reference, P-BF-6, becomes a link to that project.  A project has no URL schema that can be
+#     derived from its reference, so every project is coded here by hand, one line each, and a project reference that
+#     is not in the table is left as plain text.  A project reference is never treated as an issue.
+#   * A pull request reference, PR #957 or PR 957, becomes a link to the pull request, and the text is normalised to
+#     the house form, PR #957.  A list of them, PRs #380, #386 and #389, becomes one link per number.
+#   * A qualified reference, AFC#957 or BotFleet#1282, names its own repository and becomes a link to it.
+#
+# Which repository a pull request links to.  The numbers collide across the fleet repositories:  PR #95 exists in a
+# dozen of them, so a bare number is resolved from the block it sits in.  A paragraph and a table row are a block
+# each, and the block is read in this order:
+#
+#   1. A repository named right next to the reference:  merged as AFC PR #318 links AI-Fleet-Coordinator.
+#   2. The subject of a table row, which is what the row is about:  the com.jay.botfleet-server row links BotFleet.
+#   3. The nearest repository named near the reference, within NOTES_LINKIFY_CONTEXT_CHARS characters.
+#   4. The one repository the whole block talks about.
+#   5. The team key in the note title, so a [ST, Claude] note links Socratic-Trade.
+#   6. The fallback repository.
+#
+# A block that names several repositories, and a reference that names none of them, is left as plain text:  a link to
+# the wrong repository is worse than no link.  So a note about one pull request in another repository names that
+# repository, and a note about a pull request in the repository it is about just works.
+#
+# What is never touched:  a code span, a fenced block, a preformatted block, a style or script block, an existing
+# link, and the inside of any tag.  A hand-written markdown link therefore does not get a second one.
+#
+# The overrides (a caller may set these):
+#   NOTES_LINKIFY=0            turn the whole step off
+#   NOTES_GITHUB_OWNER=...     the GitHub owner, Simple-With-Us by default
+#   NOTES_LINKIFY_GITHUB_HOST=...  the GitHub host, github.com by default
+#   NOTES_LINKIFY_LINEAR_HOST=...  the Linear host, linear.app by default
+#   NOTES_LINKIFY_REPO=...     the fallback repository, AI-Fleet-Coordinator by default
+#   NOTES_LINKIFY_FORCE_REPO=...  use this repository for every pull request in this run
+#   NOTES_LINEAR_WORKSPACE=... the Linear workspace slug, simple-with-us by default
+#   NOTES_LINEAR_TEAM_KEYS=...  the team keys that count, the sixteen Linear teams by default
+#   NOTES_LINKIFY_CONTEXT_CHARS=...  how near a repository name must be to count, 60 by default
+_html_autolink() {
+  /usr/bin/python3 -c '
+import html as _html
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+def _env(name, default):
+    v = (os.environ.get(name) or "").strip()
+    return v if v else default
+
+
+owner = _env("NOTES_GITHUB_OWNER", "Simple-With-Us")
+github_host = _env("NOTES_LINKIFY_GITHUB_HOST", "github.com")
+linear_host = _env("NOTES_LINKIFY_LINEAR_HOST", "linear.app")
+default_repo = _env("NOTES_LINKIFY_REPO", "AI-Fleet-Coordinator")
+forced_repo = _env("NOTES_LINKIFY_FORCE_REPO", "")
+workspace = _env("NOTES_LINEAR_WORKSPACE", "simple-with-us")
+keys_raw = _env("NOTES_LINEAR_TEAM_KEYS", "AFC,OPS,ST,CT,UM,CTS,DD,PS,AR,CL,BF,HH,C,CC,FL,SWU")
+keyset = set(k.strip() for k in keys_raw.split(",") if k.strip())
+try:
+    ctx_chars = int(_env("NOTES_LINKIFY_CONTEXT_CHARS", "60") or 60)
+except ValueError:
+    #  A bad value must never cost the note its body:  the helper would exit with a traceback and
+    #  the linkified HTML would come back empty, so the body would be written blank.
+    ctx_chars = 60
+debug = _env("NOTES_LINKIFY_DEBUG", "")
+
+#  A repository that is not under the default owner.
+REPO_OWNER = {"Fleet-OPS": "jaywedgeworth22"}
+
+TEAM_TO_REPO = {
+    #  One Linear team per repository:  the team key names the repository that team works in.
+    "AFC": "AI-Fleet-Coordinator",
+    "ST": "Socratic-Trade",
+    "CT": "Congress.Trade",
+    "UM": "Usage-Monitor",
+    "CTS": "congress-trading-shared",
+    "DD": "DealDex",
+    "PS": "Personal-Site",
+    "AR": "Autorotate",
+    "CL": "ContactLogo",
+    "BF": "BotFleet",
+    "HH": "HogHunter",
+    "C": "Clutch",
+    "CC": "CodeCaps",
+    "FL": "FleetLink",
+    "OPS": "Fleet-OPS",
+    "SWU": "Simple-With-Us",
+    "CK": "Clutch",
+    "CAPS": "CodeCaps",
+    "CLUTCH": "Clutch",
+}
+
+#  The Linear projects a note may name, each coded by hand.
+#
+#  A Linear project has no URL that can be derived from its reference.  An issue is TEAM-NUMBER and
+#  every issue of a team lives under /issue/, so a team key and a number are enough to build the link.
+#  A project is neither:  its path carries a slug and a hash, so nothing about the reference says what
+#  the slug is.  The owner ruled on Oct 26, 2026 that a project reference must therefore be coded
+#  individually, and the Zulip linkifier team found no schema either.
+#
+#  So each project is one line here:  the reference a writer types, and the path of that project
+#  under the workspace.  A reference that is not in this table is left as plain text.  It is never
+#  guessed at, because a project reference that links to the wrong thing is worse than one that does
+#  not link, and it is never treated as an issue, because the number in it is a project number and
+#  not an issue number.
+PROJECT_PATHS = {
+    #  The BotFleet native macOS rewrite, which the fleet calls P-BF-6.
+    "P-BF-6": "botfleet-native-macos-rewrite-5afcbc055535",
+}
+
+#  A team that owns more than one repository.  A CTS issue is implemented in the shared congress
+#  repository and in the applications that use it, so a pull request next to a CTS-330 can be in any
+#  of them and GitHub is asked which one holds that number.
+TEAM_EXTRA_REPOS = {
+    "CTS": ["Congress.Trade", "Socratic-Trade", "Usage-Monitor"],
+}
+
+#  Team keys too short to read as a repository on their own:  CT is Central Time in a timestamp and
+#  the others turn up as ordinary words.  They still name a repository after a number (AFC-504) and
+#  in a note title ([ST, Claude]).
+AMBIGUOUS_TEAM_KEYS = {"ST", "CT", "UM", "DD", "PS", "AR", "CL", "CC", "FL", "C", "OPS"}
+
+TOKEN_TO_REPO = {
+    #  The repositories themselves.
+    "ai-fleet-coordinator": "AI-Fleet-Coordinator",
+    "autorotate": "Autorotate",
+    "botfleet": "BotFleet",
+    "clutch": "Clutch",
+    "codecaps": "CodeCaps",
+    "congress.trade": "Congress.Trade",
+    "contactlogo": "ContactLogo",
+    "dealdex": "DealDex",
+    "fleetlink": "FleetLink",
+    "hoghunter": "HogHunter",
+    "personal-site": "Personal-Site",
+    "socratic-trade": "Socratic-Trade",
+    "usage-monitor": "Usage-Monitor",
+    "congress-trading-shared": "congress-trading-shared",
+    "fleet-ops": "Fleet-OPS",
+    #  The installed helpers that live in one repository.
+    "minimax-companion": "Clutch",
+    "mac-cleanup": "AI-Fleet-Coordinator",
+    "mac-auto-cleanup": "AI-Fleet-Coordinator",
+    "disk-janitor": "AI-Fleet-Coordinator",
+    "fleet-work-backup": "AI-Fleet-Coordinator",
+    "fleet-recall": "AI-Fleet-Coordinator",
+    "fleet-rag": "AI-Fleet-Coordinator",
+    "lane-tools": "AI-Fleet-Coordinator",
+    "github-outbox-bridge": "AI-Fleet-Coordinator",
+    "sim-idle-reaper": "AI-Fleet-Coordinator",
+    "mac-process-watch": "AI-Fleet-Coordinator",
+}
+
+
+def _pairs(text):
+    """The KEY=value pairs in a comma separated list, as a dict."""
+    out = {}
+    for pair in text.split(","):
+        pair = pair.strip()
+        if "=" in pair:
+            key, value = pair.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+            if key and value:
+                out[key] = value
+    return out
+
+
+
+#  A caller may code more projects without editing this file:  REF=URL,REF=URL.  A value there is a
+#  whole URL, so a caller can name a project on another workspace or another host, while a project
+#  in the table above keeps following the host and the workspace the note is written for.
+_project_overrides = _pairs(_env("NOTES_LINEAR_PROJECTS", ""))
+PROJECT_URLS = {
+    ref: "https://" + linear_host + "/" + workspace + "/project/" + path
+    for ref, path in PROJECT_PATHS.items()
+}
+PROJECT_URLS.update(_project_overrides)
+
+#  The maps can be overridden, so a test does not have to carry the names of the repositories of
+#  the fleet to prove that the resolution works.
+#    NOTES_LINKIFY_TEAM_REPOS=KEY=repo,KEY=repo+other
+#      KEY is a team key, and the names after it are the repositories that team works in.
+#    NOTES_LINKIFY_REPO_OWNERS=repo=owner
+#      A repository that does not live under the default owner.
+_team_overrides = _pairs(_env("NOTES_LINKIFY_TEAM_REPOS", ""))
+if _team_overrides:
+    TEAM_TO_REPO = dict(TEAM_TO_REPO)
+    TOKEN_TO_REPO = dict(TOKEN_TO_REPO)
+    _extra = {}
+    for _key, _value in _team_overrides.items():
+        _names = [n.strip() for n in _value.split("+") if n.strip()]
+        if not _names:
+            continue
+        _upper = _key.upper()
+        if _upper in TEAM_TO_REPO:
+            TEAM_TO_REPO[_upper] = _names[0]
+            if len(_names) > 1:
+                _extra[_upper] = _names[1:]
+        else:
+            TOKEN_TO_REPO[_key.lower()] = _names[0]
+    if _extra:
+        TEAM_EXTRA_REPOS = dict(TEAM_EXTRA_REPOS)
+        TEAM_EXTRA_REPOS.update(_extra)
+
+_owner_overrides = _pairs(_env("NOTES_LINKIFY_REPO_OWNERS", ""))
+if _owner_overrides:
+    REPO_OWNER = dict(REPO_OWNER)
+    REPO_OWNER.update(_owner_overrides)
+
+_counts = {"issues": 0, "prs": 0, "projects": 0}
+_unresolved = []
+
+
+def _a(url, text):
+    return "<a href=\"" + _html.escape(url, quote=True) + "\">" + text + "</a>"
+
+
+def _pull_url(repo, num):
+    return (
+        "https://" + github_host + "/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/pull/" + num
+    )
+
+
+def _issue_url(repo, num):
+    return (
+        "https://" + github_host + "/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/issues/" + num
+    )
+
+
+def _mentions(text):
+    """Every repository mention in a block of text, as (start, end, repository, strength, team key).
+
+    A repository name, an installed helper, or a team key on its own is a strong mention.  A team
+    key with a number (AFC-504) is the house Linear form, so it is a weak mention:  it names the
+    team, not the repository, and the two are not always the same thing.
+    """
+    out = []
+    low = text.lower()
+    for tok, repo in TOKEN_TO_REPO.items():
+        for m in re.finditer(r"(?<![A-Za-z0-9])" + re.escape(tok) + r"(?![A-Za-z0-9])", low):
+            out.append([m.start(), m.end(), repo, "repo", ""])
+    for m in re.finditer(r"(?<![A-Za-z0-9])([A-Z]{2,4})(?![A-Za-z0-9])(?!-\d)", text):
+        repo = TEAM_TO_REPO.get(m.group(1))
+        if repo and m.group(1) not in AMBIGUOUS_TEAM_KEYS:
+            out.append([m.start(), m.end(), repo, "team", m.group(1)])
+    for m in re.finditer(r"(?<![A-Za-z0-9])([A-Z]{2,4})-\d+", text):
+        repo = TEAM_TO_REPO.get(m.group(1))
+        if repo:
+            out.append([m.start(), m.end(), repo, "teamnum", m.group(1)])
+    out.sort(key=lambda t: (t[0], -t[1]))
+    ded = []
+    for t in out:
+        if ded and t[0] == ded[-1][0] and t[1] == ded[-1][1]:
+            continue
+        ded.append(t)
+    return ded
+
+
+_gh_cache = {}
+
+
+def _gh_has_pr(repo, num):
+    """Does this pull request exist in this repository?
+
+    True when it does, False when the repository says it does not, and None when it could not be
+    asked:  a missing gh, a machine without a session, a network that is not there.  The three are
+    kept apart because a pull request that is not there is a reason to leave the reference alone,
+    while a failed question is not.
+    """
+    if not num:
+        return None
+    if _env("NOTES_LINKIFY_LOOKUP", "1") == "0":
+        return None
+    key = (repo, num)
+    if key in _gh_cache:
+        return _gh_cache[key]
+    result = None
+    gh = None
+    for cand in (
+        _env("NOTES_LINKIFY_GH", ""),
+        shutil.which("gh") or "",
+        "/opt/homebrew/bin/gh",
+        "/usr/local/bin/gh",
+        "/usr/bin/gh",
+    ):
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            gh = cand
+            break
+    if gh:
+        url = "repos/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/pulls/" + num
+        try:
+            _timeout = float(_env("NOTES_LINKIFY_GH_TIMEOUT_S", "10") or 10)
+        except ValueError:
+            _timeout = 10.0
+        try:
+            with tempfile.TemporaryFile() as err:
+                with open(os.devnull, "w") as devnull:
+                    rc = subprocess.call(
+                        [gh, "api", "--silent", url], stdout=devnull, stderr=err, timeout=_timeout
+                    )
+                err.seek(0)
+                said = err.read().decode("utf-8", "replace")
+            if rc == 0:
+                result = True
+            elif "HTTP 404" in said or ("Not Found" in said and re.search(r"\b404\b", said) is not None):
+                result = False
+            else:
+                result = None
+        except (OSError, subprocess.TimeoutExpired):
+            #  A gh that hangs must not hang the note save:  the timeout above ends it, and a gh
+            #  that cannot be run at all is the same answer, that the question was not answered.
+            result = None
+    _gh_cache[key] = result
+    return result
+
+
+def _team_repo(key, num):
+    """The repository a team key names for this pull request, or None when it cannot be told.
+
+    A team that owns one repository always names it.  A team that owns several (a CTS issue is
+    implemented in the shared congress repository and in the applications that use it) is asked of
+    GitHub, which repository holds that number.  When the answer is that none of them holds it,
+    the reference is left alone:  a link to the wrong repository is worse than no link.
+    """
+    primary = TEAM_TO_REPO.get(key)
+    if primary is None:
+        return None
+    asked = False
+    for repo in [primary] + list(TEAM_EXTRA_REPOS.get(key, [])):
+        found = _gh_has_pr(repo, num)
+        if found is True:
+            return repo
+        if found is False:
+            asked = True
+    #  Nothing holds it that could be proven.  When GitHub could not be asked, the repository of
+    #  that team is the best answer available.  When GitHub said no everywhere, there is no link.
+    if asked:
+        return None
+    return primary
+
+
+def _soft_team(soft):
+    """The team key a block names, when it names exactly one of them.
+
+    A block that names two teams (AFC-547 and OPS-1000) says nothing about where a pull request
+    lives, so no team wins and the reference is resolved by something else.  A block that names
+    one team (UM-1594) is about the repository of that team.
+    """
+    keys = set(m[4] for m in soft)
+    if len(keys) == 1:
+        return keys.pop()
+    return ""
+
+
+def _resolve(pos, mentions, is_row, title_repo, num=""):
+    """The repository a pull request reference belongs to, or None when it cannot be told.
+
+    A reference is resolved in this order:  a repository named right next to it, the subject of a
+    table row, the nearest repository named near it, the one repository the block talks about, the
+    team key in the note title, and the default repository.  A block that names several
+    repositories and a reference that names none of them is left alone:  a link to the wrong
+    repository is worse than no link.
+
+    A team key with a number (AFC-504) is the house Linear form.  It names a team, not a
+    repository, so it only counts when it sits right next to the reference:  UM-1594 PRs #1694 is a
+    Usage-Monitor pull request, but OPS-1000 is a Linear issue in the Fleet-OPS team and says
+    nothing at all about where a pull request lives.  A team that owns more than one repository is
+    asked of GitHub which of them holds the number.
+    """
+    hard = [m for m in mentions if m[3] != "teamnum"]
+    soft = [m for m in mentions if m[3] == "teamnum"]
+    hard_before = [m for m in hard if m[1] <= pos]
+    soft_before = [m for m in soft if m[1] <= pos]
+    if hard_before and pos - hard_before[-1][1] <= 16:
+        return hard_before[-1][2]
+    if is_row:
+        #  A table row is about one thing, and its first mention names that thing.
+        if hard:
+            return hard[0][2]
+        if soft:
+            key = _soft_team(soft)
+            if key:
+                return _team_repo(key, num)
+    if soft_before and pos - soft_before[-1][1] <= 16:
+        #  Only a mention that comes before the reference can describe it:  a team key further
+        #  down the block says nothing about what came before it.
+        near = [m for m in soft if 0 <= pos - m[1] <= ctx_chars]
+        key = _soft_team(near or soft_before)
+        if key:
+            return _team_repo(key, num)
+    if hard_before and pos - hard_before[-1][1] <= ctx_chars:
+        return hard_before[-1][2]
+    hard_repos = set(m[2] for m in hard)
+    if len(hard_repos) == 1:
+        return next(iter(hard_repos))
+    soft_repos = set(m[2] for m in soft)
+    soft_keys = set(m[4] for m in soft)
+    if not hard_repos and len(soft_repos) == 1:
+        if len(soft_keys) == 1:
+            #  One team, named a long way from the reference:  it is asked of GitHub which of the
+            #  repositories that team works in holds the number, exactly as the near and the row
+            #  paths do, so a team with several repositories is not decided by distance alone.
+            return _team_repo(next(iter(soft_keys)), num)
+        return next(iter(soft_repos))
+    if title_repo:
+        return title_repo
+    if not hard_repos and not soft_repos:
+        return default_repo
+    return None
+
+
+#  A pull request reference:  PR #957, PR 957, PRs #94/#95, PRs 439, 440 and 445, and the qualified
+#  form AFC#957.  A qualified reference names its own repository and never depends on the context.
+PR_RE = re.compile(
+    r"(?<![A-Za-z0-9/_-])(?P<qual>[A-Za-z][A-Za-z0-9._-]{0,30})#(?P<qnum>\d+)(?![0-9])"
+    r"|(?<![A-Za-z0-9/])(?P<kw>PRs?)(?P<gap>\s*#?\s*)"
+    r"(?P<nums>\d+(?:\s*(?:/|,)\s*#?\s*\d+|\s+and\s+#?\s*\d+)*)"
+)
+LINEAR_RE = re.compile(
+    r"(?<![A-Za-z0-9_/-])(?P<key>[A-Za-z0-9]{1,6})-(?P<num>\d+)(?![A-Za-z0-9_-])"
+)
+
+#  A project reference:  P-BF-6, or P-6 where the team is named elsewhere.  The P is the marker and
+#  the rest is the reference, so the whole thing is matched here and never offered to the issue rule.
+#  The team segment is optional because a writer may leave it out, and because a project reference
+#  that is left out of the team segment is still a project reference.  Matching it here is what
+#  keeps it out of the issue rule, so it is matched whether or not it is one of the coded projects.
+PROJECT_RE = re.compile(
+    r"(?<![A-Za-z0-9_/-])(?P<ref>P-(?:[A-Za-z0-9]{1,6}-)?\d+)(?![A-Za-z0-9_-])"
+)
+
+
+LIST_RE = re.compile(r"(#\s*)?(\d+)|\band\b|([/,])")
+
+
+def _list_items(nums_text, plural):
+    """The pull request numbers in a list, and nothing else.
+
+    PRs 439, 440 and 445 is three pull requests and the 22 files that follow it are not a fourth.
+    PR #12, 34 files is one pull request:  a singular PR takes a list only when the numbers are
+    written as PR #94/#95 or PR #95 and #96.
+
+    Returns the numbers and the offset in nums_text just past the last one, so the caller can
+    replace the list alone and leave whatever followed it, such as ", 22 files", where it was.
+    """
+    items = []
+    last_sep = ""
+    seen_and = False
+    end = 0
+    for m in LIST_RE.finditer(nums_text):
+        text = m.group(0)
+        if m.group(3):
+            sep = m.group(3)
+            if sep == "," and seen_and:
+                break
+            last_sep = sep
+            continue
+        if text == "and":
+            seen_and = True
+            last_sep = "and"
+            continue
+        hashed = m.group(1) is not None
+        if items and last_sep in (",", "and") and not plural and not hashed:
+            break
+        items.append(m.group(2))
+        end = m.end()
+        last_sep = ""
+    return items, end
+
+
+def _pr_replacement(items, repo):
+    """The house form: PR #957 for one number, PRs #94, #95 and #96 for a list.
+
+    Returns the text and the number of links in it.
+    """
+    if not items:
+        return None, 0
+    if len(items) == 1:
+        return _a(_pull_url(repo, items[0]), "PR #" + items[0]), 1
+    parts = []
+    for i, num in enumerate(items):
+        if i:
+            parts.append(" and " if i == len(items) - 1 else ", ")
+        parts.append(_a(_pull_url(repo, num), "#" + num))
+    return "PRs " + "".join(parts), len(items)
+
+
+def _process_unit(unit_html, is_row, title_repo):
+    """Rewrite one block of HTML.  The block is the context:  a table row, or a paragraph."""
+    segs = re.split(
+        r"(<pre[\s\S]*?</pre>|<code[\s\S]*?</code>|<style[\s\S]*?</style>|<script[\s\S]*?</script>|<a\b[^>]*>[\s\S]*?</a>)",
+        unit_html,
+        flags=re.I,
+    )
+    plain = []
+    maps = []
+    base = 0
+    for idx, seg in enumerate(segs):
+        if idx % 2 == 1:
+            body = re.sub(r"<[^>]+>", " ", seg)
+            plain.append(body)
+            base += len(body)
+            continue
+        runs = re.split(r"(<[^>]+>)", seg)
+        seg_plain = []
+        offsets = []
+        for r, run in enumerate(runs):
+            if r % 2 == 1:
+                seg_plain.append(" ")
+                offsets.append((-1, 0))
+            else:
+                offsets.append((len("".join(seg_plain)), len(run)))
+                seg_plain.append(run)
+        joined = "".join(seg_plain)
+        plain.append(joined)
+        maps.append((base, offsets, runs))
+        base += len(joined)
+    context = "".join(plain)
+    mentions = _mentions(context)
+    out = []
+    tcount = -1
+    for idx, seg in enumerate(segs):
+        if idx % 2 == 1:
+            out.append(seg)
+            continue
+        tcount += 1
+        seg_base, offsets, runs = maps[tcount]
+        new_runs = list(runs)
+        edits = []
+        for r, run in enumerate(runs):
+            if r % 2 == 1 or not run:
+                continue
+            run_plain_start, run_len = offsets[r]
+            for m in PR_RE.finditer(run):
+                qual = m.group("qual")
+                if qual:
+                    repo = TOKEN_TO_REPO.get(qual.lower())
+                    if repo is None:
+                        repo = TEAM_TO_REPO.get(qual.upper())
+                    if repo:
+                        _counts["prs"] += 1
+                        #  A pound sign names a pull request, so the link is the pull request and
+                        #  not the issue that shares its number.
+                        edits.append((r, m.start(), m.end(), _a(_pull_url(repo, m.group("qnum")), qual + "#" + m.group("qnum"))))
+                        continue
+                    if qual.upper() != "PR":
+                        continue
+                    #  PR#957 with no space is the keyword form, not the qualified one
+                    pos = seg_base + run_plain_start + m.start()
+                    repo = forced_repo or _resolve(pos, mentions, is_row, title_repo, m.group("qnum"))
+                    if repo is None:
+                        _unresolved.append(m.group(0))
+                        continue
+                    _counts["prs"] += 1
+                    edits.append(
+                        (r, m.start(), m.end(), _a(_pull_url(repo, m.group("qnum")), "PR #" + m.group("qnum")))
+                    )
+                    continue
+                items, end = _list_items(m.group("nums"), m.group("kw").lower() == "prs")
+                if not items:
+                    continue
+                pos = seg_base + run_plain_start + m.start()
+                repo = forced_repo or _resolve(pos, mentions, is_row, title_repo, items[0])
+                if debug:
+                    sys.stderr.write(
+                        "notes: linkify:  " + m.group(0)[:16] + " -> " + str(repo)
+                        + "  " + context[max(0, pos - 50):pos + 20].replace("\n", " ") + "\n"
+                    )
+                if repo is None:
+                    _unresolved.append(m.group(0))
+                    continue
+                repl, count = _pr_replacement(items, repo)
+                if repl:
+                    _counts["prs"] += count
+                    #  replace the list alone:  what follows it, such as ", 22 files", stays put
+                    edits.append((r, m.start(), m.start("nums") + end, repl))
+            #  A project reference is claimed here, before the issue rule runs, so the number in it
+            #  can never be read as an issue number.  A project that is not coded stays plain text.
+            project_spans = []
+            for m in PROJECT_RE.finditer(run):
+                ref = m.group("ref")
+                #  The span is claimed whether the project is coded or not:  a project reference
+                #  that names no known project stays plain text, and the number inside it is a
+                #  project number that no issue rule may ever read.
+                project_spans.append((m.start(), m.end()))
+                url = PROJECT_URLS.get(ref)
+                if url is None:
+                    _unresolved.append(ref)
+                    continue
+                _counts["projects"] += 1
+                edits.append((r, m.start(), m.end(), _a(url, ref)))
+            for m in LINEAR_RE.finditer(run):
+                #  A reference inside a project reference is the project number and not an issue number.
+                if any(m.start() >= a and m.end() <= b for a, b in project_spans):
+                    continue
+                key = m.group("key")
+                if key not in keyset:
+                    continue
+                _counts["issues"] += 1
+                ident = key + "-" + m.group("num")
+                edits.append((r, m.start(), m.end(), _a("https://" + linear_host + "/" + workspace + "/issue/" + ident, ident)))
+        if edits:
+            by_run = {}
+            for r, s, e, t in edits:
+                by_run.setdefault(r, []).append((s, e, t))
+            for r, items in by_run.items():
+                text = new_runs[r]
+                for s, e, t in sorted(items, key=lambda x: x[0], reverse=True):
+                    text = text[:s] + t + text[e:]
+                new_runs[r] = text
+        out.append("".join(new_runs))
+    return "".join(out)
+
+
+UNIT_RE = re.compile(
+    r"(<(?P<t>p|tr|li|h[1-6]|blockquote|pre)\b[^>]*>[\s\S]*?</(?P=t)>)"
+)
+
+
+def linkify(s, title=""):
+    m = re.match(r"\[\s*([A-Za-z0-9]{1,6})\b", title)
+    title_repo = TEAM_TO_REPO.get(m.group(1).upper()) if m else None
+    out = []
+    last = 0
+    for um in UNIT_RE.finditer(s):
+        if um.start() > last:
+            out.append(_process_unit(s[last:um.start()], False, title_repo))
+        out.append(_process_unit(um.group(0), um.group("t") == "tr", title_repo))
+        last = um.end()
+    if last < len(s):
+        out.append(_process_unit(s[last:], False, title_repo))
+    return "".join(out)
+
+
+def main():
+    s = sys.stdin.read()
+    if _env("NOTES_LINKIFY", "1") == "0":
+        sys.stdout.write(s)
+        return
+    result = linkify(s, _env("NOTE_TITLE", ""))
+    sys.stdout.write(result)
+    if _counts["issues"] or _counts["prs"] or _counts["projects"]:
+        sys.stderr.write(
+            "notes: linkified:  "
+            + str(_counts["issues"]) + " issue reference" + ("" if _counts["issues"] == 1 else "s")
+            + ", " + str(_counts["projects"]) + " project reference" + ("" if _counts["projects"] == 1 else "s")
+            + " and " + str(_counts["prs"]) + " pull request reference" + ("" if _counts["prs"] == 1 else "s")
+            + " became links\n"
+        )
+    if _unresolved:
+        sys.stderr.write(
+            "notes: left as text:  " + ", ".join(sorted(set(_unresolved))) + "\n"
+        )
+    if os.environ.get("NOTES_LINK_COUNTS_FILE"):
+        try:
+            with open(os.environ["NOTES_LINK_COUNTS_FILE"], "w") as _fh:
+                _fh.write(
+                    str(_counts["issues"])
+                    + " "
+                    + str(_counts["prs"])
+                    + " "
+                    + str(_counts["projects"])
+                    + chr(10)
+                )
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    main()
 '
 }
 
@@ -1475,7 +2192,7 @@ if m:
 # AFC-361, owner 2026-10-19:  the writer's session id is the small row under the timestamp, with no second date.
 # An update rewrites the whole body, so a Session row the caller echoed back from the old body is dropped
 # wherever it sat (under the timestamp, or at the end, where a version of 2026-10-19 put it) and the current one is
-# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts "Session:" is not a row
+# stamped.  A row is an id-shaped token that ends its paragraph:  prose that merely starts \"Session:\" is not a row
 # and stays.  A spacer after the row belongs to it, so a stale row at the end goes with every spacer it left behind
 # (an old note can end on more than one of them, so the row must not have to be the last characters of the body).
 _SESSION_ROW = (
@@ -1550,7 +2267,7 @@ def _fleet_date_text(m):
     except ValueError:
         return m.group(0)
 
-def fleet_dates(markup):
+def fleet_dates(markup, gap_entity=False):
     parts = re.split(r'(<[^>]+>)', markup)
     depth = 0
     for i, part in enumerate(parts):
@@ -1560,16 +2277,17 @@ def fleet_dates(markup):
                 depth += -1 if part.startswith('</') else 1
                 depth = max(depth, 0)
         elif depth == 0:
-            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part))
+            parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part), gap_entity)
     return ''.join(parts)
 
-# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as agent-sync's textfmt.single_gaps), so
+# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as scripts/agent_sync/textfmt.py
+# single_gaps), so
 # a note reads the same whoever wrote it.  Known abbreviations, dotted words, initials and list markers are skipped.
 _ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq'.split())
 _GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#])')
 _WORD = re.compile(r'([A-Za-z][A-Za-z.]*)\Z')
 
-def _one_space_gaps(segment):
+def _one_space_gaps(segment, gap_entity=False):
     def repl(m):
         if m.group(1).startswith('.'):
             before = _WORD.search(segment[max(0, m.start() - 40):m.start()])
@@ -1579,10 +2297,15 @@ def _one_space_gaps(segment):
             if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
                 return m.group(0)
         _changes['gaps'] += 1
-        return m.group(1) + '  '
+        #  AFC-552:  the note body is HTML, so the gap is the numeric reference,
+        #  like the two HTML passes and with no raw non-ASCII byte in the note HTML.
+        #  The mobile quick view is plain text that is embedded with html.escape, so
+        #  a reference there would reach the owner as the literal six characters.
+        #  It carries the character itself, which Notes keeps byte-intact.
+        return m.group(1) + ('&#8239; ' if gap_entity else '\u202f ')
     return _GAP1.sub(repl, segment)
 
-inner = fleet_dates(inner)
+inner = fleet_dates(inner, gap_entity=True)
 if summary_text:
     summary_text = fleet_dates(summary_text)
 
@@ -1617,6 +2340,12 @@ title = sys.argv[1]
 body = sys.argv[2]
 print("<h1>" + html.escape(title) + "</h1>" + body)
 ' "$TITLE" "$BODY_HTML")
+
+#  The linkifier runs on the whole note, so the date row and its pull request suffix are covered as well as the body.
+if [[ "$SKIP_BODY" == "0" ]]; then
+  _LOG_LINKS_FILE=$(mktemp /tmp/apple-notes-links.XXXXXX 2>/dev/null) || _LOG_LINKS_FILE=""
+  FULL_HTML=$(printf '%s' "$FULL_HTML" | NOTE_TITLE="$TITLE" NOTES_LINK_COUNTS_FILE="$_LOG_LINKS_FILE" _html_autolink)
+fi
 
 if [[ "${APPLE_NOTES_PRINT_HTML:-0}" == "1" ]]; then
   printf '%s\n' "$FULL_HTML"

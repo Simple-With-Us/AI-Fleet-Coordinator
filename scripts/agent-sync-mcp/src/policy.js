@@ -237,6 +237,8 @@ export function classifyPath(pathname) {
       return "health";
     case "/admin":
       return "admin";
+    case "/internal/gr-bearer-verify":
+      return "gr_verify";
     default:
       if (pathname.startsWith("/admin/")) return "admin";
       // AFC-478 follow-up:  the Linear token health (src/health.js), signed with

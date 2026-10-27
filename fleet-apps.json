@@ -4,7 +4,7 @@
   "appsRoot": "/Users/jay/apps",
   "zulipRealm": "https://simplewithus.zulipchat.com",
   "zulipChannel": "work-in-progress",
-  "notes": "Canonical fleet app + coding-seat inventory.  onboard-new-app.sh adds a row here, then patches the registries listed in docs/ONBOARDING-NEW-APP.md.  check-fleet-registry.py verifies those files still mention every app.  GROK-BOT is a fleet-wide identity that drives Cursor cloud agents; it shares CURSOR's folder name and gets no lanes of its own.  Seats carry zulipBotEmail and zulipFileCode, copied from the roster in docs/protocols/zulip-fleet-guide.md (the file code must match the agent-sync CLI's rule).  A retired seat has no bot, and aliasOf names the live seat that a retired alias now means.  Each app's acronym is also its Linear team key (Linear replaced THE BOARD, owner 2026-10-10).  liveBoard is the file name of the app's archived effort log under appsRoot; it is a record only, and nothing creates or checks that file any more.",
+  "notes": "Canonical fleet app + coding-seat inventory.  onboard-new-app.sh adds a row here, then patches the registries listed in docs/ONBOARDING-NEW-APP.md.  check-fleet-registry.py verifies those files still mention every app.  GROK-BOT is a fleet-wide identity that drives Cursor cloud agents; it shares CURSOR's folder name and gets no lanes of its own.  Seats carry zulipBotEmail and zulipFileCode, copied from the roster in docs/protocols/zulip-fleet-guide.md (the file code must match the simple-chat CLI's rule).  A retired seat has no bot, and aliasOf names the live seat that a retired alias now means.  Each app's acronym is also its Linear team key (Linear replaced THE BOARD, owner 2026-10-10).  liveBoard is the file name of the app's archived effort log under appsRoot; it is a record only, and nothing creates or checks that file any more.",
   "apps": [
     {
       "repo": "Socratic-Trade",
@@ -428,7 +428,7 @@
       ],
       "zulipBotEmail": "instinct-bat-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "Echo",
-      "notes": "Echo, shown as Echo (Instinct):  one of the two bots of the Instinct app (instinct.com), which runs on its own computer and reaches the fleet through the hosted agent-sync-mcp bridge, not through a Mac lane.  Held by the server listener (docs/protocols/agent-sync-partition.toml).  Does PR troubleshooting and release work;  its merged Congress.Trade PRs so far were pushed on instinct/ branches under the owner's GitHub login, so GitHub cannot tell the two bots apart.  echo/ is its own prefix from now on.  Has its own Linear app, Echo (Instinct), key variables LINEAR_ECHO_CLIENT_ID and LINEAR_ECHO_CLIENT_SECRET.  Registered Sun, Oct 11, 2026 (owner: add the rows)."
+      "notes": "Echo, shown as Echo (Instinct):  one of the two bots of the Instinct app (instinct.com), which runs on its own computer and reaches the fleet through the hosted ST-MCP bridge, not through a Mac lane.  Held by the server listener (docs/protocols/agent-sync-partition.toml).  Does PR troubleshooting and release work;  its merged Congress.Trade PRs so far were pushed on instinct/ branches under the owner's GitHub login, so GitHub cannot tell the two bots apart.  echo/ is its own prefix from now on.  Has its own Linear app, Echo (Instinct), key variables LINEAR_ECHO_CLIENT_ID and LINEAR_ECHO_CLIENT_SECRET.  Registered Sun, Oct 11, 2026 (owner: add the rows)."
     },
     {
       "tag": "WISE",
@@ -440,7 +440,7 @@
       ],
       "zulipBotEmail": "instinct-owl-bot@simplewithus.zulipchat.com",
       "zulipFileCode": "Wise",
-      "notes": "The other bot of the Instinct app, shown as Wise (Instinct) since Sun, Oct 11, 2026 (the owner's name for what used to be called the Instinct version).  The seat tag is WISE (owner 2026-10-15);  INSTINCT is retired and stays as an accepted spelling so existing references keep resolving.  instinct/ remains a branch prefix alongside wise/ because its merged work is on instinct/ branches under the owner's GitHub login.  Held by the server listener (docs/protocols/agent-sync-partition.toml), reached through the hosted agent-sync-mcp bridge, and makes no Mac lanes.  Has its own Linear app, Wise (Instinct), key variables LINEAR_WISE_CLIENT_ID and LINEAR_WISE_CLIENT_SECRET.  A launcher's AGENT_LAUNCH_SEAT wins over any default."
+      "notes": "The other bot of the Instinct app, shown as Wise (Instinct) since Sun, Oct 11, 2026 (the owner's name for what used to be called the Instinct version).  The seat tag is WISE (owner 2026-10-15);  INSTINCT is retired and stays as an accepted spelling so existing references keep resolving.  instinct/ remains a branch prefix alongside wise/ because its merged work is on instinct/ branches under the owner's GitHub login.  Held by the server listener (docs/protocols/agent-sync-partition.toml), reached through the hosted ST-MCP bridge, and makes no Mac lanes.  Has its own Linear app, Wise (Instinct), key variables LINEAR_WISE_CLIENT_ID and LINEAR_WISE_CLIENT_SECRET.  A launcher's AGENT_LAUNCH_SEAT wins over any default."
     }
   ],
   "seatApps": {

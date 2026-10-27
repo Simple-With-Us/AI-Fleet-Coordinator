@@ -36,7 +36,13 @@ export const AdminForm = z.strictObject({
   action: z.enum([...ADMIN_ACTIONS]),
   seat: seat.optional(),
   client_id: z.string().regex(HAND_CLIENT_ID).optional(),
-  identity: z.string().regex(/^GB-[A-Z][A-Z0-9]{1,19}$/).optional(),
+  identity: z.string().regex(/^[A-Z][A-Z0-9-]{0,31}$/).optional(),
+  // Present only on seat bearer mints:  "1" records the owner's choice to also
+  // accept the bearer on /mcp (seat-state.js gbBearerMint, mcp_accept).
+  mcp_accept: z.literal("1").optional(),
+  // Idempotency key of the rendered mint form:  an accidental resubmit within
+  // the reveal window returns the same reveal instead of rotating the bearer.
+  mint_id: z.string().regex(/^[0-9a-f]{32}$/).optional(),
 });
 
 /**

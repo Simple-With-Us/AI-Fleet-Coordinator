@@ -1,34 +1,73 @@
 import Foundation
 
-// The listener's own published state,  and the one command line that may change a wake.
+// The Operator's own published state,  and the one command line that may change a wake.
 //
-// The panel never edits the listener's state directly.  It reads the listener's own account
-// of itself —  `agent-sync daemon status --json` —  and every change it makes goes through
-// the listener's own command line.
+// The panel never edits the Operator's state directly.  It reads the Operator's own account
+// of itself —  `simple-chat daemon status --json` —  and every change it makes goes through
+// the Operator's own command line.
 
 // MARK: - The envelope
 
-/// The listener's published state.
+/// The Operator's published state.
 ///
-/// This is the envelope `agent-sync daemon status --json` prints:  the running listener's own
-/// account of what it is doing.  A setting the listener does not publish is a setting the
+/// This is the envelope `simple-chat daemon status --json` prints:  the running Operator's own
+/// account of what it is doing.  A setting the Operator does not publish is a setting the
 /// panel cannot claim anything live about.
 struct ListenerStatus: Decodable, Equatable {
+    /// Held-back / deferred wake counters published by the Operator for a seat.
+    struct HeldBackTotals: Decodable, Equatable {
+        var held: Int?
+        var surfaced: Int?
+        var expired: Int?
+        var evicted: Int?
+        var overflowed: Int?
+    }
+
+    /// The seat's held-back wake queue and lifetime totals.
+    struct HeldBack: Decodable, Equatable {
+        var count: Int?
+        var evicted: Int?
+        var overflow: Int?
+        var reasons: [String: Int]?
+        var totals: HeldBackTotals?
+    }
+
+    /// Chat nudge queue counters published by the Operator for a seat.
+    struct ChatNudges: Decodable, Equatable {
+        var accepted: Int?
+        var bindings: Int?
+        var blocked: Int?
+        var cancelled: Int?
+        var dispatching: Int?
+        var pending: Int?
+        var unknown: Int?
+    }
+
+    /// Provider quota status published by the Operator when CodeCaps or a provider reports it.
+    struct Quota: Decodable, Equatable {
+        var exhausted: Bool?
+        var known: Bool?
+        var reason: String?
+        var remaining: Double?
+        var reset_at: String?
+        var source: String?
+    }
+
     /// One seat's state.
     struct Seat: Decodable, Equatable {
-        /// The seat's name,  as the listener knows it.
+        /// The seat's name,  as the Operator knows it.
         var bot: String?
-        /// The wake type the listener is running.
+        /// The wake type the Operator is running.
         var wake: String?
-        /// The muse binary the listener uses.
+        /// The muse binary the Operator uses.
         var muse: String?
-        /// The claude binary the listener uses.
+        /// The claude binary the Operator uses.
         var claude: String?
         /// The provider the seat talks to.
         var provider: String?
         /// Where the seat's credentials come from.
         var creds: String?
-        /// Whether the listener is connected for this seat.
+        /// Whether the Operator is connected for this seat.
         var connected: Bool?
         /// Whether the kill switch stops this seat.
         var paused: Bool?
@@ -36,18 +75,29 @@ struct ListenerStatus: Decodable, Equatable {
         var wakesPaused: Bool?
         /// The wakes this seat ran in the last day.
         var wakes24h: Int?
-        /// The budget the listener is holding.
+        /// The budget the Operator is holding.
         var budget: [String: JSONValue]?
-        /// The live caps the listener is holding.
+        /// The live caps the Operator is holding.
         var live: [String: JSONValue]?
-        /// The pin the listener holds for this seat.
+        /// The pin the Operator holds for this seat.
         var pin: Pin?
+        /// Active red warnings the Operator reports for this seat.
+        var red: [String]?
+        /// Held-back / deferred wakes for this seat.
+        var heldBack: HeldBack?
+        /// Chat nudge queue counters for this seat.
+        var chatNudges: ChatNudges?
+        /// Quota reading for this seat.
+        var quota: Quota?
 
         enum CodingKeys: String, CodingKey {
             case bot, wake, muse, claude, provider, creds, connected, paused
             case wakesPaused = "wakes_paused"
             case wakes24h = "wakes_24h"
-            case budget, live, pin
+            case budget, live, pin, red
+            case heldBack = "held_back"
+            case chatNudges = "chat_nudges"
+            case quota
         }
     }
 
@@ -121,7 +171,7 @@ struct ListenerStatus: Decodable, Equatable {
 
 // MARK: - The command line
 
-/// A run of the fleet's `agent-sync` command line.
+/// A run of the fleet's `simple-chat` command line.
 struct AgentSyncInvocation: Equatable {
     var arguments: [String]
     var timeout: TimeInterval
@@ -187,7 +237,7 @@ struct AgentSyncInvocation: Equatable {
 
     /// The command as a person would type it.
     var commandLine: String {
-        (["agent-sync"] + arguments).joined(separator: " ")
+        (["simple-chat"] + arguments).joined(separator: " ")
     }
 
     /// A seat tag and a runtime name are plain tokens.  A value that could be read as a
@@ -233,18 +283,18 @@ enum AgentSyncError: Error, Equatable, LocalizedError {
         case .invalidArgument(let value):
             return "The \(value) value is not a plain token,  so nothing was run."
         case .commandNotFound(let path):
-            return "The agent-sync command line was not found at \(path)."
+            return "The simple-chat command line was not found at \(path)."
         case .launchFailed(let detail):
-            return "The agent-sync command line could not be started:  \(detail)"
+            return "The simple-chat command line could not be started:  \(detail)"
         case .timedOut(let seconds):
-            return "The agent-sync command line did not finish within \(seconds) seconds."
+            return "The simple-chat command line did not finish within \(seconds) seconds."
         case .outputTooLarge:
-            return "The agent-sync command line produced more output than Muster will read."
+            return "The simple-chat command line produced more output than Muster will read."
         case .refused(let code, let message):
             let detail = message.isEmpty ? "No reason was given." : message
-            return "The agent-sync command line refused the run (exit \(code)).  \(detail)"
+            return "The simple-chat command line refused the run (exit \(code)).  \(detail)"
         case .undecodable(let detail):
-            return "The agent-sync output could not be read:  \(detail)"
+            return "The simple-chat output could not be read:  \(detail)"
         }
     }
 }
@@ -255,9 +305,9 @@ protocol AgentSyncRunning: Sendable {
     func run(_ invocation: AgentSyncInvocation) async throws -> AgentSyncCLIResult
 }
 
-/// Runs the fleet's `agent-sync` command line from the repository checkout.
+/// Runs the fleet's `simple-chat` command line from the repository checkout.
 ///
-/// The command line is the listener's own,  at `scripts/agent-sync`,  so the app asks the
+/// The command line is the Operator's own,  at `scripts/simple-chat`,  so the app asks the
 /// same tool a person would ask.  The child environment keeps HOME and PATH,  and drops the
 /// variables that could point the command line at a stand-in.
 struct AgentSyncCLI: AgentSyncRunning {
@@ -272,7 +322,7 @@ struct AgentSyncCLI: AgentSyncRunning {
 
     /// The command line's own path.
     static func commandURL(at location: EngineLocation) -> URL {
-        location.packageDirectory.appendingPathComponent("agent-sync")
+        location.packageDirectory.appendingPathComponent("simple-chat")
     }
 
     /// The child environment.
@@ -331,7 +381,7 @@ struct AgentSyncCLI: AgentSyncRunning {
         // Output goes to files,  not pipes:  nothing can deadlock on a full pipe,  and a
         // child that outlives the app never takes a SIGPIPE when it prints its last line.
         let scratch = fileManager.temporaryDirectory
-            .appendingPathComponent("muster-agent-sync-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("muster-simple-chat-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(
             at: scratch, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]

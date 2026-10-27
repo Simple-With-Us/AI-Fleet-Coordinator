@@ -24,6 +24,7 @@ import CONTRACT from "../../agent_sync/mcp/tools.json" with { type: "json" };
 import { ROOT, wranglerConfig, testEnv, browserPostOrigin, CHATGPT_CLIENT, CHATGPT_REDIRECT, RESOURCE } from "./helpers.mjs";
 import { FakeZulip, REALM, STREAMS, OWNER_ID, zulipShapedKey } from "./fake-zulip.mjs";
 import { GB_IDENTITIES, delegatedNames } from "../src/delegated-identities.js";
+import { ADDITIONAL_BEARER_SEATS } from "../src/bearer-identities.js";
 import { FakeLinear, opOf } from "./fake-linear.mjs";
 
 const TOOLS = CONTRACT.tools;
@@ -31,7 +32,10 @@ const TOOLS = CONTRACT.tools;
 // the FleetLink tools (AFC-328), the rest of tools.json and the listener tools (AFC-330).
 const HOSTED_NAMES = ["whoami", "identities", "guide", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name),
   // AFC-330:  the rest of Zulip (every tools.json tool after the first ten) and the read-only listener tools.
-  ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log"];
+  ...TOOLS.slice(12).map((t) => t.name), "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", "notes_create", "notes_update", "notes_pin", "notes_unpin", "notes_read", "notes_list", "notes_status", "notes_log",
+  // The GR-MCP front (gr-tools.js):  listed like every other family;  without
+  // GR_UPSTREAM_URL the calls answer not_configured.
+  "gr_open_pr", "gr_edit_pr", "gr_reply_thread", "gr_comment_pr", "gr_merge_pr", "gr_workflow_dispatch", "gr_resolve_thread"];
 const JET_KEY = zulipShapedKey(11);
 // Jet's bot login comes from the committed var, never a literal copy:  it is not a secret, and the bot-email check, the
 // openai-dot tag mapping and seatProblem accept no other address, so a synthetic one cannot stand in (kody, PR 889).
@@ -55,7 +59,10 @@ const CURSOR_CIMD = {
 };
 const CLAUDE_KEY = zulipShapedKey(29);
 const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
+const bearerBots = Object.entries(ADDITIONAL_BEARER_SEATS).map(([seat, row], i) => ({ seat, ...row, key: zulipShapedKey(60 + i) }));
+let infisicalFixture = null;
 const zulip = new FakeZulip({ bots: [
+  ...bearerBots.map((b) => ({ email: b.email, key: b.key, full_name: b.seat })),
   // The borrowed-bot grant (JET-CHAT) needs the pinned owner (kody 4365848649):
   // the fake users/me carries the same owner id the committed var pins.
   { email: JET_EMAIL, full_name: "Jet", key: JET_KEY, bot_owner_id: Number(wranglerConfig().vars.OWNER_USER_ID) },
@@ -206,6 +213,13 @@ const outbound = [];
 let failChatgptCimd = 0;
 async function outboundFetch(request) {
   outbound.push(request.url);
+  if (request.url.startsWith("https://offline-infisical.example/api/v3/secrets/raw")) {
+    const url = new URL(request.url);
+    const secrets = infisicalFixture?.[url.searchParams.get("secretPath")] ?? [];
+    if (url.pathname.endsWith("/raw")) return Response.json({ secrets, totalCount: secrets.length });
+    const secret = secrets.find((row) => row.secretKey === decodeURIComponent(url.pathname.split("/").at(-1)));
+    return secret ? Response.json({ secret }) : new Response("not found", { status: 404 });
+  }
   if (request.url === `https://${TEAM}/cdn-cgi/access/certs`) return Response.json(jwks);
   if (request.url === CHATGPT_CLIENT) {
     if (failChatgptCimd > 0) {
@@ -324,9 +338,12 @@ async function browser(pathname, { method = "GET", form, jwt = true, origin = tr
 async function adminAction(action, fields = {}) {
   const page = await browser("/admin");
   assert.equal(page.status, 200);
-  const csrf = (await page.text()).match(/name="csrf" value="([0-9a-f]{64})"/)[1];
-  return browser("/admin/action", { method: "POST", form: { csrf, action, ...fields } });
+  const text = await page.text();
+  const csrf = text.match(/name="csrf" value="([0-9a-f]{64})"/)[1];
+  const mintId = text.match(/name="mint_id" value="([0-9a-f]{32})"/)?.[1];
+  return browser("/admin/action", { method: "POST", form: { csrf, ...(mintId ? { mint_id: mintId } : {}), action, ...fields } });
 }
+
 
 function pkce() {
   const verifier = b64url(randomBytes(32));
@@ -1731,7 +1748,7 @@ try {
     // Never again:  the admin page shows state, not the token.
     const page = await (await browser("/admin")).text();
     assert.ok(!page.includes(bearer));
-    assert.match(page, /Grok Bot Bearers/);
+    assert.match(page, /Per-Identity Bearers/);
     const who = (await call(bearer, "whoami")).json.result;
     assert.equal(who.isError, undefined, JSON.stringify(who));
     assert.equal(who.structuredContent.seat, PERSONA);
@@ -1749,6 +1766,12 @@ try {
       const refused = await mcp(bad, "tools/list");
       assert.equal(refused.status, 401, bad);
     }
+    // The wrong gbb_fixer secret counted against the persona end to end
+    // (route -> DO counter -> /admin).  The first mismatch on a cold counter
+    // flushes immediately, so exactly one attempt is visible here.
+    const counterPage = await (await browser("/admin")).text();
+    assert.match(counterPage, /1 wrong-secret attempt, last /);
+    assert.match(counterPage, /approximate; updates at most once a minute/);
     // Rotating replaces it at once.
     const rotated = await adminAction("mint_gb_bearer", { identity: PERSONA });
     const next = (await rotated.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
@@ -1762,6 +1785,223 @@ try {
     // A persona with no credentials cannot mint.
     const none = await adminAction("mint_gb_bearer", { identity: other });
     assert.equal(none.status, 400);
+  });
+
+  await step(`wrong bearer guesses count against the claimed persona - counter only, visible on /admin`, async () => {
+    // Regression for the roles-map bug (Tailnet review, 2026-10-25):  the
+    // public GB route's mismatch counter call must read the roles MAP.  A
+    // single-role lookup object has no .roles, the TypeError was swallowed by
+    // the observability catch, and every increment silently skipped.
+    const minted = await adminAction("mint_gb_bearer", { identity: PERSONA });
+    assert.equal(minted.status, 200);
+    const countLine = (html) => html.match(/(\d+) wrong-secret attempts?/);
+    const before = Number(countLine(await (await browser("/admin")).text())?.[1] ?? "0");
+    for (let n = 1; n <= 2; n++) {
+      const wrong = `gbb_${PERSONA.slice(3).toLowerCase()}_${String(n)}${"A".repeat(42)}`;
+      const refused = await mcp(wrong, "tools/list");
+      assert.equal(refused.status, 401, "a wrong secret is refused, never served");
+    }
+    const page = await (await browser("/admin")).text();
+    const after = Number(countLine(page)?.[1] ?? "0");
+    // Write-throttled (fresh-head review):  these two guesses land within
+    // the flush window of the persona step's writes, so they buffer in the
+    // DO instance's memory and persist NOTHING yet - the visible count is
+    // unchanged, proving a guess storm cannot force a storage write each.
+    // The alarm persists the tail at its due time - exercised for real in the lifecycle step below.
+    assert.equal(after, before, "wrong guesses inside the flush window write nothing");
+    assert.match(page, /wrong-secret attempts?, last /);
+    assert.match(page, /approximate; updates at most once a minute/);
+    const line = page.split("wrong-secret attempts")[1] ?? "";
+    assert.ok(!/[0-9a-f]{64}/.test(line.slice(0, 200)), "the count line carries no token hash");
+    await adminAction("revoke_gb_bearer", { identity: PERSONA });
+  });
+
+  await step("input-gate qualification: concurrent RPCs during a real mismatch flush (classification, not assumed)", async () => {
+    // Fresh-head review flagged that a delta counted while the flush
+    // transaction is in flight could be dropped by post-transaction
+    // bookkeeping.  Cloudflare documents (rules-of-durable-objects, Oct 2026)
+    // that awaiting STORAGE operations holds the input gate CLOSED - no
+    // other event starts - while only non-storage awaits open it;  the flush
+    // transaction awaits storage ops only, so per the docs no RPC can
+    // interleave with it.  Rather than assume, measure the actual runtime:
+    // twenty cold flushes, each with a read fired in the same macrotask.
+    // A read observing the PRE-flush count proves concurrent delivery during
+    // the transaction;  zero across the trials is consistent with the
+    // documented closed gate.  Either outcome is reported:  the buffer's
+    // synchronous hand-off is correct under BOTH, by JS run-to-completion.
+    // A fresh OBJECT NAME per trial is a genuinely cold instance (same
+    // class, its own storage);  granular eviction is not drivable here -
+    // unsafeEvictDurableObject refuses while any stub to the object exists
+    // in the process (measured:  ~30s "active references" timeout, even
+    // after dropping the reference and forcing GC).
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+    const configured = new Set(GB_IDENTITIES);
+    let staleReads = 0;
+    for (let trial = 0; trial < 20; trial++) {
+      const name = `GB-TRADER-PROBE-${trial}`;
+      const gate = ns.get(ns.idFromName(name));
+      const [flushed, during] = await Promise.all([
+        gate.gbBearerMismatch(name, configured),
+        gate.gbBearerMismatches(),
+      ]);
+      assert.equal(flushed, true, "the cold call flushed");
+      if ((during.unconfigured?.count ?? 0) < 1) staleReads += 1;
+    }
+    console.log(`      input-gate probe: ${staleReads}/20 reads observed the pre-flush state (0 = consistent with the documented closed gate during storage awaits)`);
+  });
+
+  await step("mismatch counter lifecycle on a real SeatGate: concurrent cold calls write once, the armed alarm persists the tail at its deadline, the window still holds after it", async () => {
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+    const gate = ns.get(ns.idFromName("GB-ORACLE"));
+    const configured = new Set(GB_IDENTITIES);
+    const stored = async () => (await gate.gbBearerMismatches())["GB-ORACLE"]?.count ?? 0;
+    const base = await stored();
+    // Two overlapping cold calls on the real DO:  exactly one storage
+    // write, the other delta buffered - the in-memory guard holds against
+    // the real runtime, not just the model store.
+    const [flushA, flushB] = await Promise.all([
+      gate.gbBearerMismatch("GB-ORACLE", configured),
+      gate.gbBearerMismatch("GB-ORACLE", configured),
+    ]);
+    assert.equal([flushA, flushB].filter(Boolean).length, 1, "one call flushed, the other buffered through it");
+    assert.equal(await stored(), base + 1, "overlapping cold calls produced exactly one write");
+    // Another guess inside the window buffers and writes nothing.
+    assert.equal(await gate.gbBearerMismatch("GB-ORACLE", configured), false);
+    assert.equal(await stored(), base + 1, "inside the window nothing writes");
+    // The route armed the DO's real alarm at the flush deadline even though
+    // the idle sweep's cadence is an hour:  the runtime must fire it, the
+    // due check must pass, and the two buffered deltas must persist with NO
+    // further calls.  (alarm() is a reserved method and cannot be invoked
+    // over RPC - measured against this runtime - so the busy-chain due
+    // gate is qualified by the unit suite's thirty simulated fires;  what
+    // is proven HERE is the armed deadline, the real fire and the flush.)
+    let flushedByAlarm = false;
+    for (let waited = 0; waited < 70_000; waited += 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (await stored() >= base + 3) { flushedByAlarm = true; break; }
+    }
+    assert.equal(flushedByAlarm, true, "the armed alarm fired at the deadline by itself and persisted the tail (reads never flush)");
+    console.log("      the armed alarm fired at the deadline by itself and persisted the tail");
+    // The window discipline survives the alarm flush:  the next guess
+    // buffers again instead of writing.
+    assert.equal(await gate.gbBearerMismatch("GB-ORACLE", configured), false, "after the alarm flush the next guess buffers");
+    assert.equal(await stored(), base + 3, "still no write inside the new window");
+    // A genuinely COLD instance (a fresh object name) flushes at once -
+    // onset visibility across instance restarts.  (The buffered half of
+    // the lower bound - a delta dying with an evicted instance - is
+    // structural:  the buffer is instance memory.  Granular eviction is
+    // not drivable in this harness, see the probe step's note.)
+    const cold = ns.get(ns.idFromName("GB-ORACLE-COLD"));
+    assert.equal(await cold.gbBearerMismatch("GB-ORACLE-COLD", configured), true, "a cold instance flushes at once");
+    assert.equal((await cold.gbBearerMismatches()).unconfigured?.count, 1, "the cold instance's write landed");
+  });
+
+  await step("a seat bearer: minted on /admin, serves /mcp only with the recorded acceptance, acts only as JET-CHAT, rotates and revokes", async () => {
+    // Minted without the tick:  GR-MCP's verify route may honor it, /mcp itself refuses.
+    const grOnly = await adminAction("mint_gb_bearer", { identity: "JET-CHAT" });
+    assert.equal(grOnly.status, 200);
+    const grOnlyHtml = await grOnly.text();
+    const grToken = grOnlyHtml.match(/sbt_jet-chat_[A-Za-z0-9_-]{43}/)?.[0];
+    assert.ok(grToken, "the mint response shows the seat token once");
+    assert.ok(grOnlyHtml.includes("ST-MCP&#39;s /mcp refuses this bearer"), "the unticked mint's reveal says /mcp refuses it");
+    assert.ok(!grOnlyHtml.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"), "and never implies it works on /mcp");
+    assert.equal((await mcp(grToken, "tools/list")).status, 401, "no recorded acceptance, no /mcp");
+    // Re-minted with the acceptance ticked.
+    const minted = await adminAction("mint_gb_bearer", { identity: "JET-CHAT", mcp_accept: "1" });
+    assert.equal(minted.status, 200);
+    const bearer = (await minted.text()).match(/sbt_jet-chat_[A-Za-z0-9_-]{43}/)?.[0];
+    assert.ok(bearer && bearer !== grToken, "rotation mints a different token");
+    assert.equal((await mcp(grToken, "tools/list")).status, 401, "the unticked token died with the rotation");
+    const listed = await mcp(bearer, "tools/list");
+    assert.equal(listed.status, 200, "the accepted seat bearer serves /mcp");
+    const who = (await call(bearer, "whoami")).json.result;
+    assert.equal(who.isError, undefined, JSON.stringify(who));
+    assert.equal(who.structuredContent.seat, "JET-CHAT");
+    // It acts only as JET-CHAT, even when asked to be another identity.
+    const echo = await call(bearer, "whoami", { identity: "ECHO" });
+    assert.equal(echo.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
+    // The DM guard holds over the bearer path too (AFC-469):  a bot-only
+    // direct message is refused and nothing is sent;  one with the owner goes out.
+    const sentBefore = zulip.requestsTo("POST", "messages").length;
+    const blocked = await call(bearer, "zulip_dm_send", { user_ids: [1212001], text: "bot to bot", identity: "JET-CHAT" });
+    assert.equal(blocked.json.result.isError, true);
+    assert.equal(blocked.json.result._meta["agent-sync/error"].code, "dm_owner_not_participant");
+    assert.equal(zulip.requestsTo("POST", "messages").length, sentBefore);
+    const allowedDm = await call(bearer, "zulip_dm_send", { user_ids: [OWNER_ID], text: "owner is here", identity: "JET-CHAT" });
+    assert.equal(allowedDm.json.result.isError, undefined, summarize(allowedDm.json));
+    assert.equal(zulip.requestsTo("POST", "messages").length, sentBefore + 1);
+    // The admin page shows state, never the token.
+    const page = await (await browser("/admin")).text();
+    assert.ok(!page.includes(bearer));
+    // Revoke kills it at once.
+    const revoked = await adminAction("revoke_gb_bearer", { identity: "JET-CHAT" });
+    assert.equal(revoked.status, 303);
+    assert.equal((await mcp(bearer, "tools/list")).status, 401, "a revoked seat bearer is dead");
+  });
+
+  await step("a wake-only seat's bearer keeps it wake-only:  /mcp acceptance authenticates, it never widens the surface", async () => {
+    // JET is events-only post-split.  A bearer minted with the /mcp acceptance
+    // ticked authenticates on /mcp, but the seat's surface does not grow:  an
+    // empty tools/list and every tools/call a protocol error, exactly like the
+    // seat's own OAuth grant.  The acceptance records consent-flow replacement,
+    // never a capability grant.
+    const minted = await adminAction("mint_gb_bearer", { identity: "JET", mcp_accept: "1" });
+    assert.equal(minted.status, 200);
+    const bearer = (await minted.text()).match(/sbt_jet_[A-Za-z0-9_-]{43}/)?.[0];
+    assert.ok(bearer, "the wake-only seat's mint shows its token once");
+    const listed = await mcp(bearer, "tools/list");
+    assert.equal(listed.status, 200, "the accepted bearer authenticates on /mcp");
+    assert.deepEqual(listed.json.result.tools, [], "wake-only seat:  no tools, bearer or not");
+    const who = await call(bearer, "whoami");
+    assert.equal(who.status, 200);
+    assert.ok(who.json.error && !who.json.result, "whoami is a protocol error, the token still authenticates");
+    const revoked = await adminAction("revoke_gb_bearer", { identity: "JET" });
+    assert.equal(revoked.status, 303);
+    assert.equal((await mcp(bearer, "tools/list")).status, 401, "a revoked wake-only bearer is dead");
+  });
+
+  await step("a resubmitted mint form is acked without mutation and a stale one refused; a fresh deliberate mint still works", async () => {
+    const page = await browser("/admin");
+    const pageText = await page.text();
+    const csrf = pageText.match(/name="csrf" value="([0-9a-f]{64})"/)[1];
+    const mintId = pageText.match(/name="mint_id" value="([0-9a-f]{32})"/)[1];
+    const form = { csrf, mint_id: mintId, action: "mint_gb_bearer", identity: PERSONA };
+    const first = await browser("/admin/action", { method: "POST", form });
+    assert.equal(first.status, 200);
+    const bearer = (await first.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
+    // The exact resubmit (a refresh or double-click):  acked from the stored
+    // outcome (kody discussion_r4372748176), no mutation, no new reveal.
+    const second = await browser("/admin/action", { method: "POST", form });
+    assert.equal(second.status, 200);
+    const secondHtml = await second.text();
+    assert.match(secondHtml, /Already Minted/);
+    assert.ok(!secondHtml.includes("Nothing Was Minted"), "the resubmit is not the refusal page");
+    assert.ok(!secondHtml.includes('id="gb-bearer-token"'), "no token element on the ack page");
+    assert.ok(!secondHtml.includes(bearer), "the original token is never echoed");
+    const who = (await call(bearer, "whoami")).json.result;
+    assert.equal(who.structuredContent.seat, PERSONA, "the original bearer survived the resubmit");
+    // A stale form (rendered over an hour ago, never used): refused, no mutation.
+    const staleId = (Date.now() - 2 * 3600_000).toString(16).padStart(12, "0") + "0".repeat(20);
+    const stale = await browser("/admin/action", { method: "POST", form: { ...form, mint_id: staleId } });
+    assert.match(await stale.text(), /Nothing Was Minted/);
+    const who2 = (await call(bearer, "whoami")).json.result;
+    assert.equal(who2.structuredContent.seat, PERSONA, "the stale replay changed nothing");
+    // A fresh deliberate mint (newly rendered page) still rotates on purpose.
+    const deliberate = await adminAction("mint_gb_bearer", { identity: PERSONA });
+    assert.equal(deliberate.status, 200);
+    const next = (await deliberate.text()).match(/gbb_[a-z0-9]+_[A-Za-z0-9_-]{43}/)[0];
+    assert.ok(next !== bearer, "a fresh form mints a replacement");
+    assert.equal((await mcp(bearer, "tools/list")).status, 401, "the deliberate rotation ended the old bearer");
+    await adminAction("revoke_gb_bearer", { identity: PERSONA });
+  });
+
+  await step("the seat rotation form states that an unticked rotation drops existing /mcp access", async () => {
+    await adminAction("mint_gb_bearer", { identity: "JET", mcp_accept: "1" });
+    const page = await (await browser("/admin")).text();
+    assert.match(page, /currently accepted on \/mcp\.  Rotating without the box ticked removes that/);
+    await adminAction("revoke_gb_bearer", { identity: "JET" });
+    const cleared = await (await browser("/admin")).text();
+    assert.ok(!cleared.includes("Rotating without the box ticked removes that"), "the consequence text disappears with no /mcp-accepted bearer");
   });
 
   await step("AFC-477 WhatsApp: real SeatGate storage, signed ingestion, owner and Operator provenance, eyes suppression and read/ack", async () => {
@@ -1847,6 +2087,37 @@ try {
     const full = await (await postWa(maximum)).json();
     assert.equal(full.stored, 100, "maximum provider batch commits to real SQLite storage");
     assert.equal(full.delivered, 1, "maximum batch coalesces into one owner wake");
+  });
+
+  await step("all additional ordinary and BF bearers mint, isolate identity, serve MCP, rotate and revoke using their own Infisical credentials", async () => {
+    await mf.dispose();
+    infisicalFixture = { "/zulip": bearerBots.flatMap((b) => [
+      { secretKey: `${b.prefix}_ZULIP_KEY`, secretValue: b.key },
+      { secretKey: `${b.prefix}_ZULIP_EMAIL`, secretValue: b.email },
+    ]) };
+    mf = startWorker(HOST, { INFISICAL_MODE: "required", INFISICAL_SERVICE_TOKEN: "offline-fixture", INFISICAL_WORKSPACE_ID: "offline-workspace", INFISICAL_BASE_URL: "https://offline-infisical.example", INFISICAL_EXPECT: "/unused:UNUSED" });
+    const html = await (await browser("/admin")).text();
+    for (const b of bearerBots) {
+      assert.ok(html.includes(`<strong>${b.seat}</strong>`), b.seat);
+      const unticked = await adminAction("mint_gb_bearer", { identity: b.seat });
+      assert.equal(unticked.status, 200, b.seat);
+      const oldToken = (await unticked.text()).match(/sbt_[a-z0-9-]+_[A-Za-z0-9_-]{43}/)?.[0];
+      assert.ok(oldToken, b.seat);
+      assert.equal((await mcp(oldToken, "tools/list")).status, 401);
+      const minted = await adminAction("mint_gb_bearer", { identity: b.seat, mcp_accept: "1" });
+      assert.equal(minted.status, 200, b.seat);
+      const bearer = (await minted.text()).match(/sbt_[a-z0-9-]+_[A-Za-z0-9_-]{43}/)?.[0];
+      assert.ok(bearer && bearer !== oldToken);
+      assert.equal((await mcp(oldToken, "tools/list")).status, 401);
+      const who = await call(bearer, "whoami");
+      assert.equal(who.json.result.isError, undefined, summarize(who.json));
+      assert.equal(who.json.result.structuredContent.seat, b.seat);
+      const other = await call(bearer, "whoami", { identity: "ECHO" });
+      assert.equal(other.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
+      assert.equal((await adminAction("revoke_gb_bearer", { identity: b.seat })).status, 303);
+      assert.equal((await mcp(bearer, "tools/list")).status, 401);
+    }
+    assert.equal((await adminAction("mint_gb_bearer", { identity: "BF-TYPO" })).status, 400);
   });
 
   console.log(`\n${passed} passed`);

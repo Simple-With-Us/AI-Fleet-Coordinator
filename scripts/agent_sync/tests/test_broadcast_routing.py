@@ -3,6 +3,9 @@
 Zulip sets the same wildcard flags for both tokens; only the raw message token may decide."""
 from __future__ import annotations
 
+import json
+import secrets
+import threading
 import unittest
 from unittest import mock
 
@@ -10,6 +13,7 @@ from agent_sync import chat_fanout as F
 from agent_sync import live as L
 from agent_sync import router as R
 from agent_sync.live import topic_key
+from agent_sync.tests.harness import write_rc
 from agent_sync.tests.test_chat_fanout import FakeCatalog, cloud
 from agent_sync.tests.fake_zulip import FAKE_OWNER_ID
 from agent_sync.tests.test_daemon import DaemonHarness
@@ -264,6 +268,85 @@ class OwnerAllFanoutDedupTests(DaemonHarness):
         rows = [e for e in self.log_rows(daemon) if e.get("event") == "broadcast-wake-failed"]
         self.assertEqual([r.get("seat") for r in rows], ["BROKEN"])
         self.assertGreaterEqual(len(self.wakes_for(message_id)), 1, "CLAUDE still woke after BROKEN failed")
+
+    def test_a_fanout_thread_that_cannot_start_still_wakes_the_seat_once(self) -> None:
+        """A fanout that never started hands the wake to the event thread:  the id stays in the
+        seen ring, because the hand-off owns that wake now (AFC-938)."""
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.owner_all()
+        real_start = threading.Thread.start
+
+        def boom(thread, *args, **kwargs):
+            if thread.name == "chat-fanout":
+                raise RuntimeError("can't start new thread")
+            return real_start(thread, *args, **kwargs)
+
+        with mock.patch.object(threading.Thread, "start", boom):
+            self.settle(daemon, message_id)
+        daemon.tick()
+        self.assertEqual(len(self.wakes_for(message_id)), 1, "the wake must not be lost")
+        self.assertIn(
+            message_id,
+            daemon._fanout_seen,
+            "the hand-off owns the wake, so the id stays seen",
+        )
+        events = [e.get("event") for e in self.log_rows(daemon)]
+        self.assertIn("fanout-start-failed", events)
+        row = next(e for e in self.log_rows(daemon) if e.get("event") == "fanout-start-failed")
+        self.assertEqual(row.get("id"), message_id)
+        self.assertEqual(row.get("error"), "RuntimeError")
+        self.assertNotIn("deploy", json.dumps(row), "the log never holds the content")
+
+    def test_a_failed_fanout_start_wakes_once_across_two_seats(self) -> None:
+        """The second seat's route of the same message must not fan out again, or the seat
+        wakes twice:  the id stays in the seen ring, because the hand-off owns the wake."""
+        codex_key = secrets.token_hex(16)
+        self.extra_keys.append(("codex-bot@zulip.test", codex_key))
+        self.fake.add_bot("codex-bot@zulip.test", "Codex", codex_key)
+        write_rc(
+            self.secrets_dir / "Codex-zuliprc",
+            email="codex-bot@zulip.test",
+            key=codex_key,
+            site=self.fake.url,
+        )
+        self.write_config(
+            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n\n'
+            '[seat.CODEX]\nbot = "Codex"\nwake = "inbox"\n'
+        )
+        daemon = self.started(env=self.env(AGENT_SYNC_PARTITION=self.two_seat_partition()))
+        self.assertTrue(daemon.connect_seat("CODEX"))
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.owner_all()
+        real_start = threading.Thread.start
+
+        def boom(thread, *args, **kwargs):
+            if thread.name == "chat-fanout":
+                raise RuntimeError("can't start new thread")
+            return real_start(thread, *args, **kwargs)
+
+        with mock.patch.object(threading.Thread, "start", boom):
+            self.settle(daemon, message_id)
+            self.pump_until(
+                daemon,
+                lambda: self.routed_by(daemon, "CODEX", message_id),
+                seat="CODEX",
+            )
+        daemon.tick()
+        self.assertEqual(len(self.wakes_for(message_id)), 1, "exactly one wake")
+        rows = [
+            e for e in self.log_rows(daemon) if e.get("event") == "fanout-start-failed"
+        ]
+        self.assertEqual(len(rows), 1, "the second seat must not fan out again")
+        self.assertIn(message_id, daemon._fanout_seen, "the hand-off owns the wake")
+
+    def routed_by(self, daemon, seat: str, message_id: int) -> bool:
+        return any(
+            row.get("event") == "route"
+            and row.get("seat") == seat
+            and row.get("id") == message_id
+            for row in self.log_rows(daemon)
+        )
 
 
 class NonOwnerAllChatNudgeTests(DaemonHarness):

@@ -100,7 +100,7 @@ when the string is not a full sentence — not Title Case:
   `Sun, Oct 5, 2026 at 3:15am`.  Give only the Central time:  convert UTC and every
   other zone first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00pm the previous
   calendar day during daylight saving, and 6:00pm the previous calendar day after
-  the fall-back.  See `/Users/jay/apps/AGENT-SYNC.md` § Timestamps: Central Time.
+  the fall-back.  See `/Users/jay/apps/FLEET-PROTOCOL.md` § Timestamps: Central Time.
 
 ## Money
 - Compact suffixes **lowercase**: `$99.8k`, `$1.2m`, `$3.4b`.
@@ -309,7 +309,7 @@ sentence terminator.
 
 **Agent failure mode:** shipping App Store description, review notes, or UI
 paragraphs with single spaces after periods, or stale trial/corpus copy.
-Fix on sight.  Protocol: `/Users/jay/apps/AGENT-SYNC.md` § Two spaces.
+Fix on sight.  Protocol: `/Users/jay/apps/FLEET-PROTOCOL.md` § Two spaces.
 
 ## Run-once glyph = emoji bolt (owner preference 2026-08-08, Socratic.Trade)
 The Run-once affordance uses the colored emoji ⚡ (U+26A1), not a line-icon Zap —

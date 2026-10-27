@@ -16,7 +16,7 @@ abandon open threads. Keep unfinished prior items on a todo list and finish or e
 park them — do not silently drop them.
 
 Binding for every agent on every platform (Claude, Codex, Cursor, Antigravity/Gemini, Grok,
-Monet, Copilot, …). Canonical: `/Users/jay/apps/AGENT-SYNC.md` “Prior messages stay in scope”.
+Monet, Copilot, …). Canonical: `/Users/jay/apps/FLEET-PROTOCOL.md` “Prior messages stay in scope”.
 Owner preference, 2026-08-06.
 
 ## Working rules (owner — ALL agents, ALL platforms, 2026-10-21)
@@ -30,7 +30,7 @@ Binding for every agent on every platform (Claude, Codex, Cursor, Antigravity/Ge
 ## App Icon & Logo Design Policy: Full-Bleed Square Only, Never Pre-Baked Squircle (Owner ruling 2026-08-22 — ALL seats)
 
 **Never generate or deliver app icons / logos solely in a pre-baked squircle format.**
-All icon assets and explorations must be generated as standard, uncropped, full-bleed 1:1 squares with 90° sharp corners extending edge-to-edge across the canvas.  Apple, Google, and web platforms apply their own dynamic squircle masks at runtime; pre-baked squircles cause double-rounding and edge clipping.  If generating a squircle mockup preview, **always generate and present the full-bleed uncropped square master first and alongside it**.  Canonical: `/Users/jay/apps/AGENT-SYNC.md`.
+All icon assets and explorations must be generated as standard, uncropped, full-bleed 1:1 squares with 90° sharp corners extending edge-to-edge across the canvas.  Apple, Google, and web platforms apply their own dynamic squircle masks at runtime; pre-baked squircles cause double-rounding and edge clipping.  If generating a squircle mockup preview, **always generate and present the full-bleed uncropped square master first and alongside it**.  Canonical: `/Users/jay/apps/FLEET-PROTOCOL.md`.
 
 ## Mac local processes (binding)
 
@@ -90,7 +90,7 @@ Before every commit/push to the GitHub repo, you MUST update the following:
    step. The old **ANNOUNCE-THEN-DEPLOY** protocol is **RETIRED**: do NOT post deploy claims or manually
    trigger Coolify deploys. Mechanism, verification, and rollback:
    `docs/rollouts/2026-07-10-auto-deploy-on.md`; canonical protocol detail in
-   `~/apps/AGENT-SYNC.md`.
+   `~/apps/FLEET-PROTOCOL.md`.
 3. **`docs/rollouts/YYYY-MM-DD-short-slug.md`** — create or update a chronological rollout note detailing what was done, decisions made, what's next, exact touched files, and verification commands run. Do NOT use a single `HANDOFF.md` file, use the rollouts directory.
 4. **`PLAN.md`** — reflect any scope, timeline, or approach changes.
 5. **Phase docs (`docs/*.md`)** — update the relevant phase doc to match actual implementation state.
@@ -206,7 +206,7 @@ auto-deploys `socratic-trade-prod`** via Coolify's GitHub-App webhook — `is_au
 claims or manually trigger deploys. Rollback to manual: set `is_auto_deploy_enabled=false` on the app.
 Details/verification: `docs/rollouts/2026-07-10-auto-deploy-on.md`.
 `~/apps/trading-publish.sh` is DEPRECATED (it targets the stopped Mac pm2 lane); canonical
-protocol detail lives in `~/apps/AGENT-SYNC.md`. Boot path:
+protocol detail lives in `~/apps/FLEET-PROTOCOL.md`. Boot path:
 `scripts/coolify-prod-start.sh` under `DB_BOOTSTRAP=live` — Infisical secrets via pinned
 in-container CLI, one-time restore via the pinned litestream (version pinned in
 `scripts/coolify-prod-start.sh`; 0.5.14 was rolled back to 0.5.12 on 2026-07-10 after its
@@ -331,7 +331,7 @@ deployment machine.
 
 Look first at Linear (`https://linear.app/simple-with-us`, through the `simple-board` CLI).  Coordinate with other AI
 agents in Zulip `#Work-In-Progress` (realm `https://simplewithus.zulipchat.com`).  Every post names
-both a channel and a topic, and the topic is the thread.  Full protocol: `~/apps/AGENT-SYNC.md`
+both a channel and a topic, and the topic is the thread.  Full protocol: `~/apps/FLEET-PROTOCOL.md`
 (canonical - read it before your first message; covers Linear and the claim lifecycle, sender tags, terse post
 shape, reaction acks, read/post mechanics).  Chat mechanics live in the Zulip Fleet Guide:
 `docs/protocols/zulip-fleet-guide.md`, published at
@@ -361,7 +361,7 @@ cloud), not a per-app seat.  Other agents state their cadence in their first mes
   `post`, `reply`, `read`, `listen`, `wait`, `inbox`, `topics`, `react`, `follow`, `mute`,
   `resolve`, `dm --owner`.  Slack, `slack-sync.sh`, and the `slack-collab` MCP are retired (owner
   2026-10-07); never use them or their tokens.
-Details: `~/apps/AGENT-SYNC.md` § Chat: The Zulip Contract, § Posting, and § Linear and the Claim Lifecycle.
+Details: `~/apps/FLEET-PROTOCOL.md` § Chat: The Zulip Contract, § Posting, and § Linear and the Claim Lifecycle.
 
 ## Apple Notes for owner-facing review docs (all apps, all agents)
 
@@ -387,7 +387,7 @@ other document the owner needs to read/review**, also put it in **Apple Notes**
    material changes. In-repo docs/PRs still land as usual.
 
 Skip Notes on headless/cloud agents without Notes.app. Full rule (canonical):
-`~/apps/AGENT-SYNC.md` and this repo's `AGENT-SYNC.md` — "Apple Notes for owner-facing review docs". Owner preference 2026-08-05; title/timestamp 2026-08-09; shortcuts 2026-08-10; mobile push & alerts 2026-08-12.
+`~/apps/FLEET-PROTOCOL.md` and this repo's `AGENT-SYNC.md` — "Apple Notes for owner-facing review docs". Owner preference 2026-08-05; title/timestamp 2026-08-09; shortcuts 2026-08-10; mobile push & alerts 2026-08-12.
 
 ## App Versioning & TestFlight Build Policy (binding — all apps, all agents)
 
@@ -402,11 +402,11 @@ Skip Notes on headless/cloud agents without Notes.app. Full rule (canonical):
   3. **STRICT RULE — NO AGENT NAMES:** Public / TestFlight release notes **MUST NOT** include internal agent names (`Agent: Grok`, etc.).
   4. Change summary: Concise bulleted list of what changed/fixed in this build.
 
-Canonical: `~/apps/AGENT-SYNC.md` § App Versioning & TestFlight Build Policy.
+Canonical: `~/apps/FLEET-PROTOCOL.md` § App Versioning & TestFlight Build Policy.
 
 ## iOS agent build loop (binding — all apps, all agents)
 
-Owner ruling 2026-08-13.  Canonical: `~/apps/AGENT-SYNC.md` § iOS agent build loop.
+Owner ruling 2026-08-13.  Canonical: `~/apps/FLEET-PROTOCOL.md` § iOS agent build loop.
 
 - **Do not stand up, debug, or "fix" Xcode MCP** (`XcodeBuildMCP`, `mcpbridge`, `build_sim`).
 - **`xcodebuild` / `xcrun simctl` via bash are pre-approved.**  Run them.  Do not ask.  Do not narrate missing MCP.
@@ -415,7 +415,7 @@ Owner ruling 2026-08-13.  Canonical: `~/apps/AGENT-SYNC.md` § iOS agent build l
 - Claude seats: copy `scripts/block-xcode-project-writes.py` to `.claude/hooks/` and the PreToolUse snippet from `github-workflows-template/claude-ios-settings.json`.
 - Per-app annotated tree: `ios/CLAUDE.md` (or `clients/ios/CLAUDE.md` / `native/ios/CLAUDE.md`).
 - `@Observable` + `@MainActor`; `NavigationStack`; system theme default (follow the OS, owner ruling 2026-09-19).
-- **Debug vs TestFlight (owner 2026-08-21):** do Xcode-console debug autonomously via `bash ~/apps/ios-fleet/ios-debug.sh <app>`.  Simulator `--console` is the default.  Device `--logs-only` keeps TestFlight.  `--target device --install-debug` replaces TestFlight for that bundle — say so.  Ask the owner to press Run in Xcode only for LLDB / a paste of the IDE console.  Canonical: `~/apps/AGENT-SYNC.md` § iOS agent build loop.
+- **Debug vs TestFlight (owner 2026-08-21):** do Xcode-console debug autonomously via `bash ~/apps/ios-fleet/ios-debug.sh <app>`.  Simulator `--console` is the default.  Device `--logs-only` keeps TestFlight.  `--target device --install-debug` replaces TestFlight for that bundle — say so.  Ask the owner to press Run in Xcode only for LLDB / a paste of the IDE console.  Canonical: `~/apps/FLEET-PROTOCOL.md` § iOS agent build loop.
 
 ## Fleet UI copy (web + iOS)
 
@@ -460,7 +460,7 @@ line, which is why it is allowlisted and needs no approval.  Writes (`file`, `cl
 list, then claim (or file + claim).  Branch `<seat>/<id>-<slug>`; the PR body says `Fixes <ID>`
 when it finishes the issue and `Refs <ID>` for partial work.  When done: real status +
 `--resolution`.  There is no effort log to land and no GitHub-issues mirror any more.
-Canonical: `~/apps/AGENT-SYNC.md` § Linear and the Claim Lifecycle.
+Canonical: `~/apps/FLEET-PROTOCOL.md` § Linear and the Claim Lifecycle.
 
 **Pass your session id.**  Every `simple-board` write (`file`, `claim`, `comment`, `status`), every `notes_create` / `notes_update` call (and `simple-notes`), and `apple-notes-coding.sh` needs your session id, so a headless resume-wake can find your session for the topic, and they refuse without one.  Pass it as `--session <id>` (the `session` argument on the MCP tools), else export `AGENT_SESSION`, else the tool reads your platform's own variable:  `CLAUDE_CODE_SESSION_ID` (Claude Code), `CODEX_THREAD_ID` (Codex), `CURSOR_CONVERSATION_ID` then `CURSOR_AGENT_CHAT_ID` (Cursor), `GROK_SESSION_ID` (Grok TUI), `OPENCODE_SESSION_ID` (OpenCode), `__MAVIS_RUNTIME_SESSION_ID` (MiniMax Code).  FX, Clutch, Antigravity, Muse Code and Grok Web have no variable that is known to be set, so they pass `--session <id>` or export `AGENT_SESSION`, using the id their app shows for the current chat.  A platform variable is not a promise:  a Claude Code MCP server may not inherit its variable, so Claude Code passes `session` explicitly on `notes_create` / `notes_update` (the value of `CLAUDE_CODE_SESSION_ID` from its shell), and the MiniMax Code runtime registers `__MAVIS_RUNTIME_SESSION_ID` but does not export it into the MCP server's environment, so the MiniMax Code seat passes `session` explicitly too.  Cloud seats have no shell env and always pass `session`.  Exempt, because they have one thread with the owner:  every Grok bot (GROK-BOT and GB-*), MA, JET, WISE and ECHO.  Notes get a small `Session: <id>` line under the timestamp.  A chat tag such as `session8` is not a session id and is refused.  For your seat the platform variable is `<SEAT-SESSION-VAR>` (delete this sentence if the platform has none).
 
@@ -479,7 +479,7 @@ replies to the owner**, PR titles and bodies, commit messages, Zulip posts to
 #Work-In-Progress, Apple Notes, Linear issues and comments, rollout notes, review reports, and design
 docs.  If it is prose a human reads, it gets two spaces.
 
-Canonical: `~/apps/AGENT-SYNC.md` § Two spaces and `~/apps/FLEET-UI-COPY.md`.
+Canonical: `~/apps/FLEET-PROTOCOL.md` § Two spaces and `~/apps/FLEET-UI-COPY.md`.
 Portable skill (verbatim protocol, do not weaken): `docs/SENTENCE-GAP-PORTABLE-SKILL.md`
 and `docs/fleet-skills/sentence-gap/SKILL.md`.
 
@@ -502,7 +502,7 @@ in chat, Notes, Zulip, Linear, or PRs.  Give only the Central time:  convert UTC
 first, with no stamp beside it (owner 2026-10-18).  `00:00 UTC` is 7:00pm the previous calendar day during
 daylight saving (6:00pm after the fall-back).  Binding for every agent, bot,
 and platform.  Product UI stays the viewer's timezone.  Canonical:
-`~/apps/AGENT-SYNC.md` § Timestamps: Central Time.
+`~/apps/FLEET-PROTOCOL.md` § Timestamps: Central Time.
 
 ## Secrets & Infrastructure (binding — all agents)
 
@@ -535,7 +535,7 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
 
 - **GitHub App credentials are the relay's, never yours.**  The fleet's GitHub relay (`git-relay`) is the only path that mints per-bot GitHub App tokens, and it keeps them server-side; a seat never handles an App id, a private key, or a token expiry, and never reads App keys out of Infisical itself.  A seat reaches the relay's tools with its own bearer token — never print it, and never ask the owner for an App key.  See "The fleet's GitHub tools" above.
 
-Canonical: `~/apps/AGENT-SYNC.md` § Secret handoff / Infisical / Coolify tokens.
+Canonical: `~/apps/FLEET-PROTOCOL.md` § Secret handoff / Infisical / Coolify tokens.
 
 Chat engine: the `simple-chat` CLI (`~/.local/bin/simple-chat`, AFC `scripts/agent_sync`) is the
 one tool for chat — `post`, `reply`, `read`, `wait`, `listen`, `inbox`, `topics`, `subscribe`,
@@ -571,7 +571,7 @@ is the replacement.
 
 | What | Live / repo path | GitHub |
 |------|------------------|--------|
-| Protocol | `/Users/jay/apps/AGENT-SYNC.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/AGENT-SYNC.md |
+| Protocol | `/Users/jay/apps/FLEET-PROTOCOL.md` | (none until the root mirror is renamed) |
 | Effort logs (retired stub) | `/Users/jay/apps/EFFORT-LOG-PROTOCOL.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/EFFORT-LOG-PROTOCOL.md |
 | New app | `/Users/jay/Code/AI-Fleet-Coordinator/docs/ONBOARDING-NEW-APP.md` | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/ONBOARDING-NEW-APP.md |
 | DNS / registrars | `/Users/jay/Code/AI-Fleet-Coordinator/docs/DNS-AND-REGISTRARS.md` (new app zone on **account** Usage.Jays.Services, not hostname `usage.jays.services`) | https://github.com/Simple-With-Us/AI-Fleet-Coordinator/blob/main/docs/DNS-AND-REGISTRARS.md |
@@ -597,7 +597,7 @@ is the replacement.
   fails verification — not because your session is frontier-tier.
 - **Same bar at every tier:** full gates, receipts, and Linear discipline apply no matter
   which model did the work.
-- Canonical reference: `~/apps/AGENT-SYNC.md` — "Delegation & model economics".
+- Canonical reference: `~/apps/FLEET-PROTOCOL.md` — "Delegation & model economics".
 
 ## Cross-file consistency traps (cheap to check, expensive to miss)
 

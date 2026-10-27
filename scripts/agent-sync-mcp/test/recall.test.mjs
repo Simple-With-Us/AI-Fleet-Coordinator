@@ -17,6 +17,7 @@ import * as S from "../src/seat-state.js";
 import { loadConfig } from "../src/config.js";
 import { TOOLS, ERROR_META_KEY, schemaProblem } from "../src/contract.js";
 import { RecallClient, recallClientFromEnv, recallBaseUrl, RECALL_TOOLS, HIT_TEXT_LIMIT, RECALL_USER_AGENT } from "../src/recall.js";
+import { GR_TOOLS } from "../src/gr-tools.js";
 import { NOTES_TOOLS } from "../src/notes.js";
 import { FakeZulip, BOT_EMAIL } from "./fake-zulip.mjs";
 import { ROOT, testEnv, wranglerConfig } from "./helpers.mjs";
@@ -130,7 +131,7 @@ test("the hosted list is the ten original Zulip tools, then recall, then the Lin
   const full = TOOLS.tools.slice(12).map((t) => t.name);  // after whoami, identities, guide and the original nine (AFC-331)
   assert.deepEqual(
     HOSTED_TOOL_LIST.map((t) => t.name),
-    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name), ...full, "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", ...NOTES_TOOLS.map((t) => t.name), "whatsapp_read"],
+    ["whoami", "zulip_topics", "zulip_read_topic", "zulip_inbox", "zulip_post", "zulip_reply", "zulip_react", "zulip_dm_list", "zulip_dm_read", "zulip_dm_send", "recall_search", "recall_stats", "recall_contribute", "linear_whoami", "linear_list", "linear_show", "linear_file", "linear_claim", "linear_comment", "linear_status", "linear_schema", "linear_query", "linear_mutation", ...LINEAR_NAMED_TOOLS.map((t) => t.name), ...LINEAR_MCP_TOOLS.map((t) => t.name), ...FLEETLINK_TOOLS.map((t) => t.name), ...full, "eavesdropper_status", "eavesdropper_inbox", "eavesdropper_owner_queue", "eavesdropper_wakes", "eavesdropper_held_back", ...NOTES_TOOLS.map((t) => t.name), "whatsapp_read", ...GR_TOOLS.map((t) => t.name)],
   );
   // tools.json, the stdio contract, is untouched:  the Linear tools are hosted-only,
   // the way recall and dm are, because the Python stdio server cannot run them.
@@ -140,6 +141,11 @@ test("the hosted list is the ten original Zulip tools, then recall, then the Lin
     assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
     assert.ok(tool.outputSchema, tool.name);
     for (const banned of ["seat", "as", "rc", "no_tag", "fleet"]) assert.ok(!(banned in tool.inputSchema.properties), `${tool.name} takes ${banned}`);
+  }
+  // The GR front tools are closed-input too, and all of them are writes.
+  for (const tool of GR_TOOLS) {
+    assert.equal(tool.inputSchema.additionalProperties, false, tool.name);
+    assert.ok(HOSTED_WRITE_TOOLS.has(tool.name) && !HOSTED_READ_TOOLS.has(tool.name), tool.name);
   }
   assert.ok(HOSTED_READ_TOOLS.has("recall_search") && HOSTED_READ_TOOLS.has("recall_stats"));
   assert.ok(HOSTED_WRITE_TOOLS.has("recall_contribute") && !HOSTED_READ_TOOLS.has("recall_contribute"));

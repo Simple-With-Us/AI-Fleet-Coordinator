@@ -9,21 +9,21 @@ const expiresAt = Date.parse('2026-10-15T09:00:00Z');
 const cases = [
   {
     name: 'seats-armed',
-    render: () => errorPage('More Than One Seat Armed', "These seats share this app's callback:  CURSOR, GROK-WEB.  More than one is armed, so the connection cannot tell which one you meant.  Disarm all but one in ST-MCP Admin, then start the connection again.", 409),
+    render: () => errorPage('More Than One Seat Armed', "These seats share this app's callback:  CURSOR, GROK-WEB.  More than one is armed, so the connection cannot tell which one you meant.  Disarm all but one in ST-MCP + GR-MCP Admin, then start the connection again.", 409),
     heading: 'More Than One Seat Armed',
-    copy: 'Disarm all but one in ST-MCP Admin',
+    copy: 'Disarm all but one in ST-MCP + GR-MCP Admin',
   },
   {
     name: 'no-connection',
     render: () => noConnectionPage(),
     heading: 'No Connection Expected',
-    copy: 'open ST-MCP Admin, arm the seat',
+    copy: 'open ST-MCP + GR-MCP Admin, arm the seat',
   },
   {
     name: 'bearer-reveal',
     render: () => gbBearerRevealPage({ identity: 'GB-FIXER', token: 'EXAMPLE-ONLY', expiresAt }),
     heading: 'Bearer For GB-FIXER',
-    copy: 'Back to ST-MCP Admin',
+    copy: 'Back to ST-MCP + GR-MCP Admin',
   },
 ];
 

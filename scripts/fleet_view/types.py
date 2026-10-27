@@ -75,7 +75,7 @@ class Section:
 class RequestBudget:
     """The per-cycle request budget (AFC-394:  <60 GitHub, <30 Linear).
 
-    Every ``gh`` call consumes one GitHub request and every ``board`` call
+    Every ``gh`` call consumes one GitHub request and every ``simple-board`` call
     consumes one Linear request.  A collector that would exceed its budget
     stops and reports ``UNKNOWN`` instead of spending past the cap, and the
     counts ride in the envelope so a test can assert them.

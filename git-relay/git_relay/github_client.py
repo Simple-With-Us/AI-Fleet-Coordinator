@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import urllib.error
 import urllib.request
 
@@ -20,6 +21,81 @@ MAX_ERROR_PREVIEW = 512
 TIMEOUT_SECONDS = 30
 MAX_DISPATCH_INPUTS = 32
 MAX_DISPATCH_INPUT_VALUE = 1024
+
+
+# Never retain arbitrary upstream text.  Request IDs are GitHub's bounded
+# hexadecimal correlation IDs; permission metadata is parsed, not copied.
+_DIAGNOSTIC_PERMISSIONS = frozenset(
+    {
+        "actions",
+        "administration",
+        "checks",
+        "contents",
+        "issues",
+        "metadata",
+        "pull_requests",
+        "statuses",
+        "workflows",
+    }
+)
+_ERROR_CATEGORIES = {
+    "Resource not accessible by integration": "resource_not_accessible",
+    "Resource not accessible by personal access token": "resource_not_accessible",
+    "API rate limit exceeded": "rate_limit",
+    "Bad credentials": "bad_credentials",
+    "Not Found": "not_found",
+}
+
+
+def safe_error_diagnostics(headers=None, message=None):
+    """Capture only bounded, validated metadata and fixed categories.
+
+    Unknown/hostile bodies cannot become a diagnostic string.  This does not
+    change retry classification, request permissions, or request behavior.
+    """
+    category = "unknown"
+    if isinstance(message, str) and len(message) <= MAX_ERROR_PREVIEW:
+        category = _ERROR_CATEGORIES.get(message, "unknown")
+        if re.fullmatch(
+            r"API rate limit exceeded for (?:user|installation) ID [0-9]{1,20}\.", message
+        ):
+            category = "rate_limit"
+    result = {"category": category}
+    request_id = headers.get("X-GitHub-Request-Id") if headers is not None else None
+    if isinstance(request_id, str) and re.fullmatch(
+        r"[0-9A-Fa-f]{4,8}(?::[0-9A-Fa-f]{4,8}){3}", request_id
+    ):
+        result["request_id"] = request_id
+    raw = headers.get("X-Accepted-GitHub-Permissions") if headers is not None else None
+    if isinstance(raw, str) and 0 < len(raw) <= 512 and all(32 <= ord(char) < 127 for char in raw):
+        groups = raw.split(";")
+        sets = []
+        # Reject the whole header on an anomaly.  Partial alternatives could
+        # misrepresent upstream requirements; unknown metadata is safer.
+        if len(groups) <= 4:
+            for group in groups:
+                permissions = {}
+                for item in group.split(","):
+                    pair = item.strip().split("=")
+                    if (
+                        len(pair) != 2
+                        or pair[0] not in _DIAGNOSTIC_PERMISSIONS
+                        or pair[1] not in ("read", "write")
+                        or pair[0] in permissions
+                    ):
+                        break
+                    permissions[pair[0]] = pair[1]
+                else:
+                    if permissions:
+                        sets.append(permissions)
+                        continue
+                break
+            else:
+                if len(sets) == 1:
+                    result["accepted_permissions"] = sets[0]
+                elif sets:
+                    result["accepted_permission_sets"] = sets
+    return result
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -45,6 +121,7 @@ class RelayGitHubError(Exception):
         code: str | None = None,
         retry_after=None,
         credential_preview: str | None = None,
+        diagnostics: dict | None = None,
     ):
         super().__init__(f"github {status}: {message}")
         self.status = status
@@ -55,6 +132,27 @@ class RelayGitHubError(Exception):
         # is about the credential itself;  identifies the dead key without
         # exposing it.
         self.credential_preview = credential_preview
+        # Revalidate at the public exception boundary, including stub clients.
+        source = diagnostics if isinstance(diagnostics, dict) else {}
+        hdrs = {"X-GitHub-Request-Id": source.get("request_id")}
+        perms = source.get("accepted_permissions")
+        alternatives = source.get("accepted_permission_sets")
+        groups = [perms] if perms is not None and alternatives is None else alternatives
+        if isinstance(groups, list) and 1 <= len(groups) <= 4:
+            if all(
+                isinstance(group, dict)
+                and 1 <= len(group) <= len(_DIAGNOSTIC_PERMISSIONS)
+                and all(isinstance(k, str) and isinstance(v, str) for k, v in group.items())
+                for group in groups
+            ):
+                hdrs["X-Accepted-GitHub-Permissions"] = ";".join(
+                    ",".join(k + "=" + v for k, v in group.items()) for group in groups
+                )
+        self.diagnostics = safe_error_diagnostics(hdrs)
+        if isinstance(source.get("category"), str) and source["category"] in set(
+            _ERROR_CATEGORIES.values()
+        ) | {"unknown"}:
+            self.diagnostics["category"] = source["category"]
 
 
 def _retry_after_seconds(headers) -> int | None:
@@ -122,6 +220,7 @@ class GitHubClient:
                 message[:MAX_ERROR_PREVIEW],
                 code=code,
                 retry_after=_retry_after_seconds(exc.headers),
+                diagnostics=safe_error_diagnostics(exc.headers, message),
                 credential_preview=(
                     mask_credential(bearer) if bearer and exc.code in (401, 403) else None
                 ),
@@ -154,7 +253,9 @@ class GitHubClient:
         )
         return {"number": data.get("number"), "url": data.get("html_url")}
 
-    def edit_pr(self, repo: str, number: int, title: str | None, body: str | None) -> dict:
+    def edit_pr(
+        self, repo: str, number: int, title: str | None, body: str | None, bearer=None
+    ) -> dict:
         self._check_repo(repo)
         payload: dict[str, str] = {}
         if title is not None:
@@ -163,21 +264,24 @@ class GitHubClient:
             payload["body"] = body
         if not payload:
             raise ValueError("edit_pr needs a title or a body")
-        data = self._call("PATCH", f"/repos/{repo}/pulls/{number}", payload)
+        data = self._call("PATCH", f"/repos/{repo}/pulls/{number}", payload, bearer=bearer)
         return {"number": data.get("number"), "url": data.get("html_url")}
 
-    def reply_thread(self, repo: str, number: int, comment_id: int, body: str) -> dict:
+    def reply_thread(self, repo: str, number: int, comment_id: int, body: str, bearer=None) -> dict:
         self._check_repo(repo)
         data = self._call(
             "POST",
             f"/repos/{repo}/pulls/{number}/comments",
             {"body": body, "in_reply_to": comment_id},
+            bearer=bearer,
         )
         return {"id": data.get("id"), "url": data.get("html_url")}
 
-    def comment_pr(self, repo: str, number: int, body: str) -> dict:
+    def comment_pr(self, repo: str, number: int, body: str, bearer=None) -> dict:
         self._check_repo(repo)
-        data = self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
+        data = self._call(
+            "POST", f"/repos/{repo}/issues/{number}/comments", {"body": body}, bearer=bearer
+        )
         return {"id": data.get("id"), "url": data.get("html_url")}
 
     def merge_pr(self, repo: str, number: int, method: str, bearer: str) -> dict:

@@ -1063,14 +1063,14 @@ def _build_seats() -> dict[str, dict[str, object]]:
     seats["ECHO"] = _hosted_seat(
         "ECHO",
         "Echo runs on the Instinct app's own computer and reaches the fleet through "
-        "the hosted agent-sync bridge",
+        "the hosted ST-MCP bridge",
         "Echo's credential is held by the hosted listener's secret store, not by a Mac "
         "file of its own.",
     )
     seats["WISE"] = _hosted_seat(
         "WISE",
         "Wise runs on the Instinct app's own computer and reaches the fleet through "
-        "the hosted agent-sync bridge",
+        "the hosted ST-MCP bridge",
         "Wise's credential is held by the hosted listener's secret store, not by a Mac "
         "file of its own.",
     )

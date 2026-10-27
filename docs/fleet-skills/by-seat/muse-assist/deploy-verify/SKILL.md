@@ -144,7 +144,7 @@ Move the Linear issue to **Deployed** (`simple-board status <id> deployed --reso
 
 - `/Users/jay/apps/COOLIFY.md`
 - `~/apps/ios-fleet/README.md` — TestFlight ship, the rate gate, and the freshness script
-- `/Users/jay/apps/AGENT-SYNC.md` — Production deploys; Coolify tokens; Releases, Versioning, and Brand Assets
+- `/Users/jay/apps/FLEET-PROTOCOL.md` — Production deploys; Coolify tokens; Releases, Versioning, and Brand Assets
 - ST `docs/rollouts/2026-08-07-hetzner-fleet-cutover.md`
 - ST `docs/rollouts/2026-07-10-auto-deploy-on.md` (mechanism; UUIDs/IPs in that note may be pre-cutover)
 - Skills: `secret-handoff`, `closeout`, `land-lane`

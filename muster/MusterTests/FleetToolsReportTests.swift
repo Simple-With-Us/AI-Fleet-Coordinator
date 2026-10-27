@@ -75,7 +75,7 @@ final class FleetToolsReportTests: XCTestCase {
             at: now.addingTimeInterval(-120),
             hosts: [
                 host("mac", checks: [row("tool:recall"), row("tool:lane")]),
-                host("server", checks: [row("tool:agent-sync"), row("tool:board")]),
+                host("server", checks: [row("tool:simple-chat"), row("tool:simple-board")]),
             ]
         )
         let reading = try read(json, now: now)
@@ -229,7 +229,7 @@ final class FleetToolsReportTests: XCTestCase {
                 host(
                     "server",
                     reachable: false,
-                    checks: [row("tool:agent-sync", "WARN", "unknown"), row("tool:board", "WARN", "unknown")],
+                    checks: [row("tool:simple-chat", "WARN", "unknown"), row("tool:simple-board", "WARN", "unknown")],
                     error: "no read-only route to the server (the ssh alias fleet-tools-ro is not configured)"
                 ),
             ]
@@ -356,7 +356,7 @@ final class FleetToolsReportTests: XCTestCase {
                     "mac",
                     checks: [
                         row("checkout:AI-Fleet-Coordinator", "FAIL", "stale", "human-tree"),
-                        row("command:agent-sync", "FAIL", "missing", "presence"),
+                        row("command:simple-chat", "FAIL", "missing", "presence"),
                         row("updater:com.jay.agent-sync-runtime-sync", "FAIL", "missing", "harness"),
                         row("tool:recall"),
                     ]
@@ -410,5 +410,46 @@ final class FleetToolsReportTests: XCTestCase {
             url.path,
             "/Users/somebody/.local/state/fleet-tools/report.json"
         )
+    }
+
+    /// Category filters expose coding app CLIs, fleet tools, dev tools, services, and checkouts without changing the host verdict.
+    func test_category_filters_expose_all_categories_without_changing_verdict() throws {
+        let now = Date()
+        let json = report(
+            at: now,
+            hosts: [
+                host(
+                    "mac",
+                    checks: [
+                        row("tool:agy", "OK", "current", "platform-cli"),
+                        row("tool:claude", "WARN", "stale", "platform-cli"),
+                        row("tool:simple-chat", "OK", "current", "fleet-tool"),
+                        row("tool:gh", "OK", "current", "dev-tool"),
+                        row("notes:runner", "OK", "current", "service"),
+                        row("mcp:codex", "WARN", "unknown", "harness"),
+                        row("checkout:AI-Fleet-Coordinator", "OK", "current", "human-tree"),
+                        row("command:simple-chat", "OK", "current", "presence"),
+                    ]
+                ),
+            ]
+        )
+        let reading = try read(json, now: now)
+        guard let mac = reading.hosts.first else {
+            XCTFail("expected mac host")
+            return
+        }
+        // Only tool:claude is stale among verdict-included rows; mcp:codex (harness) is excluded from verdict.
+        XCTAssertEqual(mac.state, .drift)
+        XCTAssertEqual(mac.notableRows.map(\.check), ["tool:claude"])
+        XCTAssertEqual(mac.allRows.count, 8)
+        XCTAssertEqual(mac.rows(matching: .codingApps).map(\.check), ["tool:claude", "tool:agy"])
+        XCTAssertEqual(mac.rows(matching: .fleetTools).map(\.check), ["tool:simple-chat"])
+        XCTAssertEqual(mac.rows(matching: .devTools).map(\.check), ["tool:gh"])
+        XCTAssertEqual(mac.rows(matching: .servicesAndHarnesses).map(\.check), ["mcp:codex", "notes:runner"])
+        XCTAssertEqual(
+            mac.rows(matching: .checkoutsAndPresence).map(\.check),
+            ["checkout:AI-Fleet-Coordinator", "command:simple-chat"]
+        )
+        XCTAssertEqual(mac.rows(matching: .all, search: "agy").map(\.check), ["tool:agy"])
     }
 }

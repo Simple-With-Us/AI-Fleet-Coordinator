@@ -8,14 +8,64 @@ import SwiftUI
 /// could write a fleet's control surface before that identity exists is the thing the
 /// fleet must not have.
 struct ControlsView: View {
+    enum KnobFilter: String, CaseIterable, Identifiable {
+        case all = "All Knobs"
+        case overridden = "Overridden"
+        case modes = "Modes"
+        case caps = "Caps & Numbers"
+        case urls = "URLs"
+
+        var id: String { rawValue }
+    }
+
     @EnvironmentObject private var store: FleetStore
     @State private var registry: KnobRegistry?
     @State private var reason: String?
+    @State private var knobFilter: KnobFilter = .all
+    @State private var searchText: String = ""
     /// True until the first read finishes.
     ///
     /// Without it the tab would say the registry could not be read for as long as
     /// the read takes,  which is a false report about a read that is still running.
     @State private var loading = true
+
+    private func filteredRows(_ registry: KnobRegistry) -> [KnobRegistry.Row] {
+        let overriddenNames: Set<String> = Set(
+            registry.knobs.compactMap { knob in
+                if case .current = knob.current { return knob.name }
+                return nil
+            }
+        )
+        let base: [KnobRegistry.Row]
+        switch knobFilter {
+        case .all:
+            base = registry.rows
+        case .overridden:
+            base = registry.rows.filter { overriddenNames.contains($0.name) }
+        case .modes:
+            base = registry.rows.filter {
+                $0.kind.lowercased().contains("mode")
+                    || $0.kind.lowercased().contains("flag")
+                    || $0.kind.lowercased().contains("bool")
+            }
+        case .caps:
+            base = registry.rows.filter {
+                $0.kind.lowercased().contains("int")
+                    || $0.kind.lowercased().contains("float")
+                    || $0.kind.lowercased().contains("cap")
+            }
+        case .urls:
+            base = registry.rows.filter { $0.kind.lowercased().contains("url") }
+        }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return base }
+        return base.filter {
+            $0.name.lowercased().contains(query)
+                || $0.owner.lowercased().contains(query)
+                || $0.note.lowercased().contains(query)
+                || $0.now.lowercased().contains(query)
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -47,8 +97,20 @@ struct ControlsView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Controls")
-                .font(.largeTitle.weight(.semibold))
+            HStack {
+                Text("Controls")
+                    .font(.largeTitle.weight(.semibold))
+                Spacer()
+                Button {
+                    Task {
+                        loading = true
+                        await load()
+                    }
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .disabled(loading)
+            }
             Text("Every variable that governs a script or a background process across the fleet.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -76,10 +138,30 @@ struct ControlsView: View {
     }
 
     private func table(_ registry: KnobRegistry) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            GridRowHeader(labels: ["Knob", "Owner", "Kind", "Now", "Local files may"])
-            ForEach(registry.rows) { row in
-                KnobRowView(row: row)
+        let rows = filteredRows(registry)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Picker("Filter", selection: $knobFilter) {
+                    ForEach(KnobFilter.allCases) { item in
+                        Text(item.rawValue).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 460)
+                TextField("Filter by knob name, owner, or purpose…", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(maxWidth: 260)
+                Spacer()
+                Text("\(rows.count) of \(registry.rows.count) knob(s)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                GridRowHeader(labels: ["Knob", "Owner", "Kind", "Now", "Local files may"])
+                ForEach(rows) { row in
+                    KnobRowView(row: row)
+                }
             }
         }
     }

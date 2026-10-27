@@ -63,6 +63,7 @@ __all__ = [
     "EventQueue",
     "NetworkError",
     "QueueExpired",
+    "RealmMismatch",
     "UsageError",
     "ZulipClient",
     "check_dm_guard",
@@ -77,6 +78,7 @@ __all__ = [
     "infisical_key_names_for_stem",
     "infisical_names",
     "infisical_project_id",
+    "infisical_roster",
     "infisical_seats",
     "message_channel",
     "message_topic",
@@ -269,6 +271,16 @@ class UsageError(AgentSyncError):
 
 
 class CredentialError(AgentSyncError):
+    exit_code = 3
+
+
+class RealmMismatch(CredentialError):
+    """The credential's own site is a different host than the realm it would be used against.
+
+    A `CredentialError`, so every caller that already refuses a bad credential still refuses
+    this one;  the narrower type says why:  the key is fine, it belongs to another server, so
+    the caller skips the target instead of failing the seat."""
+
     exit_code = 3
 
 
@@ -821,6 +833,38 @@ def infisical_seats(
     return frozenset(seats)
 
 
+_ZULIP_NAME_RE = re.compile(r"^(?P<prefix>.+)_ZULIP_(?:EMAIL|KEY|SITE)$")
+
+
+def infisical_roster(
+    env: Mapping[str, str] | None = None, home: Path | None = None
+) -> dict[str, tuple[str, ...]]:
+    """Every seat that has ANY of its three /zulip names, mapped to the names it is missing.
+
+    `infisical_seats` only answers for a seat whose three names are all present, so a seat whose
+    key is missing (but whose email and site are there) vanishes from it and nobody notices that
+    the seat was never addressed.  The roster is the wider enumeration:  the seat is named, and
+    the tuple says which of its three names are absent (an empty tuple means the seat is
+    complete).  The names are names, never values.
+
+    An empty roster means Infisical is off or could not be read:  the caller fails closed."""
+    names = infisical_names(env, home)
+    if not names:
+        return {}
+    roster: dict[str, tuple[str, ...]] = {}
+    for name in names:
+        match = _ZULIP_NAME_RE.match(name)
+        if not match:
+            continue
+        seat = seat_from_infisical_prefix(match.group("prefix"))
+        if not seat:
+            continue
+        missing = tuple(wanted for wanted in infisical_key_names(seat) if wanted not in names)
+        if seat not in roster or len(missing) < len(roster[seat]):
+            roster[seat] = missing
+    return roster
+
+
 def infisical_has(
     seat: str, env: Mapping[str, str] | None = None, home: Path | None = None
 ) -> bool:
@@ -970,7 +1014,11 @@ def _is_loopback(host: str) -> bool:
 
 
 def verify_realm(creds: Credentials, realm: str) -> None:
-    """Refuse credentials whose site host is not the realm host, and plain http to a non-loopback host."""
+    """Refuse credentials whose site host is not the realm host, and plain http to a non-loopback host.
+
+    A host that is not the realm's is a `RealmMismatch` (a `CredentialError`):  the key is fine,
+    it belongs to another server, so a caller skips that target instead of failing the seat.
+    The message names only hosts, so a caller may print it without exposing an identity."""
     c_host, c_port, _ = _host_key(creds.site)
     r_host, r_port, r_scheme = _host_key(realm)
     if not r_host or not c_host:
@@ -978,9 +1026,9 @@ def verify_realm(creds: Credentials, realm: str) -> None:
             "could not read a host from the realm or from the credential site (%s)" % creds.source
         )
     if (c_host, c_port) != (r_host, r_port):
-        raise CredentialError(
-            "credential site host %s (bot %s, from %s) does not match the realm host %s; refusing to send it there"
-            % (c_host, creds.email, creds.source, r_host)
+        raise RealmMismatch(
+            "credential site host %s does not match the realm host %s; refusing to send it there"
+            % (c_host, r_host)
         )
     if r_scheme != "https" and not _is_loopback(r_host):
         raise CredentialError(

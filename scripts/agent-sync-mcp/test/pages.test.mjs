@@ -331,6 +331,9 @@ test("a role never checked reads not checked yet, not a setup gap (AFC-347)", as
 test("admin page puts the owner's controls first and folds the long sections (AFC-347)", async () => {
   const calls = Array.from({ length: 40 }, (_, i) => ({ ts: Date.parse("2026-10-18T12:00:00Z") - i * 1000, seat: "JET", tool: "zulip_read", error_code: "ok" }));
   const html = await adminPage({ ...adminFacts, calls, statusCalls: calls, generatedAt: Date.parse("2026-10-18T12:00:00Z") }).text();
+  // The renamed unified title is pinned:  a rename regression fails here
+  // (kody 4372747419 - the visual harness covers the static site only).
+  assert.match(html, /<title>ST-MCP \+ GR-MCP Admin<\/title>/);
   const at = (s) => html.indexOf(s);
   assert.ok(at("<h2>Seats</h2>") > 0 && at("<h2>Seats</h2>") < at("Hand-Registered Clients"));
   assert.ok(at("Hand-Registered Clients") < at('id="status-overview"'));
@@ -339,4 +342,61 @@ test("admin page puts the owner's controls first and folds the long sections (AF
   assert.match(html, /<details class="fold"><summary><h2>Tool Calls<\/h2> <span class="count">40 calls<\/span><\/summary>/);
   for (const title of ["Refused Authorize Requests", "Audit"]) assert.match(html, new RegExp(`<details class="fold"><summary><h2>${title}`));
   assert.doesNotMatch(html, /<details[^>]* open/, "folded by default");
+});
+
+test("the bearer table shows mismatch counts when present, never hashes", async () => {
+  const { adminPage } = await import("../src/pages.js");
+  const base = {
+    email: "admin@example.test",
+    seats: [],
+    clients: [],
+    refusals: [],
+    audits: [],
+    generatedAt: 0,
+    csrf: "c",
+  };
+  const withCountRes = adminPage({
+    ...base,
+    gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null, mismatches: { count: 3, last_at: 1730000000000 } }],
+  });
+  const withCount = await withCountRes.text();
+  assert.ok(withCount.includes("3 wrong-secret attempts"), "count line renders");
+  const line = withCount.split("3 wrong-secret attempts")[1].slice(0, 120);
+  assert.ok(!/[0-9a-f]{64}/.test(line), "the count line carries no token hash");
+
+  const noneRes = adminPage({
+    ...base,
+    gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null, mismatches: { count: 0, last_at: 0 } }],
+  });
+  const none = await noneRes.text();
+  assert.ok(!none.includes("wrong-secret attempt"), "zero renders nothing");
+
+  const missingRes = adminPage({
+    ...base,
+    gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null }],
+  });
+  const missing = await missingRes.text();
+  assert.ok(!missing.includes("wrong-secret attempt"), "absent renders nothing");
+});
+
+test("a failed counter read says unavailable, never a silent zero", async () => {
+  const { adminPage } = await import("../src/pages.js");
+  const base = { email: "admin@example.test", seats: [], clients: [], refusals: [], audits: [], generatedAt: 0, csrf: "c" };
+  const html = await adminPage({
+    ...base,
+    gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null, mismatchesUnavailable: true }],
+  }).text();
+  assert.ok(html.includes("wrong-secret counter read unavailable"), "the failed read is named");
+  assert.ok(!html.includes("wrong-secret attempt"), "unavailable is not dressed as a count");
+});
+
+test("the mismatch count line labels its lifetime retention", async () => {
+  const { adminPage } = await import("../src/pages.js");
+  const base = { email: "admin@example.test", seats: [], clients: [], refusals: [], audits: [], generatedAt: 0, csrf: "c" };
+  const html = await adminPage({
+    ...base,
+    gbBearers: [{ identity: "JET", kind: "seat", credentials: true, status: null, mismatches: { count: 3, last_at: 1730000000000 } }],
+  }).text();
+  assert.ok(html.includes("3 wrong-secret attempts"), "count renders");
+  assert.ok(html.includes("(approximate; updates at most once a minute)"), "the write-throttled, lower-bound nature is labelled");
 });
