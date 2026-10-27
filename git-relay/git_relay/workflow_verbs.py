@@ -123,11 +123,7 @@ def _path(args, key="path"):
 
 def _workflow_path(path):
     """A relay write targeting the workflows dir itself, its parent, or anything under it."""
-    return (
-        path == ".github"
-        or path == ".github/workflows"
-        or path.startswith(".github/workflows/")
-    )
+    return path == ".github" or path == ".github/workflows" or path.startswith(".github/workflows/")
 
 
 def _enum(args, key, allowed, default=None):

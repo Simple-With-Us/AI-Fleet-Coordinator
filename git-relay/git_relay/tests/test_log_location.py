@@ -98,7 +98,6 @@ class LogLocationTests(unittest.TestCase):
                 "https://x.blob.core.windows.net/l", 10, full_cap=50
             )
 
-
     def test_status_falls_back_to_getcode_and_416_is_a_refusal(self):
         class Resp(io.BytesIO):
             def __init__(self, data, code, headers):
