@@ -106,7 +106,7 @@ NOTES_APPLE_EVENT_TIMEOUT_S="${NOTES_APPLE_EVENT_TIMEOUT_S:-900}"
 NOTES_SHORTCUT_TIMEOUT_S="${NOTES_SHORTCUT_TIMEOUT_S:-30}"
 [[ "$NOTES_SHORTCUT_TIMEOUT_S" =~ ^[0-9]+$ ]] || NOTES_SHORTCUT_TIMEOUT_S=30
 # One pin or unpin Shortcut at a time across processes.  Every create and update ends in a pin, and
-# several seats call this helper at once from separate processes (the agent-sync relay serializes only
+# several seats call this helper at once from separate processes (the chat relay serializes only
 # its own calls).  Two overlapping runs of the Shortcut fight over the same Find Notes picker on the
 # owner's screen and make each other fail, so a run takes this lock first.  macOS has no flock(1), so the
 # lock is a directory made with mkdir, which is atomic, holding the owner's pid.  A lock whose pid is gone,
@@ -287,11 +287,16 @@ if writes and E("_NL_CHANGES_FILE"):
 if writes and E("_NL_LINKS_FILE"):
     try:
         with open(E("_NL_LINKS_FILE")) as fh:
-            issues, prs = fh.read().split()
+            counts = fh.read().split()
         if not entry.get("reformatted"):
             entry["reformatted"] = {}
-        entry["reformatted"]["links"] = {"issues": int(issues), "prs": int(prs)}
-    except (OSError, ValueError, TypeError, AttributeError):
+        #  The counts are the issues, the pull requests and the projects that became links.  A file
+        #  written before projects were counted carries only the first two, so a missing third is
+        #  read as none rather than as a lost count.
+        links = {"issues": int(counts[0]), "prs": int(counts[1])}
+        links["projects"] = int(counts[2]) if len(counts) > 2 else 0
+        entry["reformatted"]["links"] = links
+    except (OSError, ValueError, TypeError, AttributeError, IndexError):
         pass
 if mode in ("read", "list"):
     key = "bytes" if mode == "read" else "count"
@@ -1364,6 +1369,9 @@ sys.stdout.write("".join(out))
 #
 #   * A Linear issue identifier, OPS-1000 or AFC-547, becomes a link to that issue in the fleet workspace.  The team
 #     key list is the Linear teams, so an identifier that is not a Linear issue (SRV-S07, MAC-P09) is left alone.
+#   * A Linear project reference, P-BF-6, becomes a link to that project.  A project has no URL schema that can be
+#     derived from its reference, so every project is coded here by hand, one line each, and a project reference that
+#     is not in the table is left as plain text.  A project reference is never treated as an issue.
 #   * A pull request reference, PR #957 or PR 957, becomes a link to the pull request, and the text is normalised to
 #     the house form, PR #957.  A list of them, PRs #380, #386 and #389, becomes one link per number.
 #   * A qualified reference, AFC#957 or BotFleet#1282, names its own repository and becomes a link to it.
@@ -1454,6 +1462,24 @@ TEAM_TO_REPO = {
     "CLUTCH": "Clutch",
 }
 
+#  The Linear projects a note may name, each coded by hand.
+#
+#  A Linear project has no URL that can be derived from its reference.  An issue is TEAM-NUMBER and
+#  every issue of a team lives under /issue/, so a team key and a number are enough to build the link.
+#  A project is neither:  its path carries a slug and a hash, so nothing about the reference says what
+#  the slug is.  The owner ruled on Oct 26, 2026 that a project reference must therefore be coded
+#  individually, and the Zulip linkifier team found no schema either.
+#
+#  So each project is one line here:  the reference a writer types, and the path of that project
+#  under the workspace.  A reference that is not in this table is left as plain text.  It is never
+#  guessed at, because a project reference that links to the wrong thing is worse than one that does
+#  not link, and it is never treated as an issue, because the number in it is a project number and
+#  not an issue number.
+PROJECT_PATHS = {
+    #  The BotFleet native macOS rewrite, which the fleet calls P-BF-6.
+    "P-BF-6": "botfleet-native-macos-rewrite-5afcbc055535",
+}
+
 #  A team that owns more than one repository.  A CTS issue is implemented in the shared congress
 #  repository and in the applications that use it, so a pull request next to a CTS-330 can be in any
 #  of them and GitHub is asked which one holds that number.
@@ -1512,6 +1538,17 @@ def _pairs(text):
     return out
 
 
+
+#  A caller may code more projects without editing this file:  REF=URL,REF=URL.  A value there is a
+#  whole URL, so a caller can name a project on another workspace or another host, while a project
+#  in the table above keeps following the host and the workspace the note is written for.
+_project_overrides = _pairs(_env("NOTES_LINEAR_PROJECTS", ""))
+PROJECT_URLS = {
+    ref: "https://" + linear_host + "/" + workspace + "/project/" + path
+    for ref, path in PROJECT_PATHS.items()
+}
+PROJECT_URLS.update(_project_overrides)
+
 #  The maps can be overridden, so a test does not have to carry the names of the repositories of
 #  the fleet to prove that the resolution works.
 #    NOTES_LINKIFY_TEAM_REPOS=KEY=repo,KEY=repo+other
@@ -1543,7 +1580,7 @@ if _owner_overrides:
     REPO_OWNER = dict(REPO_OWNER)
     REPO_OWNER.update(_owner_overrides)
 
-_counts = {"issues": 0, "prs": 0}
+_counts = {"issues": 0, "prs": 0, "projects": 0}
 _unresolved = []
 
 
@@ -1756,6 +1793,12 @@ LINEAR_RE = re.compile(
     r"(?<![A-Za-z0-9_/-])(?P<key>[A-Za-z0-9]{1,6})-(?P<num>\d+)(?![A-Za-z0-9_-])"
 )
 
+#  A project reference:  P-BF-6, or P-6 where the team is named elsewhere.  The P is the marker and
+#  the rest is the reference, so the whole thing is matched here and never offered to the issue rule.
+PROJECT_RE = re.compile(
+    r"(?<![A-Za-z0-9_/-])(?P<ref>P-[A-Za-z0-9]{1,6}-\d+)(?![A-Za-z0-9_-])"
+)
+
 
 LIST_RE = re.compile(r"(#\s*)?(\d+)|\band\b|([/,])")
 
@@ -1901,7 +1944,25 @@ def _process_unit(unit_html, is_row, title_repo):
                     _counts["prs"] += count
                     #  replace the list alone:  what follows it, such as ", 22 files", stays put
                     edits.append((r, m.start(), m.start("nums") + end, repl))
+            #  A project reference is claimed here, before the issue rule runs, so the number in it
+            #  can never be read as an issue number.  A project that is not coded stays plain text.
+            project_spans = []
+            for m in PROJECT_RE.finditer(run):
+                ref = m.group("ref")
+                #  The span is claimed whether the project is coded or not:  a project reference
+                #  that names no known project stays plain text, and the number inside it is a
+                #  project number that no issue rule may ever read.
+                project_spans.append((m.start(), m.end()))
+                url = PROJECT_URLS.get(ref)
+                if url is None:
+                    _unresolved.append(ref)
+                    continue
+                _counts["projects"] += 1
+                edits.append((r, m.start(), m.end(), _a(url, ref)))
             for m in LINEAR_RE.finditer(run):
+                #  A reference inside a project reference is the project number and not an issue number.
+                if any(m.start() >= a and m.end() <= b for a, b in project_spans):
+                    continue
                 key = m.group("key")
                 if key not in keyset:
                     continue
@@ -1948,10 +2009,11 @@ def main():
         return
     result = linkify(s, _env("NOTE_TITLE", ""))
     sys.stdout.write(result)
-    if _counts["issues"] or _counts["prs"]:
+    if _counts["issues"] or _counts["prs"] or _counts["projects"]:
         sys.stderr.write(
             "notes: linkified:  "
-            + str(_counts["issues"]) + " project reference" + ("" if _counts["issues"] == 1 else "s")
+            + str(_counts["issues"]) + " issue reference" + ("" if _counts["issues"] == 1 else "s")
+            + ", " + str(_counts["projects"]) + " project reference" + ("" if _counts["projects"] == 1 else "s")
             + " and " + str(_counts["prs"]) + " pull request reference" + ("" if _counts["prs"] == 1 else "s")
             + " became links\n"
         )
@@ -1962,7 +2024,14 @@ def main():
     if os.environ.get("NOTES_LINK_COUNTS_FILE"):
         try:
             with open(os.environ["NOTES_LINK_COUNTS_FILE"], "w") as _fh:
-                _fh.write(str(_counts["issues"]) + " " + str(_counts["prs"]) + chr(10))
+                _fh.write(
+                    str(_counts["issues"])
+                    + " "
+                    + str(_counts["prs"])
+                    + " "
+                    + str(_counts["projects"])
+                    + chr(10)
+                )
         except OSError:
             pass
 
@@ -2208,7 +2277,8 @@ def fleet_dates(markup, gap_entity=False):
             parts[i] = _one_space_gaps(_ISO.sub(_fleet_date, part), gap_entity)
     return ''.join(parts)
 
-# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as agent-sync's textfmt.single_gaps), so
+# Owner 2026-10-19:  a one-space sentence gap is widened too (the same rule as scripts/agent_sync/textfmt.py
+# single_gaps), so
 # a note reads the same whoever wrote it.  Known abbreviations, dotted words, initials and list markers are skipped.
 _ABBREV = frozenset('mr mrs ms dr st jr sr vs etc e.g i.e eg ie cf al approx dept est fig no nos vol ca mt ft sq'.split())
 _GAP1 = re.compile(r'([.!?][\x22\x27”’)\]*_]*) (?=[A-Z0-9\x22“(*#])')
