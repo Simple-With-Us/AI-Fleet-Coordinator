@@ -3,7 +3,7 @@
 
 Exits 1 if any required file is missing a repo, acronym, or DEFAULT_REPOS
 entry.  It also checks the registry's Zulip fields:  the realm and
-channel must match the agent-sync CLI, and each seat's bot email and credential
+channel must match the simple-chat CLI, and each seat's bot email and credential
 file code must be well formed and agree with the CLI's file-name rule.  Run from
 the AI-Fleet-Coordinator worktree:
 
@@ -66,7 +66,7 @@ BOT_EMAIL_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*-bot@(?P<host>[a-z0-9.-]+)$
 
 
 def zulip_errors(data: dict) -> list[str]:
-    """Check the registry's Zulip fields against the agent-sync CLI and each other.
+    """Check the registry's Zulip fields against the simple-chat CLI and each other.
 
     Presence is not required:  GROK-BOT is a set of owner-managed personas with no zuliprc, and
     a retired seat has no bot.  What is present must be well formed.  The bot email cannot be

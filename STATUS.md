@@ -1,5 +1,11 @@
 # Status
 
+## 2026-10-26 MM — Housekeeper owner record: one schema, and a reused pid that cannot pass for a live holder (AFC-554)
+
+Kody's post-merge review of AFC-479 (#856) found three defects that are live in `main`, and all three are fixed here: the shell owner reader now enforces the same schema the watcher enforces, the owner record carries the holder's process start time so a reused pid cannot pass for a live holder, and the watcher test stubs the hostname instead of embedding the runner's.  A new case runs one table of owner records through both readers and fails when they disagree.  The review of that fix found two more ways the readers could disagree, a missing length bound on the start token and a permission error answered differently by each, and both are fixed here as well.
+
+Rollout: `docs/rollouts/2026-10-26-afc554-housekeeper-owner-record.md`.
+
 ## 2026-10-25 MM — the sentence-gap rule, restated with the one chat-pane exception
 
 Between sentences the gap is a real U+00A0 plus a normal space on every surface, with one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.  The two-spaces wording in the 2026-09-03 entry below records the ruling as it stood that day.

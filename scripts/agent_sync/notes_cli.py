@@ -46,7 +46,7 @@ def add_parsers(
     """Register the `simple-notes` verbs, and the `guide` reader, on `sub`.
 
     The notes actions are top-level verbs of `simple-notes` (`simple-notes create ...`), not a
-    `notes` group, so each one is added straight to `sub`.  `guide` prints the Agent-Sync tools
+    `notes` group, so each one is added straight to `sub`.  `guide` prints the ST-MCP tools
     guide and stays on `simple-chat`; `verbs` lets each command keep the other's verbs out of its
     own `--help`.
     """

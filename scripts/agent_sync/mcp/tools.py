@@ -1,4 +1,4 @@
-"""The agent-sync MCP tools:  the contract (tools.json), the handlers, the untrusted envelope, the
+"""The ST-MCP tools:  the contract (tools.json), the handlers, the untrusted envelope, the
 schema check and the error model.  docs/protocols/agent-sync-mcp.md section 1 is the spec.
 
 Identity never travels in arguments:  the seat is fixed when the process starts and every schema
