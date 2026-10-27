@@ -83,7 +83,6 @@ class SeatPolicy:
         "wf_code_search",
         "wf_runs",
         "wf_run_jobs",
-        "wf_job_log",
         "wf_checks",
         "wf_update_branch",
         "wf_run_rerun",

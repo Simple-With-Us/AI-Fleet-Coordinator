@@ -15,7 +15,7 @@ def seats(actions, **extra):
 
 class WorkflowPolicyTests(unittest.TestCase):
     def test_every_workflow_spec_has_a_policy_action_name(self):
-        self.assertFalse(set(SPECS) - set(SeatPolicy.WORKFLOW_ACTIONS))
+        self.assertEqual(set(SPECS), set(SeatPolicy.WORKFLOW_ACTIONS))
         self.assertEqual(len(SeatPolicy.WORKFLOW_ACTIONS), len(set(SeatPolicy.WORKFLOW_ACTIONS)))
         self.assertTrue(all(a.startswith("wf_") for a in SeatPolicy.WORKFLOW_ACTIONS))
 
