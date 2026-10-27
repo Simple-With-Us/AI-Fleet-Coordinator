@@ -91,6 +91,8 @@ import json
 import os
 import re
 import shutil
+import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -4617,16 +4619,246 @@ def remote_selected() -> bool:
     return env("SIMPLE_BOARD_REMOTE") == "1"
 
 
+REMOTE_MAX_BYTES = 4_000_000
+REMOTE_MAX_DEPTH = 64
+REMOTE_MAX_NODES = 100_000
+# The error codes the hosted server can return (the ToolError codes in scripts/agent-sync-mcp/src);  a test keeps
+# this list in step with that source.  Anything else, including a code that merely looks safe, prints as "error".
+_REMOTE_CODES = frozenset(
+    (
+        "invalid_argument",
+        "unavailable",
+        "upstream_error",
+        "not_authorized",
+        "rate_limited",
+        "not_configured",
+        "outcome_unknown",
+        "paused",
+        "linear_error",
+        "internal",
+        "response_too_large",
+        "refused_secret",
+        "not_found",
+        "channel_not_allowed",
+        "claim_held",
+        "zulip_error",
+        "writes_disabled",
+        "unknown_tool",
+        "session_required",
+        "relay_refused",
+        "identity_required",
+        "identity_not_allowed",
+        "forbidden",
+        "fleetlink_seat_disabled",
+        "fleetlink_refused",
+        "dm_not_allowed",
+        "budget_exhausted",
+    )
+)
+_REMOTE_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+_REMOTE_UNKNOWN = "; the write may or may not have been applied, check before sending it again"
+
+
+def _remote_visible(text: str) -> str:
+    """Hosted text with control characters (other than newline and tab) shown as \\xNN, so it cannot drive the terminal."""
+    return _REMOTE_CONTROL_RE.sub(lambda m: "\\x%02x" % ord(m.group()), text)
+
+
+class _TransportError(Exception):
+    """The request did not produce an HTTP answer.  `sent` is False only when it provably never left
+    (name lookup, refused connection, certificate check);  every other stage is treated as sent."""
+
+    def __init__(self, sent: bool, reason: str = "") -> None:
+        super().__init__(reason)
+        self.sent = sent
+        self.reason = reason
+
+
 def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[int, str, bytes]:
-    """The one network call of the remote transport:  (status, content type, body).  Tests replace this."""
+    """The one network call of the remote transport:  (status, content type, body).  Tests replace this.
+    Redirects are never followed (the Authorization header must not leave the fixed origin), the body is
+    read under one total deadline and one byte cap."""
+    deadline = time.monotonic() + timeout
+    op = urllib.request.build_opener(urllib.request.ProxyHandler({}), _RemoteNoRedirect())
     req = urllib.request.Request(url, data=body, method="POST", headers=headers)
     try:
-        with opener().open(req, timeout=timeout) as r:
-            return r.status, r.headers.get("Content-Type", ""), r.read(4_000_000)
-    except urllib.error.HTTPError as e:
-        return e.code, e.headers.get("Content-Type", "") if e.headers else "", b""
-    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
-        die("the hosted endpoint could not be reached (no direct fallback in remote mode)", EXIT_ERROR)
+        with op.open(req, timeout=timeout) as r:
+            chunks, total = [], 0
+            sock = getattr(getattr(getattr(r, "fp", None), "raw", None), "_sock", None)
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise _TransportError(True, "deadline")
+                if sock is not None:
+                    sock.settimeout(remaining)
+                chunk = r.read1(65536)
+                if time.monotonic() > deadline:
+                    raise _TransportError(True, "deadline")
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > REMOTE_MAX_BYTES:
+                    raise _TransportError(True, "too large")
+                chunks.append(chunk)
+            return r.status, r.headers.get("Content-Type", ""), b"".join(chunks)
+    except urllib.error.HTTPError as exc:
+        exc.close()
+        return exc.code, "", b""
+    except urllib.error.URLError as exc:
+        unsent = isinstance(exc.reason, (socket.gaierror, ConnectionRefusedError, ssl.SSLCertVerificationError))
+        raise _TransportError(not unsent, "unreachable") from None
+    except _TransportError:
+        raise
+    except (http.client.HTTPException, OSError, ValueError):
+        raise _TransportError(True, "transport") from None
+
+
+class _RemoteNoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _remote_depth_ok(text: str) -> bool:
+    depth = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            if depth > REMOTE_MAX_DEPTH:
+                return False
+        elif ch in "]}":
+            depth -= 1
+    return True
+
+
+def _remote_nodes_ok(value) -> bool:
+    stack, count = [value], 0
+    while stack:
+        item = stack.pop()
+        count += 1
+        if count > REMOTE_MAX_NODES:
+            return False
+        if isinstance(item, dict):
+            stack.extend(item.values())
+        elif isinstance(item, list):
+            stack.extend(item)
+    return True
+
+
+def _remote_events(ctype: str, raw: bytes) -> list[str]:
+    """The JSON texts of one answer:  the body itself, or each Server-Sent Event (its `data:` lines joined by a
+    newline, as the SSE format defines, comments and other fields ignored)."""
+    text = raw.decode("utf-8", "replace")
+    if "text/event-stream" not in ctype.lower():
+        return [text]
+    events, current = [], []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line == "":
+            if current:
+                events.append("\n".join(current))
+                current = []
+        elif line.startswith("data:"):
+            value = line[5:]
+            current.append(value[1:] if value.startswith(" ") else value)
+    if current:
+        events.append("\n".join(current))
+    return events
+
+
+def _remote_code(value) -> str:
+    """A server error code, only when it is one of the codes the hosted server defines;  anything else is "error"."""
+    return value if isinstance(value, str) and value in _REMOTE_CODES else "error"
+
+
+def _remote_answer(ctype: str, raw: bytes, tool: str, write: bool):
+    """The tools/call result of one answer, or (None, message).  Returns (result, "") on success.  Only an
+    allow-listed code and a bounded retry-after leave this function:  the server's own message text is
+    untrusted and can echo the caller's input, so it is never copied into an error."""
+    unknown = _REMOTE_UNKNOWN if write else ""
+    msg = None
+    for text in _remote_events(ctype, raw):
+        if not _remote_depth_ok(text):
+            return None, "the hosted endpoint sent an answer that nests too deeply" + unknown
+        try:
+            candidate = json.loads(text)
+        except (ValueError, RecursionError):
+            continue
+        if (
+            isinstance(candidate, dict)
+            and candidate.get("jsonrpc") == "2.0"
+            and type(candidate.get("id")) is int
+            and candidate["id"] == 1
+            and ("result" in candidate) != ("error" in candidate)
+        ):
+            msg = candidate
+            break
+    if msg is None:
+        return None, "the hosted endpoint sent no readable answer to the call" + unknown
+    if not _remote_nodes_ok(msg):
+        return None, "the hosted endpoint sent an oversized answer" + unknown
+    if "error" in msg:
+        err = msg["error"]
+        code = _remote_code(err.get("code")) if isinstance(err, dict) else "error"
+        return None, "the hosted endpoint refused the call" + ("" if code == "error" else f" ({code})")
+    result = msg.get("result")
+    if not isinstance(result, dict):
+        return None, "the hosted endpoint sent no result" + unknown
+    content = result.get("content")
+    sc = result.get("structuredContent")
+    if (
+        (content is not None and not isinstance(content, list))
+        or any(not isinstance(p, dict) or ("text" in p and not isinstance(p["text"], str)) for p in content or [])
+        or (sc is not None and not isinstance(sc, dict))
+        or not isinstance(result.get("isError", False), bool)
+    ):
+        return None, "the hosted endpoint sent a result in an unexpected shape" + unknown
+    if result.get("isError"):
+        code = _remote_code((sc or {}).get("code"))
+        retry = (sc or {}).get("retry_after")
+        after = f", retry after {retry}s" if isinstance(retry, int) and not isinstance(retry, bool) and 0 <= retry <= 86400 else ""
+        note = _REMOTE_UNKNOWN if write and code == "outcome_unknown" else ""
+        return None, f"{tool} failed on the hosted server: {code}{after}{note}"
+    return result, ""
+
+
+def _remote_failure(exc: "_TransportError", write: bool) -> str:
+    if write and exc.sent:
+        return "the hosted endpoint did not answer" + _REMOTE_UNKNOWN + " (no direct fallback in remote mode)"
+    return "the hosted endpoint could not be reached (no direct fallback in remote mode)"
+
+
+def _remote_status_message(status: int, write: bool) -> str:
+    if status in (401, 403):
+        return "the hosted endpoint refused this bearer (not valid, expired, paused or not accepted for MCP)"
+    return f"the hosted endpoint answered HTTP {status}" + (
+        _REMOTE_UNKNOWN if write and (status >= 500 or status == 408) else ""
+    )
+
+
+def _remote_scan_arguments(scanner, arguments, bearer: str) -> str | None:
+    """The first argument field the fleet secret scanner flags, as `secret_scan:<field>` (the field name only,
+    never the text or any part of it), or None.  Every string at any depth is checked, and the bearer itself
+    always matches."""
+    stack = [("", arguments)]
+    while stack:
+        path, value = stack.pop()
+        if isinstance(value, str):
+            if scanner.scan(value, known=[bearer]) is not None:
+                return "secret_scan:" + (path or "arguments")
+        elif isinstance(value, dict):
+            stack.extend((f"{path}.{k}" if path else str(k), v) for k, v in value.items())
+        elif isinstance(value, (list, tuple)):
+            stack.extend((f"{path}[{i}]", v) for i, v in enumerate(value))
+    return None
 
 
 def remote_bearer() -> str:
@@ -4639,37 +4871,44 @@ def remote_bearer() -> str:
     return v
 
 
-def remote_call(tool: str, arguments: dict) -> dict:
+def _remote_scanner():
+    """The fleet's secret scanner (scripts/agent_sync/secretscan.py, standard library only), loaded by path.  If it
+    cannot be loaded nothing is sent:  remote mode has no unscanned route."""
+    import importlib.util
+
+    path = Path(os.path.realpath(__file__)).parent.parent / "agent_sync" / "secretscan.py"
+    try:
+        spec = importlib.util.spec_from_file_location("_remote_secretscan", str(path))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except (OSError, ImportError, AttributeError, SyntaxError):
+        die("the secret scanner is not available, so nothing was sent (remote mode has no unscanned route)",
+            EXIT_ERROR)
+
+
+def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     """One tools/call to the fixed endpoint.  Returns the tool's structuredContent."""
     bearer = remote_bearer()
+    hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
+    if hit:
+        die(f"refused before sending: {hit}", EXIT_USAGE)
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                        "params": {"name": tool, "arguments": arguments}}).encode()
-    status, ctype, raw = _remote_post(REMOTE_MCP_URL, {
-        "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
-        "MCP-Protocol-Version": REMOTE_PROTOCOL_VERSION, "Authorization": "Bearer " + bearer,
-        "User-Agent": "simple-board-remote/1"}, body, REMOTE_TIMEOUT_S)
-    if status in (401, 403):
-        die("the hosted endpoint refused this bearer (not valid, expired, paused or not accepted for MCP)", EXIT_AUTH)
-    if status != 200:
-        die(f"the hosted endpoint answered HTTP {status}", EXIT_ERROR)
-    text = raw.decode("utf-8", "replace")
-    if "text/event-stream" in ctype:
-        text = next((ln[5:].strip() for ln in text.splitlines() if ln.startswith("data:")), "")
     try:
-        msg = json.loads(text)
-    except ValueError:
-        die("the hosted endpoint sent an unreadable answer", EXIT_ERROR)
-    if not isinstance(msg, dict):
-        die("the hosted endpoint sent an unreadable answer", EXIT_ERROR)
-    if isinstance(msg.get("error"), dict):
-        die("the hosted endpoint refused the call: " + str(msg["error"].get("message", ""))[:200], EXIT_ERROR)
-    result = msg.get("result")
-    if not isinstance(result, dict):
-        die("the hosted endpoint sent no result", EXIT_ERROR)
-    if result.get("isError"):
-        sc = result.get("structuredContent") if isinstance(result.get("structuredContent"), dict) else {}
-        die(f"{tool} failed on the hosted server: " + str(sc.get("code") or sc.get("message") or "error")[:120],
-            EXIT_ERROR)
+        status, ctype, raw = _remote_post(REMOTE_MCP_URL, {
+            "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+            "MCP-Protocol-Version": REMOTE_PROTOCOL_VERSION, "Authorization": "Bearer " + bearer,
+            "User-Agent": "simple-board-remote/1"}, body, REMOTE_TIMEOUT_S)
+    except _TransportError as exc:
+        die(_remote_failure(exc, write), EXIT_ERROR)
+    if status in (401, 403):
+        die(_remote_status_message(status, write), EXIT_AUTH)
+    if status != 200:
+        die(_remote_status_message(status, write), EXIT_ERROR)
+    result, problem = _remote_answer(ctype, raw, tool, write)
+    if problem:
+        die(problem, EXIT_ERROR)
     sc = result.get("structuredContent")
     if not isinstance(sc, dict):
         die("the hosted endpoint sent no structured result", EXIT_ERROR)
@@ -4701,8 +4940,9 @@ def remote_write(a) -> dict:
         who = remote_call("linear_whoami", {})["structured"]
         got = str(who.get("authenticated_seat") or who.get("seat") or "")
         if not got or got.lower() != str(claimed).lower():
-            die(f"--by {claimed} does not match the seat the hosted server reports for this bearer; remote mode "
-                "never acts as another seat", EXIT_USAGE)
+            shown = _remote_visible(got)[:40] if got else "none reported"
+            die(f"--by {claimed} does not match the seat the hosted server reports for this bearer ({shown}); "
+                "remote mode never acts as another seat", EXIT_USAGE)
     if a.cmd == "claim":
         args = {"id": a.id}
         if a.comment:
@@ -4724,7 +4964,7 @@ def remote_write(a) -> dict:
                 args[key] = val
     if sessions:
         args["session"] = sessions[0]
-    return remote_call(tool, args)
+    return remote_call(tool, args, write=True)
 
 
 def remote_main(a) -> int:
@@ -4736,7 +4976,7 @@ def remote_main(a) -> int:
         out = remote_call("linear_whoami", {})
     elif a.cmd in REMOTE_WRITE_VERBS:
         out = remote_write(a)
-        print(out["text"] or json.dumps(out["structured"], indent=2))
+        print(_remote_visible(out["text"]) if out["text"] else json.dumps(out["structured"], indent=2))
         return 0
     elif a.cmd == "show":
         args: dict = {"id": a.id}
@@ -4766,14 +5006,15 @@ def remote_main(a) -> int:
         if a.__dict__.get("json"):
             print(json.dumps({"structured": out["structured"], "text": out["text"]}, indent=2))
         else:
-            print(out["text"])
+            print(_remote_visible(out["text"]) if out["text"] else json.dumps(out["structured"], indent=2))
         return 0
     out = out["structured"]
     if a.cmd == "whoami" and not a.__dict__.get("json"):
-        for k in ("seat", "authenticated_seat", "app", "viewer_id", "workspace", "transport"):
-            if out.get(k):
-                print(f"{k}: {out[k]}")
-        return 0
+        shown = [k for k in ("seat", "authenticated_seat", "app", "viewer_id", "workspace", "transport") if out.get(k)]
+        for k in shown:
+            print(f"{k}: {_remote_visible(str(out[k]))}")
+        if shown:
+            return 0
     print(json.dumps(out, indent=2))
     return 0
 

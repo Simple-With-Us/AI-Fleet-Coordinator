@@ -238,6 +238,26 @@ class Remote(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual([c["name"] for c in calls], ["linear_whoami"])
 
+    def test_by_mismatch_names_the_seat_the_server_reported(self):
+        _, _, err, _ = self.run_writes(["comment", "AFC-1", "--by", "ECHO", "--text", "x"], [rpc(self.WHO)])
+        self.assertIn("(CODEX)", err)
+
+    def test_a_credential_shaped_comment_is_refused_before_any_write(self):
+        code, _, err, calls = self.run_writes(
+            ["comment", "AFC-1", "--by", "CODEX", "--text", "token ghp_" + "A1b2C3d4E5" * 4], [rpc(self.WHO)]
+        )
+        self.assertEqual([c["name"] for c in calls], ["linear_whoami"])
+        self.assertIn("secret_scan:body", err)
+        self.assertNotIn("ghp_", err)
+
+    def test_show_with_no_text_prints_the_structured_result_and_text_is_escaped(self):
+        code, out, _, _ = self.run_cli(["show", "AFC-1"], rpc({"id": "AFC-1"}))
+        self.assertEqual(code, 0)
+        self.assertIn('"id": "AFC-1"', out)
+        code, out, _, _ = self.run_cli(["show", "AFC-1"], rpc({"id": "AFC-1"}, text="a\x1b[2Jb"))
+        self.assertNotIn("\x1b", out)
+        self.assertIn("\\x1b", out)
+
     def test_write_options_with_no_hosted_equivalent_are_refused(self):
         for argv in (
             ["claim", "AFC-1", "--by", "CODEX", "--steal", "--reason", "r"],

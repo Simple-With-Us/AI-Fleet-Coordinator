@@ -66,6 +66,19 @@ class RemoteRecall(unittest.TestCase):
         self.assertIn("BEGIN_UNTRUSTED_RECALL", out)
         self.assertNotIn(BEARER, out + err)
 
+    def test_hosted_text_cannot_drive_the_terminal(self):
+        code, out, err, _ = self.run_cli(["stats"], reply({"points": 5}, text="a\x1b]0;owned\x07b"))
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("\x1b", out)
+        self.assertIn("\\x1b", out)
+
+    def test_a_credential_shaped_query_is_refused_before_any_send(self):
+        code, out, err, calls = self.run_cli(["ghp_" + "A1b2C3d4E5" * 4], reply({}))
+        self.assertNotEqual(code, 0)
+        self.assertEqual(calls, [])
+        self.assertIn("secret_scan:query", err)
+        self.assertNotIn("ghp_", err + out)
+
     def test_stats(self):
         code, out, _, calls = self.run_cli(["stats", "--json"], reply({"points": 5}))
         self.assertEqual(code, 0)
@@ -104,6 +117,7 @@ class RemoteRecall(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(calls[0][2]["params"], {"name": "recall_contribute", "arguments": {
             "text": self.LESSON, "category": "lesson", "app": "fleet", "title": "pm2", "url": "https://x.example/1"}})
+        self.assertNotIn("idempotency_key", calls[0][2]["params"]["arguments"])
         self.assertNotIn("seat", calls[0][2]["params"]["arguments"])
 
     def test_contribute_refuses_seat_and_force(self):
@@ -142,8 +156,9 @@ class TransportErrors(unittest.TestCase):
                 raise http.client.IncompleteRead(b"x")
 
         with mock.patch.object(recall.urllib.request, "build_opener", return_value=Op()):
-            with self.assertRaises(recall.FleetRagError):
+            with self.assertRaises(recall._TransportError) as ctx:
                 recall._remote_post("https://agents.simplewithus.com/mcp", {}, b"{}", 1)
+        self.assertTrue(ctx.exception.sent)
 
 
 if __name__ == "__main__":

@@ -101,6 +101,18 @@ class RemoteRead(unittest.TestCase):
                 self.assertEqual(code, 0, err)
                 self.assertEqual(calls[0][2]["params"], {"name": tool, "arguments": args})
 
+    def test_a_non_ascii_digit_recipient_is_a_clean_refusal_not_a_traceback(self):
+        code, _, err, calls = self.run_cli(["dm", "--to", "\u0663", "hi"], reply({}), env=self.W)
+        self.assertEqual((code, calls), (2, []))
+        self.assertNotIn("Traceback", err)
+
+    def test_hosted_text_cannot_drive_the_terminal(self):
+        code, out, err, _ = self.run_cli(["whoami"], reply({}, text="a\x1b]0;owned\x07b\x9bc"))
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("\x1b", out)
+        self.assertNotIn("\x07", out)
+        self.assertIn("\\x1b", out)
+
     def test_write_options_with_no_hosted_equivalent_are_refused(self):
         for argv in (["post", "--topic", "t", "--fleet", "x"], ["post", "--topic", "t", "--quiet", "x"],
                      ["post", "--topic", "t", "--no-tag", "x"], ["post", "--topic", "t", "--to-owner", "x"],
@@ -147,8 +159,9 @@ class TransportErrors(unittest.TestCase):
                 raise http.client.IncompleteRead(b"x")
 
         with mock.patch.object(cli.urllib.request, "build_opener", return_value=Op()):
-            with self.assertRaises(cli.RemoteError):
+            with self.assertRaises(cli._TransportError) as ctx:
                 cli._remote_post("https://agents.simplewithus.com/mcp", {}, b"{}", 1)
+        self.assertTrue(ctx.exception.sent)
 
 
 class EntrypointTrap(unittest.TestCase):
