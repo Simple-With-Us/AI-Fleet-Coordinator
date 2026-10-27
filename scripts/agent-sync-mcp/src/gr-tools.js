@@ -17,6 +17,7 @@
 // relay's own error body;  no fallback, no retry storm, secrets never logged.
 
 import { z } from "zod";
+import { callTypedV1 } from "./gr-typed-v1.js";
 import { resolveSecret } from "./infisical.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
@@ -96,6 +97,11 @@ export class GrRelayClient {
     this.#secrets = [accessId, accessSecret, bearer];
     this.fetch = fetchImpl;
     this.timeoutMs = timeoutMs;
+  }
+
+  async callTyped(action, args, expectedPrincipal) {
+    return callTypedV1({action,args,baseUrl:this.#base,bearer:this.#secrets[2],
+      accessId:this.#secrets[0],accessSecret:this.#secrets[1],fetchImpl:this.fetch,expectedPrincipal});
   }
 
   secrets() {

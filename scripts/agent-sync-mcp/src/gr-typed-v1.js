@@ -27,7 +27,7 @@ export function validTypedV1Receipt(action, args, body) {
   if (!body.label_events.every(e => exactKeys(e,['id','createdAt','__typename','actor','label']) &&
       ['LabeledEvent','UnlabeledEvent'].includes(e.__typename) &&
       [e.id,e.createdAt,e.label].every(x => text(x,160)) && (e.actor === null || text(e.actor,160)))) return false;
-  return !disable || (body.outcome === 'confirmed_disabled' && body.auto_merge_enabled === false &&
+  return !disable || (body.state === 'OPEN' && body.outcome === 'confirmed_disabled' && body.auto_merge_enabled === false &&
     typeof body.write_attempted === 'boolean' && body.atomic_head_guard === false);
 }
 export const TYPED_V1_TOOLS = Object.freeze(TYPED_V1_ACTIONS.map(action => ({
@@ -49,12 +49,18 @@ export async function callTypedV1({action,args,baseUrl,bearer,accessId,accessSec
     // 110s covers preflight/write/readback, each existing broker call max30s.
     const response = await fetchImpl(`${url.origin}/v1/${action}`, {method:'POST',redirect:'manual',signal:AbortSignal.timeout(110000),
       headers:{Authorization:`Bearer ${bearer}`,'CF-Access-Client-Id':accessId,'CF-Access-Client-Secret':accessSecret,'Content-Type':'application/json'},body:JSON.stringify(args)});
-    if (!response.body || response.status !== 200) return unknown();
+    if (!response.body) return unknown();
     const reader = response.body.getReader(); const chunks=[]; let bytes=0;
     for (;;) {const {done,value}=await reader.read(); if(done) break; bytes+=value.byteLength;
       if(bytes>65536){await reader.cancel();return unknown();} chunks.push(value);}
     const raw = new Uint8Array(bytes); let offset=0; for(const chunk of chunks){raw.set(chunk,offset);offset+=chunk.byteLength;}
     const parsed = JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(raw));
+    if (response.status !== 200) {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return unknown();
+      if ([401,403].includes(response.status)) return {status:response.status,body:{error:'typed_request_refused',retryable:false}};
+      if (response.status === 503 && parsed.retryable === true) return {status:503,body:{error:'typed_preflight_unavailable',retryable:true}};
+      return unknown();
+    }
     if (!validTypedV1Receipt(action,args,parsed) || parsed.principal !== expectedPrincipal) return unknown();
     // Secrets must never reflect even from a compromised/misconfigured upstream.
     const encoded = JSON.stringify(parsed);
