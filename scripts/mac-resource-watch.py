@@ -404,7 +404,12 @@ def _housekeeper_guard():
 # any process can write, so a record is either exactly this -- the key set,
 # the types and the bounds of every value -- or it is not an owner record at
 # all.
-_OWNER_KEYS = frozenset({"pid", "host", "acquired_at", "lock"})
+_OWNER_KEYS = frozenset({"pid", "host", "acquired_at", "lock", "start"})
+
+# The start time of the holder's process, as the kernel reports it.  It is an
+# OPAQUE string:  it is compared and never parsed, so the only bound it needs
+# is one that keeps a hostile file from putting an unbounded string in memory.
+_OWNER_START_MAX = 128
 
 
 def _parse_housekeeper_owner(raw: str) -> dict | None:
@@ -453,6 +458,9 @@ def _parse_housekeeper_owner(raw: str) -> dict | None:
     lock = owner["lock"]
     if not isinstance(lock, str) or not lock:
         return None
+    start = owner["start"]
+    if not isinstance(start, str) or not start or len(start) > _OWNER_START_MAX:
+        return None
     return owner
 
 
@@ -481,6 +489,42 @@ def _read_housekeeper_owner() -> dict | None:
             return _parse_housekeeper_owner(raw)
     except OSError:
         return None
+
+
+def _process_start_token(pid: int) -> str:
+    """The start time of the process a pid names, as an opaque string.
+
+    A pid alone does not name a process:  the kernel hands the same number to
+    somebody else once the original exits, and a reused pid that is ALIVE
+    looks exactly like a holder that is still running.  The start time tells
+    the two apart.
+
+    The token is read from the kernel through ps and kept as a string that is
+    compared and never parsed, so the format does not have to be understood
+    here.  The C locale is forced, because the writer and the reader have to
+    produce the SAME string for the same process:  a token that differed only
+    because the two processes ran under different locales would read as a
+    different process, and a live holder's lock would be taken away from it.
+
+    An empty token means the start time could not be read at all.  A caller
+    that cannot tell the holder from a reused pid must not conclude that the
+    holder is gone.
+    """
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
 
 
 def _pid_alive(pid: int) -> bool:
@@ -519,7 +563,11 @@ def _housekeeper_owner_is_gone(lock_mtime: float) -> bool:
       * it is malformed  --  it is shared state any process can write;
       * it names another host  --  a pid is only meaningful where it ran;
       * it is OLDER than the lock directory it sits beside  --  then it
-        describes an earlier holder, not the lock we are looking at.
+        describes an earlier holder, not the lock we are looking at;
+      * it names a pid whose start time cannot be read  --  then it cannot
+        tell the holder from a pid the kernel has since handed to somebody
+        else, and a record that cannot say which is not evidence of
+        anything.
     """
     owner = _read_housekeeper_owner()
     if owner is None:
@@ -532,7 +580,19 @@ def _housekeeper_owner_is_gone(lock_mtime: float) -> bool:
         return False
     if owner_mtime <= lock_mtime:
         return False
-    return not _pid_alive(owner["pid"])
+    pid = owner["pid"]
+    if not _pid_alive(pid):
+        return True
+    # The pid is ALIVE.  It is the holder only when it is the SAME process:
+    # the kernel hands a pid to somebody else once the original exits, and a
+    # reused pid looks exactly like a live holder.  Believing it would leave
+    # a dead holder's lock in place until the whole stale window expires.
+    current = _process_start_token(pid)
+    if not current:
+        # The start time could not be read:  the record cannot speak for the
+        # lock, and the age rule decides.
+        return False
+    return current != owner["start"]
 
 
 def _write_housekeeper_owner() -> None:
@@ -543,7 +603,9 @@ def _write_housekeeper_owner() -> None:
     waiting out the whole stale window.  The owner file is only a hint, so
     failing to write it must not fail the acquire; the lock itself is the
     mutex.  It is written AFTER the lock directory, so its mtime is newer and
-    a reader can tell that it describes the current holder.
+    a reader can tell that it describes the current holder.  The start time
+    travels with the pid, because a pid the kernel has since handed to
+    somebody else would otherwise look exactly like a live holder.
 
     The write is ATOMIC:  a temp file in the same directory is written,
     flushed and fsynced, renamed over the owner file, and the directory is
@@ -554,6 +616,13 @@ def _write_housekeeper_owner() -> None:
     The write is under the shared guard, because a writer that interleaves
     with a reader can leave a half-written file behind.
     """
+    start = _process_start_token(os.getpid())
+    if not start:
+        # Without the start time the record cannot tell the holder from a
+        # reused pid, so none is written:  a missing owner file is an
+        # ordinary state -- the shell holder writes none at all -- and the
+        # age rule decides.  The lock itself is the mutex.
+        return
     payload = {
         "pid": os.getpid(),
         # The host must be a non-empty string:  that is the declared shape of
@@ -562,6 +631,9 @@ def _write_housekeeper_owner() -> None:
         "host": socket.gethostname() or "unknown",
         "acquired_at": time.time(),
         "lock": str(HOUSEKEEPER_LOCK),
+        # The start time of THIS process, so a reader can tell the holder
+        # from a pid the kernel has since handed to somebody else.
+        "start": start,
     }
     try:
         with _housekeeper_guard():
