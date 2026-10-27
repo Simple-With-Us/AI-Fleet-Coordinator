@@ -128,9 +128,9 @@ class SeatAndMcpTests(unittest.TestCase):
     def test_mcp_registrations(self):
         self.touch(
             ".codex/config.toml",
-            "[mcp_servers.agent-sync]\ncommand = 'x'\n[mcp_servers.fleetlink]\nurl = 'y'\n",
+            "[mcp_servers.simple-chat]\ncommand = 'x'\n[mcp_servers.fleetlink]\nurl = 'y'\n",
         )
-        self.touch(".claude.json", json.dumps({"mcpServers": {"agent-sync": {}}}))
+        self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
         report = doctor.Report()
         doctor.check_mcp(report)
         rows = {r["check"]: r for r in report.rows}
@@ -356,9 +356,9 @@ class SeatAndMcpTests(unittest.TestCase):
 
     def test_codex_toml_quoted_and_subtables(self):
         names = doctor.codex_mcp_names(
-            '[mcp_servers."agent-sync"]\ncommand = "x"\n[mcp_servers.fleetlink.env]\nA = "b"\n'
+            '[mcp_servers."simple-chat"]\ncommand = "x"\n[mcp_servers.fleetlink.env]\nA = "b"\n'
         )
-        self.assertEqual(sorted(names), ["agent-sync", "fleetlink"])
+        self.assertEqual(sorted(names), ["fleetlink", "simple-chat"])
 
 
 class ShippedListTests(unittest.TestCase):
@@ -409,11 +409,11 @@ class RegisteredEnvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             (home / ".claude.json").write_text(
-                json.dumps({"mcpServers": {"agent-sync": {"env": {"ZULIP_RC": "/c"}}}})
+                json.dumps({"mcpServers": {"simple-chat": {"env": {"ZULIP_RC": "/c"}}}})
             )
             (home / ".codex").mkdir()
             (home / ".codex/config.toml").write_text(
-                '[mcp_servers.agent-sync]\ncommand = "x"\n\n[mcp_servers.agent-sync.env]\nZULIP_RC = "/x"\n'
+                '[mcp_servers.simple-chat]\ncommand = "x"\n\n[mcp_servers.simple-chat.env]\nZULIP_RC = "/x"\n'
             )
             self.assertEqual(doctor.registered_env("CLAUDE", home), {})
             self.assertEqual(doctor.registered_env("CODEX", home), {})
@@ -422,8 +422,8 @@ class RegisteredEnvTests(unittest.TestCase):
             for bad in (
                 [],
                 {"mcpServers": []},
-                {"mcpServers": {"agent-sync": "x"}},
-                {"mcpServers": {"agent-sync": {"env": "x"}}},
+                {"mcpServers": {"simple-chat": "x"}},
+                {"mcpServers": {"simple-chat": {"env": "x"}}},
             ):
                 (home / ".claude.json").write_text(json.dumps(bad))
                 with self.assertRaises(doctor.ClientConfigError):
@@ -435,12 +435,12 @@ class RegisteredEnvTests(unittest.TestCase):
             home = Path(tmp)
             (home / ".codex").mkdir()
             (home / ".codex/config.toml").write_text(
-                '[mcp_servers.agent-sync]\ncommand = "x"\n\n[mcp_servers.agent-sync.env]\nLANG = "C"\n\n'
+                '[mcp_servers.simple-chat]\ncommand = "x"\n\n[mcp_servers.simple-chat.env]\nLANG = "C"\n\n'
                 '[mcp_servers."fleetlink"]\ncommand = "y"\n'
             )
             with mock.patch.dict(sys.modules, {"tomllib": None}):
                 self.assertEqual(
-                    sorted(doctor.client_servers("CODEX", home)), ["agent-sync", "fleetlink"]
+                    sorted(doctor.client_servers("CODEX", home)), ["fleetlink", "simple-chat"]
                 )
                 self.assertEqual(doctor.registered_env("CODEX", home), {})
                 report = doctor.Report()
@@ -456,7 +456,7 @@ class RegisteredEnvTests(unittest.TestCase):
                 json.dumps(
                     {
                         "mcpServers": {
-                            "agent-sync": {
+                            "simple-chat": {
                                 "env": {
                                     "INFISICAL_TOKEN": "synthetic-file-token",
                                     "ZULIP_KEY": "synthetic-key",

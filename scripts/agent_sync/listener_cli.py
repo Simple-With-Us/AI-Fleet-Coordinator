@@ -144,7 +144,7 @@ def daemon_running(root: str) -> int | None:
 def installed_plugin_version(home: str) -> str | None:
     data = L.read_json(os.path.join(home, ".claude", "plugins", "installed_plugins.json"))
     plugins = data.get("plugins") if isinstance(data.get("plugins"), dict) else data
-    entry = plugins.get("agent-sync@afc") if isinstance(plugins, dict) else None
+    entry = plugins.get("simple-chat@afc") if isinstance(plugins, dict) else None
     if isinstance(entry, list) and entry:
         entry = entry[-1]
     return entry.get("version") if isinstance(entry, dict) else None
@@ -354,7 +354,7 @@ def cmd_status(rt: Any, args: argparse.Namespace) -> int:
     status = L.read_json(os.path.join(L.listener_dir(root), "status.json"))
     pid = daemon_running(root)
     repo_version = L.read_json(
-        os.path.join(A.REPO_ROOT, "plugins", "agent-sync", ".claude-plugin", "plugin.json")
+        os.path.join(A.REPO_ROOT, "plugins", "simple-chat", ".claude-plugin", "plugin.json")
     ).get("version")
     info = {
         "running": bool(pid),
