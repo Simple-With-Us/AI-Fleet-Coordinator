@@ -342,7 +342,7 @@ class ActualRuntime(unittest.TestCase):
         replies = [json.loads(line) for line in result.stdout.splitlines()]
         self.assertEqual([item["id"] for item in replies], [1, 2])
         self.assertEqual(replies[0]["result"]["protocolVersion"], "2025-11-25")
-        self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "agent-sync")
+        self.assertEqual(replies[0]["result"]["serverInfo"]["name"], "simple-chat")
         # What the real server serves:  tools.json, eavesdropper-tools.json (AFC-330), notes-tools.json and
         # recall-tools.json (AFC-331), then the linear_* tools built from the board catalogs, then
         # fleetlink-tools.json.  Every file must ship, or `simple-chat mcp` fails at startup on the server (it

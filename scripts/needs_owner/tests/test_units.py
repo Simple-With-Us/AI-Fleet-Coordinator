@@ -1,12 +1,14 @@
 """The pure parts:  text cleaning, the uid and topic, links, the block, the record formats and the refusals."""
 from __future__ import annotations
 
+import os
 import unittest
 
 from needs_owner import block as B
 from needs_owner import f3
 from needs_owner import items as I
 from needs_owner import links, records, safety
+from needs_owner import seat as S
 from needs_owner import text as T
 from needs_owner.errors import Refusal
 
@@ -281,10 +283,175 @@ class BoardWriteOptInTests(unittest.TestCase):
             with open(tool, "w") as fh:
                 fh.write('#!/bin/sh\nprintf "%s" "$LINEAR_BOARD_WRITES"\n')
             os.chmod(tool, stat.S_IRWXU)
+            from needs_owner import seat as seatmod
+
+            self.addCleanup(setattr, seatmod, "MANAGED_BIN_DIR", seatmod.MANAGED_BIN_DIR)
+            seatmod.MANAGED_BIN_DIR = d  # the import-only seam:  the managed board is this folder's
             runner = Runner(None, {"PATH": d, "HOME": d})
             result = runner.board("comment", "AFC-1", "x")
             self.assertEqual(result.out, "1")
             self.assertNotIn("LINEAR_BOARD_WRITES", runner.env)
+
+
+class TrustedBinaryTests(unittest.TestCase):
+    """A forged `bearer-verified` line cannot come from a binary or folder others can write."""
+
+    def make(self, mode_dir: int, mode_file: int) -> str:
+        import tempfile
+        root = tempfile.mkdtemp(prefix="nobin-")
+        self.addCleanup(__import__("shutil").rmtree, root, True)
+        os.chmod(root, mode_dir)
+        path = os.path.join(root, "simple-board")
+        with open(path, "w") as fh:
+            fh.write('#!/bin/sh\necho "seat:        CLAUDE (bearer-verified)"\n')
+        os.chmod(path, mode_file)
+        return root
+
+    def test_an_owner_only_binary_in_an_owner_only_folder_is_used(self) -> None:
+        root = self.make(0o755, 0o755)
+        self.assertEqual(S.trusted_binary("simple-board", root), os.path.realpath(os.path.join(root, "simple-board")))
+
+    def test_a_world_writable_folder_or_file_is_refused(self) -> None:
+        for mode_dir, mode_file in ((0o777, 0o755), (0o755, 0o775), (0o755, 0o757)):
+            root = self.make(mode_dir, mode_file)
+            self.assertIsNone(S.trusted_binary("simple-board", root), (oct(mode_dir), oct(mode_file)))
+
+    def test_a_hostile_first_path_entry_is_not_skipped_for_a_later_safe_one(self) -> None:
+        bad, good = self.make(0o777, 0o755), self.make(0o755, 0o755)
+        self.assertIsNone(S.trusted_binary("simple-board", bad + os.pathsep + good))
+
+    def test_the_real_probe_refuses_a_forged_line_from_an_unsafe_folder(self) -> None:
+        bad = self.make(0o777, 0o755)
+        self.addCleanup(setattr, S, "MANAGED_BIN_DIR", S.MANAGED_BIN_DIR)
+        S.MANAGED_BIN_DIR = bad
+        env = {"PATH": bad, S.LOCATOR_ENV: "/fleet-seats:CLAUDE_SEAT_BEARER"}
+        with self.assertRaises(Refusal):
+            S.verified_seat("CLAUDE", env)
+
+    def test_a_safe_binary_on_the_callers_path_or_home_is_never_the_managed_board(self) -> None:
+        planted = self.make(0o755, 0o755)  # user-owned and tidy:  only the caller's PATH and HOME point at it
+        self.addCleanup(setattr, S, "MANAGED_BIN_DIR", S.MANAGED_BIN_DIR)
+        S.MANAGED_BIN_DIR = None
+        env = {"PATH": planted, "HOME": os.path.dirname(planted), S.LOCATOR_ENV: "/fleet-seats:CLAUDE_SEAT_BEARER"}
+        from needs_owner import proc
+
+        self.assertNotEqual(proc.find_tool("simple-board", env), os.path.join(planted, "simple-board"))
+        self.assertNotEqual(S.managed_board(), os.path.join(planted, "simple-board"))
+
+    def test_a_writable_ancestor_is_refused_even_when_the_parent_and_file_are_tight(self) -> None:
+        import tempfile
+        grand = tempfile.mkdtemp(prefix="nobin-grand-")
+        self.addCleanup(__import__("shutil").rmtree, grand, True)
+        parent = os.path.join(grand, "managed")
+        os.mkdir(parent)
+        os.chmod(parent, 0o755)
+        binary = os.path.join(parent, "simple-board")
+        with open(binary, "w") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(binary, 0o755)
+        self.assertEqual(S.trusted_binary("simple-board", parent), os.path.realpath(binary))
+        os.chmod(grand, 0o777)  # another user could now rename `managed` away and put their own in its place
+        self.assertIsNone(S.trusted_binary("simple-board", parent))
+
+    def test_a_symlink_chain_is_checked_at_every_hop(self) -> None:
+        import tempfile
+        good = self.make(0o755, 0o755)  # tight folder and binary
+        loose = tempfile.mkdtemp(prefix="nobin-loose-")
+        self.addCleanup(__import__("shutil").rmtree, loose, True)
+        os.chmod(loose, 0o777)
+        # a link kept in a writable folder can be swapped by anyone, even though it points at a tight binary
+        os.symlink(os.path.join(good, "simple-board"), os.path.join(loose, "simple-board"))
+        self.assertIsNone(S.trusted_binary("simple-board", loose))
+        # a link in a tight folder that points into a writable one is refused through its target's folder
+        tight = tempfile.mkdtemp(prefix="nobin-tight-")
+        self.addCleanup(__import__("shutil").rmtree, tight, True)
+        target = os.path.join(loose, "real")
+        with open(target, "w") as fh:
+            fh.write("#!/bin/sh\n")
+        os.chmod(target, 0o755)
+        os.symlink(target, os.path.join(tight, "simple-board"))
+        self.assertIsNone(S.trusted_binary("simple-board", tight))
+        # the ordinary managed shape:  a tight link folder pointing into a tight runtime folder is accepted
+        link = tempfile.mkdtemp(prefix="nobin-link-")
+        self.addCleanup(__import__("shutil").rmtree, link, True)
+        os.symlink(os.path.join(good, "simple-board"), os.path.join(link, "simple-board"))
+        self.assertEqual(S.trusted_binary("simple-board", link), os.path.realpath(os.path.join(good, "simple-board")))
+
+    def test_a_middle_symlink_hop_in_a_writable_folder_is_refused(self) -> None:
+        import tempfile
+        safe = self.make(0o755, 0o755)  # the final binary, tight
+        loose = tempfile.mkdtemp(prefix="nobin-mid-")
+        self.addCleanup(__import__("shutil").rmtree, loose, True)
+        os.chmod(loose, 0o777)
+        first = tempfile.mkdtemp(prefix="nobin-first-")  # tight folder holding the entry link
+        self.addCleanup(__import__("shutil").rmtree, first, True)
+        os.symlink(os.path.join(safe, "simple-board"), os.path.join(loose, "hop"))  # hop 2 lives in a writable folder
+        os.symlink(os.path.join(loose, "hop"), os.path.join(first, "simple-board"))  # entry -> hop -> final
+        self.assertIsNone(S.trusted_binary("simple-board", first))
+        # relative targets and a symlinked folder component are walked too
+        rel = tempfile.mkdtemp(prefix="nobin-rel-")
+        self.addCleanup(__import__("shutil").rmtree, rel, True)
+        os.symlink(loose, os.path.join(rel, "dir"))
+        os.symlink(os.path.join("dir", "hop"), os.path.join(rel, "simple-board"))
+        self.assertIsNone(S.trusted_binary("simple-board", rel))
+        # a two-hop chain wholly inside tight folders is accepted
+        t1 = tempfile.mkdtemp(prefix="nobin-t1-")
+        self.addCleanup(__import__("shutil").rmtree, t1, True)
+        t2 = tempfile.mkdtemp(prefix="nobin-t2-")
+        self.addCleanup(__import__("shutil").rmtree, t2, True)
+        os.symlink(os.path.join(safe, "simple-board"), os.path.join(t2, "hop"))
+        os.symlink(os.path.join(t2, "hop"), os.path.join(t1, "simple-board"))
+        self.assertEqual(S.trusted_binary("simple-board", t1), os.path.realpath(os.path.join(safe, "simple-board")))
+
+    def test_a_relative_path_entry_is_never_used(self) -> None:
+        self.assertIsNone(S.trusted_binary("simple-board", "bin:."))
+
+
+class VerifiedSeatTests(unittest.TestCase):
+    """The seat is proven by the board CLI's bearer verification, never by AGENT_SEAT or a launcher variable."""
+
+    LOCATOR = {"SIMPLE_BOARD_BEARER_LOCATOR": "/fleet-seats:CLAUDE_SEAT_BEARER"}
+
+    def probe(self, out, code=0):
+        calls = []
+
+        def run(env):
+            calls.append(dict(env))
+            return code, out
+        run.calls = calls
+        return run
+
+    def test_seat_comes_from_the_verified_whoami_line(self) -> None:
+        from needs_owner import seat as S
+        run = self.probe("seat:        CLAUDE (bearer-verified)\nidentity:    Claude\n")
+        self.assertEqual(S.verified_seat("claude", dict(self.LOCATOR, AGENT_SEAT="CODEX"), probe=run), "CLAUDE")
+
+    def test_no_locator_refuses_even_with_agent_seat(self) -> None:
+        from needs_owner import seat as S
+        run = self.probe("seat:        CLAUDE (bearer-verified)\n")
+        with self.assertRaises(Refusal):
+            S.verified_seat("CLAUDE", {"AGENT_SEAT": "CLAUDE", "AGENT_LAUNCH_SEAT": "CLAUDE", "AGENT_LAUNCHER": "x"}, probe=run)
+        self.assertEqual(run.calls, [])
+
+    def test_unverified_or_failed_probe_refuses(self) -> None:
+        from needs_owner import seat as S
+        for out, code in (("seat:        (no bearer: reads run without an identity)\n", 0),
+                          ("seat:        CLAUDE (AGENT_SEAT)\n", 0),
+                          ("seat:        CLAUDE (bearer-verified)\n", 6), ("", 0)):
+            with self.assertRaises(Refusal, msg=out):
+                S.verified_seat("CLAUDE", self.LOCATOR, probe=self.probe(out, code))
+
+    def test_by_must_match_the_verified_seat(self) -> None:
+        from needs_owner import seat as S
+        with self.assertRaises(Refusal):
+            S.verified_seat("CODEX", self.LOCATOR, probe=self.probe("seat:        CLAUDE (bearer-verified)\n"))
+
+    def test_children_lose_every_identity_variable_and_keep_the_locator(self) -> None:
+        from needs_owner import seat as S
+        env = S.child_environment(dict(self.LOCATOR, AGENT_SEAT="CODEX", AGENT_LAUNCH_SEAT="CODEX", PATH="/bin"))
+        self.assertNotIn("AGENT_SEAT", env)
+        self.assertNotIn("AGENT_LAUNCH_SEAT", env)
+        self.assertEqual(env["SIMPLE_BOARD_BEARER_LOCATOR"], self.LOCATOR["SIMPLE_BOARD_BEARER_LOCATOR"])
 
 
 if __name__ == "__main__":

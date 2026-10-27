@@ -993,6 +993,8 @@ class WakeTests(DaemonHarness):
         self.assertEqual(board_calls, [])
         self.assertEqual(self.ledger()[-1]["board_skipped"], "board_per_day")
         self.write_config(budget="board_per_day = 3")
+        path = self.state_dir / "listener.toml"
+        path.write_text(path.read_text().replace('[seat.CLAUDE]\n', '[seat.CLAUDE]\nbearer_locator = "/fleet-seats:CLAUDE_SEAT_BEARER"\n', 1))
         daemon.reload()
         mid = self.fake.add_message("Codex", "agent-sync", "CT#2316 sentry", MENTION + " again")
         self.pump_until(daemon, lambda: sum(1 for r in self.ledger() if r["state"] == "queued") >= 2)
@@ -1003,11 +1005,49 @@ class WakeTests(DaemonHarness):
         self.assertIn("--app=CT", argv)
         self.assertIn("zulip:CLAUDE:%d" % mid, argv)
         self.assertEqual(self.ledger()[-1]["board_uid"], "zulip:CLAUDE:%d" % mid)
-        # `env -i` drops the inherited seat, and the Linear board CLI refuses a write without AGENT_SEAT.
-        self.assertEqual(board_envs[0].get("AGENT_SEAT"), "CLAUDE")
+        # The CLI proves the seat from the bearer at the configured locator and never reads AGENT_SEAT, so the
+        # daemon offers the locator from its own config and no env seat at all.
+        self.assertEqual(board_envs[0].get("SIMPLE_BOARD_BEARER_LOCATOR"), "/fleet-seats:CLAUDE_SEAT_BEARER")
+        self.assertNotIn("AGENT_SEAT", board_envs[0])
+        self.assertNotIn("AGENT_LAUNCH_SEAT", board_envs[0])
         # simple-board is a plain symlink to scripts/simple-board and exports nothing itself, so the
         # daemon must pass the write switch the old ~/.local/bin/board wrapper used to export.
         self.assertEqual(board_envs[0].get("LINEAR_BOARD_WRITES"), "1")
+
+    def test_board_filing_without_a_bearer_locator_files_nothing_and_offers_no_seat(self) -> None:
+        board_calls = []
+
+        def board_runner(argv, **kw):
+            board_calls.append((argv, kw.get("env")))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        self.set_claude(mode="ok", output={"action": "board", "reply": None, "owner_note": None, "risk": None,
+                                           "board": {"title": "Fix it", "severity": "P2", "desc": "details"}})
+        self.write_config(budget="board_per_day = 3")
+        daemon = self.started(board_runner=board_runner, board_bin="/fake/board")
+        self.fake.add_message("Codex", "agent-sync", "CT#2316 sentry", MENTION)
+        self.pump_until(daemon, lambda: len(self.ledger()) >= 1)
+        self.wake_cycle(daemon, 100)
+        self.assertEqual(board_calls, [])
+        self.assertEqual(self.ledger()[-1]["board_skipped"], "no bearer_locator configured for this seat")
+
+    def test_the_board_is_the_managed_entry_not_a_wake_path_lookup(self) -> None:
+        import os as _os
+        later = self.tmp / "later-bin"
+        later.mkdir()
+        planted = later / "simple-board"
+        planted.write_text("#!/bin/sh\n")
+        planted.chmod(0o755)
+        daemon = self.daemon(wake_path="%s:/usr/bin:/bin" % later)
+        self.assertEqual(daemon.board_bin, _os.path.join(daemon.home, ".local", "bin", "simple-board"))
+        self.assertNotEqual(daemon.board_bin, str(planted))
+
+    def test_a_malformed_bearer_locator_in_seat_config_is_refused(self) -> None:
+        import re as _re
+        from agent_sync import config as _C
+        for bad in ("nope", "/a/../b:K", "/a:lower", "/a/:K", "//a:K", "/a:K:X"):
+            self.assertIsNone(_re.fullmatch(_C.BEARER_LOCATOR_RE, bad), bad)
+        self.assertIsNotNone(_re.fullmatch(_C.BEARER_LOCATOR_RE, "/fleet-seats:CLAUDE_SEAT_BEARER"))
 
     def test_disabled_loop_guard_allows_new_wake_without_owner_and_reload_keeps_history(self) -> None:
         path = self.state_dir / "listener.toml"

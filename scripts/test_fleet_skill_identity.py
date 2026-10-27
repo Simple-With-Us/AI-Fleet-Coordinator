@@ -898,7 +898,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
                 board,
                 key,
             )
-            self.assertIn('--by "$AGENT_SEAT"', board, key)
+            self.assertIn("--by <YOUR_TAG>", board, key)
             self.assertNotIn(f"--by {seat.tag}", board, key)
         gb = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
         self.assertNotIn("MONET·session8", gb)
@@ -935,7 +935,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
 
 
 class AgentSeatPinTests(unittest.TestCase):
-    """The seat-precedence block (AGENT-SYNC § Identity Rules, owner 2026-10-09).
+    """The seat-precedence block (FLEET-PROTOCOL.md § Identity Rules, owner 2026-10-09).
 
     BotFleet runs Claude, Codex and other CLIs as engines for its own bots, and
     those engines load these skills.  A bare `export AGENT_SEAT=<PLATFORM>`
@@ -998,7 +998,10 @@ class AgentSeatPinTests(unittest.TestCase):
                 continue
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
             if seat.retired:
-                self.assertIn(f"{seat.tag} is retired and is no platform's default", out, key)
+                self.assertIn("a retired catalog pack is never a platform default", out, key)
+                self.assertIn("A retired pack takes no work", out, key)
+                self.assertNotIn("branch prefix from your launcher", out, key)
+                self.assertNotIn(f"`{seat.prefix}` for {seat.tag}", out, key)
                 continue
             self.assertIn(_arm(seat.tag), self._block(out).splitlines(), key)
             self.assertIn(_ordinary(seat.notes, seat.tag), out, key)
@@ -1021,7 +1024,7 @@ class AgentSeatPinTests(unittest.TestCase):
             if seat.retired:
                 continue
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
-            self.assertIn('--by "$AGENT_SEAT"', out, key)
+            self.assertIn("--by <YOUR_TAG>", out, key)
             self.assertNotRegex(out, r"--by [A-Z]", key)
             self.assertIn("claim:  <branch-prefix>/<slug>", out, key)
             self.assertNotIn(f"claim:  {seat.prefix}/", out, key)
