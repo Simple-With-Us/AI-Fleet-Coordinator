@@ -11,14 +11,14 @@ each rule has a test of its own.
   control   A message that is only the word `pause` or `resume` controls the notifier and is never an answer.
   request   A Grok Bot persona's fenced `needs-owner-request` JSON block, validated strictly.
 """
+
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass
 
-from . import f3
-from . import safety
+from . import f3, safety
 from . import text as T
 from .errors import Refusal
 
@@ -41,7 +41,12 @@ def option_of_reaction(reaction: object) -> int | None:
 def owner_taps(reactions: object, owner_id: int | None, option_count: int) -> list[int]:
     """The distinct options the owner tapped, sorted.  Reactions of anyone else, custom emoji, other emoji and
     keycaps beyond the item's options are not taps."""
-    if not isinstance(owner_id, int) or isinstance(owner_id, bool) or owner_id <= 0 or not isinstance(reactions, list):
+    if (
+        not isinstance(owner_id, int)
+        or isinstance(owner_id, bool)
+        or owner_id <= 0
+        or not isinstance(reactions, list)
+    ):
         return []
     found = set()
     for reaction in reactions:
@@ -80,39 +85,59 @@ def control_word(content: object) -> str | None:
 
 # ---- the notifier's own words --------------------------------------------------------------------------
 
+
 def keycaps(options: list[int]) -> str:
     return " and ".join(T.option_emoji(n) for n in options)
 
 
 def ask_again_text(options: list[int]) -> str:
-    return ("I saw two different reactions on the question (%s).  I counted neither.  Leave exactly one reaction, or reply here "
-            "in words." % keycaps(options))
+    return (
+        "I saw two different reactions on the question (%s).  I counted neither.  Leave exactly one reaction, or reply here "
+        "in words." % keycaps(options)
+    )
 
 
 def typed_reply_text(option: int) -> str:
-    return ("I saw a reaction on option %d, which needs a typed reply.  I did not count it.  Please reply here in words." % option)
+    return (
+        "I saw a reaction on option %d, which needs a typed reply.  I did not count it.  Please reply here in words."
+        % option
+    )
 
 
 def note_text(identifier: str, url: str, kind: str, ident: str) -> str:
-    where = {"msg": "message %s in this topic", "reaction": "a reaction on message %s in this topic", "comment": "Linear comment %s"}[kind]
-    return ("Jay replied on %s:  %s  (%s).  Verify it before you act:  `simple-chat verify-owner-msg` for a message, the owner's "
-            "reaction (`simple-chat read --json` `reactions` and `whoami --json` `owner_user_id`) for a tap, the comment's author "
-            "for Linear.  The item stays open;  close it yourself when you have acted." % (identifier, url, where % ident))
+    where = {
+        "msg": "message %s in this topic",
+        "reaction": "a reaction on message %s in this topic",
+        "comment": "Linear comment %s",
+    }[kind]
+    return (
+        "Jay replied on %s:  %s  (%s).  Verify it before you act:  `simple-chat verify-owner-msg` for a message, the owner's "
+        "reaction (`simple-chat read --json` `reactions` and `whoami --json` `owner_user_id`) for a tap, the comment's author "
+        "for Linear.  The item stays open;  close it yourself when you have acted."
+        % (identifier, url, where % ident)
+    )
 
 
 def pending_header(for_seat: str, filed_by: str | None) -> str:
-    return "**For %s** (filed by %s, not checked by CLAUDE)." % (for_seat, filed_by or "an unknown seat")
+    return "**For %s** (filed by %s, not checked by CLAUDE)." % (
+        for_seat,
+        filed_by or "an unknown seat",
+    )
 
 
 def rejected_request_text(reason: str) -> str:
-    return ("I could not file this request in Linear (%s).  Check the `needs-owner-request` block against the contract in "
-            "docs/protocols/needs-owner.md and post it again as a new message." % reason)
+    return (
+        "I could not file this request in Linear (%s).  Check the `needs-owner-request` block against the contract in "
+        "docs/protocols/needs-owner.md and post it again as a new message." % reason
+    )
 
 
 # ---- a Grok Bot persona's request --------------------------------------------------------------------------
 
 REQUEST_INFO = "needs-owner-request"
-REQUEST_KEYS = frozenset({"question", "options", "seat", "low_stakes", "recommend", "context", "urgent", "app", "format"})
+REQUEST_KEYS = frozenset(
+    {"question", "options", "seat", "low_stakes", "recommend", "context", "urgent", "app", "format"}
+)
 _FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})\s*([A-Za-z0-9_-]*)\s*$")
 CONTEXT_ROOM = T.CONTEXT_MAX - 60  # the notifier puts "for GB-<ROLE>:  " in front
 
@@ -150,7 +175,7 @@ def find_request_blocks(content: object) -> list[str]:
             if end is None:
                 return bodies  # never closed:  nothing after it is trusted
             if info == REQUEST_INFO:
-                bodies.append("\n".join(lines[n + 1:end]))
+                bodies.append("\n".join(lines[n + 1 : end]))
             n = end + 1
             continue
         n += 1
@@ -197,17 +222,25 @@ def parse_request(content: object, sender_seat: str) -> Request | None:
         raw_options = data.get("options")
         if not isinstance(raw_options, list) or not 1 <= len(raw_options) <= T.MAX_OPTIONS:
             raise RequestProblem("options_count")
-        options = [T.clean_text(o, "option %d" % n, T.OPTION_MAX) for n, o in enumerate(raw_options, 1)]
+        options = [
+            T.clean_text(o, "option %d" % n, T.OPTION_MAX) for n, o in enumerate(raw_options, 1)
+        ]
         if len({T.normalize(o) for o in options}) != len(options):
             raise RequestProblem("options_repeat")
         context = None
         if data.get("context") is not None:
-            context = T.clean_text(data.get("context"), "context", CONTEXT_ROOM, required=False) or None
+            context = (
+                T.clean_text(data.get("context"), "context", CONTEXT_ROOM, required=False) or None
+            )
     except Refusal:
         raise RequestProblem("text_not_accepted") from None
     low = _int_list(data.get("low_stakes"), len(options), "low_stakes_option")
     recommend = data.get("recommend")
-    if recommend is not None and (not isinstance(recommend, int) or isinstance(recommend, bool) or not 1 <= recommend <= len(options)):
+    if recommend is not None and (
+        not isinstance(recommend, int)
+        or isinstance(recommend, bool)
+        or not 1 <= recommend <= len(options)
+    ):
         raise RequestProblem("recommend_option")
     urgent = data.get("urgent", False)
     if not isinstance(urgent, bool):
@@ -215,8 +248,15 @@ def parse_request(content: object, sender_seat: str) -> Request | None:
     if urgent and low:
         raise RequestProblem("urgent_with_low_stakes")
     try:
-        safety.check_fields({"the question": question, "the context": context,
-                             **{"option %d" % n: o for n, o in enumerate(options, 1)}})
+        safety.check_fields(
+            {
+                "the question": question,
+                "the context": context,
+                **{"option %d" % n: o for n, o in enumerate(options, 1)},
+            }
+        )
     except Refusal:
         raise RequestProblem("secret_or_personal_data") from None
-    return Request(f3.identity.canonical_seat(sender_seat), question, options, low, recommend, context, urgent)
+    return Request(
+        f3.identity.canonical_seat(sender_seat), question, options, low, recommend, context, urgent
+    )
