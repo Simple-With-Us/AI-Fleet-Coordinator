@@ -127,6 +127,10 @@ TOOL_REQUIRED = frozenset(
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
         "scripts/agent_sync/mcp/fleetlink-tools.json",
+        # The fleet secret scanner (standard library only):  every remote transport scans its arguments with it
+        # before anything is sent, and sends nothing if it is missing.  Not in BASE_REQUIRED, so a retained release
+        # built before it stays a valid rollback target.
+        "scripts/agent_sync/secretscan.py",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
