@@ -26,7 +26,7 @@ test('argument sets equal the relay _only() sets',()=>{
 test('writes carry a head fence where the relay has one',()=>{
   for(const a of ['wf_update_branch','wf_files_put','wf_merge_guarded']) assert.ok(WF_V1_TOOLS.find(t=>t.name==='gr_'+a).inputSchema.required.includes('expected_head_sha'));
 });
-const repo='Simple-With-Us/Socratic-Trade';
+const repo='example/repo';
 test('valid and invalid args',()=>{
   assert.ok(validWfV1Args('wf_merge_guarded',{repo,number:9,expected_head_sha:'a'.repeat(40),method:'squash'}));
   assert.ok(!validWfV1Args('wf_merge_guarded',{repo,number:9,expected_head_sha:'a'.repeat(40),url:'https://x.invalid'}));
@@ -110,4 +110,17 @@ test('relay requirements: per_page max50, method/ref required, content nonempty,
   assert.ok(!validWfV1Args('wf_file_put',{repo,path:'f',branch:'b',message:'m',content_b64:''}));
   assert.ok(!validWfV1Args('wf_runs',JSON.parse('{"repo":"a/b","__proto__":"bad"}')));
   assert.ok(!validWfV1Args('wf_runs',{repo,toString:'bad'}));
+});
+
+test('path/ref/repo traversal and structural bombs fail closed',async()=>{
+ for(const bad of ['../a','/a','a/../b','a//b']) assert.ok(!validWfV1Args('wf_file_get',{repo,path:bad,ref:'main'}),bad);
+ assert.ok(!validWfV1Args('wf_tree',{repo,ref:'../main'}));
+ assert.ok(!validWfV1Args('wf_runs',{repo:'../repo'}));
+ const cycle={repo};cycle.self=cycle;
+ const deep={repo};let cur=deep;for(let i=0;i<20;i++){cur.x={};cur=cur.x;}
+ for(const args of [cycle,deep,{repo,term:'x'.repeat(70000)},{repo,x:Array(501).fill('x')}]) {
+  assert.ok(!validWfV1Args('wf_runs',args));
+  const t=harness(async()=>{throw Error('no network');});
+  assert.ok((await t.call('gr_wf_runs',args)).isError);
+ }
 });

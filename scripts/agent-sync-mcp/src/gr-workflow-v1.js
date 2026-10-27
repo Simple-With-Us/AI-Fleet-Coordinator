@@ -5,34 +5,36 @@
 // arbitrary path input. The relay stays the policy boundary (per-seat allowlist,
 // ceilings, GIT_RELAY_ENABLE_WORKFLOW_VERBS); this module adds no policy of its own.
 // Host rollout (relay flag, seat config, Worker env) is separate and not done here.
-const REPO = { type: 'string', pattern: '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$', description: 'owner/name' };
+const REPO = { type: 'string', pattern: '^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$', description: 'owner/name' };
 const SHA = { type: 'string', pattern: '^[0-9a-f]{40}$' };
 const INT = { type: 'integer', minimum: 1, maximum: 1e12 };
 const PER_PAGE = { type: 'integer', minimum: 1, maximum: 50 };
 const CONTENT = { type: 'string', minLength: 1, maxLength: 256 * 1024 };
+const PATH = {type:'string', maxLength:1024, pattern:'^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$'};
+const REF = {type:'string', maxLength:200, pattern:'^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$'};
 const STR = { type: 'string', maxLength: 500 };
 const obj = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
-  wf_pr_list: ['List pull requests.', obj(['repo'], { repo: REPO, state: STR, head: STR, base: STR, per_page: PER_PAGE })],
+  wf_pr_list: ['List pull requests.', obj(['repo'], { repo: REPO, state: STR, head: REF, base: REF, per_page: PER_PAGE })],
   wf_pr_files: ['List files of a pull request.', obj(['repo', 'number'], { repo: REPO, number: INT, per_page: PER_PAGE })],
-  wf_file_get: ['Read one file.', obj(['repo', 'path', 'ref'], { repo: REPO, path: STR, ref: STR })],
-  wf_tree: ['Read a git tree.', obj(['repo', 'ref'], { repo: REPO, ref: STR })],
+  wf_file_get: ['Read one file.', obj(['repo', 'path', 'ref'], { repo: REPO, path: PATH, ref: REF })],
+  wf_tree: ['Read a git tree.', obj(['repo', 'ref'], { repo: REPO, ref: REF })],
   wf_branches: ['List branches.', obj(['repo'], { repo: REPO, per_page: PER_PAGE })],
-  wf_commits: ['List commits.', obj(['repo', 'ref'], { repo: REPO, ref: STR, path: STR, per_page: PER_PAGE })],
+  wf_commits: ['List commits.', obj(['repo', 'ref'], { repo: REPO, ref: REF, path: PATH, per_page: PER_PAGE })],
   wf_code_search: ['Search code in the repository.', obj(['repo', 'term'], { repo: REPO, term: STR, per_page: PER_PAGE })],
-  wf_runs: ['List workflow runs.', obj(['repo'], { repo: REPO, branch: STR, head_sha: SHA, status: STR, per_page: PER_PAGE })],
+  wf_runs: ['List workflow runs.', obj(['repo'], { repo: REPO, branch: REF, head_sha: SHA, status: STR, per_page: PER_PAGE })],
   wf_run_jobs: ['List jobs of a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT, per_page: PER_PAGE })],
-  wf_checks: ['List check runs for a ref (needs checks:read in the seat ceiling).', obj(['repo', 'ref'], { repo: REPO, ref: STR, per_page: PER_PAGE })],
+  wf_checks: ['List check runs for a ref (needs checks:read in the seat ceiling).', obj(['repo', 'ref'], { repo: REPO, ref: REF, per_page: PER_PAGE })],
   wf_update_branch: ['Update a PR branch, fenced on its head.', obj(['repo', 'number', 'expected_head_sha'], { repo: REPO, number: INT, expected_head_sha: SHA })],
   wf_run_rerun: ['Re-run a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_run_cancel: ['Cancel a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_run_approve: ['Approve a pending workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
-  wf_file_put: ['Write one file to a branch.', obj(['repo', 'path', 'branch', 'message', 'content_b64'], { repo: REPO, path: STR, branch: STR, message: STR, content_b64: CONTENT, prior_sha: SHA })],
+  wf_file_put: ['Write one file to a branch.', obj(['repo', 'path', 'branch', 'message', 'content_b64'], { repo: REPO, path: PATH, branch: REF, message: STR, content_b64: CONTENT, prior_sha: SHA })],
   wf_files_put: ['Write up to 20 files in one commit, fenced on the branch head.', obj(['repo', 'branch', 'message', 'expected_head_sha', 'files'], {
-    repo: REPO, branch: STR, message: STR, expected_head_sha: SHA,
-    files: { type: 'array', minItems: 1, maxItems: 20, items: obj(['path'], { path: STR, content_b64: CONTENT, delete: { type: 'boolean' } }) } })],
+    repo: REPO, branch: REF, message: STR, expected_head_sha: SHA,
+    files: { type: 'array', minItems: 1, maxItems: 20, items: obj(['path'], { path: PATH, content_b64: CONTENT, delete: { type: 'boolean' } }) } })],
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
@@ -51,7 +53,30 @@ function validWfV1Args2(schema, args) {
   if (!schema.required.every(k => Object.hasOwn(args,k))) return false;
   return Object.keys(args).every(k => Object.hasOwn(schema.properties,k) && typeOk(schema.properties[k], args[k]));
 }
-export const validWfV1Args = (action, args) => WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args);
+// Iterative guard runs before recursive schema code or JSON serialization.
+export function boundedWorkflowInput(args) {
+  const stack=[[args,0]], seen=new Set(); let nodes=0, bytes=0;
+  while(stack.length) {
+    const [value,depth]=stack.pop();
+    if(++nodes>500 || depth>6) return false;
+    if(typeof value==='string') {
+      if(value.length>65536) return false;
+      bytes+=new TextEncoder().encode(value).length;
+    } else if(value && typeof value==='object') {
+      if(seen.has(value)) return false; seen.add(value);
+      if(Object.getPrototypeOf(value)!==Object.prototype && !Array.isArray(value) && Object.getPrototypeOf(value)!==null) return false;
+      const keys=Object.keys(value); if(keys.length>100) return false;
+      for(const key of keys) {
+        const d=Object.getOwnPropertyDescriptor(value,key);
+        if(!d || !Object.hasOwn(d,'value')) return false;
+        bytes+=key.length; stack.push([d.value,depth+1]);
+      }
+    } else if(!['number','boolean'].includes(typeof value) && value!==null) return false;
+    if(bytes>65536) return false;
+  }
+  return true;
+}
+export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args);
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
