@@ -191,11 +191,11 @@ export function toolListFor(seat, config = {}) {
   // `eventsOnlySeats` overrides the production set in tests only.
   const eventsOnlySeats = config.eventsOnlySeats ?? EVENTS_ONLY_SEATS;
   if (eventsOnlySeats.includes(seat)) return EMPTY_TOOL_SET;
-  const cacheKey = `${seat}:${config.whatsappEnabled === true}:${config.eventsOnlySeats ? config.eventsOnlySeats.join(",") : ""}`;
+  const cacheKey = `${seat}:${config.whatsappEnabled === true}:${config.grWorkflowEnabled === true}:${config.eventsOnlySeats ? config.eventsOnlySeats.join(",") : ""}`;
   const cached = LIST_CACHE.get(cacheKey);
   if (cached) return cached;
   const allowed = allowedIdentities(seat);
-  const decorated = HOSTED_TOOL_LIST.filter(spec => !spec.name.startsWith("whatsapp_") || (seat === "JET-CHAT" && config.whatsappEnabled === true)).map((spec) => decorate(spec, allowed, seat));
+  const decorated = HOSTED_TOOL_LIST.filter(spec => (!spec.name.startsWith("whatsapp_") || (seat === "JET-CHAT" && config.whatsappEnabled === true)) && (!spec.name.startsWith("gr_wf_") || config.grWorkflowEnabled === true)).map((spec) => decorate(spec, allowed, seat));
   const at = decorated.findIndex((spec) => spec.name === "whoami") + 1;
   const list = Object.freeze([...decorated.slice(0, at), IDENTITIES_SPEC, decorate(GUIDE_SPEC, allowed, seat), ...decorated.slice(at)]);
   const byName = Object.freeze(Object.fromEntries(list.map((spec) => [spec.name, spec])));

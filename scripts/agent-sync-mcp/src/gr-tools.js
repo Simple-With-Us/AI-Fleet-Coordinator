@@ -17,6 +17,7 @@
 // relay's own error body;  no fallback, no retry storm, secrets never logged.
 
 import { z } from "zod";
+import { WF_V1_READ_ACTIONS, validWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
@@ -96,6 +97,47 @@ export class GrRelayClient {
     this.#secrets = [accessId, accessSecret, bearer];
     this.fetch = fetchImpl;
     this.timeoutMs = timeoutMs;
+  }
+
+  // Workflow verbs get a bounded stream, longer deadline and conservative write
+  // uncertainty. No automatic retries. Existing seven-action transport is unchanged.
+  async callWorkflow(action, args) {
+    if (!validWfV1Args(action, args)) return {status:400,body:{error:"invalid_workflow_args"}};
+    const serialized = JSON.stringify(args);
+    if (new TextEncoder().encode(serialized).length > 65536) return {status:400,body:{error:"workflow_request_too_large"}};
+    const write = !WF_V1_READ_ACTIONS.includes(action);
+    const unavailable = () => ({status:502,body:{error:"upstream_unavailable", ...(write ? {outcome:"unknown",retryable:false} : {retryable:true})}});
+    try {
+      const response = await this.fetch(`${this.#base}/v1/${action}`, {
+        method:"POST", headers:this.#headers, body:serialized,
+        redirect:"manual", signal:AbortSignal.timeout(110000),
+      });
+      if (!response.body) return unavailable();
+      const reader = response.body.getReader(); const chunks=[]; let size=0;
+      for (;;) {
+        const {done,value}=await reader.read(); if(done) break;
+        size+=value.byteLength;
+        if(size>1048576) { await reader.cancel(); return unavailable(); }
+        chunks.push(value);
+      }
+      const bytes=new Uint8Array(size); let at=0;
+      for(const chunk of chunks){bytes.set(chunk,at);at+=chunk.byteLength;}
+      const body=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(bytes));
+      const encoded=JSON.stringify(body);
+      if(this.#secrets.filter(Boolean).some(secret=>encoded.includes(secret))) return unavailable();
+      if(response.status===200) {
+        if(!validWfV1Response(action,body)) return unavailable();
+        return {status:200,body};
+      }
+      if (response.status < 400 || response.status > 599 || !body || typeof body!=="object" || Array.isArray(body)) return unavailable();
+      const errorShape = z.object({error:z.string().max(1000),retryable:z.boolean().optional(),outcome:z.enum(['pending','unknown','refused']).optional()}).safeParse(body);
+      if(!errorShape.success) return unavailable();
+      // Never reflect upstream error prose; a duplicate can be pending/unknown.
+      if(response.status===409 && ['pending','unknown'].includes(body.outcome))
+        return {status:502,body:{error:"workflow_outcome_unknown",outcome:"unknown",retryable:false}};
+      if(response.status>=500 && body.retryable!==true) return unavailable();
+      return {status:response.status,body:{error:"workflow_request_refused", ...(body.retryable===true ? {retryable:true} : {})}};
+    } catch {return unavailable();}
   }
 
   secrets() {

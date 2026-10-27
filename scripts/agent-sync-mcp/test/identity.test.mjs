@@ -190,7 +190,7 @@ test("the grant's scope and pause govern a call made as another identity", async
 
 test("row 6:  each grant's tools/list offers exactly its own set, required on writes, and identities after whoami", () => {
   for (const seat of KNOWN_SEATS) {
-    const { list } = toolListFor(seat, { whatsappEnabled: true });
+    const { list } = toolListFor(seat, { whatsappEnabled: true, grWorkflowEnabled: true });
     if (EVENTS_ONLY_SEATS.includes(seat)) {
       assert.deepEqual(list, [], `${seat} is wake-only:  it advertises no tools`);
       continue;
