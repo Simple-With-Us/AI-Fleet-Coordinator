@@ -2,17 +2,16 @@ import json
 import tempfile
 import threading
 import unittest
-import urllib.error
 import urllib.request
+import urllib.error
 from http.server import ThreadingHTTPServer
-
 from git_relay.audit import AuditLog
-from git_relay.github_client import GitHubClient
 from git_relay.outcomes import OutcomeStore, key_for
 from git_relay.policy import SeatPolicy
+from git_relay.github_client import GitHubClient
 from git_relay.server import make_handler
-from git_relay.tests.test_typed_disarm import ARGS, Client, state
 from git_relay.typed_gateway import TypedGateway
+from git_relay.tests.test_typed_disarm import Client, ARGS, state
 
 TOKEN = "test-opaque-" + "bearer-123456"
 
@@ -105,3 +104,33 @@ class Tests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             worker.join()
+
+
+class TypedStartupTests(unittest.TestCase):
+    def test_typed_only_missing_app_rejected(self):
+        from git_relay.policy import PolicyError
+
+        for action in ("pr_state", "pr_hold_state", "pr_automerge_disable"):
+            with self.subTest(action=action), self.assertRaises(PolicyError):
+                SeatPolicy(
+                    json.dumps(
+                        {"swu-wise": {"token": TOKEN, "actions": [action], "repos": [ARGS["repo"]]}}
+                    )
+                )
+
+    def test_typed_only_missing_ceiling_rejected(self):
+        from git_relay.policy import PolicyError
+
+        with self.assertRaises(PolicyError):
+            SeatPolicy(
+                json.dumps(
+                    {
+                        "swu-wise": {
+                            "token": TOKEN,
+                            "actions": ["pr_state"],
+                            "repos": [ARGS["repo"]],
+                            "app_slug": "swu-wise",
+                        }
+                    }
+                )
+            )
