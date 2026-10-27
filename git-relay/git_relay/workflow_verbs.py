@@ -360,8 +360,16 @@ class WorkflowVerbs:
     def wf_checks(self, repo, args):
         """Check runs for one commit (Kody, Seer, merge-gate and Actions jobs alike)."""
         _only(args, ("repo", "ref", "per_page"))
-        ref = _sha(args, "ref") if re.fullmatch(r"[0-9a-f]{40}", str(args.get("ref", ""))) else _ref(args, "ref")
-        data = _obj(self._get(f"/repos/{repo}/commits/{quote(ref, safe='')}/check-runs?per_page={_page(args)}"))
+        ref = (
+            _sha(args, "ref")
+            if re.fullmatch(r"[0-9a-f]{40}", str(args.get("ref", "")))
+            else _ref(args, "ref")
+        )
+        data = _obj(
+            self._get(
+                f"/repos/{repo}/commits/{quote(ref, safe='')}/check-runs?per_page={_page(args)}"
+            )
+        )
         return {
             "checks": [
                 {k: c.get(k) for k in ("id", "name", "status", "conclusion", "completed_at")}

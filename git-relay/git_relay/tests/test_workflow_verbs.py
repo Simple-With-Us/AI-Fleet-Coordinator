@@ -243,12 +243,26 @@ class Tests(unittest.TestCase):
             WorkflowVerbs.for_action(Client(), Policy(), Minter(), "swu-wise", "wf_checks", REPO)
         ceiling = dict(CEILING, checks="read")
         minter = Minter()
-        h = WorkflowVerbs.for_action(Client(), Policy(ceiling), minter, "swu-wise", "wf_checks", REPO)
+        h = WorkflowVerbs.for_action(
+            Client(), Policy(ceiling), minter, "swu-wise", "wf_checks", REPO
+        )
         self.assertEqual(minter.calls[0][2], {"checks": "read", "metadata": "read"})
         self.assertIsNotNone(h)
 
     def test_wf_checks_reads_check_runs_for_a_ref(self):
-        s, c = svc({"check_runs": [{"id": 1, "name": "Kody Code Review", "status": "completed", "conclusion": "success", "extra": "x"}]})
+        s, c = svc(
+            {
+                "check_runs": [
+                    {
+                        "id": 1,
+                        "name": "Kody Code Review",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "extra": "x",
+                    }
+                ]
+            }
+        )
         out = s.run("wf_checks", {"repo": REPO, "ref": SHA})
         self.assertEqual(out["checks"][0]["name"], "Kody Code Review")
         self.assertNotIn("extra", out["checks"][0])
