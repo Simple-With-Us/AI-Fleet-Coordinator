@@ -60,6 +60,9 @@ class SeatPolicy:
     # Known but not implemented:  accepted in seat config, refused at dispatch
     # until their implementation and per-action policy land.
     REGISTERED_ACTIONS = (
+        "pr_state",
+        "pr_hold_state",
+        "pr_automerge_disable",
         "create_release",
         "rerun_workflow",
         "cancel_workflow",
