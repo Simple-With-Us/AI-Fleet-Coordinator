@@ -735,13 +735,13 @@ def _mcp_target(platform: str) -> str:
 def _mcp_servers(platform: str) -> tuple[str, ...]:
     """The MCP servers the fleet registers for a platform.
 
-    ``fleet-recall`` is registered everywhere.  ``agent-sync`` is registered only for
+    ``fleet-recall`` is registered everywhere.  The local ST-MCP server is registered only for
     the platforms with a fixed seat, and the installer's own note holds it back for
     OpenCode, whose seat is shared with a Conductor session that has no default.
     """
     fixed_seat = ("muse-code", "minimax", "fx")
     if platform == "muse":
-        # The muse target of install_mcp carries the fixed seat MC, so the agent-sync
+        # The muse target of install_mcp carries the fixed seat MC, so the ST-MCP server's
         # entry is registered as MC and never as MA.
         return ("fleet-recall",)
     if platform in fixed_seat:

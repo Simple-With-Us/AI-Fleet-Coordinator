@@ -103,6 +103,8 @@ A server host (the Hetzner VPS) keeps the project mirrors and the lanes on their
 
 **The layout.**  The volume is the one the host names in `FLEET_SERVER_VOLUME`:  `Code/` holds the project mirrors (the GitHub checkouts a seat picks to work in) and `apps/` holds the apps, `lanes/` among them.  On the server the root account has no `~/Code` or `~/apps` alias, so the tools take the roots from the environment (`FLEET_CODE_ROOT`, `FLEET_APPS_ROOT`, `FLEET_LANES_ROOT`):  the managed `lane` wrapper carries them, and the bashrc block the server configurator manages exports them, so every shell on that host resolves the same directories.  The `jay` account keeps the `~/` spellings as symlinks into the volume, so `~/apps/lanes/<Repo>/<seat>-<slug>` and the path `FLEET_LANES_ROOT` names are one directory there.
 
+**The guard shims resolve the roots themselves.**  The generated hook shims (`lane-guard-hook`, `fleet-guard-hook`, `minimax-guard-hook`) read the environment first, then the home directory, then the volume the host names in `FLEET_SERVER_VOLUME`, and take the first candidate whose directory is there, so a hook process that inherited no profile still denies the same things on the server host as on the Mac.  The volume's path is baked into a shim when it is generated, because it is host configuration and never lives in this repository.
+
 **What is on the volume.**  Everything the host owns that used to sit on its main disk lives on that volume now.  The root account reaches it only by its canonical path, and the `jay` account through symlinks, so a path an agent uses names the same tree either way:
 
 | On the volume | Reached as | What it is |
@@ -206,7 +208,7 @@ Owner decision 2026-10-09: the existing lanes move to the v2 tree in one pass, a
 - The old shapes keep working until then: `lane ls` reports them as `legacy (migrate)` with their new path, and `lane new` finds a lane that has not moved yet.
 - A moved lane leaves a symlink at its old path, pointing at the new one.  The symlinks stay for 7 days (the removal date is written to the migration log) so a shell or an editor that still has the old path keeps working, then `lanes-v2-migrate.py --remove-links` deletes only those symlinks.
 - Lanes with a running process, uncommitted changes, a lock or another checkout below them (a gitignored `.claude/worktrees/<name>`) are skipped and listed; run the script again when they are free.
-- `_managed` and `_review` disappear with their last entry.  The agent-sync runtime checkout under `_managed/fleet` is live infrastructure, so the script skips it and it needs its own step (owner decision pending).
+- `_managed` and `_review` disappear with their last entry.  The runtime checkout under `_managed/fleet` is live infrastructure, so the script skips it and it needs its own step (owner decision pending).
 - Bot lanes (BotFleet `kody`, `fixer`, `designer`, `compiler`) have no seat row in the registry; they are reported as `BOT-LANE` until the owner registers a scheme.
 
 ## Enforcement

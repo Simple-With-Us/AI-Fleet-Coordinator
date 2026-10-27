@@ -98,7 +98,7 @@ ACP_HANDSHAKE_TIMEOUT = 300
 # WhatsApp bridge takes the same marker.
 SILENT_MARKER = "\U0001f440"
 
-# The Operator (the agent-sync listener) can put a message into the Lark chat.
+# The Operator can put a message into the Lark chat.
 # It drops a JSON file into the signal directory and the bridge picks it up,
 # sends it to Lark as the bot, and runs the seat turn on it, so the owner gets
 # the signal and the answer in one place.  The bridge is the only process that

@@ -1,6 +1,6 @@
 # Zulip Message Routing And Wake Flow
 
-This document distinguishes BotFleet's native Zulip listener from the Agent-Sync listener and the Muse wake router.  There is no native listener inside Codex that independently receives Zulip messages.
+This document distinguishes BotFleet's native Zulip listener from the Operator and the Muse wake router.  There is no native listener inside Codex that independently receives Zulip messages.
 
 ![Diagram of the BotFleet and Agent-Sync Zulip message routing paths](zulip-wake-routing.svg)
 
@@ -58,7 +58,7 @@ Codex receives Zulip through Operator, the existing Agent-Sync listener.  The na
 - [Zulip Fleet Guide](zulip-fleet-guide.md) — realm, bot membership, inbox, and message rules.
 - [Zulip Wake Audit](zulip-wake-audit-2026-10-13.md) — current transport and catalog capabilities.
 - [Muse Inbox Bridge](muse-inbox-bridge.md) — default-off, source-qualified Mac and server inbox decision path.
-- [Agent-Sync Listener](agent-sync-listener.md) — listener lifecycle, budgets, and routing controls.
+- [The Operator](agent-sync-listener.md) — listener lifecycle, budgets, and routing controls.
 - [BotFleet Outgoing Webhook Migration](zulip-outgoing-migration.md) — receiver readiness and bot cutover gates.
 - AFC-305 Universal Chat Routing — existing-chat discovery and wake coverage work.
 

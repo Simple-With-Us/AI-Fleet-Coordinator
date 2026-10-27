@@ -1,4 +1,4 @@
-// Request gates for the hosted agent-sync MCP Worker.
+// Request gates for the hosted ST-MCP Worker.
 //
 // Pure module:  no `cloudflare:` imports, no I/O.  Every check here runs before
 // the OAuth library sees the request, so nothing here may fetch anything.
