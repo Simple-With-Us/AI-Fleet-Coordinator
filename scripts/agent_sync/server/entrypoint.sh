@@ -1,5 +1,5 @@
 #!/bin/sh
-# Container entry for the agent-sync server instance.
+# Container entry for the Operator's server instance.
 #
 # On first start it copies the sample config (scripts/agent_sync/server/listener.toml) onto the
 # state volume as $AGENT_SYNC_CONFIG; it never overwrites one that exists, because

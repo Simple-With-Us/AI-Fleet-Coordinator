@@ -1,4 +1,4 @@
-"""agent-sync over MCP (docs/protocols/agent-sync-mcp.md).
+"""simple-chat over MCP (docs/protocols/agent-sync-mcp.md).
 
   tools.json      the tool contract:  names, descriptions, input and output schemas, annotations.
                   Every transport serves it unchanged; tests assert tools/list deep-equals it.

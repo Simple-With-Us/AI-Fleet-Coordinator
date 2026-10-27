@@ -1,4 +1,4 @@
-"""`agent-sync daemon install` and `uninstall`:  the LaunchAgent plist and the sample config.
+"""`simple-chat daemon install` and `uninstall`:  the LaunchAgent plist and the sample config.
 
 They write files only.  They never run launchctl:  they print the bootstrap or bootout command
 for the person (or orchestrator) doing the install.  Every path is derived from HOME, so tests

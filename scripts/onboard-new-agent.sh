@@ -109,7 +109,7 @@ if [ -n "$APP" ] && ! printf '%s' "$APP" | grep -Eq '^[a-z0-9]+(-[a-z0-9]+)*$'; 
   exit 1
 fi
 
-# The credential file code comes from the rule the agent-sync CLI itself uses, so the
+# The credential file code comes from the rule the simple-chat CLI itself uses, so the
 # file this script names is the file the CLI will look for.  The bot email is the short
 # name plus -bot@ plus the realm host (the registry's zulipRealm).
 zulip_ids="$(python3 - "$here" "$TAG" "$ZULIP_SHORT" <<'PY'

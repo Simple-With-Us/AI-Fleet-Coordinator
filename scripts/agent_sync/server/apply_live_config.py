@@ -13,7 +13,7 @@ sample never reaches a live volume by itself.  This copies exactly the sample's 
 comment lines just above it, and a missing one is appended.  [listener_api] and [notes_queue] (AFC-486) are
 appended the same way when the live file has none, but one that is there is never changed:  its `enabled`
 and its seat lists are the operator's choice on that volume, and the sample ships both off.  [daemon]
-(owner_user_id and eligible_user_ids, pinned by `agent-sync daemon init`) and every other section stay byte
+(owner_user_id and eligible_user_ids, pinned by `simple-chat daemon init`) and every other section stay byte
 for byte.
 
 Before writing, the result is checked with the listener's own config parser and the seat partition;

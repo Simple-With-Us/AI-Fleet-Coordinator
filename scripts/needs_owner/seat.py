@@ -2,7 +2,7 @@
 
 The seat is the launcher's (`AGENT_LAUNCH_SEAT`, when `AGENT_LAUNCHER` is set) or, in an ordinary
 session, `AGENT_SEAT`;  `--by` is only a check that the caller means the same seat (AGENT-SYNC § Identity
-Rules).  The same F3 `identity.resolve_seat` that `agent-sync` uses does the choosing, so a launched bot
+Rules).  The same F3 `identity.resolve_seat` that `simple-chat` uses does the choosing, so a launched bot
 whose `AGENT_SEAT` names another seat is refused here exactly as it would be there.  `board` reads only
 `AGENT_SEAT`, never `AGENT_LAUNCH_SEAT`, so every child process gets the verified seat as `AGENT_SEAT`
 and keeps the launcher variables as they were.

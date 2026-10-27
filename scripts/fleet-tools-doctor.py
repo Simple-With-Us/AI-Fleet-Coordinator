@@ -40,8 +40,8 @@ Checks:
   fleet-mode-doc  the Mac's ~/apps/FLEET-MODE.md equals the repo's docs/FLEET-MODE.md (WARN if not)
   seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical
               (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
-  mcp:codex   Codex registers agent-sync (and FleetLink when a token exists)
-  mcp:claude  Claude Code registers agent-sync (and FleetLink likewise)
+  mcp:codex   Codex registers the local ST-MCP server (and FleetLink when a token exists)
+  mcp:claude  Claude Code registers the local ST-MCP server (and FleetLink likewise)
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
               fleet-secrets, fleetlink), then each registry tool's install and version
   updater:<U> the job that keeps the runtime on main (the Mac's runtime-sync LaunchAgent,
@@ -951,7 +951,7 @@ def check_mac_runtime(
     updater: dict | None = None,
     previous: dict | None = None,
 ) -> dict:
-    """The Mac's managed runtime (agent-sync, board, and the source of every Mac copy) against the tip.
+    """The Mac's managed runtime (simple-chat, board, and the source of every Mac copy) against the tip.
 
     Behind is amber only while the updater is healthy and has not yet had its chance:  it is loaded,
     not paused, exits cleanly, its run counter moved, the worktree has no tracked changes, and this
@@ -2998,7 +2998,7 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
     except (
         OSError,
         subprocess.SubprocessError,
-    ):  # agent-sync missing from PATH (check_commands reports it) or hung
+    ):  # simple-chat missing from PATH (check_commands reports it) or hung
         return False
     if result.returncode == 0:
         STATE.parent.mkdir(parents=True, exist_ok=True)
@@ -3060,7 +3060,7 @@ def run(
     if on_mac_runtime:
         updater = check_mac_updater(report, runner, previous)
     if on_mac_runtime:
-        # agent-sync, board and every Mac copy come from the managed runtime, so the Mac's rows are
+        # simple-chat, board and every Mac copy come from the managed runtime, so the Mac's rows are
         # always judged against it, even if an old release receipt is still on disk.
         rt = check_mac_runtime(report, runner, expected, updater, previous)
     else:

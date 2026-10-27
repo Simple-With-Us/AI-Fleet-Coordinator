@@ -5,7 +5,7 @@ It runs as CLAUDE every five minutes (com.jay.needs-owner-notify) and does these
   1. Reads the open items from Linear (a failed read sends nothing and exits 0) and re-validates each one (the block
      parses, the seat is verified, the question and options still hash to the uid, no secret or personal data).
   2. Replies.  For each item whose OWNER topic is open it looks for an answer, in this order, and records the first:
-       - a typed message that `agent-sync verify-owner-msg` verifies (the owner's id, a human client, the topic, newer
+       - a typed message that `simple-chat verify-owner-msg` verifies (the owner's id, a human client, the topic, newer
          than the notice);  a message that is only `pause` or `resume` controls the notifier and is never an answer;
        - a tap:  a reaction on the notice from the pinned owner's user id, a standard keycap emoji, on a low-stakes option;
        - a Linear comment whose author id is OWNER_LINEAR_USER_ID and which is not an app's.
@@ -230,7 +230,7 @@ class Notifier:
             self.lock.touch()
 
     def agent_sync(self, verb: str, *args: str, stdin: str | None = None):
-        """`agent-sync VERB --as CLAUDE --session needsown ARGS...`:  the seat and session go right after the verb, because
+        """`simple-chat VERB --as CLAUDE --session needsown ARGS...`:  the seat and session go right after the verb, because
         everything after a `--` is message text."""
         return self.runner.agent_sync(verb, "--as", SEAT, "--session", SESSION, *args, stdin=stdin)
 
@@ -269,7 +269,7 @@ class Notifier:
         return sorted(rows, key=lambda r: r["id"])
 
     def verify(self, message_id: int, topic: str, after: int) -> bool | None:
-        """True when `agent-sync verify-owner-msg` verifies the message, False when it says it is not the owner's, None when
+        """True when `simple-chat verify-owner-msg` verifies the message, False when it says it is not the owner's, None when
         it could not say (the network, a missing owner pin)."""
         result = self.agent_sync(
             "verify-owner-msg",
@@ -710,7 +710,7 @@ class Notifier:
 
     # ---- a pause or a resume in any OWNER topic -------------------------------------------------------------
     def topic_rows(self) -> list[dict] | None:
-        """The recent topics of #Work-In-Progress (`agent-sync topics --json`), fetched once a run.  None when it failed."""
+        """The recent topics of #Work-In-Progress (`simple-chat topics --json`), fetched once a run.  None when it failed."""
         if not self._topic_rows_read:
             self._topic_rows_read = True
             result = self.agent_sync(

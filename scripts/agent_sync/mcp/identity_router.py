@@ -1,4 +1,4 @@
-"""Per-call identity for `agent-sync mcp` (AFC-331, docs/protocols/per-call-identity.md sections 2-4).
+"""Per-call identity for `simple-chat mcp` (AFC-331, docs/protocols/per-call-identity.md sections 2-4).
 
 One stdio connection may act as several bots.  The connection says who may act (the allowed set:
 every agent bot whose credential file is on this host, or the launcher's seat alone), and each call

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for github-outbox-bridge.py.  No gh, no network, no agent-sync: fakes only."""
+"""Unit tests for github-outbox-bridge.py.  No gh, no network, no simple-chat: fakes only."""
 
 from __future__ import annotations
 
@@ -278,7 +278,7 @@ class RuleTests(unittest.TestCase):
 
     def test_no_credential_is_read_into_this_process(self):
         # The bridge used to parse SLACK_BOT_TOKEN / AGENT_SYNC_POST_TOKEN out of a
-        # KEY=value file.  It now holds no credential at all: the agent-sync CLI and
+        # KEY=value file.  It now holds no credential at all: the simple-chat CLI and
         # the --rc file path resolve the seat's own Zulip key.  This test pins that.
         self.assertEqual(bridge.TOKEN_NAMES, ())
         with tempfile.TemporaryDirectory() as tmp:

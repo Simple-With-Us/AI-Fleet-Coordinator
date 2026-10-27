@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Container health check for the agent-sync server instance.
+"""Container health check for the Operator's server instance.
 
 Healthy (exit 0) while the listener keeps rewriting <state>/listener/status.json, which it does
 every 2 seconds from its main loop.  Unhealthy (exit 1) when the file is older than 60 seconds

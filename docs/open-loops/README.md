@@ -68,7 +68,7 @@ It exits 0 when clean, 1 on any finding and 2 on a usage error.  CI runs the te
 | `slack-helper` | The retired Slack helper or a Slack endpoint |
 | `single-space-gap` | A sentence boundary with one ASCII space, including one after "no" or after a one-letter word such as "option A.".  Fences, inline code, URLs, `e.g.`, `i.e.`, `vs.` and list markers ("1." and "A." at the start of a line) are skipped.  A person named by initial (`J. Smith`) is flagged too, so reword it |
 | `reminder-missing` | The owner's standing reminder is not quoted verbatim |
-| `secret-shaped` | A secret-shaped string, by the agent-sync secret scanner plus a local copy of the Linear, Sentry, xAI, Infisical, Cloudflare and Coolify patterns |
+| `secret-shaped` | A secret-shaped string, by the simple-chat secret scanner plus a local copy of the Linear, Sentry, xAI, Infisical, Cloudflare and Coolify patterns |
 | `gb-label` | A `gb-<role>.md` text without its own `[GB-<ROLE>]` label and `<role>-grok-bot@` email, or with another role's;  or any GB label in a core |
 | `placeholder` | With `--no-placeholders`:  a leftover `<C2 ID>`, `<C5 ID>`, TODO or FIXME |
 | `private-dir` | With `--private`:  the folder is not 0700, a file is group or world readable, or the folder is inside a git worktree |

@@ -61,7 +61,7 @@ def secretscan():
 
 
 def textfmt():
-    """`agent_sync/textfmt.py` (sentence_gap), for a caller that needs the same gap rule agent-sync applies on
+    """`agent_sync/textfmt.py` (sentence_gap), for a caller that needs the same gap rule simple-chat applies on
     the way out (open-loops C2-1's DM lint).  Loaded only when asked for:  fleet-facts itself never needs it,
     so its stable copy does not carry the file."""
     return _load("textfmt")

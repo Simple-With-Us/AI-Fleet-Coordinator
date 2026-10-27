@@ -139,7 +139,7 @@ jobs:
     # block in step with what the pr-autofix reusable declares and consumes.
     - name: Autofix caller template guard
       run: python3 scripts/test_pr_autofix_doc_template.py
-    - name: agent-sync CLI tests
+    - name: simple-chat CLI tests
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
         python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
@@ -167,7 +167,7 @@ jobs:
         bash -n install-fleet-secrets.sh
         bash -n fleet_secrets/seed-system-keychain.sh
         bash -n fleet_secrets/switch-pm2-jobs.sh
-    # needs-owner (open-loops C6-1 and C6-2):  a fake `board` and `agent-sync` on PATH, built on the real parsers, a fixed
+    # needs-owner (open-loops C6-1 and C6-2):  a fake `board` and `simple-chat` on PATH, built on the real parsers, a fixed
     # clock and fake K1 knobs for the fallback notifier;  the stable copy installed into a temp HOME must run under
     # `python3 -I`, and the LaunchAgent plist must parse.
     - name: needs-owner tests
@@ -181,8 +181,8 @@ jobs:
         cd scripts && python3 -m unittest discover -s fleet_facts/tests -t . -v
     - name: fleet_facts fixtures are synthetic
       run: python3 scripts/fleet_facts/check_fixtures.py
-    # Open-loops C2-1:  gather, render and send for the daily digest.  Scripted gatherers, a fake agent-sync that
-    # runs every command line through the real agent-sync parser, and a temp HOME for the install test (which
+    # Open-loops C2-1:  gather, render and send for the daily digest.  Scripted gatherers, a fake simple-chat that
+    # runs every command line through the real simple-chat parser, and a temp HOME for the install test (which
     # runs the stable copy with python3 -I).  The second step uses the same synthetic-data check on these tests.
     - name: open_loops tests
       run: |
@@ -386,15 +386,15 @@ jobs:
     # file, which left this gate vacuous.
     - name: Alert ingress unit tests
       run: node --test workers/alert-ingress/src/*.test.js
-    # Hosted agent-sync MCP Worker unit tests (including GraphQL document
+    # Hosted ST-MCP Worker unit tests (including GraphQL document
     # parsing).  Install its pinned dependencies before running the suites.
-    - name: agent-sync MCP Worker unit tests
+    - name: ST-MCP Worker unit tests
       run: |
         npm ci --ignore-scripts --prefix scripts/agent-sync-mcp
         node --test scripts/agent-sync-mcp/test/*.test.mjs
     # The scoped-folder copy script (AFC-478) against a mocked Infisical and a fake
     # fleet-secrets:  names-only output, collisions, exit codes and reruns.
-    - name: agent-sync MCP scoped-folder copy script tests
+    - name: ST-MCP scoped-folder copy script tests
       run: python3 -I scripts/agent-sync-mcp/scripts/test_populate_scoped_folders.py
     - name: Kody defer and deferred sweep tests
       run: node --test scripts/kody-defer/*.test.mjs scripts/kody-deferred-sweep.test.mjs

@@ -26,7 +26,7 @@ OWNER="${GITHUB_OWNER:-jaywedgeworth22}"
 LOG_DIR="${HOME}/Library/Logs/mac-seat-claim"
 GROK_BIN="${GROK_BIN:-/Users/jay/.grok/bin/grok}"
 CURSOR_AGENT="${CURSOR_AGENT:-cursor-agent}"
-# Zulip posting needs no shared secret: the agent-sync CLI reads the seat's own
+# Zulip posting needs no shared secret: the simple-chat CLI reads the seat's own
 # Zulip credential (Infisical Fleet-OPS /zulip).  The old AGENT_SYNC_ENV / AGENT_SYNC_POST_URL
 # relay is retired and deliberately not referenced here.
 ZULIP_CHANNEL="${ZULIP_CHANNEL:-Work-In-Progress}"
@@ -117,7 +117,7 @@ PY
 }
 
 post_agent_sync() {
-  # Post to Zulip with the seat's own bot via the agent-sync CLI.
+  # Post to Zulip with the seat's own bot via the simple-chat CLI.
   # The CLI resolves that seat's own Zulip credential (Infisical /zulip) itself, so
   # there is no shared bearer token to parse, rotate, or leak in this script.
   # (The old relay POST is retired; see AGENT-SYNC.md.)

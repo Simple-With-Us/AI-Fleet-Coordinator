@@ -374,7 +374,7 @@ def note_digest(paths: L.SeatPaths, *, upto: int, now: float, told: bool = False
 
 
 def summary(paths: L.SeatPaths, now: float) -> dict[str, Any]:
-    """For status and `agent-sync wakes`:  how many are held back now (both tiers), how many of them
+    """For status and `simple-chat wakes`:  how many are held back now (both tiers), how many of them
     are in overflow, the oldest one's age in seconds, the count per reason, `evicted` (ids lost past
     both caps, still owed) and the lifetime totals."""
     data = load(paths)

@@ -14,7 +14,7 @@ included) where the writers put one, so a comment typed or reflowed by hand stil
   owner replied:  comment <id>
 
 A reply record says that a reply exists.  It never holds the answer, and a consumer verifies before it
-acts:  `agent-sync verify-owner-msg` for a Zulip message, the reaction's user id for a tap, and a
+acts:  `simple-chat verify-owner-msg` for a Zulip message, the reaction's user id for a tap, and a
 comment author equal to OWNER_LINEAR_USER_ID for Linear.
 """
 from __future__ import annotations

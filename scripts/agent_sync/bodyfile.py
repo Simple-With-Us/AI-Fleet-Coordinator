@@ -5,7 +5,7 @@ the command line shows up in `ps` and in shell history.  A file the caller owns,
 read or change, is the safe channel.  The same rules as the board's `--desc-file`:
 
   * a regular file, not a symbolic link, a directory, a FIFO or a device;
-  * owned by the user running agent-sync;
+  * owned by the user running simple-chat;
   * mode exactly 0600 or 0400 (anything wider means someone else could have written or read it);
   * at most 64 KB, and strict UTF-8 with no NUL byte (a byte-order mark is dropped).
 

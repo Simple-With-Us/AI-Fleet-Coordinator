@@ -3,7 +3,7 @@
 Peer wakes during a fleet rollout can otherwise start a muse or claude child on
 every seat at once and multiply an already-hot load average.  BotFleet already
 defers webhook dispatch on the same load-per-core ceiling; this module gives
-agent-sync the same read-only signal without importing BotFleet.
+the listener the same read-only signal without importing BotFleet.
 """
 from __future__ import annotations
 

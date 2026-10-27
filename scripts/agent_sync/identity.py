@@ -1,4 +1,4 @@
-"""Seat precedence and the bot check, shared by every agent-sync entry point.
+"""Seat precedence and the bot check, shared by every simple-chat entry point.
 
 AGENT-SYNC § Identity Rules (owner 2026-10-09) says a session's seat is the first of:
 

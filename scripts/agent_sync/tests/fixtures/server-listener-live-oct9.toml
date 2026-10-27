@@ -21,7 +21,7 @@
 
 [daemon]
 instance = "server"
-owner_user_id = 1000001                 # pinned by `agent-sync daemon init`, never derived at runtime
+owner_user_id = 1000001                 # pinned by `simple-chat daemon init`, never derived at runtime
 eligible_user_ids = [1000002, 1000003, 1000004]
 owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
 stale_after_minutes = 120

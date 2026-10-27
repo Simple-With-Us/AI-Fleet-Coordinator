@@ -10,7 +10,7 @@ Status: built and tested against a local mock of Linear, and checked live with r
 
 ### Before cutover: as `board-linear`
 
-Install it next to the old CLI and leave `~/.local/bin/board` alone.  Install from the repo only, so the live copy cannot drift from the tracked one.  Link to the managed runtime checkout, never to the human integration tree under `~/Code`:  `/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime` is a detached worktree that `com.jay.agent-sync-runtime-sync` keeps on AFC origin/main every 120 seconds (the `agent-sync` CLI already runs from it).
+Install it next to the old CLI and leave `~/.local/bin/board` alone.  Install from the repo only, so the live copy cannot drift from the tracked one.  Link to the managed runtime checkout, never to the human integration tree under `~/Code`:  `/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime` is a detached worktree that `com.jay.agent-sync-runtime-sync` keeps on AFC origin/main every 120 seconds (the `simple-chat` CLI already runs from it).
 
 ```bash
 ln -sf "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/linear-board/board" "$HOME/.local/bin/board-linear"
@@ -177,7 +177,7 @@ Who holds an issue, in order:
 
 ## Agent-Sync parity
 
-The hosted Agent-Sync MCP server (`scripts/agent-sync-mcp`) gives cloud seats Linear as 175 named commands, the general `linear_schema`, `linear_query` and `linear_mutation` tools, and 11 tools proxied from Linear's official MCP server.  `board` serves the same tools from a shell, with the same guards, so a seat on the Mac or a VM has everything a hosted seat has:
+The hosted ST-MCP server (`scripts/agent-sync-mcp`) gives cloud seats Linear as 175 named commands, the general `linear_schema`, `linear_query` and `linear_mutation` tools, and 11 tools proxied from Linear's official MCP server.  `board` serves the same tools from a shell, with the same guards, so a seat on the Mac or a VM has everything a hosted seat has:
 
 | Verb | Hosted tool | What it does |
 |---|---|---|
