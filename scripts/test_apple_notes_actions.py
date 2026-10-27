@@ -547,7 +547,8 @@ class ActionLogTests(ActionsTestCase):
         self.assertEqual(entry["body_sha256"], call["html_sha256"])
         #  the linkifier's own count rides along with the other rewrites (AFC-547)
         self.assertEqual(
-            entry["reformatted"], {"dates": 1, "gaps": 1, "links": {"issues": 0, "prs": 1, "projects": 0}}
+            entry["reformatted"],
+            {"dates": 1, "gaps": 1, "links": {"issues": 0, "prs": 1, "projects": 0}},
         )
         self.assertEqual(entry["pin"], "pinned")
         self.assertEqual(

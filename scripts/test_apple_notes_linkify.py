@@ -295,7 +295,7 @@ class LinkifyTests(LinkifyTestCase):
         #  the project the fleet names, built from the host and the workspace the note is written
         #  for, so a note written for another workspace links into that one
         out = self.html("[AFC, MM] Notes", "The rewrite is P-BF-6.")
-        self.assertIn('href="https://' + LINEAR_HOST + "/" + LINEAR_WORKSPACE + '/project/', out)
+        self.assertIn('href="https://' + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/project/", out)
         self.assertIn(">P-BF-6</a>", out)
 
     def test_a_project_reference_is_never_read_as_an_issue(self):
@@ -438,7 +438,9 @@ class LinkifyTests(LinkifyTestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         (line,) = self.log_lines()
         self.assertEqual(
-            line["reformatted"]["links"], {"issues": 2, "prs": 1, "projects": 0}, line["reformatted"]
+            line["reformatted"]["links"],
+            {"issues": 2, "prs": 1, "projects": 0},
+            line["reformatted"],
         )
 
     def test_the_log_keeps_the_link_counts_when_the_date_counts_are_missing(self):
@@ -458,7 +460,9 @@ class LinkifyTests(LinkifyTestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         (line,) = self.log_lines()
         self.assertEqual(
-            line["reformatted"]["links"], {"issues": 2, "prs": 1, "projects": 0}, line["reformatted"]
+            line["reformatted"]["links"],
+            {"issues": 2, "prs": 1, "projects": 0},
+            line["reformatted"],
         )
 
     def test_a_network_error_that_only_looks_like_a_404_is_not_a_missing_pull_request(self):
