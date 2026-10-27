@@ -999,6 +999,9 @@ class AgentSeatPinTests(unittest.TestCase):
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
             if seat.retired:
                 self.assertIn("a retired catalog pack is never a platform default", out, key)
+                self.assertIn("A retired pack takes no work", out, key)
+                self.assertNotIn("branch prefix from your launcher", out, key)
+                self.assertNotIn(f"`{seat.prefix}` for {seat.tag}", out, key)
                 continue
             self.assertIn(_arm(seat.tag), self._block(out).splitlines(), key)
             self.assertIn(_ordinary(seat.notes, seat.tag), out, key)
