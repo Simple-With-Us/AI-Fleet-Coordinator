@@ -321,6 +321,7 @@ case "$*" in
       approved_old_head) printf '%s\n' '[{"user":{"login":"kody-ai[bot]"},"commit_id":"2222222222222222222222222222222222222222","state":"APPROVED"}]' ;;
       commented_current) printf '%s\n' "[{\\\"user\\\":{\\\"login\\\":\\\"kody-ai[bot]\\\"},\\\"commit_id\\\":\\\"$H\\\",\\\"state\\\":\\\"COMMENTED\\\"}]" ;;
       changes_requested_current) printf '%s\n' "[{\\\"user\\\":{\\\"login\\\":\\\"kody-ai[bot]\\\"},\\\"commit_id\\\":\\\"$H\\\",\\\"state\\\":\\\"APPROVED\\\"},{\\\"user\\\":{\\\"login\\\":\\\"kody-ai[bot]\\\"},\\\"commit_id\\\":\\\"$H\\\",\\\"state\\\":\\\"CHANGES_REQUESTED\\\"}]" ;;
+      approved_then_commented) printf '%s\\n' "[{\\"user\\":{\\"login\\":\\"kody-ai[bot]\\"},\\"commit_id\\":\\"$H\\",\\"state\\":\\"APPROVED\\"},{\\"user\\":{\\"login\\":\\"kody-ai[bot]\\"},\\"commit_id\\":\\"$H\\",\\"state\\":\\"COMMENTED\\"}]" ;;
       approved_by_other) printf '%s\n' "[{\\\"user\\\":{\\\"login\\\":\\\"someone\\\"},\\\"commit_id\\\":\\\"$H\\\",\\\"state\\\":\\\"APPROVED\\\"}]" ;;
       *) printf '%s\n' '[]' ;;
     esac
@@ -474,6 +475,12 @@ class ClassifyCurrentApproval(unittest.TestCase):
 
     def test_an_approval_on_an_older_commit_does_not_count(self):
         self.assertIn("no current-head approval", self.run_mode("approved_old_head"))
+
+    def test_a_trailing_comment_does_not_revoke_an_approval(self):
+        self.assertIn("compare API failed", self.run_mode("approved_then_commented"))
+
+    def test_the_review_lookup_is_an_explicit_get(self):
+        self.assertIn("--method GET", step_script(CLASSIFY_STEP_NAME))
 
     def test_a_commented_review_does_not_count(self):
         self.assertIn("no current-head approval", self.run_mode("commented_current"))
