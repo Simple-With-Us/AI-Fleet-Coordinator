@@ -316,7 +316,13 @@ class Tests(unittest.TestCase):
         ]
         out = Multi(c).run(
             "wf_files_put",
-            {"repo": REPO, "branch": "feat/x", "message": "m", "expected_head_sha": SHA, "files": files},
+            {
+                "repo": REPO,
+                "branch": "feat/x",
+                "message": "m",
+                "expected_head_sha": SHA,
+                "files": files,
+            },
         )
         self.assertEqual(out, {"branch": "feat/x", "commit": "1" * 40, "files": 3})
         tree = next(p for m, path, p, b in c.calls if path.endswith("/git/trees") and m == "POST")
@@ -325,7 +331,9 @@ class Tests(unittest.TestCase):
         self.assertEqual(by_path["docs/new.md"]["mode"], "100644")
         self.assertIsNone(by_path["old.txt"]["sha"])
         self.assertEqual(tree["base_tree"], "b" * 40)
-        commit = next(p for m, path, p, b in c.calls if path.endswith("/git/commits") and m == "POST")
+        commit = next(
+            p for m, path, p, b in c.calls if path.endswith("/git/commits") and m == "POST"
+        )
         self.assertEqual(commit["parents"], [SHA])
         patch = c.calls[-1]
         self.assertEqual((patch[0], patch[2]), ("PATCH", {"sha": "1" * 40, "force": False}))
@@ -333,7 +341,13 @@ class Tests(unittest.TestCase):
 
     def test_wf_files_put_refusals(self):
         ok = [{"path": "a.md", "content_b64": base64.b64encode(b"x").decode()}]
-        base = {"repo": REPO, "branch": "feat/x", "message": "m", "expected_head_sha": SHA, "files": ok}
+        base = {
+            "repo": REPO,
+            "branch": "feat/x",
+            "message": "m",
+            "expected_head_sha": SHA,
+            "files": ok,
+        }
 
         def refused(**over):
             c = self._git_data_client(**{k: over.pop(k) for k in ("head", "default") if k in over})
@@ -347,7 +361,9 @@ class Tests(unittest.TestCase):
         refused(files=ok + ok)  # duplicate path
         refused(files=[{"path": "../x", "content_b64": "eA=="}])
         refused(files=[{"path": "a", "content_b64": "eA==", "delete": True}])
-        refused(files=[{"path": "a", "content_b64": base64.b64encode(b"ghp_" + b"A" * 30).decode()}])
+        refused(
+            files=[{"path": "a", "content_b64": base64.b64encode(b"ghp_" + b"A" * 30).decode()}]
+        )
         refused(files=[])
         refused(files=[{"path": f"f{i}", "content_b64": "eA=="} for i in range(21)])
         refused(message="")

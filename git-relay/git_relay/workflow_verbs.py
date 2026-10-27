@@ -515,7 +515,9 @@ class WorkflowVerbs:
         ref = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(branch, safe='/')}"))
         if (ref.get("object") or {}).get("sha") != head:
             raise Refused("branch head moved")
-        base_tree = (_obj(self._get(f"/repos/{repo}/git/commits/{head}")).get("tree") or {}).get("sha")
+        base_tree = (_obj(self._get(f"/repos/{repo}/git/commits/{head}")).get("tree") or {}).get(
+            "sha"
+        )
         if not isinstance(base_tree, str) or not _SHA.fullmatch(base_tree):
             raise Refused("unexpected upstream shape")
         cache, entries = {}, []
