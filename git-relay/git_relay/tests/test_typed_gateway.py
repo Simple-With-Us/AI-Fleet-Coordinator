@@ -2,16 +2,17 @@ import json
 import tempfile
 import threading
 import unittest
-import urllib.request
 import urllib.error
+import urllib.request
 from http.server import ThreadingHTTPServer
+
 from git_relay.audit import AuditLog
+from git_relay.github_client import GitHubClient
 from git_relay.outcomes import OutcomeStore, key_for
 from git_relay.policy import SeatPolicy
-from git_relay.github_client import GitHubClient
 from git_relay.server import make_handler
+from git_relay.tests.test_typed_disarm import ARGS, Client, state
 from git_relay.typed_gateway import TypedGateway
-from git_relay.tests.test_typed_disarm import Client, ARGS, state
 
 TOKEN = "test-opaque-" + "bearer-123456"
 
