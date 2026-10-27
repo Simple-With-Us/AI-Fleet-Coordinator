@@ -129,6 +129,14 @@ class AdapterTests(unittest.TestCase):
         self.assertNotIn("--projectId", source)
         self.assertNotIn("8dae6d03", source)
 
+    def test_caller_merge_principal_mismatch_is_refused_before_mint(self):
+        guard = 'if os.environ.get("EXPECTED_MERGE_ACTOR", ACTOR) != ACTOR:'
+        wf = Path(__file__).resolve().parent.parent / ".github/workflows/auto-merge-reusable.yml"
+        for source in (Path(w.__file__).read_text(), wf.read_text()):
+            self.assertEqual(source.count(guard), 1)
+            self.assertLess(source.index(guard), source.index("token = mint_verified(config)"))
+            self.assertIn("caller merge principal does not match the relay principal", source)
+
     def test_exec_token_is_masked_in_actions(self):
         source = Path(w.__file__).read_text()
         self.assertIn('print("::add-mask::" + token, flush=True)', source)

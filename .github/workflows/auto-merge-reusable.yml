@@ -575,6 +575,9 @@ jobs:
                   config = configuration(json.loads(run.stdout))
               except (subprocess.SubprocessError, OSError, ValueError):
                   raise Refused("Infisical dedicated-folder fetch failed") from None
+              # The caller's configured merge principal must be the relay principal; never overwrite it silently.
+              if os.environ.get("EXPECTED_MERGE_ACTOR", ACTOR) != ACTOR:
+                  raise Refused("caller merge principal does not match the relay principal")
               token = mint_verified(config)
               if os.environ.get("GITHUB_ACTIONS") == "true":
                   print("::add-mask::" + token, flush=True)
