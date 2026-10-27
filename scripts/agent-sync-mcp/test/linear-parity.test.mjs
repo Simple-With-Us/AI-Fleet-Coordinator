@@ -161,3 +161,19 @@ test("CLUTCH canonical name and CK compatibility alias route to the live C team"
     assert.deepEqual(routeApp(app), { team: "C", slug: null });
   }
 });
+
+test("CODEX has its own Linear pair, app name and deploy gate, shared with no other seat", async () => {
+  const L = await import("../src/linear.js");
+  assert.deepEqual({ ...L.LINEAR_SECRETS.CODEX }, { clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" });
+  assert.deepEqual({ ...L.LINEAR_INFISICAL.CODEX }, { clientId: "CODEX_LINEAR_CLIENT_ID", clientSecret: "CODEX_LINEAR_CLIENT_SECRET" });
+  assert.ok(L.LINEAR_SEATS.includes("CODEX"));
+  assert.deepEqual([...L.seatAppNames("CODEX")], ["Codex"]);
+  assert.ok(L.appNameOk("Codex", "CODEX"));
+  for (const other of Object.keys(L.LINEAR_SECRETS).filter((s) => s !== "CODEX")) {
+    assert.ok(!L.appNameOk("Codex", other), `${other} must not accept the Codex app`);
+    assert.notEqual(L.LINEAR_SECRETS[other].clientId, L.LINEAR_SECRETS.CODEX.clientId);
+    assert.notEqual(L.LINEAR_INFISICAL[other].clientId, L.LINEAR_INFISICAL.CODEX.clientId);
+  }
+  // Same scope string as the CLI:  Linear revokes every app token when a mint asks for another one.
+  assert.equal(L.LINEAR_SCOPE, "read,write,app:assignable,app:mentionable");
+});

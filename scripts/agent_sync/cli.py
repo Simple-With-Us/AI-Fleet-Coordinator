@@ -33,6 +33,8 @@ import signal
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -2892,6 +2894,171 @@ def build_parser_for(
     )
 
 
+# ---------------------------------------------------------------- remote read transport (opt-in)
+#
+# SIMPLE_CHAT_REMOTE=1 sends a few READ verbs (whoami, channels, topics, read, inbox) to the hosted ST-MCP
+# endpoint with the bot's own bearer (SIMPLE_TOOLS_BEARER, process environment only).  The hosted server decides
+# the seat from the bearer; this client never names one, so --as and --default-seat are refused.  The endpoint is
+# the fixed constant below (no override), no Zulip key or rc file is read, and a failure never falls back to the
+# direct path.  Every other verb and every flag with no hosted equivalent is refused.  The hosted bearer holds
+# every hosted tool of its seat; calling only these reads is a client choice, not a server restriction.
+# This is the LOCAL simple-chat CLI calling the HOSTED ST-MCP server:  two different servers.
+REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
+REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
+REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
+REMOTE_TIMEOUT_S = 40
+REMOTE_READ_VERBS = ("whoami", "channels", "topics", "read", "inbox")
+REMOTE_WRITE_VERBS = ("post", "reply", "react", "dm")
+REMOTE_VERBS = REMOTE_READ_VERBS + REMOTE_WRITE_VERBS
+
+
+def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[int, str, bytes]:
+    """The one network call of the remote transport:  (status, content type, body).  Tests replace this."""
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+            return None
+
+    op = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    try:
+        with op.open(req, timeout=timeout) as r:
+            return r.status, r.headers.get("Content-Type", ""), r.read(4_000_000)
+    except urllib.error.HTTPError as exc:
+        return exc.code, "", b""
+    except (urllib.error.URLError, OSError, ValueError):
+        raise RemoteError("the hosted endpoint could not be reached (no direct fallback in remote mode)") from None
+
+
+class RemoteError(Exception):
+    pass
+
+
+def _remote_call(env: Mapping[str, str], tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    bearer = str(env.get(REMOTE_BEARER_ENV, "")).strip()
+    if not bearer:
+        raise RemoteError(f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
+                          "to direct credentials")
+    if not REMOTE_BEARER_RE.fullmatch(bearer):
+        raise RemoteError(f"{REMOTE_BEARER_ENV} is not a bearer token (unexpected characters or length)")
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": tool, "arguments": arguments}}).encode()
+    status, ctype, raw = _remote_post(REMOTE_MCP_URL, {
+        "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2025-06-18", "Authorization": "Bearer " + bearer,
+        "User-Agent": "simple-chat-remote/1"}, body, REMOTE_TIMEOUT_S)
+    if status in (401, 403):
+        raise RemoteError("the hosted endpoint refused this bearer (not valid, expired, paused or not accepted for MCP)")
+    if status != 200:
+        raise RemoteError(f"the hosted endpoint answered HTTP {status}")
+    text = raw.decode("utf-8", "replace")
+    if "text/event-stream" in ctype:
+        text = next((ln[5:].strip() for ln in text.splitlines() if ln.startswith("data:")), "")
+    try:
+        msg = json.loads(text)
+    except ValueError:
+        raise RemoteError("the hosted endpoint sent an unreadable answer") from None
+    if not isinstance(msg, dict) or isinstance(msg.get("error"), dict) or not isinstance(msg.get("result"), dict):
+        raise RemoteError("the hosted endpoint refused or did not answer the call")
+    result = msg["result"]
+    if result.get("isError"):
+        sc = result.get("structuredContent") if isinstance(result.get("structuredContent"), dict) else {}
+        raise RemoteError(f"{tool} failed on the hosted server: " + str(sc.get("code") or "error")[:120])
+    return result
+
+
+def _remote_write_args(rt: Runtime, cmd: str, args: argparse.Namespace) -> tuple[str, dict[str, Any]]:
+    """post / reply / react / dm to the hosted zulip_* tool of the same meaning.  A write needs its own switch
+    (SIMPLE_CHAT_REMOTE_WRITES=1) on top of SIMPLE_CHAT_REMOTE=1;  the hosted server still applies its own
+    tagging, secret scan, recipient rules and rate limits.  Options with no hosted equivalent are refused."""
+    if str(rt.env.get("SIMPLE_CHAT_REMOTE_WRITES", "")).strip() != "1":
+        raise RemoteError(f"`{cmd}` is a write:  set SIMPLE_CHAT_REMOTE_WRITES=1 as well as SIMPLE_CHAT_REMOTE=1 "
+                          "to send it to the hosted server (it is not sent directly instead)")
+    for flag, bad in (("--fleet", "fleet"), ("--to-owner", "to_owner"), ("--no-tag", "no_tag"),
+                      ("--quiet", "quiet"), ("--owner", "owner"), ("--body-file", "body_file")):
+        if getattr(args, bad, False):
+            raise RemoteError(f"{flag} has no hosted equivalent in remote mode")
+    if cmd == "react":
+        return "zulip_react", {"message_id": args.id, "emoji": args.emoji}
+    words = list(getattr(args, "text", None) or [])
+    text = rt.stdin.read() if words == ["-"] else " ".join(words)
+    if not text.strip():
+        raise RemoteError(f"`{cmd}` needs message text (an argument, or - for stdin)")
+    if cmd == "post":
+        targs: dict[str, Any] = {"channel": args.channel, "topic": args.topic, "text": text}
+        if args.to:
+            targs["to"] = list(args.to)
+        return "zulip_post", targs
+    if cmd == "reply":
+        targs = {"message_id": args.id, "text": text}
+        if args.to:
+            targs["to"] = list(args.to)
+        return "zulip_reply", targs
+    ids = [t for t in args.to if t.isdigit()]
+    emails = [t for t in args.to if "@" in t]
+    if not args.to or len(ids) + len(emails) != len(args.to):
+        raise RemoteError("remote dm needs --to with numeric user ids or emails (names, seat tags and the "
+                          "owner default are not resolved in remote mode)")
+    targs = {"text": text}
+    if ids:
+        targs["user_ids"] = [int(i) for i in ids]
+    if emails:
+        targs["emails"] = emails
+    if getattr(args, "clarifying_question", False):
+        targs["clarifying_question"] = True
+    return "zulip_dm_send", targs
+
+
+def _remote_main(rt: Runtime, args: argparse.Namespace) -> int:
+    cmd = getattr(args, "command", None) or getattr(args, "cmd", None)
+    try:
+        if cmd not in REMOTE_VERBS:
+            raise RemoteError(f"`{cmd}` is not available in remote mode (SIMPLE_CHAT_REMOTE=1 supports only "
+                              f"{', '.join(REMOTE_VERBS)}); it is not run directly either")
+        for flag, bad in (("--as", getattr(args, "as_seat", None)), ("--default-seat", getattr(args, "default_seat", None)),
+                          ("--rc", getattr(args, "rc", None)), ("--session", getattr(args, "session", None))):
+            if bad:
+                raise RemoteError(f"{flag} has no meaning in remote mode:  the hosted server fixes the seat from the bearer")
+        if cmd == "whoami":
+            tool, targs = "whoami", {}
+        elif cmd == "channels":
+            tool, targs = "zulip_channels", {"all": bool(getattr(args, "all", False))}
+        elif cmd == "topics":
+            tool, targs = "zulip_topics", {"channel": args.channel, "limit": args.limit}
+        elif cmd == "read":
+            if getattr(args, "new", False):
+                raise RemoteError("--new uses a local cursor and has no hosted equivalent in remote mode")
+            tool, targs = "zulip_read_topic", {"channel": args.channel, "topic": args.topic, "limit": args.limit}
+            if getattr(args, "since", None) is not None:
+                targs["since_id"] = args.since
+            if getattr(args, "include_self", False):
+                targs["include_self"] = True
+        elif cmd in REMOTE_WRITE_VERBS:
+            tool, targs = _remote_write_args(rt, cmd, args)
+        else:
+            if getattr(args, "local", False):
+                raise RemoteError("--local reads the listener's local files and has no hosted equivalent")
+            if not getattr(args, "peek", False):
+                raise RemoteError("remote inbox cannot advance the local cursor:  pass --peek to read without it")
+            tool, targs = "zulip_inbox", {"limit": args.limit}
+        result = _remote_call(rt.env, tool, targs)
+    except RemoteError as exc:
+        print(f"{rt.prog}: {exc}", file=rt.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps({"structured": result.get("structuredContent"), "content": result.get("content")}, indent=2),
+              file=rt.stdout)
+        return 0
+    printed = False
+    for part in result.get("content") or []:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            print(part["text"], file=rt.stdout)
+            printed = True
+    if not printed:
+        print(json.dumps(result.get("structuredContent"), indent=2), file=rt.stdout)
+    return 0
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -2922,6 +3089,11 @@ def main(
     # The hook fast path belongs to `simple-chat` alone:  attach/detach are listener verbs, so a
     # command that does not own them (simple-notes) must fall through to the parser and be refused.
     spec = COMMAND_SPECS.get(prog)
+    if prog == "simple-chat" and str(rt.env.get("SIMPLE_CHAT_REMOTE", "")).strip() == "1" and argv \
+            and argv[0] in HOOK_VERBS:
+        print(f"{prog}: `{argv[0]}` is a local listener verb and is not available in remote mode "
+              "(SIMPLE_CHAT_REMOTE=1); it is not run locally either", file=rt.stderr)
+        return 2
     if argv and argv[0] in HOOK_VERBS and spec is not None and argv[0] in spec["listener"]:
         from . import attach
 
@@ -2941,6 +3113,8 @@ def main(
         return exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 2)
 
     args = _resolve_channel_args(args, rt.env)
+    if prog == "simple-chat" and str(rt.env.get("SIMPLE_CHAT_REMOTE", "")).strip() == "1":
+        return _remote_main(rt, args)
 
     previous = None
     if threading.current_thread() is threading.main_thread():

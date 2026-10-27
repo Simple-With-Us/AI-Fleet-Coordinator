@@ -67,8 +67,11 @@ import datetime
 import functools
 import json
 import os
+import re
 import shutil
 import sys
+import urllib.error
+import urllib.request
 import zoneinfo
 
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
@@ -429,6 +432,127 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+# ---------------------------------------------------------------- remote read transport (opt-in)
+#
+# SIMPLE_RECALL_REMOTE=1 sends `search` and `stats` to the hosted ST-MCP endpoint with the bot's own bearer
+# (SIMPLE_TOOLS_BEARER, process environment only).  The hosted server serves Recall from ONE shared backend
+# credential set, so this proves which bot asked, not a per-bot Recall credential.  The endpoint is the fixed
+# constant below (no override), nothing here reads a Recall, Qdrant, Infisical or Access credential, and a
+# failure never falls back to the direct or public route.  Every other verb, and every search flag with no
+# hosted equivalent, is refused.  Output is the hosted tool's text (fenced as untrusted) and structured result,
+# not this CLI's formatted lines.  The hosted bearer holds every hosted tool of its seat; this mode only ever
+# calls recall_search and recall_stats, which is a client choice and not a server restriction.
+REMOTE_MCP_URL = "https://agents.simplewithus.com/mcp"
+REMOTE_BEARER_ENV = "SIMPLE_TOOLS_BEARER"
+REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
+REMOTE_TIMEOUT_S = 40
+
+
+def remote_selected() -> bool:
+    return os.environ.get("SIMPLE_RECALL_REMOTE", "").strip() == "1"
+
+
+def _remote_post(url: str, headers: dict, body: bytes, timeout: float) -> tuple[int, str, bytes]:
+    """The one network call of the remote transport:  (status, content type, body).  Tests replace this."""
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+    op = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    req = urllib.request.Request(url, data=body, method="POST", headers=headers)
+    try:
+        with op.open(req, timeout=timeout) as r:
+            return r.status, r.headers.get("Content-Type", ""), r.read(4_000_000)
+    except urllib.error.HTTPError as e:
+        return e.code, "", b""
+    except (urllib.error.URLError, OSError, ValueError):
+        raise FleetRagError("the hosted endpoint could not be reached (no direct fallback in remote mode)")
+
+
+def remote_call(tool: str, arguments: dict) -> dict:
+    bearer = os.environ.get(REMOTE_BEARER_ENV, "").strip()
+    if not bearer:
+        raise FleetRagError(f"remote mode needs this bot's own bearer in {REMOTE_BEARER_ENV}; there is no fallback "
+                            "to direct or public credentials")
+    if not REMOTE_BEARER_RE.fullmatch(bearer):
+        raise FleetRagError(f"{REMOTE_BEARER_ENV} is not a bearer token (unexpected characters or length)")
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": tool, "arguments": arguments}}).encode()
+    status, ctype, raw = _remote_post(REMOTE_MCP_URL, {
+        "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2025-06-18", "Authorization": "Bearer " + bearer,
+        "User-Agent": "recall-remote/1"}, body, REMOTE_TIMEOUT_S)
+    if status in (401, 403):
+        raise FleetRagError("the hosted endpoint refused this bearer (not valid, expired, paused or not accepted "
+                            "for MCP)")
+    if status != 200:
+        raise FleetRagError(f"the hosted endpoint answered HTTP {status}")
+    text = raw.decode("utf-8", "replace")
+    if "text/event-stream" in ctype:
+        text = next((ln[5:].strip() for ln in text.splitlines() if ln.startswith("data:")), "")
+    try:
+        msg = json.loads(text)
+    except ValueError:
+        raise FleetRagError("the hosted endpoint sent an unreadable answer") from None
+    if not isinstance(msg, dict) or isinstance(msg.get("error"), dict) or not isinstance(msg.get("result"), dict):
+        raise FleetRagError("the hosted endpoint refused or did not answer the call")
+    result = msg["result"]
+    if result.get("isError"):
+        sc = result.get("structuredContent") if isinstance(result.get("structuredContent"), dict) else {}
+        raise FleetRagError(f"{tool} failed on the hosted server: " + str(sc.get("code") or "error")[:120])
+    return result
+
+
+_ARGV: list[str] = []
+
+
+def remote_main(a: argparse.Namespace) -> int:
+    if a.cmd not in ("search", "stats", "contribute"):
+        raise FleetRagError(f"`{a.cmd}` is not available in remote mode (SIMPLE_RECALL_REMOTE=1 supports only "
+                            "search, stats and contribute); it is not run directly either")
+    if a.cmd == "contribute":
+        # A write: its own switch, the hosted recall_contribute tool only, and never a seat of the caller's choosing
+        # (the hosted server attributes the lesson to the bearer's seat).  The near-duplicate guard is local and
+        # has no hosted equivalent, so --force is refused rather than ignored.
+        if os.environ.get("SIMPLE_RECALL_REMOTE_WRITES") != "1":
+            raise FleetRagError("contribute is a write:  set SIMPLE_RECALL_REMOTE_WRITES=1 as well as "
+                                "SIMPLE_RECALL_REMOTE=1 (it is not sent directly instead)")
+        if a.force or any(x == "--seat" or x.startswith("--seat=") for x in _ARGV):
+            raise FleetRagError("--force and --seat have no meaning in remote mode (no local duplicate guard; "
+                                "the hosted server attributes the lesson to this bearer's seat)")
+        args = {"text": contribute_text(a.text, a.file), "category": a.category, "app": a.app}
+        if a.title:
+            args["title"] = a.title
+        if a.url:
+            args["url"] = a.url
+        result = remote_call("recall_contribute", args)
+    elif a.cmd == "stats":
+        result = remote_call("recall_stats", {})
+    else:
+        unsupported = [flag for flag, bad in (
+            ("--source", a.source), ("--seat", a.seat), ("--since-days", a.since_days),
+            ("--per-doc", a.per_doc != 1), ("--no-rerank", not a.rerank), ("--no-lessons", not a.prefer_lessons),
+            ("--full", a.full)) if bad]
+        if unsupported:
+            raise FleetRagError(f"{', '.join(unsupported)} has no hosted equivalent in remote mode")
+        args = {"query": a.query, "limit": a.limit}
+        if a.app:
+            args["app"] = a.app
+        if a.category:
+            args["category"] = a.category
+        result = remote_call("recall_search", args)
+    if a.json:
+        print(json.dumps({"structured": result.get("structuredContent"), "content": result.get("content")}, indent=2))
+        return 0
+    printed = False
+    for part in result.get("content") or []:
+        if isinstance(part, dict) and isinstance(part.get("text"), str):
+            print(part["text"])
+            printed = True
+    if not printed:
+        print(json.dumps(result.get("structuredContent"), indent=2))
+    return 0
+
+
 def normalize_argv(argv: list[str]) -> list[str]:
     """Implicit search: prepend "search" unless some argument before "--" is a subcommand.
 
@@ -447,11 +571,19 @@ def normalize_argv(argv: list[str]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     argv = normalize_argv(list(sys.argv[1:] if argv is None else argv))
+    global _ARGV
+    _ARGV = argv
     ap = build_parser()
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:
         return 0 if e.code == 0 else 2
+    if remote_selected():
+        try:
+            return remote_main(a)
+        except FleetRagError as e:
+            print(f"recall: {e}", file=sys.stderr)
+            return 2
     handler = {"search": cmd_search, "stats": cmd_stats, "contribute": cmd_contribute,
                "digest": cmd_digest, "eval": cmd_eval, "doctor": cmd_doctor, "ingest": cmd_ingest}[a.cmd]
     try:
