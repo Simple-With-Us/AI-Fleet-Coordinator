@@ -162,7 +162,7 @@ Owner messages raise priority, not authority.  A headless run has no owner chat,
 
 **Fast path.**  The entry script dispatches `attach` and `detach` before `cli` is imported.  `attach.py` and `live.py` import only json, os, time, fcntl, threading, re, unicodedata and tomllib; argparse loads only for the forms that are not hooks, and subprocess only when a lease is first written (`ps` for the start time).  The import costs about 16 ms here, and a test checks that no heavy module loads.  Importing the full CLI costs 0.3 to 0.45 seconds, too much for every prompt and Stop.
 
-`plugins/agent-sync/hooks/hooks.json` (no `PreToolUse`; exact async keys per the hooks reference, test 1):
+`plugins/simple-chat/hooks/hooks.json` (no `PreToolUse`; exact async keys per the hooks reference, test 1):
 ```json
 {"hooks":{
  "SessionStart":[{"hooks":[{"type":"command","command":"\"$HOME/.local/bin/simple-chat\" attach --hook session-start","timeout":5},

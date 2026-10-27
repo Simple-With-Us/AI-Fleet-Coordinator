@@ -40,8 +40,8 @@ Checks:
   fleet-mode-doc  the Mac's ~/apps/FLEET-MODE.md equals the repo's docs/FLEET-MODE.md (WARN if not)
   seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical
               (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
-  mcp:codex   Codex registers agent-sync (and FleetLink when a token exists)
-  mcp:claude  Claude Code registers agent-sync (and FleetLink likewise)
+  mcp:codex   Codex registers simple-chat (and FleetLink when a token exists)
+  mcp:claude  Claude Code registers simple-chat (and FleetLink likewise)
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
               fleet-secrets, fleetlink), then each registry tool's install and version
   updater:<U> the job that keeps the runtime on main (the Mac's runtime-sync LaunchAgent,
@@ -1455,7 +1455,7 @@ def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
     Approved credentials come from the process environment or fleet-secrets.  Client-file
     values cannot override either source or redirect credential lookup.
     """
-    server = client_servers(seat, home).get("agent-sync", {})
+    server = client_servers(seat, home).get("simple-chat", {})
     env = server.get("env", {})
     return {key: value for key, value in env.items() if key in {"LANG", "LC_ALL"}}
 
@@ -1494,7 +1494,7 @@ def check_mcp_startup(report: Report, seat: str, runner: Callable = subprocess.r
     else:
         first = (result.stderr or b"").decode("utf-8", "replace").strip().splitlines()[:1]
         why = first[0][:160] if first else f"exit {result.returncode}"
-        report.add(f"mcp-start:{seat}", "FAIL", f"agent-sync mcp did not list its tools:  {why}")
+        report.add(f"mcp-start:{seat}", "FAIL", f"simple-chat mcp did not list its tools:  {why}")
 
 
 def codex_mcp_names(text: str) -> list[str]:
@@ -1522,7 +1522,7 @@ def check_mcp(report: Report) -> None:
         except ClientConfigError as exc:
             report.add(label, "FAIL", str(exc))
             continue
-        lacking = [name for name in ("agent-sync", "fleetlink") if name not in names]
+        lacking = [name for name in ("simple-chat", "fleetlink") if name not in names]
         report.add(
             label,
             "WARN" if lacking else "OK",
@@ -2998,7 +2998,7 @@ def post_changes(report: Report, runner: Callable = subprocess.run) -> bool:
     except (
         OSError,
         subprocess.SubprocessError,
-    ):  # agent-sync missing from PATH (check_commands reports it) or hung
+    ):  # simple-chat missing from PATH (check_commands reports it) or hung
         return False
     if result.returncode == 0:
         STATE.parent.mkdir(parents=True, exist_ok=True)
@@ -3028,7 +3028,7 @@ def run(
     parser.add_argument(
         "--post",
         action="store_true",
-        help="when the set of failing checks changes, post it with agent-sync to #Work-In-Progress, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as agent-sync resolves it)",
+        help="when the set of failing checks changes, post it with simple-chat to #Work-In-Progress, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as agent-sync resolves it)",
     )
     parser.add_argument(
         "--no-registry",

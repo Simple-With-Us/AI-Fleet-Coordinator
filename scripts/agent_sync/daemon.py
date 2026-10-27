@@ -122,7 +122,7 @@ PROBE_TOPIC = "listener probe"
 PAUSE_COMMAND = "simple-chat pause"
 PAUSE_COMMANDS = frozenset((PAUSE_COMMAND, "agent-sync pause"))
 PLUGIN_MANIFEST = os.path.join(
-    A.REPO_ROOT, "plugins", "agent-sync", ".claude-plugin", "plugin.json"
+    A.REPO_ROOT, "plugins", "simple-chat", ".claude-plugin", "plugin.json"
 )
 # A process's environment is fixed when it starts:  `daemon reload` re-reads listener.toml only.
 ENV_RESTART_HINT = (

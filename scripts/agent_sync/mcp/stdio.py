@@ -1,4 +1,4 @@
-"""`agent-sync mcp`:  the agent-sync tools over MCP on stdin and stdout (design section 2).
+"""`simple-chat mcp`:  the agent-sync tools over MCP on stdin and stdout (design section 2).
 
 Framing:  newline-delimited UTF-8 JSON-RPC 2.0, one message per line.  Batches are answered only in
 a session that negotiated 2025-03-26, the one revision whose receivers MUST accept them; everywhere
@@ -110,7 +110,7 @@ NO_DEFAULT = "no default identity (name one on every call)"
 
 
 def server_info() -> dict[str, str]:
-    return {"name": "agent-sync", "version": __version__}
+    return {"name": "simple-chat", "version": __version__}
 
 
 def _valid_id(value: Any) -> bool:
@@ -591,13 +591,13 @@ def _open_identity(
 def run(
     rt: CLI.Runtime, args: argparse.Namespace, *, clock: Callable[[], float] = time.time
 ) -> int:
-    """`agent-sync mcp`.  Exit 0 at EOF; 2 for a bad seat name; 3 when the default identity, its
+    """`simple-chat mcp`.  Exit 0 at EOF; 2 for a bad seat name; 3 when the default identity, its
     credential or its bot's role is refused; 5 or 6 when Zulip cannot confirm the default bot at
     startup.  With no default identity (no --as, AGENT_SEAT or --default-seat), the server starts and
     every call must name its identity (AFC-331)."""
 
     def log(text: str) -> None:
-        rt.err("agent-sync mcp: " + text)
+        rt.err("simple-chat mcp: " + text)
 
     resolved = I.resolve_seat(
         rt.env,

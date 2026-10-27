@@ -444,9 +444,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(parsed["model"], "existing-worker")
         self.assertEqual(parsed["features"], {"foo": True})
         self.assertTrue(
-            parsed["mcp_servers"]["agent-sync"]["command"].endswith("simple-chat-codex-mcp")
+            parsed["mcp_servers"]["simple-chat"]["command"].endswith("simple-chat-codex-mcp")
         )
-        self.assertNotIn("env", parsed["mcp_servers"]["agent-sync"])
+        self.assertNotIn("env", parsed["mcp_servers"]["simple-chat"])
         wrapper = (self.home / ".local/bin/simple-chat-codex-mcp").read_text()
         self.assertIn("--codex-thread-meta", wrapper)
         self.assertNotIn("--codex-thread-meta", (self.home / ".local/bin/simple-chat").read_text())
@@ -477,10 +477,11 @@ class ReleaseTests(unittest.TestCase):
         parsed = tomllib.loads(config.read_text())
         self.assertEqual(parsed["model"], "existing-worker")
         self.assertEqual(
-            parsed["mcp_servers"]["agent-sync"]["command"],
+            parsed["mcp_servers"]["simple-chat"]["command"],
             str(self.home / ".local/bin/simple-chat-codex-mcp"),
         )
-        self.assertNotIn("agent-sync-codex-mcp", config.read_text())
+        self.assertNotIn("agent-sync", config.read_text())
+        self.assertNotIn("agent-sync", parsed["mcp_servers"])
 
     def test_update_path_migrates_the_prerenamed_codex_registration_too(self):
         self.receive()
@@ -495,9 +496,25 @@ class ReleaseTests(unittest.TestCase):
         )
         self.receive(make_bundle("two"), install=False)
         self.assertEqual(
-            tomllib.loads(config.read_text())["mcp_servers"]["agent-sync"]["command"],
+            tomllib.loads(config.read_text())["mcp_servers"]["simple-chat"]["command"],
             str(self.home / ".local/bin/simple-chat-codex-mcp"),
         )
+
+    def test_a_renamed_wrapper_under_the_old_key_is_migrated_to_the_new_key(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        command = str(self.home / ".local/bin/simple-chat-codex-mcp")
+        config.write_bytes(
+            (
+                '[mcp_servers.agent-sync]\ncommand = "%s"\n'
+                'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
+                ' "AGENT_SESSION"]\n' % command
+            ).encode()
+        )
+        self.receive()
+        parsed = tomllib.loads(config.read_text())
+        self.assertEqual(list(parsed["mcp_servers"]), ["simple-chat"])
+        self.assertEqual(parsed["mcp_servers"]["simple-chat"]["command"], command)
 
     def test_a_hand_edited_codex_registration_is_still_refused(self):
         config = self.home / ".codex/config.toml"

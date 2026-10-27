@@ -18,7 +18,7 @@
 #      go through `python3 -m fleet_lanes.install_mcp`, which this script calls with --home "$HOME"; it writes
 #      each tool's native shape, skips a tool that is not installed, and leaves a hand-registered entry alone.
 #      Clutch is not touched here: it carries fleet-recall as a native agent preset.  agent-sync is not
-#      registered here (run install_mcp with --with-agent-sync; docs/protocols/agent-sync-mcp.md).
+#      registered here (run install_mcp with --with-simple-chat; docs/protocols/agent-sync-mcp.md).
 #   4. With --with-seat-mcp, also copies seat_mcp/tools.py + recall_bridge.py into
 #      $HOME/apps/seat-mcp/seat_mcp/ and prints the pm2 restart command (does not run it).
 #   5. With --hooks, copies scripts/hooks/fleet-recall-session-start.sh and

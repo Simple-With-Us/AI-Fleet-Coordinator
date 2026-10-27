@@ -1,4 +1,4 @@
-"""install_mcp tests: the per-harness MCP registrations (fleet-recall, and agent-sync for fixed-seat tools).
+"""install_mcp tests: the per-harness MCP registrations (fleet-recall, and simple-chat for fixed-seat tools).
 
     cd scripts && python3 -m unittest fleet_lanes.tests.test_install_mcp -v
 
@@ -111,7 +111,7 @@ class ShapeTests(HomeCase):
     def test_server_argv_uses_absolute_paths_and_no_tilde(self) -> None:
         argv = M.server_argv("fleet-recall", self.home, None, self.env)
         self.assertEqual(argv, ["python3", self.recall])
-        argv = M.server_argv("agent-sync", self.home, "MC", self.env)
+        argv = M.server_argv("simple-chat", self.home, "MC", self.env)
         self.assertEqual(argv, [self.agent_sync, "mcp", "--default-seat", "MC"])
         self.assertFalse(any(a.startswith("~") for a in argv))
 
@@ -293,7 +293,7 @@ class AgentSyncTests(HomeCase):
     def test_only_fixed_seat_tools_get_agent_sync_and_never_a_pinned_seat(self) -> None:
         self.mkdir(*TOOL_DIRS.values())
         keys = [k for k in M.TARGET_KEYS if k != "clutch"]
-        code, out, _ = self.run_cli("apply", *keys, "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", *keys, "--with-simple-chat")
         self.assertEqual(code, M.EXIT_OK, out)
         seats = {"opencode": ("OPENCODE", ".config/opencode/opencode.json", ("mcp", "servers")),
                  "muse": ("MC", ".config/muse/settings.json", ("mcpServers",)),
@@ -304,28 +304,58 @@ class AgentSyncTests(HomeCase):
             for k in path:
                 doc = doc[k]
             with self.subTest(key=key):
-                self.assertIn("agent-sync", doc)
-                entry = doc["agent-sync"]
+                self.assertIn("simple-chat", doc)
+                entry = doc["simple-chat"]
                 argv = ([entry["command"]] + entry["args"]) if isinstance(entry["command"], str) else entry["command"]
                 self.assertEqual(argv, [self.agent_sync, "mcp", "--default-seat", seat])
                 self.assertNotIn("env", entry, "never a pinned AGENT_SEAT")
         for key, rel in (("kimi", ".kimi-code/mcp.json"), ("copilot", ".copilot/mcp-config.json")):
             with self.subTest(key=key):
-                self.assertNotIn("agent-sync", self.read(rel), "a tool with no default seat has no seat to register")
+                self.assertNotIn("simple-chat", self.read(rel), "a tool with no default seat has no seat to register")
+
+    def test_apply_retires_the_pre_rename_json_registration(self) -> None:
+        self.mkdir(*TOOL_DIRS.values())
+        legacy = {"mcpServers": {"agent-sync": {"command": self.agent_sync, "args": ["mcp", "--default-seat", "MC"]},
+                                 "other": {"command": "/x"}}}
+        self.write(".config/muse/settings.json", json.dumps(legacy))
+        code, out, _ = self.run_cli("apply", "muse", "--with-simple-chat")
+        self.assertEqual(code, M.EXIT_OK, out)
+        doc = self.load(".config/muse/settings.json")["mcpServers"]
+        self.assertNotIn("agent-sync", doc)
+        self.assertIn("simple-chat", doc)
+        self.assertIn("other", doc)
+
+    def test_a_foreign_agent_sync_entry_is_left_alone(self) -> None:
+        self.mkdir(*TOOL_DIRS.values())
+        self.write(".config/muse/settings.json", json.dumps({"mcpServers": {"agent-sync": {"command": "/owner/custom"}}}))
+        self.run_cli("apply", "muse", "--with-simple-chat")
+        doc = self.load(".config/muse/settings.json")["mcpServers"]
+        self.assertEqual(doc["agent-sync"], {"command": "/owner/custom"})
+
+    def test_apply_retires_the_pre_rename_clutch_block(self) -> None:
+        self.mkdir(".clutch/dsh")
+        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
+        text = self.read(".clutch/dsh/cordis.patch.yml").replace("mcp-simple-chat", "mcp-agent-sync")
+        self.write(".clutch/dsh/cordis.patch.yml", text)
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
+        self.assertEqual(code, M.EXIT_OK, out)
+        new = self.read(".clutch/dsh/cordis.patch.yml")
+        self.assertNotIn("mcp-agent-sync", new)
+        self.assertEqual(new.count("fleet:begin mcp-simple-chat"), 1)
 
     def test_without_the_flag_agent_sync_is_never_written(self) -> None:
         self.mkdir(*TOOL_DIRS.values())
         self.run_cli("apply", "muse", "minimax", "fx")
         for rel in (".config/muse/settings.json", ".minimax/mcp.json", ".fx/mcp.json"):
-            self.assertNotIn("agent-sync", self.read(rel))
+            self.assertNotIn("simple-chat", self.read(rel))
 
     def test_remove_takes_out_only_what_apply_wrote(self) -> None:
         self.mkdir(".minimax", ".fx")
         hand = {"mcpServers": {"sentry": {"command": "npx"}, "fleet-recall": {"command": "python3", "args": [self.recall],
                                                                                  "type": "stdio", "extra": True}}}
         self.write(".minimax/mcp.json", json.dumps(hand) + "\n")
-        self.run_cli("apply", "fx", "--with-agent-sync")
-        code, out, _ = self.run_cli("remove", "minimax", "fx", "--with-agent-sync")
+        self.run_cli("apply", "fx", "--with-simple-chat")
+        code, out, _ = self.run_cli("remove", "minimax", "fx", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_OK, out)
         self.assertEqual(self.load(".minimax/mcp.json"), hand, "a hand-registered entry is not ours")
         self.assertIn("skipped-not-ours", out)
@@ -373,13 +403,13 @@ class ClutchTests(HomeCase):
 
     def test_the_patch_is_proven_with_the_engine_before_it_is_written(self) -> None:
         flag = self.with_engine()
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_OK, out)
         self.assertIn("engine check: web: the patch merges and the dump names @deepseek-ai/dsh-mcp-client", out)
         self.assertTrue(os.path.exists(self.path(self.patch())))
         os.unlink(self.path(self.patch()))
         Path(flag).write_text("x")
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_FAILED, out)
         self.assertIn("REFUSED: the Clutch check does not accept the new patch", out)
         self.assertFalse(os.path.exists(self.path(self.patch())))
@@ -389,18 +419,18 @@ class ClutchTests(HomeCase):
         link = self.path(".clutch/dsh/profiles/node_modules/@deepseek-ai/dsh-mcp-client")
         os.rmdir(link)
         os.symlink(self.path("apps/clutch-runtime/node_modules/.pnpm/gone"), link)
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_FAILED, out)
         self.assertIn("REFUSED: the Clutch check does not accept the new patch", out)
         self.assertIn("no longer exists", out)
         self.assertIn("Restart clutch-web first", out)
         self.assertFalse(os.path.exists(self.path(self.patch())))
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         self.assertEqual(code, M.EXIT_OK, out)
 
     def test_the_apply_says_when_each_profile_reads_the_patch(self) -> None:
         self.with_engine()
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_OK, out)
         self.assertIn("patchReload: web live", out)
         self.assertIn("reaches the running web engine at once", out)
@@ -408,11 +438,11 @@ class ClutchTests(HomeCase):
 
     def test_without_an_engine_the_write_is_refused_unless_the_owner_says_so(self) -> None:
         self.mkdir(".clutch/dsh")
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_FAILED, out)
         self.assertIn("--no-dsh-check", out)
         self.assertFalse(os.path.exists(self.path(self.patch())))
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         self.assertEqual(code, M.EXIT_OK, out)
         self.assertTrue(os.path.exists(self.path(self.patch())))
 
@@ -421,17 +451,17 @@ class ClutchTests(HomeCase):
         binary = self.path("apps/clutch-runtime/node_modules/.bin/dsh")
         other = self.path("other-dsh")
         os.rename(binary, other)
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--dsh", other)
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--dsh", other)
         self.assertEqual(code, M.EXIT_OK, out)
         self.assertIn("engine check:", out)
 
     def test_plan_and_remove_do_not_run_the_engine(self) -> None:
         self.mkdir(".clutch/dsh")
-        code, out, _ = self.run_cli("plan", "clutch", "--with-agent-sync")
+        code, out, _ = self.run_cli("plan", "clutch", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_OK, out)
         self.assertNotIn("engine check", out)
-        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
-        code, out, _ = self.run_cli("remove", "clutch", "--with-agent-sync")
+        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
+        code, out, _ = self.run_cli("remove", "clutch", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_OK, out)
         self.assertNotIn("engine check", out)
 
@@ -445,20 +475,20 @@ class ClutchTests(HomeCase):
 
     def test_the_agent_sync_block_is_created_with_a_header(self) -> None:
         self.mkdir(".clutch/dsh")
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         self.assertEqual(code, M.EXIT_OK, out)
         text = self.read(self.patch())
         self.assertTrue(text.startswith("# Home-level cordis patch"))
-        self.assertIn("# fleet:begin mcp-agent-sync (managed by fleet_lanes.install_mcp)\n- insert:\n", text)
+        self.assertIn("# fleet:begin mcp-simple-chat (managed by fleet_lanes.install_mcp)\n- insert:\n", text)
         self.assertIn("      name: '@deepseek-ai/dsh-mcp-client'\n", text)
-        self.assertIn('        serverName: agent-sync\n        transport: stdio\n', text)
+        self.assertIn('        serverName: simple-chat\n        transport: stdio\n', text)
         self.assertIn('        command: "%s"\n' % self.agent_sync, text)
         self.assertIn('          - "mcp"\n          - "--default-seat"\n          - "CLUTCH"\n', text)
-        self.assertIn("        failOnStartupError: false\n# fleet:end mcp-agent-sync\n", text)
+        self.assertIn("        failOnStartupError: false\n# fleet:end mcp-simple-chat\n", text)
         self.assertNotIn("env:", text, "no env, so no pinned seat")
-        self.assertEqual(M.MB.block_body(text, "mcp-agent-sync")[0], "- insert:")
+        self.assertEqual(M.MB.block_body(text, "mcp-simple-chat")[0], "- insert:")
         before = text
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         self.assertIn("unchanged", out)
         self.assertEqual(self.read(self.patch()), before)
         self.assertEqual(self.backups(".clutch/dsh"), [])
@@ -466,7 +496,7 @@ class ClutchTests(HomeCase):
     def test_the_owners_patch_entries_survive_and_are_backed_up(self) -> None:
         mine = "# my layer\n- id: typert-gateway\n  config:\n    websocketHeartbeatIntervalMs: 15000\n"
         self.write(self.patch(), mine)
-        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         text = self.read(self.patch())
         self.assertTrue(text.startswith(mine + "\n# fleet:begin"))
         names = self.backups(".clutch/dsh")
@@ -474,66 +504,66 @@ class ClutchTests(HomeCase):
 
     def test_a_changed_command_replaces_the_block_in_place(self) -> None:
         self.mkdir(".clutch/dsh")
-        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
-        text = self.read(self.patch()).replace(self.agent_sync, "/old/agent-sync")
+        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
+        text = self.read(self.patch()).replace(self.agent_sync, "/old/simple-chat")
         self.write(self.patch(), text + "- id: tail\n")
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         self.assertIn("block replaced in place", out)
         new = self.read(self.patch())
         self.assertIn(self.agent_sync, new)
-        self.assertNotIn("/old/agent-sync", new)
+        self.assertNotIn("/old/simple-chat", new)
         self.assertTrue(new.endswith("- id: tail\n"))
 
     def test_remove_deletes_only_the_block(self) -> None:
         mine = "- id: typert-gateway\n  config:\n    a: 1\n"
         self.write(self.patch(), mine)
-        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
-        code, out, _ = self.run_cli("remove", "clutch", "--with-agent-sync")
+        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
+        code, out, _ = self.run_cli("remove", "clutch", "--with-simple-chat")
         self.assertIn("removed", out)
         self.assertEqual(self.read(self.patch()), mine)
 
     def test_removing_the_last_block_deletes_the_file_because_a_comment_only_patch_crashes_the_engine(self) -> None:
         self.mkdir(".clutch/dsh")
-        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
-        code, out, _ = self.run_cli("remove", "clutch", "--with-agent-sync")
+        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
+        code, out, _ = self.run_cli("remove", "clutch", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_OK, out)
         self.assertIn("so the file is removed", out)
         self.assertFalse(os.path.exists(self.path(self.patch())))
         names = self.backups(".clutch/dsh")
         self.assertEqual(len(names), 1)
-        self.assertIn("# fleet:begin mcp-agent-sync", self.read(".clutch/dsh/" + names[0]))
+        self.assertIn("# fleet:begin mcp-simple-chat", self.read(".clutch/dsh/" + names[0]))
 
     def test_another_installers_block_in_the_same_patch_is_untouched(self) -> None:
         from fleet_lanes import cordis_patch as CP
         self.mkdir(".clutch/dsh")
-        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         text, _ = CP.upsert(self.read(self.patch()), "hooks-fleet-guards", "other", ["- id: fleet-hooks-guards"])
         self.write(self.patch(), text)
-        self.run_cli("remove", "clutch", "--with-agent-sync")
+        self.run_cli("remove", "clutch", "--with-simple-chat")
         left = self.read(self.patch())
         self.assertIn("# fleet:begin hooks-fleet-guards (managed by other)", left)
-        self.assertNotIn("mcp-agent-sync", left)
-        self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        self.assertNotIn("mcp-simple-chat", left)
+        self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         self.assertIn("# fleet:begin hooks-fleet-guards", self.read(self.patch()))
-        self.assertIn("# fleet:begin mcp-agent-sync", self.read(self.patch()))
+        self.assertIn("# fleet:begin mcp-simple-chat", self.read(self.patch()))
 
     def test_a_patch_that_is_not_a_list_is_left_alone(self) -> None:
         text = "plugins:\n  - a\n"
         self.write(self.patch(), text)
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         self.assertIn("skipped-bad-shape", out)
         self.assertEqual(self.read(self.patch()), text)
 
     def test_broken_markers_are_refused(self) -> None:
-        text = "- id: a\n# fleet:begin mcp-agent-sync (managed by x)\n- insert: []\n"
+        text = "- id: a\n# fleet:begin mcp-simple-chat (managed by x)\n- insert: []\n"
         self.write(self.patch(), text)
-        code, out, _ = self.run_cli("apply", "clutch", "--with-agent-sync", "--no-dsh-check")
+        code, out, _ = self.run_cli("apply", "clutch", "--with-simple-chat", "--no-dsh-check")
         self.assertIn("skipped-bad-markers", out)
         self.assertEqual(self.read(self.patch()), text)
 
     def test_odd_paths_are_quoted_as_yaml_strings(self) -> None:
-        body = M.clutch_block_body(['/Users/o\'brien/a b/agent-sync', "mcp", "--default-seat", "CLUTCH"])
-        self.assertIn('        command: "/Users/o\'brien/a b/agent-sync"', body)
+        body = M.clutch_block_body(['/Users/o\'brien/a b/simple-chat', "mcp", "--default-seat", "CLUTCH"])
+        self.assertIn('        command: "/Users/o\'brien/a b/simple-chat"', body)
 
 
 class VerifyTests(HomeCase):
@@ -636,7 +666,7 @@ class ProbeSeatTests(HomeCase):
         self.write(".local/bin/simple-chat", "#!%s\n%s" % (sys.executable, body), mode=0o755)
         self.write("apps/fleet-rag/fleet-recall-mcp.py", body)
         self.mkdir(".minimax")
-        code, out, _ = self.run_cli("apply", "minimax", "--with-agent-sync")
+        code, out, _ = self.run_cli("apply", "minimax", "--with-simple-chat")
         self.assertEqual(code, M.EXIT_OK, out)
 
     def calls(self) -> list:
@@ -646,16 +676,16 @@ class ProbeSeatTests(HomeCase):
         from unittest import mock
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.dict(os.environ, environ, clear=False):
-            code = M.main(["verify", "minimax", "--with-agent-sync", "--probe", "--home", self.home], out=out, err=err, env=self.env)
+            code = M.main(["verify", "minimax", "--with-simple-chat", "--probe", "--home", self.home], out=out, err=err, env=self.env)
         return code, out.getvalue()
 
     def test_from_another_seat_the_agent_sync_probe_is_skipped_and_never_started(self) -> None:
         code, out = self.verify({"AGENT_SEAT": "CLAUDE"})
         self.assertEqual(code, M.EXIT_OK, out)
-        line = [ln for ln in out.splitlines() if "agent-sync" in ln and "probe" in ln][0]
+        line = [ln for ln in out.splitlines() if "simple-chat" in ln and "probe" in ln][0]
         self.assertTrue(line.startswith("SKIP"), out)
         self.assertIn("this session is the CLAUDE seat", line)
-        self.assertIn("run `verify --probe --with-agent-sync` from a MM session", line)
+        self.assertIn("run `verify --probe --with-simple-chat` from a MM session", line)
         self.assertEqual([c["seat"] for c in self.calls()], [None], "only fleet-recall was started")
 
     def test_from_no_seat_at_all_it_is_skipped_too(self) -> None:
@@ -663,7 +693,7 @@ class ProbeSeatTests(HomeCase):
         out, err = io.StringIO(), io.StringIO()
         clean = {k: v for k, v in os.environ.items() if not k.startswith("AGENT_")}
         with mock.patch.dict(os.environ, clean, clear=True):
-            code = M.main(["verify", "minimax", "--with-agent-sync", "--probe", "--home", self.home], out=out, err=err, env=self.env)
+            code = M.main(["verify", "minimax", "--with-simple-chat", "--probe", "--home", self.home], out=out, err=err, env=self.env)
         self.assertEqual(code, M.EXIT_OK, out.getvalue())
         self.assertIn("this session is no seat", out.getvalue())
 
