@@ -132,9 +132,7 @@ class SeatPolicy:
             mint_perms = cfg.get("mint_permissions") or {}
             if not isinstance(mint_perms, dict):
                 raise PolicyError(f"seat {seat!r}: mint_permissions must be an object")
-            wants_app = any(
-                a in self.APP_ACTIONS or a in self.WORKFLOW_ACTIONS for a in actions
-            )
+            wants_app = any(a in self.APP_ACTIONS or a in self.WORKFLOW_ACTIONS for a in actions)
             if wants_app and not app_slug:
                 raise PolicyError(f"seat {seat!r}: app actions need an app_slug")
             if app_slug is not None:
