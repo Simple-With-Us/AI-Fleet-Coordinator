@@ -107,7 +107,10 @@ class TypedDisarm:
             raise Refused("invalid PR number")
         if not isinstance(head, str) or not re.fullmatch(r"[0-9a-f]{40}", head):
             raise Refused("exact head SHA required")
-        if getattr(self, "_action_scope", None) is not None and self._action_scope != (action, repo):
+        if getattr(self, "_action_scope", None) is not None and self._action_scope != (
+            action,
+            repo,
+        ):
             raise Refused("credential action scope mismatch")
         if not hasattr(self, "_action_scope") and self.policy.authorize(self.seat, action, repo):
             raise Refused("action or repository denied")

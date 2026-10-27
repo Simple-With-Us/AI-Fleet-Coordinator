@@ -67,7 +67,11 @@ class Tests(unittest.TestCase):
 
         with self.assertRaises(Refused):
             TypedDisarm(
-                Client([]), ReadOnly(), "swu-wise", "t", "swu-wise",
+                Client([]),
+                ReadOnly(),
+                "swu-wise",
+                "t",
+                "swu-wise",
                 ("pr_automerge_disable", ARGS["repo"]),
             )
 
@@ -160,7 +164,9 @@ class Tests(unittest.TestCase):
 
     def test_no_app_impersonation(self):
         with self.assertRaises(Refused):
-            TypedDisarm(Client([]), Policy(), "swu-wise", "test", "swu-echo", ("pr_state", ARGS["repo"]))
+            TypedDisarm(
+                Client([]), Policy(), "swu-wise", "test", "swu-echo", ("pr_state", ARGS["repo"])
+            )
 
     def test_untrusted_failure_redacted(self):
         with self.assertRaisesRegex(Unknown, "^upstream result unavailable$"):
