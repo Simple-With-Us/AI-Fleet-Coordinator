@@ -75,8 +75,9 @@ on:
           has an APPROVED review on the PR's CURRENT head commit, and any armed
           merge is disabled otherwise.  A skipped or missing review check, a
           COMMENTED review, or an approval on an older commit does not count.
-          Dependency-bump lanes (restrict_to_pattern set) are exempt, because
-          their review is not run on every bump.
+          There is no implicit exemption: restrict_to_pattern matches a PR title,
+          which any author controls, so a dependency-bump caller that wants no
+          review gate must set this to false explicitly.
         type: boolean
         default: true
       approval_reviewer:
@@ -222,9 +223,10 @@ jobs:
           # must not arm a merge.  Only an APPROVED review by the fleet reviewer on
           # this exact head commit qualifies; a newer push makes the old approval
           # not count, and the next pull_request or pull_request_review event
-          # re-evaluates.  Dependency-bump lanes (RESTRICT set) are exempt.  The
+          # re-evaluates.  No implicit lane exemption (the lane pattern matches a
+          # title the author controls); callers opt out with the input.  The
           # lookup fails closed.
-          if [ "${REQUIRE_APPROVAL:-true}" = "true" ] && [ -z "$RESTRICT" ]; then
+          if [ "${REQUIRE_APPROVAL:-true}" = "true" ]; then
             reviews_out="$RUNNER_TEMP/reviews.txt"
             reviews_raw="$RUNNER_TEMP/reviews.json"
             if ! GH_TOKEN="$GATE_TOKEN" gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" -f per_page=100 --paginate \

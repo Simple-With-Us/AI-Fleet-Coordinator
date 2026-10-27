@@ -61,8 +61,9 @@ jobs:
   armed only while `approval_reviewer` (default `kody-ai[bot]`) has an APPROVED
   review on the PR's current head commit.  A skipped review check, a COMMENTED
   review, an approval on an older commit, a later CHANGES_REQUESTED, or a failed
-  lookup all disarm.  A new push makes the old approval stale.  Dependency-bump
-  lanes (`restrict_to_pattern` set) are exempt.  Callers pin the reusable by SHA,
+  lookup all disarm.  A new push makes the old approval stale.  There is no implicit lane
+  exemption (the lane pattern matches a title the author controls); a dependency
+  caller opts out with `require_current_approval: false`.  Callers pin the reusable by SHA,
   so the gate reaches a repo when its pin is bumped.
 
 ## Merge queues

@@ -492,11 +492,10 @@ class ClassifyCurrentApproval(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("compare API failed", reason)
 
-    def test_dependency_lanes_are_exempt(self):
-        # RESTRICT set and the title matches the lane: the approval gate is skipped.
+    def test_a_lane_match_does_not_exempt_the_approval_gate(self):
         code, output, reason = run_classify("clear", "true", "feature")
         self.assertEqual(code, 0, output)
-        self.assertIn("compare API failed", reason)
+        self.assertIn("no current-head approval", reason)
 
 
 class GateSource(unittest.TestCase):
