@@ -110,7 +110,7 @@ case "$state" in
   off) : ;;
   *) echo "::error::auto-merge state after disarm attempt: $state ($PR_URL)"
      any_error=1
-     disarm_unconfirmed=1 ;;
+     disarm_unconfirmed=1
      disarm_error="auto-merge is $state after the disarm attempt" ;;
 esac
 
