@@ -326,6 +326,8 @@ export function loadConfig(env) {
     // Worker secret binding, not a var, so a later deploy from main does not
     // turn it off (DEPLOY.md, "AFC-477 second-event spike").
     whatsappEnabled: String(env.WHATSAPP_BRIDGE_ENABLED ?? "").trim() === "on",
+    // Default off: the gr_wf_ workflow verb tools are neither listed nor callable until the owner sets GR_WORKFLOW_TOOLS=on.
+    grWorkflowEnabled: String(env.GR_WORKFLOW_TOOLS ?? "").trim() === "on",
     whatsappWakeEnabled: String(env.WHATSAPP_BRIDGE_WAKE_ENABLED ?? "").trim() === "on",
     spikeExtraEvents: String(env.SPIKE_EXTRA_EVENTS ?? "").trim() === "on",
   });
