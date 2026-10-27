@@ -1191,7 +1191,16 @@ async function serveAdmin(request, env, config, oauth, email) {
     if (!safeEqual(parsed.data.csrf, readCookie(request, CSRF_COOKIE))) return errorPage("Request Refused", "The admin form expired.  Reload ST-MCP + GR-MCP Admin and try again.", 403);
     const { action, seat = "" } = parsed.data;
     const needsSeat = ["arm", "disarm", "pause", "unpause", "revoke", "create_manual_client"].includes(action);
-    if (needsSeat && !config.hostedSeats.includes(seat)) return errorPage("Request Refused", "Unknown seat.", 400);
+    const pauseActions = ["pause", "unpause"];
+    // Pause is the seat-level kill switch for every mintable bearer identity,
+    // including unhosted BEARER_SEATS such as CODEX.  Arm/disarm/revoke stay
+    // hosted-only because they own OAuth grants.
+    if (needsSeat) {
+      const known = pauseActions.includes(action)
+        ? (config.hostedSeats.includes(seat) || BEARER_SEATS.includes(seat))
+        : config.hostedSeats.includes(seat);
+      if (!known) return errorPage("Request Refused", "Unknown seat.", 400);
+    }
     switch (action) {
       case "arm":
         await gate(env, seat).arm({ by: email });
