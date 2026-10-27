@@ -114,6 +114,15 @@ def _path(args, key="path"):
     return value
 
 
+def _workflow_path(path):
+    """A relay write targeting the workflows dir itself, its parent, or anything under it."""
+    return (
+        path == ".github"
+        or path == ".github/workflows"
+        or path.startswith(".github/workflows/")
+    )
+
+
 def _enum(args, key, allowed, default=None):
     value = args.get(key, default)
     if value not in allowed:
@@ -422,7 +431,7 @@ class WorkflowVerbs:
     def wf_file_put(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "content_b64", "prior_sha"))
         path, branch = _path(args), _ref(args, "branch")
-        if path.startswith(".github/workflows/"):
+        if _workflow_path(path):
             raise Refused("workflow files are not writable here")
         message = args.get("message")
         content = args.get("content_b64")
@@ -486,7 +495,7 @@ class WorkflowVerbs:
             if not isinstance(f, dict) or set(f) - {"path", "content_b64", "delete"}:
                 raise Refused("invalid files")
             path = _path(f)
-            if path in seen or path.startswith(".github/workflows/"):
+            if path in seen or _workflow_path(path):
                 raise Refused("duplicate or workflow path refused")
             seen.add(path)
             if f.get("delete") is True:

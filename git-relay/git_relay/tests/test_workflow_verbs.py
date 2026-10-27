@@ -174,6 +174,8 @@ class Tests(unittest.TestCase):
         s, _ = svc()
         for bad in (
             {"path": ".github/workflows/a.yml"},
+            {"path": ".github/workflows"},
+            {"path": ".github"},
             {"path": "../a"},
             {"path": "/a"},
             {"branch": "a..b"},
@@ -358,6 +360,8 @@ class Tests(unittest.TestCase):
         refused(head="9" * 40)  # branch moved since the caller read it
         refused(default="feat/x")  # default branch never writable
         refused(files=[{"path": ".github/workflows/ci.yml", "content_b64": "eA=="}])
+        refused(files=[{"path": ".github/workflows", "delete": True}])
+        refused(files=[{"path": ".github", "delete": True}])
         refused(files=ok + ok)  # duplicate path
         refused(files=[{"path": "../x", "content_b64": "eA=="}])
         refused(files=[{"path": "a", "content_b64": "eA==", "delete": True}])
