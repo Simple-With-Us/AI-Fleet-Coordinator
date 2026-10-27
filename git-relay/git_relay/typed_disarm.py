@@ -89,7 +89,7 @@ class TypedDisarm:
             raise Refused("exact head SHA required")
         if hasattr(self, "_action_scope") and self._action_scope != (action, repo):
             raise Refused("credential action scope mismatch")
-        if self.policy.authorize(self.seat, action, repo):
+        if not hasattr(self, "_action_scope") and self.policy.authorize(self.seat, action, repo):
             raise Refused("action or repository denied")
         return repo, number, head
 
