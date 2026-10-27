@@ -53,7 +53,18 @@ _FACTORY_BINDING = object()
 
 
 class TypedDisarm:
-    def __init__(self, client, policy, seat, bearer, app_slug, action_scope, clock=time.monotonic, *, _binding=None):
+    def __init__(
+        self,
+        client,
+        policy,
+        seat,
+        bearer,
+        app_slug,
+        action_scope,
+        clock=time.monotonic,
+        *,
+        _binding=None,
+    ):
         # Scope and ceiling bind on every construction; for_action is the
         # normal path, a direct caller must still name one action and repo.
         if _binding is not _FACTORY_BINDING:

@@ -117,6 +117,7 @@ class Tests(unittest.TestCase):
 
     def test_rate_limited_after_reservation_releases_it(self):
         from unittest.mock import patch
+
         from git_relay.typed_disarm import RateLimited
 
         with patch("git_relay.typed_disarm.TypedDisarm.disable", side_effect=RateLimited()):

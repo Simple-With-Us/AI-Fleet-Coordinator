@@ -83,8 +83,14 @@ class Tests(unittest.TestCase):
 
     def test_arbitrary_bearer_cannot_construct_even_with_scope(self):
         with self.assertRaises(Refused):
-            TypedDisarm(Client([]), Policy(), "swu-wise", "caller-token", "swu-wise",
-                        ("pr_automerge_disable", ARGS["repo"]))
+            TypedDisarm(
+                Client([]),
+                Policy(),
+                "swu-wise",
+                "caller-token",
+                "swu-wise",
+                ("pr_automerge_disable", ARGS["repo"]),
+            )
 
     def test_unknown_seat_lookup_maps_to_refused(self):
         class Missing(Policy):

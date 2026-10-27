@@ -88,18 +88,30 @@ class TypedGateway:
             return 200, payload
         except RateLimited:
             if not self._release_prewrite(key):
-                return 502, {"error": "reservation release unavailable", "outcome": "unknown", "retryable": False}
+                return 502, {
+                    "error": "reservation release unavailable",
+                    "outcome": "unknown",
+                    "retryable": False,
+                }
             result = "rate_limited"
             return 429, {"error": "typed quota exhausted", "retryable": True}
         except PreflightUnavailable:
             if not self._release_prewrite(key):
-                return 502, {"error": "reservation release unavailable", "outcome": "unknown", "retryable": False}
+                return 502, {
+                    "error": "reservation release unavailable",
+                    "outcome": "unknown",
+                    "retryable": False,
+                }
             key = None
             result = "unavailable"
             return 503, {"error": "preflight unavailable", "retryable": True}
         except Refused:
             if not self._release_prewrite(key):
-                return 502, {"error": "reservation release unavailable", "outcome": "unknown", "retryable": False}
+                return 502, {
+                    "error": "reservation release unavailable",
+                    "outcome": "unknown",
+                    "retryable": False,
+                }
             return 403, {"error": "typed request refused", "retryable": False}
         except Exception:
             if key is not None:
