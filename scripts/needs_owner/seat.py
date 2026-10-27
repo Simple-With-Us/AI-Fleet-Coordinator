@@ -172,8 +172,22 @@ def verified_seat(
 
 
 def child_environment(environ: Mapping[str, str] | None = None) -> dict[str, str]:
-    """A copy of the environment with every identity variable removed (the bearer locator stays)."""
+    """A copy of the environment with every identity variable removed (the bearer locator stays).
+
+    Python search-path variables are stripped too:  the managed board binary
+    must not inherit a caller-controlled PYTHONPATH/PYTHONHOME that could
+    shadow its imports and forge a bearer-verified seat line.
+    """
     env = dict(os.environ if environ is None else environ)
     for name in _IDENTITY_VARS:
+        env.pop(name, None)
+    for name in (
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSAFEPATH",
+        "PYTHONNOUSERSITE",
+        "PYTHONUSERBASE",
+        "PYTHONSTARTUP",
+    ):
         env.pop(name, None)
     return env
