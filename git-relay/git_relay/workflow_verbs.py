@@ -183,13 +183,17 @@ class WorkflowVerbs:
         self.action, self.repo = action, repo
 
     @classmethod
-    def for_action(cls, client, policy, minter, seat, action, repo):
-        """Seat is already authenticated by the broker; authorize once, mint least permission."""
+    def for_action(cls, client, policy, minter, seat, action, repo, preauthorized=False):
+        """Seat is already authenticated by the broker; authorize once, mint least permission.
+
+        preauthorized is for Relay.handle only: it has just run policy.authorize for this
+        exact seat, action and repo, and a second call would count the hourly quota twice.
+        """
         if action not in SPECS:
             raise Refused("unsupported workflow action")
         if not isinstance(repo, str) or not _REPO.fullmatch(repo):
             raise Refused("invalid repository")
-        if policy.authorize(seat, action, repo):
+        if not preauthorized and policy.authorize(seat, action, repo):
             raise Refused("action or repository denied")
         app_slug, ceiling = policy.app_identity(seat)
         required = dict(SPECS[action][0])

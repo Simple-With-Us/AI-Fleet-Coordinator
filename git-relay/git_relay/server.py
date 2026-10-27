@@ -229,7 +229,11 @@ class Relay:
         audit: AuditLog,
         app_minter=None,
         outcomes: OutcomeStore | None = None,
+        workflow_verbs_enabled: bool = False,
     ):
+        # Off unless the operator turns it on: with it off every wf_ action is refused
+        # as registered-not-wired, exactly as before the wiring existed.
+        self.workflow_verbs_enabled = workflow_verbs_enabled
         self.policy = policy
         self.client = client
         self.audit = audit
@@ -265,7 +269,14 @@ class Relay:
                 # Credential-shaped input is refused before any durable state
                 # or side effect (SecretInputError is a ValueError).
                 scan_args(args)
-                canonical = _validate_args(action, args)
+                if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
+                    # The verb layer owns per-field shape validation and rejects any field it
+                    # does not accept; here only the envelope (a repo string) is checked.
+                    if not isinstance(args.get("repo"), str) or not args["repo"]:
+                        raise ValueError("repo is required")
+                    canonical = dict(args)
+                else:
+                    canonical = _validate_args(action, args)
                 denial = self.policy.authorize(seat, action, canonical["repo"])
                 if denial:
                     raise PolicyDenied(denial)
@@ -277,7 +288,7 @@ class Relay:
                 outcome = "bad_request"
                 detail = {"reason": str(exc)}
                 return 400, {"error": str(exc)}
-            if action != "mint_token":
+            if action != "mint_token" and not self._is_workflow_read(action):
                 # Idempotency gate for non-idempotent writes:  mint_token is exempt
                 # because it returns a credential (a replay could only be served
                 # by persisting that credential in the store, which is worse) and
@@ -408,7 +419,10 @@ class Relay:
                 return 400, payload
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
-            detail = {**canonical, **result}
+            if action in SeatPolicy.WORKFLOW_ACTIONS:
+                detail = _workflow_audit_detail(canonical, result)
+            else:
+                detail = {**canonical, **result}
             return 200, result
         except Exception as exc:
             # An unexpected relay failure:  whether GitHub was reached is
@@ -428,6 +442,8 @@ class Relay:
     def _dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         # handle() has already scanned, shape-validated, and authorized this
         # call (allowlist + hourly quota, once);  dispatch only executes.
+        if action in SeatPolicy.WORKFLOW_ACTIONS:
+            return self._dispatch_workflow(seat, action, args, repo)
         if action in SeatPolicy.APP_ACTIONS:
             return self._dispatch_app(seat, action, args, repo)
         if action == "open_pr":
@@ -440,6 +456,80 @@ class Relay:
             )
         # Every non-open_pr write is an APP_ACTION and never reaches here.
         raise ValueError(f"unknown owner-token action {action!r}")
+
+
+_WORKFLOW_AUDIT_SCALARS = (
+    "job_id",
+    "run_id",
+    "number",
+    "ref",
+    "branch",
+    "base",
+    "head",
+    "expected_head_sha",
+    "prior_sha",
+    "per_page",
+    "state",
+    "tail_bytes",
+    "method",
+    "path",
+)
+
+
+def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
+    """What a wf_ call may leave in the audit log: bounded identifiers and counts only.
+
+    Never file bytes, log text, commit messages, search text or any result body: a read
+    verb returns repository content and a write verb is given it.
+    """
+    detail: dict = {
+        k: canonical[k]
+        for k in _WORKFLOW_AUDIT_SCALARS
+        if isinstance(canonical.get(k), (int, str)) and not isinstance(canonical.get(k), bool)
+    }
+    if isinstance(canonical.get("files"), list):
+        detail["files"] = len(canonical["files"])
+    for key in ("commit", "sha", "merged", "files"):
+        value = result.get(key)
+        if isinstance(value, (int, bool)) or (isinstance(value, str) and len(value) <= 64):
+            detail[f"result_{key}"] = value
+    return detail
+
+
+def _is_workflow_read(self, action: str) -> bool:
+    """A wf_ verb that changes nothing upstream needs no idempotency key and holds no outcome."""
+    if action not in SeatPolicy.WORKFLOW_ACTIONS:
+        return False
+    from .workflow_verbs import SPECS
+
+    spec = SPECS.get(action)
+    return spec is not None and not spec[1]
+
+
+def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> dict:
+    # Imported here: workflow_verbs imports this module.
+    from .workflow_verbs import Refused, Unknown, WorkflowVerbs
+
+    if self.app_minter is None:
+        raise ServerUnavailable("app-token minting is not configured on this relay")
+    try:
+        # handle() has already run policy.authorize for this exact seat, action and repo
+        # (and counted its quota once); for_action then only checks the App ceiling and
+        # mints the least permission in SPECS.
+        handle = WorkflowVerbs.for_action(
+            self.client, self.policy, self.app_minter, seat, action, repo, preauthorized=True
+        )
+        return handle.run(action, args)
+    except Unknown:
+        raise ServerUnavailable("the seat's own App credential is unavailable") from None
+    except Refused as exc:
+        if str(exc) == "seat permission ceiling insufficient":
+            raise PolicyDenied(str(exc)) from None
+        raise
+
+
+Relay._is_workflow_read = _is_workflow_read
+Relay._dispatch_workflow = _dispatch_workflow
 
 
 def _perm_within_ceiling(requested: dict, ceiling: dict) -> str | None:
@@ -874,7 +964,14 @@ def from_env() -> Relay:
             )
         except AppTokenError as exc:
             raise SystemExit(f"git-relay config: {exc}") from exc
-    return Relay(policy, client, audit, app_minter=app_minter, outcomes=outcomes)
+    return Relay(
+        policy,
+        client,
+        audit,
+        app_minter=app_minter,
+        outcomes=outcomes,
+        workflow_verbs_enabled=os.environ.get("GIT_RELAY_ENABLE_WORKFLOW_VERBS") == "1",
+    )
 
 
 def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | None:
