@@ -22,6 +22,7 @@ only job and step conclusions are returned.
 import base64
 import binascii
 import re
+from urllib.parse import quote
 
 from .secret_scan import find_secret
 from .server import _perm_within_ceiling
@@ -37,6 +38,8 @@ class Unknown(RuntimeError):
 
 _SHA = re.compile(r"[0-9a-f]{40}")
 _REF = re.compile(r"[A-Za-z0-9._/-]{1,200}")
+_PATH = re.compile(r"[A-Za-z0-9._/+@~-]{1,1024}")
+_REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
 MAX_FILE_B64 = 256 * 1024
 MAX_PAGE = 50
 MAX_PROJECT = 100
@@ -96,10 +99,8 @@ def _path(args, key="path"):
     if (
         not isinstance(value, str)
         or not value
-        or len(value) > 1024
+        or not _PATH.fullmatch(value)
         or value.startswith("/")
-        or "\\" in value
-        or "\x00" in value
         or any(part in ("", ".", "..") for part in value.split("/"))
     ):
         raise Refused(f"invalid {key}")
@@ -117,6 +118,18 @@ def _page(args):
     return _int(args, "per_page", 1, MAX_PAGE) if "per_page" in args else 30
 
 
+def _obj(data):
+    if not isinstance(data, dict):
+        raise Refused("unexpected upstream shape")
+    return data
+
+
+def _arr(data):
+    if not isinstance(data, list):
+        raise Refused("unexpected upstream shape")
+    return data
+
+
 def _only(args, allowed):
     extra = set(args) - set(allowed)
     if extra:
@@ -124,21 +137,23 @@ def _only(args, allowed):
 
 
 class WorkflowVerbs:
-    def __init__(self, client, policy, seat, bearer, app_slug):
+    def __init__(self, client, policy, seat, bearer, app_slug, action, repo):
         expected, _ = policy.app_identity(seat)
         if not bearer or app_slug != expected or app_slug != seat:
             raise Refused("own App required")
+        if action not in SPECS or not isinstance(repo, str) or not _REPO.fullmatch(repo):
+            raise Refused("action and repository binding required")
         self.client, self.policy, self.seat, self.bearer = client, policy, seat, bearer
+        # The handle is minted for exactly one authorized action and repository.
+        self.action, self.repo = action, repo
 
     @classmethod
     def for_action(cls, client, policy, minter, seat, action, repo):
         """Seat is already authenticated by the broker; authorize once, mint least permission."""
         if action not in SPECS:
             raise Refused("unsupported workflow action")
-        try:
-            client._check_repo(repo)
-        except ValueError:
-            raise Refused("invalid repository") from None
+        if not isinstance(repo, str) or not _REPO.fullmatch(repo):
+            raise Refused("invalid repository")
         if policy.authorize(seat, action, repo):
             raise Refused("action or repository denied")
         app_slug, ceiling = policy.app_identity(seat)
@@ -150,7 +165,7 @@ class WorkflowVerbs:
             token, _ = minter.token_for(app_slug, repo, required)
         except Exception:
             raise Unknown("own App credential unavailable") from None
-        return cls(client, policy, seat, token, app_slug)
+        return cls(client, policy, seat, token, app_slug, action, repo)
 
     def _get(self, path):
         return self.client._call("GET", path, None, bearer=self.bearer)
@@ -158,14 +173,10 @@ class WorkflowVerbs:
     def run(self, action, args):
         if not isinstance(args, dict) or action not in SPECS:
             raise Refused("unsupported workflow action")
-        repo = args.get("repo")
-        if not isinstance(repo, str):
-            raise Refused("invalid repo")
-        try:
-            self.client._check_repo(repo)
-        except ValueError:
-            raise Refused("invalid repo") from None
-        return getattr(self, action)(repo, args)
+        # Authorization happened once, in for_action, for exactly this action and repo.
+        if action != self.action or args.get("repo") != self.repo:
+            raise Refused("action or repository not authorized for this handle")
+        return getattr(self, action)(self.repo, args)
 
     # ---- reads ----
     def wf_pr_list(self, repo, args):
@@ -173,8 +184,10 @@ class WorkflowVerbs:
         state = _enum(args, "state", ("open", "closed", "all"), "open")
         q = f"state={state}&per_page={_page(args)}"
         if "base" in args:
-            q += "&base=" + _ref(args, "base")
-        data = self._get(f"/repos/{repo}/pulls?{q}")
+            q += "&base=" + quote(_ref(args, "base"), safe="/")
+        if "head" in args:
+            q += "&head=" + quote(repo.split("/")[0] + ":" + _ref(args, "head"), safe="")
+        data = _arr(self._get(f"/repos/{repo}/pulls?{q}"))
         return {
             "pulls": [
                 {
@@ -188,7 +201,7 @@ class WorkflowVerbs:
                     "updated_at": p.get("updated_at"),
                     "auto_merge": p.get("auto_merge") is not None,
                 }
-                for p in (data if isinstance(data, list) else [])[:MAX_PROJECT]
+                for p in data[:MAX_PROJECT]
             ],
             "complete": False,
         }
@@ -196,11 +209,11 @@ class WorkflowVerbs:
     def wf_pr_files(self, repo, args):
         _only(args, ("repo", "number", "per_page"))
         number = _int(args, "number")
-        data = self._get(f"/repos/{repo}/pulls/{number}/files?per_page={_page(args)}")
+        data = _arr(self._get(f"/repos/{repo}/pulls/{number}/files?per_page={_page(args)}"))
         return {
             "files": [
                 {k: f.get(k) for k in ("filename", "status", "additions", "deletions", "sha")}
-                for f in (data if isinstance(data, list) else [])[:MAX_PROJECT]
+                for f in data[:MAX_PROJECT]
             ],
             "complete": False,
         }
@@ -208,7 +221,8 @@ class WorkflowVerbs:
     def wf_file_get(self, repo, args):
         _only(args, ("repo", "path", "ref"))
         path, ref = _path(args), _ref(args, "ref")
-        data = self._get(f"/repos/{repo}/contents/{path}?ref={ref}")
+        where = quote(path, safe="/")
+        data = self._get(f"/repos/{repo}/contents/{where}?ref={quote(ref, safe='/')}")
         if not isinstance(data, dict) or data.get("type") != "file":
             raise Refused("not a file")
         return {
@@ -222,8 +236,10 @@ class WorkflowVerbs:
     def wf_tree(self, repo, args):
         _only(args, ("repo", "ref"))
         ref = _ref(args, "ref")
-        data = self._get(f"/repos/{repo}/git/trees/{ref}?recursive=1")
-        tree = data.get("tree") if isinstance(data, dict) else None
+        data = _obj(self._get(f"/repos/{repo}/git/trees/{quote(ref, safe='')}?recursive=1"))
+        tree = data.get("tree")
+        if tree is not None and not isinstance(tree, list):
+            raise Refused("unexpected upstream shape")
         return {
             "sha": (data or {}).get("sha"),
             "truncated": bool((data or {}).get("truncated")) or len(tree or []) > 2000,
@@ -235,21 +251,21 @@ class WorkflowVerbs:
 
     def wf_branches(self, repo, args):
         _only(args, ("repo", "per_page"))
-        data = self._get(f"/repos/{repo}/branches?per_page={_page(args)}")
+        data = _arr(self._get(f"/repos/{repo}/branches?per_page={_page(args)}"))
         return {
             "branches": [
                 {"name": b.get("name"), "sha": (b.get("commit") or {}).get("sha")}
-                for b in (data if isinstance(data, list) else [])[:MAX_PROJECT]
+                for b in data[:MAX_PROJECT]
             ],
             "complete": False,
         }
 
     def wf_commits(self, repo, args):
         _only(args, ("repo", "ref", "path", "per_page"))
-        q = f"sha={_ref(args, 'ref')}&per_page={_page(args)}"
+        q = f"sha={quote(_ref(args, 'ref'), safe='')}&per_page={_page(args)}"
         if "path" in args:
-            q += "&path=" + _path(args).replace("/", "%2F")
-        data = self._get(f"/repos/{repo}/commits?{q}")
+            q += "&path=" + quote(_path(args), safe="")
+        data = _arr(self._get(f"/repos/{repo}/commits?{q}"))
         return {
             "commits": [
                 {
@@ -258,7 +274,7 @@ class WorkflowVerbs:
                     "author": (c.get("author") or {}).get("login"),
                     "date": ((c.get("commit") or {}).get("author") or {}).get("date"),
                 }
-                for c in (data if isinstance(data, list) else [])[:MAX_PROJECT]
+                for c in data[:MAX_PROJECT]
             ],
             "complete": False,
         }
@@ -273,7 +289,7 @@ class WorkflowVerbs:
         ):
             raise Refused("invalid term")
         q = (term + f" repo:{repo}").replace(" ", "+")
-        data = self._get(f"/search/code?q={q}&per_page={_page(args)}")
+        data = _obj(self._get(f"/search/code?q={q}&per_page={_page(args)}"))
         return {
             "total": (data or {}).get("total_count"),
             "items": [
@@ -287,14 +303,14 @@ class WorkflowVerbs:
         _only(args, ("repo", "branch", "head_sha", "status", "per_page"))
         q = f"per_page={_page(args)}"
         if "branch" in args:
-            q += "&branch=" + _ref(args, "branch")
+            q += "&branch=" + quote(_ref(args, "branch"), safe="")
         if "head_sha" in args:
             q += "&head_sha=" + _sha(args, "head_sha")
         if "status" in args:
             q += "&status=" + _enum(
                 args, "status", ("queued", "in_progress", "completed", "success", "failure")
             )
-        data = self._get(f"/repos/{repo}/actions/runs?{q}")
+        data = _obj(self._get(f"/repos/{repo}/actions/runs?{q}"))
         return {
             "runs": [
                 {
@@ -319,7 +335,7 @@ class WorkflowVerbs:
     def wf_run_jobs(self, repo, args):
         _only(args, ("repo", "run_id", "per_page"))
         run_id = _int(args, "run_id")
-        data = self._get(f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page={_page(args)}")
+        data = _obj(self._get(f"/repos/{repo}/actions/runs/{run_id}/jobs?per_page={_page(args)}"))
         return {
             "jobs": [
                 {
@@ -383,15 +399,15 @@ class WorkflowVerbs:
             raise Refused("invalid content") from None
         if find_secret(message) or find_secret(raw.decode("utf-8", "replace")):
             raise Refused("credential-shaped content refused")
-        repo_info = self._get(f"/repos/{repo}")
-        default = repo_info.get("default_branch") if isinstance(repo_info, dict) else None
+        repo_info = _obj(self._get(f"/repos/{repo}"))
+        default = repo_info.get("default_branch")
         if not default or branch == default:
             raise Refused("default branch is not writable")
         payload = {"message": message, "content": content, "branch": branch}
         if "prior_sha" in args:
             payload["sha"] = _sha(args, "prior_sha")
         data = self.client._call(
-            "PUT", f"/repos/{repo}/contents/{path}", payload, bearer=self.bearer
+            "PUT", f"/repos/{repo}/contents/{quote(path, safe='/')}", payload, bearer=self.bearer
         )
         return {
             "path": path,

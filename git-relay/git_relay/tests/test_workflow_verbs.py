@@ -50,9 +50,22 @@ class Minter:
         return "opaque-installation-bearer", 0
 
 
+class Multi:
+    """Test helper: one bound handle per action, all sharing one client."""
+
+    def __init__(self, client):
+        self.client = client
+
+    def run(self, action, args):
+        handle = WorkflowVerbs(
+            self.client, Policy(), "swu-wise", "opaque", "swu-wise", action, args.get("repo", REPO)
+        )
+        return handle.run(action, args)
+
+
 def svc(*replies):
     client = Client(*replies)
-    return WorkflowVerbs(client, Policy(), "swu-wise", "opaque", "swu-wise"), client
+    return Multi(client), client
 
 
 class Tests(unittest.TestCase):
@@ -87,9 +100,51 @@ class Tests(unittest.TestCase):
 
     def test_own_app_required(self):
         with self.assertRaises(Refused):
-            WorkflowVerbs(Client(), Policy(), "swu-wise", "", "swu-wise")
+            WorkflowVerbs(Client(), Policy(), "swu-wise", "", "swu-wise", "wf_tree", REPO)
         with self.assertRaises(Refused):
-            WorkflowVerbs(Client(), Policy(), "swu-wise", "b", "swu-echo")
+            WorkflowVerbs(Client(), Policy(), "swu-wise", "b", "swu-echo", "wf_tree", REPO)
+        with self.assertRaises(Refused):
+            WorkflowVerbs(Client(), Policy(), "swu-wise", "b", "swu-wise", "mint_token", REPO)
+
+    def test_handle_is_bound_to_its_action_and_repo(self):
+        minter = Minter()
+        handle = WorkflowVerbs.for_action(
+            Client({}), Policy(), minter, "swu-wise", "wf_tree", REPO
+        )
+        handle.run("wf_tree", {"repo": REPO, "ref": "main"})
+        with self.assertRaises(Refused):
+            handle.run("wf_file_put", {"repo": REPO})
+        with self.assertRaises(Refused):
+            handle.run("wf_tree", {"repo": "Simple-With-Us/Other", "ref": "main"})
+        self.assertEqual(len(minter.calls), 1)
+
+    def test_path_and_repo_cannot_break_out_of_the_url(self):
+        s, c = svc({"type": "file", "path": "a", "size": 1})
+        s.run("wf_file_get", {"repo": REPO, "path": "docs/a b.md".replace(" ", "_"), "ref": "main"})
+        for bad in ("a?x=1", "a#f", "a%2e", "a b", "a\n", "a&b=1", "a\\b"):
+            with self.assertRaises(Refused, msg=bad):
+                s.run("wf_file_get", {"repo": REPO, "path": bad, "ref": "main"})
+        for bad in ("x/y?z", "x/y/z", "x", "../y/z"):
+            with self.assertRaises(Refused, msg=bad):
+                WorkflowVerbs.for_action(Client(), Policy(), Minter(), "swu-wise", "wf_tree", bad)
+
+    def test_pr_list_head_filter_is_sent(self):
+        s, c = svc([])
+        s.run("wf_pr_list", {"repo": REPO, "head": "wise/x", "base": "main"})
+        self.assertIn("head=Simple-With-Us%3Awise/x", c.calls[0][1].replace("%2F", "/"))
+        self.assertIn("base=main", c.calls[0][1])
+
+    def test_unexpected_upstream_shape_is_a_controlled_refusal(self):
+        for action, args in (
+            ("wf_runs", {"repo": REPO}),
+            ("wf_run_jobs", {"repo": REPO, "run_id": 1}),
+            ("wf_code_search", {"repo": REPO, "term": "x"}),
+            ("wf_tree", {"repo": REPO, "ref": "main"}),
+            ("wf_pr_list", {"repo": REPO}),
+        ):
+            s, _ = svc(["not", "an", "object"] if action != "wf_pr_list" else {"a": 1})
+            with self.assertRaises(Refused, msg=action):
+                s.run(action, args)
 
     def test_update_branch_and_merge_carry_atomic_head(self):
         s, c = svc({"message": "ok"}, {"merged": True, "sha": "b" * 40})
@@ -172,7 +227,7 @@ class Tests(unittest.TestCase):
                 s.run("wf_run_cancel", {"repo": REPO, "run_id": bad})
 
     def test_all_calls_use_the_minted_bearer_only(self):
-        s, c = svc({}, {}, {})
+        s, c = svc({"tree": []}, [], [])
         s.run("wf_tree", {"repo": REPO, "ref": "main"})
         s.run("wf_branches", {"repo": REPO})
         s.run("wf_commits", {"repo": REPO, "ref": "main", "path": "a/b.md"})
