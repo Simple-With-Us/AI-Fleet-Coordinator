@@ -131,24 +131,17 @@ resolve_token() {
 # Read the manifest at a ref (branch or commit) into a file.  Sets FETCHED_SHA
 # to the file's blob sha.
 fetch_json_at() {
-  local ref="$1" dest="$2" sha b64 meta
+  local ref="$1" dest="$2" sha b64 json
   command -v gh >/dev/null 2>&1 || return 1
-  # Prefer separate .sha / .content reads.  jq's @tsv escapes embedded newlines
-  # in base64 as literal \n and corrupts the alphabet on a live Contents API
-  # payload, so a packed TSV decode fails against real GitHub.
-  sha="$(gh api "repos/${REPO}/contents/${REMOTE_PATH}?ref=${ref}" --jq .sha 2>/dev/null || true)"
-  b64="$(gh api "repos/${REPO}/contents/${REMOTE_PATH}?ref=${ref}" --jq .content 2>/dev/null || true)"
-  # A stub that ignores --jq may still return "sha<TAB>b64" for every call.
-  if [[ "$sha" == *$'	'* ]]; then
-    b64="${sha#*$'	'}"
-    sha="${sha%%$'	'*}"
-  fi
-  if [[ -z "$sha" || "$sha" == "null" || -z "$b64" || "$b64" == "null" ]]; then
-    meta="$(gh api "repos/${REPO}/contents/${REMOTE_PATH}?ref=${ref}" --jq '[.sha, .content] | @tsv' 2>/dev/null || true)"
-    [[ -n "$meta" ]] || return 1
-    sha="${meta%%$'	'*}"
-    b64="${meta#*$'	'}"
-  fi
+  # One Contents API read so sha and content come from the same blob.  Two
+  # separate --jq calls can race a concurrent publish and pair a new sha with
+  # the previous content (or the reverse), which fails the later PUT and builds
+  # the merge on a mixed snapshot.  jq -r on .content alone keeps the base64
+  # alphabet intact (unlike packing sha+content through @tsv).
+  json="$(gh api "repos/${REPO}/contents/${REMOTE_PATH}?ref=${ref}" 2>/dev/null || true)"
+  [[ -n "$json" ]] || return 1
+  sha="$(printf '%s' "$json" | jq -r '.sha // empty')"
+  b64="$(printf '%s' "$json" | jq -r '.content // empty')"
   FETCHED_SHA="$sha"
   [[ -n "$FETCHED_SHA" && -n "$b64" && "$b64" != "null" ]] || return 1
   python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode("".join(sys.argv[1].split())))' "$b64" >"$dest"
