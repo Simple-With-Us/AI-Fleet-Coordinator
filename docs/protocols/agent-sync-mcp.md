@@ -6,7 +6,7 @@ Tool names, identity, connections and the CLI equivalents are in the [Simple-Too
 
 Naming:  the hosted server is now **ST-MCP** (Simple-Tools MCP) and the local stdio server is `simple-chat mcp`.  This page keeps the older name in its title and in the decisions below, because those records name the artifact as it was built.  The current names live in the tools guide.
 
-Goal:  give Mac seats `agent-sync` as MCP tools, and give cloud-only seats (Jet in ChatGPT, Grok on Web and iOS) one shared hosted endpoint.  Each caller acts only as its own bot.  Bot keys never reach the client.
+Goal:  give Mac seats the local ST-MCP server as MCP tools, and give cloud-only seats (Jet in ChatGPT, Grok on Web and iOS) one shared hosted endpoint.  Each caller acts only as its own bot.  Bot keys never reach the client.
 
 ## 0. Decisions at a Glance
 
@@ -260,7 +260,7 @@ Owner, Thu, Oct 15:  "I'd like Agent-Sync and whatever local agents use to be ab
 | fx (FX) | `~/.fx/mcp.json` → `mcp.agent-sync = {"type": "local", "command": ["<home>/.local/bin/agent-sync", "mcp", "--default-seat", "FX"], "enabled": true}`.  fx has no `env` key, and none is needed now. |
 | Muse Code (MC) | `~/.config/muse/settings.json` → `mcpServers.agent-sync = {"type": "stdio", "command": "<home>/.local/bin/agent-sync", "args": ["mcp", "--default-seat", "MC"], "mode": "optional"}` (the shape of the existing `fleet-recall` entry there; written by `python3 -m fleet_lanes.install_mcp apply muse --with-agent-sync`, not yet run live).  VERIFY:  whether Muse passes its own environment (`AGENT_LAUNCH_SEAT`, `AGENT_LAUNCHER`) to an MCP child.  The existing `fleet-recall` entry pins `AGENT_SEAT=MC` in `env`, which a launcher's seat must not be overridden by:  remove that key by hand. |
 | Clutch (CLUTCH) | `~/.clutch/dsh/cordis.patch.yml` → a marked `- insert:` block that mounts `@deepseek-ai/dsh-mcp-client` with `command` `<home>/.local/bin/agent-sync` and `args` `["mcp", "--default-seat", "CLUTCH"]`, no `env` (`install_mcp apply clutch --with-agent-sync`).  Clutch already carries `fleet-recall` as a native agent preset, so that is not added again. |
-| BotFleet role bots (BF-<ROLE>) | Not registered (owner 2026-10-09):  BF bots post only through BotFleet's native Zulip, so BotFleet hands its engines no agent-sync server.  An engine that loads the owner's user config still finds the platform registration above; under BotFleet's `AGENT_LAUNCHER=botfleet` it exits 3 with no launch seat, and with `AGENT_LAUNCH_SEAT=BF-<ROLE>` it serves only that bot's own key, or exits 3 when the engine has none. |
+| BotFleet role bots (BF-<ROLE>) | Not registered (owner 2026-10-09):  BF bots post only through BotFleet's native Zulip, so BotFleet hands its engines no ST-MCP server.  An engine that loads the owner's user config still finds the platform registration above; under BotFleet's `AGENT_LAUNCHER=botfleet` it exits 3 with no launch seat, and with `AGENT_LAUNCH_SEAT=BF-<ROLE>` it serves only that bot's own key, or exits 3 when the engine has none. |
 
 The config-file forms, for an edit by hand or the installer.  In every `command` value below `<home>` is the absolute home directory, because no shell expands those fields.  Codex, `~/.codex/config.toml` (the `[mcp_servers.X]` shape `install-fleet-rag.sh` writes, plus Codex's `env_vars` passthrough list):
 
@@ -299,7 +299,7 @@ Later these go into an installer modeled on `scripts/install-fleet-rag.sh`, with
 
 ### 2.2 FleetLink on Stdio
 
-Every seat can use FleetLink through agent-sync, not only the hosted ones.  The stdio server serves the same 15 `fleetlink_*` tools as the hosted Worker, last in `tools/list` (after the `linear_*` tools), as the identity's own FleetLink bot.
+Every seat can use FleetLink through ST-MCP, local or hosted.  The stdio server serves the same 15 `fleetlink_*` tools as the hosted Worker, last in `tools/list` (after the `linear_*` tools), as the identity's own FleetLink bot.
 
 - **Contract.**  `scripts/agent_sync/mcp/fleetlink-tools.json`:  names, input schemas and annotations, generated from the hosted `FLEETLINK_TOOLS` in `scripts/agent-sync-mcp/src/fleetlink.js` by `node scripts/export-fleetlink-tools.mjs` (run in `scripts/agent-sync-mcp`).  `test/fleetlink.test.mjs` fails when the two differ, exactly as `recall-tools.json` is checked.  Reads are `fleetlink_list_shares`, `fleetlink_get_share`, `fleetlink_list_teams`, `fleetlink_read_file` and `fleetlink_whoami`;  the other ten are writes and must name `identity`.  No `outputSchema`, as on hosted.  The release allowlist ships the file (`EXACT` and `TOOL_REQUIRED` in `scripts/fleet-cli-release.py`, not `BASE_REQUIRED`, so older releases stay valid rollback targets).
 - **Execution.**  `scripts/agent_sync/mcp/fleetlink_tools.py` runs FleetLink's own CLI as a child:  `fleetlink tool <name> --json --args-json @<file>`.  The arguments go in a mode-0600 file inside a private (0700) temporary folder, which is the child's working folder and is deleted afterwards, so no argument reaches the command line.  The CLI is `AGENT_SYNC_FLEETLINK_CLI`, else `fleetlink` on `PATH`.  FleetLink's own CLI is the CLI surface for these tools (`EXTERNAL_CLI` in `tools.py` maps each one to its `fleetlink` command, FleetLink's `MCP_TO_CLI`).  The child times out after 120 seconds.

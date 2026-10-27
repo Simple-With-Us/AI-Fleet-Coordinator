@@ -1,9 +1,0 @@
-dbs:
-  - path: /Users/jay/apps/mac-collab/findings.db
-    replicas:
-      - type: s3
-        endpoint: s3.eu-central-003.backblazeb2.com
-        bucket: jays-fleet-shared-eu
-        path: mac-collab/findings.db
-        access_key_id: ${BACKBLAZE_MASTER_KEY_ID}
-        secret_access_key: ${BACKBLAZE_MASTER_APPLICATION_KEY}

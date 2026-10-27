@@ -31,7 +31,7 @@ import { resolveSecret, prefetchFolder } from "./infisical.js";
 import { readBodyBytes, wakeSignature, WAKE_SIGNATURE_HEADER, WAKE_MAX_AGE_S, WAKE_MAX_SKEW_S, WAKE_MIN_KEY_LEN } from "./wake.js";
 import { z } from "zod";
 import { GB_IDENTITIES } from "./delegated-identities.js";
-import { KNOWN_SEATS } from "./config.js";
+import { BEARER_SEATS } from "./bearer-identities.js";
 
 export const GR_VERIFY_CONTRACT = "gr-bearer-verify/1";
 export const GR_VERIFY_PATH = "/internal/gr-bearer-verify";
@@ -40,7 +40,7 @@ export const GR_VERIFY_KEY_VAR = "GR_BEARER_VERIFY_KEY";
 
 const HEX64_RE = /^[0-9a-f]{64}$/;
 const IDENTITY_RE = /^[A-Z][A-Z0-9-]{0,31}$/;
-const KNOWN = new Set([...GB_IDENTITIES, ...KNOWN_SEATS]);
+const KNOWN = new Set([...GB_IDENTITIES, ...BEARER_SEATS]);
 
 // The signed payload's strict shape.  sent_at is an epoch-seconds integer.
 const GrVerifySchema = z
@@ -135,7 +135,7 @@ export async function serveGrBearerVerify(request, env, gates, { resolveKey = re
     } else if (verdict.reason === "mismatch") {
       // Wrong guesses write no audit row (they are free to send) but DO count
       // against the claimed identity - the relay-facing view of a storm.
-      try { await identityGate.gbBearerMismatch(identity, new Set([...GB_IDENTITIES, ...KNOWN_SEATS])); } catch { /* A counter is observability, never the security path. */ }
+      try { await identityGate.gbBearerMismatch(identity, new Set([...GB_IDENTITIES, ...BEARER_SEATS])); } catch { /* A counter is observability, never the security path. */ }
     }
     return jsonResponse({ ok: false, reason: verdict.reason }, 200);
   }

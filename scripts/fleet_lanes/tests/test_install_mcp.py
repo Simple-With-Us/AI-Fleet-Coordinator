@@ -1,4 +1,4 @@
-"""install_mcp tests: the per-harness MCP registrations (fleet-recall, and agent-sync for fixed-seat tools).
+"""install_mcp tests: the per-harness MCP registrations (fleet-recall, and the local ST-MCP server for fixed-seat tools).
 
     cd scripts && python3 -m unittest fleet_lanes.tests.test_install_mcp -v
 

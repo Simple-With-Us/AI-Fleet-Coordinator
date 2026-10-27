@@ -289,7 +289,7 @@ class CredentialTests(FleetLinkHarness):
         self.assertEqual(len(self.calls()), 1)
 
     def test_a_seat_from_a_flag_binds_the_generic_token_like_one_from_the_environment(self):
-        # A platform registers `agent-sync mcp --default-seat S` and no AGENT_SEAT, so the generic token
+        # A platform registers `simple-chat mcp --default-seat S` and no AGENT_SEAT, so the generic token
         # belongs to S:  another identity on the same connection is not configured, exactly as when the
         # environment named S (AFC-331 identity, fleetlink_tools.py generic_token_allowed).
         self.answer(stdout=json.dumps(SHARE))

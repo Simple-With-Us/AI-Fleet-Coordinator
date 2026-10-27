@@ -81,7 +81,7 @@ RETENTION = (
 PRUNE_EVERY = 24 * 3600
 CHECK_EVERY = 7 * 24 * 3600
 SKIP_WARN_AFTER = 8  # consecutive skipped runs (about 24 hours at one run per 3 hours)
-ALERT_EVERY = 24 * 3600  # at most one agent-sync alert a day while runs stay not ok
+ALERT_EVERY = 24 * 3600  # at most one fleet chat alert a day while runs stay not ok
 ALERT_TOPIC = "AFC 29c02bcb fleet-work-backup"
 ALERT_GAP = "\u00a0 "  # Zulip renders Markdown:  a sentence gap is U+00A0 plus a space
 
@@ -3529,7 +3529,7 @@ def agent_sync_path(cfg: Config) -> str:
 
 
 def _agent_sync_send(cmd: list, text: str) -> bool:
-    """Run one agent-sync command with ``text`` on stdin.  Never raises;  False when it did not succeed."""
+    """Run one simple-chat command with ``text`` on stdin.  Never raises;  False when it did not succeed."""
     try:
         p = subprocess.run(
             cmd,
@@ -3544,7 +3544,7 @@ def _agent_sync_send(cmd: list, text: str) -> bool:
 
 
 def post_alert(cfg: Config, text: str, wake: bool = True, failed: list | None = None) -> bool:
-    """Tell the fleet through agent-sync as this job's seat, in up to two places:  a post in the work topic of
+    """Tell the fleet through the simple-chat CLI as this job's seat, in up to two places:  a post in the work topic of
     #Work-In-Progress and, when ``cfg.alert_dm_owner``, a Zulip DM to the owner with the text alone.  With ``wake`` the
     post carries the ``--to`` mentions (``cfg.alert_to``) and ``cfg.alert_note`` after the text;  without it the post
     names nobody and wakes nobody (good news does not spend a peer's wake budget).  Each send is tried even when the

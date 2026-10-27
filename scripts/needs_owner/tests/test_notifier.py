@@ -1,6 +1,6 @@
 """The fallback notifier (`needs-owner notify`):  notices, caps, the pause, the lock, the log.
 
-Every test runs the real notifier in process against the fake `board` and `agent-sync` (built on the real parsers), a
+Every test runs the real notifier in process against the fake `board` and `simple-chat` (built on the real parsers), a
 fake clock and fake K1 knobs, in a temp HOME.  Jay is Zulip user 7 (the pinned owner);  CODEX, BF-DIRECTOR and the
 Grok Bot personas are the filing seats.
 """

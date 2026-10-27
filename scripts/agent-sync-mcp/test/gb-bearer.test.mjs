@@ -160,18 +160,26 @@ test("the completed-ack page shows outcome metadata, never a token, and is not c
 });
 
 test("the reveal send line matches what the minted bearer can actually do", async () => {
+  // The fleet-tool note is true in every mint mode:  a tool that verifies with
+  // this Worker uses the same bearer, and the /mcp acceptance does not gate
+  // that.  It names simple-board as the first tool and claims landing
+  // support, never a shipped one.
+  const fleetNote = "A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity&#39;s credential.";
   // Persona:  ST-MCP /mcp and GR-MCP.
   const persona = await gbBearerRevealPage({ identity: ID, token: "t", expiresAt: NOW, kind: "persona", mcpAccept: true }).text();
   assert.ok(persona.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  assert.ok(persona.includes(fleetNote));
   // Ticked seat:  same reach.
   const ticked = await gbBearerRevealPage({ identity: "JET", token: "t", expiresAt: NOW, kind: "seat", mcpAccept: true }).text();
   assert.ok(ticked.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  assert.ok(ticked.includes(fleetNote));
   // Unticked seat:  GR-MCP ONLY, and the page says /mcp refuses it - it must
   // never imply the bearer works on ST-MCP's /mcp.
   const unticked = await gbBearerRevealPage({ identity: "JET", token: "t", expiresAt: NOW, kind: "seat", mcpAccept: false }).text();
   assert.ok(unticked.includes("to GR-MCP (git-relay) only"));
   assert.ok(unticked.includes("ST-MCP&#39;s /mcp refuses this bearer"));
   assert.ok(!unticked.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  assert.ok(unticked.includes(fleetNote), "fleet tools are not gated by the /mcp acceptance");
 });
 
 test("the refused mint page never shows a token and states nothing changed", async () => {
@@ -353,6 +361,10 @@ test("the admin section lists status and buttons and never a token or hash", asy
   assert.match(html, /Rotate \(Mint New\)/);
   assert.match(html, /No credentials loaded/);
   assert.ok(!/gbb_/.test(html));
+  // The intro states the fleet-wide direction honestly:  per-tool support,
+  // simple-board first - no claim that every tool already accepts it.
+  assert.ok(html.includes("credential for fleet tools that verify with this Worker"), "intro names the fleet-tools direction");
+  assert.ok(html.includes("support lands per tool, starting with simple-board"), "intro scopes readiness per tool");
 });
 
 test("mint id shape is enforced: malformed ids refuse as invalid before any timestamp math (kody 4372747948)", async () => {
@@ -668,4 +680,18 @@ test("alarm composition: a throwing sweep still reschedules for the buffered tai
   assert.equal(scheduled.length, 1, "the reschedule ran despite the throw");
   assert.equal(scheduled[0], t0 + S.GB_MISMATCH_FLUSH_MS, "the orphaned-tail case now wakes at the counter deadline, not never");
   assert.equal(buf.pending.get("JET").count, 1, "the tail was not flushed early (not due) and survives for the rescheduled alarm");
+});
+
+test("bearer reveal copy preserves every internal rendered sentence gap in all mint modes", async () => {
+  for (const [kind, mcpAccept] of [["persona", true], ["seat", true], ["seat", false]]) {
+    const html = await gbBearerRevealPage({ identity: "ECHO", token: "offline-preview", expiresAt: NOW, kind, mcpAccept }).text();
+    const copy = html.match(/<p>Expires [\s\S]*?<\/p>/)?.[0];
+    assert.ok(copy, "the reveal has expiry and send copy");
+    assert.ok(copy.includes(".\u00a0 A fleet tool"), "the new fleet-tool sentence keeps its rendered gap");
+    assert.ok(!/\. +[A-Z]/.test(copy), "no internal ASCII-only sentence gap may collapse in HTML");
+    if (kind === "seat" && !mcpAccept) {
+      assert.ok(copy.includes(".\u00a0 ST-MCP"));
+      assert.ok(copy.includes(".\u00a0 If this seat"));
+    }
+  }
 });

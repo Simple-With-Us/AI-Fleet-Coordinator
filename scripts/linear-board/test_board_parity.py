@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the board CLI's Agent-Sync parity verbs:  commands, run, api and mcp.
+"""Tests for the board CLI's ST-MCP parity verbs:  commands, run, api and mcp.
 
 Run:  python3 scripts/linear-board/test_board_parity.py   (stdlib only, under a minute)
 

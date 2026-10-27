@@ -1,4 +1,4 @@
-"""A stand-in `agent-sync` for the needs-owner tests.
+"""A stand-in `simple-chat` for the needs-owner tests.
 
 It parses argv with the REAL parser of scripts/agent_sync/cli.py (so a wrong flag, or a flag in the wrong
 place, fails as it would for real), keeps topics and messages in a JSON file, and records every call with
@@ -77,7 +77,7 @@ def seat_app(seat):
 
 
 def message_json(m):
-    """One stored message as the real `agent-sync read --json` prints it.  The bot's email is the seat tag
+    """One stored message as the real `simple-chat read --json` prints it.  The bot's email is the seat tag
     lower-cased plus -bot@ (what the real `seat_tag_for` reads back), and a person has no seat."""
     is_bot = bool(m.get("is_bot", True))
     seat = str(m.get("seat") or "") if is_bot else None
@@ -124,7 +124,7 @@ def dispatch(world, args, seat, stdin):
     if args.command == "channels":
         print(json.dumps([{"name": "work-in-progress", "description": "", "stream_id": world.get("stream_id", 12)}]))
         return 0
-    sys.stderr.write("fake agent-sync: unexpected command %s\n" % args.command)
+    sys.stderr.write("fake simple-chat: unexpected command %s\n" % args.command)
     return 64
 
 
@@ -160,7 +160,7 @@ def whoami(world, args, seat):
 
 
 def verify_owner_msg(world, args):
-    """The real rule of `agent-sync verify-owner-msg`, over the stored messages."""
+    """The real rule of `simple-chat verify-owner-msg`, over the stored messages."""
     if world.get("verify_fails"):
         sys.stderr.write("fake zulip: verify failed\n")
         return 5

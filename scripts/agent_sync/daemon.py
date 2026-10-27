@@ -1719,7 +1719,7 @@ class Daemon:
             if c.owner_api:
                 self.notifier.notify(
                     self.config.claude_seat or runner.seat,
-                    "agent-sync: owner account",
+                    "simple-chat: owner account",
                     "a post from your account came from an API client (%s), treated as not you"
                     % A.clean_banner(str(message.get("client") or "?"), 40),
                     kind="owner-api",

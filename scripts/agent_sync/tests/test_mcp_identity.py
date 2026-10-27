@@ -1,4 +1,4 @@
-"""Per-call identity on `agent-sync mcp` (AFC-331, docs/protocols/per-call-identity.md sections 2-4 and
+"""Per-call identity on `simple-chat mcp` (AFC-331, docs/protocols/per-call-identity.md sections 2-4 and
 the stdio rows of section 8).
 
 The HOME of every test holds the credential files of several bots:  seats (Claude, Cursor), a BF-*
@@ -260,7 +260,7 @@ class CallRuleTests(IdentityHarness):
 
 
 class CliTests(IdentityHarness):
-    """The CLI side:  `agent-sync identities` lists the same set, and every write is audited."""
+    """The CLI side:  `simple-chat identities` lists the same set, and every write is audited."""
 
     def cli_env(self, **overrides: str | None) -> dict[str, str]:
         return self.env(

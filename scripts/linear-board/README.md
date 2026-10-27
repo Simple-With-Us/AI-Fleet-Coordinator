@@ -10,7 +10,7 @@ Status: built and tested against a local mock of Linear, and checked live with r
 
 ### Before cutover: as `board-linear`
 
-Install it next to the old CLI and leave `~/.local/bin/board` alone.  Install from the repo only, so the live copy cannot drift from the tracked one.  Link to the managed runtime checkout, never to the human integration tree under `~/Code`:  `/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime` is a detached worktree that `com.jay.agent-sync-runtime-sync` keeps on AFC origin/main every 120 seconds (the `agent-sync` CLI already runs from it).
+Install it next to the old CLI and leave `~/.local/bin/board` alone.  Install from the repo only, so the live copy cannot drift from the tracked one.  Link to the managed runtime checkout, never to the human integration tree under `~/Code`:  `/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime` is a detached worktree that `com.jay.agent-sync-runtime-sync` keeps on AFC origin/main every 120 seconds (the `simple-chat` CLI already runs from it).
 
 ```bash
 ln -sf "/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/linear-board/board" "$HOME/.local/bin/board-linear"
@@ -39,13 +39,13 @@ EOF
 chmod 755 "$HOME/.local/bin/board"
 ```
 
-The old CLI was kept as `~/.local/bin/board-legacy` (a symlink to `~/apps/mac-collab/board`) until it was removed on 2026-10-19 (AFC-363).  Cloud seats and BotFleet set `LINEAR_BOARD_WRITES=1` in their own environment at the same moment.
+The old CLI was kept as `~/.local/bin/board-legacy` (a symlink to `~/apps/mac-collab/board`) until it was removed on 2026-10-19 (AFC-363);  that path is now the frozen archive `~/apps/_retired/mac-collab-20261019/board`.  Cloud seats and BotFleet set `LINEAR_BOARD_WRITES=1` in their own environment at the same moment.
 
 ### Rollback
 
-**Retired 2026-10-19 (AFC-363).**  The `BOARD_BACKEND=mac-collab` rollback no longer exists:  the old board server is retired, `board-legacy` is removed, and `~/apps/mac-collab` was moved to `~/apps/_retired/mac-collab-20261019/`.  There is no way back to the old board;  Linear is the only tracker.  The text below is kept as history.
+**The old board server is retired (2026-10-19, AFC-363).**  Its pm2 jobs are deleted, `board-legacy` is removed, the retired ingress answers 404, and `~/apps/mac-collab` was moved to `~/apps/_retired/mac-collab-20261019/`.  Linear is the only tracker, and there is no live board to go back to.
 
-Set `BOARD_BACKEND=mac-collab`.  The CLI then runs the old board CLI with the same arguments, before any other check, so the result matches today's behavior exactly.  The old script stays where it is (`~/apps/mac-collab/board`, or the path in `BOARD_MAC_COLLAB_CLI`); nothing is copied.
+What survives is the old CLI *script*, in the frozen archive.  Set `BOARD_BACKEND=mac-collab` and the CLI runs it with the same arguments, before any other check, so a read matches the old behavior exactly.  It reads the archived `findings.db` and talks to no server, and because that database is frozen and read-only the backend serves reads only:  `file`, `claim`, `status`, `comment` and `label` are refused before the archived CLI is run, rather than failing inside a read-only database with a raw sqlite error.  The archived CLI still needs its own `MAC_COLLAB_TOKEN`, which it takes from the environment or from Infisical Fleet-OPS `/mac-collab` through `fleet-secrets`.  That folder and its tokens were deleted on the day of the retirement, so with no value in the environment the archived CLI cannot authenticate at all, and the rollback backend is dead in practice and not only read-only.  The script stays where it is (`~/apps/_retired/mac-collab-20261019/board`, or the path in `BOARD_MAC_COLLAB_CLI`); nothing is copied.
 
 ## Cutover gates
 
@@ -79,7 +79,7 @@ Everything else is unchanged:  claims keep their `claimed:<SEAT>` label and `CLA
 
 ## Frozen contract
 
-Every verb and flag of the old board CLI (`~/apps/mac-collab/board`, retired 2026-10-19) is accepted and prints the same lines, with these deliberate breaks:
+Every verb and flag of the old board CLI (`~/apps/_retired/mac-collab-20261019/board`, frozen 2026-10-19) is accepted and prints the same lines, with these deliberate breaks:
 
 - `status <id> duplicate` needs `--of <id>` (or a `dup of <id>` in `--resolution`).  The old CLI took a bare `duplicate`; 88 board rows used it.  Linear only makes a Duplicate through a relation to a canonical issue.
 - `claim` refuses (exit 3) when another seat holds an In Progress claim, unless `--steal --reason "..."`.
@@ -177,7 +177,7 @@ Who holds an issue, in order:
 
 ## Agent-Sync parity
 
-The hosted Agent-Sync MCP server (`scripts/agent-sync-mcp`) gives cloud seats Linear as 175 named commands, the general `linear_schema`, `linear_query` and `linear_mutation` tools, and 11 tools proxied from Linear's official MCP server.  `board` serves the same tools from a shell, with the same guards, so a seat on the Mac or a VM has everything a hosted seat has:
+The hosted ST-MCP server (`scripts/agent-sync-mcp`) gives cloud seats Linear as 175 named commands, the general `linear_schema`, `linear_query` and `linear_mutation` tools, and 11 tools proxied from Linear's official MCP server.  `board` serves the same tools from a shell, with the same guards, so a seat on the Mac or a VM has everything a hosted seat has:
 
 | Verb | Hosted tool | What it does |
 |---|---|---|
@@ -224,8 +224,8 @@ CI enforces it twice.  `scripts/agent-sync-mcp/test/linear-catalog-parity.test.m
 |---|---|---|
 | `SIMPLE_BOARD_BEARER_LOCATOR` | required for writes | A `FOLDER:KEY_NAME` location of the seat's own bearer;  the verifier names the seat every write carries.  `AGENT_SEAT` is ignored.  `list`, `show`, `stats` and `whoami` run without it |
 | `LINEAR_BOARD_WRITES` | off | `1` enables `file`, `claim`, `status`, `comment`, `label`, and the parity writes (`run` of a write command, `api mutation`, a write `mcp call`) |
-| `BOARD_BACKEND` | `linear` | `mac-collab` ran the old board CLI (rollback);  retired 2026-10-19 |
-| `BOARD_MAC_COLLAB_CLI` | `~/apps/mac-collab/board` | The old CLI that `BOARD_BACKEND=mac-collab` ran;  retired 2026-10-19 |
+| `BOARD_BACKEND` | `linear` | `mac-collab` runs the archived old board CLI (rollback);  the server it used is retired |
+| `BOARD_MAC_COLLAB_CLI` | `~/apps/_retired/mac-collab-20261019/board` | The archived old CLI that `BOARD_BACKEND=mac-collab` runs |
 | `LINEAR_BOARD_FLEET_SECRETS` | `fleet-secrets` on `PATH`, else `~/.local/bin/fleet-secrets` | The `fleet-secrets` binary used for the Fleet-OPS reads (tests point it at a stub) |
 | `LINEAR_CLIENT_ID`, `LINEAR_CLIENT_SECRET` | unset | Cloud runtimes:  the seat's own app or Fleet.  When both are set they come first |
 | `LINEAR_<SEAT>_CLIENT_ID`, `LINEAR_<SEAT>_CLIENT_SECRET` | unset | Cloud runtimes:  the seat's own app, for the bearer-verified seat only, with hyphens as underscores (`LINEAR_GROK_WEB_CLIENT_ID`) |
