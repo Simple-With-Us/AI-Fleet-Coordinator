@@ -523,6 +523,17 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
             self.receive()
 
+    def test_non_table_codex_shapes_are_refused_not_an_internal_error(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        for text, code in (('mcp_servers = "x"\n', "invalid_codex_config"),
+                           ('[mcp_servers]\nagent-sync = "x"\n', "existing_agent_sync_mcp_conflict"),
+                           ('[mcp_servers]\nsimple-chat = "x"\n', "existing_simple_chat_mcp_conflict")):
+            with self.subTest(text=text):
+                config.write_bytes(text.encode())
+                with self.assertRaisesRegex(release.Refused, code):
+                    self.receive()
+
     def test_update_keeps_configuration_and_wrappers_untouched(self):
         self.receive()
         config = self.home / ".codex/config.toml"

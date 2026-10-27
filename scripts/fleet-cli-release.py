@@ -435,12 +435,16 @@ def migrate_codex_mcp(home: Path, files: dict) -> None:
     except (ValueError, UnicodeError):
         raise Refused("invalid_codex_config") from None
     servers = before.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        raise Refused("invalid_codex_config")
     current = servers.get(CODEX_KEY)
     if current is not None and current != expected:
         raise Refused("existing_simple_chat_mcp_conflict")
     present = servers.get(LEGACY_CODEX_KEY)
     if present is None:
         return
+    if not isinstance(present, dict):
+        raise Refused("existing_agent_sync_mcp_conflict")
     legacy_command = str(bin_dir / LEGACY_CODEX_MCP)
     if present.get("command") not in (legacy_command, expected["command"]) or (
         present.get("env_vars") != expected["env_vars"]

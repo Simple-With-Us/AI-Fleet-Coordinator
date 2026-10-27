@@ -325,6 +325,16 @@ class AgentSyncTests(HomeCase):
         self.assertIn("simple-chat", doc)
         self.assertIn("other", doc)
 
+    def test_the_pre_rename_entry_stays_when_the_new_simple_chat_entry_is_refused(self) -> None:
+        self.mkdir(*TOOL_DIRS.values())
+        doc = {"mcpServers": {"agent-sync": {"command": self.agent_sync, "args": ["mcp", "--default-seat", "MC"]},
+                              "simple-chat": {"command": "/owner/custom"}}}
+        self.write(".config/muse/settings.json", json.dumps(doc))
+        self.run_cli("apply", "muse", "--with-simple-chat")
+        got = self.load(".config/muse/settings.json")["mcpServers"]
+        self.assertIn("agent-sync", got, "a refused replacement must not take the working entry with it")
+        self.assertEqual(got["simple-chat"], {"command": "/owner/custom"})
+
     def test_a_foreign_agent_sync_entry_is_left_alone(self) -> None:
         self.mkdir(*TOOL_DIRS.values())
         self.write(".config/muse/settings.json", json.dumps({"mcpServers": {"agent-sync": {"command": "/owner/custom"}}}))

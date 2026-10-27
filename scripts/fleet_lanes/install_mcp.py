@@ -339,6 +339,12 @@ def edit_json_target(target: JsonTarget, text: Optional[str], names_argv: Sequen
         old_entry = servers.get(LEGACY_SERVER)
         if old_entry is None:
             continue
+        landed = next((o.status for o in out if o.server == name), None)
+        if action == "add" and landed not in ("added", "unchanged", "present"):
+            # The replacement was refused:  keep the working legacy entry and say why.
+            out.append(Outcome(target.key, LEGACY_SERVER, "skipped-not-ours",
+                               "kept:  the %s entry was not written (%s), so the pre-rename one stays" % (name, landed)))
+            continue
         if old_entry == target.build(LEGACY_SERVER, argv) or target.argv_of(old_entry) == argv:
             del servers[LEGACY_SERVER]
             out.append(Outcome(target.key, LEGACY_SERVER, "removed", "retired the pre-rename registration"))

@@ -3028,7 +3028,7 @@ def run(
     parser.add_argument(
         "--post",
         action="store_true",
-        help="when the set of failing checks changes, post it with simple-chat to #Work-In-Progress, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as agent-sync resolves it)",
+        help="when the set of failing checks changes, post it with simple-chat to #Work-In-Progress, topic 'fleet tools doctor' (the seat comes from AGENT_SEAT in the environment, as simple-chat resolves it)",
     )
     parser.add_argument(
         "--no-registry",
