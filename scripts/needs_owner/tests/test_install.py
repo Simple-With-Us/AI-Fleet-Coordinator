@@ -26,10 +26,25 @@ class InstallTests(unittest.TestCase):
         env = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % Path(sys.executable).parent}
         return subprocess.run(["bash", str(INSTALL), *args], capture_output=True, text=True, env=env, timeout=120)
 
-    def isolated(self, *args: str, env: dict | None = None, cwd: str | None = None) -> subprocess.CompletedProcess:
-        base = {"HOME": str(self.home), "PATH": "/usr/bin:/bin"}
+    def isolated(self, *args: str, env: dict | None = None, cwd: str | None = None, managed: str | None = None) -> subprocess.CompletedProcess:
+        # a stand-in `simple-board whoami`:  the seat is proven by bearer verification, never by a variable
+        stub = self.home.parent / ("stubbin-" + self.home.name)
+        stub.mkdir(exist_ok=True)
+        self.addCleanup(shutil.rmtree, stub, True)
+        (stub / "simple-board").write_text('#!/bin/sh\necho "seat:        CLAUDE (bearer-verified)"\n')
+        (stub / "simple-board").chmod(0o755)
+        base = {"HOME": str(self.home), "PATH": "%s:/usr/bin:/bin" % stub,
+                "SIMPLE_BOARD_BEARER_LOCATOR": "/fleet-seats:CLAUDE_SEAT_BEARER"}
         base.update(env or {})
-        return subprocess.run([sys.executable, "-I", str(self.dest / "needs-owner"), *args], capture_output=True, text=True,
+        base.pop("AGENT_SEAT", None)
+        # the managed-board seam is import-only, so the isolated run sets it in-process before the entry runs
+        entry = [sys.executable, "-I", str(self.dest / "needs-owner"), *args]
+        if args and not args[0].startswith("--"):  # a verb reaches the seat probe;  --help/--version never do
+            entry = None
+        boot = ("import sys, runpy; sys.path.insert(0, %r); import needs_owner.seat as S; S.MANAGED_BIN_DIR = %r; "
+                "sys.argv = [%r] + sys.argv[1:]; runpy.run_path(%r, run_name='__main__')"
+                % (str(self.dest), str(managed or stub), str(self.dest / "needs-owner"), str(self.dest / "needs-owner")))
+        return subprocess.run(entry or [sys.executable, "-I", "-c", boot, *args], capture_output=True, text=True,
                               env=base, cwd=cwd or str(self.home), timeout=120)
 
     def test_the_plan_changes_nothing(self) -> None:
@@ -64,7 +79,7 @@ class InstallTests(unittest.TestCase):
         self.assertIn("knobs.py", source)
         # Under python3 -I, with nothing of the checkout on the path, `notify` finds fleet_knobs next to the package.
         # A refused Infisical environment stops it before any fetch, so no real CLI runs:  exit 1 and the reason.
-        ran = self.isolated("notify", "--dry-run", env={"INFISICAL_ENV": "staging", "AGENT_SEAT": "CLAUDE"})
+        ran = self.isolated("notify", "--dry-run", env={"INFISICAL_ENV": "staging"})
         self.assertEqual(ran.returncode, 1, ran.stdout + ran.stderr)
         self.assertIn("the knobs cannot be read", ran.stderr)
         self.assertNotIn("fleet_knobs is missing", ran.stderr)
@@ -74,7 +89,7 @@ class InstallTests(unittest.TestCase):
         self.assertEqual(self.install("--apply").returncode, 0)
         shutil.rmtree(self.dest / "fleet_knobs")
         self.assertEqual(self.isolated("--version").returncode, 0)
-        ran = self.isolated("notify", "--dry-run", env={"AGENT_SEAT": "CLAUDE"})
+        ran = self.isolated("notify", "--dry-run", env={})
         self.assertEqual(ran.returncode, 1)
         self.assertIn("fleet_knobs is missing", ran.stderr)
         self.assertIn("install.sh --apply", ran.stderr)
@@ -111,11 +126,11 @@ class InstallTests(unittest.TestCase):
         env = world.env()
         env["HOME"] = str(self.home)
         ran = self.isolated("file", "--by", "CLAUDE", "--app", "AFC", "--question", "Is the copy complete?", "--option", "Yes",
-                            "--option", "No", "--dry-run", "--json", env=env)
+                            "--option", "No", "--dry-run", "--json", env=env, managed=str(world.bin))
         self.assertEqual(ran.returncode, 0, ran.stderr)
         self.assertTrue(json.loads(ran.stdout)["dry_run"])
         refused = self.isolated("file", "--by", "CLAUDE", "--app", "AFC", "--question", "Key lin_api_" + "Zx9Yw8Vv7U" * 3 + "?",
-                                "--option", "Yes", "--option", "No", env=env)
+                                "--option", "Yes", "--option", "No", env=env, managed=str(world.bin))
         self.assertEqual(refused.returncode, 2)
         self.assertIn("secret", refused.stderr)
 

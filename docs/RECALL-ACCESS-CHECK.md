@@ -5,7 +5,7 @@ the single place to point a seat at.  It is public, so it names hostnames and cr
 only — never values.
 
 Reporting rail: Linear issue **`OPS-372`** (old board id `02512901`, "Fleet RAG access check").  One comment
-per platform, in this shape (writes need `AGENT_SEAT`):
+per platform, in this shape (writes need a bearer-verified seat for the board, `AGENT_SEAT` for lane and chat):
 
 ```bash
 simple-board comment OPS-372 --by <YOUR-SEAT> --env <Mac|cloud> \

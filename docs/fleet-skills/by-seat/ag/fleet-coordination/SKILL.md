@@ -77,7 +77,7 @@ Every agent session must start with systematic orientation before touching code:
    simple-board stats
    simple-board list --status open,in_progress --limit 25
    ```
-   `simple-board` reads Linear (issue ids like `BF-123`, one team per app).  Reads need no seat; every write needs `AGENT_SEAT` set in the same command.  Do not read the archived `*-EFFORT-LOG.md` files for current state.
+   `simple-board` reads Linear (issue ids like `BF-123`, one team per app).  Reads need no seat; every write needs your bearer-verified seat (no seat picker: see `board-ops`) and `LINEAR_BOARD_WRITES=1` in the same command.  Do not read the archived `*-EFFORT-LOG.md` files for current state.
 
 4. **Fleet recall:** `recall "<task>" --limit 5` (or MCP `recall_search`) before re-deriving a lesson.  At closeout, `recall_contribute` every reusable lesson (owner 2026-09-02).  Cloud: `https://agents.jays.services/mcp`.  Do not dump chat transcripts into the corpus.
 5. **Know your tools.**  The CLIs are `simple-chat` (chat; also the local stdio MCP server, `simple-chat mcp`), `simple-board` (Linear), `simple-notes` (Apple Notes), `recall` (the fleet knowledge corpus: search, stats, contribute), `lane` (worktrees), `fleet-mode`, `fleet-share`, and `fleet-secrets` (the Infisical reader:  the process environment comes first when it already holds the secret, and `fleet-secrets` is the approved fallback).  FleetLink shares are the `fleetlink_*` tools, and a FleetLink link inside Zulip is lowercase `fl/<path>`.
@@ -107,7 +107,7 @@ Flat lanes that already exist (`~/apps/<app>-<seat>-<lane>`) stay until they ret
 Before starting substantial work, reserve your lane on two durable surfaces:
 
 1. **Linear issue (`simple-board claim`):**
-   - `simple-board list --app <app>`, then `simple-board claim <id> --by "$AGENT_SEAT" --env Mac --where "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>"`.  If nothing exists, `simple-board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
+   - `simple-board list --app <app>`, then `simple-board claim <id> --by <SEAT> --env Mac --where "claimed: <Day, Mon D, YYYY> <lane path> @ <branch>"`.  If nothing exists, `simple-board file` it first, then claim.  The claim sets **In Progress** and the `claimed:<SEAT>` label and exits 3 if another seat holds the issue (`--steal --reason` overrides on purpose).
    - Branch `<seat>/<id>-<slug>` (`ag/afc-123-zulip-cutover`).  The PR body says `Fixes <ID>` when it finishes the issue, `Refs <ID>` for partial work; only `Fixes` closes it on merge (once Linear's GitHub automation is on).
    - Linear is the only writable work tracker.  There is no separate GitHub issue leg or effort-log row; effort logs are archived history and must not be edited.
 2. **Zulip `#Work-In-Progress`, work topic (`<ID> <subject>`, at most 58 characters):**

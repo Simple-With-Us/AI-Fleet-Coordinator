@@ -75,6 +75,11 @@ class World:
             d.mkdir()
         self.knobs = FakeKnobs()
         self.now = dt.datetime(2026, 10, 11, 18, 0, 0, tzinfo=dt.timezone.utc)  # well after every issue the fake board stamps
+        from needs_owner import seat as _seat
+
+        self._seat_module, self._saved_bin = _seat, _seat.MANAGED_BIN_DIR
+        _seat.MANAGED_BIN_DIR = str(self.bin)  # the import-only seam:  the fake tools are the "managed" install
+        test.addCleanup(setattr, _seat, "MANAGED_BIN_DIR", self._saved_bin)
         self._launcher("simple-board", HERE / "fake_board.py")
         self._launcher("simple-chat", HERE / "fake_agent_sync.py")
 
@@ -92,6 +97,13 @@ class World:
         env = {"PATH": "%s:/usr/bin:/bin" % self.bin, "HOME": str(self.home), "FAKE_STATE_DIR": str(self.state),
                "FAKE_SCRIPTS_DIR": str(SCRIPTS), "AGENT_SEAT": "CLAUDE", "PYTHONDONTWRITEBYTECODE": "1"}
         env.update(extra)
+        # The harness plays the trusted launcher:  a seat binds the run to a bearer locator and the fake board
+        # proves that seat (FAKE_BEARER_SEAT).  AGENT_SEAT itself is never an identity any more, so it is not
+        # passed on;  no seat means no locator and the run refuses.
+        seat = env.pop("AGENT_SEAT", None)
+        if seat:
+            env["SIMPLE_BOARD_BEARER_LOCATOR"] = "/fleet-seats:%s_SEAT_BEARER" % seat.replace("-", "_")
+            env["FAKE_BEARER_SEAT"] = seat
         return {k: v for k, v in env.items() if v is not None}
 
     def run(self, *argv: str, env: dict | None = None) -> Run:

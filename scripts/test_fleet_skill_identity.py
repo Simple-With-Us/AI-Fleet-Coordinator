@@ -898,7 +898,7 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
                 board,
                 key,
             )
-            self.assertIn('--by "$AGENT_SEAT"', board, key)
+            self.assertIn("--by <YOUR_TAG>", board, key)
             self.assertNotIn(f"--by {seat.tag}", board, key)
         gb = specialize_from_monet(_session(), SEATS["grok-bot"], skill_name="session-start")
         self.assertNotIn("MONET·session8", gb)
@@ -1021,7 +1021,7 @@ class AgentSeatPinTests(unittest.TestCase):
             if seat.retired:
                 continue
             out = specialize_from_monet(_session(), seat, skill_name="session-start")
-            self.assertIn('--by "$AGENT_SEAT"', out, key)
+            self.assertIn("--by <YOUR_TAG>", out, key)
             self.assertNotRegex(out, r"--by [A-Z]", key)
             self.assertIn("claim:  <branch-prefix>/<slug>", out, key)
             self.assertNotIn(f"claim:  {seat.prefix}/", out, key)

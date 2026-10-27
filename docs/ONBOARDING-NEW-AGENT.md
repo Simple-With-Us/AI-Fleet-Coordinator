@@ -97,7 +97,7 @@ with the top-level `apps` (the acronyms) and `--app`.
    Work in a lane: `~/apps/lane new <app> <slug>` makes one at
    `~/apps/lanes/<Repo>/<suffix>-<slug>` (`docs/protocols/lane-map.md`).
 3. **Linear first, then Zulip, then code.**  Claim and closeout on every real unit are
-   the Linear issue (`simple-board claim`, `simple-board status`; writes need `AGENT_SEAT`), the PR
+   the Linear issue (`simple-board claim`, `simple-board status`; writes need your bearer-verified seat, no seat variable picks it), the PR
    (`Fixes <ID>` or `Refs <ID>`, branch `<seat>/<id>-<slug>`) and a `#Work-In-Progress` post.
 4. **Commit → push → open PR → merge when CI is green.** Do not wait for the
    owner to say "commit". Do not leave a remote branch without a PR.
