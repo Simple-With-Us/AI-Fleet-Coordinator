@@ -74,7 +74,7 @@ Every agent session must start with systematic orientation before touching code:
    simple-board stats
    simple-board list --status open,in_progress --limit 25
    ```
-   `simple-board` reads Linear (issue ids like `BF-123`, one team per app).  Reads need no seat; every write needs your bearer-verified seat (no seat picker: see `board-ops`) and `LINEAR_BOARD_WRITES=1` in the same command.  Do not read the archived `*-EFFORT-LOG.md` files for current state.
+   `simple-board` reads Linear (issue ids like `BF-123`, one team per app).  Reads need no seat; every write needs your bearer-verified seat (no seat picker: see `board-ops`).  Do not read the archived `*-EFFORT-LOG.md` files for current state.
 
 4. **Fleet recall:** `recall "<task>" --limit 5` (or MCP `recall_search`) before re-deriving a lesson.  At closeout, `recall_contribute` every reusable lesson (owner 2026-09-02).  Cloud: `https://agents.jays.services/mcp`.  Do not dump chat transcripts into the corpus.
 5. **Know your tools.**  The CLIs are `simple-chat` (chat; also the local stdio MCP server, `simple-chat mcp`), `simple-board` (Linear), `simple-notes` (Apple Notes), `recall` (the fleet knowledge corpus: search, stats, contribute), `lane` (worktrees), `fleet-mode`, `fleet-share`, and `fleet-secrets` (the Infisical reader:  the process environment comes first when it already holds the secret, and `fleet-secrets` is the approved fallback).  FleetLink shares are the `fleetlink_*` tools, and a FleetLink link inside Zulip is lowercase `fl/<path>`.

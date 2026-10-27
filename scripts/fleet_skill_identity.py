@@ -107,17 +107,18 @@ def _bot_address(seat: Seat) -> str:
 
 def seat_pin_block(seat: Seat) -> str:
     """Identity block for one seat:  its platform default arm, never an overwrite."""
+    if seat.retired:
+        # A retired seat is never anyone's default:  the arm fails instead.
+        # Do not name the retired branch prefix (Rule 12).
+        return _seat_block(
+            f'"${{AGENT_SEAT:?{seat.tag} is retired; take no work as {seat.tag}}}"',
+            "you have no seat here — a retired catalog pack is never a platform default.",
+            f"  `{BRANCH_PREFIX}` below is your seat's branch prefix from your launcher.",
+        )
     prefix_line = (
         f"  `{BRANCH_PREFIX}` below is your seat's branch prefix:  `{seat.prefix}` "
         f"for {seat.tag}, or the one your launcher names."
     )
-    if seat.retired:
-        # A retired seat is never anyone's default:  the arm fails instead.
-        return _seat_block(
-            f'"${{AGENT_SEAT:?{seat.tag} is retired; take no work as {seat.tag}}}"',
-            "you have no seat here — a retired catalog pack is never a platform default.",
-            prefix_line,
-        )
     bot = _bot_address(seat)
     return _seat_block(
         f'"${{AGENT_SEAT:-{seat.tag}}}"',
