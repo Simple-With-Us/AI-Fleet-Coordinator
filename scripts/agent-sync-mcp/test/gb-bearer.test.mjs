@@ -695,3 +695,10 @@ test("bearer reveal copy preserves every internal rendered sentence gap in all m
     }
   }
 });
+
+test("admin credential diagnostic failure is unknown, not absent or mintable", async () => {
+  const html = await adminPage({ email: "offline@example.invalid", seats: [], clients: [], refusals: [], audits: [], calls: [], csrf: "a".repeat(64), generatedAt: NOW, gbBearers: [{ identity: "CODEX", kind: "seat", credentials: false, credentialsUnavailable: true, status: { active: false } }] }, new Headers()).text();
+  assert.ok(html.includes("Credential readiness unknown (diagnostic read failed)"));
+  assert.ok(!html.includes("No credentials loaded"));
+  assert.ok(!html.includes('name="action" value="mint_gb_bearer"'));
+});
