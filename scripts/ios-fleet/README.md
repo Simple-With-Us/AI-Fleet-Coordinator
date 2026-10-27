@@ -77,9 +77,16 @@ Two rules the copy must keep:
    There is no local-snapshot fallback: if the live manifest cannot be read, pass `--base-json`
    or the run fails.
 2. **Never publish a document that drops an app the live remote has.**  The live manifest is
-   re-read right before the write, and if it moved since the base was read (a concurrent
-   publish) the run fails instead of overwriting.  Same class as DealDex #173.
-3. **The credential is `GH_TOKEN` (the fleet GH_PAT) or `fleet-secrets get GH_PAT`.**  A bare
+   re-read on every pass of the publish loop.  Same class as DealDex #173.
+3. **One shared branch, serialized by compare-and-swap, never by force.**  Every publish lands
+   on `ios-versions-publish/fleet` and its one open pull request, so two ships cannot open two
+   pull requests that conflict on the top-level `updatedAt`.  The write carries the branch
+   file's blob sha, so a lost race is refused and re-read; when the default branch moved, the
+   branch gets a real merge commit through a non-force ref update (a bump another publisher
+   pushed meanwhile is kept); the branch is only reset when it has nothing the default branch
+   lacks.  An app both sides changed differently stops the run for a human.  The schema is
+   unchanged (`updatedAt` stays top-level).
+4. **The credential is `GH_TOKEN` (the fleet GH_PAT) or `fleet-secrets get GH_PAT`.**  A bare
    `gh` login is never used.  A failure to arm auto-merge exits non-zero.
 
 ## Why the rules block is generated

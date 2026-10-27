@@ -235,45 +235,111 @@ test("the manifest target is the org repository the apps read", () => {
   assert.match(src, /site\/ios-versions\.json/);
 });
 
-// ---- stubbed gh: the publish path without a network ------------------------
+// ---- stubbed gh: a small fake GitHub, so the publish path runs without a network ----
+
+const FAKE_GH = `#!/usr/bin/env python3
+import base64, hashlib, json, os, sys
+D = os.environ["FAKE_GH_DIR"]
+S = json.load(open(D + "/state.json"))
+args = sys.argv[1:]
+line = " ".join(args)
+open(D + "/calls.log", "a").write("gh " + line + "\\n")
+def save():
+    json.dump(S, open(D + "/state.json", "w"))
+def blob(doc):
+    return hashlib.md5(json.dumps(doc, sort_keys=True).encode()).hexdigest()
+def tsv(doc):
+    print(blob(doc) + "\\t" + base64.b64encode((json.dumps(doc, indent=2) + "\\n").encode()).decode())
+def opt(name):
+    return args[args.index(name) + 1] if name in args else None
+def flag(name):
+    return opt(name)
+if args[0] == "pr":
+    sys.exit(1 if S.get("mergeFail") else 0)
+path = next((a for a in args if a.startswith("repos/")), "")
+method = opt("--method") or "GET"
+br = S["branch"]
+if "/contents/" in path:
+    ref = path.split("ref=")[-1] if "ref=" in path else None
+    if method == "PUT":
+        if S.get("race") and not S.get("raced"):
+            S["raced"] = True
+            br["doc"]["apps"]["raced.app"] = {"marketingVersion": "9.9.9"}
+            br["ahead"] += 1
+            save(); sys.exit(1)
+        if opt("-f") is None: sys.exit(1)
+        fields = {}
+        i = 0
+        while i < len(args):
+            if args[i] == "-f":
+                k, v = args[i + 1].split("=", 1); fields[k] = v; i += 2
+            else: i += 1
+        if fields.get("sha") != blob(br["doc"]): save(); sys.exit(1)
+        br["doc"] = json.loads(base64.b64decode(fields["content"]))
+        br["ahead"] += 1
+        save(); sys.exit(0)
+    if ref == "main": tsv(S["main"]["doc"])
+    elif ref == "mbsha": tsv(br["mbDoc"])
+    elif br and ref == S["branchName"]: tsv(br["doc"])
+    else: sys.exit(1)
+elif "/git/ref/heads/" in path:
+    name = path.split("/git/ref/heads/")[-1]
+    if name == "main": print("m1")
+    elif br and name == S["branchName"]: print("b1")
+    else: sys.exit(1)
+elif "/compare/" in path:
+    if "merge_base_commit" in line: print("mbsha")
+    else: print(str(br["ahead"]) + "\\t" + str(br["behind"]))
+elif "/git/refs/heads/" in path and method == "PATCH":
+    force = "force=true" in line
+    if force:
+        br["doc"] = S["main"]["doc"]; br["ahead"] = 0; br["behind"] = 0
+    else:
+        if S.get("refRace"): sys.exit(1)
+        br["doc"] = S["treeDoc"]; br["behind"] = 0
+        S["merged"] = True
+    save()
+elif "/git/refs" in path and method == "POST":
+    S["branch"] = {"doc": S["main"]["doc"], "ahead": 0, "behind": 0, "mbDoc": S["main"]["doc"]}; save()
+elif "/git/commits/" in path: print("tree1")
+elif path.endswith("/git/trees"):
+    body = json.loads(sys.stdin.read()); S["treeDoc"] = json.loads(body["tree"][0]["content"]); save(); print("tree2")
+elif path.endswith("/git/commits"):
+    sys.stdin.read(); print("commit2")
+elif "/pulls?head=" in path:
+    if S.get("prOpen"): print(1)
+elif path.endswith("/pulls") and method == "POST":
+    S["prOpen"] = True; save(); print("https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1")
+sys.exit(0)
+`;
 
 function stubDir(opts = {}) {
   const dir = mkdtempSync(join(tmpdir(), "afc-ios-stub-"));
-  const live = join(dir, "live.json");
-  writeFileSync(live, JSON.stringify(opts.live || FLEET, null, 2) + "\n");
-  const gh = `#!/usr/bin/env bash
-echo "gh $*" >> "${dir}/calls.log"
-args="$*"
-if [[ "$1" == "pr" ]]; then
-  [[ "${opts.mergeFail ? 1 : 0}" == "1" ]] && exit 1
-  exit 0
-fi
-if [[ "$args" == *"@tsv"* ]]; then
-  n=$(cat "${dir}/reads" 2>/dev/null || echo 0); echo $((n+1)) > "${dir}/reads"
-  sha=sha-one; [[ "${opts.moves ? 1 : 0}" == "1" && $n -ge 1 ]] && sha=sha-two
-  printf '%s\\t%s\\n' "$sha" "$(base64 < "${dir}/live.json" | tr -d '\\n')"
-  exit 0
-fi
-case "$args" in
-  *"git/ref/heads/main"*) echo basesha ;;
-  *"git/ref/heads/ios-versions-publish"*) exit 1 ;;
-  *"git/refs"*) ;;
-  *"contents/site/ios-versions.json?ref=ios-versions-publish"*) exit 1 ;;
-  *"--method PUT"*) ;;
-  *"pulls?head="*) ;;
-  *"--method POST"*"/pulls"*) echo https://github.com/Simple-With-Us/AI-Fleet-Coordinator/pull/1 ;;
-esac
-exit 0
-`;
-  writeFileSync(join(dir, "gh"), gh);
+  const main = opts.live || FLEET;
+  const state = {
+    main: { doc: main },
+    branchName: "ios-versions-publish/fleet",
+    branch: opts.branch
+      ? { ahead: 1, behind: 0, mbDoc: main, ...opts.branch }
+      : null,
+    prOpen: Boolean(opts.branch),
+    mergeFail: Boolean(opts.mergeFail),
+    race: Boolean(opts.race),
+    refRace: Boolean(opts.refRace),
+  };
+  writeFileSync(join(dir, "state.json"), JSON.stringify(state));
+  writeFileSync(join(dir, "gh"), FAKE_GH);
   chmodSync(join(dir, "gh"), 0o755);
   return dir;
 }
 
+const stateOf = (stub) => JSON.parse(readFileSync(join(stub, "state.json"), "utf8"));
+const callsOf = (stub) => readFileSync(join(stub, "calls.log"), "utf8");
+
 function publish(stub, extra = [], env = {}) {
   return run(
     ["--bundle-id", "com.socratictrade.ios", "--version", "1.0.69", "--skip-local-write", ...extra],
-    { PATH: `${stub}:${process.env.PATH}`, GH_TOKEN: "ghp_notarealtoken", GITHUB_TOKEN: "", ...env },
+    { PATH: `${stub}:${process.env.PATH}`, FAKE_GH_DIR: stub, GH_TOKEN: "ghp_notarealtoken", GITHUB_TOKEN: "", ...env },
   );
 }
 
@@ -286,36 +352,84 @@ test("a failed auto-merge arm exits nonzero after the pull request exists", () =
   rmSync(stub, { recursive: true, force: true });
 });
 
-test("a successful publish arms auto-merge and exits zero", () => {
+test("a first publish creates the shared branch and lands the bump on it", () => {
   const stub = stubDir();
   const res = publish(stub);
   assert.equal(res.status, 0, res.stderr || res.stdout);
   assert.match(res.stdout, /auto-merge armed/);
+  const st = stateOf(stub);
+  assert.equal(st.branch.doc.apps["com.socratictrade.ios"].marketingVersion, "1.0.69");
+  assert.deepEqual(Object.keys(st.branch.doc.apps).sort(), Object.keys(FLEET.apps).sort());
   rmSync(stub, { recursive: true, force: true });
 });
 
-test("a concurrent publish (the remote blob moved) is refused before any write", () => {
-  const stub = stubDir({ moves: true });
+test("a second publish lands on the open shared branch and keeps the pending bump", () => {
+  const pending = JSON.parse(JSON.stringify(FLEET));
+  pending.apps["net.dealdex"].marketingVersion = "1.0.3";
+  const stub = stubDir({ branch: { doc: pending } });
+  const res = publish(stub);
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const st = stateOf(stub);
+  assert.equal(st.branch.doc.apps["net.dealdex"].marketingVersion, "1.0.3", "pending bump kept");
+  assert.equal(st.branch.doc.apps["com.socratictrade.ios"].marketingVersion, "1.0.69", "new bump added");
+  assert.doesNotMatch(callsOf(stub), /force=true/, "an ahead branch is never force-moved");
+  assert.doesNotMatch(callsOf(stub), /method POST .*\/pulls /, "the open pull request is reused");
+  rmSync(stub, { recursive: true, force: true });
+});
+
+test("a writer that loses the compare-and-swap re-reads and keeps the other writer's app", () => {
+  const stub = stubDir({ branch: { doc: FLEET }, race: true });
+  const res = publish(stub);
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  assert.match(res.stderr, /moved under this publish/);
+  const st = stateOf(stub);
+  assert.equal(st.branch.doc.apps["raced.app"].marketingVersion, "9.9.9", "the raced bump survives");
+  assert.equal(st.branch.doc.apps["com.socratictrade.ios"].marketingVersion, "1.0.69");
+  rmSync(stub, { recursive: true, force: true });
+});
+
+test("when the default branch moved, the branch is merged up without a force and keeps both sides", () => {
+  const base = FLEET;
+  const live = JSON.parse(JSON.stringify(FLEET));
+  live.apps["trade.congress.ios"].marketingVersion = "1.0.81";
+  live.updatedAt = "2026-08-25T00:00:00Z";
+  const pending = JSON.parse(JSON.stringify(FLEET));
+  pending.apps["net.dealdex"].marketingVersion = "1.0.3";
+  pending.updatedAt = "2026-08-24T09:00:00Z";
+  const stub = stubDir({ live, branch: { doc: pending, mbDoc: base, behind: 2 } });
+  const res = publish(stub);
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const st = stateOf(stub);
+  assert.equal(st.merged, true);
+  assert.equal(st.branch.doc.apps["trade.congress.ios"].marketingVersion, "1.0.81", "default branch change kept");
+  assert.equal(st.branch.doc.apps["net.dealdex"].marketingVersion, "1.0.3", "pending bump kept");
+  assert.equal(st.branch.doc.apps["com.socratictrade.ios"].marketingVersion, "1.0.69");
+  assert.doesNotMatch(callsOf(stub), /force=true/);
+  rmSync(stub, { recursive: true, force: true });
+});
+
+test("an app both the branch and the default branch changed differently is refused, nothing written", () => {
+  const live = JSON.parse(JSON.stringify(FLEET));
+  live.apps["net.dealdex"].marketingVersion = "1.0.9";
+  const pending = JSON.parse(JSON.stringify(FLEET));
+  pending.apps["net.dealdex"].marketingVersion = "1.0.3";
+  const stub = stubDir({ live, branch: { doc: pending, mbDoc: FLEET, behind: 1 } });
   const res = publish(stub);
   assert.notEqual(res.status, 0);
-  assert.match(res.stderr, /changed on main since it was read/);
-  const calls = readFileSync(join(stub, "calls.log"), "utf8");
-  assert.doesNotMatch(calls, /--method (PUT|POST|PATCH)/);
+  assert.match(res.stderr, /both the branch and the default branch changed net.dealdex/);
+  assert.doesNotMatch(callsOf(stub), /--method PUT/);
+  assert.doesNotMatch(callsOf(stub), /force=true/);
   rmSync(stub, { recursive: true, force: true });
 });
 
-test("a document that drops an app the live remote has is refused", () => {
-  const stub = stubDir();
-  const { dir, base } = fixture("afc-ios-versions-shrink-", {
-    schemaVersion: 1,
-    apps: { "com.socratictrade.ios": { marketingVersion: "1.0.68" }, "other.app": { marketingVersion: "1.0.0" } },
-  });
-  const res = publish(stub, ["--base-json", base]);
+test("a document that drops an app the default branch has is refused before any write", () => {
+  const thin = { schemaVersion: 1, apps: { "com.socratictrade.ios": { marketingVersion: "1.0.68" } } };
+  const stub = stubDir({ branch: { doc: thin } });
+  const res = publish(stub);
   assert.notEqual(res.status, 0);
   assert.match(res.stderr, /drop apps the live remote has/);
-  assert.doesNotMatch(readFileSync(join(stub, "calls.log"), "utf8"), /--method (PUT|POST|PATCH)/);
+  assert.doesNotMatch(callsOf(stub), /--method PUT/);
   rmSync(stub, { recursive: true, force: true });
-  rmSync(dir, { recursive: true, force: true });
 });
 
 test("there is no local-snapshot fallback when the live manifest cannot be read", () => {
