@@ -223,25 +223,50 @@ class RelayMcp:
         )
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
-                payload = json.loads(resp.read(MAX_LINE))
+                raw = resp.read(MAX_LINE + 1)
+            if len(raw) > MAX_LINE:
+                return _tool_failure(message, "outcome_unknown")
+            payload = json.loads(raw)
+            if not isinstance(payload, dict):
+                return _tool_failure(message, "outcome_unknown")
+            if payload.get("outcome") in ("unknown", "pending"):
+                return _tool_failure(message, "outcome_unknown")
         except urllib.error.HTTPError as exc:
-            preview = exc.read(512).decode("utf-8", "replace")
-            return _result(
-                message,
-                {
-                    "content": [{"type": "text", "text": f"relay refused ({exc.code}): {preview}"}],
-                    "isError": True,
-                },
-            )
+            # Every exposed tool writes.  A server error or replay hold can
+            # follow an accepted write, so never call it a definite refusal.
+            try:
+                raw = exc.read(MAX_LINE + 1)
+                error = json.loads(raw) if len(raw) <= MAX_LINE else None
+            except (OSError, ValueError):
+                error = None
+            if isinstance(error, dict) and error.get("outcome") in ("unknown", "pending"):
+                return _tool_failure(message, "outcome_unknown", exc.code)
+            if exc.code >= 500:
+                if isinstance(error, dict) and error.get("retryable") is True:
+                    return _tool_failure(message, "unavailable", exc.code, retryable=True)
+                return _tool_failure(message, "outcome_unknown", exc.code)
+            return _tool_failure(message, "relay_refused", exc.code)
         except (OSError, ValueError):
-            return _result(
-                message,
-                {
-                    "content": [{"type": "text", "text": "relay unreachable or reply invalid"}],
-                    "isError": True,
-                },
-            )
+            return _tool_failure(message, "outcome_unknown")
         return _result(message, {"content": [{"type": "text", "text": json.dumps(payload)}]})
+
+
+def _tool_failure(message, code, status=None, retryable=False):
+    # Provider prose can contain private details.  Return only stable local
+    # guidance and the HTTP status, never the response body or credentials.
+    if code == "outcome_unknown":
+        detail = "The write outcome is unknown.  Do not retry blindly; check the target state first."
+    elif code == "unavailable":
+        detail = "Relay reports a retryable pre-write failure.  Nothing was written."
+    else:
+        detail = "Relay refused the request."
+    error = {"code": code, "message": detail, "retryable": retryable}
+    if status is not None:
+        error["http_status"] = status
+    return _result(
+        message,
+        {"isError": True, "content": [{"type": "text", "text": json.dumps(error)}]},
+    )
 
 
 def _result(message: dict, result: dict) -> dict:
