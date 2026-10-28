@@ -996,6 +996,7 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "review reply outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "in_reply_to_id", "html_url")}}
+
     def _check_payload(self, args):
         name = self._text(args, "name", 100)
         if not re.fullmatch(r"swu-[a-z0-9-]+/report", name) or (
