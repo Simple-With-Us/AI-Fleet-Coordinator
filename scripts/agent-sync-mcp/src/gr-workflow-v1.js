@@ -278,13 +278,11 @@ const chunkShape={offset:z.number().int().nonnegative(),next_offset:z.number().i
 const chunkSchema=(id,text=false)=>z.object({...chunkShape,[id]:positive,[text?'content':'content_b64']:text?z.string().max(1048064):z.string().max(349528).regex(/^[A-Za-z0-9+/]*={0,2}$/)}).strict().refine(v=>v.next_offset>=v.offset&&(v.complete||v.next_offset>v.offset));
 const binaryAsset=z.object({id:positive,name:z.string().min(1).max(255),state:z.enum(['uploaded','open','starter']),size:z.number().int().nonnegative()}).strict();
 const binaryResponses={wf_release_asset_download:chunkSchema('asset_id'),wf_artifact_download:chunkSchema('artifact_id'),wf_run_logs:chunkSchema('run_id'),wf_job_log:chunkSchema('job_id',true),wf_release_asset_upload_binary:z.object({asset:binaryAsset}).strict(),wf_release_asset_update:z.object({asset:binaryAsset}).strict(),wf_release_asset_delete:z.object({deleted:z.literal(true),asset_id:positive}).strict()};
-export function validWfV1Response(action, body, args) {
- if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
- if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
 const lifecycleReview=z.object({id:positive,state:z.enum(['PENDING','COMMENTED','APPROVED','CHANGES_REQUESTED','DISMISSED']),commit_id:shaValue.nullable(),html_url:z.string().nullable()}).strict();
 const lifecycleResponses={wf_review_update:z.object({review:lifecycleReview}).strict(),wf_review_dismiss:z.object({review:lifecycleReview.refine(v=>v.state==='DISMISSED')}).strict(),wf_review_pending_delete:z.object({review:lifecycleReview.refine(v=>v.state==='PENDING')}).strict(),wf_review_comment_reply:z.object({comment:z.object({id:positive,in_reply_to_id:positive,html_url:z.string().nullable()}).strict()}).strict()};
 export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
+ if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
 

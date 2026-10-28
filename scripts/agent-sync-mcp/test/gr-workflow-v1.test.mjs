@@ -426,6 +426,7 @@ test('binary chunk strict receipt and own bearer upload path',async()=>{
  for(const bad of [{...good,asset_id:true},{...good,next_offset:-1},{...good,complete:false,next_offset:0},{...good,total:'3'}])assert.equal(validWfV1Response('wf_release_asset_download',bad),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_release_asset_upload_binary'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({asset:{id:7,name:'a.bin',state:'uploaded',size:184320}}));});
  assert.ok(!(await t.call('gr_wf_release_asset_upload_binary',{repo,release_id:3,name:'a.bin',content_b64:'YWFh'.repeat(61440)})).isError);
+});
 test('review lifecycle projected receipts use cached strict schemas and own bearer',async()=>{
  const review={id:2,state:'PENDING',commit_id:'a'.repeat(40),html_url:null};
  assert.equal(validWfV1Response('wf_review_pending_delete',{review}),true);
