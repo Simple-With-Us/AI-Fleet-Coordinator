@@ -460,7 +460,7 @@ export class HostedTools {
         delete args.seat;
       }
       requestArgs = args;
-      if (publicName.startsWith("gr_wf_") && !boundedWorkflowInput(args, workflowInputLimit(publicName.slice(3)))) throw new ToolError("invalid_argument", "Workflow input exceeds structural limits.");
+      if (publicName.startsWith("gr_wf_") && !boundedWorkflowInput(args, {maxBytes:workflowInputLimit(publicName.slice(3)),maxString:workflowInputLimit(publicName.slice(3))})) throw new ToolError("invalid_argument", "Workflow input exceeds structural limits.");
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(publicName);

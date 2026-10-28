@@ -8,6 +8,11 @@ except ImportError:
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
 
+class FixturePolicy(Policy):
+    def app_identity(self, seat):
+        return "fixture-seat", dict(self.ceiling)
+
+
 class ActionsManagement(unittest.TestCase):
     def test_fixed_routes_and_integer_ids(self):
         cases = [
@@ -18,8 +23,21 @@ class ActionsManagement(unittest.TestCase):
         ]
         for action, key, method, path in cases:
             c = Client({})
-            h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
-            self.assertEqual(h.run(action, {"repo": REPO, key: 7}), {"completed": True, key: 7})
+            h = WorkflowVerbs(
+                c, FixturePolicy(), "fixture-seat", "private", "fixture-seat", action, REPO
+            )
+            self.assertEqual(
+                h.run(action, {"repo": REPO, key: 7}),
+                {
+                    "completed": True,
+                    key: 7,
+                    **(
+                        {"state": "enabled" if action == "wf_workflow_enable" else "disabled"}
+                        if action.startswith("wf_workflow_")
+                        else {}
+                    ),
+                },
+            )
             self.assertEqual(c.calls, [(method, "/repos/" + REPO + "/" + path, None, "private")])
             for value in [True, 0, -1, "7"]:
                 with self.assertRaises(Refused):

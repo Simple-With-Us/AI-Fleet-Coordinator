@@ -379,7 +379,7 @@ class VerbTests(unittest.TestCase):
             )
 
     def test_update_fenced_and_validated(self):
-        c = DL(ASSET, {**ASSET, "name": "b.bin"})
+        c = DL(ASSET, {**ASSET, "name": "b.bin", "label": "L"})
         out = handle("wf_release_asset_update", c).run(
             "wf_release_asset_update",
             {"repo": REPO, "asset_id": 7, "expected_name": "a.bin", "name": "b.bin", "label": "L"},
@@ -406,6 +406,21 @@ class VerbTests(unittest.TestCase):
             handle("wf_release_asset_update", DL(ASSET, ASSET)).run(
                 "wf_release_asset_update", {**base, "name": "b.bin"}
             )
+
+    def test_delete_requires_empty_204_and_label_echo(self):
+        class Strict(DL):
+            def _call(self, method, path, data=None, bearer=None, expected_status=None):
+                if method == "DELETE":
+                    self.expected = expected_status
+                return super()._call(method, path, data, bearer=bearer)
+        c = Strict(ASSET, {})
+        handle("wf_release_asset_delete", c).run("wf_release_asset_delete", {"repo":REPO,"asset_id":7,"expected_name":"a.bin"})
+        self.assertEqual(c.expected, 204)
+        for receipt in (None, [], False, 0):
+            with self.assertRaises(RelayGitHubError):
+                handle("wf_release_asset_delete", DL(ASSET, receipt)).run("wf_release_asset_delete", {"repo":REPO,"asset_id":7,"expected_name":"a.bin"})
+        with self.assertRaises(RelayGitHubError):
+            handle("wf_release_asset_update", DL(ASSET, ASSET)).run("wf_release_asset_update", {"repo":REPO,"asset_id":7,"expected_name":"a.bin","label":"new"})
 
     def test_request_bounds_only_binary_upload_is_large(self):
         self.assertEqual(MAX_REQUEST_BYTES, 64 * 1024)
