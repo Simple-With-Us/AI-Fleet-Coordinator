@@ -69,6 +69,7 @@ targets:
       - path: Muster/Model/DriftWatchList.swift
       - path: Muster/Model/EngineIdentity.swift
       - path: Muster/Model/EngineRunner.swift
+      - path: Muster/Model/FleetAdmin.swift
       - path: Muster/Model/FleetConfigContract.swift
       - path: Muster/Model/FleetGrid.swift
       - path: Muster/Model/FleetRegistry.swift
