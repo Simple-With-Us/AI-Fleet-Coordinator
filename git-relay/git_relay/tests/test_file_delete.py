@@ -75,3 +75,10 @@ class Delete(unittest.TestCase):
         ]:
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape("wf_file_delete", self.args(**kwargs), REPO)
+
+    def test_qualified_branch_ref_refused_before_network(self):
+        for branch in ("refs/heads/main", "refs/heads/feature/x", "refs/tags/main"):
+            c = Client()
+            with self.assertRaises(Refused):
+                self.handle(c).run("wf_file_delete", self.args(branch=branch))
+            self.assertEqual(c.calls, [])

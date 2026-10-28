@@ -706,6 +706,8 @@ class WorkflowVerbs:
     def wf_file_delete(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "prior_sha"))
         path, branch, sha = _path(args), _ref(args, "branch"), _sha(args, "prior_sha")
+        if branch.startswith("refs/"):
+            raise Refused("qualified branch refs are not accepted")
         if _workflow_path(path):
             raise Refused("workflow files are not writable here")
         message = args.get("message")
