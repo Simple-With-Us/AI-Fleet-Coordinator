@@ -26,6 +26,11 @@ const SPECS = {
  wf_issue_blocked_by:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_issue_blocking:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
 
+  wf_issue_list: ['List issues (not pull requests).', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE})],
+  wf_issue_get: ['Read issue summary.', obj(['repo','number'], {repo:REPO,number:INT})],
+  wf_issue_create: ['Create an issue as your own GitHub App.', obj(['repo','title','body'], {repo:REPO,title:CONTENT,body:CONTENT})],
+  wf_issue_update: ['Update issue text or open/closed state.', obj(['repo','number'], {repo:REPO,number:INT,title:CONTENT,body:CONTENT,state:{type:'string',enum:['open','closed']}})],
+  wf_issue_comment: ['Comment on an issue as your own GitHub App.', obj(['repo','number','body'], {repo:REPO,number:INT,body:CONTENT})],
   wf_issue_comment_update: ['issue comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:{type:"string",minLength:1,maxLength:32768}})],
   wf_issue_comment_delete: ['issue comment delete.',obj(['repo', 'comment_id'],{repo:REPO,comment_id:INT})],
   wf_review_comment_update: ['review comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:{type:"string",minLength:1,maxLength:32768}})],
@@ -63,8 +68,8 @@ const SPECS = {
   wf_run_artifacts: ['Read run artifacts.', obj(['repo', 'run_id'], {repo:REPO,run_id:INT,per_page:PER_PAGE})],
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_workflow_disable: ['Disable a workflow, stopping future CI triggers; can break required checks. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_run_delete: ['Irreversibly delete run and logs. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
-  wf_artifact_delete: ['Irreversibly remove artifact data. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
+  wf_run_delete: ['Irreversibly delete the exact repo-scoped run ID and logs. No upstream expected-state fence or head-SHA CAS exists. Explicit action/repo authorization and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
+  wf_artifact_delete: ['Irreversibly remove exact repo-scoped artifact ID. No upstream expected-state fence or head-SHA CAS exists. Explicit action/repo authorization and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
 
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
@@ -93,7 +98,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_repo_tags','wf_repo_languages','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_issue_list','wf_issue_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_repo_tags','wf_repo_languages','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -155,6 +160,7 @@ export const validWfV1Args = (action, args) => parseWfV1Args(action,args)!==null
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+  wf_issue_list:['issues','complete'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
   wf_issue_comment_update:['result'],
   wf_issue_comment_delete:['deleted'],
   wf_review_comment_update:['result'],
@@ -264,9 +270,12 @@ export function validWfV1Response(action, body, args) {
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;
-  for (const k of ['pulls','files','entries','branches','commits','items','runs','jobs','checks','reviews','comments','labels']) {
+  for (const k of ['issues','pulls','files','entries','branches','commits','items','runs','jobs','checks','reviews','comments','labels']) {
     if (k in body && !(action === 'wf_files_put' && k === 'files') && !Array.isArray(body[k])) return false;
   }
+  if ('issues' in body && body.issues.some(issue => !issue || typeof issue !== 'object' || !Number.isInteger(issue.number) || issue.number < 1 || !['open','closed'].includes(issue.state))) return false;
+  if ('issue' in body && (!body.issue || typeof body.issue !== 'object' || Array.isArray(body.issue) || !Number.isInteger(body.issue.number) || !['open','closed'].includes(body.issue.state))) return false;
+  if ('comment' in body && (!body.comment || typeof body.comment !== 'object' || !Number.isInteger(body.comment.id))) return false;
   if (action.startsWith('wf_release_asset')) {
     const assetOk = x => x && !Array.isArray(x) && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string' && x.name.length > 0 && x.name.length <= 255 && ['uploaded','open','starter'].includes(x.state) && Number.isInteger(x.size) && x.size >= 0;
     if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;

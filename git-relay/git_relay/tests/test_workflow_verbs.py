@@ -30,7 +30,7 @@ class Client:
     def __init__(self, *replies):
         self.replies, self.calls = list(replies), []
 
-    def _call(self, method, path, payload=None, bearer=None):
+    def _call(self, method, path, payload=None, bearer=None, expected_status=None):
         self.calls.append((method, path, payload, bearer))
         return self.replies.pop(0) if self.replies else {}
 
@@ -73,7 +73,7 @@ class Tests(unittest.TestCase):
     def test_every_action_has_a_handler_and_spec(self):
         for action in ACTIONS:
             self.assertTrue(callable(getattr(WorkflowVerbs, action)))
-        self.assertEqual(len(ACTIONS), 68)
+        self.assertEqual(len(ACTIONS), 73)
 
     def test_least_permission_minted_and_ceiling_enforced(self):
         minter = Minter()
