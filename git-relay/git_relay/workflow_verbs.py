@@ -968,6 +968,7 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "commit status write unverifiable")
         return {"status": result}
+
     @staticmethod
     def _review_summary(value, review_id=None):
         if not isinstance(value, dict):
