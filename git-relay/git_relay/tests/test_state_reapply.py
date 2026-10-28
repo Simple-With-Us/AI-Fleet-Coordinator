@@ -54,6 +54,7 @@ class StateReapply(unittest.TestCase):
 
         self.assertNotIn("wf_commit_status_create", _REAPPLY_STATE_ACTIONS)
         self.assertNotIn("wf_deployment_status_create", _REAPPLY_STATE_ACTIONS)
+
     def test_relay_known_state_reapply_but_unknown_holds(self):
         import json
         from unittest.mock import patch
