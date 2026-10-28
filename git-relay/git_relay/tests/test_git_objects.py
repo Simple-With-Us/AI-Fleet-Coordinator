@@ -1,11 +1,13 @@
-import base64, hashlib, unittest
+import base64
+import hashlib
+import unittest
 
 try:
     from .test_workflow_verbs import REPO, SHA, Client, Policy
 except ImportError:
     from test_workflow_verbs import REPO, SHA, Client, Policy
-from git_relay.workflow_verbs import WorkflowVerbs, Refused
 from git_relay.github_client import RelayGitHubError
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
 
 class Objects(unittest.TestCase):
