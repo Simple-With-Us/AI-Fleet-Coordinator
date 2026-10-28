@@ -1277,6 +1277,60 @@ def _load_installer():
     return module
 
 
+class AlwaysOnRuleFileTests(unittest.TestCase):
+    """The always-on rule files a tool home reads are installed from the repo.
+
+    Without this, the live copy of a repo-tracked rule file drifts silently and a
+    seat reads the stale one (the sentence-gap rule sat a month behind the repo).
+    """
+
+    def setUp(self) -> None:
+        self.installer = _load_installer()
+
+    def test_every_repo_rule_file_is_mapped(self) -> None:
+        repo_rules = sorted(
+            os.path.relpath(os.path.join(root, name), ROOT)
+            for root, _dirs, files in os.walk(os.path.join(ROOT, ".cursor", "rules"))
+            for name in files
+            if name.endswith(".mdc")
+        )
+        self.assertTrue(repo_rules, "no repo cursor rules found to check")
+        mapped = set(self.installer.ALWAYS_ON_RULE_FILES)
+        for rel in repo_rules:
+            self.assertIn(rel, mapped, f"{rel} is not installed to a tool home")
+
+    def test_the_installed_gap_rule_is_the_current_one(self) -> None:
+        rel = ".cursor/rules/sentence-gap.mdc"
+        self.assertIn(rel, self.installer.ALWAYS_ON_RULE_FILES)
+        with io.open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            body = fh.read()
+        self.assertIn("Current rule (owner ruling 2026-10-23)", body)
+        # The retired per-surface table: two literal ASCII spaces for files,
+        # commits, terminals and untested surfaces.
+        self.assertNotIn("| two literal ASCII spaces |", body)
+        # The entity belongs to the two exception panes and nowhere else.
+        self.assertNotIn("Any other agent chat pane that renders Markdown", body)
+
+    def test_the_copy_lands_at_the_home_path(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            env_home = os.environ.get("HOME")
+            os.environ["HOME"] = home
+            try:
+                written = self.installer._install_always_on_rules()
+            finally:
+                if env_home is None:
+                    os.environ.pop("HOME", None)
+                else:
+                    os.environ["HOME"] = env_home
+            self.assertTrue(written, "nothing was installed")
+            for src_rel, dest_rel in self.installer.ALWAYS_ON_RULE_FILES.items():
+                path = os.path.join(home, dest_rel.replace("~/", "", 1))
+                self.assertTrue(os.path.isfile(path), path)
+                src = os.path.join(ROOT, src_rel)
+                with io.open(path, "rb") as a, io.open(src, "rb") as b:
+                    self.assertEqual(a.read(), b.read())
+
+
 class InstallerRepoOnlyTests(unittest.TestCase):
     """install-fleet-skills.py --repo-only touches the repo and never HOME."""
 
