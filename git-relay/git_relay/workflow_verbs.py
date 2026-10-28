@@ -63,6 +63,11 @@ SPECS = {
     "wf_milestone_create": ({"issues": "write"}, True),
     "wf_milestone_update": ({"issues": "write"}, True),
     "wf_milestone_delete": ({"issues": "write"}, True),
+    "wf_labels_set": ({"issues": "write"}, True),
+    "wf_reviewers_request": ({"pull_requests": "write"}, True),
+    "wf_reviewers_remove": ({"pull_requests": "write"}, True),
+    "wf_release_create": ({"contents": "write"}, True),
+    "wf_release_update": ({"contents": "write"}, True),
     "wf_environments": ({"actions": "read"}, False),
     "wf_environment_get": ({"actions": "read"}, False),
     "wf_file_delete": ({"contents": "write"}, True),
@@ -1002,6 +1007,220 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def wf_labels_set(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "labels",
+            ),
+        )
+        number = _int(args, "number")
+        labels = args.get("labels")
+        if (
+            not isinstance(labels, list)
+            or not 1 <= len(labels) <= 50
+            or any(
+                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", v)
+                for v in labels
+            )
+        ):
+            raise Refused("invalid labels")
+        data = self.client._call(
+            "PUT", f"/repos/{repo}/issues/{number}/labels", {"labels": labels}, bearer=self.bearer
+        )
+        if not isinstance(data, list):
+            raise RelayGitHubError(502, "label receipt unverifiable")
+        result = data
+        if any(
+            not isinstance(x, dict)
+            or isinstance(x.get("id"), bool)
+            or not isinstance(x.get("id"), int)
+            or x["id"] <= 0
+            or not isinstance(x.get("name"), str)
+            for x in result
+        ):
+            raise RelayGitHubError(502, "label receipt unverifiable")
+        if {x["name"].casefold() for x in result} != {x.casefold() for x in labels}:
+            raise RelayGitHubError(502, "label receipt does not match requested labels")
+        return {"labels": [{k: x.get(k) for k in ("id", "name", "color")} for x in result]}
+
+    def wf_reviewers_request(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "reviewers",
+            ),
+        )
+        number = _int(args, "number")
+        reviewers = args.get("reviewers")
+        if (
+            not isinstance(reviewers, list)
+            or not 1 <= len(reviewers) <= 50
+            or any(
+                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", v)
+                for v in reviewers
+            )
+        ):
+            raise Refused("invalid reviewers")
+        data = self.client._call(
+            "POST",
+            f"/repos/{repo}/pulls/{number}/requested_reviewers",
+            {"reviewers": reviewers},
+            bearer=self.bearer,
+        )
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
+        if (
+            not isinstance(result.get("requested_reviewers"), list)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+            or result["id"] <= 0
+        ):
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        if result.get("number") != number or type(result.get("number")) is not int:
+            raise RelayGitHubError(502, "reviewer receipt PR identity unverifiable")
+        observed = set()
+        for person in result["requested_reviewers"]:
+            if not isinstance(person, dict) or not isinstance(person.get("login"), str):
+                raise RelayGitHubError(502, "reviewer receipt unverifiable")
+            observed.add(person["login"].casefold())
+        requested = {name.casefold() for name in reviewers}
+        if not requested <= observed:
+            raise RelayGitHubError(502, "reviewer receipt membership unverifiable")
+        return {"result": result}
+
+    def wf_reviewers_remove(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "reviewers",
+            ),
+        )
+        number = _int(args, "number")
+        reviewers = args.get("reviewers")
+        if (
+            not isinstance(reviewers, list)
+            or not 1 <= len(reviewers) <= 50
+            or any(
+                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", v)
+                for v in reviewers
+            )
+        ):
+            raise Refused("invalid reviewers")
+        data = self.client._call(
+            "DELETE",
+            f"/repos/{repo}/pulls/{number}/requested_reviewers",
+            {"reviewers": reviewers},
+            bearer=self.bearer,
+        )
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
+        if (
+            not isinstance(result.get("requested_reviewers"), list)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+            or result["id"] <= 0
+        ):
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        if result.get("number") != number or type(result.get("number")) is not int:
+            raise RelayGitHubError(502, "reviewer receipt PR identity unverifiable")
+        observed = set()
+        for person in result["requested_reviewers"]:
+            if not isinstance(person, dict) or not isinstance(person.get("login"), str):
+                raise RelayGitHubError(502, "reviewer receipt unverifiable")
+            observed.add(person["login"].casefold())
+        requested = {name.casefold() for name in reviewers}
+        if requested & observed:
+            raise RelayGitHubError(502, "reviewer receipt membership unverifiable")
+        return {"result": result}
+
+    def wf_release_create(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "tag",
+                "name",
+                "body",
+                "draft",
+                "prerelease",
+            ),
+        )
+        tag = self._text(args, "tag")
+        name = self._text(args, "name")
+        body = self._text(args, "body")
+        draft = args.get("draft")
+        if not isinstance(draft, bool):
+            raise Refused("invalid draft")
+        prerelease = args.get("prerelease")
+        if not isinstance(prerelease, bool):
+            raise Refused("invalid prerelease")
+        tag = _ref(args, "tag")
+        data = self.client._call(
+            "POST",
+            f"/repos/{repo}/releases",
+            {"tag_name": tag, "name": name, "body": body, "draft": draft, "prerelease": prerelease},
+            bearer=self.bearer,
+        )
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("tag_name") != tag
+        ):
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        return {"result": result}
+
+    def wf_release_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "release_id",
+                "name",
+                "body",
+                "draft",
+                "prerelease",
+            ),
+        )
+        release_id = _int(args, "release_id")
+        name = self._text(args, "name")
+        body = self._text(args, "body")
+        draft = args.get("draft")
+        if not isinstance(draft, bool):
+            raise Refused("invalid draft")
+        prerelease = args.get("prerelease")
+        if not isinstance(prerelease, bool):
+            raise Refused("invalid prerelease")
+        data = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/releases/{release_id}",
+            {"name": name, "body": body, "draft": draft, "prerelease": prerelease},
+            bearer=self.bearer,
+        )
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result["id"] != release_id
+        ):
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        return {"result": result}
 
     def wf_issue_comment_update(self, repo, args):
         _only(
