@@ -60,6 +60,13 @@ SPECS = {
     "wf_issue_subissues": ({"issues": "read"}, False),
     "wf_issue_blocked_by": ({"issues": "read"}, False),
     "wf_issue_blocking": ({"issues": "read"}, False),
+    "wf_issue_comment_update": ({"issues": "write"}, True),
+    "wf_issue_comment_delete": ({"issues": "write"}, True),
+    "wf_review_comment_update": ({"pull_requests": "write"}, True),
+    "wf_review_comment_delete": ({"pull_requests": "write"}, True),
+    "wf_release_list": ({"contents": "read"}, False),
+    "wf_release_get": ({"contents": "read"}, False),
+    "wf_release_delete": ({"contents": "write"}, True),
     "wf_branch_update": ({"contents": "write"}, True),
     "wf_branch_delete": ({"contents": "write"}, True),
     "wf_tag_create": ({"contents": "write"}, True),
@@ -218,6 +225,200 @@ def _only(args, allowed):
         raise Refused("unexpected argument")
 
 
+_NEW_READS = frozenset(
+    {
+        "wf_pr_get",
+        "wf_pr_reviews",
+        "wf_pr_comments",
+        "wf_issue_comments",
+        "wf_commit_get",
+        "wf_compare",
+        "wf_branch_get",
+        "wf_repo_get",
+        "wf_labels",
+        "wf_workflows",
+        "wf_run_get",
+        "wf_run_artifacts",
+    }
+)
+
+
+def _validate_read(action, result):
+    """Bound untrusted JSON and verify each newly exposed endpoint's core shape."""
+
+    def bad():
+        raise RelayGitHubError(502, "workflow read receipt unverifiable")
+
+    stack = [(result, 0)]
+    nodes = size = 0
+    while stack:
+        value, depth = stack.pop()
+        nodes += 1
+        if nodes > 500 or depth > 6:
+            bad()
+        if isinstance(value, str):
+            size += len(value.encode("utf-8"))
+        elif isinstance(value, dict):
+            if len(value) > 100 or not all(isinstance(k, str) for k in value):
+                bad()
+            size += sum(len(k) for k in value)
+            stack.extend((v, depth + 1) for v in value.values())
+        elif isinstance(value, list):
+            if len(value) > 250:
+                bad()
+            stack.extend((v, depth + 1) for v in value)
+        elif value is not None and type(value) not in (bool, int, float):
+            bad()
+        if size > 65536:
+            bad()
+
+    def fields(value, shape):
+        if not isinstance(value, dict):
+            bad()
+        for k, check in shape.items():
+            if k not in value or not check(value[k]):
+                bad()
+        return True
+
+    positive = lambda v: type(v) is int and v > 0
+    nonnegative = lambda v: type(v) is int and v >= 0
+    text = lambda v: isinstance(v, str)
+    sha = lambda v: isinstance(v, str) and bool(_SHA.fullmatch(v))
+    boolean = lambda v: type(v) is bool
+    seq = lambda v, check, limit=50: (
+        isinstance(v, list) and len(v) <= limit and all(check(x) for x in v)
+    )
+    commit = lambda v: fields(
+        v,
+        {
+            "sha": sha,
+            "commit": lambda x: fields(x, {"message": text}),
+            "parents": lambda x: seq(x, lambda y: fields(y, {"sha": sha}), 100),
+        },
+    )
+    comment = lambda v: fields(v, {"id": positive, "body": lambda x: text(x) and len(x) <= 32768})
+    schemas = {
+        "wf_pr_get": {
+            "pull": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "number": positive,
+                    "state": lambda x: x in ("open", "closed"),
+                    "head": lambda x: fields(x, {"sha": sha}),
+                    "base": lambda x: fields(x, {"sha": sha}),
+                },
+            )
+        },
+        "wf_pr_reviews": {
+            "reviews": lambda v: seq(
+                v, lambda x: fields(x, {"id": positive, "state": text, "commit_id": sha})
+            ),
+            "complete": boolean,
+        },
+        "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_issue_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_commit_get": {"commit": commit},
+        "wf_compare": {
+            "comparison": lambda v: fields(
+                v,
+                {
+                    "status": text,
+                    "ahead_by": nonnegative,
+                    "behind_by": nonnegative,
+                    "total_commits": nonnegative,
+                    "commits": lambda x: seq(x, commit, 250),
+                },
+            )
+        },
+        "wf_branch_get": {
+            "branch": lambda v: fields(
+                v,
+                {
+                    "name": lambda x: text(x) and bool(x),
+                    "commit": lambda x: fields(x, {"sha": sha}),
+                },
+            )
+        },
+        "wf_repo_get": {
+            "repository": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "name": lambda x: text(x) and bool(x),
+                    "full_name": lambda x: text(x) and len(x) >= 3,
+                    "default_branch": lambda x: text(x) and bool(x),
+                    "private": boolean,
+                },
+            )
+        },
+        "wf_labels": {
+            "labels": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "name": text,
+                        "color": lambda y: text(y) and bool(re.fullmatch(r"[0-9a-fA-F]{6}", y)),
+                    },
+                ),
+            ),
+            "complete": boolean,
+        },
+        "wf_workflows": {
+            "workflows": lambda v: fields(
+                v,
+                {
+                    "total_count": nonnegative,
+                    "workflows": lambda x: seq(
+                        x,
+                        lambda y: fields(
+                            y, {"id": positive, "name": text, "path": text, "state": text}
+                        ),
+                    ),
+                },
+            )
+        },
+        "wf_run_get": {
+            "run": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "head_sha": sha,
+                    "status": text,
+                    "conclusion": lambda x: x is None or text(x),
+                },
+            )
+        },
+        "wf_run_artifacts": {
+            "artifacts": lambda v: fields(
+                v,
+                {
+                    "total_count": nonnegative,
+                    "artifacts": lambda x: seq(
+                        x,
+                        lambda y: fields(
+                            y,
+                            {
+                                "id": positive,
+                                "name": text,
+                                "size_in_bytes": nonnegative,
+                                "expired": boolean,
+                            },
+                        ),
+                    ),
+                },
+            )
+        },
+    }
+    shape = schemas[action]
+    if not isinstance(result, dict) or set(result) != set(shape):
+        bad()
+    fields(result, shape)
+    return result
+
+
 class WorkflowVerbs:
     def __init__(self, client, policy, seat, bearer, app_slug, action, repo):
         expected, _ = policy.app_identity(seat)
@@ -293,7 +494,8 @@ class WorkflowVerbs:
         # Authorization happened once, in for_action, for exactly this action and repo.
         if action != self.action or args.get("repo") != self.repo:
             raise Refused("action or repository not authorized for this handle")
-        return getattr(self, action)(self.repo, args)
+        result = getattr(self, action)(self.repo, args)
+        return _validate_read(action, result) if action in _NEW_READS else result
 
     @staticmethod
     def _relation_issue(data):
@@ -600,6 +802,152 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def wf_issue_comment_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+                "body",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        body = self._text(args, "body")
+        data = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/issues/comments/{comment_id}",
+            {"body": body},
+            bearer=self.bearer,
+        )
+        result = _obj(data)
+        if (
+            result.get("id") != comment_id
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
+            raise RelayGitHubError(502, "response unverifiable")
+        return {"result": result}
+
+    def wf_issue_comment_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        data = self.client._call(
+            "DELETE", f"/repos/{repo}/issues/comments/{comment_id}", None, bearer=self.bearer
+        )
+        return {"deleted": True}
+
+    def wf_review_comment_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+                "body",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        body = self._text(args, "body")
+        data = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/pulls/comments/{comment_id}",
+            {"body": body},
+            bearer=self.bearer,
+        )
+        result = _obj(data)
+        if (
+            result.get("id") != comment_id
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
+            raise RelayGitHubError(502, "response unverifiable")
+        return {"result": result}
+
+    def wf_review_comment_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        data = self.client._call(
+            "DELETE", f"/repos/{repo}/pulls/comments/{comment_id}", None, bearer=self.bearer
+        )
+        return {"deleted": True}
+
+    @staticmethod
+    def _release_summary(value):
+        value = _obj(value)
+        if (
+            isinstance(value.get("id"), bool)
+            or not isinstance(value.get("id"), int)
+            or value["id"] <= 0
+        ):
+            raise RelayGitHubError(502, "release receipt unverifiable")
+        result = {"id": value["id"]}
+        for key in ("tag_name", "name", "html_url", "created_at", "published_at"):
+            item = value.get(key)
+            if item is not None and (not isinstance(item, str) or len(item.encode("utf-8")) > 2048):
+                raise RelayGitHubError(502, "release receipt unverifiable")
+            result[key] = item
+        for key in ("draft", "prerelease"):
+            if not isinstance(value.get(key), bool):
+                raise RelayGitHubError(502, "release flags unverifiable")
+            result[key] = value[key]
+        return result
+
+    def wf_release_list(self, repo, args):
+        _only(args, ("repo",))
+        data = self.client._call(
+            "GET", f"/repos/{repo}/releases?per_page=50", None, bearer=self.bearer
+        )
+        return {
+            "releases": [self._release_summary(x) for x in _arr(data)[:MAX_PAGE]],
+            "complete": False,
+        }
+
+    def wf_release_get(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "release_id",
+            ),
+        )
+        release_id = _int(args, "release_id")
+        data = self.client._call(
+            "GET", f"/repos/{repo}/releases/{release_id}", None, bearer=self.bearer
+        )
+        result = _obj(data)
+        if (
+            result.get("id") != release_id
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
+            raise RelayGitHubError(502, "response unverifiable")
+        return {"result": self._release_summary(result)}
+
+    def wf_release_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "release_id",
+            ),
+        )
+        release_id = _int(args, "release_id")
+        data = self.client._call(
+            "DELETE", f"/repos/{repo}/releases/{release_id}", None, bearer=self.bearer
+        )
+        return {"deleted": True}
 
     def wf_branch_update(self, repo, args):
         _only(
@@ -1028,7 +1376,7 @@ class WorkflowVerbs:
         self.client._call(
             "PUT", f"/repos/{repo}/actions/workflows/{value}/enable", None, bearer=self.bearer
         )
-        return {"completed": True, "workflow_id": value}
+        return {"completed": True, "workflow_id": value, "state": "enabled"}
 
     def wf_workflow_disable(self, repo, args):
         _only(args, ("repo", "workflow_id"))
@@ -1036,7 +1384,7 @@ class WorkflowVerbs:
         self.client._call(
             "PUT", f"/repos/{repo}/actions/workflows/{value}/disable", None, bearer=self.bearer
         )
-        return {"completed": True, "workflow_id": value}
+        return {"completed": True, "workflow_id": value, "state": "disabled"}
 
     def wf_run_delete(self, repo, args):
         _only(args, ("repo", "run_id"))

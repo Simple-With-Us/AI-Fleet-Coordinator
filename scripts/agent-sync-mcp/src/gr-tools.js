@@ -139,7 +139,7 @@ export class GrRelayClient {
       const encoded=JSON.stringify(body);
       if(this.#secrets.filter(Boolean).some(secret=>encoded.includes(secret))) return unavailable();
       if(response.status===200) {
-        if(!validWfV1Response(action,body)) return unavailable();
+        if(!validWfV1Response(action,body,args)) return unavailable();
         return {status:200,body};
       }
       if (response.status < 400 || response.status > 599 || !body || typeof body!=="object" || Array.isArray(body)) return unavailable();

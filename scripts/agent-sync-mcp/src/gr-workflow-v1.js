@@ -26,6 +26,13 @@ const SPECS = {
  wf_issue_blocked_by:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_issue_blocking:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
 
+  wf_issue_comment_update: ['issue comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:{type:"string",minLength:1,maxLength:32768}})],
+  wf_issue_comment_delete: ['issue comment delete.',obj(['repo', 'comment_id'],{repo:REPO,comment_id:INT})],
+  wf_review_comment_update: ['review comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:{type:"string",minLength:1,maxLength:32768}})],
+  wf_review_comment_delete: ['review comment delete.',obj(['repo', 'comment_id'],{repo:REPO,comment_id:INT})],
+  wf_release_list: ['release list.',obj(['repo'],{repo:REPO})],
+  wf_release_get: ['release get.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
+  wf_release_delete: ['release delete.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
   wf_branch_update: ['branch update; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'branch', 'sha', 'expected_sha'],{repo:REPO,branch:REF,sha:SHA,expected_sha:SHA})],
   wf_branch_delete: ['branch delete; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'branch', 'expected_sha'],{repo:REPO,branch:REF,expected_sha:SHA})],
   wf_tag_create: ['tag create; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag', 'sha'],{repo:REPO,tag:REF,sha:SHA})],
@@ -86,7 +93,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_tag_get','wf_review_threads','wf_repo_tags','wf_repo_languages','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_repo_tags','wf_repo_languages','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -140,14 +147,23 @@ export function parseWfV1Args(action,args){
  if(!boundedWorkflowInput(args)||!WF_V1_ACTIONS.includes(action))return null;
  const parsed=ARG_SCHEMAS[action].safeParse(args);
  if(!parsed.success)return null;
- if(['wf_review_submit','wf_review_inline'].includes(action)&&!reviewBodyOk(parsed.data))return null;
+ if(['wf_review_submit','wf_review_inline','wf_issue_comment_update','wf_review_comment_update'].includes(action)&&!reviewBodyOk(parsed.data))return null;
  return parsed.data;
 }
 export const validWfV1Args = (action, args) => parseWfV1Args(action,args)!==null &&
-  (action !== 'wf_review_submit' && action !== 'wf_review_inline' || reviewBodyOk(args));
+  (action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' || reviewBodyOk(args));
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+  wf_issue_comment_update:['result'],
+  wf_issue_comment_delete:['deleted'],
+  wf_review_comment_update:['result'],
+  wf_review_comment_delete:['deleted'],
+  wf_release_list:['releases', 'complete'],
+  wf_release_get:['result'],
+  wf_release_delete:['deleted'],
+  wf_workflow_enable:['completed','workflow_id','state'],
+  wf_workflow_disable:['completed','workflow_id','state'],
   wf_branch_update:['ref', 'sha'],
   wf_branch_delete:['deleted', 'ref'],
   wf_tag_create:['ref', 'sha'],
@@ -176,8 +192,6 @@ const RESPONSE_KEYS = {
   wf_workflows:['workflows'],
   wf_run_get:['run'],
   wf_run_artifacts:['artifacts'],
-  wf_workflow_enable:['completed','workflow_id'],
-  wf_workflow_disable:['completed','workflow_id'],
   wf_run_delete:['completed','run_id'],
   wf_artifact_delete:['completed','artifact_id'],
 
@@ -204,7 +218,14 @@ const runObject=objectWith({id:positive,head_sha:shaValue,status:z.string(),conc
 const artifactObject=objectWith({id:positive,name:z.string(),size_in_bytes:z.number().int().nonnegative(),expired:z.boolean()});
 const workflowObject=objectWith({id:positive,name:z.string(),path:z.string(),state:z.string()});
 const pullObject=objectWith({id:positive,number:positive,state:z.enum(['open','closed']),head:objectWith({sha:shaValue}),base:objectWith({sha:shaValue})});
+const reviewObject=objectWith({id:positive,state:z.string().max(100),commit_id:shaValue});
+const commentObject=objectWith({id:positive,body:z.string().max(32768)});
+const labelObject=objectWith({id:positive,name:z.string().max(100),color:z.string().regex(/^[0-9a-fA-F]{6}$/)});
 const readResponseSchemas={
+ wf_pr_reviews:z.object({reviews:z.array(reviewObject).max(50),complete:z.boolean()}).strict(),
+ wf_pr_comments:z.object({comments:z.array(commentObject).max(50),complete:z.boolean()}).strict(),
+ wf_issue_comments:z.object({comments:z.array(commentObject).max(50),complete:z.boolean()}).strict(),
+ wf_labels:z.object({labels:z.array(labelObject).max(50),complete:z.boolean()}).strict(),
  wf_pr_get:z.object({pull:pullObject}).strict(),
  wf_commit_get:z.object({commit:commitObject}).strict(),
  wf_compare:z.object({comparison:objectWith({status:z.string(),ahead_by:z.number().int().nonnegative(),behind_by:z.number().int().nonnegative(),total_commits:z.number().int().nonnegative(),commits:z.array(commitObject)})}).strict(),
@@ -214,7 +235,7 @@ const readResponseSchemas={
  wf_run_get:z.object({run:runObject}).strict(),
  wf_run_artifacts:z.object({artifacts:objectWith({total_count:z.number().int().nonnegative(),artifacts:z.array(artifactObject).max(50)})}).strict(),
 };
-export function validWfV1Response(action, body) {
+export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
 
  if(action==='wf_repo_tags'||action==='wf_repo_languages'){
@@ -228,20 +249,17 @@ export function validWfV1Response(action, body) {
   return (action==='wf_issue_parent'?z.object({issue}).strict():z.object({issues:z.array(issue).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()).safeParse(body).success;
  }
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
+
+  if (action === 'wf_release_list' && (!Array.isArray(body?.releases) || body.releases.length > 50 || !body.releases.every(x => x && Number.isInteger(x.id) && x.id > 0 && typeof x.draft === 'boolean' && typeof x.prerelease === 'boolean' && Object.keys(x).every(k => ['id','tag_name','name','html_url','created_at','published_at','draft','prerelease'].includes(k)) && ['tag_name','name','html_url','created_at','published_at'].every(k => x[k] === null || typeof x[k] === 'string' && new TextEncoder().encode(x[k]).length <= 2048)))) return false;
  const keysBeforeParse=RESPONSE_KEYS[action];
  if(!keysBeforeParse)return false;
  const shape=Object.fromEntries(keysBeforeParse.map(k=>[k,jsonValue]));
  if(action==='wf_file_put'||action==='wf_files_put'){shape.branch=z.string().min(1);shape.commit=shaValue;if(action==='wf_file_put')shape.path=z.string().min(1);else shape.files=z.number().int().min(1).max(20);}
- const result=z.object(shape).strict().safeParse(body);
- if(!result.success)return false;
- body=result.data;
-
-  const completedKey={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
-  if(completedKey){
-    const parsed=z.object({completed:z.literal(true),[completedKey]:z.number().int().positive()}).strict().safeParse(body);
-    if(!parsed.success)return false;
-    body=parsed.data;
-  }
+ const parsed=z.object(shape).strict().safeParse(body);
+ if(!parsed.success)return false;
+ body=parsed.data;
+ const key={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
+ if(key){const shape={completed:z.literal(true),[key]:z.number().int().positive()};if(action==='wf_workflow_enable'||action==='wf_workflow_disable')shape.state=z.literal(action==='wf_workflow_enable'?'enabled':'disabled');const parsed=z.object(shape).strict().safeParse(body);if(!parsed.success)return false;body=parsed.data;}
 
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
@@ -253,6 +271,9 @@ export function validWfV1Response(action, body) {
     const assetOk = x => x && !Array.isArray(x) && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string' && x.name.length > 0 && x.name.length <= 255 && ['uploaded','open','starter'].includes(x.state) && Number.isInteger(x.size) && x.size >= 0;
     if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;
   }
+  if (['wf_issue_comment_delete','wf_review_comment_delete','wf_release_delete'].includes(action) && body.deleted !== true) return false;
+  if (action === 'wf_release_list' && !Array.isArray(body.releases)) return false;
+  if ('result' in body && (!body.result || typeof body.result !== 'object' || Array.isArray(body.result))) return false;
   if (['wf_branch_update','wf_tag_create','wf_tag_get'].includes(action) && (typeof body.ref !== 'string' || !body.ref.startsWith(action.startsWith('wf_branch_') ? 'refs/heads/' : 'refs/tags/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;
   if (['wf_branch_delete','wf_tag_delete'].includes(action) && (body.deleted !== true || typeof body.ref !== 'string' || !body.ref.startsWith(action.startsWith('wf_branch_') ? 'refs/heads/' : 'refs/tags/'))) return false;
   for (const key of ['pull','threads']) if (key in body && (!body[key] || typeof body[key] !== 'object' || Array.isArray(body[key]))) return false;
@@ -267,6 +288,8 @@ export function validWfV1Response(action, body) {
   if ('result' in body && (!body.result || typeof body.result !== 'object' || Array.isArray(body.result))) return false;
   const completedId = {wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
   if (completedId && (!Number.isInteger(body[completedId]) || body[completedId] < 1)) return false;
+  if (completedId && args && body[completedId] !== args[completedId]) return false;
+  if (action === 'wf_workflow_enable' && body.state !== 'enabled' || action === 'wf_workflow_disable' && body.state !== 'disabled') return false;
   if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
   if (action === 'wf_review_inline' && (!body.comment || !Number.isInteger(body.comment.id) || body.comment.id < 1 || !/^[0-9a-f]{40}$/.test(body.comment.commit_id))) return false;
   if (action === 'wf_branch_create' && (typeof body.ref !== 'string' || !body.ref.startsWith('refs/heads/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;
