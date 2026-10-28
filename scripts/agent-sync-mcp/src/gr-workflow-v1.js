@@ -1,3 +1,4 @@
+import {z} from 'zod';
 // Default-off caller contract. hosted-tools registers these tools, but they are neither listed nor
 // callable unless the owner sets GR_WORKFLOW_TOOLS=on (config.grWorkflowEnabled).
 // Contract for the git-relay wf_ workflow verbs (git-relay/git_relay/workflow_verbs.py).
@@ -147,7 +148,35 @@ const RESPONSE_KEYS = {
   wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
   wf_merge_guarded: ['merged','sha'],
 };
+const shaValue=z.string().regex(/^[0-9a-f]{40}$/),positive=z.number().int().positive();
+const jsonValue=z.lazy(()=>z.union([z.string(),z.number().finite(),z.boolean(),z.null(),z.array(jsonValue),z.record(z.string(),jsonValue)]));
+const objectWith=shape=>z.object(shape).catchall(jsonValue);
+const commitObject=objectWith({sha:shaValue,commit:objectWith({message:z.string()}),parents:z.array(objectWith({sha:shaValue}))});
+const branchObject=objectWith({name:z.string().min(1),commit:objectWith({sha:shaValue})});
+const runObject=objectWith({id:positive,head_sha:shaValue,status:z.string(),conclusion:z.string().nullable()});
+const artifactObject=objectWith({id:positive,name:z.string(),size_in_bytes:z.number().int().nonnegative(),expired:z.boolean()});
+const workflowObject=objectWith({id:positive,name:z.string(),path:z.string(),state:z.string()});
+const pullObject=objectWith({id:positive,number:positive,state:z.enum(['open','closed']),head:objectWith({sha:shaValue}),base:objectWith({sha:shaValue})});
+const readResponseSchemas={
+ wf_pr_get:z.object({pull:pullObject}).strict(),
+ wf_commit_get:z.object({commit:commitObject}).strict(),
+ wf_compare:z.object({comparison:objectWith({status:z.string(),ahead_by:z.number().int().nonnegative(),behind_by:z.number().int().nonnegative(),total_commits:z.number().int().nonnegative(),commits:z.array(commitObject)})}).strict(),
+ wf_branch_get:z.object({branch:branchObject}).strict(),
+ wf_repo_get:z.object({repository:objectWith({id:positive,name:z.string().min(1),full_name:z.string().min(3),default_branch:z.string().min(1),private:z.boolean()})}).strict(),
+ wf_workflows:z.object({workflows:objectWith({total_count:z.number().int().nonnegative(),workflows:z.array(workflowObject).max(50)})}).strict(),
+ wf_run_get:z.object({run:runObject}).strict(),
+ wf_run_artifacts:z.object({artifacts:objectWith({total_count:z.number().int().nonnegative(),artifacts:z.array(artifactObject).max(50)})}).strict(),
+};
 export function validWfV1Response(action, body) {
+ if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
+ const keysBeforeParse=RESPONSE_KEYS[action];
+ if(!keysBeforeParse)return false;
+ const shape=Object.fromEntries(keysBeforeParse.map(k=>[k,jsonValue]));
+ if(action==='wf_file_put'||action==='wf_files_put'){shape.branch=z.string().min(1);shape.commit=shaValue;if(action==='wf_file_put')shape.path=z.string().min(1);else shape.files=z.number().int().min(1).max(20);}
+ const parsed=z.object(shape).strict().safeParse(body);
+ if(!parsed.success)return false;
+ body=parsed.data;
+
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;

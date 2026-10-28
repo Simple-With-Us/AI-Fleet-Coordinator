@@ -205,7 +205,7 @@ test('fixed PR controls and thread reads preserve scope and UNKNOWN',async()=>{
  }
 });
 test('new read envelopes reject malformed objects and fixed routes use own bearer',async()=>{
-  const cases=[['wf_pr_get',{number:1},{pull:{number:1}}],['wf_compare',{base:'main',head:'feature/x'},{comparison:{}}],['wf_repo_get',{},{repository:{}}],['wf_commit_get',{sha:'a'.repeat(40)},{commit:{}}],['wf_run_get',{run_id:1},{run:{}}],['wf_run_artifacts',{run_id:1},{artifacts:{}}]];
+  const cases=[['wf_pr_get',{number:1},{pull:{id:1,number:1,state:'open',head:{sha:'a'.repeat(40)},base:{sha:'b'.repeat(40)}}}],['wf_compare',{base:'main',head:'feature/x'},{comparison:{status:'ahead',ahead_by:1,behind_by:0,total_commits:0,commits:[]}}],['wf_repo_get',{},{repository:{id:1,name:'x',full_name:'a/x',default_branch:'main',private:true}}],['wf_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),commit:{message:'x'},parents:[]}}],['wf_run_get',{run_id:1},{run:{id:1,head_sha:'a'.repeat(40),status:'completed',conclusion:'success'}}],['wf_run_artifacts',{run_id:1},{artifacts:{total_count:0,artifacts:[]}}]];
   for(const [action,args,result] of cases){
     let calls=0;
     const t=harness(async(url,init)=>{
@@ -240,3 +240,8 @@ test('workflow state and run/artifact deletion preserve own-bearer writes and UN
 });
 
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
+
+test('untrusted nested read response Zod boundary rejects malformed fields',()=>{
+ for(const [a,b] of [['wf_pr_get',{pull:{}}],['wf_commit_get',{commit:{sha:true}}],['wf_branch_get',{branch:{name:'x',commit:{sha:7}}}],['wf_repo_get',{repository:{id:true}}],['wf_workflows',{workflows:{total_count:1,workflows:[{id:true}]}}],['wf_run_get',{run:{id:1,head_sha:'a'.repeat(40),status:'done',conclusion:7}}],['wf_run_artifacts',{artifacts:{total_count:1,artifacts:[{id:1,name:'x',size_in_bytes:-1,expired:false}]}}]])assert.equal(validWfV1Response(a,b),false,a);
+ assert.equal(validWfV1Response('wf_file_put',{branch:'x',path:'a',commit:'a'.repeat(40),unexpected:true}),false);
+});
