@@ -22,7 +22,10 @@ class CustodyTests(unittest.TestCase):
         out = io.BytesIO()
         with (
             mock.patch.object(mod.os, "geteuid", return_value=0),
-            mock.patch.object(Path, "lstat", return_value=parent),
+            mock.patch.object(mod, "check_code"),
+            mock.patch.object(mod.os, "fstat", return_value=parent),
+            mock.patch.object(mod.os, "stat", side_effect=FileNotFoundError),
+            mock.patch.object(mod.os, "close"),
             mock.patch.object(Path, "exists", return_value=False),
             mock.patch.object(Path, "is_symlink", return_value=False),
             mock.patch.object(
@@ -40,14 +43,21 @@ class CustodyTests(unittest.TestCase):
         self.assertEqual(run.call_args.args[0][0], "/usr/bin/systemd-creds")
         self.assertEqual(out.getvalue(), b"ciphertext")
         self.assertTrue(opened.call_args.args[1] & mod.os.O_EXCL)
-        self.assertEqual(opened.call_args.args[0], mod.ENCRYPTED)
+        self.assertEqual(opened.call_args.args[0], mod.ENCRYPTED.name)
+        self.assertEqual(opened.call_args.kwargs["dir_fd"], 5)
 
     def test_wrong_seat_or_existing_entry_never_encrypts(self):
         parent = SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0)
         for existing, token in ((True, SYNTHETIC), (False, b"sbt_wise_" + b"A" * 43)):
             with (
                 mock.patch.object(mod.os, "geteuid", return_value=0),
-                mock.patch.object(Path, "lstat", return_value=parent),
+                mock.patch.object(mod, "check_code"),
+                mock.patch.object(mod.os, "fstat", return_value=parent),
+                mock.patch.object(
+                    mod.os, "stat", side_effect=None if existing else FileNotFoundError
+                ),
+                mock.patch.object(mod.os, "open", return_value=5),
+                mock.patch.object(mod.os, "close"),
                 mock.patch.object(Path, "exists", return_value=existing),
                 mock.patch.object(Path, "is_symlink", return_value=False),
                 mock.patch.object(mod.subprocess, "run") as run,
@@ -55,6 +65,22 @@ class CustodyTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     mod.ingress(io.BytesIO(token))
                 run.assert_not_called()
+
+    def test_ingress_checks_code_and_rejects_oversized_before_encryption(self):
+        parent = SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0)
+        with (
+            mock.patch.object(mod, "check_code") as checked,
+            mock.patch.object(mod.os, "geteuid", return_value=0),
+            mock.patch.object(mod.os, "open", return_value=5),
+            mock.patch.object(mod.os, "close"),
+            mock.patch.object(mod.os, "fstat", return_value=parent),
+            mock.patch.object(mod.os, "stat", side_effect=FileNotFoundError),
+            mock.patch.object(mod.subprocess, "run") as run,
+        ):
+            with self.assertRaises(ValueError):
+                mod.ingress(io.BytesIO(SYNTHETIC + b" " * 300))
+            checked.assert_called_once()
+            run.assert_not_called()
 
     def test_launcher_fixed_service_hardening_no_caller_selector_or_environment(self):
         with (

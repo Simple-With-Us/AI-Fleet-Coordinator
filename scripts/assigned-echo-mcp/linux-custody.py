@@ -27,43 +27,64 @@ def check_code():
 
 def ingress(stream):
     """Owner-only provisioning after separate approval. Plaintext never hits disk."""
+    check_code()
     if os.geteuid() != 0:
         raise ValueError("owner-only ingress")
-    parent = ENCRYPTED.parent.lstat()
-    if (
-        not stat.S_ISDIR(parent.st_mode)
-        or parent.st_uid != 0
-        or stat.S_IMODE(parent.st_mode) != 0o700
-    ):
-        raise ValueError("unsafe encrypted credential directory")
-    # No rotation or overwrite. Unexpected active storage requires owner review.
-    if ENCRYPTED.exists() or ENCRYPTED.is_symlink():
-        raise ValueError("existing encrypted credential requires owner review")
-    raw = stream.read(256).strip()
-    if not TOKEN.fullmatch(raw):
-        raise ValueError("expected assigned ECHO bearer")
-    result = subprocess.run(
-        [
-            "/usr/bin/systemd-creds",
-            "encrypt",
-            "--with-key=host",
-            "--name=assigned-echo-mcp",
-            "-",
-            "-",
-        ],
-        input=raw,
-        capture_output=True,
-        env={"PATH": "/usr/bin:/bin"},
-        timeout=30,
-        check=False,
-    )
-    if result.returncode or not result.stdout or len(result.stdout) > 65536 or raw in result.stdout:
-        raise ValueError("native encryption failed")
-    # Atomic exclusive creation prevents a race overwriting another credential.
-    fd = os.open(ENCRYPTED, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, "wb") as target:
-        target.write(result.stdout)
-    return 0
+    parent_fd = os.open(ENCRYPTED.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != 0
+            or stat.S_IMODE(parent.st_mode) != 0o700
+        ):
+            raise ValueError("unsafe encrypted credential directory")
+        try:
+            os.stat(ENCRYPTED.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError("existing encrypted credential requires owner review")
+        raw = stream.read(257)
+        if len(raw) > 256:
+            raise ValueError("oversized assigned bearer")
+        raw = raw.strip()
+        if not TOKEN.fullmatch(raw):
+            raise ValueError("expected assigned ECHO bearer")
+        result = subprocess.run(
+            [
+                "/usr/bin/systemd-creds",
+                "encrypt",
+                "--with-key=host",
+                "--name=assigned-echo-mcp",
+                "-",
+                "-",
+            ],
+            input=raw,
+            capture_output=True,
+            env={"PATH": "/usr/bin:/bin"},
+            timeout=30,
+            check=False,
+        )
+        if (
+            result.returncode
+            or not result.stdout
+            or len(result.stdout) > 65536
+            or raw in result.stdout
+        ):
+            raise ValueError("native encryption failed")
+        # Atomic exclusive creation prevents a race overwriting another credential.
+        fd = os.open(
+            ENCRYPTED.name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        with os.fdopen(fd, "wb") as target:
+            target.write(result.stdout)
+        return 0
+    finally:
+        os.close(parent_fd)
 
 
 def child():
@@ -74,7 +95,10 @@ def child():
         info = os.fstat(source.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
             raise ValueError("unsafe service credential")
-        raw = source.read(256).strip()
+        raw = source.read(257)
+        if len(raw) > 256:
+            raise ValueError("oversized service credential")
+        raw = raw.strip()
     if not TOKEN.fullmatch(raw):
         raise ValueError("expected assigned ECHO bearer")
     # Only the token and a fixed PATH reach the reviewed adapter. No reader auth.
