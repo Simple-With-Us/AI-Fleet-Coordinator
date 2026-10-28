@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_pr_list_page": ({"pull_requests": "read"}, False),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -2704,6 +2705,67 @@ class WorkflowVerbs:
         per_page = _page(args)
         data = self._get(f"/repos/{repo}/actions/runs/{run_id}/artifacts?per_page={per_page}")
         return {"artifacts": _obj(data)}
+
+    def wf_pr_list_page(self, repo, args):
+        """Mutable list page, not a snapshot or full inventory."""
+        _only(args, ("repo", "state", "head", "base", "per_page", "page"))
+        state = _enum(args, "state", ("open", "closed", "all"), "open")
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        head = _ref(args, "head") if "head" in args else None
+        base = _ref(args, "base") if "base" in args else None
+        q = f"state={state}&per_page={limit}&page={page}&sort=created&direction=asc"
+        if head is not None:
+            q += "&head=" + quote(repo.split("/")[0] + ":" + head, safe="")
+        if base is not None:
+            q += "&base=" + quote(base, safe="")
+        value = self._get(f"/repos/{repo}/pulls?{q}")
+        if not isinstance(value, list) or len(value) > limit:
+            raise RelayGitHubError(502, "PR list page unverifiable")
+        pulls = []
+        seen = set()
+        for row in value:
+            if (
+                not isinstance(row, dict)
+                or type(row.get("number")) is not int
+                or row["number"] < 1
+                or row["number"] in seen
+                or type(row.get("draft")) is not bool
+                or row.get("state") not in ("open", "closed")
+                or state != "all"
+                and row["state"] != state
+            ):
+                raise RelayGitHubError(502, "PR list row unverifiable")
+            item = {"number": row["number"], "state": row["state"], "draft": row["draft"]}
+            for key in ("head", "base"):
+                part = row.get(key)
+                if (
+                    not isinstance(part, dict)
+                    or not isinstance(part.get("sha"), str)
+                    or not _SHA.fullmatch(part["sha"])
+                ):
+                    raise RelayGitHubError(502, "PR list commit unverifiable")
+                try:
+                    ref = _ref({"ref": part.get("ref")}, "ref")
+                except Refused:
+                    raise RelayGitHubError(502, "PR list ref unverifiable")
+                item[key + "_ref"] = ref
+                item[key + "_sha"] = part["sha"]
+            if (
+                base is not None
+                and item["base_ref"] != base
+                or head is not None
+                and (
+                    item["head_ref"] != head
+                    or not isinstance(row["head"].get("label"), str)
+                    or row["head"]["label"].casefold()
+                    != (repo.split("/")[0] + ":" + head).casefold()
+                )
+            ):
+                raise RelayGitHubError(502, "PR list filter unverifiable")
+            seen.add(row["number"])
+            pulls.append(item)
+        return {"pulls": pulls, "page": page, "has_more": len(pulls) == limit, "snapshot": False}
 
     def wf_pr_list(self, repo, args):
         _only(args, ("repo", "state", "head", "base", "per_page"))
