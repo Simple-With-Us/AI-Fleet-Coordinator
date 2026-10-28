@@ -17,9 +17,9 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
-  wf_issue_comment_update: ['issue comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:STR})],
+  wf_issue_comment_update: ['issue comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:{type:"string",minLength:1,maxLength:32768}})],
   wf_issue_comment_delete: ['issue comment delete.',obj(['repo', 'comment_id'],{repo:REPO,comment_id:INT})],
-  wf_review_comment_update: ['review comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:STR})],
+  wf_review_comment_update: ['review comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:{type:"string",minLength:1,maxLength:32768}})],
   wf_review_comment_delete: ['review comment delete.',obj(['repo', 'comment_id'],{repo:REPO,comment_id:INT})],
   wf_release_list: ['release list.',obj(['repo'],{repo:REPO})],
   wf_release_get: ['release get.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
@@ -95,7 +95,7 @@ export function boundedWorkflowInput(args) {
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
 export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
-  (action !== 'wf_review_submit' && action !== 'wf_review_inline' || reviewBodyOk(args));
+  (action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' || reviewBodyOk(args));
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
