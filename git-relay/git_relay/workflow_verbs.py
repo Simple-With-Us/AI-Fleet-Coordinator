@@ -2870,6 +2870,7 @@ class WorkflowVerbs:
         for row in value["workflow_runs"]:
             if (
                 not isinstance(row, dict)
+                or "conclusion" not in row
                 or any(
                     type(row.get(k)) is not int or row[k] < 1
                     for k in ("id", "run_attempt", "workflow_id")

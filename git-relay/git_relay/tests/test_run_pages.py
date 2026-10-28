@@ -82,3 +82,43 @@ class RunPages(unittest.TestCase):
             "wf_runs_page", {"repo": REPO}
         )
         self.assertIsNone(out["runs"][0]["head_branch"])
+
+    def test_each_required_run_field_missing_is_fixed_refusal(self):
+        for key in (
+            "id",
+            "run_attempt",
+            "workflow_id",
+            "head_sha",
+            "head_branch",
+            "status",
+            "conclusion",
+            "pull_requests",
+        ):
+            row = self.row()
+            del row[key]
+            with self.subTest(key=key), self.assertRaises(RelayGitHubError):
+                self.handle(Client(self.value([row]))).run("wf_runs_page", {"repo": REPO})
+
+    def test_malformed_field_types_are_fixed_refusals(self):
+        for key in (
+            "id",
+            "run_attempt",
+            "workflow_id",
+            "head_sha",
+            "head_branch",
+            "status",
+            "conclusion",
+            "pull_requests",
+        ):
+            for value in (True, {}, [], 17):
+                if (
+                    key in ("id", "run_attempt", "workflow_id")
+                    and value == 17
+                    or key == "pull_requests"
+                    and value == []
+                ):
+                    continue
+                with self.subTest(key=key, value=value), self.assertRaises(RelayGitHubError):
+                    self.handle(Client(self.value([self.row(**{key: value})]))).run(
+                        "wf_runs_page", {"repo": REPO}
+                    )
