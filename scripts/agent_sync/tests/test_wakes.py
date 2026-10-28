@@ -107,9 +107,13 @@ class ValidateTests(unittest.TestCase):
         schema = json.loads(W.schema_text())
         required = set(schema["required"])
         self.assertEqual(required, {"action", "reply", "board", "owner_note", "risk"})
-        for optional in ("route", "chat_target", "chat_inspect"):
+        optional_keys = {"route", "chat_target", "chat_inspect"}
+        for optional in sorted(optional_keys):
             self.assertIn(optional, schema["properties"])
             self.assertNotIn(optional, required)
+        # A property the validator does not know is accepted by the strict runtimes and then
+        # thrown away by the daemon, so the two key sets are pinned to each other here.
+        self.assertEqual(set(schema["properties"]), required | optional_keys)
         result, why = W.validate(
             {"action": "reply", "reply": "hi", "board": None, "owner_note": None, "risk": "low"}
         )
