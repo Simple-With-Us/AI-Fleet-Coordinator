@@ -216,3 +216,11 @@ test('workflow state and run/artifact deletion preserve own-bearer writes and UN
 });
 
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
+
+test('destructive Actions descriptions expose unfenced irreversible behavior and boundary validation',()=>{
+ for(const a of ['wf_workflow_disable','wf_run_delete','wf_artifact_delete']){
+  const t=WF_V1_TOOLS.find(x=>x.name==='gr_'+a);assert.match(t.description,/authorization/);assert.match(t.description,/fence/);
+ }
+ for(const value of [true,'1',0,-1,null]) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:value}));
+ assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:1,extra:true}));
+});

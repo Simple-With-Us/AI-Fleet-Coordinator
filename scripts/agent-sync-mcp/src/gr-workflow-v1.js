@@ -1,3 +1,4 @@
+import {z} from 'zod';
 // Default-off caller contract. hosted-tools registers these tools, but they are neither listed nor
 // callable unless the owner sets GR_WORKFLOW_TOOLS=on (config.grWorkflowEnabled).
 // Contract for the git-relay wf_ workflow verbs (git-relay/git_relay/workflow_verbs.py).
@@ -23,9 +24,9 @@ const SPECS = {
   wf_tag_get: ['tag get; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag'],{repo:REPO,tag:REF})],
   wf_tag_delete: ['tag delete; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag', 'expected_sha'],{repo:REPO,tag:REF,expected_sha:SHA})],
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_workflow_disable: ['workflow disable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_run_delete: ['run delete.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
-  wf_artifact_delete: ['artifact delete.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
+  wf_workflow_disable: ['Disable a workflow; no expected-state fence. Requires explicit per-seat action/repo authorization and owner execution authority, never a CI bypass.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
+  wf_run_delete: ['Irreversibly delete an Actions run and logs; no concurrency fence. Requires explicit per-seat action/repo authorization and separate owner execution authority.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
+  wf_artifact_delete: ['Irreversibly delete an artifact; no concurrency fence. Requires explicit per-seat action/repo authorization and separate owner execution authority.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
 
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
@@ -124,6 +125,13 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 export function validWfV1Response(action, body) {
+  const completedKey={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
+  if(completedKey){
+    const parsed=z.object({completed:z.literal(true),[completedKey]:z.number().int().positive()}).strict().safeParse(body);
+    if(!parsed.success)return false;
+    body=parsed.data;
+  }
+
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;
