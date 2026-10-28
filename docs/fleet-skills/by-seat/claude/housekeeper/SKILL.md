@@ -33,6 +33,12 @@ Several schedulers reach the same playbook and they all take the **same** lock, 
 export HOUSEKEEPER_LOCK_OWNER=1
 : "${HOUSEKEEPER_LOCK:?set HOUSEKEEPER_LOCK to the lock path in the operator inventory before taking the lock}"
 LOCK_DIR="$HOUSEKEEPER_LOCK"
+release_locks() {
+  rmdir "${LOCK_DIR:-}" 2>/dev/null
+  if [ "${REMOTE_LOCK_HELD:-0}" = "1" ]; then
+    ssh "$HOUSEKEEPER_SSH_ALIAS" "rmdir /run/fleet-housekeeper.lock" >/dev/null 2>&1
+  fi
+}
 python3 - "$LOCK_DIR" <<'PY'
 import os
 import sys
@@ -43,7 +49,7 @@ except FileExistsError:
     raise SystemExit(75)
 except OSError as exc:
     print("housekeeper lock: cannot create the lock directory: %s" % (exc.strerror or exc), file=sys.stderr)
-    raise SystemExit(1)
+    raise
 PY
 status=$?
 case "$status" in
@@ -51,7 +57,7 @@ case "$status" in
   75) echo "skipped, peer holds lock"; exit 0 ;;
   *) exit "$status" ;;
 esac
-trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+trap release_locks EXIT
 ```
 
 Only `FileExistsError` means a peer holds the lock, so the lock is skipped.  Any other `OSError` —
@@ -135,6 +141,13 @@ Take the lock or exit.  Sample and record before-numbers.
 
 ```bash
 : "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the ssh target in the operator inventory before reaching the host}"
+release_locks() {
+  rmdir "${LOCK_DIR:-}" 2>/dev/null
+  if [ "${REMOTE_LOCK_HELD:-0}" = "1" ]; then
+    ssh "$HOUSEKEEPER_SSH_ALIAS" "rmdir /run/fleet-housekeeper.lock" >/dev/null 2>&1
+  fi
+}
+REMOTE_LOCK_HELD=0
 ssh "$HOUSEKEEPER_SSH_ALIAS" 'python3 -' <<'PY'
 import os
 import sys
@@ -145,28 +158,22 @@ except FileExistsError:
     raise SystemExit(75)
 except OSError as exc:
     print("housekeeper lock: cannot create the remote lock directory: %s" % (exc.strerror or exc), file=sys.stderr)
-    raise SystemExit(1)
+    raise
 PY
 status=$?
 case "$status" in
-  0) ;;
+  0) REMOTE_LOCK_HELD=1 ;;
   75) echo "skipped, a peer holds the remote lock"; exit 0 ;;
   *) exit "$status" ;;
 esac
-trap 'rmdir "${LOCK_DIR:-}" 2>/dev/null; ssh "$HOUSEKEEPER_SSH_ALIAS" "rmdir /run/fleet-housekeeper.lock" >/dev/null 2>&1' EXIT
+trap release_locks EXIT
 ssh "$HOUSEKEEPER_SSH_ALIAS" 'df -h /; free -h; swapon --show; uptime; docker system df'
+ssh "$HOUSEKEEPER_SSH_ALIAS" 'docker image prune -af --filter "until=168h"; docker builder prune -af --filter "until=168h"; find /opt/actions-runner-ct-*/_diag -type f -name "*.log" -mtime +14 -delete; find /var/log/fleet-backup -name "sqlite-*.log" -mtime +14 -delete'
 ```
 
-The remote lock is taken the way the Mac lock is taken.  The atomic `mkdir` runs in Python on the host, so only `FileExistsError` is read as contention and every other `OSError` exits nonzero and says what went wrong, because a lock that could not be taken is not a lock another seat holds.  The shell reads the host's exit status before anything else runs, so a peer that holds the lock stops the run before the sampling commands reach the box, and a host that cannot be reached fails closed instead of looking like contention.  The trap removes the remote lock directory when the run ends, and the Mac lock directory as well when the same run took that one too, so both playbooks can share one shell without leaking a lock.  A run killed hard enough that the trap never runs leaves the directory behind, and every later run then reports a held lock; remove it by hand once the box is idle.
+The remote lock is taken the way the Mac lock is taken.  The atomic `mkdir` runs in Python on the host, so only `FileExistsError` is read as contention; every other `OSError` is reported and re-raised, so the traceback keeps the original error and the shell fails closed instead of looking like contention.  The shell reads the host's exit status before anything else runs, so a peer that holds the lock stops the run before the sampling commands reach the box.  Both playbooks install the same `release_locks` function and the same `trap release_locks EXIT`, because bash keeps one trap per signal and a second `trap` would silently replace the first; the function releases the Mac lock directory and the remote lock directory, and `REMOTE_LOCK_HELD` is set only after the remote lock is really taken, so a run that stopped on a peer's lock never removes that peer's lock.  The prune commands run inside the locked block, so the lock is held from the first sample to the last deletion and the two playbooks can share one shell without leaking a lock.  A run killed hard enough that the trap never runs leaves the directory behind, and every later run then reports a held lock; remove it by hand once the box is idle.
 
-Act without asking — regenerable only:
-
-```bash
-docker image   prune -af --filter "until=168h"
-docker builder prune -af --filter "until=168h"
-find /opt/actions-runner-ct-*/_diag -type f -name '*.log' -mtime +14 -delete
-find /var/log/fleet-backup -name 'sqlite-*.log' -mtime +14 -delete
-```
+Act without asking — regenerable only: the prune commands run on the host inside the locked block above, so the remote lock is held from the first sample to the last deletion.
 
 **Never, on the server:**
 - `docker system prune --volumes` in any form.  The five named volumes hold ~38 GB of **live production data**, including the 27G socratic app-data volume (with the 9.8G `app.db`) and 6.1G of Qdrant storage.

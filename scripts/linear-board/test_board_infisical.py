@@ -1,5 +1,6 @@
-"""Board CLI tests for Infisical (AFC-348):  Linear client pairs from AI Fleet Coordinator prod /linear
-before the local files, and one shared minted token per app (LINEAR_<SEAT>_CACHE_TOKEN).
+"""Board CLI tests for the Linear credentials (AFC-348, AFC-473):  the client pairs come from the
+environment first and from `fleet-secrets get` second, and one shared minted token per app is kept in
+the AI Fleet Coordinator prod /linear folder (LINEAR_<SEAT>_CACHE_TOKEN).
 
 A mock Infisical runs beside test_board.py's mock Linear;  nothing reaches the network.
 
@@ -111,7 +112,8 @@ class MockInfisical:
 
 
 class InfisicalTests(T.BoardTest):
-    """Credentials from Infisical first, and one shared token per seat through LINEAR_<SEAT>_CACHE_TOKEN."""
+    """Credentials from the environment first and from `fleet-secrets get` second, and one shared token
+    per app through LINEAR_<SEAT>_CACHE_TOKEN."""
 
     seat_app = T.SeatAppTests.seat_app
     cache = T.SeatAppTests.cache
@@ -129,24 +131,28 @@ class InfisicalTests(T.BoardTest):
             }
         )
 
-    def legacy_host(self):
-        """A server or cloud host:  no fleet-secrets, only an INFISICAL_AUTOMATION identity (AFC-348).
-        Such a host cannot verify a seat bearer, so it runs without an identity:  reads use the
-        shared Fleet app, whose pair and shared token can still come from the old folder."""
-        return {"LINEAR_BOARD_FLEET_SECRETS": str(self.tmp / "no-such-fleet-secrets")}
+    def legacy_host(self, **extra):
+        """A server or cloud host:  no fleet-secrets, so the pair comes from the environment (AFC-473).  Such
+        a host cannot verify a seat bearer, so it runs without an identity:  reads use the shared Fleet app."""
+        return dict({"LINEAR_BOARD_FLEET_SECRETS": str(self.tmp / "no-such-fleet-secrets")}, **extra)
 
-    def fleet_in_old_folder(self):
-        self.vault.secrets.update(
-            {"LINEAR_FLEET_CLIENT_ID": T.CLIENT_ID, "LINEAR_FLEET_CLIENT_SECRET": T.CLIENT_SECRET}
-        )
+    def afc_put(self, name, value):
+        """Put one key in the AI Fleet Coordinator prod /linear folder, which the fake loader serves under
+        `--project ai-fleet-coordinator`."""
+        (self.afc_vault / name).write_text(value)
 
-    def test_legacy_host_reads_the_pair_and_shares_the_token_through_the_old_folder(self):
-        self.fleet_in_old_folder()
-        p = self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host())
+    def fleet_env(self):
+        """The shared Fleet app's pair in the environment, as a host with no fleet-secrets must export it."""
+        return {
+            "LINEAR_FLEET_CLIENT_ID": T.CLIENT_ID,
+            "LINEAR_FLEET_CLIENT_SECRET": T.CLIENT_SECRET,
+        }
+
+    def test_a_host_without_fleet_secrets_takes_the_pair_from_the_environment(self):
+        p = self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()))
         self.assertIn("viewer:      Fleet (app user)", p.stdout)
         self.assertIn(
-            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_FLEET_CLIENT_ID",
-            p.stdout,
+            "credentials: environment (LINEAR_FLEET_CLIENT_ID, LINEAR_FLEET_CLIENT_SECRET)", p.stdout
         )
         self.assertIn(
             "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_FLEET_CACHE_TOKEN (no token on disk)",
@@ -156,23 +162,76 @@ class InfisicalTests(T.BoardTest):
         self.assertIn(shared["access_token"], self.mock.tokens)
         self.assertEqual(shared["viewer"]["name"], "Fleet")  # the viewer is kept too
         # a second process on the same host (or another host) reads the shared copy and mints nothing
-        self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host())
+        self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()))
         self.assertEqual(self.mock.mints, 1)
         self.assertFalse(
             list((self.tmp / "home").rglob("*.token")), "no token file anywhere under HOME"
         )
 
-    def test_legacy_host_remints_a_refused_shared_token_and_shares_it_again(self):
-        self.fleet_in_old_folder()
-        self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host())
+    def test_a_host_without_fleet_secrets_remints_a_refused_shared_token_and_shares_it_again(self):
+        self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()))
         first = json.loads(self.vault.secrets["LINEAR_FLEET_CACHE_TOKEN"])
         first["minted_at"] -= 2 * 86400
         self.vault.secrets["LINEAR_FLEET_CACHE_TOKEN"] = json.dumps(first)
         self.mock.tokens.clear()  # Linear now refuses the shared token
-        self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host())
+        self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()))
         self.assertEqual(self.mock.mints, 2)
         second = json.loads(self.vault.secrets["LINEAR_FLEET_CACHE_TOKEN"])
         self.assertNotEqual(second["access_token"], first["access_token"])
+
+    def test_a_host_without_fleet_secrets_and_without_a_pair_fails_closed_naming_the_variables(self):
+        p = self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(), code=4)
+        self.assertIn("FLEET_LINEAR_CLIENT_ID", p.stderr)
+        self.assertIn("LINEAR_FLEET_CLIENT_ID", p.stderr)
+        self.assertIn("LINEAR_CLIENT_ID", p.stderr)
+        self.assertEqual(self.mock.mints, 0)
+
+    def test_the_ai_fleet_pair_is_read_through_fleet_secrets_and_not_through_infisical(self):
+        cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_ID", cid)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_SECRET", secret)
+        p = self.as_seat("CLAUDE", "whoami")
+        self.assertIn(
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
+            p.stdout,
+        )
+        # the loader was asked for that project by name, and the direct Infisical call was never made
+        self.assertIn(
+            "get LINEAR_CLAUDE_CLIENT_ID --project ai-fleet-coordinator", self.fs_verbs()
+        )
+        self.assertEqual([r for r in self.vault.requests if r[1].startswith("/api/v3/secrets/raw")], [])
+
+    def test_the_environment_pair_beats_the_stored_pair(self):
+        cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_ID", "stored-client-id")
+        self.afc_put("LINEAR_CLAUDE_CLIENT_SECRET", "stored-client-secret")
+        p = self.as_seat(
+            "CLAUDE",
+            "whoami",
+            extra={
+                "LINEAR_CLAUDE_CLIENT_ID": cid,
+                "LINEAR_CLAUDE_CLIENT_SECRET": secret,
+            },
+        )
+        self.assertIn(
+            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)", p.stdout
+        )
+        # the stored pair was never read:  the environment came first
+        self.assertEqual([v for v in self.fs_verbs() if v.startswith("get LINEAR_CLAUDE_CLIENT_ID")], [])
+
+    def test_identity_from_fleet_secrets_when_not_in_the_environment(self):
+        cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_ID", cid)
+        self.afc_put("LINEAR_CLAUDE_CLIENT_SECRET", secret)
+        p = self.as_seat(
+            "CLAUDE",
+            "whoami",
+            drop=("INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET"),
+        )
+        self.assertIn(
+            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
+            p.stdout,
+        )
 
     def test_infisical_outage_keeps_fleet_ops_credentials(self):
         self.seat_app("CLAUDE", "Claude")  # CLAUDE's pair in Fleet-OPS /linear
@@ -182,32 +241,6 @@ class InfisicalTests(T.BoardTest):
             "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID", p.stdout
         )
         self.assertIn("viewer:      Claude (app user)", p.stdout)
-
-    def test_identity_from_fleet_secrets_when_not_in_the_environment(self):
-        cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
-        self.vault.secrets.update(
-            {"LINEAR_CLAUDE_CLIENT_ID": cid, "LINEAR_CLAUDE_CLIENT_SECRET": secret}
-        )
-        stub = self.tmp / "fleet-secrets"
-        stub.write_text(
-            "#!/bin/sh\n"
-            '[ "$1" = get ] || exit 2\n'
-            'case "$2" in INFISICAL_AUTOMATION_CLIENT_ID) echo inf-id;; INFISICAL_AUTOMATION_CLIENT_SECRET) echo inf-secret;; '
-            f'GR_BEARER_VERIFY_KEY) cat "{self.ops_vault}/tools/GR_BEARER_VERIFY_KEY";; '
-            f'CLAUDE_SEAT_BEARER) cat "{self.ops_vault}/fleet-seats/CLAUDE_SEAT_BEARER";; '
-            "*) exit 3;; esac\n"
-        )
-        stub.chmod(0o700)
-        p = self.as_seat(
-            "CLAUDE",
-            "whoami",
-            drop=("INFISICAL_AUTOMATION_CLIENT_ID", "INFISICAL_AUTOMATION_CLIENT_SECRET"),
-            extra={"LINEAR_BOARD_FLEET_SECRETS": str(stub)},
-        )
-        self.assertIn(
-            "credentials: Infisical AI Fleet Coordinator prod /linear (LINEAR_CLAUDE_CLIENT_ID",
-            p.stdout,
-        )
 
     def test_no_identity_means_no_infisical_calls(self):
         cid, secret = self.seat_app(
