@@ -222,6 +222,13 @@ jobs:
     - name: Fleet skill identity tests
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # The housekeeper locks, read from the one home:  the lock blocks are run
+    # as written, with the ssh hop replaced by a fake, so the free, peer-held
+    # and unmakeable paths are all covered and the destructive commands are
+    # checked to run inside the locked block.
+    - name: Housekeeper lock tests
+      run: |
+        cd scripts && python3 -m unittest test_housekeeper_lock -v
     # The sentence-gap converter, read from the one home:  its shape (one or more
     # spaces, the numbered-list lookbehind, the markup group) and its behaviour on
     # every shape a body can hold, plus the check that no copy has drifted.
