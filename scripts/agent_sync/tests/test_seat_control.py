@@ -281,6 +281,18 @@ class SeatControlTests(unittest.TestCase):
         self.assertEqual(len(result["data"]["sessions"]), 1)
         self.assertEqual(result["data"]["sessions"][0]["target"]["host"], "mac-fixture")
 
+    def test_list_applies_result_limit_after_bounded_catalog_discovery(self):
+        self.catalog.rows = [row(session_id=f"session-{index}") for index in range(6)]
+        result = self.service.call_tool(
+            "seat_control_list",
+            {"host_scope": "mac", "host": "mac-fixture", "limit": 2},
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["data"]["sessions"]), 2)
+        # The production catalog itself owns bounded scans/caching. The
+        # adapter independently limits each returned response.
+        self.assertLessEqual(result["data"]["limit"], 24)
+
     def test_read_requires_host_platform_and_native_session_identity(self):
         wrong = self.service.call_tool(
             "seat_control_read",
@@ -395,6 +407,58 @@ class SeatControlTests(unittest.TestCase):
         self.assertEqual(result["status"], "request_conflict")
         self.assertEqual(len(self.transport.sent), 1)
 
+    def test_held_request_is_not_replayed_when_target_becomes_ready(self):
+        self.catalog.rows = [row(status="busy")]
+        first = self.prompt()
+        self.assertEqual(first["status"], "held")
+        self.catalog.rows = [row(status="idle")]
+        second = self.prompt()
+        self.assertEqual(second["status"], "held")
+        self.assertEqual(len(self.transport.sent), 0)
+
+    def test_failed_request_receipt_is_not_replayed(self):
+        self.transport.outcome = "rejected"
+        first = self.prompt()
+        self.assertEqual(first["status"], "failed")
+        self.transport.outcome = "accepted"
+        second = self.prompt()
+        self.assertEqual(second["status"], "failed")
+        self.assertEqual(second["data"]["status"], "failed")
+        self.assertEqual(len(self.transport.sent), 1)
+
+    def test_held_or_failed_request_id_reuse_with_changed_content_conflicts(self):
+        self.catalog.rows = [row(status="busy")]
+        self.assertEqual(self.prompt()["status"], "held")
+        self.assertEqual(self.prompt(prompt="changed")["status"], "request_conflict")
+        self.catalog.rows = [row(status="idle")]
+        self.transport.outcome = "rejected"
+        self.assertEqual(self.prompt(request_id="failed-id")["status"], "failed")
+        self.assertEqual(
+            self.prompt(request_id="failed-id", prompt="changed")["status"],
+            "request_conflict",
+        )
+        self.assertEqual(len(self.transport.sent), 1)
+
+    def test_terminal_receipt_survives_missing_target(self):
+        self.catalog.rows = [row(status="busy")]
+        first = self.prompt()
+        self.catalog.rows.clear()
+        second = self.prompt()
+        self.assertEqual(first["status"], "held")
+        self.assertEqual(second["status"], "held")
+        self.assertEqual(len(self.transport.sent), 0)
+
+    def test_hidden_receipt_race_cannot_reclaim_terminal_held_request(self):
+        self.catalog.rows = [row(status="busy")]
+        self.assertEqual(self.prompt()["status"], "held")
+        self.catalog.rows = [row(status="idle")]
+        self.service.idempotency = DelayRowVisibilityStore(
+            self.service.idempotency, hidden_reads=2
+        )
+        raced = self.prompt()
+        self.assertIn(raced["status"], {"held", "pending"})
+        self.assertEqual(len(self.transport.sent), 0)
+
     def test_concurrent_request_id_collision_is_conflict(self):
         key = hashlib.sha256(b"CODEX\0req-1").hexdigest()
         self.service.idempotency.begin(
@@ -446,7 +510,6 @@ class SeatControlTests(unittest.TestCase):
 
     def test_active_or_permission_waiting_target_is_held_not_downgraded_to_unsupported(self):
         self.catalog.rows = [row(status="active", capabilities={"read": True, "wake": False})]
-        self.transport.preflight_outcome = "busy"
         result = self.prompt()
         self.assertEqual(result["status"], "held")
         self.assertEqual(self.transport.sent, [])
@@ -455,6 +518,7 @@ class SeatControlTests(unittest.TestCase):
         for request_id, changes in (
             ("unknown-state", {"status": "unknown"}),
             ("busy-state", {"status": "busy"}),
+            ("active-state", {"status": "active"}),
             ("permission-state", {"pending_permission": True}),
             ("permission-status", {"status": "pending_permission"}),
         ):
@@ -463,6 +527,22 @@ class SeatControlTests(unittest.TestCase):
                 result = self.prompt(request_id=request_id)
                 self.assertEqual(result["status"], "held")
         self.assertEqual(self.transport.sent, [])
+
+    def test_prompt_requires_affirmative_catalog_wake_capability(self):
+        cases = (
+            ("missing wake", {"capabilities": {"read": True}}),
+            ("false wake", {"capabilities": {"read": True, "wake": False}}),
+            ("truthy nonboolean", {"capabilities": {"read": True, "wake": "true"}}),
+            ("malformed capabilities", {"capabilities": ["read", "wake"]}),
+            ("missing capabilities", {"capabilities": None}),
+        )
+        for request_id, changes in cases:
+            with self.subTest(case=request_id):
+                self.catalog.rows = [row(**changes)]
+                result = self.prompt(request_id=request_id)
+                self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(self.transport.sent, [])
+        self.assertEqual(self.transport.preflights, [])
 
     def test_runtime_unverified_server_prompt_never_reaches_transport(self):
         self.catalog.rows = [row(host="server-fixture")]
@@ -532,14 +612,25 @@ class SeatControlTests(unittest.TestCase):
         self.assertEqual(len(messages[0]["text"]), 2400)
         self.assertLessEqual(sum(len(m["text"]) for m in messages), 6000)
 
-    def test_audit_redacts_prompt_host_and_native_session_id(self):
+    def test_audit_omits_ids_hashes_platform_and_prompt_content(self):
         secret_prompt = "private prompt content"
         self.prompt(prompt=secret_prompt)
         audit_text = repr(self.audit_rows)
-        self.assertNotIn(secret_prompt, audit_text)
-        self.assertNotIn("mac-fixture", audit_text)
-        self.assertNotIn("native-session-1", audit_text)
-        self.assertIn("request_fingerprint", audit_text)
+        identifiers = (
+            "CODEX",
+            "mac-fixture",
+            "grok-leader",
+            "native-session-1",
+            "req-1",
+            secret_prompt,
+        )
+        for identifier in identifiers:
+            self.assertNotIn(identifier, audit_text)
+            self.assertNotIn(hashlib.sha256(identifier.encode()).hexdigest(), audit_text)
+        self.assertNotIn("actor_fingerprint", audit_text)
+        self.assertNotIn("host_fingerprint", audit_text)
+        self.assertNotIn("session_fingerprint", audit_text)
+        self.assertNotIn("request_fingerprint", audit_text)
         self.assertNotIn("prompt_fingerprint", audit_text)
         key = hashlib.sha256(b"CODEX\0req-1").hexdigest()
         row = self.service.idempotency.row(key)

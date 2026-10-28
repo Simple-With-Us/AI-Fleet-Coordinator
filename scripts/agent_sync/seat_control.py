@@ -47,6 +47,11 @@ REQUEST_TTL_SECONDS = 7 * 24 * 60 * 60
 # IdemStore prunes rows by this timestamp. Preserve no-replay tombstones beyond
 # the normal request TTL so an old retry cannot become a fresh provider send.
 TOMBSTONE_EXPIRES_AT = 2**63 - 1
+# IdemStore.begin() treats a fresh pending row as an atomic no-replay claim.
+# Keep a held/failed receipt pending with a future claim timestamp so begin()
+# cannot atomically overwrite it as a new send. The result retains the true
+# caller-visible held/failed status.
+TOMBSTONE_CLAIMED_AT = TOMBSTONE_EXPIRES_AT
 
 
 def _states(**overrides: CapabilityState) -> dict[str, CapabilityState]:
@@ -577,6 +582,7 @@ class SeatControlMCP:
         row_status = str(row.get("status", "unknown")).strip().lower().replace("-", "_")
         if row_status in {
             "busy",
+            "active",
             "unknown",
             "permission_wait",
             "permission_waiting",
@@ -629,6 +635,16 @@ class SeatControlMCP:
             return self._result(
                 "request_conflict", "request_id was already used for different content"
             )
+        receipt = prior.get("result")
+        if prior.get("state") in {"held", "failed"} or (
+            isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}
+        ):
+            status = receipt.get("status") if isinstance(receipt, dict) else prior["state"]
+            return self._result(
+                status,
+                receipt.get("reason") if isinstance(receipt, dict) else "previous request was not dispatched",
+                data=receipt,
+            )
         if prior.get("state") == "sent":
             self._audit("prompt", target, "duplicate", prompt=prompt, request_id=request_id)
             return self._result(
@@ -671,6 +687,16 @@ class SeatControlMCP:
                 return self._result(
                     "request_conflict", "request_id was already used for different content"
                 )
+            receipt = prior.get("result")
+            if prior.get("state") in {"held", "failed"} or (
+                isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}
+            ):
+                status = receipt.get("status") if isinstance(receipt, dict) else prior["state"]
+                return self._result(
+                    status,
+                    receipt.get("reason") if isinstance(receipt, dict) else "previous request was not dispatched",
+                    data=receipt,
+                )
             if prior.get("state") == "sent":
                 self._audit("prompt", target, "duplicate", prompt=prompt, request_id=request_id)
                 return self._result(
@@ -700,6 +726,14 @@ class SeatControlMCP:
                 "duplicate", "request was already accepted", data=previous.get("result")
             )
         if state == "busy":
+            if previous and isinstance(previous.get("result"), dict):
+                receipt = previous["result"]
+                if receipt.get("status") in {"held", "failed"}:
+                    return self._result(
+                        receipt["status"],
+                        receipt.get("reason") or "previous request was not dispatched",
+                        data=receipt,
+                    )
             self._audit("prompt", target, "pending", prompt=prompt, request_id=request_id)
             return self._result("pending", "request is already in progress")
         if state == "reconcile":
@@ -739,7 +773,7 @@ class SeatControlMCP:
             return self._result("invalid_target", "native adapter rejected the exact target")
         if preflight != "ready":
             result = {"status": "held", "reason": "target is busy or unavailable"}
-            self.idempotency.set(key, state="held", result=result, expires=TOMBSTONE_EXPIRES_AT)
+            self._pin_receipt(key, result)
             self._audit("prompt", target, "held", prompt=prompt, request_id=request_id)
             return self._result("held", result["reason"], data=result)
 
@@ -752,12 +786,15 @@ class SeatControlMCP:
 
         def finish(status: str, state: str, result: dict[str, Any], message: str) -> dict[str, Any]:
             try:
-                self.idempotency.set(
-                    key,
-                    state=state,
-                    result=result,
-                    expires=TOMBSTONE_EXPIRES_AT,
-                )
+                if status in {"held", "failed"}:
+                    self._pin_receipt(key, result)
+                else:
+                    self.idempotency.set(
+                        key,
+                        state=state,
+                        result=result,
+                        expires=TOMBSTONE_EXPIRES_AT,
+                    )
             except Exception:
                 # The provider may already have accepted the prompt. Best-effort
                 # mark the durable pending row as unknown; even if persistence is
@@ -863,6 +900,16 @@ class SeatControlMCP:
             return self._result(
                 "request_conflict", "request_id was already used for different content"
             )
+        receipt = prior.get("result") if prior else None
+        if prior and (prior.get("state") in {"held", "failed"} or (
+            isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}
+        )):
+            status = receipt.get("status") if isinstance(receipt, dict) else prior["state"]
+            return self._result(
+                status,
+                receipt.get("reason") if isinstance(receipt, dict) else "previous request was not dispatched",
+                data=receipt,
+            )
         if prior and prior.get("state") == "sent":
             return self._result(
                 "duplicate", "request was already accepted", data=prior.get("result")
@@ -900,6 +947,14 @@ class SeatControlMCP:
                     "unknown", "idempotency receipt is missing; dispatch is blocked"
                 )
             if state == "busy":
+                if raced and isinstance(raced.get("result"), dict):
+                    receipt = raced["result"]
+                    if receipt.get("status") in {"held", "failed"}:
+                        return self._result(
+                            receipt["status"],
+                            receipt.get("reason") or "previous request was not dispatched",
+                            data=receipt,
+                        )
                 self._audit(operation, target, "pending", prompt=prompt, request_id=request_id)
                 return self._result("pending", "request is already in progress")
             if state == "reconcile":
@@ -915,14 +970,26 @@ class SeatControlMCP:
                 return self._result(
                     "unknown", "idempotency state is unrecognized; dispatch is blocked"
                 )
+        result = {"status": "held", "reason": reason}
+        self._pin_receipt(key, result)
+        self._audit(operation, target, "held", prompt=prompt, request_id=request_id)
+        return self._result("held", reason, data=result)
+
+    def _pin_receipt(self, key: str, result: dict[str, Any]) -> None:
+        """Persist a terminal non-dispatch receipt without racing IdemStore.begin().
+
+        IdemStore.begin() only recognizes `sent` and `pending` as non-new states;
+        it overwrites `held` and `failed`. A future-dated pending claim makes
+        that existing atomic begin return `busy` indefinitely, while `result`
+        preserves the actual held/failed outcome for this adapter's caller.
+        """
         self.idempotency.set(
             key,
-            state="held",
-            result={"status": "held", "reason": reason},
+            state="pending",
+            claimed_at=TOMBSTONE_CLAIMED_AT,
+            result=result,
             expires=TOMBSTONE_EXPIRES_AT,
         )
-        self._audit(operation, target, "held", prompt=prompt, request_id=request_id)
-        return self._result("held", reason, data={"status": "held"})
 
     def _nudge_pending(self, target: SessionTarget) -> bool:
         """Do not overtake an existing exact-session wake; never cancel it."""
@@ -1001,6 +1068,13 @@ class SeatControlMCP:
                     for action in ("read", "output"):
                         if result.get(action) == "implemented":
                             result[action] = "unsupported"
+                # A discoverable session is not necessarily wake-eligible.
+                # Require the catalog's explicit boolean rather than a
+                # truthy/missing/malformed value before offering prompt.
+                if catalog_caps.get("wake") is not True and result.get("prompt") == "implemented":
+                    result["prompt"] = "unsupported"
+            elif result.get("prompt") == "implemented":
+                result["prompt"] = "unsupported"
         return result
 
     def _audit(
@@ -1014,13 +1088,8 @@ class SeatControlMCP:
     ) -> None:
         record = {
             "event": "seat_control",
-            "actor_fingerprint": _digest(self.caller_id),
             "operation": operation,
             "outcome": outcome,
-            "host_fingerprint": _digest(target.host) if target else None,
-            "platform": target.platform if target else None,
-            "session_fingerprint": _digest(target.session_id) if target else None,
-            "request_fingerprint": _digest(request_id) if request_id else None,
             "prompt_chars": len(prompt) if prompt is not None else None,
             "at": self.clock(),
         }

@@ -33,6 +33,29 @@ itself never grants a control capability.
 Stale records report `stale` for otherwise implemented capabilities. Existing
 adapter refusals (busy, permission wait, missing workspace, unavailable host)
 remain refusals; the wrapper does not choose a different target.
+Prompt eligibility additionally requires `capabilities.wake is True` from the
+catalog. Missing, malformed, false, or merely truthy non-boolean wake flags
+refuse dispatch. Busy, active, unknown, and permission-waiting rows retain a
+`held` receipt without reaching transport preflight or send.
+
+### List bound review disposition
+
+The review claim that `ChatCatalog.discover()` performs an unbounded scan and
+returns an unbounded collection is not borne out by the implementation at this
+branch head. `ChatCatalog` defaults to `max_records=24` and clamps it to
+`1..1000`; its 30-second default TTL caches the bounded result under a scan
+lock. Filesystem and Grok enumerators cap at `MAX_FILES_PER_SOURCE=160`;
+Cursor Cloud discovery caps at two pages and `_MAX_AGENTS=200`, and the catalog
+limits those records by `max_records`. The aggregate cache is capped to
+`max_records` before `discover()` returns. The seat-control adapter applies its
+own response limit (maximum 24) and exact host filter. Evidence:
+`scripts/agent_sync/chat_catalog.py` (`DEFAULT_TTL`, `MAX_FILES_PER_SOURCE`,
+constructor, `_scan_cursor`, `_discover`, `discover`),
+`scripts/agent_sync/cursor_chat_transport.py` (`_MAX_PAGES`, `_MAX_AGENTS`,
+`discover`), and the existing `test_catalog_cap_is_fair_across_platforms`,
+`test_discovery_is_ttl_cached_and_ids_are_stable`, and
+`test_discovery_caps_results_and_page_fetches` fixtures. The adapter does not
+need a shared catalog rewrite for this finding.
 
 ## Authorization and delivery
 
@@ -59,17 +82,20 @@ remain false until a provider offers a separately verified receipt.
 
 The idempotency key is scoped to authenticated caller plus request ID. A
 different target or prompt under the same key is a conflict. Accepted requests
-return the recorded result without a second send. An uncertain result is
-recorded as unknown and is never replayed automatically. The adapter extends
-pending and terminal idempotency rows to a far-future expiration supported by
-the existing store; removing those tombstones or resetting that store can erase
-the no-replay evidence, so integrations must preserve them for as long as old
-request IDs can be retried. If terminal persistence fails after dispatch, the
-result is unknown and the adapter makes a best-effort unknown-state write.
-Audit entries include actor, host, session, and request fingerprints plus
-prompt length; they do not include a prompt hash or content, workspace paths,
-raw host IDs, or raw session IDs. Integrators must provide the existing durable
-store and audit sink before registering the tools.
+return the recorded result without a second send. Held and failed receipts
+preserve their actual caller-visible status and are pinned as long-lived
+pending claims with that receipt in the result. This uses the existing atomic
+`IdemStore.begin()` behavior: later begins see the pinned claim as busy instead
+of overwriting a held/failed row with a new send. An uncertain result is
+recorded as unknown and is never replayed automatically. Removing tombstones or
+resetting the store can erase no-replay evidence, so integrations must preserve
+them as long as old request IDs can be retried. If terminal persistence fails
+after dispatch, the result is unknown and the adapter makes a best-effort
+unknown-state write. Audit entries contain only event, operation, outcome,
+prompt length, and timestamp; caller, host, platform, native session,
+request ID, prompt content, and hashes of those identifiers are omitted.
+Integrators must provide the existing durable store and audit sink before
+registering the tools.
 
 ## MCP integration boundary
 
@@ -111,4 +137,6 @@ host settings are provisioned here.
 from `scripts/` runs local-only fixtures for identity separation, host mismatch,
 stale/ambiguous targets, permissions, mutation gating, idempotency, unknown
 outcomes, bounded output, audit redaction, busy/queued state, and cancellation
-semantics. It does not call provider APIs or start a session.
+semantics, strict catalog wake eligibility, and non-replay of held/failed
+receipts. The existing chat-catalog fixtures verify its cache and per-source
+bounds. These checks do not call provider APIs or start a session.
