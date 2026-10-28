@@ -317,7 +317,7 @@ class Relay:
                 # the hour and the minter's per-key lock dedups concurrent calls.
                 key = key_for(seat, action, canonical)
                 try:
-                    prior = self.outcomes.begin(key)
+                    prior = self.outcomes.begin(key, reapply_ok=action in _REAPPLY_STATE_ACTIONS)
                 except OutcomeStoreError as exc:
                     outcome = "unavailable"
                     detail = {"reason": type(exc).__name__}
@@ -508,6 +508,17 @@ class Relay:
         raise ValueError(f"unknown owner-token action {action!r}")
 
 
+# Idempotent state setters must reach GitHub again after a verified success: A->B->A
+# is a new desired state, not a replay of A. Keep the same key and all pending/unknown
+# holds; only OutcomeStore.begin atomically replaces a known-success row.
+_REAPPLY_STATE_ACTIONS = frozenset({
+    "wf_issue_update", "wf_labels_set", "wf_reviewers_request", "wf_reviewers_remove",
+    "wf_release_update", "wf_issue_comment_update", "wf_review_comment_update",
+    "wf_assignees_add", "wf_assignees_remove", "wf_issue_lock", "wf_issue_unlock",
+    "wf_workflow_enable", "wf_workflow_disable", "wf_pr_draft", "wf_pr_ready",
+    "wf_automerge_enable", "wf_automerge_disable", "wf_asset_update",
+})
+
 _WORKFLOW_AUDIT_SCALARS = (
     "job_id",
     "run_id",
@@ -522,6 +533,14 @@ _WORKFLOW_AUDIT_SCALARS = (
     "head",
     "expected_head_sha",
     "prior_sha",
+    "tag",
+    "sha",
+    "expected_sha",
+    "comment_id",
+    "release_id",
+    "asset_id",
+    "workflow_id",
+    "artifact_id",
     "per_page",
     "state",
     "tail_bytes",
