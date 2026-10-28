@@ -103,6 +103,7 @@ export function validWfV1Response(action, body) {
   for (const k of ['issues','pulls','files','entries','branches','commits','items','runs','jobs','checks']) {
     if (k in body && !(action === 'wf_files_put' && k === 'files') && !Array.isArray(body[k])) return false;
   }
+  if ('issues' in body && body.issues.some(issue => !issue || typeof issue !== 'object' || !Number.isInteger(issue.number) || issue.number < 1 || !['open','closed'].includes(issue.state))) return false;
   if ('issue' in body && (!body.issue || typeof body.issue !== 'object' || Array.isArray(body.issue) || !Number.isInteger(body.issue.number) || !['open','closed'].includes(body.issue.state))) return false;
   if ('comment' in body && (!body.comment || typeof body.comment !== 'object' || !Number.isInteger(body.comment.id))) return false;
   if ('complete' in body && typeof body.complete !== 'boolean') return false;

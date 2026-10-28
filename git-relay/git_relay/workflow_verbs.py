@@ -264,6 +264,13 @@ class WorkflowVerbs:
         data = _obj(data)
         if "pull_request" in data:
             raise Refused("pull requests are not issue lifecycle targets")
+        if (
+            isinstance(data.get("number"), bool)
+            or not isinstance(data.get("number"), int)
+            or data["number"] < 1
+            or data.get("state") not in ("open", "closed")
+        ):
+            raise Refused("unexpected issue response")
         return {k: data.get(k) for k in ("number", "state", "title", "updated_at", "html_url")}
 
     @staticmethod
@@ -283,9 +290,7 @@ class WorkflowVerbs:
         data = _arr(self._get(f"/repos/{repo}/issues?state={state}&per_page={_page(args)}"))
         return {
             "issues": [
-                self._issue_summary(x)
-                for x in data[:MAX_PROJECT]
-                if isinstance(x, dict) and "pull_request" not in x
+                self._issue_summary(x) for x in data[:MAX_PROJECT] if "pull_request" not in _obj(x)
             ],
             "complete": False,
         }

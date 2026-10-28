@@ -217,3 +217,16 @@ class IssueTests(unittest.TestCase):
             self.assertEqual(status2, 200)
             self.assertEqual(body2["issue"]["state"], "closed")
             self.assertEqual([c[0] for c in calls], ["GET", "GET", "PATCH"])
+
+    def test_malformed_issue_summaries_are_refused(self):
+        for issue in [
+            {},
+            {**ISSUE, "number": True},
+            {**ISSUE, "number": 0},
+            {**ISSUE, "state": "bad"},
+            None,
+        ]:
+            with self.assertRaises(Refused):
+                self.run_action("wf_issue_list", {}, [issue])
+            with self.assertRaises(Refused):
+                self.run_action("wf_issue_get", {"number": 2}, issue)
