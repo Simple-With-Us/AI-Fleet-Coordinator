@@ -16,7 +16,7 @@ class Management(unittest.TestCase):
                 {"number": 3, "labels": ["bug"]},
                 "PUT",
                 "issues/3/labels",
-                [],
+                [{"id": 1, "name": "bug"}],
                 {"labels": ["bug"]},
             ),
             (
@@ -46,7 +46,7 @@ class Management(unittest.TestCase):
                 },
                 "POST",
                 "releases",
-                {"id": 1},
+                {"id": 1, "tag_name": "v1"},
                 {
                     "tag_name": "v1",
                     "name": "Release",
@@ -104,3 +104,28 @@ class Management(unittest.TestCase):
                 },
                 REPO,
             )
+
+    def test_wrong_write_receipts_are_unknown(self):
+        from git_relay.github_client import RelayGitHubError
+
+        for action, args, reply in [
+            ("wf_labels_set", {"number": 1, "labels": ["bug"]}, []),
+            ("wf_labels_set", {"number": 1, "labels": ["bug"]}, [{"id": 1, "name": "other"}]),
+            (
+                "wf_release_create",
+                {
+                    "tag": "v1",
+                    "name": "Release",
+                    "body": "Notes",
+                    "draft": True,
+                    "prerelease": False,
+                },
+                {"id": 1, "tag_name": "v2"},
+            ),
+        ]:
+            c = Client(reply)
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
+            with self.assertRaises(RelayGitHubError) as error:
+                h.run(action, {"repo": REPO, **args})
+            self.assertEqual(error.exception.status, 502)
+            self.assertEqual(len(c.calls), 1)

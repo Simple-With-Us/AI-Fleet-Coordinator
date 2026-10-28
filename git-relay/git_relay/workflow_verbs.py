@@ -483,6 +483,8 @@ class WorkflowVerbs:
             for x in result
         ):
             raise RelayGitHubError(502, "label receipt unverifiable")
+        if {x["name"].casefold() for x in result} != {x.casefold() for x in labels}:
+            raise RelayGitHubError(502, "label receipt does not match requested labels")
         return {"labels": [{k: x.get(k) for k in ("id", "name", "color")} for x in result]}
 
     def wf_reviewers_request(self, repo, args):
@@ -596,6 +598,7 @@ class WorkflowVerbs:
             not isinstance(result.get("id"), int)
             or isinstance(result.get("id"), bool)
             or result["id"] <= 0
+            or result.get("tag_name") != tag
         ):
             raise RelayGitHubError(502, "write outcome unverifiable")
         return {"result": result}
