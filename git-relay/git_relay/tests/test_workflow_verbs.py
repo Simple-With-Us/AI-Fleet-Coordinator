@@ -29,7 +29,7 @@ class Client:
     def __init__(self, *replies):
         self.replies, self.calls = list(replies), []
 
-    def _call(self, method, path, payload=None, bearer=None):
+    def _call(self, method, path, payload=None, bearer=None, expected_status=None):
         self.calls.append((method, path, payload, bearer))
         return self.replies.pop(0) if self.replies else {}
 

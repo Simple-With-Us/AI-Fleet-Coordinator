@@ -26,8 +26,8 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 const SPECS = {
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_workflow_disable: ['workflow disable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_run_delete: ['run delete.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
-  wf_artifact_delete: ['artifact delete.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
+  wf_run_delete: ['Irreversibly delete exact repo-scoped run ID and logs. No upstream expected-state or head-SHA CAS exists. Explicit action/repo and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
+  wf_artifact_delete: ['Irreversibly remove exact repo-scoped artifact ID. No upstream expected-state or head-SHA CAS exists. Explicit action/repo and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
 
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
