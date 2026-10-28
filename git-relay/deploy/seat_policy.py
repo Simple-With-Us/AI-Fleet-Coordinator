@@ -223,7 +223,7 @@ def install(args) -> int:
         return 0
     with open(args.config, encoding="utf-8") as fh:
         before = fh.read()
-    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = f"{args.config}.backup-seat-policy-{stamp}"
     _write_atomic(backup, before)
     lines[index] = f"{SEATS_VAR}={compact(seats)}"
@@ -241,8 +241,12 @@ def install(args) -> int:
 
 
 def _unit_env(unit: str) -> dict:
-    out = subprocess.run(["systemctl", "show", "-p", "Environment", "--value", unit],
-                         check=True, capture_output=True, text=True).stdout.split()
+    out = subprocess.run(
+        ["systemctl", "show", "-p", "Environment", "--value", unit],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
     env = dict(item.split("=", 1) for item in out if "=" in item)
     return {name: env[name] for name in UNIT_ENV if env.get(name)}
 
@@ -266,14 +270,39 @@ def verify_apps(args) -> int:
             json.dump(seats, fh)
         os.chmod(script, 0o644)
         os.chmod(policy, 0o644)
-        cmd = ["systemd-run", "--wait", "--pipe", "--collect", "--quiet",
-               "-p", "DynamicUser=yes", "-p", "User=git-relay-verify", "-p", "PrivateTmp=yes",
-               "-p", "ProtectHome=yes", "-p", "NoNewPrivileges=yes", "-p", "UMask=0077",
-               "-p", f"LoadCredential=git-relay-apps-token:{args.apps_token}"]
+        cmd = [
+            "systemd-run",
+            "--wait",
+            "--pipe",
+            "--collect",
+            "--quiet",
+            "-p",
+            "DynamicUser=yes",
+            "-p",
+            "User=git-relay-verify",
+            "-p",
+            "PrivateTmp=yes",
+            "-p",
+            "ProtectHome=yes",
+            "-p",
+            "NoNewPrivileges=yes",
+            "-p",
+            "UMask=0077",
+            "-p",
+            f"LoadCredential=git-relay-apps-token:{args.apps_token}",
+        ]
         for name, value in env.items():
             cmd += ["-p", f"Environment={name}={value}"]
-        cmd += ["/usr/bin/python3", "-I", script, "verify-inner",
-                "--seats", policy, "--relay", args.relay]
+        cmd += [
+            "/usr/bin/python3",
+            "-I",
+            script,
+            "verify-inner",
+            "--seats",
+            policy,
+            "--relay",
+            args.relay,
+        ]
         return subprocess.run(cmd, check=False).returncode
     finally:
         shutil.rmtree(folder, ignore_errors=True)
