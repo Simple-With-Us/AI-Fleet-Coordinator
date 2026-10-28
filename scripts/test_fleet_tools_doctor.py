@@ -127,6 +127,7 @@ class SeatAndMcpTests(unittest.TestCase):
 
     def mcp_rows(self, fleetlink_tokens=frozenset()):
         """Run check_mcp with a fixed Infisical answer for the FleetLink token folder."""
+
         def fake_names(folder, env, project="fleet-ops"):
             if folder == "/fleetlink" and project == "ai-fleet-coordinator":
                 return frozenset(fleetlink_tokens)
