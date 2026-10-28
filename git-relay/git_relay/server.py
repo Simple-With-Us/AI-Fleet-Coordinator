@@ -509,7 +509,7 @@ class Relay:
 
 
 # Idempotent state setters must reach GitHub again after a verified success: A->B->A
-# is a new desired state, not a replay of A. Keep the same key and all pending/unknown
+# is a new desired state, not a replay of A.  Keep the same key and all pending/unknown
 # holds; only OutcomeStore.begin atomically replaces a known-success row.
 _REAPPLY_STATE_ACTIONS = frozenset(
     {
