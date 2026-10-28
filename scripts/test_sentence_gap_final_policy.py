@@ -66,17 +66,18 @@ STALE_RULE_FILES = (
     "docs/INSTINCT-ONBOARDING-PROMPT.md",
     "docs/OPENCODE-ONBOARDING-PROMPT.md",
     "docs/fleet-skills/README-add-in-app.md",
-    # The dated rollout record for the 2026-10-08 ruling.  It carries the Oct 8
-    # per-surface table as a record, under a superseded note that names the
-    # current rule and points at the live table, so it states the rule and has
-    # to carry the exception.
-    "docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",
     # The compliance inventory's AFC-P05 row states the mechanism for every
     # surface, so it states the exception with it.
     "docs/compliance/inventory.md",
 )
 
-# The packs whose own text states the rule.  The installer writes a copy of each
+# Dated rollout records whose body is intentionally preserved; the stale-prescription
+# scan skips them wholesale because their tables are history, not live guidance.
+HISTORY_FILES = (
+    "docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",
+)
+
+# The packs whose own text states the rule.
 # one into skills/ and a per-seat copy into docs/fleet-skills/by-seat/, so the
 # gate covers every copy through a glob instead of a hand-kept list of paths.
 RULE_STATING_PACKS = ("fleet-coordination", "land-lane", "owner-copy", "sentence-gap")
@@ -179,8 +180,11 @@ HISTORY_MARKERS = (
 # The panes have to be called an exception, not listed as one option among many.
 # The wording moved with AFC-552:  there are two exceptions now, so a file may
 # say "two exceptions" where it used to say "the one exception", so the check
-# looks for the word and not for a count.
-EXCEPTION_WORD_RE = re.compile(r"exception", re.IGNORECASE)
+# looks for an explicit exception phrase and not for a bare "exception".
+EXCEPTION_PHRASE_RE = re.compile(
+    r"(only exception|one exception|single exception|two exceptions)",
+    re.IGNORECASE,
+)
 
 
 def _read(rel: str) -> str:
@@ -212,7 +216,7 @@ def _states_the_exception(text: str) -> bool:
     for match in re.finditer(re.escape("`&nbsp;`"), text):
         window = text[max(0, match.start() - 600) : match.end() + 600]
         if "Claude Code" in window and "MiniMax Code" in window:
-            if EXCEPTION_WORD_RE.search(window):
+            if EXCEPTION_PHRASE_RE.search(window):
                 return True
     return False
 
@@ -223,6 +227,8 @@ class StaleGuidanceTests(unittest.TestCase):
     def test_no_live_line_prescribes_the_github_entity_split(self) -> None:
         problems = []
         for rel in STALE_RULE_FILES:
+            if rel in HISTORY_FILES:
+                continue
             for number, line in enumerate(_read(rel).splitlines(), start=1):
                 if _is_history(line):
                     continue
