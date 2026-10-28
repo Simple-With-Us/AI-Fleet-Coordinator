@@ -32,6 +32,7 @@
 // onto the Linear issue it is about, and a mirrored comment that names a
 // fleet bot must NOT wake that bot, because the Zulip side already did.
 
+import { z } from "zod";
 import { safeEqual } from "./policy.js";
 import { readBodyBytes, wakeSignature } from "./wake.js";
 import { resolveSecret, infisicalMode, InfisicalError, prefetchFolder } from "./infisical.js";
@@ -91,6 +92,29 @@ export const NO_WAKE_MARKERS = Object.freeze([":eyes:", "\u{1F440}"]);
 export const Q_WAKE_VIEWER = `query LinearWakeViewer {
   viewer { id name displayName url }
 }`;
+
+/**
+ * The webhook body, as a zod schema.
+ *
+ * The door validates the parsed JSON against this before anything else reads
+ * it:  a malformed body is refused with 400 and never reaches the seat map or
+ * a delivery.  The schema is loose (passthrough) on purpose:  Linear sends
+ * many more fields than this feature reads, and a webhook is a signed
+ * payload from a known sender, not a user form.  The fields this feature
+ * reads are typed, so a body that carries the wrong shape is caught here
+ * rather than half-way through a wake.
+ */
+export const LinearWebhookSchema = z
+  .object({
+    type: z.string().optional(),
+    action: z.string().optional(),
+    webhookTimestamp: z.number().optional(),
+    url: z.string().optional(),
+    actor: z.record(z.string(), z.unknown()).optional(),
+    data: z.record(z.string(), z.unknown()).optional(),
+    updatedFrom: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
 
 // ---------------------------------------------------------------- small helpers
 
@@ -340,12 +364,16 @@ export function profileKeyOf(url) {
 let seatMapCache = { at: 0, map: null, pending: null };
 
 async function seatMap(env, options = {}) {
-  const now = (options.now ?? (() => Date.now()))();
+  const clock = options.now ?? (() => Date.now());
+  const now = clock();
   if (seatMapCache.map && now - seatMapCache.at < LINEAR_WAKE_SEAT_MAP_TTL_MS) return seatMapCache.map;
   if (seatMapCache.pending) return seatMapCache.pending;
   seatMapCache.pending = buildSeatMap(env, options)
     .then((map) => {
-      seatMapCache = { at: Date.now(), map, pending: null };
+      // The stamp is the same clock the expiry check reads:  a skewed or
+      // injected clock would otherwise keep the map forever, or refetch it
+      // on every event.
+      seatMapCache = { at: clock(), map, pending: null };
       return map;
     })
     .catch(() => {
@@ -399,8 +427,24 @@ export function decideLinearWake(payload, seatMap, opts = {}) {
       return { seats, summary };
     }
     // update:  only a mention the old body did not have is news.
-    const before = mentionedSeats(String(payload?.updatedFrom?.body ?? ""), map, payload, data, { ids: false });
-    const added = [...mentionedSeats(text, map, payload, data, { ids: false }).values()]
+    const updatedFrom = isObject(payload?.updatedFrom) ? payload.updatedFrom : {};
+    if (!("body" in updatedFrom)) {
+      // The body did not change (a resolve, a metadata change):  there is no
+      // new mention, so nothing wakes.
+      return { skip: "not_a_wake_event" };
+    }
+    const before = mentionedSeats(String(updatedFrom.body ?? ""), map, payload, data, { ids: false });
+    // The mention ids of the OLD body, when the payload carries them:  a seat
+    // named by its id alone (no text) can only be diffed against them, so
+    // without them the id-only mentions stay out of the diff rather than
+    // waking on every edit.
+    const previousIds = mentionedUserIds(updatedFrom, {});
+    for (const id of previousIds) {
+      for (const entry of map.values()) {
+        if (entry.userId && entry.userId === id) before.set(entry.seat, { seat: entry.seat, via: "mention" });
+      }
+    }
+    const added = [...mentionedSeats(text, map, payload, data, { ids: previousIds.size > 0 }).values()]
       .filter((entry) => !before.has(entry.seat) && !isSelfActor(actor, entry, map));
     if (!added.length) return { skip: "not_a_wake_event" };
     return { seats: added, summary };
@@ -516,17 +560,17 @@ export function claimWakeBudget(seat, now = Date.now()) {
 }
 
 /** Has this delivery id been seen in this isolate?  Best effort, by design. */
-export function seenDelivery(id) {
+export function seenDelivery(id, now = Date.now()) {
   if (!id) return false;
   const at = seenDeliveries.get(id);
-  if (at !== undefined && Date.now() - at < LINEAR_WAKE_DEDUPE_TTL_MS) return true;
+  if (at !== undefined && now - at < LINEAR_WAKE_DEDUPE_TTL_MS) return true;
   return false;
 }
 
 /** Remember a delivery id, keeping the last LINEAR_WAKE_DEDUPE_MAX of them. */
-export function rememberDelivery(id) {
+export function rememberDelivery(id, now = Date.now()) {
   if (!id) return;
-  seenDeliveries.set(id, Date.now());
+  seenDeliveries.set(id, now);
   while (seenDeliveries.size > LINEAR_WAKE_DEDUPE_MAX) {
     const oldest = seenDeliveries.keys().next();
     if (oldest.done) break;
@@ -695,19 +739,34 @@ export async function serveLinearWake(request, env, ctx, deps = {}) {
     log("linear_wake_refused", { reason: "bad_json" });
     return jsonResponse({ error: "bad_json" }, 400);
   }
+  // The trust boundary:  the parsed body is validated before anything reads
+  // it, so a malformed or hostile payload never reaches the seat map or a
+  // delivery.
+  const checked = LinearWebhookSchema.safeParse(payload);
+  if (!checked.success) {
+    log("linear_wake_refused", { reason: "bad_payload" });
+    return jsonResponse({ error: "bad_payload" }, 400);
+  }
+  payload = checked.data;
   // Freshness, both directions.
   const stamp = payload.webhookTimestamp;
   if (!Number.isSafeInteger(stamp) || Math.abs(now() - stamp) > LINEAR_WAKE_TIMESTAMP_WINDOW_MS) {
     log("linear_wake_refused", { reason: "stale" });
     return jsonResponse({ error: "stale" }, 401);
   }
-  // The delivery id, so a retry never wakes twice.
+  // The delivery id, so a retry never wakes twice.  It is required:  a
+  // request without it cannot be deduped, so it is refused rather than
+  // answered as if it were the first delivery.
   const delivery = String(request.headers.get(LINEAR_WAKE_DELIVERY_HEADER) ?? "").trim();
-  if (seenDelivery(delivery)) {
+  if (!delivery) {
+    log("linear_wake_refused", { reason: "missing_delivery" });
+    return jsonResponse({ error: "missing_delivery" }, 400);
+  }
+  if (seenDelivery(delivery, now())) {
     log("linear_wake_refused", { reason: "duplicate" });
     return jsonResponse({ ok: true, skipped: "duplicate" }, 200);
   }
-  rememberDelivery(delivery);
+  rememberDelivery(delivery, now());
   // The cheap shape check first, so a non-event never builds the seat map.
   const type = String(payload.type ?? "");
   const action = String(payload.action ?? "");

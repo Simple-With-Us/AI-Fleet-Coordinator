@@ -695,7 +695,7 @@ class Daemon:
         # per fleet bot's `@all`, keyed by message id, with the time it comes due.  They live in
         # memory only, so a restart drops them:  the cost is one unexplained broadcast, never a
         # wrong wake.  The cap on reminders per seat and per hour lives in the limiter.
-        self._broadcast_audits: dict[int, tuple[BAUD.Broadcast, float]] = {}
+        self._broadcast_audits: dict[int, tuple[BAUD.Broadcast, float, int]] = {}
         self._broadcast_rate = BAUD.RateLimiter()
         self.log.write("peer-broadcast-audit-start", pending=0)
         self.coalescer = W.Coalescer(
@@ -1759,9 +1759,10 @@ class Daemon:
         if self._inbox_broadcast(c):
             self.start_inbox_delivery(message, c)
         # A fleet bot's `@all` has to be explained to the owner (owner, Oct 27 2026):  the audit
-        # asks, ten minutes later, whether Jay asked for it or the bot told him why.  Only the
-        # first seat that sees the message schedules it, and a marker message never does.
-        if first_seen and c.peer_broadcast and not c.no_wake:
+        # asks, ten minutes later, whether Jay asked for it or the bot told him why.  The gate is
+        # the message itself, not the routing verdict, and the audit keeps one entry per message
+        # id, so every seat that sees the broadcast agrees on one reminder.
+        if self._peer_broadcast_audit(message, c):
             self.schedule_broadcast_audit(message, c)
         # The seats this listener holds that cannot take a routine/headless wake for a
         # channel-wide `@all`.  This is not owner-only bookkeeping:  a fleet bot's `@all` wakes
@@ -3188,6 +3189,27 @@ class Daemon:
             c.peer_broadcast and not c.owner_topic and not c.dm and not c.stale and not c.no_wake
         )
 
+    def _peer_broadcast_audit(self, message: Mapping[str, Any], c: R.Classes) -> bool:
+        """Is this message a fleet bot's `@all` that the owner must be asked about?
+
+        The audit is about the MESSAGE, not about the seat that routed it, so the gate is not
+        `c.peer_broadcast`:  that class is the routing verdict, and the sender's own seat runner
+        sees its own post as `own`, never as a peer broadcast.  With the verdict as the gate the
+        sender's own runner took the message first and no seat scheduled the audit at all.
+
+        The message itself is enough:  a fleet bot's `@all`, outside a DM and outside an OWNER
+        topic, that is not stale and carries no marker.  `schedule_broadcast_audit` keeps one
+        audit per message id, so the seats that see the broadcast agree on one reminder."""
+        if c.no_wake or c.dm or c.stale or c.owner or c.owner_topic:
+            return False
+        if not c.broadcast_all:
+            return False
+        return bool(
+            BAUD.sender_seat_for(
+                str(message.get("sender_email") or ""), seats=self._fleet_seat_tags()
+            )
+        )
+
     def _log_broadcast_wake_unsupported(self, message_id: int) -> None:
         """Seats this listener holds that cannot take a routine/headless wake (for owner `@all`).
 
@@ -3216,6 +3238,7 @@ class Daemon:
         thread = threading.Thread(
             target=self.fanout,
             args=(message_id, c.channel, c.topic, where, FAN.ChatPlaces(), message),
+            kwargs={"owner": bool(c.owner)},
             name="chat-fanout",
             daemon=True,
         )
@@ -3334,7 +3357,7 @@ class Daemon:
             if message_id in self._broadcast_audits:
                 return
             due = self.clock.time() + minutes * 60.0
-            self._broadcast_audits[message_id] = (broadcast, due)
+            self._broadcast_audits[message_id] = (broadcast, due, 0)
         self.log.write("peer-broadcast-audit-scheduled", id=message_id, seat=seat or "unknown")
 
     def _fleet_seat_tags(self) -> frozenset[str]:
@@ -3350,17 +3373,17 @@ class Daemon:
         The event thread only picks them up:  the check reads Zulip (the sender bot's own
         account) and posts one DM, so it must not run where the coalescer lives.  A thread that
         never started owns nothing, so the audit is logged as failed."""
-        due: list[BAUD.Broadcast] = []
+        due: list[tuple[BAUD.Broadcast, int]] = []
         with self._fanout_lock:
-            for message_id, (broadcast, due_at) in list(self._broadcast_audits.items()):
+            for message_id, (broadcast, due_at, attempt) in list(self._broadcast_audits.items()):
                 if due_at <= now:
-                    due.append(broadcast)
+                    due.append((broadcast, attempt))
                     self._broadcast_audits.pop(message_id, None)
-        for broadcast in due:
+        for broadcast, attempt in due:
             try:
                 threading.Thread(
                     target=self._run_broadcast_audit,
-                    args=(broadcast,),
+                    args=(broadcast, attempt),
                     name="broadcast-audit",
                     daemon=True,
                 ).start()
@@ -3373,7 +3396,7 @@ class Daemon:
                     error=type(exc).__name__,
                 )
 
-    def _run_broadcast_audit(self, broadcast: BAUD.Broadcast) -> None:
+    def _run_broadcast_audit(self, broadcast: BAUD.Broadcast, attempt: int = 0) -> None:
         """Check one fleet bot's `@all` and, when nobody explained it, DM the owner.
 
         Runs off the event thread.  The check reads the SENDER bot's own Zulip account, with
@@ -3473,14 +3496,32 @@ class Daemon:
             result = runner.client.post(
                 "messages", {"type": "direct", "to": [owner_id], "content": text}
             )
-        except Exception as exc:  # noqa: BLE001 - a failed DM is logged, never raised
+        except Exception as exc:  # noqa: BLE001 - a failed DM is logged and kept, never swallowed
+            # The failure is classified:  a retryable one keeps the audit pending so the
+            # reminder is not lost, a permanent one drops it, and a write that may have
+            # reached the server is never sent twice.
+            failure = BAUD.dm_failure_outcome(exc)
             self.log.write(
                 "peer-broadcast-all",
                 id=message_id,
                 seat=seat,
-                outcome=BAUD.REMINDER_FAILED,
+                outcome=BAUD.REMINDER_UNKNOWN if failure == BAUD.UNKNOWN else BAUD.REMINDER_FAILED,
                 error=type(exc).__name__,
             )
+            if failure == BAUD.RETRY and attempt < BAUD.REMINDER_MAX_ATTEMPTS:
+                with self._fanout_lock:
+                    self._broadcast_audits[broadcast.message_id] = (
+                        broadcast,
+                        self.clock.time() + BAUD.REMINDER_RETRY_SECONDS,
+                        attempt + 1,
+                    )
+                self.log.write(
+                    "peer-broadcast-all-retry",
+                    id=message_id,
+                    seat=seat,
+                    attempt=attempt + 1,
+                    error=type(exc).__name__,
+                )
             return
         finally:
             runner.last_post = self.clock.monotonic()
@@ -3716,16 +3757,24 @@ class Daemon:
         where: FAN.Scope,
         places: Any = None,
         message: Mapping[str, Any] | None = None,
+        *,
+        owner: bool = True,
     ) -> dict[str, Any]:
         """Queue a Zulip reminder for each chosen chat that has a transport;  log the rest by platform.
 
         When `message` is set (owner `@all`), every seat that got no chat nudge is handed back to the
         event thread for one headless/routine wake (tick drains `_broadcast_wakes`).  The hand-off
         runs whatever happens here, a catalog failure included, so the route's deferred wake is
-        never lost;  and this thread never touches the coalescer, which only the event thread owns."""
+        never lost;  and this thread never touches the coalescer, which only the event thread owns.
+
+        `owner` says whose broadcast this is:  the owner's `@all` keeps the owner path, and a fleet
+        bot's `@all` (owner, Oct 27 2026) takes the peer path, so its nudges answer to the peer
+        budgets and never borrow the owner's."""
         nudged_seats: set[str] = set()
         try:
-            return self._fanout_chats(message_id, channel, topic, where, places, nudged_seats)
+            return self._fanout_chats(
+                message_id, channel, topic, where, places, nudged_seats, owner
+            )
         finally:
             if message is not None:
                 self._broadcast_wakes.put((message, frozenset(nudged_seats)))
@@ -3738,6 +3787,7 @@ class Daemon:
         where: FAN.Scope,
         places: Any,
         nudged_seats: set[str],
+        owner: bool = True,
     ) -> dict[str, Any]:
         result: dict[str, Any] = {"queued": 0, "already": 0, "no_transport": {}}
         try:
@@ -3769,7 +3819,7 @@ class Daemon:
             binding.update(channel=channel, topic=topic)
             try:
                 added = self.chat_queue(runner.seat).enqueue_target(
-                    binding, message_id, self.clock.time(), owner=True
+                    binding, message_id, self.clock.time(), owner=owner
                 )
             except ValueError:
                 # The transport was vetted above, so a refusal here is a bad binding or an unreadable state

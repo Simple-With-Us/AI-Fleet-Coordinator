@@ -273,6 +273,28 @@ test("a comment update that adds a new mention wakes the new seat only", () => {
   assert.deepEqual(decideLinearWake(payload, seatMap()).seats, [{ seat: BF, via: "mention" }]);
 });
 
+test("a comment update that did not change the body wakes nobody", () => {
+  const payload = comment({ action: "update" });
+  payload.updatedFrom = { resolvedAt: "2026-10-27T12:00:00.000Z" };
+  assert.equal(decideLinearWake(payload, seatMap()).skip, "not_a_wake_event");
+});
+
+test("a comment update diffs the id-only mentions against the previous mention ids", () => {
+  const payload = comment({ action: "update" });
+  payload.updatedFrom = { body: "look at this", mentionedUserIds: ["user-gb-fixer"] };
+  payload.data.body = "look at this";
+  payload.data.mentionedUserIds = ["user-gb-fixer"];
+  assert.equal(decideLinearWake(payload, seatMap()).skip, "not_a_wake_event");
+});
+
+test("a comment update that adds a seat by id alone wakes that seat", () => {
+  const payload = comment({ action: "update" });
+  payload.updatedFrom = { body: "look at this", mentionedUserIds: ["user-gb-fixer"] };
+  payload.data.body = "look at this";
+  payload.data.mentionedUserIds = ["user-gb-fixer", "user-bf-builder"];
+  assert.deepEqual(decideLinearWake(payload, seatMap()).seats, [{ seat: BF, via: "mention" }]);
+});
+
 // ---------------------------------------------------------------- the door
 
 test("a good signature is accepted and the seat is woken", async () => {
@@ -367,6 +389,28 @@ test("a repeated delivery id wakes nobody twice", async () => {
   const second = await run(comment(), { fetchImpl: fetcher, delivery: "dup-1" });
   assert.deepEqual(second.body, { ok: true, skipped: "duplicate" });
   assert.equal(fetcher.calls.filter((call) => call.url === GB_ENDPOINT).length, 1, "one delivery only");
+});
+
+test("a request without the delivery header is refused with 400", async () => {
+  _resetInfisicalForTests();
+  _resetLinearWakeForTests();
+  const fetcher = fakeFetch();
+  const { response, body, calls } = await run(comment(), { fetchImpl: fetcher, delivery: null });
+  assert.equal(response.status, 400);
+  assert.deepEqual(body, { error: "missing_delivery" });
+  assert.ok(!calls.some((call) => call.url === GB_ENDPOINT), "nothing is delivered");
+});
+
+test("a payload that does not match the schema is refused with 400", async () => {
+  _resetInfisicalForTests();
+  _resetLinearWakeForTests();
+  const fetcher = fakeFetch();
+  const payload = comment();
+  payload.data = "not an object";
+  const { response, body, calls } = await run(payload, { fetchImpl: fetcher });
+  assert.equal(response.status, 400);
+  assert.deepEqual(body, { error: "bad_payload" });
+  assert.ok(!calls.some((call) => call.url === GB_ENDPOINT), "nothing is delivered");
 });
 
 test("a body over the limit is 413", async () => {

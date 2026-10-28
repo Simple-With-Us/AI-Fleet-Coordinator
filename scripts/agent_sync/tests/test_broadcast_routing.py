@@ -12,6 +12,7 @@ from unittest import mock
 from agent_sync import chat_fanout as F
 from agent_sync import live as L
 from agent_sync import router as R
+from agent_sync import zulip as Z
 from agent_sync.live import topic_key
 from agent_sync.tests.harness import write_rc
 from agent_sync.tests.test_chat_fanout import FakeCatalog, cloud
@@ -521,6 +522,51 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         )
         self.assertEqual(len(daemon._broadcast_audits), 1)
 
+    def test_the_senders_own_runner_still_schedules_one_audit(self) -> None:
+        """The sender's own seat runner sees its own post as `own`, never as a peer broadcast:
+        the audit must not hang on that routing verdict, or the reminder is lost."""
+        codex_key = secrets.token_hex(16)
+        self.extra_keys.append(("codex-bot@zulip.test", codex_key))
+        self.fake.add_bot("codex-bot@zulip.test", "Codex", codex_key)
+        write_rc(
+            self.secrets_dir / "Codex-zuliprc",
+            email="codex-bot@zulip.test",
+            key=codex_key,
+            site=self.fake.url,
+        )
+        self.write_config(
+            seats='[seat.CLAUDE]\nbot = "Claude"\nwake = "claude"\n\n'
+            '[seat.CODEX]\nbot = "Codex"\nwake = "inbox"\n'
+        )
+        daemon = self.started(env=self.env(AGENT_SYNC_PARTITION=self.two_seat_partition()))
+        self.assertTrue(daemon.connect_seat("CODEX"))
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.fake.add_message(
+            "Codex", "agent-sync", "t", "@all the deploy is broken", deliver=False
+        )
+        message = next(m for m in self.fake.messages if m["id"] == message_id)
+        # The sender's own seat routes it first:  that view is `own`, not a peer broadcast.
+        daemon.route_message(daemon.seats["CODEX"], dict(message))
+        self.assertEqual(list(daemon._broadcast_audits), [message_id])
+        # A second seat's route of the same message must not schedule a second audit.
+        daemon.route_message(daemon.seats["CLAUDE"], dict(message))
+        self.assertEqual(len(daemon._broadcast_audits), 1)
+
+    def test_a_stale_peer_at_all_schedules_no_audit(self) -> None:
+        """A stale replay wakes nobody, so it must not schedule a reminder either."""
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.fake.add_message(
+            "Codex",
+            "agent-sync",
+            "t",
+            "@all the deploy is broken",
+            timestamp=int(self.clock.time()) - 10000,
+        )
+        message = next(m for m in self.fake.messages if m["id"] == message_id)
+        daemon.route_message(daemon.seats["CLAUDE"], dict(message))
+        self.assertEqual(daemon._broadcast_audits, {})
+
     def test_the_owner_at_all_schedules_no_audit(self) -> None:
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog([])
@@ -529,6 +575,46 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         )
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
         self.assertEqual(daemon._broadcast_audits, {})
+
+    def test_a_peer_broadcast_nudge_is_not_an_owner_wake(self) -> None:
+        """A fleet bot's `@all` takes the peer path:  its chat nudge answers to the peer
+        budgets and never borrows the owner's."""
+        daemon = self.started()
+        now = self.clock.time()
+        daemon._chat_catalog = FakeCatalog(
+            [dict(cloud(1, 0, ST_URL), seat="CLAUDE", updated_at=now - 60)]
+        )
+        message_id = self.peer_all()
+        queue = daemon.chat_queue("CLAUDE")
+        self.pump_until(daemon, lambda: len(queue.snapshot()["items"]) >= 1)
+        items = queue.snapshot()["items"]
+        self.assertTrue(items, "the peer broadcast queued a chat nudge")
+        self.assertEqual(items[0]["message_id"], str(message_id))
+        self.assertFalse(items[0]["owner"], "a peer broadcast is not an owner wake")
+
+    def test_a_retryable_dm_failure_keeps_the_audit_pending(self) -> None:
+        """A failed DM is classified:  a retryable one keeps the audit, so the reminder is not lost."""
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.peer_all()
+        self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
+        self.clock.advance(11 * 60)
+        runner = daemon._alert_runner()
+        self.assertIsNotNone(runner, "a seat can carry the reminder")
+        with mock.patch.object(runner.client, "post", side_effect=Z.NetworkError("no route")):
+            daemon.tick()
+            self.pump_until(
+                daemon,
+                lambda: any(
+                    row.get("event") == "peer-broadcast-all" for row in self.log_rows(daemon)
+                ),
+            )
+        rows = [r for r in self.log_rows(daemon) if r.get("event") == "peer-broadcast-all"]
+        self.assertEqual(rows[-1].get("outcome"), "reminder_failed")
+        self.assertEqual(rows[-1].get("error"), "NetworkError")
+        self.assertIn(
+            message_id, daemon._broadcast_audits, "a retryable failure keeps the audit pending"
+        )
 
     def test_the_audit_reminds_the_owner_when_nothing_explained_the_broadcast(self) -> None:
         daemon = self.started()

@@ -61,10 +61,32 @@ EXPLAINED = "explained"
 REMIND = "remind"
 REMINDED = "reminded"
 REMINDER_FAILED = "reminder_failed"
+REMINDER_UNKNOWN = "outcome_unknown"
 RATE_LIMITED = "rate_limited"
+
+#: What a failed DM to the owner means.
+#: The write is worth trying again (a 429, a 408, a 5xx, a connection that never opened).
+RETRY = "retry"
+#: The write is refused for good (a permanent 4xx):  trying again changes nothing.
+PERMANENT = "permanent"
+#: The write may have reached the server (a timeout on a POST):  the reminder may already be in
+#: Jay's inbox, so it is never sent twice.
+UNKNOWN = "unknown"
+
+#: How long a failed DM waits before the audit tries again.
+REMINDER_RETRY_SECONDS = 120.0
+
+#: How many times one audit may try again after a failed DM.
+REMINDER_MAX_ATTEMPTS = 3
 
 #: How long the owner has to be in the conversation before the `@all` is assumed to be asked for.
 OWNER_CONTEXT_MINUTES = 60
+
+#: How many messages one page of the topic history carries.
+OWNER_CONTEXT_PAGE = 100
+
+#: How many pages the check may walk back before it gives up on the window.
+OWNER_CONTEXT_MAX_PAGES = 10
 
 #: How long the sender has to explain itself before the reminder goes out.
 REMINDER_MINUTES = 10
@@ -293,6 +315,58 @@ def reminder_text(
     return "%s%s\n(Could not check its DMs: %s.)" % (first, SENTENCE_GAP, reason)
 
 
+def _message_id(message: Mapping[str, Any]) -> int:
+    """The id of a message, or 0 when it carries none."""
+    mid = message.get("id")
+    if isinstance(mid, int) and not isinstance(mid, bool):
+        return int(mid)
+    return 0
+
+
+def topic_history(
+    http: Http,
+    broadcast: Broadcast,
+    window_minutes: float = OWNER_CONTEXT_MINUTES,
+) -> tuple[list[Mapping[str, Any]], bool]:
+    """The topic's messages, far enough back to cover the owner-context window.
+
+    The window is the sixty minutes before the `@all`, so the history has to reach that far
+    back:  a fixed page of twenty messages is not enough on a busy topic, and a history that
+    stops inside the window cannot answer the question at all.  The walk pages back from the
+    broadcast until the window is covered.
+
+    The second answer says whether it managed:  False when the window is covered (the owner
+    was not in it, or was, and the caller sees it), True when the history stops inside the
+    window, which is a check that could not run rather than a check that found nothing."""
+    narrow = topic_narrow(broadcast.channel, broadcast.topic)
+    needed_until = float(broadcast.timestamp) - float(window_minutes) * 60.0
+    messages: list[Mapping[str, Any]] = []
+    seen: set[int] = set()
+    anchor = str(int(broadcast.message_id))
+    for _ in range(OWNER_CONTEXT_MAX_PAGES):
+        page = fetch_messages(http, narrow, anchor=anchor, before=OWNER_CONTEXT_PAGE, after=0)
+        fresh = [
+            message for message in page if _message_id(message) and _message_id(message) not in seen
+        ]
+        for message in fresh:
+            seen.add(_message_id(message))
+        messages.extend(fresh)
+        if not fresh or len(page) < OWNER_CONTEXT_PAGE:
+            # The history ends here, so the window is covered by what was read.
+            return messages, False
+        oldest = min(_message_id(message) for message in fresh)
+        stamps = [
+            float(message.get("timestamp"))
+            for message in fresh
+            if isinstance(message.get("timestamp"), (int, float))
+            and not isinstance(message.get("timestamp"), bool)
+        ]
+        if stamps and min(stamps) <= needed_until:
+            return messages, False
+        anchor = str(oldest)
+    return messages, True
+
+
 def evaluate(
     broadcast: Broadcast,
     *,
@@ -314,16 +388,15 @@ def evaluate(
     The transport and the clock are injected, so the whole decision runs offline in a test."""
     reason = ""
     try:
-        topic_messages = fetch_messages(
-            http,
-            topic_narrow(broadcast.channel, broadcast.topic),
-            anchor=str(int(broadcast.message_id)),
-            before=20,
-            after=0,
-        )
+        topic_messages, truncated = topic_history(http, broadcast, window_minutes)
     except Exception as exc:  # noqa: BLE001 - a failed check is a reason, not a pass
-        topic_messages = []
+        topic_messages, truncated = [], True
         reason = "its topic history could not be read (%s)" % type(exc).__name__
+    if truncated and not reason:
+        # The history stopped inside the window:  the check could not run, so it is a reason
+        # and not a pass.  The reminder still goes out, and it says that the check could not
+        # be made, rather than claiming that Jay never asked for the broadcast.
+        reason = "its topic history could not be read far enough back"
     if owner_context(
         topic_messages,
         owner_user_id=owner_user_id,
@@ -359,6 +432,26 @@ def evaluate(
         reason=reason,
     )
     return Verdict(REMIND, reason=reason, text=text)
+
+
+def dm_failure_outcome(exc: BaseException) -> str:
+    """What a failed DM to the owner means:  retry it, let it go, or never send it twice.
+
+    A retryable failure (a 429, a 408, a 5xx, a connection that never opened) is worth another
+    try, so the audit stays pending.  A permanent refusal (a 4xx) changes nothing by trying
+    again.  A write that may have reached the server (a timeout on a POST) is neither:  the
+    reminder may already be in Jay's inbox, so it is recorded as an unknown outcome and never
+    sent a second time."""
+    if isinstance(exc, Z.NetworkError):
+        return UNKNOWN if exc.maybe_sent else RETRY
+    if isinstance(exc, Z.ApiError):
+        status = int(exc.status or 0)
+        if status in (408, 429) or status >= 500:
+            return RETRY
+        return PERMANENT
+    if isinstance(exc, OSError):
+        return RETRY
+    return PERMANENT
 
 
 def sender_seat_for(email: str, seats: Iterable[str] | None = None) -> str:

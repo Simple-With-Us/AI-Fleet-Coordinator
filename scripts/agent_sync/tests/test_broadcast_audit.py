@@ -8,6 +8,7 @@ import unittest
 
 from agent_sync import broadcast_audit as BA
 from agent_sync import secretscan
+from agent_sync import zulip as Z
 
 OWNER = 12
 NOW = 1_700_000_000.0
@@ -59,6 +60,42 @@ class FakeHttp:
 
     def narrow_of(self, index: int) -> list[dict]:
         return self.calls[index][2].get("narrow") or []
+
+
+class PagedHttp:
+    """A transport that pages back through a topic's history the way Zulip does."""
+
+    def __init__(self, topic):
+        self.topic = sorted(topic, key=lambda m: m["id"])
+        self.calls: list[tuple[str, str, dict]] = []
+
+    def __call__(self, method, path, payload=None):
+        self.calls.append((method, path, dict(payload or {})))
+        narrow = payload.get("narrow") or []
+        if any(item.get("operator") == "dm" for item in narrow):
+            return {"messages": []}
+        anchor = int(payload.get("anchor") or 0)
+        before = int(payload.get("num_before") or 0)
+        rows = [m for m in self.topic if m["id"] < anchor]
+        return {"messages": rows[-before:] if before else rows}
+
+
+class BusyHttp:
+    """A transport that always answers with a full page of busy history."""
+
+    def __init__(self, count: int = BA.OWNER_CONTEXT_PAGE, ts: float = NOW - 3000):
+        self.count = count
+        self.ts = ts
+        self.calls: list[tuple[str, str, dict]] = []
+
+    def __call__(self, method, path, payload=None):
+        self.calls.append((method, path, dict(payload or {})))
+        narrow = payload.get("narrow") or []
+        if any(item.get("operator") == "dm" for item in narrow):
+            return {"messages": []}
+        anchor = int(payload.get("anchor") or 0)
+        ids = [anchor - 1 - i for i in range(self.count)]
+        return {"messages": [message(i, 99, ts=self.ts) for i in ids]}
 
 
 class OwnerContextTests(unittest.TestCase):
@@ -293,6 +330,80 @@ class TextTests(unittest.TestCase):
             "MA", "GB-ENGINEER", "work-in-progress", "sk-ant-" + "a" * 32, PERMALINK
         )
         self.assertIsNotNone(secretscan.scan(planted), "the scanner refuses it, so the DM is not sent")
+
+
+class OwnerContextWindowTests(unittest.TestCase):
+    """The window is the sixty minutes before the `@all`:  the history has to reach that far
+    back, and a history that stops inside it is a check that could not run."""
+
+    def test_jay_is_found_further_back_than_one_page(self) -> None:
+        """A busy topic:  Jay's ask is 250 messages back, so a fixed page of twenty misses it."""
+        rows = [message(2 + i, 99, ts=NOW - 3000) for i in range(250)]
+        rows.append(message(1, OWNER, ts=NOW - 3600))
+        http = PagedHttp(rows)
+        verdict = BA.evaluate(
+            broadcast(),
+            owner_user_id=OWNER,
+            http=http,
+            permalink=PERMALINK,
+            rate=BA.RateLimiter(),
+            now=NOW,
+            alert_seat="MA",
+        )
+        self.assertEqual(verdict.outcome, BA.OWNER_CONTEXT)
+
+    def test_a_history_that_stops_inside_the_window_is_a_reason_and_not_a_pass(self) -> None:
+        """The history never reaches the window:  the reminder says the check could not run."""
+        http = BusyHttp()
+        verdict = BA.evaluate(
+            broadcast(),
+            owner_user_id=OWNER,
+            http=http,
+            permalink=PERMALINK,
+            rate=BA.RateLimiter(),
+            now=NOW,
+            alert_seat="MA",
+        )
+        self.assertEqual(verdict.outcome, BA.REMIND)
+        self.assertIn("Could not check", verdict.text)
+        self.assertIn("far enough back", verdict.text)
+
+    def test_the_dm_check_still_runs_after_the_topic_history(self) -> None:
+        http = BusyHttp()
+        BA.evaluate(
+            broadcast(),
+            owner_user_id=OWNER,
+            http=http,
+            permalink=PERMALINK,
+            rate=BA.RateLimiter(),
+            now=NOW,
+            alert_seat="MA",
+        )
+        dm_call = http.calls[-1]
+        narrow = dm_call[2].get("narrow")
+        self.assertIn({"operator": "dm", "operand": [OWNER]}, narrow)
+
+
+class DmFailureTests(unittest.TestCase):
+    """A failed DM to the owner is classified:  a retryable one is kept, a permanent one is
+    dropped, and a write that may have landed is never sent twice."""
+
+    def test_a_rate_limit_is_retryable(self) -> None:
+        self.assertEqual(BA.dm_failure_outcome(Z.ApiError("slow down", status=429)), BA.RETRY)
+
+    def test_a_server_error_is_retryable(self) -> None:
+        self.assertEqual(BA.dm_failure_outcome(Z.ApiError("oops", status=503)), BA.RETRY)
+
+    def test_a_permanent_refusal_is_not_retryable(self) -> None:
+        self.assertEqual(BA.dm_failure_outcome(Z.ApiError("nope", status=400)), BA.PERMANENT)
+
+    def test_a_connection_that_never_opened_is_retryable(self) -> None:
+        self.assertEqual(BA.dm_failure_outcome(Z.NetworkError("no route")), BA.RETRY)
+
+    def test_a_write_that_may_have_landed_is_never_sent_twice(self) -> None:
+        self.assertEqual(
+            BA.dm_failure_outcome(Z.NetworkError("timeout", maybe_sent=True)), BA.UNKNOWN
+        )
 
 
 if __name__ == "__main__":
