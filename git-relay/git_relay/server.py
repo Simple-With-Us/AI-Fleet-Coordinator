@@ -589,6 +589,14 @@ def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
             value = nested.get("id")
             if isinstance(value, int) and not isinstance(value, bool):
                 detail[result_key] = value
+    for kind in ("commit", "tree", "blob"):
+        nested = result.get(kind)
+        if (
+            isinstance(nested, dict)
+            and isinstance(nested.get("sha"), str)
+            and re.fullmatch(r"[0-9a-f]{40}", nested["sha"])
+        ):
+            detail["result_" + kind + "_sha"] = nested["sha"]
     return detail
 
 

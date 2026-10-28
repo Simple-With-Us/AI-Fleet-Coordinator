@@ -98,3 +98,22 @@ class Objects(unittest.TestCase):
                 Client({"sha": sha, "encoding": "base64", "size": 1, "content": "/w=="}),
                 "wf_git_blob_get",
             ).run("wf_git_blob_get", {"repo": REPO, "sha": sha})
+
+    def test_decoded_credentials_and_commit_read_limits_refused(self):
+        raw = ("ghp_" + "a" * 30).encode()
+        sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        c = Client(
+            {
+                "sha": sha,
+                "encoding": "base64",
+                "size": len(raw),
+                "content": base64.b64encode(raw).decode(),
+            }
+        )
+        with self.assertRaises(Refused):
+            self.handle(c, "wf_git_blob_get").run("wf_git_blob_get", {"repo": REPO, "sha": sha})
+        for value in [{"message": "x" * 32769}, {"parents": [{}] * 21}]:
+            with self.assertRaises(Refused):
+                self.handle(Client(value), "wf_git_commit_get").run(
+                    "wf_git_commit_get", {"repo": REPO, "sha": SHA}
+                )

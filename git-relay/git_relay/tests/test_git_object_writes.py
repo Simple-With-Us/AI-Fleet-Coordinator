@@ -69,3 +69,26 @@ class Writes(unittest.TestCase):
             self.assertEqual(err.exception.status, 502)
             self.assertEqual(len(c.calls), 1)
             self.assertNotIn(a, _REAPPLY_STATE_ACTIONS)
+
+    def test_audit_identifiers_only_and_path_scanned(self):
+        from git_relay.server import _workflow_audit_detail
+
+        result = {
+            "commit": {"sha": SHA, "message": "omit"},
+            "tree": {"sha": SHA},
+            "blob": {"sha": SHA, "text": "omit"},
+        }
+        detail = _workflow_audit_detail({}, result)
+        self.assertEqual(
+            detail, {"result_commit_sha": SHA, "result_tree_sha": SHA, "result_blob_sha": SHA}
+        )
+        with self.assertRaises(Refused):
+            WorkflowVerbs.check_shape(
+                "wf_git_tree_create",
+                {
+                    "repo": REPO,
+                    "base_tree": SHA,
+                    "files": [{"path": "ghp_" + "a" * 30, "text": "hi", "mode": "100644"}],
+                },
+                REPO,
+            )

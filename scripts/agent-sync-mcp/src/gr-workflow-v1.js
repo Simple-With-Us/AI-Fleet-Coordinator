@@ -1,3 +1,4 @@
+import {z} from 'zod';
 // Default-off caller contract. hosted-tools registers these tools, but they are neither listed nor
 // callable unless the owner sets GR_WORKFLOW_TOOLS=on (config.grWorkflowEnabled).
 // Contract for the git-relay wf_ workflow verbs (git-relay/git_relay/workflow_verbs.py).
@@ -99,8 +100,25 @@ export function boundedWorkflowInput(args) {
 // mirror that here so bad input fails before network instead of as a relay 400.
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
+const gitSha=z.string().regex(/^[0-9a-f]{40}$/);
+const utfBytes=(limit,nonblank=false)=>z.string().refine(v=>(!nonblank||v.trim()!=='')&&new TextEncoder().encode(v).length<=limit);
+function gitSchema(schema){
+ if(schema.type==='object')return z.object(Object.fromEntries(Object.entries(schema.properties).map(([k,v])=>[k,schema.required.includes(k)?gitSchema(v):gitSchema(v).optional()]))).strict();
+ if(schema.type==='array')return z.array(gitSchema(schema.items)).min(schema.minItems).max(schema.maxItems);
+ if(schema.type==='integer')return z.number().int().min(schema.minimum).max(schema.maximum);
+ if(schema.type==='boolean')return z.boolean();
+ let out=z.string();if(schema.minLength)out=out.min(schema.minLength);if(schema.maxLength)out=out.max(schema.maxLength);if(schema.pattern)out=out.regex(new RegExp(schema.pattern));if(schema.enum)out=out.refine(v=>schema.enum.includes(v));return out;
+}
+const gitArgsOk=(action,args)=>{
+ if(!action.startsWith('wf_git_'))return true;
+ if(!gitSchema(SPECS[action][1]).safeParse(args).success)return false;
+ if(action==='wf_git_blob_create')return utfBytes(40000).safeParse(args.text).success;
+ if(action==='wf_git_commit_create')return utfBytes(32768,true).safeParse(args.message).success&&new Set(args.parents).size===args.parents.length;
+ if(action==='wf_git_tree_create')return args.files.reduce((n,x)=>n+new TextEncoder().encode(x.text).length,0)<=40000;
+ return true;
+};
 export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
-  (action !== 'wf_review_submit' && action !== 'wf_review_inline' || reviewBodyOk(args));
+  (action !== 'wf_review_submit' && action !== 'wf_review_inline' || reviewBodyOk(args)) && gitArgsOk(action,args);
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
@@ -125,12 +143,16 @@ const RESPONSE_KEYS = {
 };
 export function validWfV1Response(action, body) {
  if(action.startsWith('wf_git_')){
-   const key=action.includes('_blob_')?'blob':action.startsWith('wf_git_commit_')?'commit':'tree',v=body?.[key];
-   if(!v || typeof v.sha !== 'string' || !/^[0-9a-f]{40}$/.test(v.sha)) return false;
-   if(key==='blob' && (!Number.isInteger(v.size) || v.size<0 || v.size>40000 || action==='wf_git_blob_get' && (typeof v.text!=='string' || new TextEncoder().encode(v.text).length!==v.size)))return false;
-   if(key==='commit' && (typeof v.tree_sha!=='string' || !/^[0-9a-f]{40}$/.test(v.tree_sha) || !Array.isArray(v.parents) || v.parents.length>20 || !v.parents.every(x=>typeof x==='string'&&/^[0-9a-f]{40}$/.test(x)) || typeof v.message!=='string' || new TextEncoder().encode(v.message).length>32768)) return false;
-   if(action==='wf_git_tree_create' && (!Number.isInteger(v.files) || v.files<1 || v.files>20))return false;
-   if(action==='wf_git_tree_get' && (!Array.isArray(v.entries) || v.entries.length>100 || typeof v.truncated!=='boolean' || !v.entries.every(x=>x&&typeof x.sha==='string'&&/^[0-9a-f]{40}$/.test(x.sha)&&['blob','tree','commit'].includes(x.type)&&['100644','100755','040000','120000','160000'].includes(x.mode)&&typeof x.path==='string'&&x.path.length>0&&new TextEncoder().encode(x.path).length<=1024))) return false;
+   const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768)}).strict();
+   const schemas={
+    wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000)}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
+    wf_git_blob_create:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000)}).strict()}).strict(),
+    wf_git_commit_get:z.object({commit:commitRead}).strict(),
+    wf_git_tree_get:z.object({tree:z.object({sha:gitSha,truncated:z.boolean(),entries:z.array(z.object({sha:gitSha,type:z.enum(['blob','tree','commit']),mode:z.enum(['100644','100755','040000','120000','160000']),path:utfBytes(1024,true)}).strict()).max(100)}).strict()}).strict(),
+    wf_git_tree_create:z.object({tree:z.object({sha:gitSha,files:z.number().int().min(1).max(20)}).strict()}).strict(),
+    wf_git_commit_create:z.object({commit:z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).min(1).max(2).refine(v=>new Set(v).size===v.length)}).strict()}).strict()
+   };
+   const parsed=schemas[action]?.safeParse(body);if(!parsed?.success)return false;body=parsed.data;
  }
 
   const keys = RESPONSE_KEYS[action];

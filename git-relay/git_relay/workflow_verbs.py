@@ -721,6 +721,8 @@ class WorkflowVerbs:
                 raise Refused("invalid file")
             _only(value, ("path", "text", "mode"))
             path = _path(value)
+            if find_secret(path):
+                raise Refused("credential-shaped file path refused")
             mode = _enum(value, "mode", ("100644", "100755"))
             text = value.get("text")
             if (
@@ -785,7 +787,6 @@ class WorkflowVerbs:
                 not isinstance(x, dict) or x.get("sha") != expected
                 for x, expected in zip(result["parents"], parents)
             )
-            or result.get("message") != message
         ):
             raise RelayGitHubError(502, "commit creation receipt unverifiable")
         return {
@@ -793,7 +794,6 @@ class WorkflowVerbs:
                 "sha": result["sha"],
                 "tree_sha": tree,
                 "parents": parents,
-                "message": message,
             }
         }
 
@@ -825,7 +825,9 @@ class WorkflowVerbs:
             or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() != sha
         ):
             raise RelayGitHubError(502, "blob identity unverifiable")
-        # Relay response scanning also checks decoded text, not opaque base64.
+        if find_secret(text):
+            raise Refused("credential-shaped blob text refused")
+        # Explicitly scan decoded text, never opaque base64.
         return {"blob": {"sha": sha, "size": len(raw), "text": text}}
 
     def wf_git_blob_create(self, repo, args):
@@ -849,6 +851,13 @@ class WorkflowVerbs:
         _only(args, ("repo", "sha"))
         sha = _sha(args, "sha")
         result = self._get(f"/repos/{repo}/git/commits/{sha}")
+        if isinstance(result, dict) and (
+            isinstance(result.get("message"), str)
+            and len(result["message"].encode("utf-8")) > 32768
+            or isinstance(result.get("parents"), list)
+            and len(result["parents"]) > 20
+        ):
+            raise Refused("commit exceeds supported read limits")
         if (
             not isinstance(result, dict)
             or result.get("sha") != sha

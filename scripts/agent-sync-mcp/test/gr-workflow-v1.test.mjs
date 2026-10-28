@@ -216,9 +216,18 @@ test('bounded git object fixed own-bearer calls and unknown blob creates',async(
 });
 
 test('unattached tree commit writes have closed schemas own bearer and UNKNOWN',async()=>{
- for(const [action,args,reply] of [['wf_git_tree_create',{base_tree:'a'.repeat(40),files:[{path:'x.txt',text:'hi',mode:'100644'}]},{tree:{sha:'b'.repeat(40),files:1}}],['wf_git_commit_create',{tree_sha:'a'.repeat(40),parents:['b'.repeat(40)],message:'edit'},{commit:{sha:'c'.repeat(40),tree_sha:'a'.repeat(40),parents:['b'.repeat(40)],message:'edit'}}]]){
+ for(const [action,args,reply] of [['wf_git_tree_create',{base_tree:'a'.repeat(40),files:[{path:'x.txt',text:'hi',mode:'100644'}]},{tree:{sha:'b'.repeat(40),files:1}}],['wf_git_commit_create',{tree_sha:'a'.repeat(40),parents:['b'.repeat(40)],message:'edit'},{commit:{sha:'c'.repeat(40),tree_sha:'a'.repeat(40),parents:['b'.repeat(40)]}}]]){
   assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,author:'other'}));
   const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
   const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_'+action,{repo,...args});assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
  }
+});
+
+test('Git create UTF8 budgets and strict receipt parent sets',()=>{
+ const args={repo,tree_sha:'a'.repeat(40),parents:['b'.repeat(40)],message:'edit'};
+ assert.ok(!validWfV1Args('wf_git_commit_create',{...args,message:'é'.repeat(16385)}));
+ assert.ok(!validWfV1Args('wf_git_commit_create',{...args,parents:['b'.repeat(40),'b'.repeat(40)]}));
+ assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:'é'.repeat(20001)}));
+ assert.ok(!validWfV1Response('wf_git_commit_create',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[]}}));
+ assert.ok(!validWfV1Response('wf_git_commit_create',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:['c'.repeat(40),'c'.repeat(40)]}}));
 });
