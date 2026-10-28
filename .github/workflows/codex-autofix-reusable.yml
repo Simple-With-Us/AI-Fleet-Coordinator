@@ -278,12 +278,22 @@ jobs:
           # "run started" comment.  Normalized as the action normalizes:
           # lowercased,  [bot] stripped.  Only the normalized allowlisted
           # requester reaches the marker below.
-          allowed=false
-          IFS=',' read -ra swu_bots <<< "$ALLOWED_BOTS"
-          for swu_bot in "${swu_bots[@]}"; do
-            swu_bot=$(printf '%s' "$swu_bot" | tr -d '[:space:]' | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
-            if [ "$swu_bot" = "$requester" ]; then allowed=true; break; fi
-          done
+          #
+          # The allowlist gates bot reviewers.  A workflow_dispatch run is
+          # requested by a human,  whose login is not a bot login;  requiring it
+          # to be on a bot list would silently skip every manual dispatch,  which
+          # the event handling above deliberately supports.  The dispatch itself
+          # already needs write access to the repository,  so the bot list has
+          # nothing to add there.
+          allowed=true
+          if [ "$GITHUB_EVENT_NAME" = "pull_request_review" ]; then
+            allowed=false
+            IFS=',' read -ra swu_bots <<< "$ALLOWED_BOTS"
+            for swu_bot in "${swu_bots[@]}"; do
+              swu_bot=$(printf '%s' "$swu_bot" | tr -d '[:space:]' | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
+              if [ "$swu_bot" = "$requester" ]; then allowed=true; break; fi
+            done
+          fi
           if [ "$allowed" != "true" ]; then
             echo "::notice::$author is not in allowed_bots, skipping before any marker write"
             echo "skip=true" >> "$GITHUB_OUTPUT"

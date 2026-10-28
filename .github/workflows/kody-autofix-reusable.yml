@@ -4,18 +4,11 @@ name: Kody MiniMax M3 Fix Proposals (Reusable)
 # The trusted helper is independently pinned to its immutable publication commit.
 # Provider: MiniMax M3.1 Flash through MiniMax's OpenAI-compatible chat completions (owner 2026-10-20).
 # Callers forward MODEL_API_KEY explicitly from the provider-specific organization secret.
-#
-# Canonical home:  this repository now holds the fleet's shared reusable workflows,  so this
-# file is the one copy every caller pins.  The helper it pins is still
+# Canonical home:  this repository holds the fleet's shared reusable workflows,  so this file
+# is the one copy every caller pins.  The helper it pins is still
 # Simple-With-Us/congress-trading-shared/.github/kody-autofix at the commit below,  because
 # the helper source lives there;  only the workflow that calls it lives here.
-#
-# Infisical /github-org preflight:  the fleet-ops prod /github-org folder holds the org-wide
-# provider keys,  so a caller that cannot hold the provider secret itself can instead pass the
-# universal-auth machine identity of this repository and let the preflight fetch the key at
-# run time.  The preflight runs in the same job as the model call,  because a masked value
-# cannot travel through a job output.  The fetch script is checked out from this repository at
-# a pinned commit,  so a pull-request branch can never substitute the fetch logic.
+
 on:
   workflow_call:
     inputs:
@@ -53,14 +46,8 @@ on:
         default: https://api.minimax.io/v1
     secrets:
       MODEL_API_KEY:
-        description: Provider key for model_base_url, forwarded explicitly by the caller.  Optional when the Infisical /github-org preflight supplies the credential instead.
-        required: false
-      INFISICAL_UNIVERSAL_AUTH_CLIENT_ID:
-        description: Universal-auth client id for the fleet-ops prod /github-org preflight.  Optional when the caller forwards MODEL_API_KEY.
-        required: false
-      INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET:
-        description: Universal-auth client secret for the fleet-ops prod /github-org preflight.  Optional when the caller forwards MODEL_API_KEY.
-        required: false
+        description: Provider key for model_base_url, forwarded explicitly by the caller
+        required: true
       USAGE_INGEST_TOKEN:
         description: Usage Monitor ingest token scoped to the ci-autofix producer, forwarded explicitly by the caller.  Optional;  without it the usage report is skipped.
         required: false
@@ -124,6 +111,31 @@ jobs:
         run: node trusted-helper/.github/kody-autofix/fleet.mjs prepare "$RUNNER_TEMP/kody-autofix"
         env:
           GH_TOKEN: ${{ github.token }}
+      # The context is user-supplied text,  and the artifact below persists it.  Scan it with
+      # the pinned scanner first,  fail closed on a hit,  and upload only what came back clean.
+      # The same scan runs again in the job that holds the provider credential;  this one
+      # guards the artifact store,  which is where an unscanned credential would otherwise
+      # land first.
+      - name: Install Verified Gitleaks Scanner
+        if: steps.prepare.outputs.eligible == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools_dir="$RUNNER_TEMP/kody-tools"
+          mkdir -p "$tools_dir"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            --max-time 60 --retry 0 \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$tools_dir/gitleaks.tar.gz"
+          printf '%s  %s\n' '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' "$tools_dir/gitleaks.tar.gz" | sha256sum --check --strict
+          tar --extract --gzip --file "$tools_dir/gitleaks.tar.gz" --directory "$tools_dir" \
+            --no-same-owner --no-same-permissions gitleaks
+          chmod 0755 "$tools_dir/gitleaks"
+      - name: Reject Secret-Bearing Context Before It Is Persisted
+        if: steps.prepare.outputs.eligible == 'true'
+        run: node trusted-helper/.github/kody-autofix/fleet.mjs scan "$RUNNER_TEMP/kody-autofix"
+        env:
+          GITLEAKS_BIN: ${{ runner.temp }}/kody-tools/gitleaks
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: steps.prepare.outputs.eligible == 'true'
         with:
@@ -190,20 +202,11 @@ jobs:
       contents: read
       actions: read
     steps:
-      # Fail fast when the caller supplied no credential at all,  before the
-      # scanner and the helper run.  Only the presence flags travel in the
-      # environment;  the key itself stays in the secret context.
-      - name: Require A Provider Credential
+      - name: Require Forwarded Provider Credential
         shell: bash
         env:
-          HAS_FORWARDED: ${{ secrets.MODEL_API_KEY != '' }}
-          HAS_INFISICAL: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID != '' && secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET != '' }}
-        run: |
-          set -euo pipefail
-          if [ "$HAS_FORWARDED" != "true" ] && [ "$HAS_INFISICAL" != "true" ]; then
-            echo "::error::no provider credential: forward MODEL_API_KEY or grant the Infisical /github-org preflight"
-            exit 1
-          fi
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
+        run: test -n "$MODEL_API_KEY"
       - name: Check Out Trusted Helper Only
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -244,53 +247,11 @@ jobs:
         run: node trusted-helper/.github/kody-autofix/fleet.mjs scan "$RUNNER_TEMP/kody-autofix"
         env:
           GITLEAKS_BIN: ${{ runner.temp }}/kody-tools/gitleaks
-      # The provider credential enters the job only after the context scan above,  so the
-      # scan really does run without it.  A caller that forwards MODEL_API_KEY wins over the
-      # preflight;  a caller that does not gets the key from the Infisical /github-org path.
-      - name: Check Out The Trusted Infisical Fetch Script
-        if: ${{ secrets.MODEL_API_KEY == '' && secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID != '' && secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET != '' }}
-        uses: actions/checkout@3d3c42e5aac5ba805da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: Simple-With-Us/AI-Fleet-Coordinator
-          # Pinned to the commit that carries scripts/infisical-fetch.mjs.  Advance this SHA
-          # when that script changes;  the pin is what keeps a pull-request branch from
-          # substituting the fetch logic.
-          ref: 'afa98765961c4a88c88b2a078e0c2120b73b8fea'
-          path: trusted-infisical
-          persist-credentials: false
-          sparse-checkout: scripts/infisical-fetch.mjs
-          sparse-checkout-cone-mode: false
-      - name: Load MiniMax from Infisical /github-org (same job; no job outputs)
-        if: ${{ secrets.MODEL_API_KEY == '' && secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID != '' && secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET != '' }}
-        shell: bash
-        env:
-          INFISICAL_NAMES: MINIMAX_API_KEY
-          INFISICAL_REQUIRED: MINIMAX_API_KEY
-          INFISICAL_PROJECT_ID: 8dae6d03-8f12-48b2-adf3-e5c1b881c8c5
-          INFISICAL_ENVIRONMENT: prod
-          INFISICAL_SECRET_PATH: /github-org
-          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID }}
-          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET }}
-        run: node trusted-infisical/scripts/infisical-fetch.mjs
-      - name: Wire The Provider Credential
-        shell: bash
-        env:
-          FORWARDED_MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -n "$FORWARDED_MODEL_API_KEY" ]; then
-            echo "MODEL_API_KEY=$FORWARDED_MODEL_API_KEY" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          if [ -z "${MINIMAX_API_KEY:-}" ]; then
-            echo "::error::no provider credential: forward MODEL_API_KEY or grant the Infisical /github-org preflight"
-            exit 1
-          fi
-          echo "MODEL_API_KEY=$MINIMAX_API_KEY" >> "$GITHUB_ENV"
       # One bounded chat-completions request from the trusted helper; no CLI, tools, or proxy.
       - name: Generate One Bounded Proposal
         run: node trusted-helper/.github/kody-autofix/fleet.mjs generate "$RUNNER_TEMP/kody-autofix"
         env:
+          MODEL_API_KEY: ${{ secrets.MODEL_API_KEY }}
           KODY_MODEL: ${{ inputs.model }}
           KODY_MODEL_BASE_URL: ${{ inputs.model_base_url }}
       - name: Reject Secret-Bearing Generated Results
