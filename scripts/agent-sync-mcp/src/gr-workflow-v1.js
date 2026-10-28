@@ -18,6 +18,8 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_git_blob_binary_get:['Read exact Git blob as bounded base64 (32000 bytes), verified Git SHA1 and known ASCII credential-pattern scan. No range, larger blob, write or secret-free guarantee.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
+
  wf_git_blob_get:['Read bounded UTF-8 blob by exact SHA (40KiB maximum).',obj(['repo','sha'],{repo:REPO,sha:SHA})],
  wf_git_blob_create:['Create unattached bounded UTF-8 blob; no ref or tree changes.',obj(['repo','text'],{repo:REPO,text:{type:'string',maxLength:40000}})],
  wf_git_commit_get:['Read bounded Git commit object, not full REST commit diff.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
@@ -67,7 +69,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_git_blob_binary_get','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -129,6 +131,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_git_blob_binary_get:['blob'],
  wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
   wf_pr_get:['pull'],
   wf_pr_reviews:['reviews','complete'],
@@ -163,6 +166,8 @@ export function validWfV1Response(action, body) {
  if(action.startsWith('wf_git_')){
    const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768)}).strict();
    const schemas={
+    wf_git_blob_binary_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(32000),content_b64:z.string().max(42668).regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)}).strict().refine(v=>{const raw=Buffer.from(v.content_b64,'base64');return raw.length===v.size&&raw.toString('base64')===v.content_b64&&!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(raw.toString('latin1'));})}).strict(),
+
     wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000)}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
     wf_git_blob_create:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000)}).strict()}).strict(),
     wf_git_commit_get:z.object({commit:commitRead}).strict(),

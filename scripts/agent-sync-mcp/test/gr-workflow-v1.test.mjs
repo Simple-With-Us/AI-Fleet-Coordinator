@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,43);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,44);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,43);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,44);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -245,4 +245,11 @@ test('git read contracts accept actual whitespace filenames and refuse absent wr
  const tree={tree:{sha:'a'.repeat(40),truncated:false,entries:[{sha:'b'.repeat(40),type:'blob',mode:'100644',path:' '}]}};
  assert.ok(validWfV1Response('wf_git_tree_get',tree));tree.tree.entries[0].path='';assert.equal(validWfV1Response('wf_git_tree_get',tree),false);
  assert.equal(validWfV1Args('wf_git_commit_create',{}),false);assert.equal(validWfV1Response('wf_git_commit_create',{}),false);
+});
+
+test('bounded binary blob reads canonical base64 and decoded credential boundary',async()=>{
+ const action='wf_git_blob_binary_get',args={repo,sha:'a'.repeat(40)},blob={sha:args.sha,size:2,content_b64:'/wA='};
+ assert.ok(validWfV1Args(action,args));assert.ok(!validWfV1Args(action,{...args,url:'evil'}));assert.ok(validWfV1Response(action,{blob}));assert.equal(validWfV1Response(action,{blob:{...blob,size:1}}),false);
+ const raw=Buffer.from('ghp_'+'x'.repeat(36));assert.equal(validWfV1Response(action,{blob:{sha:args.sha,size:raw.length,content_b64:raw.toString('base64')}}),false);
+ const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({blob}));});assert.ok(!(await t.call('gr_'+action,args)).isError);
 });

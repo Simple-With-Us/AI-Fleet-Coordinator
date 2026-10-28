@@ -55,6 +55,7 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_git_blob_binary_get": ({"contents": "read"}, False),
     "wf_git_blob_get": ({"contents": "read"}, False),
     "wf_git_blob_create": ({"contents": "write"}, True),
     "wf_git_commit_get": ({"contents": "read"}, False),
@@ -865,6 +866,43 @@ class WorkflowVerbs:
 
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
+
+    def wf_git_blob_binary_get(self, repo, args):
+        _only(args, ("repo", "sha"))
+        sha = _sha(args, "sha")
+        value = self._get(f"/repos/{repo}/git/blobs/{sha}")
+        if isinstance(value, dict) and type(value.get("size")) is int and value["size"] > 32000:
+            raise Refused("binary blob exceeds supported size")
+        if (
+            not isinstance(value, dict)
+            or value.get("sha") != sha
+            or value.get("encoding") != "base64"
+            or type(value.get("size")) is not int
+            or not 0 <= value["size"] <= 32000
+            or not isinstance(value.get("content"), str)
+            or len(value["content"]) > 48000
+        ):
+            raise RelayGitHubError(502, "binary blob receipt unverifiable")
+        try:
+            raw = base64.b64decode(value["content"].replace("\n", ""), validate=True)
+        except (ValueError, binascii.Error):
+            raise RelayGitHubError(502, "binary blob encoding unverifiable") from None
+        if (
+            len(raw) != value["size"]
+            or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() != sha
+        ):
+            raise RelayGitHubError(502, "binary blob identity unverifiable")
+        # Latin1 preserves all ASCII credential-shaped byte sequences, even in binary.
+        # This is known-pattern scanning, never a guarantee of secret-free content.
+        if find_secret(raw.decode("latin1")):
+            raise Refused("credential-shaped binary blob refused")
+        return {
+            "blob": {
+                "sha": sha,
+                "size": len(raw),
+                "content_b64": base64.b64encode(raw).decode("ascii"),
+            }
+        }
 
     def wf_git_blob_get(self, repo, args):
         _only(args, ("repo", "sha"))
