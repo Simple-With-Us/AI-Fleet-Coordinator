@@ -719,3 +719,19 @@ test("legacy missing acceptance is distinct from explicit GR-only in status", as
   assert.equal(legacy.mcp_accept_recorded,false);
   assert.equal((await S.gbBearerCheck(store,hash,NOW+1)).mcp_accept,false);
 });
+
+
+test("bearer activity cannot hide missing or unknown service readiness", async () => {
+  const html = await adminPage({ email: "offline@example.invalid", seats: [], clients: [], refusals: [], audits: [], calls: [], csrf: "a".repeat(64), generatedAt: NOW, gbBearers: [
+    {identity: "ECHO", kind: "seat", credentials: false, status: {active: true, mcp_accept: true}},
+    {identity: "CODEX", kind: "seat", credentials: false, credentialsUnavailable: true, status: {active: true}},
+    {identity: ID, kind: "persona", credentials: false, status: {active: true}},
+    {identity: "WISE", kind: "seat", credentials: true, status: {active: true}},
+  ]}, new Headers()).text();
+  assert.match(html, /Service Readiness/);
+  assert.match(html, /class="service-missing">Missing Zulip credentials \(token or bot email\)/);
+  assert.match(html, /Not ready for service calls; an active bearer is not service readiness/);
+  assert.match(html, /Service readiness unknown \(diagnostic read failed\)/);
+  assert.match(html, /Missing service credentials \(Zulip or Linear bundle\)/);
+  assert.match(html, /Service credentials loaded; connectivity not verified/);
+});
