@@ -1,7 +1,9 @@
 import unittest
-from .test_workflow_verbs import Client, Policy, REPO
-from git_relay.workflow_verbs import WorkflowVerbs, Refused, SPECS
+
 from git_relay.server import _REAPPLY_STATE_ACTIONS
+from git_relay.workflow_verbs import SPECS, Refused, WorkflowVerbs
+
+from .test_workflow_verbs import REPO, Client, Policy
 
 
 class Variables(unittest.TestCase):

@@ -82,7 +82,6 @@ class SeatPolicy:
         "wf_repo_variable_create",
         "wf_repo_variable_update",
         "wf_repo_variable_delete",
-
         "wf_pr_get",
         "wf_pr_reviews",
         "wf_pr_comments",
