@@ -176,7 +176,9 @@ class GitHubClient:
         self._base = base_url.rstrip("/")
         self._opener = opener or urllib.request.build_opener(_NoRedirect()).open
 
-    def _call(self, method: str, path: str, payload: dict | None = None, bearer=None) -> dict:
+    def _call(
+        self, method: str, path: str, payload: dict | None = None, bearer=None, expected_status=None
+    ) -> dict:
         if bearer is not None and not bearer:
             # Fail closed:  an empty task credential must never fall back to the
             # owner token and run a privileged write under the wrong identity.
@@ -202,6 +204,8 @@ class GitHubClient:
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
                 raw = resp.read(MAX_BODY + 1)
+                if expected_status is not None and (resp.status != expected_status or raw):
+                    raise RelayGitHubError(502, "unexpected upstream completion status or body")
         except urllib.error.HTTPError as exc:
             preview = exc.read(MAX_ERROR_PREVIEW).decode("utf-8", "replace")
             code = None

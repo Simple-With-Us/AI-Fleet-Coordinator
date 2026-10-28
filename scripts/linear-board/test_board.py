@@ -1763,9 +1763,7 @@ class SafetyTests(BoardTest):
         old = self.tmp / "old-board"
         old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
         extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
-        p = self.board(
-            "list", "--app", "AFC", drop=("AGENT_SEAT",), extra=extra
-        )
+        p = self.board("list", "--app", "AFC", drop=("AGENT_SEAT",), extra=extra)
         self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])
         # a write never rides the rollback backend:  it would skip the bearer-verified seat
@@ -2893,11 +2891,17 @@ class RelabelTests(BoardTest):
         # to a minted bearer and its verify route.  A test that wants no seat drops the locator.
         if "SIMPLE_BOARD_BEARER_LOCATOR" not in drop and "SIMPLE_BOARD_BEARER_LOCATOR" not in e:
             e["SIMPLE_BOARD_BEARER_LOCATOR"] = self.bearer_locator_for("CLAUDE")
-        if "SIMPLE_BOARD_BEARER_VERIFY_URL" not in drop and "SIMPLE_BOARD_BEARER_VERIFY_URL" not in e:
+        if (
+            "SIMPLE_BOARD_BEARER_VERIFY_URL" not in drop
+            and "SIMPLE_BOARD_BEARER_VERIFY_URL" not in e
+        ):
             e["SIMPLE_BOARD_BEARER_VERIFY_URL"] = self.verify_url
         p = subprocess.run(
             [PY, "-c", RELABEL_BOOTSTRAP, str(RELABEL), *args],
-            env=e, capture_output=True, text=True, timeout=60
+            env=e,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         self.assertEqual(
             p.returncode, code, f"exit {p.returncode}\nstdout:\n{p.stdout}\nstderr:\n{p.stderr}"
@@ -2951,6 +2955,44 @@ class RelabelTests(BoardTest):
         p = self.relabel(code=4)
         self.assertIn("no Fleet credentials", p.stderr)
         self.assertEqual((self.mock.mints, self.mock.ops), (0, []))
+
+    def test_a_dry_run_never_verifies_the_bearer(self):
+        # A dry run writes nothing, so it must not verify the bearer:  the verify route is a network
+        # round trip that can refuse, and a plan that dies before it prints is not a plan.
+        p = self.relabel()
+        self.assertIn("2 issue(s) to mark", p.stdout)
+        self.assertEqual(self.verify_store["queries"], [], "the dry run verified the bearer")
+
+    def test_apply_accepts_the_cloud_pair_that_holds_the_seat_app(self):
+        # A cloud host's own pair may hold the seat's app:  that is the operator's deliberate choice
+        # for that host and the README promises the script works with it, so the write must not be
+        # refused as a swap.  The seat stays the gate, never the identity.
+        self.mock.add_client("cloud-pair-id", "cloud-pair-secret", "Claude")
+        p = self.relabel(
+            "--apply",
+            extra={
+                "LINEAR_CLIENT_ID": "cloud-pair-id",
+                "LINEAR_CLIENT_SECRET": "cloud-pair-secret",
+            },
+        )
+        self.assertIn("2 issue(s) to mark", p.stdout)
+        self.assertNotIn("belong to the", p.stderr)
+        self.assertEqual(self.mock.ops.count("BoardUpdate"), 2)
+
+    def test_apply_refuses_the_cloud_pair_that_holds_another_seat_app(self):
+        # The other half of the same check:  a pair holding another seat's app is a swap, and the
+        # script still refuses it before it writes anything.
+        self.mock.add_client("cloud-pair-id", "cloud-pair-secret", "Codex")
+        p = self.relabel(
+            "--apply",
+            extra={
+                "LINEAR_CLIENT_ID": "cloud-pair-id",
+                "LINEAR_CLIENT_SECRET": "cloud-pair-secret",
+            },
+            code=4,
+        )
+        self.assertIn("the 'Codex' app", p.stderr)
+        self.assertEqual([o for o in self.mock.ops if o in WRITE_OPS], [])
 
 
 WRITE_OPS = {
@@ -3982,9 +4024,7 @@ class FlatLabelTests(BoardTest):
             self.assertNotIn("OLD BOARD", p.stdout, args)
         # A write verb with no Linear-only flag still does not reach the archived CLI:
         # the frozen findings.db is read-only, so the backend refuses it first.
-        p = self.board(
-            "list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT",)
-        )
+        p = self.board("list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT",))
         self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])
 

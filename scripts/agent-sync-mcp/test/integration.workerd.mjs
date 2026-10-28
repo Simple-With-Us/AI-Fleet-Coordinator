@@ -1887,7 +1887,7 @@ try {
     const grOnlyHtml = await grOnly.text();
     const grToken = grOnlyHtml.match(/sbt_jet-chat_[A-Za-z0-9_-]{43}/)?.[0];
     assert.ok(grToken, "the mint response shows the seat token once");
-    assert.ok(grOnlyHtml.includes("ST-MCP&#39;s /mcp refuses this bearer"), "the unticked mint's reveal says /mcp refuses it");
+    assert.ok(grOnlyHtml.includes("Fleet MCP&#39;s /mcp refuses this bearer"), "the unticked mint's reveal says /mcp refuses it");
     assert.ok(!grOnlyHtml.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"), "and never implies it works on /mcp");
     assert.equal((await mcp(grToken, "tools/list")).status, 401, "no recorded acceptance, no /mcp");
     // Re-minted with the acceptance ticked.
