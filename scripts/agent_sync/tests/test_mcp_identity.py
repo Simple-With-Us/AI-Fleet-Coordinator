@@ -17,7 +17,7 @@ from agent_sync import identities as X
 from agent_sync.mcp import identity_router as R
 from agent_sync.mcp import tools as T
 from agent_sync.tests.harness import TAG, write_rc
-from agent_sync.tests.mcp_harness import McpHarness, zulip_shaped
+from agent_sync.tests.mcp_harness import McpHarness, seat_bearer_locator, zulip_shaped
 
 ENABLED = X.gb_identities()
 PERSONA = ENABLED[1]  # any enabled persona works;  the table decides which
@@ -58,6 +58,15 @@ class IdentityHarness(McpHarness):
             )
         self.expected = sorted(
             {"CLAUDE", "CURSOR", "BF-PLUMBER"} | ({PERSONA, "GB-RETIRED"} & set(ENABLED))
+        )
+        # board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT,
+        # so every seat this suite acts as gets its own locator in the installed listener.toml.  Without
+        # one a Linear write is refused before board runs.
+        self.pin_seat_bearers(
+            {
+                seat: seat_bearer_locator(seat)
+                for seat in ("CLAUDE", "CURSOR", "BF-PLUMBER", PERSONA)
+            }
         )
 
     def error(self, result: dict) -> dict:
