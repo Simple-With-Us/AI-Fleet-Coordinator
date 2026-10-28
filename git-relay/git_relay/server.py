@@ -759,7 +759,9 @@ def make_handler(relay: Relay):
             except ValueError:
                 self._send(400, {"error": "bad Content-Length"})
                 return
-            cap = MAX_BINARY_REQUEST_BYTES if action in BINARY_REQUEST_ACTIONS else MAX_REQUEST_BYTES
+            cap = (
+                MAX_BINARY_REQUEST_BYTES if action in BINARY_REQUEST_ACTIONS else MAX_REQUEST_BYTES
+            )
             if length < 1 or length > cap:
                 self._send(400, {"error": "request body missing or over the 64 KiB bound"})
                 return

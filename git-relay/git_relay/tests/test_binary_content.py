@@ -1,9 +1,9 @@
 import base64
 import gzip
 import io
+import unittest
 import urllib.error
 import zipfile
-import unittest
 from email.message import Message
 
 try:
@@ -59,11 +59,11 @@ def redirecting(location, second):
 class DownloadClient(unittest.TestCase):
     def test_bearer_only_to_api_origin_and_range_requested(self):
         loc = "https://release-assets.githubusercontent.com/x?sig=1"
-        opener, seen = redirecting(
-            loc, Resp(206, b"abc", hdrs(Content_Range="bytes 2-4/10"))
-        )
+        opener, seen = redirecting(loc, Resp(206, b"abc", hdrs(Content_Range="bytes 2-4/10")))
         c = GitHubClient("owner-unused", opener=opener)
-        data, total = c.download_chunk("/repos/o/r/releases/assets/7", "own", 2, 3, "application/octet-stream")
+        data, total = c.download_chunk(
+            "/repos/o/r/releases/assets/7", "own", 2, 3, "application/octet-stream"
+        )
         self.assertEqual((data, total), (b"abc", 10))
         self.assertEqual(seen[0].get_header("Authorization"), "Bearer own")
         self.assertTrue(seen[0].full_url.startswith("https://api.github.com/"))
@@ -95,10 +95,14 @@ class DownloadClient(unittest.TestCase):
             c.download_chunk("/repos/o/r/actions/jobs/1/logs", "own", 0, 10)
 
         def gone(req, timeout):
-            raise urllib.error.HTTPError(req.full_url, 410, "Gone", hdrs(), io.BytesIO(b'{"message":"expired"}'))
+            raise urllib.error.HTTPError(
+                req.full_url, 410, "Gone", hdrs(), io.BytesIO(b'{"message":"expired"}')
+            )
 
         with self.assertRaises(RelayGitHubError) as cm:
-            GitHubClient("t", opener=gone).download_chunk("/repos/o/r/actions/jobs/1/logs", "own", 0, 10)
+            GitHubClient("t", opener=gone).download_chunk(
+                "/repos/o/r/actions/jobs/1/logs", "own", 0, 10
+            )
         self.assertEqual(cm.exception.status, 410)
         for bad in [(-1, 5), (0, 0), (0, 256 * 1024 + 1), (True, 5)]:
             with self.assertRaises(ValueError):
@@ -143,7 +147,10 @@ class VerbTests(unittest.TestCase):
         )
         self.assertEqual(base64.b64decode(out["content_b64"]), b"abc")
         self.assertEqual((out["total"], out["complete"], out["next_offset"]), (3, True, 3))
-        self.assertEqual(c.dl[0], (f"/repos/{REPO}/releases/assets/7", "own", 0, 256 * 1024, "application/octet-stream"))
+        self.assertEqual(
+            c.dl[0],
+            (f"/repos/{REPO}/releases/assets/7", "own", 0, 256 * 1024, "application/octet-stream"),
+        )
         for reply in [{**ASSET, "id": 8}, {**ASSET, "state": "open"}]:
             with self.assertRaises(RelayGitHubError):
                 handle("wf_release_asset_download", DL(reply)).run(
@@ -186,12 +193,23 @@ class VerbTests(unittest.TestCase):
 
     def upload(self, content, **extra):
         c = DL(
-            {"id": 3, "upload_url": f"https://uploads.github.com/repos/{REPO}/releases/3/assets{{?name,label}}"}
+            {
+                "id": 3,
+                "upload_url": f"https://uploads.github.com/repos/{REPO}/releases/3/assets{{?name,label}}",
+            }
         )
         seen = []
         c.upload_release_asset = lambda *a: seen.append(a) or {**ASSET, "size": len(content)}
-        args = {"repo": REPO, "release_id": 3, "name": "a.bin", "content_b64": base64.b64encode(content).decode(), **extra}
-        out = handle("wf_release_asset_upload_binary", c).run("wf_release_asset_upload_binary", args)
+        args = {
+            "repo": REPO,
+            "release_id": 3,
+            "name": "a.bin",
+            "content_b64": base64.b64encode(content).decode(),
+            **extra,
+        }
+        out = handle("wf_release_asset_upload_binary", c).run(
+            "wf_release_asset_upload_binary", args
+        )
         return out, seen, c
 
     def test_binary_upload_and_scan(self):
@@ -269,11 +287,23 @@ class VerbTests(unittest.TestCase):
             {"repo": REPO, "asset_id": 7, "expected_name": "a.bin", "name": "b.bin", "label": "L"},
         )
         self.assertEqual(out["asset"]["name"], "b.bin")
-        self.assertEqual(c.calls[1], ("PATCH", f"/repos/{REPO}/releases/assets/7", {"name": "b.bin", "label": "L"}, "own"))
+        self.assertEqual(
+            c.calls[1],
+            ("PATCH", f"/repos/{REPO}/releases/assets/7", {"name": "b.bin", "label": "L"}, "own"),
+        )
         base = {"repo": REPO, "asset_id": 7, "expected_name": "a.bin"}
-        for extra in [{}, {"name": "a/b"}, {"label": TOKEN}, {"label": "x" * 256}, {"state": "open"}, {"label": "a\nb"}]:
+        for extra in [
+            {},
+            {"name": "a/b"},
+            {"label": TOKEN},
+            {"label": "x" * 256},
+            {"state": "open"},
+            {"label": "a\nb"},
+        ]:
             with self.assertRaises(Refused, msg=extra):
-                handle("wf_release_asset_update", DL(ASSET)).run("wf_release_asset_update", {**base, **extra})
+                handle("wf_release_asset_update", DL(ASSET)).run(
+                    "wf_release_asset_update", {**base, **extra}
+                )
         with self.assertRaises(RelayGitHubError):  # response name mismatch is unverifiable
             handle("wf_release_asset_update", DL(ASSET, ASSET)).run(
                 "wf_release_asset_update", {**base, "name": "b.bin"}

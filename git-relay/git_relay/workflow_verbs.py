@@ -234,7 +234,10 @@ def _scan_asset_bytes(content, depth=0):
         try:
             archive = zipfile.ZipFile(io.BytesIO(content))
             infos = archive.infolist()
-            if len(infos) > MAX_ARCHIVE_MEMBERS or sum(i.file_size for i in infos) > MAX_ARCHIVE_EXPANDED:
+            if (
+                len(infos) > MAX_ARCHIVE_MEMBERS
+                or sum(i.file_size for i in infos) > MAX_ARCHIVE_EXPANDED
+            ):
                 raise Refused("asset archive expands past the scan bound")
             for info in infos:
                 if info.flag_bits & 0x1:
@@ -265,10 +268,9 @@ def _scan_asset_bytes(content, depth=0):
         except (lzma.LZMAError, OSError, EOFError):
             raise Refused("asset archive could not be scanned") from None
         _scan_asset_bytes(inner, depth + 1)
-    elif (
-        head.startswith((b"\x28\xb5\x2f\xfd", b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x5d\x00\x00"))
-        or head[:2] in (b"\x1f\x9d", b"\x1f\xa0")
-    ):
+    elif head.startswith(
+        (b"\x28\xb5\x2f\xfd", b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x5d\x00\x00")
+    ) or head[:2] in (b"\x1f\x9d", b"\x1f\xa0"):
         raise Refused("unscannable compressed asset format")
 
 
