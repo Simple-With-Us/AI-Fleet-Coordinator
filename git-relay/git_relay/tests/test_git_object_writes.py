@@ -4,9 +4,9 @@ try:
     from .test_workflow_verbs import REPO, SHA, Client, Policy
 except ImportError:
     from test_workflow_verbs import REPO, SHA, Client, Policy
-from git_relay.workflow_verbs import WorkflowVerbs, Refused
 from git_relay.github_client import RelayGitHubError
 from git_relay.server import _REAPPLY_STATE_ACTIONS
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
 
 class Writes(unittest.TestCase):
