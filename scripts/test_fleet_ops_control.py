@@ -483,13 +483,18 @@ class RedeployTests(Base):
         self.assertEqual((code, ans["result"]), (1, "failed"))
         self.assertEqual(self.http_calls, [])
 
-    def test_base_url_must_be_https_or_loopback(self):
+    def test_base_url_must_be_a_loopback_origin(self):
+        # The token never leaves this host,  whatever the environment names.
         for base, ok in (
-            ("https://coolify.example.test", True),
             ("http://localhost:8000", True),
+            ("http://127.0.0.1:8000", True),
+            ("https://[::1]:8443", True),
+            ("https://coolify.example.test", False),
             ("http://coolify.example.test", False),
-            ("https://coolify.example.test/api", False),
-            ("https://user@coolify.example.test", False),
+            ("https://127.0.0.1.example.test", False),
+            ("http://localhost:8000/api", False),
+            ("http://user@localhost:8000", False),
+            ("http://localhost:notaport", False),
             ("file:///etc/passwd", False),
         ):
             ctx = self.ctx(environ={"COOLIFY_BASE_URL": base})

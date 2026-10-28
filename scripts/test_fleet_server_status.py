@@ -904,7 +904,45 @@ class ServiceTests(unittest.TestCase):
         self.assertNotIn("enabled", by_unit["docker.service"])
         timer = by_unit["fleet-server-status.timer"]
         self.assertEqual((timer["scope"], timer["subState"]), ("user", "waiting"))
-        self.assertTrue(timer["controllable"])
+        # The helper refuses a file with an entry that lists no actions,  so even the
+        # timer,  whose own entry is good,  is not offered.
+        self.assertFalse(timer["controllable"])
+
+    def test_controllable_is_the_control_helpers_own_verdict(self):
+        good = {
+            "schemaVersion": 1,
+            "server": {
+                "units": [
+                    {"unit": "fleet-server-status.timer", "scope": "user", "actions": ["start"]},
+                    {"unit": "cron.service", "scope": "system", "actions": ["restart"]},
+                ]
+            },
+        }
+        # A templated unit the report can show but the helper never accepts:  the helper
+        # then refuses the whole file,  so nothing in it is controllable.
+        templated = json.loads(json.dumps(good))
+        templated["server"]["units"].append(
+            {"unit": "docker@backup.service", "scope": "system", "actions": ["restart"]}
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(
+                collector.control_units(self.control(tmp, good)),
+                [("fleet-server-status.timer", "user", True), ("cron.service", "system", True)],
+            )
+            self.assertEqual(
+                collector.control_units(self.control(tmp, templated)),
+                [
+                    ("fleet-server-status.timer", "user", False),
+                    ("cron.service", "system", False),
+                    ("docker@backup.service", "system", False),
+                ],
+            )
+            # A helper that cannot be loaded acts on nothing.
+            absent = Path(tmp) / "absent.py"
+            self.assertEqual(
+                [row[2] for row in collector.control_units(self.control(tmp, good), absent)],
+                [False, False],
+            )
 
     def test_one_show_call_per_scope_with_an_explicit_property_list(self):
         systemctl = FakeSystemctl(
@@ -1049,11 +1087,12 @@ class SummaryAndInfoDriftTests(unittest.TestCase):
             control.write_text(
                 json.dumps(
                     {
+                        "schemaVersion": 1,
                         "server": {
                             "units": [
                                 {"unit": "cron.service", "scope": "system", "actions": ["restart"]}
                             ]
-                        }
+                        },
                     }
                 )
             )

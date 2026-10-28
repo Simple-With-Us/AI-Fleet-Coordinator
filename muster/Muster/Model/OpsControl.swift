@@ -467,7 +467,7 @@ struct OpsProcessRunner: OpsRunning {
             // below always ends.
             let pid = process.processIdentifier
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + OpsControlRoute.killGrace) {
-                if process.isRunning { kill(pid, SIGKILL) }
+                if process.isRunning { _ = kill(pid, SIGKILL) }
             }
         }
         timer.resume()

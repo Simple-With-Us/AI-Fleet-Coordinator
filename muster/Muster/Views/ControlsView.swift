@@ -410,15 +410,21 @@ private struct KnobEditSheet: View {
                     .font(.system(size: 12, design: .monospaced))
                     .frame(width: 140)
                     .onChange(of: numberText) { _, fresh in
-                        // The stepper only takes a number in range;  an out-of-range text
-                        // stays on screen and `problem` holds Show Plan back.
+                        // The stepper only takes a number the registry allows (no bound
+                        // means unbounded,  as in `problem`);  any other text stays on
+                        // screen and `problem` holds Show Plan back.
                         if let parsed = Int(fresh.trimmingCharacters(in: .whitespaces)),
-                           (lower...upper).contains(parsed) {
+                           low.map({ parsed >= $0 }) ?? true,
+                           high.map({ parsed <= $0 }) ?? true {
                             number = parsed
                         }
                     }
                     .onChange(of: number) { _, fresh in
-                        numberText = String(fresh)
+                        // Only a stepper click changes the number away from the text,  so
+                        // what the operator typed (`007`,  `+5`) is never rewritten.
+                        if Int(numberText.trimmingCharacters(in: .whitespaces)) != fresh {
+                            numberText = String(fresh)
+                        }
                     }
                 Stepper("", value: $number, in: lower...upper)
                     .labelsHidden()

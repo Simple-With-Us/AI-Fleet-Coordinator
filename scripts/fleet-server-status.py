@@ -22,8 +22,10 @@ What it reads,  and what it refuses to read:
     `os.statvfs`.  The disks are `/` and every real file system mounted under `/mnt`.
   * The fleet's systemd units are the ones `scripts/fleet-ops-control.json` names
     (`server.units`),  read with `systemctl show` and an explicit property list,  one
-    call per scope.  A unit is `controllable` only when its entry lists actions.  A
-    missing or malformed allowlist means no units,  never a crash.
+    call per scope.  A unit is `controllable` only when `scripts/fleet-ops-control.py`
+    itself accepts the allowlist and that entry:  the helper refuses the whole file for
+    one bad entry,  and then no unit is controllable.  A missing or malformed allowlist
+    means no units,  never a crash.
 
 A measurement that cannot be taken is omitted,  never reported as a zero:  a container
 with no stats row carries no cpu and no memory,  and a file that is not there is
@@ -47,6 +49,7 @@ import argparse
 import datetime
 import errno
 import hashlib
+import importlib.util
 import json
 import os
 import pwd
@@ -138,9 +141,10 @@ INFO_FILES = ("README.md", "package.json")
 
 # The allowlist that names the fleet's units,  next to this script.
 DEFAULT_CONTROL = Path(__file__).resolve().parent / "fleet-ops-control.json"
+# The helper that acts on it:  its own check says which units are controllable.
+DEFAULT_CONTROLLER = Path(__file__).resolve().parent / "fleet-ops-control.py"
 CONTROL_LIMIT = 256 * 1024
 SCOPES = ("system", "user")
-ACTIONS = ("start", "stop", "restart")
 # A unit name is passed to systemctl as an argument,  so it must look like one and never
 # like an option.
 UNIT_RE = re.compile(
@@ -717,11 +721,13 @@ def collect_host_metrics(proc=Path("/proc"), statvfs=os.statvfs, cpu_count=os.cp
 # MARK: - The fleet's units
 
 
-def control_units(path=DEFAULT_CONTROL):
+def control_units(path=DEFAULT_CONTROL, controller=DEFAULT_CONTROLLER):
     """The units the allowlist names,  as (unit, scope, controllable).
 
     A missing,  unreadable or malformed allowlist names no units.  An entry with a bad
     unit name or scope is skipped,  and a unit named twice in one scope is kept once.
+    `controllable` is the control helper's own verdict (`accepted_units`),  so the report
+    never offers a unit the helper would refuse.
     """
     try:
         if path.stat().st_size > CONTROL_LIMIT:
@@ -737,6 +743,7 @@ def control_units(path=DEFAULT_CONTROL):
     entries = server.get("units")
     if not isinstance(entries, list):
         return []
+    accepted = accepted_units(document, controller)
     units = []
     seen = set()
     for entry in entries:
@@ -749,10 +756,28 @@ def control_units(path=DEFAULT_CONTROL):
         if scope not in SCOPES or (unit, scope) in seen:
             continue
         seen.add((unit, scope))
-        actions = entry.get("actions")
-        controllable = isinstance(actions, list) and any(action in ACTIONS for action in actions)
-        units.append((unit, scope, controllable))
+        units.append((unit, scope, accepted.get(unit) == scope))
     return units
+
+
+def accepted_units(document, controller=DEFAULT_CONTROLLER):
+    """{unit: scope} for the units the control helper accepts in this allowlist.
+
+    The helper's own `validate_config` decides,  so this reader can never be wider than
+    it.  The helper refuses the whole file for one bad entry,  and a helper that cannot
+    be loaded acts on nothing,  so either way the answer is no units.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location("fleet_ops_control", controller)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except (OSError, ImportError, SyntaxError, AttributeError):
+        return {}
+    try:
+        verdict = module.validate_config(document)
+    except Exception:  # noqa: BLE001 - anything the helper raises is a refusal
+        return {}
+    return {unit: entry["scope"] for unit, entry in verdict["units"].items()}
 
 
 def iso_from_systemd(value):

@@ -87,7 +87,8 @@ SYSTEMCTL_CANDIDATES = ("/usr/bin/systemctl", "/bin/systemctl")
 FLEET_SECRETS_CANDIDATES = ("~/.local/bin/fleet-secrets", "/usr/local/bin/fleet-secrets")
 COOLIFY_TOKEN_NAME = "COOLIFY_API_TOKEN"
 COOLIFY_TOKEN_PATH = "/coolify"
-# Coolify answers on its own host; COOLIFY_BASE_URL overrides it.
+# Coolify answers on its own host; COOLIFY_BASE_URL may change the port or the scheme,
+# never the host.
 COOLIFY_DEFAULT_BASE = "http://127.0.0.1:8000"
 # The Infisical identity fleet-secrets may be handed from the credential file, and nothing
 # else from it.
@@ -436,19 +437,25 @@ def _parse_time(text):
 
 
 def coolify_base(ctx):
+    """The Coolify origin the token is sent to.  It is always on this host:  the variable
+    may change the scheme or the port, never the host, so no environment can carry the
+    token to another machine."""
     base = (ctx.environ.get("COOLIFY_BASE_URL") or COOLIFY_DEFAULT_BASE).strip().rstrip("/")
     parts = urllib.parse.urlsplit(base)
-    loopback = parts.hostname in ("127.0.0.1", "localhost", "::1")
+    try:
+        parts.port
+    except ValueError:
+        raise Refused("COOLIFY_BASE_URL must be a loopback origin") from None
     if (
         parts.scheme not in ("http", "https")
-        or not parts.hostname
+        or parts.hostname not in ("127.0.0.1", "localhost", "::1")
         or parts.path
         or parts.query
         or parts.fragment
         or parts.username
-        or (parts.scheme == "http" and not loopback)
+        or parts.password
     ):
-        raise Refused("COOLIFY_BASE_URL must be an https origin, or http on loopback")
+        raise Refused("COOLIFY_BASE_URL must be a loopback origin")
     return base
 
 
