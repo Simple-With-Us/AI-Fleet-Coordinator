@@ -258,7 +258,7 @@ final class FleetToolsReportTests: XCTestCase {
                         row("tool:recall", "FAIL", "stale"),
                         row("tool:gitleaks", "FAIL", "missing"),
                         row("tool:lane", "WARN", "stale"),
-                        row("tool:board", "OK", "current"),
+                        row("tool:simple-board", "OK", "current"),
                     ]
                 ),
             ]
