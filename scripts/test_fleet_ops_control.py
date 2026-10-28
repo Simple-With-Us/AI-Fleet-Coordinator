@@ -26,7 +26,7 @@ NOW = 1_800_000_000.0
 
 
 def stamp(epoch):
-    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime(
+    return datetime.datetime.fromtimestamp(epoch, datetime.UTC).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
 
@@ -41,10 +41,16 @@ CONFIG = {
     },
     "server": {
         "units": [
-            {"unit": "fleet-server-status.timer", "scope": "user", "actions": ["start", "stop", "restart"]},
+            {
+                "unit": "fleet-server-status.timer",
+                "scope": "user",
+                "actions": ["start", "stop", "restart"],
+            },
             {"unit": "fleet-cli-git-update.timer", "scope": "system", "actions": ["restart"]},
         ],
-        "updates": [{"name": "fleet-cli", "unit": "fleet-cli-git-update.service", "scope": "system"}],
+        "updates": [
+            {"name": "fleet-cli", "unit": "fleet-cli-git-update.service", "scope": "system"}
+        ],
         "coolify": {"redeploy": True},
     },
 }
@@ -116,7 +122,9 @@ class Base(unittest.TestCase):
     def write_status(self, rows, age=60, mode=0o600, tool="fleet-server-status"):
         path = self.state / "server-status.json"
         path.write_text(
-            json.dumps({"schemaVersion": 1, "tool": tool, "generatedAt": stamp(NOW - age), "coolify": rows})
+            json.dumps(
+                {"schemaVersion": 1, "tool": tool, "generatedAt": stamp(NOW - age), "coolify": rows}
+            )
         )
         os.chmod(path, mode)
         return path
@@ -128,7 +136,11 @@ class AllowlistTests(Base):
         plists = Path(HERE, "launchd").glob("*.plist")
         for plist in plists:
             text = plist.read_text()
-            label = text.split("<key>Label</key>", 1)[1].split("<string>", 1)[1].split("</string>", 1)[0]
+            label = (
+                text.split("<key>Label</key>", 1)[1]
+                .split("<string>", 1)[1]
+                .split("</string>", 1)[0]
+            )
             self.assertIn(label.strip(), config["agents"], plist.name)
         self.assertIn("com.jay.fleet-worker-health", config["agents"])
         self.assertIn("com.jay.fleet-mac-services", config["agents"])
@@ -139,18 +151,54 @@ class AllowlistTests(Base):
     def test_malformed_entries_refuse_the_whole_file(self):
         bad_docs = [
             {"schemaVersion": 2},
-            {"schemaVersion": 1, "mac": {"agents": [{"label": "com.jay.x; rm -rf /", "actions": ["start"]}]}},
-            {"schemaVersion": 1, "mac": {"agents": [{"label": "com.jay.x", "actions": ["delete"]}]}},
+            {
+                "schemaVersion": 1,
+                "mac": {"agents": [{"label": "com.jay.x; rm -rf /", "actions": ["start"]}]},
+            },
+            {
+                "schemaVersion": 1,
+                "mac": {"agents": [{"label": "com.jay.x", "actions": ["delete"]}]},
+            },
             {"schemaVersion": 1, "mac": {"agents": [{"label": "com.jay.x", "actions": []}]}},
-            {"schemaVersion": 1, "server": {"units": [{"unit": "../etc.service", "scope": "user", "actions": ["start"]}]}},
-            {"schemaVersion": 1, "server": {"units": [{"unit": "x.mount", "scope": "user", "actions": ["start"]}]}},
-            {"schemaVersion": 1, "server": {"units": [{"unit": "x@y.service", "scope": "user", "actions": ["start"]}]}},
-            {"schemaVersion": 1, "server": {"units": [{"unit": "x.service", "scope": "root", "actions": ["start"]}]}},
-            {"schemaVersion": 1, "server": {"updates": [{"name": "x", "unit": "x.timer", "scope": "system"}]}},
+            {
+                "schemaVersion": 1,
+                "server": {
+                    "units": [{"unit": "../etc.service", "scope": "user", "actions": ["start"]}]
+                },
+            },
+            {
+                "schemaVersion": 1,
+                "server": {"units": [{"unit": "x.mount", "scope": "user", "actions": ["start"]}]},
+            },
+            {
+                "schemaVersion": 1,
+                "server": {
+                    "units": [{"unit": "x@y.service", "scope": "user", "actions": ["start"]}]
+                },
+            },
+            {
+                "schemaVersion": 1,
+                "server": {"units": [{"unit": "x.service", "scope": "root", "actions": ["start"]}]},
+            },
+            {
+                "schemaVersion": 1,
+                "server": {"updates": [{"name": "x", "unit": "x.timer", "scope": "system"}]},
+            },
             {"schemaVersion": 1, "server": {"coolify": {"redeploy": "yes"}}},
-            {"schemaVersion": 1, "mac": {"agents": [{"label": "com.jay.x\n", "actions": ["start"]}]}},
-            {"schemaVersion": 1, "server": {"units": [{"unit": "x.service\n", "scope": "user", "actions": ["start"]}]}},
-            {"schemaVersion": 1, "server": {"updates": [{"name": "x\n", "unit": "x.service", "scope": "system"}]}},
+            {
+                "schemaVersion": 1,
+                "mac": {"agents": [{"label": "com.jay.x\n", "actions": ["start"]}]},
+            },
+            {
+                "schemaVersion": 1,
+                "server": {
+                    "units": [{"unit": "x.service\n", "scope": "user", "actions": ["start"]}]
+                },
+            },
+            {
+                "schemaVersion": 1,
+                "server": {"updates": [{"name": "x\n", "unit": "x.service", "scope": "system"}]},
+            },
         ]
         for doc in bad_docs:
             with self.assertRaises(foc.Refused, msg=json.dumps(doc)):
@@ -159,7 +207,9 @@ class AllowlistTests(Base):
 
 class ServerVerbTests(Base):
     def test_plan_prints_argv_and_runs_nothing(self):
-        code, ans = self.run_main(["server", "restart", "fleet-server-status.timer", "--plan", "--json"], self.ctx())
+        code, ans = self.run_main(
+            ["server", "restart", "fleet-server-status.timer", "--plan", "--json"], self.ctx()
+        )
         self.assertEqual(code, 0)
         self.assertEqual(ans["result"], "planned")
         self.assertEqual(ans["commands"][0][1:], ["--user", "restart", "fleet-server-status.timer"])
@@ -168,27 +218,38 @@ class ServerVerbTests(Base):
         self.assertEqual(self.audit_rows(), [])
 
     def test_yes_runs_the_argv_with_a_trimmed_env_and_audits(self):
-        code, ans = self.run_main(["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx())
+        code, ans = self.run_main(
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+        )
         self.assertEqual((code, ans["result"]), (0, "done"))
-        (argv, env), = self.runner.calls
+        ((argv, env),) = self.runner.calls
         self.assertEqual(argv[1:], ["--user", "stop", "fleet-server-status.timer"])
         self.assertNotIn("SECRET_THING", env)
         rows = self.audit_rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(
             {k: rows[0][k] for k in ("host", "verb", "target", "result")},
-            {"host": "server", "verb": "server stop", "target": "fleet-server-status.timer", "result": "done"},
+            {
+                "host": "server",
+                "verb": "server stop",
+                "target": "fleet-server-status.timer",
+                "result": "done",
+            },
         )
         mode = stat.S_IMODE(os.stat(self.state / "ops-audit.jsonl").st_mode)
         self.assertEqual(mode, 0o600)
 
     def test_system_scope_has_no_user_flag(self):
-        code, ans = self.run_main(["server", "restart", "fleet-cli-git-update.timer", "--plan", "--json"], self.ctx())
+        code, ans = self.run_main(
+            ["server", "restart", "fleet-cli-git-update.timer", "--plan", "--json"], self.ctx()
+        )
         self.assertEqual(code, 0)
         self.assertEqual(ans["commands"][0][1:], ["restart", "fleet-cli-git-update.timer"])
 
     def test_refuses_without_plan_or_yes(self):
-        code, ans = self.run_main(["server", "start", "fleet-server-status.timer", "--json"], self.ctx())
+        code, ans = self.run_main(
+            ["server", "start", "fleet-server-status.timer", "--json"], self.ctx()
+        )
         self.assertEqual((code, ans["result"]), (2, "refused"))
         self.assertEqual(self.runner.calls, [])
 
@@ -207,7 +268,8 @@ class ServerVerbTests(Base):
 
     def test_failed_command_is_failed_and_carries_no_output(self):
         code, ans = self.run_main(
-            ["server", "start", "fleet-server-status.timer", "--yes", "--json"], self.ctx(runner=FakeRunner(status=5))
+            ["server", "start", "fleet-server-status.timer", "--yes", "--json"],
+            self.ctx(runner=FakeRunner(status=5)),
         )
         self.assertEqual((code, ans["result"]), (1, "failed"))
         self.assertEqual(ans["detail"], "systemctl start exited 5")
@@ -216,17 +278,21 @@ class ServerVerbTests(Base):
     def test_update_starts_the_update_unit(self):
         code, ans = self.run_main(["server", "update", "fleet-cli", "--yes", "--json"], self.ctx())
         self.assertEqual(code, 0)
-        (argv, _env), = self.runner.calls
+        ((argv, _env),) = self.runner.calls
         self.assertEqual(argv[1:], ["start", "--no-block", "fleet-cli-git-update.service"])
         code, _ = self.run_main(["server", "update", "everything", "--yes", "--json"], self.ctx())
         self.assertEqual(code, 2)
 
     def test_server_verbs_refused_on_the_mac(self):
-        code, ans = self.run_main(["server", "start", "fleet-server-status.timer", "--plan", "--json"], self.ctx("darwin"))
+        code, ans = self.run_main(
+            ["server", "start", "fleet-server-status.timer", "--plan", "--json"], self.ctx("darwin")
+        )
         self.assertEqual(code, 2)
 
     def test_human_output(self):
-        code, text = self.run_main(["server", "start", "fleet-server-status.timer", "--plan"], self.ctx())
+        code, text = self.run_main(
+            ["server", "start", "fleet-server-status.timer", "--plan"], self.ctx()
+        )
         self.assertEqual(code, 0)
         self.assertTrue(text.startswith("planned: server start"))
 
@@ -241,7 +307,9 @@ class MacVerbTests(Base):
         return path
 
     def test_restart_loaded_uses_kickstart_k(self):
-        code, ans = self.run_main(["mac", "restart", "com.jay.fleet-tools-doctor", "--yes", "--json"], self.ctx("darwin"))
+        code, ans = self.run_main(
+            ["mac", "restart", "com.jay.fleet-tools-doctor", "--yes", "--json"], self.ctx("darwin")
+        )
         self.assertEqual(code, 0)
         uid = os.getuid()
         self.assertEqual(
@@ -256,7 +324,8 @@ class MacVerbTests(Base):
     def test_start_unloaded_bootstraps_the_installed_plist(self):
         plist = self.plist("com.jay.fleet-tools-doctor")
         code, ans = self.run_main(
-            ["mac", "start", "com.jay.fleet-tools-doctor", "--plan", "--json"], self.ctx("darwin", FakeRunner(loaded=False))
+            ["mac", "start", "com.jay.fleet-tools-doctor", "--plan", "--json"],
+            self.ctx("darwin", FakeRunner(loaded=False)),
         )
         self.assertEqual(code, 0)
         uid = os.getuid()
@@ -270,17 +339,24 @@ class MacVerbTests(Base):
 
     def test_start_unloaded_refuses_missing_or_shared_plist(self):
         ctx = self.ctx("darwin", FakeRunner(loaded=False))
-        code, ans = self.run_main(["mac", "start", "com.jay.fleet-tools-doctor", "--plan", "--json"], ctx)
+        code, ans = self.run_main(
+            ["mac", "start", "com.jay.fleet-tools-doctor", "--plan", "--json"], ctx
+        )
         self.assertEqual((code, ans["detail"]), (2, "the agent is not installed"))
         self.plist("com.jay.fleet-tools-doctor", mode=0o666)
-        code, _ = self.run_main(["mac", "start", "com.jay.fleet-tools-doctor", "--plan", "--json"], ctx)
+        code, _ = self.run_main(
+            ["mac", "start", "com.jay.fleet-tools-doctor", "--plan", "--json"], ctx
+        )
         self.assertEqual(code, 2)
 
     def test_stop_loaded_boots_out_and_unloaded_does_nothing(self):
-        code, ans = self.run_main(["mac", "stop", "com.jay.fleet-tools-doctor", "--plan", "--json"], self.ctx("darwin"))
+        code, ans = self.run_main(
+            ["mac", "stop", "com.jay.fleet-tools-doctor", "--plan", "--json"], self.ctx("darwin")
+        )
         self.assertEqual(ans["commands"][0][:2], ["/bin/launchctl", "bootout"])
         code, ans = self.run_main(
-            ["mac", "stop", "com.jay.fleet-tools-doctor", "--yes", "--json"], self.ctx("darwin", FakeRunner(loaded=False))
+            ["mac", "stop", "com.jay.fleet-tools-doctor", "--yes", "--json"],
+            self.ctx("darwin", FakeRunner(loaded=False)),
         )
         self.assertEqual((code, ans["commands"], ans["detail"]), (0, [], "nothing to do"))
 
@@ -297,14 +373,21 @@ class MacVerbTests(Base):
             self.assertEqual(self.runner.calls, [], argv)
 
     def test_mac_verbs_refused_on_linux(self):
-        code, _ = self.run_main(["mac", "start", "com.jay.fleet-tools-doctor", "--plan", "--json"], self.ctx("linux"))
+        code, _ = self.run_main(
+            ["mac", "start", "com.jay.fleet-tools-doctor", "--plan", "--json"], self.ctx("linux")
+        )
         self.assertEqual(code, 2)
 
 
 class RedeployTests(Base):
     ROWS = [
         {"uuid": UUID, "name": "fleet-recall", "type": "application", "status": "running"},
-        {"uuid": "standalone-box", "name": "standalone-box", "type": "standalone", "status": "running"},
+        {
+            "uuid": "standalone-box",
+            "name": "standalone-box",
+            "type": "standalone",
+            "status": "running",
+        },
     ]
 
     def test_plan_checks_the_live_report(self):
@@ -319,7 +402,7 @@ class RedeployTests(Base):
         self.write_status(self.ROWS)
         code, ans = self.run_main(["server", "redeploy", UUID, "--yes", "--json"], self.ctx())
         self.assertEqual((code, ans["result"]), (0, "done"), ans)
-        (url, headers), = self.http_calls
+        ((url, headers),) = self.http_calls
         self.assertEqual(url, f"http://127.0.0.1:8000/api/v1/deploy?uuid={UUID}")
         self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
         for argv, _env in self.runner.calls:
@@ -354,12 +437,19 @@ class RedeployTests(Base):
             {"uuid": "svcuuid123456", "name": "recall-api", "type": "service", "status": "running"},
             {"uuid": "postgres16", "name": "postgres16", "type": "database", "status": "running"},
             {"uuid": "echomail", "name": "echomail", "type": "application", "status": "running"},
-            {"uuid": "echomail2", "name": "echomail2 (relay)", "type": "application", "status": "running"},
+            {
+                "uuid": "echomail2",
+                "name": "echomail2 (relay)",
+                "type": "application",
+                "status": "running",
+            },
             {"uuid": "labelled123", "name": "x", "type": "application", "uuidSource": "name"},
         ]
         self.write_status(rows)
         for row in rows:
-            code, ans = self.run_main(["server", "redeploy", row["uuid"], "--yes", "--json"], self.ctx())
+            code, ans = self.run_main(
+                ["server", "redeploy", row["uuid"], "--yes", "--json"], self.ctx()
+            )
             self.assertEqual((code, ans["result"]), (2, "refused"), row)
         self.assertEqual(self.http_calls, [])
         self.assertEqual(self.runner.calls, [])
@@ -368,7 +458,9 @@ class RedeployTests(Base):
     def test_uuid_from_label(self):
         self.assertTrue(foc.uuid_from_label({"uuid": UUID, "name": "fleet-recall"}))
         self.assertTrue(foc.uuid_from_label({"uuid": UUID, "name": UUID + "-123456"}))
-        self.assertTrue(foc.uuid_from_label({"uuid": "same", "name": "same", "uuidSource": "label"}))
+        self.assertTrue(
+            foc.uuid_from_label({"uuid": "same", "name": "same", "uuidSource": "label"})
+        )
         self.assertFalse(foc.uuid_from_label({"uuid": "same", "name": "same"}))
         self.assertFalse(foc.uuid_from_label({"uuid": "same", "name": "same (web)"}))
         self.assertFalse(foc.uuid_from_label({"uuid": UUID, "name": "x", "uuidSource": "resource"}))
@@ -376,7 +468,9 @@ class RedeployTests(Base):
 
     def test_refuses_a_uuid_with_a_trailing_newline(self):
         self.write_status(self.ROWS)
-        code, ans = self.run_main(["server", "redeploy", UUID + "\n", "--plan", "--json"], self.ctx())
+        code, ans = self.run_main(
+            ["server", "redeploy", UUID + "\n", "--plan", "--json"], self.ctx()
+        )
         self.assertEqual((code, ans["detail"]), (2, "the uuid is not valid"))
 
     def test_refuses_without_a_report(self):
@@ -385,7 +479,9 @@ class RedeployTests(Base):
 
     def test_missing_token_and_bad_answer_fail(self):
         self.write_status(self.ROWS)
-        code, ans = self.run_main(["server", "redeploy", UUID, "--yes", "--json"], self.ctx(runner=FakeRunner(secret="")))
+        code, ans = self.run_main(
+            ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(runner=FakeRunner(secret=""))
+        )
         self.assertEqual((code, ans["result"]), (1, "failed"))
         self.assertEqual(self.http_calls, [])
 
@@ -410,7 +506,10 @@ class CredentialTests(Base):
     """The Infisical identity fleet-secrets logs in with, from the root-only file."""
 
     ROWS = RedeployTests.ROWS
-    PAIR = {"INFISICAL_AUTOMATION_CLIENT_ID": "id-" + "a" * 30, "INFISICAL_AUTOMATION_CLIENT_SECRET": "sec-" + "b" * 40}
+    PAIR = {
+        "INFISICAL_AUTOMATION_CLIENT_ID": "id-" + "a" * 30,
+        "INFISICAL_AUTOMATION_CLIENT_SECRET": "sec-" + "b" * 40,
+    }
 
     def credentials(self, text, mode=0o600):
         folder = self.home / ".config" / "fleet-tools"
@@ -426,10 +525,12 @@ class CredentialTests(Base):
     def redeploy(self, environ=None):
         self.write_status(self.ROWS)
         environ = environ or {"PATH": "/usr/bin", "INFISICAL_TOKEN": "stale-token-from-env"}
-        return self.run_main(["server", "redeploy", UUID, "--yes", "--json"], self.ctx(environ=environ))
+        return self.run_main(
+            ["server", "redeploy", UUID, "--yes", "--json"], self.ctx(environ=environ)
+        )
 
     def secrets_env(self):
-        (argv, env), = [c for c in self.runner.calls if c[0][1:2] == ["get"]]
+        ((argv, env),) = [c for c in self.runner.calls if c[0][1:2] == ["get"]]
         return env
 
     def test_file_is_the_one_identity_and_reaches_only_fleet_secrets(self):
@@ -447,8 +548,10 @@ class CredentialTests(Base):
                 self.assertNotIn(value, " ".join(argv))
         # A systemctl child never sees it.
         self.runner.calls.clear()
-        self.run_main(["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx())
-        (argv, env), = self.runner.calls
+        self.run_main(
+            ["server", "stop", "fleet-server-status.timer", "--yes", "--json"], self.ctx()
+        )
+        ((argv, env),) = self.runner.calls
         self.assertFalse(set(self.PAIR) & set(env))
 
     def test_a_token_line_alone_is_enough(self):
@@ -470,7 +573,7 @@ class CredentialTests(Base):
             (self.pair_text(), 0o640),
             (self.pair_text(), 0o604),
             ("INFISICAL_AUTOMATION_CLIENT_ID=only-half\n", 0o600),
-            ("INFISICAL_TOKEN=\"quoted\"\n", 0o600),
+            ('INFISICAL_TOKEN="quoted"\n', 0o600),
             ("PATH=/tmp/evil\n", 0o600),
             ("INFISICAL_TOKEN=a b\n", 0o600),
             ("INFISICAL_TOKEN=x\nINFISICAL_TOKEN=y\n", 0o600),
@@ -483,7 +586,10 @@ class CredentialTests(Base):
             self.assertEqual((code, ans["result"]), (1, "failed"), (text, oct(mode)))
             self.assertIn(
                 ans["detail"],
-                ("the Infisical credential file is not private", "the Infisical credential file is malformed"),
+                (
+                    "the Infisical credential file is not private",
+                    "the Infisical credential file is malformed",
+                ),
             )
             self.assertEqual([c for c in self.runner.calls if c[0][1:2] == ["get"]], [])
             self.assertEqual(self.http_calls, [])
@@ -502,12 +608,15 @@ class CredentialTests(Base):
         self.credentials(self.pair_text())
         code, ans = self.run_main(["--check-token"], self.ctx())
         self.assertEqual((code, ans["result"]), (0, "done"), ans)
-        (url, headers), = self.http_calls
+        ((url, headers),) = self.http_calls
         self.assertEqual(url, "http://127.0.0.1:8000/api/v1/version")
         self.assertEqual(headers["Authorization"], "Bearer " + TOKEN)
         self.assertNotIn(TOKEN, json.dumps(ans))
         self.assertEqual(self.audit_rows(), [])
-        self.assertEqual(self.secrets_env()["INFISICAL_AUTOMATION_CLIENT_ID"], self.PAIR["INFISICAL_AUTOMATION_CLIENT_ID"])
+        self.assertEqual(
+            self.secrets_env()["INFISICAL_AUTOMATION_CLIENT_ID"],
+            self.PAIR["INFISICAL_AUTOMATION_CLIENT_ID"],
+        )
 
     def test_check_token_failures(self):
         code, ans = self.run_main(["--check-token"], self.ctx(runner=FakeRunner(secret="")))
@@ -567,7 +676,9 @@ class SshGateTests(Base):
     def test_from_ssh_takes_no_other_arguments(self):
         code, ans = self.ssh("server update fleet-cli --plan", argv=("--from-ssh", "--json"))
         self.assertEqual(code, 2)
-        code, ans = self.ssh("server update fleet-cli --plan", argv=("server", "update", "fleet-cli", "--from-ssh"))
+        code, ans = self.ssh(
+            "server update fleet-cli --plan", argv=("server", "update", "fleet-cli", "--from-ssh")
+        )
         self.assertEqual(code, 2)
 
 

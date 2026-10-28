@@ -1,4 +1,5 @@
 """``fleet_knobs set`` against the fake ``infisical``:  validation, the token, the copy, the audit."""
+
 from __future__ import annotations
 
 import io
@@ -53,7 +54,9 @@ class ValidationTests(SetTestCase):
         ]
         for name, value in cases:
             with self.subTest(name=name, value=value):
-                answer, code = self.run_set(name, value, "yes", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN})
+                answer, code = self.run_set(
+                    name, value, "yes", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN}
+                )
                 self.assertEqual((code, answer["result"]), (2, "refused"))
                 self.assertNotIn(value, answer["detail"])
         self.assertEqual(self.set_calls(), [])
@@ -65,7 +68,9 @@ class ValidationTests(SetTestCase):
         self.assertEqual(self.audit_rows(), [])
 
     def test_canonical_text_is_written(self):
-        _spec, typed, text = setter.check("ASK_CAPTURE_CAPS", '{"per_session": 2, "per_seat_day": 9}')
+        _spec, typed, text = setter.check(
+            "ASK_CAPTURE_CAPS", '{"per_session": 2, "per_seat_day": 9}'
+        )
         self.assertEqual(text, "per_seat_day=9,per_session=2")
         self.assertEqual(typed, {"per_session": 2, "per_seat_day": 9})
         self.assertEqual(setter.check("CONSULT_ENABLED", "YES")[2], "true")
@@ -78,10 +83,19 @@ class PlanTests(SetTestCase):
         self.assertEqual((answer["old"], answer["new"]), ("off", "report"))
         self.assertEqual(
             answer["commands"],
-            [[
-                "infisical", "secrets", "set", "FLEET_AUTOPUSH_MODE=report", "--env=prod", "--path=/",
-                f"--projectId={source.PROJECT_ID}", "--type=shared", "--silent",
-            ]],
+            [
+                [
+                    "infisical",
+                    "secrets",
+                    "set",
+                    "FLEET_AUTOPUSH_MODE=report",
+                    "--env=prod",
+                    "--path=/",
+                    f"--projectId={source.PROJECT_ID}",
+                    "--type=shared",
+                    "--silent",
+                ]
+            ],
         )
         self.assertEqual(self.set_calls(), [])
         self.assertEqual(self.audit_rows(), [])
@@ -92,7 +106,7 @@ class WriteTests(SetTestCase):
         answer, code = self.run_set("FLEET_AUTOPUSH_MODE", "report", "yes", platform="linux")
         self.assertEqual((code, answer["detail"]), (2, "no write token"))
         self.assertEqual(self.set_calls(), [])
-        row, = self.audit_rows()
+        (row,) = self.audit_rows()
         self.assertEqual((row["key"], row["result"]), ("FLEET_AUTOPUSH_MODE", "refused"))
 
     def test_token_only_in_the_child_env_and_never_in_output(self):
@@ -104,10 +118,14 @@ class WriteTests(SetTestCase):
             "AGENT_SEAT": "CLAUDE",
         }
         answer, code = self.run_set(
-            "FLEET_AUTOPUSH_MODE", "report", "yes", environ, reader=lambda name: ("off", "infisical")
+            "FLEET_AUTOPUSH_MODE",
+            "report",
+            "yes",
+            environ,
+            reader=lambda name: ("off", "infisical"),
         )
         self.assertEqual((code, answer["result"]), (0, "done"), answer)
-        call, = self.set_calls()
+        (call,) = self.set_calls()
         self.assertIn("FLEET_AUTOPUSH_MODE=report", call)
         self.assertFalse([a for a in call if WRITE_TOKEN in a])
         self.assertEqual(self.fake.tokens()[-1], WRITE_TOKEN)
@@ -118,10 +136,16 @@ class WriteTests(SetTestCase):
             text = fh.read()
         self.assertNotIn(WRITE_TOKEN, text)
         self.assertEqual(stat.S_IMODE(os.stat(self.audit_file).st_mode), 0o600)
-        row, = self.audit_rows()
+        (row,) = self.audit_rows()
         self.assertEqual(
             {k: row[k] for k in ("seat", "key", "old", "new", "result")},
-            {"seat": "CLAUDE", "key": "FLEET_AUTOPUSH_MODE", "old": "off", "new": "report", "result": "done"},
+            {
+                "seat": "CLAUDE",
+                "key": "FLEET_AUTOPUSH_MODE",
+                "old": "off",
+                "new": "report",
+                "result": "done",
+            },
         )
 
     def test_keychain_is_read_on_the_mac(self):
@@ -134,28 +158,48 @@ class WriteTests(SetTestCase):
             return setter.run(argv, timeout=timeout, env=env, want_stdout=want_stdout)
 
         answer, code = self.run_set(
-            "FLEET_AUTOPUSH_MODE", "report", "yes", platform="darwin", runner=runner,
+            "FLEET_AUTOPUSH_MODE",
+            "report",
+            "yes",
+            platform="darwin",
+            runner=runner,
             reader=lambda name: ("off", "infisical"),
         )
         self.assertEqual(code, 0, answer)
         self.assertEqual(
             seen[0],
-            ["/usr/bin/security", "find-generic-password", "-s", "fleet-knobs-write", "-a", "INFISICAL_TOKEN", "-w"],
+            [
+                "/usr/bin/security",
+                "find-generic-password",
+                "-s",
+                "fleet-knobs-write",
+                "-a",
+                "INFISICAL_TOKEN",
+                "-w",
+            ],
         )
         self.assertEqual(self.fake.tokens()[-1], WRITE_TOKEN)
 
     def test_cli_failure_is_failed(self):
         self.fake.set(mode="fail", code=4, leak=WRITE_TOKEN)
         answer, code = self.run_set(
-            "FLEET_AUTOPUSH_MODE", "report", "yes", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN},
+            "FLEET_AUTOPUSH_MODE",
+            "report",
+            "yes",
+            {setter.ENV_WRITE_TOKEN: WRITE_TOKEN},
             reader=lambda name: ("off", "infisical"),
         )
-        self.assertEqual((code, answer["result"], answer["detail"]), (1, "failed", "infisical secrets set exited 4"))
+        self.assertEqual(
+            (code, answer["result"], answer["detail"]),
+            (1, "failed", "infisical secrets set exited 4"),
+        )
         self.assertNotIn(WRITE_TOKEN, json.dumps(answer))
 
     def test_secret_attempt_audits_no_value(self):
-        self.run_set("FLEET_FACTS_SIGNING_KEY", SIGNING, "yes", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN})
-        row, = self.audit_rows()
+        self.run_set(
+            "FLEET_FACTS_SIGNING_KEY", SIGNING, "yes", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN}
+        )
+        (row,) = self.audit_rows()
         self.assertEqual((row["old"], row["new"]), (None, None))
         with open(self.audit_file, encoding="utf-8") as fh:
             self.assertNotIn(SIGNING, fh.read())
@@ -169,7 +213,11 @@ class LastKnownGoodTests(SetTestCase):
             return setter.current(name)
 
         answer, code = self.run_set(
-            "FLEET_AUTOPUSH_MODE", "report", "yes", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN}, reader=reader
+            "FLEET_AUTOPUSH_MODE",
+            "report",
+            "yes",
+            {setter.ENV_WRITE_TOKEN: WRITE_TOKEN},
+            reader=reader,
         )
         self.assertEqual((code, answer["lkg"]), (0, "refreshed"), answer)
         doc, note = lkg.read()
@@ -181,7 +229,10 @@ class LastKnownGoodTests(SetTestCase):
         knobs.reset_for_tests()
         before, _ = lkg.read()
         answer, code = self.run_set(
-            "FLEET_AUTOPUSH_MODE", "snapshot", "yes", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN},
+            "FLEET_AUTOPUSH_MODE",
+            "snapshot",
+            "yes",
+            {setter.ENV_WRITE_TOKEN: WRITE_TOKEN},
             reader=lambda name: ("off", "lkg"),
         )
         self.assertEqual((code, answer["lkg"]), (0, "patched"), answer)
@@ -191,7 +242,10 @@ class LastKnownGoodTests(SetTestCase):
 
     def test_no_copy_is_reported(self):
         answer, code = self.run_set(
-            "FLEET_AUTOPUSH_MODE", "report", "yes", {setter.ENV_WRITE_TOKEN: WRITE_TOKEN},
+            "FLEET_AUTOPUSH_MODE",
+            "report",
+            "yes",
+            {setter.ENV_WRITE_TOKEN: WRITE_TOKEN},
             reader=lambda name: ("off", "lkg"),
         )
         self.assertEqual((code, answer["lkg"]), (0, "not-refreshed:absent"))

@@ -181,11 +181,11 @@ REAL_FILE_SYSTEMS = (
 
 def utc_now() -> str:
     """The time this report was made,  in the spelling the doctor uses."""
-    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def iso_from_timestamp(value: float) -> str:
-    moment = datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+    moment = datetime.datetime.fromtimestamp(value, datetime.UTC)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -1175,9 +1175,7 @@ def main(argv=None, run_command=run, proc=Path("/proc")):
     snapshot = args.snapshot or output
 
     coolify = collect_coolify(run_command=run_command)
-    processes = collect_processes(
-        limit=args.process_limit, interval=args.cpu_interval, proc=proc
-    )
+    processes = collect_processes(limit=args.process_limit, interval=args.cpu_interval, proc=proc)
     files, found = collect_files(args.code_root, previous_files(snapshot), limit=args.file_limit)
     document = build_report(
         coolify,

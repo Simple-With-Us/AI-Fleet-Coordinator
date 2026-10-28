@@ -920,9 +920,7 @@ class ServiceTests(unittest.TestCase):
             self.assertNotIn("status", command)
             properties = [part for part in command if part.startswith("--property=")]
             self.assertEqual(len(properties), 1)
-        self.assertEqual(
-            systemctl.calls[0][-2:], ["cron.service", "docker.service"]
-        )
+        self.assertEqual(systemctl.calls[0][-2:], ["cron.service", "docker.service"])
         self.assertIn("--user", systemctl.calls[1])
         self.assertEqual(systemctl.calls[1][-1], "fleet-server-status.timer")
 
@@ -976,8 +974,12 @@ class ServiceTests(unittest.TestCase):
         by_unit = {row["unit"]: row for row in rows}
         self.assertEqual(
             by_unit["cron.service"],
-            {"unit": "cron.service", "scope": "system", "activeState": "unknown",
-             "controllable": False},
+            {
+                "unit": "cron.service",
+                "scope": "system",
+                "activeState": "unknown",
+                "controllable": False,
+            },
         )
         self.assertEqual(by_unit["fleet-server-status.timer"]["activeState"], "active")
 

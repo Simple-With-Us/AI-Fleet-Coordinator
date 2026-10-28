@@ -71,7 +71,9 @@ NEVER_EXITED = """gui/501/com.jay.mac-process-watch = {
 }
 """
 
-NOT_FOUND_STDERR = 'Bad request.\nCould not find service "com.jay.grok-idle-unload" in domain for user gui: 501\n'
+NOT_FOUND_STDERR = (
+    'Bad request.\nCould not find service "com.jay.grok-idle-unload" in domain for user gui: 501\n'
+)
 
 
 class FakeRunner:
@@ -158,7 +160,10 @@ class Document(unittest.TestCase):
                     "schemaVersion": 1,
                     "mac": {
                         "agents": [
-                            {"label": "com.jay.fleet-tools-doctor", "actions": ["start", "stop", "restart"]},
+                            {
+                                "label": "com.jay.fleet-tools-doctor",
+                                "actions": ["start", "stop", "restart"],
+                            },
                             {"label": "com.jay.extra-agent", "actions": ["restart"]},
                             {"label": "com.jay.no-actions", "actions": []},
                             {"label": "../escape", "actions": ["start"]},
@@ -225,7 +230,9 @@ class Document(unittest.TestCase):
         )
         self.assertFalse(cleanup["controllable"])
         extra = by_label["com.jay.extra-agent"]
-        self.assertEqual((extra["plistInRepo"], extra["loaded"], extra["controllable"]), (False, False, True))
+        self.assertEqual(
+            (extra["plistInRepo"], extra["loaded"], extra["controllable"]), (False, False, True)
+        )
         self.assertFalse(by_label["com.jay.no-actions"]["controllable"])
         self.assertFalse(by_label["com.jay.bad-actions"]["controllable"])
         self.assertTrue(by_label["com.jay.broken"]["plistInRepo"])
@@ -233,7 +240,15 @@ class Document(unittest.TestCase):
         for agent in doc["agents"]:
             self.assertEqual(
                 set(agent),
-                {"label", "plistInRepo", "installed", "loaded", "pid", "lastExitStatus", "controllable"},
+                {
+                    "label",
+                    "plistInRepo",
+                    "installed",
+                    "loaded",
+                    "pid",
+                    "lastExitStatus",
+                    "controllable",
+                },
             )
         self.assertIn(["launchctl", "print", "gui/501/com.jay.fleet-tools-doctor"], runner.calls)
 
@@ -245,7 +260,12 @@ class Document(unittest.TestCase):
             doc = self.build(FakeRunner({}), control)
             self.assertEqual(
                 [a["label"] for a in doc["agents"]],
-                ["com.jay.broken", "com.jay.dashes", "com.jay.fleet-tools-doctor", "com.jay.mac-cleanup"],
+                [
+                    "com.jay.broken",
+                    "com.jay.dashes",
+                    "com.jay.fleet-tools-doctor",
+                    "com.jay.mac-cleanup",
+                ],
             )
             self.assertFalse(any(a["controllable"] for a in doc["agents"]))
         with open(bad, "w") as handle:
@@ -284,7 +304,11 @@ class Document(unittest.TestCase):
 
     def test_missing_launchd_dir_gives_only_allowlisted_agents(self):
         doc = fms.document(
-            os.path.join(self.tmp.name, "nope"), self.control, self.agents, uid=501, runner=FakeRunner({})
+            os.path.join(self.tmp.name, "nope"),
+            self.control,
+            self.agents,
+            uid=501,
+            runner=FakeRunner({}),
         )
         self.assertTrue(all(not a["plistInRepo"] for a in doc["agents"]))
         self.assertEqual(len(doc["agents"]), 4)
@@ -323,10 +347,14 @@ class Writing(unittest.TestCase):
                 code = fms.main(
                     [
                         "--dry-run",
-                        "--write", path,
-                        "--launchd-dir", launchd,
-                        "--control", os.path.join(root, "absent.json"),
-                        "--agents-dir", root,
+                        "--write",
+                        path,
+                        "--launchd-dir",
+                        launchd,
+                        "--control",
+                        os.path.join(root, "absent.json"),
+                        "--agents-dir",
+                        root,
                     ],
                     runner=FakeRunner({"com.jay.a": RUNNING}),
                 )
@@ -338,7 +366,16 @@ class Writing(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             path = os.path.join(root, "state", "out.json")
             code = fms.main(
-                ["--write", path, "--launchd-dir", root, "--control", os.path.join(root, "x.json"), "--agents-dir", root],
+                [
+                    "--write",
+                    path,
+                    "--launchd-dir",
+                    root,
+                    "--control",
+                    os.path.join(root, "x.json"),
+                    "--agents-dir",
+                    root,
+                ],
                 runner=FakeRunner({}),
             )
             self.assertEqual(code, 0)
@@ -358,7 +395,8 @@ class RepoTemplates(unittest.TestCase):
         names = [n for n in os.listdir(launchd) if n.endswith(".plist")]
         self.assertTrue(names)
         self.assertEqual(
-            fms.repo_labels(launchd), {n[: -len(".plist")] for n in names if fms.valid_label(n[: -len(".plist")])}
+            fms.repo_labels(launchd),
+            {n[: -len(".plist")] for n in names if fms.valid_label(n[: -len(".plist")])},
         )
         for name in names:
             if name in self.KNOWN_MALFORMED:
@@ -383,7 +421,9 @@ class RepoTemplates(unittest.TestCase):
             self.assertEqual(data["StartInterval"], interval)
             self.assertTrue(data["RunAtLoad"])
             self.assertIn("--write", args)
-            self.assertTrue(args[args.index("--write") + 1].startswith("/Users/jay/.local/state/fleet-tools/"))
+            self.assertTrue(
+                args[args.index("--write") + 1].startswith("/Users/jay/.local/state/fleet-tools/")
+            )
 
 
 if __name__ == "__main__":

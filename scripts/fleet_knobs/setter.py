@@ -32,7 +32,8 @@ import os
 import stat
 import subprocess
 import sys
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 from . import knobs, lkg, source, values
 from .registry import BY_NAME, Spec
@@ -63,11 +64,16 @@ class Failed(Exception):
     """The write was allowed and did not succeed."""
 
 
-Runner = Callable[..., Tuple[int, bytes]]
+Runner = Callable[..., tuple[int, bytes]]
 
 
-def run(argv: List[str], *, timeout: float, env: Optional[Dict[str, str]] = None,
-        want_stdout: bool = False) -> Tuple[int, bytes]:
+def run(
+    argv: list[str],
+    *,
+    timeout: float,
+    env: dict[str, str] | None = None,
+    want_stdout: bool = False,
+) -> tuple[int, bytes]:
     """(exit status, stdout).  An argv list without a shell; stderr is always discarded."""
     if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
         raise Refused("internal: not an argv list")
@@ -90,7 +96,7 @@ def run(argv: List[str], *, timeout: float, env: Optional[Dict[str, str]] = None
     return proc.returncode, ((proc.stdout or b"") if want_stdout else b"")
 
 
-def check(name: str, raw: str) -> Tuple[Spec, Any, str]:
+def check(name: str, raw: str) -> tuple[Spec, Any, str]:
     """(spec, typed value, canonical text) for a request, or Refused.  Never names the value."""
     spec = BY_NAME.get(name)
     if spec is None:
@@ -110,7 +116,7 @@ def check(name: str, raw: str) -> Tuple[Spec, Any, str]:
     return spec, typed, text
 
 
-def write_argv(cli: str, name: str, text: str) -> List[str]:
+def write_argv(cli: str, name: str, text: str) -> list[str]:
     return [
         cli,
         "secrets",
@@ -124,12 +130,20 @@ def write_argv(cli: str, name: str, text: str) -> List[str]:
     ]
 
 
-def read_token(environ: Dict[str, str], platform: str, runner: Runner) -> str:
+def read_token(environ: dict[str, str], platform: str, runner: Runner) -> str:
     """The write token from the environment, else the Mac keychain, else ""."""
     token = (environ.get(ENV_WRITE_TOKEN) or "").strip()
     if not token and platform.startswith("darwin"):
         status, out = runner(
-            [SECURITY, "find-generic-password", "-s", KEYCHAIN_SERVICE, "-a", KEYCHAIN_ACCOUNT, "-w"],
+            [
+                SECURITY,
+                "find-generic-password",
+                "-s",
+                KEYCHAIN_SERVICE,
+                "-a",
+                KEYCHAIN_ACCOUNT,
+                "-w",
+            ],
             timeout=KEYCHAIN_TIMEOUT,
             want_stdout=True,
         )
@@ -140,22 +154,23 @@ def read_token(environ: Dict[str, str], platform: str, runner: Runner) -> str:
     return token
 
 
-def child_env(environ: Dict[str, str], token: str) -> Dict[str, str]:
+def child_env(environ: dict[str, str], token: str) -> dict[str, str]:
     env = {k: v for k, v in environ.items() if k not in DROP_FROM_CHILD}
     env["INFISICAL_DISABLE_UPDATE_CHECK"] = "true"
     env[source.ENV_TOKEN] = token
     return env
 
 
-def current(name: str) -> Tuple[Any, str]:
+def current(name: str) -> tuple[Any, str]:
     """(typed value, source) from a fresh read: infisical, lkg or default."""
     knobs.refresh()
     knob = knobs.resolve(name)
     return knob.value, knob.source
 
 
-def refresh_lkg(name: str, text: str, reader: Callable[[str], Tuple[Any, str]],
-                spec: Spec, typed: Any) -> str:
+def refresh_lkg(
+    name: str, text: str, reader: Callable[[str], tuple[Any, str]], spec: Spec, typed: Any
+) -> str:
     """Bring the last-known-good copy up to the new value.  Returns how: ``refreshed`` (a live
     read rewrote it), ``patched`` (the read failed, so this key was set in the copy and the copy
     kept its age), or ``not-refreshed:<note>``."""
@@ -181,11 +196,13 @@ def audit_path() -> str:
     return os.path.join(os.path.expanduser("~"), ".agent-sync", "listener", "knobs.jsonl")
 
 
-def audit(path: str, row: Dict[str, Any]) -> bool:
+def audit(path: str, row: dict[str, Any]) -> bool:
     """Append one JSON line, 0600, to a regular file of ours.  False when it cannot."""
     try:
         os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        fd = os.open(
+            path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
     except OSError:
         return False
     try:
@@ -204,16 +221,16 @@ def audit(path: str, row: Dict[str, Any]) -> bool:
 def set_knob(
     name: str,
     raw: str,
-    mode: Optional[str],
+    mode: str | None,
     *,
-    environ: Optional[Dict[str, str]] = None,
-    platform: Optional[str] = None,
-    runner: Optional[Runner] = None,
-    reader: Optional[Callable[[str], Tuple[Any, str]]] = None,
-    find_cli: Optional[Callable[[], Optional[str]]] = None,
-    audit_file: Optional[str] = None,
-    now: Optional[Callable[[], datetime.datetime]] = None,
-) -> Tuple[Dict[str, Any], int]:
+    environ: dict[str, str] | None = None,
+    platform: str | None = None,
+    runner: Runner | None = None,
+    reader: Callable[[str], tuple[Any, str]] | None = None,
+    find_cli: Callable[[], str | None] | None = None,
+    audit_file: str | None = None,
+    now: Callable[[], datetime.datetime] | None = None,
+) -> tuple[dict[str, Any], int]:
     """(answer, exit status) for one request.  ``mode`` is ``plan``, ``yes`` or None.
 
     The answer is ``{ok, verb, target, old, new, commands, result, detail}`` plus ``lkg`` after
@@ -223,8 +240,8 @@ def set_knob(
     runner = runner or run
     reader = reader or current
     find_cli = find_cli or source.find_cli
-    now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
-    answer: Dict[str, Any] = {
+    now = now or (lambda: datetime.datetime.now(datetime.UTC))
+    answer: dict[str, Any] = {
         "ok": False,
         "verb": "set",
         "target": name,

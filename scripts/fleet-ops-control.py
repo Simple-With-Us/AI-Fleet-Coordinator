@@ -357,7 +357,9 @@ def server_update_commands(ctx, config, name):
         raise Refused("the update is not in the allowlist")
     # --no-block: an update can run for minutes, and the Mac is waiting over ssh.  The unit's
     # own result shows in the services list on the next status report.
-    return [_systemctl_argv(entry["scope"], "start", "--no-block", entry["unit"])], "runs in the background"
+    return [
+        _systemctl_argv(entry["scope"], "start", "--no-block", entry["unit"])
+    ], "runs in the background"
 
 
 def _server_only(ctx):
@@ -430,7 +432,7 @@ def _parse_time(text):
         moment = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
         return None
-    return moment.replace(tzinfo=datetime.timezone.utc).timestamp()
+    return moment.replace(tzinfo=datetime.UTC).timestamp()
 
 
 def coolify_base(ctx):
@@ -616,7 +618,7 @@ def execute(ctx, scope, action, target, commands):
 def audit(ctx, scope, action, target, result):
     """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname."""
     row = {
-        "time": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "time": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "host": "mac" if ctx.platform.startswith("darwin") else "server",
         "verb": f"{scope} {action}",
         "target": target,
@@ -666,7 +668,9 @@ def handle(ctx, scope, action, target, mode):
             answer.update(ok=True, result="planned", detail=note)
             code = 0
         else:
-            answer.update(ok=True, result="done", detail=execute(ctx, scope, action, target, commands))
+            answer.update(
+                ok=True, result="done", detail=execute(ctx, scope, action, target, commands)
+            )
             code = 0
     except Refused as exc:
         answer.update(ok=False, result="refused", detail=str(exc))
@@ -779,7 +783,14 @@ def main(argv=None, ctx=None, out=None):
 
 
 def _refusal(detail):
-    return {"ok": False, "verb": "", "target": "", "commands": [], "result": "refused", "detail": detail}
+    return {
+        "ok": False,
+        "verb": "",
+        "target": "",
+        "commands": [],
+        "result": "refused",
+        "detail": detail,
+    }
 
 
 if __name__ == "__main__":
