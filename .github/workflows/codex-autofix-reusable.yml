@@ -51,9 +51,10 @@ name: Claude Code Autofix (Reusable)
 #         pr:
 #           description: "PR number to run the autofix loop on"
 #           required: true
-#   permissions:          # GITHUB_TOKEN needs both, the reusable cannot raise them
+#   permissions:          # GITHUB_TOKEN needs all three, the reusable cannot raise them
 #     contents: write
 #     pull-requests: write
+#     issues: write  # the one-run marker comments are issue comments; a reusable can only narrow its caller's grants
 #   concurrency:
 #     group: pr-autofix-${{ github.repository }}-${{ github.event.pull_request.number || github.event.inputs.pr }}
 #     cancel-in-progress: false
@@ -94,7 +95,7 @@ on:
       allowed_bots:
         required: false
         type: string
-        default: "chatgpt-codex-connector,chatgpt-codex-connector[bot],kody-ai,kody-ai[bot],cursor,cursor[bot],swu-ag,swu-ag[bot],swu-bf-builder,swu-bf-builder[bot],swu-bf-compiler,swu-bf-compiler[bot],swu-bf-deployer,swu-bf-deployer[bot],swu-bf-designer,swu-bf-designer[bot],swu-bf-director,swu-bf-director[bot],swu-bf-fixer,swu-bf-fixer[bot],swu-bf-housekeeper,swu-bf-housekeeper[bot],swu-bf-monitor,swu-bf-monitor[bot],swu-bf-oracle,swu-bf-oracle[bot],swu-bf-plumber,swu-bf-plumber[bot],swu-bf-publisher,swu-bf-publisher[bot],swu-claude,swu-claude[bot],swu-clutch,swu-clutch[bot],swu-codex,swu-codex[bot],swu-cursor,swu-cursor[bot],swu-cursor-cloud,swu-cursor-cloud[bot],swu-echo,swu-echo[bot],swu-fx,swu-fx[bot],swu-gb-compiler,swu-gb-compiler[bot],swu-gb-deployer,swu-gb-deployer[bot],swu-gb-designer,swu-gb-designer[bot],swu-gb-director,swu-gb-director[bot],swu-gb-engineer,swu-gb-engineer[bot],swu-gb-fixer,swu-gb-fixer[bot],swu-gb-housekeeper,swu-gb-housekeeper[bot],swu-gb-monitor,swu-gb-monitor[bot],swu-gb-oracle,swu-gb-oracle[bot],swu-gb-plumber,swu-gb-plumber[bot],swu-gb-publisher,swu-gb-publisher[bot],swu-gb-trader,swu-gb-trader[bot],swu-grok-build,swu-grok-build[bot],swu-grok-web,swu-grok-web[bot],swu-jet,swu-jet[bot],swu-mc,swu-mc[bot],swu-minimax,swu-minimax[bot],swu-opencode,swu-opencode[bot],swu-operator,swu-operator[bot],swu-rob,swu-rob[bot],swu-wise,swu-wise[bot]"
+        default: "chatgpt-codex-connector,chatgpt-codex-connector[bot],kody-ai,kody-ai[bot],cursor,cursor[bot],claude,claude[bot],swu-ag,swu-ag[bot],swu-bf-builder,swu-bf-builder[bot],swu-bf-compiler,swu-bf-compiler[bot],swu-bf-deployer,swu-bf-deployer[bot],swu-bf-designer,swu-bf-designer[bot],swu-bf-director,swu-bf-director[bot],swu-bf-fixer,swu-bf-fixer[bot],swu-bf-housekeeper,swu-bf-housekeeper[bot],swu-bf-monitor,swu-bf-monitor[bot],swu-bf-oracle,swu-bf-oracle[bot],swu-bf-plumber,swu-bf-plumber[bot],swu-bf-publisher,swu-bf-publisher[bot],swu-claude,swu-claude[bot],swu-clutch,swu-clutch[bot],swu-codex,swu-codex[bot],swu-cursor,swu-cursor[bot],swu-cursor-cloud,swu-cursor-cloud[bot],swu-echo,swu-echo[bot],swu-fx,swu-fx[bot],swu-gb-compiler,swu-gb-compiler[bot],swu-gb-deployer,swu-gb-deployer[bot],swu-gb-designer,swu-gb-designer[bot],swu-gb-director,swu-gb-director[bot],swu-gb-engineer,swu-gb-engineer[bot],swu-gb-fixer,swu-gb-fixer[bot],swu-gb-housekeeper,swu-gb-housekeeper[bot],swu-gb-monitor,swu-gb-monitor[bot],swu-gb-oracle,swu-gb-oracle[bot],swu-gb-plumber,swu-gb-plumber[bot],swu-gb-publisher,swu-gb-publisher[bot],swu-gb-trader,swu-gb-trader[bot],swu-grok-build,swu-grok-build[bot],swu-grok-web,swu-grok-web[bot],swu-jet,swu-jet[bot],swu-mc,swu-mc[bot],swu-minimax,swu-minimax[bot],swu-opencode,swu-opencode[bot],swu-operator,swu-operator[bot],swu-rob,swu-rob[bot],swu-wise,swu-wise[bot]"
         description: "Allowed bot actors (normalised by the action: lowercased, [bot] stripped)"
       # The id the owner chose for all fleet MiniMax use on 2026-10-20.  A model id that is
       # absent from the MiniMax Code runtime catalog can still be a valid public API id, and an
@@ -141,6 +142,12 @@ jobs:
     outputs:
       usage: ${{ steps.usage.outputs.json }}
     steps:
+      # The guard runs before the request gate and the policy loader, so a bad
+      # endpoint/model pair fails before any run starts (Kody 2026-10-21).
+      # congress-trading-shared's copy of this workflow moved the guard behind
+      # the request gate instead;  this repository keeps it in front,  because
+      # here a misconfigured fleet-wide switch must be loud on every run,  not
+      # silent on the runs that happen to be accepted.
       - name: Validate Model Switch
         env:
           VAR_BASE: ${{ vars.SWU_AUTOFIX_MODEL_BASE_URL }}
@@ -180,6 +187,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.inputs.pr }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
           NOTIFY_URL: ${{ vars.SWU_AUTOFIX_NOTIFY_URL }}
+          ALLOWED_BOTS: ${{ inputs.allowed_bots }}
         run: |
           set -euo pipefail
           # Owner rule 2026-10-20:  one autofix run per bot per PR;  the owner
@@ -264,9 +272,39 @@ jobs:
               > /dev/null
             exit 0
           fi
+          # Allowlist before any marker work (Kody on cts #394):  the action
+          # filters disallowed actors downstream,  but without a gate-side check
+          # their request still writes a marker and leaves a misleading
+          # "run started" comment.  Normalized as the action normalizes:
+          # lowercased,  [bot] stripped.  Only the normalized allowlisted
+          # requester reaches the marker below.
+          allowed=false
+          IFS=',' read -ra swu_bots <<< "$ALLOWED_BOTS"
+          for swu_bot in "${swu_bots[@]}"; do
+            swu_bot=$(printf '%s' "$swu_bot" | tr -d '[:space:]' | tr 'A-Z' 'a-z' | sed 's/\[bot\]$//')
+            if [ "$swu_bot" = "$requester" ]; then allowed=true; break; fi
+          done
+          if [ "$allowed" != "true" ]; then
+            echo "::notice::$author is not in allowed_bots, skipping before any marker write"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Anchored exact marker text, github-actions[bot] comments only: an
+          # unanchored contains() lets bot=swu-cursor match bot=swu-cursor-cloud's
+          # marker, and without an author filter any commenter could forge a
+          # marker to block a bot's one run (Sentry on cts #395).
           marker="swu-autofix-run: bot=$requester"
-          prior=$(gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
-            --jq ".[].body | select(contains(\"$marker\"))" 2> /dev/null | head -1 || true)
+          # Fail closed:  without the lookup result the one-run-per-bot record is
+          # unknown,  and a swallowed gh api error would let a bot run twice (Kody
+          # on cts #394).  The result goes through a file so pipefail cannot turn
+          # head's early close into a fake gh failure.
+          if ! gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\") | .body | select(contains(\"<!-- $marker -->\"))" \
+            > "$RUNNER_TEMP/prior_markers.txt"; then
+            echo "::error::marker lookup failed (gh api error) - refusing to run without the one-run-per-bot record;  retry the run"
+            exit 1
+          fi
+          prior=$(head -1 "$RUNNER_TEMP/prior_markers.txt")
           accepted=true
           if [ -n "$prior" ]; then accepted=false; fi
           if [ -n "${NOTIFY_URL:-}" ]; then
@@ -284,9 +322,15 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
+          # The marker must land before the model starts,  so a write failure
+          # stops the run here with an actionable error instead of a raw gh
+          # abort (Kody on cts #394) - before any model spend.
+          if ! gh api "repos/$GH_REPO/issues/$PR_NUMBER/comments" \
             -f body="<!-- $marker --> Autofix run $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID started for \`$author\`'s tagged request.  One autofix run per bot per PR (owner rule 2026-10-20);  delete this comment to reset." \
-            > /dev/null
+            > /dev/null; then
+            echo "::error::could not record the one-run marker comment - the calling job must grant issues: write and the issues API must be reachable;  the run stops before billing the model"
+            exit 1
+          fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         if: ${{ steps.request_gate.outputs.skip != 'true' }}
