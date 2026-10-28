@@ -137,7 +137,9 @@ class SystemdUnitTemplates(unittest.TestCase):
         self.assertIn("HOME=/home/jay", environments)
         self.assertIn("AGENT_SEAT=CLAUDE", environments)
         command = values(sections, "Service", "ExecStart")[0]
-        self.assertIn("/home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py", command)
+        self.assertIn(
+            "/home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py", command
+        )
         self.assertIn("--post", command)
         self.assertNotIn("--home", command)
 
