@@ -11,8 +11,8 @@ and this file is where they agree:
   3. the registry carries the same title the thread carries, found by the session id.
 
 The store is MiniMax Code's own session table; the letter lives in the Operator
-registry, which is one file for the fleet.  The registry is on the Operator host, so
-this asks it over SSH when the local copy is not there — one namespace, one allocator.
+registry, which is one file for the fleet.  This host reads that file locally when the
+deployment points at the shared store — there is no SSH fallback with a private alias.
 
 Subthreads do not get a letter:  a session with a parent is part of its parent's
 thread, and a session that is not a conversation (a task, a peek, a cron run) has no
@@ -33,21 +33,30 @@ import argparse
 import json
 import os
 import re
-import shlex
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import unicodedata
 
+from agent_sync import secretscan
+from agent_sync.operator_registry import registry_db_path
+
 SEAT = "MM"
 PLATFORM = "minimax"
-OPERATOR_HOST = os.environ.get("MM_OPERATOR_HOST", "mac")
+PROFILE_SCOPE = "default"
 LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 TITLE_MAX = 120
+HOOK_INPUT_MAX = 1_048_576
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 # The Mac's checkout of AI-Fleet-Coordinator, on the Operator host and here.
 REPO_REL = "AI-Fleet-Coordinator/scripts"
+
+
+class RegistryError(RuntimeError):
+    """The Operator registry call failed; callers must not treat it as success."""
 
 
 # ---- where things live ------------------------------------------------------------
@@ -74,9 +83,13 @@ def registry_db() -> str:
     """The local registry file, or "" when this host keeps no copy."""
     override = os.environ.get("AGENT_SYNC_OPERATOR_REGISTRY")
     if override:
-        return os.path.expanduser(override)
-    candidate = os.path.expanduser("~/.agent-sync/operator/registry.sqlite3")
-    return candidate if os.path.isfile(candidate) else ""
+        path = os.path.expanduser(override)
+        return path if os.path.isfile(path) else ""
+    root = os.environ.get("AGENT_SYNC_STATE_DIR") or os.path.join(
+        os.path.expanduser("~"), ".agent-sync"
+    )
+    path = registry_db_path(root, os.environ)
+    return path if os.path.isfile(path) else ""
 
 
 def repo_scripts_dir() -> str:
@@ -90,61 +103,71 @@ def repo_scripts_dir() -> str:
     return ""
 
 
-# ---- the registry, locally or over SSH --------------------------------------------
+def _scan_title(text: str) -> None:
+    hit = secretscan.scan(text or "")
+    if hit:
+        raise ValueError("session title refused: %s" % hit)
+
+
+# ---- the registry, locally only ---------------------------------------------------
+
+
+def _registry_identity_args() -> list[str]:
+    return ["--location", location(), "--scope", PROFILE_SCOPE]
 
 
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
-    """Run the Operator's registry CLI and return its JSON answer.
-
-    The registry is one file for the fleet, on the Operator host.  When this host has no
-    copy, the call goes over SSH to that host, so the letter namespace stays one
-    namespace.
-    """
+    """Run the Operator's registry CLI and return its JSON answer."""
     local_db = registry_db()
-    cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args
-    if local_db:
-        cmd += ["--db", local_db]
     scripts = repo_scripts_dir()
-    if local_db and scripts:
-        proc = subprocess.run(cmd, cwd=scripts, capture_output=True, text=True, timeout=timeout)
-    else:
-        remote = "cd ~/Code/%s && %s -m agent_sync.operator_registry %s" % (
-            REPO_REL,
-            "python3",
-            " ".join(shlex.quote(a) for a in args),
-        )
-        if local_db:
-            remote += " --db %s" % shlex.quote(local_db)
+    if not local_db or not scripts:
+        return {
+            "error": "the operator registry is not available on this host",
+            "code": "no_registry",
+        }
+    cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
+    try:
         proc = subprocess.run(
-            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", OPERATOR_HOST, remote],
+            cmd,
+            cwd=scripts,
             capture_output=True,
             text=True,
             timeout=timeout,
+            start_new_session=True,
         )
+    except subprocess.TimeoutExpired:
+        return {"error": "the registry did not answer in time", "code": "timeout"}
+    except OSError as exc:
+        code = "missing_tool" if getattr(exc, "errno", None) == 2 else "spawn_failed"
+        return {"error": str(exc)[:400], "code": code}
     out = (proc.stdout or "").strip()
     if not out:
-        return {"error": (proc.stderr or "no answer").strip()[:400]}
+        err = (proc.stderr or "no answer").strip()[:400]
+        code = "nonzero" if proc.returncode else "empty"
+        return {"error": err, "code": code}
     try:
-        return json.loads(out.splitlines()[-1])
+        answer = json.loads(out.splitlines()[-1])
     except json.JSONDecodeError:
-        return {"error": "unreadable answer: %s" % out[:200]}
+        return {"error": "unreadable answer: %s" % out[:200], "code": "bad_json"}
+    if proc.returncode and "error" not in answer:
+        answer = {"error": answer.get("error") or "registry exited %s" % proc.returncode}
+    return answer
+
+
+def _require_registry(answer: dict) -> dict:
+    if answer.get("error"):
+        raise RegistryError(str(answer["error"]))
+    return answer
 
 
 def register(session_id: str, title: str = "", space: str = "single") -> dict:
     """Ask the Operator for this session's letter.  Idempotent: the same session id
-    always answers with the same letter.
-
-    The space is "single" for a main conversation and "double" for a subthread, so a
-    subthread never takes the letter a conversation is holding.
-    """
+    always answers with the same letter."""
     args = [
         "register",
         "--platform",
         PLATFORM,
-        "--location",
-        location(),
-        "--scope",
-        "default",
+        *_registry_identity_args(),
         "--session-id",
         session_id,
         "--seat",
@@ -155,30 +178,56 @@ def register(session_id: str, title: str = "", space: str = "single") -> dict:
         space,
     ]
     if title:
+        _scan_title(title)
         args += ["--title", title]
     return registry_call(args)
 
 
-def update_title(session_id: str, title: str) -> dict:
-    """Carry the thread's own title into the registry, keyed on the session id."""
+def touch_session(session_id: str) -> dict:
     return registry_call(
-        ["update", "--platform", PLATFORM, "--session-id", session_id, "--title", title]
+        ["touch", "--platform", PLATFORM, *_registry_identity_args(), "--session-id", session_id]
+    )
+
+
+def update_title(session_id: str, title: str) -> dict:
+    """Carry the thread topic into the registry (topic only — not the letter prefix)."""
+    _scan_title(title)
+    letter = cached_letter(session_id)
+    topic = registry_topic_from_display(letter, title)
+    return registry_call(
+        [
+            "update",
+            "--platform",
+            PLATFORM,
+            *_registry_identity_args(),
+            "--session-id",
+            session_id,
+            "--title",
+            topic,
+        ]
     )
 
 
 def close_letter(session_id: str, reason: str) -> dict:
-    """End a letter's use.  The row stays, so the history keeps the window."""
     return registry_call(
         [
             "close",
             "--platform",
             PLATFORM,
+            *_registry_identity_args(),
             "--session-id",
             session_id,
             "--reason",
             reason,
         ]
     )
+
+
+def registry_topic_from_display(letter: str, title: str) -> str:
+    text = (title or "").strip()
+    if letter and text.startswith(letter + ":"):
+        return text[len(letter) + 1 :].lstrip()
+    return text
 
 
 # ---- the MiniMax Code session store ----------------------------------------------
@@ -204,6 +253,12 @@ def sessions(only_conversations: bool = False) -> list[dict]:
     out = []
     for row in rows:
         item = dict(row)
+        title = str(item.get("title") or "")
+        if title:
+            try:
+                _scan_title(title)
+            except ValueError:
+                item["title"] = ""
         if only_conversations and (
             item.get("parent_session_id") or item.get("session_kind") != "conversation"
         ):
@@ -221,6 +276,7 @@ def session_row(session_id: str) -> dict | None:
 
 def set_title(session_id: str, title: str) -> bool:
     """Write the thread's title into the MiniMax Code store."""
+    _scan_title(title)
     db = store_db()
     if not os.path.isfile(db):
         return False
@@ -254,7 +310,7 @@ def wanted_title(letter: str, topic: str) -> str:
     topic = (topic or "").strip()
     topic = re.sub(r"^\s*[A-Z]:\s*", "", topic)  # never double the prefix
     topic = " ".join(topic.split())
-    if not topic:
+    if not topic or not is_english(topic):
         topic = "Session " + (letter or "?")
     return "%s: %s" % (letter, topic[:TITLE_MAX])
 
@@ -270,37 +326,67 @@ def title_ok(title: str, letter: str) -> tuple[bool, str]:
     return True, "ok"
 
 
+def first_line_states_letter(text: str, letter: str) -> bool:
+    head = (text or "").strip()
+    if not head:
+        return False
+    first = head.split("\n", 1)[0].strip()
+    return bool(re.match(r"^%s:" % re.escape(letter), first))
+
+
 # ---- the letter cache -------------------------------------------------------------
 
 
 def letter_cache_dir() -> str:
     base = os.environ.get("MINIMAX_HOOKS_DATA") or os.path.join(data_dir(), "hook-state")
     path = os.path.join(base, "session-letters")
-    os.makedirs(path, exist_ok=True)
+    os.makedirs(path, mode=0o700, exist_ok=True)
     return path
 
 
 def cache_letter(session_id: str, letter: str, topic: str = "", space: str = "single") -> None:
+    if letter not in LETTERS and len(letter) != 2:
+        raise ValueError("invalid letter for cache")
+    payload = {"letter": letter, "topic": topic, "host": location(), "space": space}
     path = os.path.join(letter_cache_dir(), session_id + ".json")
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump({"letter": letter, "topic": topic, "host": location(), "space": space}, fh)
+    fd, tmp = tempfile.mkstemp(dir=letter_cache_dir(), prefix=".letter-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 
 def cached_letter(session_id: str) -> str:
     path = os.path.join(letter_cache_dir(), session_id + ".json")
     try:
         with open(path, encoding="utf-8") as fh:
-            return str(json.load(fh).get("letter") or "")
-    except (OSError, ValueError):
+            data = json.load(fh)
+    except (OSError, ValueError, json.JSONDecodeError):
         return ""
+    if not isinstance(data, dict):
+        return ""
+    letter = str(data.get("letter") or "")
+    if len(letter) == 1 and letter in LETTERS:
+        return letter
+    if len(letter) == 2 and letter[0] in LETTERS and letter[1] in LETTERS:
+        return letter
+    return ""
 
 
 def letter_for(session_id: str, topic: str = "", space: str = "single") -> str:
     """The letter for a session:  the cache first, the Operator otherwise."""
     letter = cached_letter(session_id)
     if letter:
+        try:
+            touch_session(session_id)
+        except RegistryError:
+            pass
         return letter
-    answer = register(session_id, topic, space)
+    answer = _require_registry(register(session_id, topic, space))
     letter = str(answer.get("label") or "")
     if letter:
         cache_letter(session_id, letter, topic, space)
@@ -312,8 +398,10 @@ def letter_for(session_id: str, topic: str = "", space: str = "single") -> str:
 
 def read_hook_input() -> dict:
     try:
-        raw = sys.stdin.read()
+        raw = sys.stdin.read(HOOK_INPUT_MAX + 1)
     except (OSError, ValueError):
+        return {}
+    if len(raw) > HOOK_INPUT_MAX:
         return {}
     if not raw.strip():
         return {}
@@ -324,17 +412,32 @@ def read_hook_input() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def hook_session_id(payload: dict) -> str:
+    value = payload.get("session_id")
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    return text if SESSION_ID_RE.fullmatch(text) else ""
+
+
 def hook_session_start() -> int:
     """Give the session its letter, and tell the agent the two forms it must use."""
     payload = read_hook_input()
-    session_id = str(payload.get("session_id") or "")
+    session_id = hook_session_id(payload)
     if not session_id:
         return 0
     row = session_row(session_id) or {}
     space = "single"
     if row.get("parent_session_id") or row.get("session_kind") == "task":
         space = "double"  # a subthread takes a double letter (owner 2026-10-28)
-    letter = letter_for(session_id, str(row.get("title") or ""), space)
+    try:
+        letter = letter_for(session_id, str(row.get("title") or ""), space)
+    except RegistryError:
+        print(
+            "Session letter: none yet (the Operator could not be reached).  Name this thread "
+            "in English; if a letter arrives later, prefix the title with it."
+        )
+        return 0
     if not letter:
         print(
             "Session letter: none yet (the Operator could not be reached).  Name this thread "
@@ -360,17 +463,22 @@ POSTING_TOOLS = ("zulip_", "linear_", "notes_")
 def hook_pre_tool_use() -> int:
     """Block a post that does not state the letter."""
     payload = read_hook_input()
-    session_id = str(payload.get("session_id") or "")
+    session_id = hook_session_id(payload)
     if not session_id:
         return 0
     row = session_row(session_id) or {}
     if row.get("parent_session_id"):
         return 0  # a subthread posts under its parent's letter
+    if row.get("session_kind") not in (None, "conversation"):
+        return 0
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
         return 0
-    letter = cached_letter(session_id) or letter_for(session_id)
+    try:
+        letter = cached_letter(session_id) or letter_for(session_id)
+    except RegistryError:
+        return 0
     if not letter:
         return 0
     text = ""
@@ -396,8 +504,7 @@ def hook_pre_tool_use() -> int:
             return 0
     else:
         return 0  # not a posting tool:  the letter does not apply
-    head = text.strip()[:400]
-    if re.search(r"(^|\n)\s*%s[:.\s]" % re.escape(letter), head) or letter + ":" in head:
+    if first_line_states_letter(text, letter):
         return 0
     sys.stderr.write(
         "This post does not state the session letter %s.  State it in the first line "
@@ -409,19 +516,28 @@ def hook_pre_tool_use() -> int:
 def hook_stop() -> int:
     """Check the thread title, and carry it into the registry."""
     payload = read_hook_input()
-    session_id = str(payload.get("session_id") or "")
+    session_id = hook_session_id(payload)
     if not session_id:
         return 0
-    row = session_row(session_id) or {}
+    row = session_row(session_id)
+    if row is None:
+        return 0
     if row.get("parent_session_id") or row.get("session_kind") not in (None, "conversation"):
         return 0
-    letter = cached_letter(session_id) or letter_for(session_id)
+    try:
+        letter = cached_letter(session_id) or letter_for(session_id)
+    except RegistryError:
+        return 0
     if not letter:
         return 0
     title = str(row.get("title") or "")
     ok, why = title_ok(title, letter)
     if ok:
-        update_title(session_id, title)  # the registry carries the thread's own title
+        try:
+            update_title(session_id, title)
+        except (RegistryError, ValueError) as exc:
+            sys.stderr.write("Could not update the registry: %s\n" % exc)
+            return 2
         return 0
     active = bool(payload.get("stop_hook_active"))
     if not active:
@@ -430,10 +546,15 @@ def hook_stop() -> int:
             '"%s: <topic in English>" with the session-title tool, then finish.' % (why, letter)
         )
         return 2
-    # Second pass: fix it here rather than leave a thread nobody can file.
     fallback = wanted_title(letter, title)
-    set_title(session_id, fallback)
-    update_title(session_id, fallback)
+    if not set_title(session_id, fallback):
+        sys.stderr.write("Could not rename the thread in the session store.\n")
+        return 2
+    try:
+        update_title(session_id, fallback)
+    except (RegistryError, ValueError) as exc:
+        sys.stderr.write("Could not update the registry: %s\n" % exc)
+        return 2
     sys.stderr.write("The thread was renamed to %r.\n" % fallback)
     return 0
 
@@ -488,12 +609,7 @@ def is_live(row: dict, live_hours: int) -> bool:
 
 
 def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
-    """Name the sessions this host already has:  letter, English title, registry in step.
-
-    A main conversation takes a single letter and a subthread a double one.  A thread
-    that is not live has its letter ended straight away, so the letter returns to the
-    pool for the next thread and the registry keeps the window it was used in.
-    """
+    """Name the sessions this host already has:  letter, English title, registry in step."""
     topics: dict[str, str] = {}
     if topics_file:
         try:
@@ -512,7 +628,11 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             continue
         session_id = row["session_id"]
         space = "single" if kind == "conversation" else "double"
-        letter = letter_for(session_id, title, space)
+        try:
+            letter = letter_for(session_id, title, space)
+        except RegistryError as exc:
+            out.append({"session_id": session_id, "error": str(exc)})
+            continue
         if not letter:
             out.append({"session_id": session_id, "error": "no letter"})
             continue
@@ -523,23 +643,41 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             )
             continue
         wanted = wanted_title(letter, topic)
+        already_ok = title_ok(title, letter)[0]
         entry = {
             "session_id": session_id,
             "kind": kind,
             "letter": letter,
             "current_title": title,
             "wanted_title": wanted,
-            "already_ok": title_ok(title, letter)[0],
+            "already_ok": already_ok,
             "live": is_live(row, live_hours),
         }
-        if apply and not entry["already_ok"]:
-            set_title(session_id, wanted)
-            update_title(session_id, wanted)
-            entry["applied"] = True
-        if apply and not entry["live"]:
-            # The thread is old:  its letter's use ends, and the history keeps the window.
-            closed = close_letter(session_id, "stale and replaced by a newer session")
-            entry["letter_ended"] = closed.get("outcome")
+        if apply:
+            if not already_ok:
+                if not set_title(session_id, wanted):
+                    entry["error"] = "could not rename in the session store"
+                    out.append(entry)
+                    continue
+                try:
+                    update_title(session_id, wanted)
+                except (RegistryError, ValueError) as exc:
+                    entry["error"] = str(exc)
+                    out.append(entry)
+                    continue
+                entry["applied"] = True
+            else:
+                try:
+                    update_title(session_id, title)
+                    entry["registry_synced"] = True
+                except (RegistryError, ValueError) as exc:
+                    entry["registry_error"] = str(exc)
+            if not entry["live"]:
+                try:
+                    closed = close_letter(session_id, "stale and replaced by a newer session")
+                    entry["letter_ended"] = closed.get("outcome")
+                except RegistryError as exc:
+                    entry["letter_end_error"] = str(exc)
         out.append(entry)
     print(json.dumps(out, indent=2))
     return 0
@@ -571,14 +709,28 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sweep":
         return sweep(args.apply, args.live_hours, args.topics_file)
     if args.command == "letter":
-        print(json.dumps(register(args.session_id, args.title)))
+        try:
+            print(json.dumps(_require_registry(register(args.session_id, args.title))))
+        except RegistryError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
         return 0
     if args.command == "rename":
-        answer = register(args.session_id)
+        try:
+            answer = _require_registry(register(args.session_id))
+        except RegistryError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
         letter = str(answer.get("label") or "")
         title = wanted_title(letter, args.title)
-        set_title(args.session_id, title)
-        update_title(args.session_id, title)
+        if not set_title(args.session_id, title):
+            print(json.dumps({"error": "could not rename in the session store"}))
+            return 2
+        try:
+            update_title(args.session_id, title)
+        except (RegistryError, ValueError) as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
         print(json.dumps({"letter": letter, "title": title}))
         return 0
     return 0

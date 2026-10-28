@@ -35,6 +35,13 @@ class RegistryTest(unittest.TestCase):
         self.db = os.path.join(self.tmp.name, "registry.sqlite3")
         self.reg = R.SessionRegistry(self.db)
 
+    def _loc(self, **kw):
+        fields = ident(**kw)
+        return {
+            "verified_host": fields["verified_host"],
+            "profile_scope": fields["profile_scope"],
+        }
+
     def tearDown(self):
         self.reg.close_db()
         self.tmp.cleanup()
@@ -191,6 +198,7 @@ class RegistryTest(unittest.TestCase):
             platform="minimax",
             native_session_id="native-1",
             title="Memory sync, fleet skills and Operator session letter",
+            **self._loc(platform="minimax"),
         )
         self.assertEqual(out["outcome"], "updated")
         self.assertEqual(out["label"], a["label"])  # the letter is never touched
@@ -201,13 +209,25 @@ class RegistryTest(unittest.TestCase):
         )
         self.assertEqual(self.reg._get(a["record_id"])["title"], out["title"])
 
+    def test_update_session_strips_a_display_title_prefix(self):
+        self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
+        out = R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            title="A: Memory sync",
+            **self._loc(platform="minimax"),
+        )
+        self.assertEqual(out["title_display"], "A: Memory sync")
+        self.assertEqual(self.reg._get(out["record_id"])["title"], "Memory sync")
+
     def test_update_session_is_idempotent_on_the_same_session_id(self):
         self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
         first = R.update_session(
-            self.db, platform="minimax", native_session_id="native-1", title="T"
+            self.db, platform="minimax", native_session_id="native-1", title="T", **self._loc()
         )
         again = R.update_session(
-            self.db, platform="minimax", native_session_id="native-1", title="T"
+            self.db, platform="minimax", native_session_id="native-1", title="T", **self._loc()
         )
         self.assertEqual(first["outcome"], "updated")
         self.assertEqual(again["outcome"], "unchanged")
@@ -216,16 +236,16 @@ class RegistryTest(unittest.TestCase):
 
     def test_update_session_on_an_unregistered_session_raises(self):
         with self.assertRaises(ValueError):
-            R.update_session(self.db, platform="minimax", native_session_id="nope", title="T")
+            R.update_session(self.db, platform="minimax", native_session_id="nope", title="T", **self._loc())
 
     def test_update_session_needs_a_field(self):
         self.reg.resolve_or_register(ident(platform="minimax"))
         with self.assertRaises(ValueError):
-            R.update_session(self.db, platform="minimax", native_session_id="native-1")
+            R.update_session(self.db, platform="minimax", native_session_id="native-1", **self._loc())
 
     def test_update_session_does_not_mint_a_letter(self):
         self.reg.resolve_or_register(ident(platform="minimax"))
-        R.update_session(self.db, platform="minimax", native_session_id="native-1", title="T")
+        R.update_session(self.db, platform="minimax", native_session_id="native-1", title="T", **self._loc(platform="minimax"))
         row = self.reg._conn.execute(
             "SELECT COUNT(*) AS n FROM sessions WHERE platform = 'minimax'"
         ).fetchone()
@@ -239,7 +259,7 @@ class RegistryTest(unittest.TestCase):
             ("2020-01-01T00:00:00.000Z", a["record_id"]),
         )
         self.reg._conn.commit()
-        R.update_session(self.db, platform="minimax", native_session_id="native-1", title="T")
+        R.update_session(self.db, platform="minimax", native_session_id="native-1", title="T", **self._loc(platform="minimax"))
         seen = self.reg._get(a["record_id"])["last_seen_at"]
         self.assertNotEqual(seen, "2020-01-01T00:00:00.000Z")
         ended = R.sweep_stale(self.db, platform="minimax", seat="MM", stale_after_minutes=120)
@@ -254,6 +274,7 @@ class RegistryTest(unittest.TestCase):
             platform="minimax",
             native_session_id="native-1",
             reason="stale and replaced by a newer session",
+            **self._loc(platform="minimax"),
         )
         self.assertTrue(out["closed"])
         self.assertEqual(out["label"], a["label"])
@@ -269,20 +290,20 @@ class RegistryTest(unittest.TestCase):
 
     def test_close_session_twice_changes_nothing(self):
         self.reg.resolve_or_register(ident(platform="minimax"))
-        first = R.close_session(self.db, platform="minimax", native_session_id="native-1")
-        again = R.close_session(self.db, platform="minimax", native_session_id="native-1")
+        first = R.close_session(self.db, platform="minimax", native_session_id="native-1", **self._loc(platform="minimax"))
+        again = R.close_session(self.db, platform="minimax", native_session_id="native-1", **self._loc(platform="minimax"))
         self.assertTrue(first["closed"])
         self.assertFalse(again["closed"])
         self.assertEqual(again["outcome"], "already_closed")
 
     def test_close_session_on_an_unregistered_session_raises(self):
         with self.assertRaises(ValueError):
-            R.close_session(self.db, platform="minimax", native_session_id="nope")
+            R.close_session(self.db, platform="minimax", native_session_id="nope", **self._loc(platform="minimax"))
 
     def test_history_lists_live_and_retired_letters_with_their_windows(self):
         self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
         self.reg.resolve_or_register(ident(platform="minimax", native="native-2"))
-        R.close_session(self.db, platform="minimax", native_session_id="native-1")
+        R.close_session(self.db, platform="minimax", native_session_id="native-1", **self._loc(platform="minimax"))
         history = R.letter_history(self.db, "minimax")
         by_letter = {row["letter"]: row for row in history}
         self.assertFalse(by_letter["A"]["live"])

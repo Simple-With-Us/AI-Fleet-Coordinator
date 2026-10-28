@@ -134,6 +134,17 @@ def display_title(label: str, title: str) -> str:
     return f"{label}: {title}" if label else title
 
 
+def registry_title(label: str, title: str) -> str:
+    """The topic stored on the row:  the letter prefix belongs in display_title only."""
+    text = (title or "").strip()
+    if not label or not text:
+        return text
+    prefix = f"{label}:"
+    if text.startswith(prefix):
+        return text[len(prefix) :].lstrip()
+    return text
+
+
 def cross_seat_ref(seat: str, letter: str, generation: int) -> str:
     """Cross-seat reference form.  Generation > 1 (a recycled letter) must be disambiguated."""
     base = f"{seat} {letter}"
@@ -684,10 +695,36 @@ def register_session(
     return out
 
 
+def _session_row_for_update(
+    conn: sqlite3.Connection,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+) -> sqlite3.Row:
+    namespace = normalize_platform(platform)
+    native = SI.check(native_session_id, "the native session id")
+    row = conn.execute(
+        "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
+        " AND profile_scope = ? AND native_session_id = ?"
+        " ORDER BY registered_at DESC LIMIT 1",
+        (namespace, verified_host, profile_scope, native),
+    ).fetchone()
+    if row is None:
+        raise ValueError(
+            f"session {native} is not registered on {namespace} at {verified_host}/{profile_scope};"
+            " register it first"
+        )
+    return row
+
+
 def update_session(
     db_path: str,
     *,
     platform: str,
+    verified_host: str,
+    profile_scope: str,
     native_session_id: str,
     title: str | None = None,
     project: str | None = None,
@@ -708,8 +745,12 @@ def update_session(
     A session id that is not registered raises ValueError:  a caller that wants a
     letter must register first, and a miss here is not a reason to invent a row.
     """
-    native = SI.check(native_session_id, "the native session id")
-    namespace = normalize_platform(platform)
+    for name, value in (
+        ("verified_host", verified_host),
+        ("profile_scope", profile_scope),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("%s is required" % name)
     fields = {
         "title": title,
         "project": project,
@@ -725,18 +766,17 @@ def update_session(
         raise ValueError(f"not mutable: {', '.join(bad)}")
     registry = SessionRegistry(db_path)
     try:
-        rows = registry._conn.execute(
-            "SELECT * FROM sessions WHERE platform = ? AND native_session_id = ?"
-            " ORDER BY registered_at DESC",
-            (namespace, native),
-        ).fetchall()
-        if not rows:
-            raise ValueError(
-                f"session {native} is not registered on {namespace}; register it first"
-            )
-        row = rows[0]
+        row = _session_row_for_update(
+            registry._conn,
+            platform=platform,
+            verified_host=verified_host,
+            profile_scope=profile_scope,
+            native_session_id=native_session_id,
+        )
         record_id = row["record_id"]
         letter, generation = registry._active_alias(registry._conn, record_id)
+        if title is not None:
+            wanted["title"] = registry_title(letter, title)
         changed = {k: v for k, v in wanted.items() if (row[k] or "") != v}
         if changed:
             registry.update_attrs(record_id, **changed)
@@ -781,10 +821,44 @@ def _parse_instant(value: str | None) -> datetime | None:
         return None
 
 
+def touch_session(
+    db_path: str,
+    *,
+    platform: str,
+    verified_host: str,
+    profile_scope: str,
+    native_session_id: str,
+) -> dict[str, Any]:
+    """Stamp last_seen_at for a live session without changing its fields."""
+    for name, value in (
+        ("verified_host", verified_host),
+        ("profile_scope", profile_scope),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("%s is required" % name)
+    registry = SessionRegistry(db_path)
+    try:
+        row = _session_row_for_update(
+            registry._conn,
+            platform=platform,
+            verified_host=verified_host,
+            profile_scope=profile_scope,
+            native_session_id=native_session_id,
+        )
+        if row["closed_at"]:
+            return {"record_id": row["record_id"], "outcome": "closed"}
+        registry.mark_seen(row["record_id"])
+        return {"record_id": row["record_id"], "outcome": "seen"}
+    finally:
+        registry.close_db()
+
+
 def close_session(
     db_path: str,
     *,
     platform: str,
+    verified_host: str,
+    profile_scope: str,
     native_session_id: str,
     reason: str = "",
     actor: str = "registry",
@@ -796,17 +870,21 @@ def close_session(
     keeps the history of every letter it has issued and the window each one was used
     in.  The reason ("stale", "replaced") goes into the close event.
     """
-    native = SI.check(native_session_id, "the native session id")
-    namespace = normalize_platform(platform)
+    for name, value in (
+        ("verified_host", verified_host),
+        ("profile_scope", profile_scope),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("%s is required" % name)
     registry = SessionRegistry(db_path)
     try:
-        row = registry._conn.execute(
-            "SELECT * FROM sessions WHERE platform = ? AND native_session_id = ?"
-            " ORDER BY registered_at DESC LIMIT 1",
-            (namespace, native),
-        ).fetchone()
-        if row is None:
-            raise ValueError(f"session {native} is not registered on {namespace}")
+        row = _session_row_for_update(
+            registry._conn,
+            platform=platform,
+            verified_host=verified_host,
+            profile_scope=profile_scope,
+            native_session_id=native_session_id,
+        )
         record_id = row["record_id"]
         letter, generation = registry._active_alias(registry._conn, record_id)
         closed = registry.close(record_id, actor=actor, source=source, reason=reason)
@@ -849,42 +927,75 @@ def sweep_stale(
     registry = SessionRegistry(db_path)
     ended: list[dict[str, Any]] = []
     try:
-        rows = registry._conn.execute(
-            "SELECT * FROM sessions WHERE platform = ? AND seat = ? AND closed_at IS NULL"
-            " ORDER BY registered_at ASC",
-            (namespace, seat),
-        ).fetchall()
-        seen = [(r, _parse_instant(r["last_seen_at"])) for r in rows]
-        for row, last_seen in seen:
-            if last_seen is None or last_seen >= cutoff:
-                continue  # alive, or never seen:  not stale
-            replaced = any(
-                other is not row
-                and (other_seen is None or other_seen > last_seen)
-                and (parsed_registered is None or parsed_registered > last_seen)
-                for other, other_seen in seen
-                for parsed_registered in [_parse_instant(other["registered_at"])]
-            )
-            if not replaced:
-                continue
-            letter, generation = registry._active_alias(registry._conn, row["record_id"])
-            registry.close(
-                row["record_id"],
-                actor="registry",
-                source="stale_sweep",
-                reason="stale and replaced by a newer session",
-            )
-            ended.append(
-                {
-                    "record_id": row["record_id"],
-                    "label": letter,
-                    "generation": generation,
-                    "native_session_id": row["native_session_id"],
-                    "title": row["title"],
-                    "last_seen_at": row["last_seen_at"],
-                    "reason": "stale and replaced by a newer session",
-                }
-            )
+        with registry._write_txn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sessions WHERE platform = ? AND seat = ? AND closed_at IS NULL"
+                " ORDER BY registered_at ASC",
+                (namespace, seat),
+            ).fetchall()
+            open_rows = list(rows)
+            for row in open_rows:
+                fresh = conn.execute(
+                    "SELECT last_seen_at, registered_at FROM sessions WHERE record_id = ?",
+                    (row["record_id"],),
+                ).fetchone()
+                last_seen = _parse_instant(fresh["last_seen_at"] if fresh else None)
+                if last_seen is None or last_seen >= cutoff:
+                    continue
+                replaced = False
+                for other in open_rows:
+                    if other["record_id"] == row["record_id"]:
+                        continue
+                    other_seen = _parse_instant(
+                        conn.execute(
+                            "SELECT last_seen_at FROM sessions WHERE record_id = ?",
+                            (other["record_id"],),
+                        ).fetchone()["last_seen_at"]
+                    )
+                    other_registered = _parse_instant(other["registered_at"])
+                    if (other_seen is None or other_seen > last_seen) and (
+                        other_registered is None or other_registered > last_seen
+                    ):
+                        replaced = True
+                        break
+                if not replaced:
+                    continue
+                letter, generation = registry._active_alias(conn, row["record_id"])
+                if row["closed_at"]:
+                    continue
+                now = _utcnow()
+                conn.execute(
+                    "UPDATE sessions SET closed_at = ?, state = 'closed' WHERE record_id = ?",
+                    (now, row["record_id"]),
+                )
+                conn.execute(
+                    "UPDATE alias_assignments SET retired_at = ?"
+                    " WHERE record_id = ? AND retired_at IS NULL",
+                    (now, row["record_id"]),
+                )
+                registry._insert_event(
+                    conn,
+                    row["record_id"],
+                    letter,
+                    "close",
+                    "registry",
+                    "closed",
+                    "stale_sweep",
+                    "stale and replaced by a newer session",
+                    now,
+                )
+                registry._enqueue_session_upsert(conn, row["record_id"], now)
+                ended.append(
+                    {
+                        "record_id": row["record_id"],
+                        "label": letter,
+                        "generation": generation,
+                        "native_session_id": row["native_session_id"],
+                        "title": row["title"],
+                        "last_seen_at": fresh["last_seen_at"] if fresh else row["last_seen_at"],
+                        "reason": "stale and replaced by a newer session",
+                    }
+                )
     finally:
         registry.close_db()
     return ended
@@ -911,12 +1022,21 @@ def letter_history(db_path: str, platform: str, limit: int = 50) -> list[dict[st
             (namespace, max(1, int(limit))),
         ).fetchall()
         out: list[dict[str, Any]] = []
+        record_ids = [row["record_id"] for row in rows]
+        close_by_id: dict[str, sqlite3.Row] = {}
+        if record_ids:
+            placeholders = ",".join("?" * len(record_ids))
+            for event in registry._conn.execute(
+                "SELECT session_record_id, recorded_at, details FROM events"
+                " WHERE event = 'close' AND session_record_id IN (%s)"
+                " ORDER BY recorded_at DESC" % placeholders,
+                record_ids,
+            ):
+                rid = event["session_record_id"]
+                if rid not in close_by_id:
+                    close_by_id[rid] = event
         for row in rows:
-            event = registry._conn.execute(
-                "SELECT recorded_at, details FROM events WHERE session_record_id = ?"
-                " AND event = 'close' ORDER BY recorded_at DESC LIMIT 1",
-                (row["record_id"],),
-            ).fetchone()
+            event = close_by_id.get(row["record_id"])
             item = dict(row)
             item["end_reason"] = (event["details"] if event else "") or ""
             item["ended_at"] = (event["recorded_at"] if event else None) or row["retired_at"]
@@ -1439,6 +1559,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     u.add_argument("--db", default="", help="the registry file (default: the shared path)")
     u.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    u.add_argument(
+        "--location",
+        required=True,
+        help="the fleet location (mac, server, cloud), never an OS hostname",
+    )
+    u.add_argument("--scope", required=True, help="the profile scope")
     u.add_argument("--session-id", required=True, help="the native session id")
     u.add_argument("--title", default=None)
     u.add_argument("--project", default=None)
@@ -1448,6 +1574,12 @@ def main(argv: list[str] | None = None) -> int:
     c = sub.add_parser("close", help="end one session's letter and keep its history")
     c.add_argument("--db", default="", help="the registry file (default: the shared path)")
     c.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    c.add_argument(
+        "--location",
+        required=True,
+        help="the fleet location (mac, server, cloud), never an OS hostname",
+    )
+    c.add_argument("--scope", required=True, help="the profile scope")
     c.add_argument("--session-id", required=True, help="the native session id")
     c.add_argument("--reason", default="", help="why the letter's use ended")
     c.add_argument("--actor", default="registry")
@@ -1463,6 +1595,16 @@ def main(argv: list[str] | None = None) -> int:
     h.add_argument("--db", default="", help="the registry file (default: the shared path)")
     h.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     h.add_argument("--limit", type=int, default=50)
+    t = sub.add_parser("touch", help="stamp last_seen_at for one live session")
+    t.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    t.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    t.add_argument(
+        "--location",
+        required=True,
+        help="the fleet location (mac, server, cloud), never an OS hostname",
+    )
+    t.add_argument("--scope", required=True, help="the profile scope")
+    t.add_argument("--session-id", required=True, help="the native session id")
     args = parser.parse_args(argv)
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
@@ -1508,6 +1650,8 @@ def main(argv: list[str] | None = None) -> int:
             out = update_session(
                 args.db or _default_db(),
                 platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
                 native_session_id=args.session_id,
                 title=args.title,
                 project=args.project,
@@ -1525,10 +1669,26 @@ def main(argv: list[str] | None = None) -> int:
             out = close_session(
                 args.db or _default_db(),
                 platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
                 native_session_id=args.session_id,
                 reason=args.reason,
                 actor=args.actor,
                 source=args.source,
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(out))
+        return 0
+    if args.command == "touch":
+        try:
+            out = touch_session(
+                args.db or _default_db(),
+                platform=args.platform,
+                verified_host=args.location,
+                profile_scope=args.scope,
+                native_session_id=args.session_id,
             )
         except ValueError as exc:
             print(json.dumps({"error": str(exc)}))
