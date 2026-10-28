@@ -81,7 +81,6 @@ class SeatPolicy:
         "wf_issue_subissues",
         "wf_issue_blocked_by",
         "wf_issue_blocking",
-
         "wf_pr_get",
         "wf_pr_reviews",
         "wf_pr_comments",
