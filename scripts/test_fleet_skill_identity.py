@@ -65,7 +65,7 @@ def _notes() -> str:
 def _protocol_doc_path() -> Path:
     """The protocol document is being renamed:  the mirror holds it under exactly one of the two names.
     Remove the old name when the rename is complete."""
-    for name in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md"):
+    for name in ("FLEET-PROTOCOL.md",):
         if Path(ROOT, name).is_file():
             return Path(ROOT, name)
     return Path(ROOT, "FLEET-PROTOCOL.md")
@@ -1518,7 +1518,7 @@ class LinearTeamListTests(unittest.TestCase):
         return tuple(ast.literal_eval(match.group(1)))
 
     def _sources(self) -> list[Path]:
-        #  Only files this repo owns.  AGENT-SYNC.md is deliberately absent:  it
+        #  Only files this repo owns.  FLEET-PROTOCOL.md is deliberately absent:  it
         #  is a generated mirror of the Fleet-OPS handbook, check-generated-mirror.py
         #  refuses an edit here, and its copy of the team list is fixed where it is
         #  generated rather than in this tree.

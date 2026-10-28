@@ -3,7 +3,7 @@
 fleet's delegation rules.
 
 WHY THIS IS A HOOK AND NOT A PARAGRAPH
-The rules below already exist in CLAUDE.md and AGENT-SYNC.md, and are violated on
+The rules below already exist in CLAUDE.md and FLEET-PROTOCOL.md, and are violated on
 essentially every spawn anyway.  That is structural, not forgetful: a subagent
 with no `model` INHERITS the session model, nothing in the run output states which
 tier was used, and the overspend is only visible afterward by reading agent meta

@@ -186,7 +186,7 @@ SEAT_ROSTER = {
     "BF-FIXER", "BF-DIRECTOR", "BF-COMPILER", "BF-DESIGNER", "BF-PUBLISHER", "BF-PLUMBER",
     "BF-ORACLE", "BF-MONITOR", "BF-HOUSEKEEPER", "BF-DEPLOYER", "BF-BUILDER", "BF-PRODUCER",
 }
-# The eleven BotFleet role seats are the ten role seats plus BF-DIRECTOR (AGENT-SYNC.md, owner
+# The eleven BotFleet role seats are the ten role seats plus BF-DIRECTOR (FLEET-PROTOCOL.md, owner
 # 2026-10-09).  BF-PRODUCER is not one of those eleven and has no Zulip bot.  It stays on this
 # roster so its Linear app signs its own writes (board #531).
 BF_ROLES = {"DIRECTOR", "COMPILER", "FIXER", "DESIGNER", "PLUMBER", "PUBLISHER",
@@ -213,7 +213,7 @@ SEAT_APP_NAMES = {
     "GROK-WEB": "Grok Web", "CLUTCH": "Clutch", "MM": "MM", "FX": "Fx", "MC": "Muse Code",
     "MA": "Muse Assist", "JET": "Jet", "JET-CHAT": "Jet", "OPENCODE": "OpenCode",
     "ECHO": "Echo (Instinct)", "WISE": "Wise (Instinct)",
-    # BotFleet seats in SEAT_ROSTER.  AGENT-SYNC.md (owner 2026-10-09) names the ten role seats
+    # BotFleet seats in SEAT_ROSTER.  FLEET-PROTOCOL.md (owner 2026-10-09) names the ten role seats
     # plus BF-DIRECTOR.  BF-PRODUCER is on that same roster (BF_ROLES turns a bare PRODUCER into
     # it), so it has an app too:  a write from that seat must not sign as the shared Fleet app.
     # Each app is named for its seat tag, which app_name_ok accepts directly, so a rename in

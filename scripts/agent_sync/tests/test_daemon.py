@@ -168,7 +168,7 @@ class RoutingTests(DaemonHarness):
     def test_own_posts_reach_sibling_leases_only_and_topics_match_without_case(self) -> None:
         daemon = self.started()
         self.write_lease("poster", topics=[("agent-sync", "AFC Work")], session_id="aaaa1111-0000")
-        self.write_lease("sibling", topics=[("AGENT-SYNC", "afc work")], session_id="bbbb2222-0000")
+        self.write_lease("sibling", topics=[("FLEET-PROTOCOL", "afc work")], session_id="bbbb2222-0000")
         self.fake.add_message(self.fake.me, "agent-sync", "afc WORK", "[CLAUDE·aaaa1111] working on it")
         self.pump_until(daemon, lambda: len(self.live_items("sibling")) >= 1)
         self.assertEqual([i["kind"] for i in self.live_items("sibling")], ["sibling"])
@@ -1556,7 +1556,7 @@ class MuseSeatTests(DaemonHarness):
 
 
 class PeerScreenTests(DaemonHarness):
-    """The tool-less responder screens a peer's request (AGENT-SYNC Precedence rule 3):  low risk is
+    """The tool-less responder screens a peer's request (FLEET-PROTOCOL Precedence rule 3):  low risk is
     answered, uncertain and high risk reach the owner by Zulip DM from the seat's own bot."""
 
     OWNER_ID = 12

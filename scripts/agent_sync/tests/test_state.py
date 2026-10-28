@@ -75,7 +75,7 @@ class StateTests(unittest.TestCase):
         state = S.State(self.root, "CLAUDE", "t")
         state.advance_cursor("Agent-Sync", "Roll Call", 10)
         state.advance_cursor("agent-sync", "roll call", 4)
-        self.assertEqual(state.cursor("AGENT-SYNC", "ROLL CALL"), 10)
+        self.assertEqual(state.cursor("FLEET-PROTOCOL", "ROLL CALL"), 10)
         self.assertIsNone(state.cursor("agent-sync", "other"))
 
     def test_cursor_falls_back_to_legacy_channel_name(self) -> None:

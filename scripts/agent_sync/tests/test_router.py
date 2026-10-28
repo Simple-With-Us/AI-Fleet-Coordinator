@@ -431,7 +431,7 @@ class LeaseRoutingTests(unittest.TestCase):
         self.assertTrue(R.route(msg(content=DIRECT[0], flags=DIRECT[1]), ME, muted, [])[1].seat_inbox)
 
     def test_topics_match_without_case(self) -> None:
-        a = lease("A", topics=[("AGENT-SYNC", "AFC Work")])
+        a = lease("A", topics=[("FLEET-PROTOCOL", "AFC Work")])
         self.assertEqual(R.route(msg(topic="afc work"), ME, ctx(), [a])[1].lease_items, [("A", "passive", "message")])
 
 
