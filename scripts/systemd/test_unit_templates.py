@@ -60,9 +60,7 @@ def values(sections: dict[str, list[tuple[str, str]]], section: str, key: str) -
 
 
 def services() -> list[str]:
-    return sorted(
-        name for name in os.listdir(UNIT_DIR) if name.endswith(".service")
-    )
+    return sorted(name for name in os.listdir(UNIT_DIR) if name.endswith(".service"))
 
 
 class SystemdUnitTemplates(unittest.TestCase):
@@ -100,14 +98,8 @@ class SystemdUnitTemplates(unittest.TestCase):
         self.assertEqual(values(sections, "Service", "Group"), accounts)
 
         environments = values(sections, "Service", "Environment")
-        homes = [
-            value.split("=", 1)[1]
-            for value in environments
-            if value.startswith("HOME=")
-        ]
-        self.assertEqual(
-            len(homes), 1, "the unit must set HOME explicitly, once"
-        )
+        homes = [value.split("=", 1)[1] for value in environments if value.startswith("HOME=")]
+        self.assertEqual(len(homes), 1, "the unit must set HOME explicitly, once")
         home = homes[0]
         self.assertTrue(home.startswith("/"), "HOME must be an absolute path")
 
@@ -137,14 +129,8 @@ class SystemdUnitTemplates(unittest.TestCase):
         path = os.path.join(UNIT_DIR, UPDATER_UNIT)
         command = values(parse_unit(path), "Service", "ExecStart")[0]
         with open(INVENTORY, encoding="utf-8") as handle:
-            rows = [
-                line
-                for line in handle
-                if line.startswith(f"| {INVENTORY_ROW} ")
-            ]
-        self.assertEqual(
-            len(rows), 1, f"expected exactly one {INVENTORY_ROW} inventory row"
-        )
+            rows = [line for line in handle if line.startswith(f"| {INVENTORY_ROW} ")]
+        self.assertEqual(len(rows), 1, f"expected exactly one {INVENTORY_ROW} inventory row")
         self.assertIn(
             command,
             rows[0],
