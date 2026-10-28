@@ -48,3 +48,9 @@ class StateReapply(unittest.TestCase):
         self.assertEqual(detail["comment_id"], 2)
         self.assertEqual(detail["artifact_id"], 5)
         self.assertNotIn("body", detail)
+
+    def test_append_only_status_creates_keep_strict_idempotency(self):
+        from git_relay.server import _REAPPLY_STATE_ACTIONS
+
+        self.assertNotIn("wf_commit_status_create", _REAPPLY_STATE_ACTIONS)
+        self.assertNotIn("wf_deployment_status_create", _REAPPLY_STATE_ACTIONS)

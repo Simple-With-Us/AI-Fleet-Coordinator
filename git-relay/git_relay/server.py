@@ -514,7 +514,6 @@ class Relay:
 _REAPPLY_STATE_ACTIONS = frozenset(
     {
         "wf_issue_update",
-        "wf_commit_status_create",
         "wf_labels_set",
         "wf_reviewers_request",
         "wf_reviewers_remove",

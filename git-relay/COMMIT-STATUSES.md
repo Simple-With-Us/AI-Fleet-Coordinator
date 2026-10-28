@@ -19,3 +19,8 @@ It cannot write `test`, `gitleaks`, another App namespace or arbitrary gate cont
 This report namespace must not be configured as independent CI evidence.  No source
 capability can prove the truth of a caller-supplied report; owner authorization and
 actual result evidence still apply to every execution.
+
+Append-only status creation retains strict idempotency: identical verified requests
+return their stored receipt without appending history again.  Different status
+arguments use distinct keys; a later intentional repeated historical status is not
+implemented as reapply.  Pending and UNKNOWN always remain held.
