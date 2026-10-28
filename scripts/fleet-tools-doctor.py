@@ -1972,41 +1972,9 @@ def check_mac_tools(report: Report, rt: dict, runner: Callable = subprocess.run)
                     tool=command,
                 ),
             )
-    board = HOME / ".local/bin/board"
-    try:
-        text = board.read_text(errors="replace")[:65536]
-    except OSError:
-        text = None
-    if text is None:
-        why = f"{board} is not installed"
-        add_tool_row(
-            report,
-            "board",
-            dict(
-                status="FAIL",
-                state="missing",
-                detail=why,
-                reason=why,
-                category="fleet-tool",
-                tool="board",
-            ),
-        )
-    elif str(MAC_RUNTIME) in text and "scripts/linear-board/board" in text:
-        add_tool_row(report, "board", inherit_row("board", rt, f"{board} runs the runtime's board"))
-    else:
-        why = f"{board} does not run {MAC_RUNTIME}/scripts/linear-board/board"
-        add_tool_row(
-            report,
-            "board",
-            dict(
-                status="FAIL",
-                state="stale",
-                detail=why,
-                reason=why,
-                category="fleet-tool",
-                tool="board",
-            ),
-        )
+    # The `board` wrapper is retired (2026-10-28):  `simple-board` is the entry point and is already
+    # checked through FLEET_TOOLS and MAC_SIMPLE_TOOLS, so no `board` row is emitted.  A row for a
+    # deliberately retired wrapper would be a permanent false failure in the published report.
     for name in ("recall", "fleet-mode", "fleet-secrets"):
         add_tool_row(report, name, compare_copy(name, COPY_SETS[name], MAC_RUNTIME, rt, runner))
     check_lane_tools(report, rt, runner)

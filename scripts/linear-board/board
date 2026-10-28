@@ -37,8 +37,7 @@ Agent-Sync parity (the hosted server's Linear tools, from catalog/*.json):
 `run` builds the same `AgentSyncNamed` document the hosted server builds and applies its guards:  one
 operation, depth 16, 500 fields, no protected or batch mutation roots, only public input fields, and
 no edits of claimed:, seat: or stale-claim labels (`board claim` owns those).  A write (a write
-command, `api mutation`, or a write `mcp call`) needs a bearer-verified seat,
-LINEAR_BOARD_WRITES=1 and
+command, `api mutation`, or a write `mcp call`) needs a bearer-verified seat and
 --idempotency-key:  a retry with the same key returns the first result and never sends it twice, and
 an unknown outcome is never replayed automatically.  `mcp` proxies Linear's official MCP server
 (https://mcp.linear.app/mcp) with the same app token.
@@ -78,8 +77,8 @@ starts with a seat tag line ([CLAUDE·6db9ee77]), with a seat app too.  A seat
 app's writes are refused when Linear names another app as the viewer
 (swapped credentials).  A claim is a claimed:<TAG> label on the issue;
 seat:<TAG> labels only say who reported or touched it (the import put them on
-reporters too), so they are never read as a claim.  Writes are off unless
-LINEAR_BOARD_WRITES=1.  BOARD_BACKEND=mac-collab runs the old board CLI
+reporters too), so they are never read as a claim.  A write needs the
+bearer-verified seat and nothing else.  BOARD_BACKEND=mac-collab runs the old board CLI
 instead for reads (rollback);  it never carries a write, which needs the bearer-verified seat.
 
 Stdlib only, so cloud seats, the Grok Bot VM and BotFleet containers can run
@@ -136,7 +135,6 @@ EXIT_CLAIM_HELD = 3     # another seat holds the claim
 EXIT_NO_CREDS = 4       # no Fleet credentials, or a write with another app's seat credentials
 EXIT_RATE_LIMIT = 5     # Linear rate limit outlasted LINEAR_BOARD_MAX_WAIT
 EXIT_AUTH = 6           # no verified seat, token refused, mint refused, or whoami check failed
-EXIT_WRITES_OFF = 7     # a write verb without LINEAR_BOARD_WRITES=1
 
 # Linear's client-credentials tokens last 30 days.  A cached token is re-minted
 # early once it is this old (and still used while that early mint fails), so a
@@ -2962,7 +2960,7 @@ def cmd_whoami(L: Linear, auth: Auth, seat: str) -> int:
     fleet = fleet_app_name()
     app = SEAT_APP_NAMES.get(seat, "")
     name = v.get("name")
-    writes = "enabled" if env("LINEAR_BOARD_WRITES") == "1" else "disabled (LINEAR_BOARD_WRITES=1 turns them on at cutover)"
+    writes = "enabled (the bearer-verified seat is the gate)" if seat else "disabled (no bearer-verified seat: the write verbs refuse)"
     info = auth.info or {}
     if ident.kind == "seat":
         identity = f"{name or app} (the {seat} seat's own Linear app)"
@@ -4307,7 +4305,7 @@ def cmd_commands(a) -> int:
             print(f"\nwithout id:  {c['variants']['create']['name']};  with id:  {c['variants']['update']['name']}")
         print(f"\ndefault selection:  {c.get('selection') or '(none)'}")
         if c["kind"] == "write":
-            print("\nwrites need a bearer-verified seat, LINEAR_BOARD_WRITES=1 and --idempotency-key")
+            print("\nwrites need a bearer-verified seat and --idempotency-key")
         return 0
     if a.action is not None or a.name:
         die("usage:  board commands [--search WORD] [--kind read|write] [--json]  |  board commands show NAME",
@@ -4789,7 +4787,7 @@ REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
 
 
 def remote_selected() -> bool:
-    return env("SIMPLE_BOARD_REMOTE") == "1"
+    return env("SIMPLE_BOARD_REMOTE") == "1" or native_echo_selected()
 
 
 REMOTE_MAX_BYTES = 4_000_000
@@ -5037,6 +5035,42 @@ def _remote_scan_arguments(scanner, arguments, bearer: str) -> str | None:
     return None
 
 
+def native_echo_selected() -> bool:
+    return env("SIMPLE_BOARD_NATIVE_ECHO") == "1"
+
+
+def _native_echo_post(body: bytes, write: bool):
+    """Fixed existing root-controlled ECHO custody transport; no credential export."""
+    if os.geteuid() != 0:
+        die("native ECHO board transport requires the existing root-controlled launch context", EXIT_AUTH)
+    initialize = {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+        "protocolVersion": REMOTE_PROTOCOL_VERSION, "capabilities": {},
+        "clientInfo": {"name": "simple-board", "version": "1"}}}
+    notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    data = json.dumps(initialize).encode() + b"\n" + json.dumps(notification).encode() + b"\n" + body + b"\n"
+    try:
+        proc = subprocess.run(["/usr/bin/python3", "-I", "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"],
+            input=data, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=REMOTE_TIMEOUT_S,
+            env={"PATH": "/usr/bin:/bin"}, check=False)
+        if proc.returncode or len(proc.stdout) > 3 * REMOTE_MAX_BYTES:
+            raise ValueError("native transport failed")
+        lines = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+        if len(lines) != 2 or any(not isinstance(x, dict) for x in lines):
+            raise ValueError("invalid native response")
+        hello, answer = lines
+        if hello.get("id") != 0 or not isinstance(hello.get("result"), dict) or answer.get("id") != 1:
+            raise ValueError("native response mismatch")
+        result = answer.get("result")
+        if write and isinstance(result, dict) and result.get("isError") and not isinstance(result.get("structuredContent"), dict):
+            # The existing native adapter reports uncertain transport failures in
+            # content only. Preserve UNKNOWN rather than treating it as a refusal.
+            result["structuredContent"] = {"code": "outcome_unknown"}
+        return 200, "application/json", json.dumps(answer).encode()
+    except (OSError, ValueError, RecursionError, subprocess.SubprocessError):
+        die("native ECHO transport unavailable; " +
+            ("write outcome unknown, do not replay before checking the target" if write else "no direct-credential fallback"), EXIT_ERROR)
+
+
 def remote_bearer() -> str:
     v = env(REMOTE_BEARER_ENV)
     if not v:
@@ -5065,14 +5099,14 @@ def _remote_scanner():
 
 def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     """One tools/call to the fixed endpoint.  Returns the tool's structuredContent."""
-    bearer = remote_bearer()
+    bearer = "" if native_echo_selected() else remote_bearer()
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
         die(f"refused before sending: {hit}", EXIT_USAGE)
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                        "params": {"name": tool, "arguments": arguments}}).encode()
     try:
-        status, ctype, raw = _remote_post(REMOTE_MCP_URL, {
+        status, ctype, raw = _native_echo_post(body, write) if native_echo_selected() else _remote_post(REMOTE_MCP_URL, {
             "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": REMOTE_PROTOCOL_VERSION, "Authorization": "Bearer " + bearer,
             "User-Agent": "simple-board-remote/1"}, body, REMOTE_TIMEOUT_S)
@@ -5227,11 +5261,6 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_mcp(None, None, a, "")
     writes = a.cmd in WRITE_VERBS or parity_is_write(a)
     seat = current_seat(required=writes)
-    if writes and env("LINEAR_BOARD_WRITES") != "1":
-        verb = {"run": f"run {getattr(a, 'name', '')}", "api": "api mutation",
-                "mcp": f"mcp call {getattr(a, 'tool', '')}"}.get(a.cmd, a.cmd)
-        die(f"`board {verb}` is a write, and writes to Linear are off unless LINEAR_BOARD_WRITES=1.  "
-            "The installed `~/.local/bin/board` wrapper sets it;  set it yourself for a direct run.", EXIT_WRITES_OFF)
     for flag, val in (("--by", getattr(a, "reported_by", None)), ("--by", getattr(a, "addressed_by", None)),
                       ("--by", getattr(a, "author", None))):
         if val is not None:
