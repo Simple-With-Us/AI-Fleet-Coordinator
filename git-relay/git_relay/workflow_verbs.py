@@ -22,6 +22,7 @@ only job and step conclusions are returned.
 
 import base64
 import binascii
+import hashlib
 import re
 from urllib.parse import quote
 
@@ -54,6 +55,10 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_git_blob_get": ({"contents": "read"}, False),
+    "wf_git_blob_create": ({"contents": "write"}, True),
+    "wf_git_commit_get": ({"contents": "read"}, False),
+    "wf_git_tree_get": ({"contents": "read"}, False),
     "wf_workflow_enable": ({"actions": "write"}, True),
     "wf_workflow_disable": ({"actions": "write"}, True),
     "wf_run_delete": ({"actions": "write"}, True),
@@ -701,6 +706,112 @@ class WorkflowVerbs:
 
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
+
+    def wf_git_blob_get(self, repo, args):
+        _only(args, ("repo", "sha"))
+        sha = _sha(args, "sha")
+        value = self._get(f"/repos/{repo}/git/blobs/{sha}")
+        if (
+            not isinstance(value, dict)
+            or value.get("sha") != sha
+            or value.get("encoding") != "base64"
+            or type(value.get("size")) is not int
+            or not 0 <= value["size"] <= 40000
+            or not isinstance(value.get("content"), str)
+            or len(value["content"]) > 60000
+        ):
+            raise RelayGitHubError(502, "blob receipt unsupported or unverifiable")
+        try:
+            raw = base64.b64decode(value["content"].replace("\n", ""), validate=True)
+            text = raw.decode("utf-8")
+        except (ValueError, UnicodeError, binascii.Error):
+            raise RelayGitHubError(502, "blob is not bounded UTF-8 text") from None
+        if (
+            len(raw) != value["size"]
+            or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() != sha
+        ):
+            raise RelayGitHubError(502, "blob identity unverifiable")
+        # Relay response scanning also checks decoded text, not opaque base64.
+        return {"blob": {"sha": sha, "size": len(raw), "text": text}}
+
+    def wf_git_blob_create(self, repo, args):
+        _only(args, ("repo", "text"))
+        text = args.get("text")
+        if not isinstance(text, str) or len(text.encode("utf-8")) > 40000 or find_secret(text):
+            raise Refused("invalid blob text")
+        raw = text.encode("utf-8")
+        sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/git/blobs",
+            {"content": text, "encoding": "utf-8"},
+            bearer=self.bearer,
+        )
+        if not isinstance(result, dict) or result.get("sha") != sha:
+            raise RelayGitHubError(502, "blob creation receipt unverifiable")
+        return {"blob": {"sha": sha, "size": len(raw)}}
+
+    def wf_git_commit_get(self, repo, args):
+        _only(args, ("repo", "sha"))
+        sha = _sha(args, "sha")
+        result = self._get(f"/repos/{repo}/git/commits/{sha}")
+        if (
+            not isinstance(result, dict)
+            or result.get("sha") != sha
+            or not isinstance(result.get("tree"), dict)
+            or not isinstance(result["tree"].get("sha"), str)
+            or not _SHA.fullmatch(result["tree"]["sha"])
+            or not isinstance(result.get("message"), str)
+            or len(result["message"].encode("utf-8")) > 32768
+            or not isinstance(result.get("parents"), list)
+            or len(result["parents"]) > 20
+        ):
+            raise RelayGitHubError(502, "git commit receipt unsupported or unverifiable")
+        parents = []
+        for value in result["parents"]:
+            if (
+                not isinstance(value, dict)
+                or not isinstance(value.get("sha"), str)
+                or not _SHA.fullmatch(value["sha"])
+            ):
+                raise RelayGitHubError(502, "git commit parent unverifiable")
+            parents.append(value["sha"])
+        return {
+            "commit": {
+                "sha": sha,
+                "tree_sha": result["tree"]["sha"],
+                "parents": parents,
+                "message": result["message"],
+            }
+        }
+
+    def wf_git_tree_get(self, repo, args):
+        _only(args, ("repo", "sha"))
+        sha = _sha(args, "sha")
+        result = self._get(f"/repos/{repo}/git/trees/{sha}")
+        if (
+            not isinstance(result, dict)
+            or result.get("sha") != sha
+            or type(result.get("truncated")) is not bool
+            or not isinstance(result.get("tree"), list)
+            or len(result["tree"]) > 100
+        ):
+            raise RelayGitHubError(502, "git tree receipt unsupported or unverifiable")
+        entries = []
+        for value in result["tree"]:
+            if (
+                not isinstance(value, dict)
+                or not isinstance(value.get("sha"), str)
+                or not _SHA.fullmatch(value["sha"])
+                or value.get("type") not in ("blob", "tree", "commit")
+                or value.get("mode") not in ("100644", "100755", "040000", "120000", "160000")
+                or not isinstance(value.get("path"), str)
+                or not value["path"]
+                or len(value["path"].encode("utf-8")) > 1024
+            ):
+                raise RelayGitHubError(502, "git tree entry unverifiable")
+            entries.append({k: value[k] for k in ("sha", "type", "mode", "path")})
+        return {"tree": {"sha": sha, "entries": entries, "truncated": result["truncated"]}}
 
     def wf_file_put(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "content_b64", "prior_sha"))

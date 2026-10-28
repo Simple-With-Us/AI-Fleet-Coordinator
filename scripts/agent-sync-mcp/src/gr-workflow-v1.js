@@ -17,6 +17,11 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_git_blob_get:['Read bounded UTF-8 blob by exact SHA (40KiB maximum).',obj(['repo','sha'],{repo:REPO,sha:SHA})],
+ wf_git_blob_create:['Create unattached bounded UTF-8 blob; no ref or tree changes.',obj(['repo','text'],{repo:REPO,text:{type:'string',maxLength:40000}})],
+ wf_git_commit_get:['Read bounded Git commit object, not full REST commit diff.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
+ wf_git_tree_get:['Read nonrecursive tree with at most100 entries; larger trees refused.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
+
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_workflow_disable: ['workflow disable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_run_delete: ['run delete.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
@@ -49,7 +54,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -96,6 +101,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
   wf_workflow_enable:['completed','workflow_id'],
   wf_workflow_disable:['completed','workflow_id'],
   wf_run_delete:['completed','run_id'],
@@ -114,6 +120,14 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 export function validWfV1Response(action, body) {
+ if(action.startsWith('wf_git_')){
+   const key=action.includes('_blob_')?'blob':action==='wf_git_commit_get'?'commit':'tree',v=body?.[key];
+   if(!v || typeof v.sha !== 'string' || !/^[0-9a-f]{40}$/.test(v.sha)) return false;
+   if(key==='blob' && (!Number.isInteger(v.size) || v.size<0 || v.size>40000 || action==='wf_git_blob_get' && (typeof v.text!=='string' || new TextEncoder().encode(v.text).length!==v.size)))return false;
+   if(key==='commit' && (typeof v.tree_sha!=='string' || !/^[0-9a-f]{40}$/.test(v.tree_sha) || !Array.isArray(v.parents) || v.parents.length>20 || !v.parents.every(x=>typeof x==='string'&&/^[0-9a-f]{40}$/.test(x)) || typeof v.message!=='string' || new TextEncoder().encode(v.message).length>32768)) return false;
+   if(key==='tree' && (!Array.isArray(v.entries) || v.entries.length>100 || typeof v.truncated!=='boolean' || !v.entries.every(x=>x&&typeof x.sha==='string'&&/^[0-9a-f]{40}$/.test(x.sha)&&['blob','tree','commit'].includes(x.type)&&['100644','100755','040000','120000','160000'].includes(x.mode)&&typeof x.path==='string'&&x.path.length>0&&new TextEncoder().encode(x.path).length<=1024))) return false;
+ }
+
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;
@@ -139,6 +153,6 @@ export function validWfV1Response(action, body) {
     const suffix = {wf_run_rerun:'rerun-failed-jobs',wf_run_cancel:'cancel',wf_run_approve:'approve'};
     return body.requested === suffix[action] && Number.isInteger(body.run_id);
   }
-  if ('commit' in body && !/^[0-9a-f]{40}$/.test(body.commit)) return false;
+  if ('commit' in body && action !== 'wf_git_commit_get' && !/^[0-9a-f]{40}$/.test(body.commit)) return false;
   return true;
 }

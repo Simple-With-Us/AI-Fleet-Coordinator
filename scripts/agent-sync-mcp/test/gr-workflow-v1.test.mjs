@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,27);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,31);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -63,7 +63,7 @@ test('default-off discovery, cache separation and direct-call denial',async()=>{
 test('all workflow tools have dispatch and correct read/write scope',()=>{
   for(const action of WF_V1_ACTIONS) {
     assert.equal(typeof HostedTools.prototype['tool_gr_'+action],'function');
-    const read=['wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks'].includes(action);
+    const read=['wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks'].includes(action);
     assert.equal(HOSTED_READ_TOOLS.has('gr_'+action),read);
     assert.equal(HOSTED_WRITE_TOOLS.has('gr_'+action),!read);
   }
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,27);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,31);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -206,3 +206,11 @@ test('workflow state and run/artifact deletion preserve own-bearer writes and UN
 });
 
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
+
+test('bounded git object fixed own-bearer calls and unknown blob creates',async()=>{
+ for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message'}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
+  assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,url:'https://evil.invalid'}));
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
+ }
+ const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_wf_git_blob_create',{repo,text:'hi'});assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
+});
