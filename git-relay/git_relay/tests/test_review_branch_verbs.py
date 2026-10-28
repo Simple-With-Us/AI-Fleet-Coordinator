@@ -1,12 +1,14 @@
-import unittest
 import json
 import os
 import tempfile
+import unittest
+
+from test_workflow_wiring import TOKEN, Minter
+
+from git_relay.audit import AuditLog
 from git_relay.github_client import RelayGitHubError
 from git_relay.policy import SeatPolicy
-from git_relay.audit import AuditLog
 from git_relay.server import Relay
-from test_workflow_wiring import Minter, TOKEN
 
 try:
     from test_workflow_verbs import REPO, SHA, Client, Policy
