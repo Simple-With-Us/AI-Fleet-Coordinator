@@ -21,6 +21,11 @@ const SPECS = {
   wf_review_dismiss: ['Dismiss a review only when separately authorized by its owner; never a merge-gate bypass.',obj(['repo', 'number', 'review_id', 'message'],{repo:REPO,number:INT,review_id:INT,message:{type:'string',minLength:1,maxLength:32768}})],
   wf_review_pending_delete: ['Delete only a pending review after a pre-read; not atomic.',obj(['repo', 'number', 'review_id'],{repo:REPO,number:INT,review_id:INT})],
   wf_review_comment_reply: ['Reply to a PR review comment.',obj(['repo', 'number', 'comment_id', 'body'],{repo:REPO,number:INT,comment_id:INT,body:{type:'string',minLength:1,maxLength:32768}})],
+  wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
+  wf_workflow_disable: ['workflow disable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
+  wf_run_delete: ['run delete.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
+  wf_artifact_delete: ['artifact delete.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
+
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
   wf_release_asset_upload: ['Upload up to 32 KiB secret-scanned UTF-8 text as a new asset; no overwrite/delete.',obj(['repo','release_id','name','content_b64'],{repo:REPO,release_id:INT,name:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?$'},content_b64:{type:'string',minLength:1,maxLength:43692}})],
@@ -99,6 +104,10 @@ const RESPONSE_KEYS = {
   wf_review_dismiss:['review'],
   wf_review_pending_delete:['review'],
   wf_review_comment_reply:['comment'],
+  wf_workflow_enable:['completed','workflow_id'],
+  wf_workflow_disable:['completed','workflow_id'],
+  wf_run_delete:['completed','run_id'],
+  wf_artifact_delete:['completed','artifact_id'],
 
   wf_release_assets:['assets','complete'],wf_release_asset_get:['asset'],wf_release_asset_upload:['asset'],
   wf_review_submit:['review'],wf_review_inline:['comment'],wf_branch_create:['ref','sha'],
@@ -125,6 +134,9 @@ export function validWfV1Response(action, body) {
   }
   if (['wf_review_update','wf_review_dismiss','wf_review_pending_delete'].includes(action)) return body.review && Number.isInteger(body.review.id) && body.review.id > 0 && ['PENDING','COMMENTED','APPROVED','CHANGES_REQUESTED','DISMISSED'].includes(body.review.state) && (action !== 'wf_review_dismiss' || body.review.state === 'DISMISSED') && (action !== 'wf_review_pending_delete' || body.review.state === 'PENDING');
   if (action === 'wf_review_comment_reply') return body.comment && Number.isInteger(body.comment.id) && body.comment.id > 0 && Number.isInteger(body.comment.in_reply_to_id) && body.comment.in_reply_to_id > 0;
+  if ('completed' in body && body.completed !== true) return false;
+  const completedId = {wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
+  if (completedId && (!Number.isInteger(body[completedId]) || body[completedId] < 1)) return false;
   if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
   if (action === 'wf_review_inline' && (!body.comment || !Number.isInteger(body.comment.id) || body.comment.id < 1 || !/^[0-9a-f]{40}$/.test(body.comment.commit_id))) return false;
   if (action === 'wf_branch_create' && (typeof body.ref !== 'string' || !body.ref.startsWith('refs/heads/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;
@@ -133,7 +145,7 @@ export function validWfV1Response(action, body) {
   if ('truncated' in body && typeof body.truncated !== 'boolean') return false;
   if (action === 'wf_merge_guarded') return body.merged === true && /^[0-9a-f]{40}$/.test(body.sha);
   if (action === 'wf_update_branch') return body.accepted === true && typeof body.message === 'string';
-  if (action.startsWith('wf_run_') && action !== 'wf_run_jobs') {
+  if (['wf_run_rerun','wf_run_cancel','wf_run_approve'].includes(action)) {
     const suffix = {wf_run_rerun:'rerun-failed-jobs',wf_run_cancel:'cancel',wf_run_approve:'approve'};
     return body.requested === suffix[action] && Number.isInteger(body.run_id);
   }

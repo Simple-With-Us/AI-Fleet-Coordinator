@@ -6,7 +6,7 @@ const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',i
 const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
 const onlyOf=name=>{
   const body=py.split(/\n    def /).find(b=>b.startsWith(name+'('));
-  const m=body&&body.match(/_only\(args, \(([^)]*)\)\)/);
+  const m=body&&body.match(/_only\(\s*args,\s*\(([^)]*)\),?\s*\)/);
   return m?[...m[1].matchAll(/"([a-z0-9_]+)"/g)].map(x=>x[1]).sort():null;
 };
 test('names equal the relay SPECS, plus wf_job_log when it lands',()=>{
@@ -203,3 +203,13 @@ test('review lifecycle closed args and receipt validation',()=>{
   assert.ok(!validWfV1Response(action,{}),action);
  }
 });
+test('workflow state and run/artifact deletion preserve own-bearer writes and UNKNOWN',async()=>{
+ const cases=[['wf_workflow_enable','workflow_id'],['wf_workflow_disable','workflow_id'],['wf_run_delete','run_id'],['wf_artifact_delete','artifact_id']];
+ for(const [action,key] of cases){
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({completed:true,[key]:7}));});
+  assert.ok(!(await t.call('gr_'+action,{repo,[key]:7})).isError,action);
+  const fail=harness(async()=>{throw Error('no response');});const r=await fail.call('gr_'+action,{repo,[key]:7});assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);
+ }
+});
+
+test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
