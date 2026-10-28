@@ -89,7 +89,6 @@ class SeatPolicy:
         "wf_workflows",
         "wf_run_get",
         "wf_run_artifacts",
-
         "wf_release_assets",
         "wf_release_asset_get",
         "wf_release_asset_upload",
