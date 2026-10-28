@@ -81,6 +81,32 @@ class Queue(unittest.TestCase):
             m.calls[0][2], {"contents": "write", "pull_requests": "write", "metadata": "read"}
         )
 
+    def test_graphql_transport_on_mutation_is_outcome_unverifiable(self):
+        class GraphQLDown(Client):
+            def __init__(self, status):
+                super().__init__(
+                    {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"}
+                )
+                self.graphql_status = status
+
+            def _call(self, method, path, payload=None, bearer=None):
+                if path == "/graphql":
+                    self.calls.append((method, path, payload, bearer))
+                    raise RelayGitHubError(self.graphql_status, "upstream")
+                return super()._call(method, path, payload, bearer)
+
+        for status in (0, 408, 429, 502):
+            with self.subTest(status=status):
+                c = GraphQLDown(status)
+                with self.assertRaises(RelayGitHubError) as error:
+                    self.handle(c, "wf_merge_queue_enqueue").run(
+                        "wf_merge_queue_enqueue",
+                        {"repo": REPO, "number": 1, "expected_sha": SHA},
+                    )
+                self.assertEqual(error.exception.status, 502)
+                self.assertIn("GraphQL outcome unverifiable", str(error.exception))
+                self.assertEqual(len(c.calls), 2)
+
     def test_null_or_malformed_postmutation_receipt_is_unknown(self):
         for value in (None, [], {}, "bad"):
             c = Client(

@@ -503,7 +503,10 @@ class WorkflowVerbs:
         owner, name = repo.split("/")
         query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id mergeQueueEntry{id state position jump enqueuedAt}}}}"
         result = self._fixed_graph(
-            query, {"owner": owner, "name": name, "number": number}, "repository"
+            query,
+            {"owner": owner, "name": name, "number": number},
+            "repository",
+            write=False,
         )
         pull = _sub(result, "pullRequest")
         if not isinstance(pull.get("id"), str) or "mergeQueueEntry" not in pull:
@@ -554,10 +557,18 @@ class WorkflowVerbs:
             raise Refused("PR node unavailable")
         return node
 
-    def _fixed_graph(self, query, variables, field):
-        data = self.client._call(
-            "POST", "/graphql", {"query": query, "variables": variables}, bearer=self.bearer
-        )
+    def _fixed_graph(self, query, variables, field, write=True):
+        try:
+            data = self.client._call(
+                "POST",
+                "/graphql",
+                {"query": query, "variables": variables},
+                bearer=self.bearer,
+            )
+        except RelayGitHubError as exc:
+            if write and (exc.status in (0, 408, 429) or exc.status >= 500):
+                raise RelayGitHubError(502, "GraphQL outcome unverifiable") from None
+            raise
         # GraphQL HTTP200 errors may follow partial mutation application; never call them definitely unsent.
         if (
             not isinstance(data, dict)
@@ -628,7 +639,10 @@ class WorkflowVerbs:
         owner, name = repo.split("/")
         query = "query($owner:String!, $name:String!, $number:Int!, $cursor:String) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:5, after:$cursor) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first:2) { nodes { id databaseId body author { login } } pageInfo { hasNextPage endCursor } } } } } } }"
         result = self._fixed_graph(
-            query, {"owner": owner, "name": name, "number": number, "cursor": cursor}, "repository"
+            query,
+            {"owner": owner, "name": name, "number": number, "cursor": cursor},
+            "repository",
+            write=False,
         )
         threads = _sub(_sub(result, "pullRequest"), "reviewThreads")
         if not isinstance(threads.get("nodes"), list):
