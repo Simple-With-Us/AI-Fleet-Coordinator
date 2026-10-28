@@ -22,6 +22,10 @@ const SPECS = {
   wf_tag_create: ['tag create; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag', 'sha'],{repo:REPO,tag:REF,sha:SHA})],
   wf_tag_get: ['tag get; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag'],{repo:REPO,tag:REF})],
   wf_tag_delete: ['tag delete; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag', 'expected_sha'],{repo:REPO,tag:REF,expected_sha:SHA})],
+  wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
+  wf_workflow_disable: ['workflow disable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
+  wf_run_delete: ['run delete.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
+  wf_artifact_delete: ['artifact delete.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
 
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
@@ -102,6 +106,10 @@ const RESPONSE_KEYS = {
   wf_tag_create:['ref', 'sha'],
   wf_tag_get:['ref', 'sha'],
   wf_tag_delete:['deleted', 'ref'],
+  wf_workflow_enable:['completed','workflow_id'],
+  wf_workflow_disable:['completed','workflow_id'],
+  wf_run_delete:['completed','run_id'],
+  wf_artifact_delete:['completed','artifact_id'],
 
   wf_release_assets:['assets','complete'],wf_release_asset_get:['asset'],wf_release_asset_upload:['asset'],
   wf_review_submit:['review'],wf_review_inline:['comment'],wf_branch_create:['ref','sha'],
@@ -128,6 +136,9 @@ export function validWfV1Response(action, body) {
   }
   if (['wf_branch_update','wf_tag_create','wf_tag_get'].includes(action) && (typeof body.ref !== 'string' || !body.ref.startsWith(action.startsWith('wf_branch_') ? 'refs/heads/' : 'refs/tags/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;
   if (['wf_branch_delete','wf_tag_delete'].includes(action) && (body.deleted !== true || typeof body.ref !== 'string' || !body.ref.startsWith(action.startsWith('wf_branch_') ? 'refs/heads/' : 'refs/tags/'))) return false;
+  if ('completed' in body && body.completed !== true) return false;
+  const completedId = {wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
+  if (completedId && (!Number.isInteger(body[completedId]) || body[completedId] < 1)) return false;
   if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
   if (action === 'wf_review_inline' && (!body.comment || !Number.isInteger(body.comment.id) || body.comment.id < 1 || !/^[0-9a-f]{40}$/.test(body.comment.commit_id))) return false;
   if (action === 'wf_branch_create' && (typeof body.ref !== 'string' || !body.ref.startsWith('refs/heads/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;
@@ -136,7 +147,7 @@ export function validWfV1Response(action, body) {
   if ('truncated' in body && typeof body.truncated !== 'boolean') return false;
   if (action === 'wf_merge_guarded') return body.merged === true && /^[0-9a-f]{40}$/.test(body.sha);
   if (action === 'wf_update_branch') return body.accepted === true && typeof body.message === 'string';
-  if (action.startsWith('wf_run_') && action !== 'wf_run_jobs') {
+  if (['wf_run_rerun','wf_run_cancel','wf_run_approve'].includes(action)) {
     const suffix = {wf_run_rerun:'rerun-failed-jobs',wf_run_cancel:'cancel',wf_run_approve:'approve'};
     return body.requested === suffix[action] && Number.isInteger(body.run_id);
   }

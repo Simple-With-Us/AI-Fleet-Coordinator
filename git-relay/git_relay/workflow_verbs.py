@@ -59,6 +59,10 @@ SPECS = {
     "wf_tag_create": ({"contents": "write"}, True),
     "wf_tag_get": ({"contents": "read"}, False),
     "wf_tag_delete": ({"contents": "write"}, True),
+    "wf_workflow_enable": ({"actions": "write"}, True),
+    "wf_workflow_disable": ({"actions": "write"}, True),
+    "wf_run_delete": ({"actions": "write"}, True),
+    "wf_artifact_delete": ({"actions": "write"}, True),
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
@@ -601,6 +605,35 @@ class WorkflowVerbs:
             raise Refused("ref changed")
         data = self.client._call("DELETE", path, None, bearer=self.bearer)
         return {"deleted": True, "ref": "refs/tags/" + name}
+    def wf_workflow_enable(self, repo, args):
+        _only(args, ("repo", "workflow_id"))
+        value = _int(args, "workflow_id")
+        self.client._call(
+            "PUT", f"/repos/{repo}/actions/workflows/{value}/enable", None, bearer=self.bearer
+        )
+        return {"completed": True, "workflow_id": value}
+
+    def wf_workflow_disable(self, repo, args):
+        _only(args, ("repo", "workflow_id"))
+        value = _int(args, "workflow_id")
+        self.client._call(
+            "PUT", f"/repos/{repo}/actions/workflows/{value}/disable", None, bearer=self.bearer
+        )
+        return {"completed": True, "workflow_id": value}
+
+    def wf_run_delete(self, repo, args):
+        _only(args, ("repo", "run_id"))
+        value = _int(args, "run_id")
+        self.client._call("DELETE", f"/repos/{repo}/actions/runs/{value}", None, bearer=self.bearer)
+        return {"completed": True, "run_id": value}
+
+    def wf_artifact_delete(self, repo, args):
+        _only(args, ("repo", "artifact_id"))
+        value = _int(args, "artifact_id")
+        self.client._call(
+            "DELETE", f"/repos/{repo}/actions/artifacts/{value}", None, bearer=self.bearer
+        )
+        return {"completed": True, "artifact_id": value}
 
     # ---- reads ----
     def wf_pr_list(self, repo, args):
