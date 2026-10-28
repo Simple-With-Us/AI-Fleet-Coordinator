@@ -431,7 +431,8 @@ class WorkflowVerbs:
 
     @staticmethod
     def _milestone_summary(value):
-        value = _obj(value)
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "milestone receipt unverifiable")
         if (
             isinstance(value.get("number"), bool)
             or not isinstance(value.get("number"), int)
