@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,73);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,75);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,73);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,75);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -293,6 +293,12 @@ test('management receipts and UTF8 input fail closed',()=>{
  assert.equal(validWfV1Args('wf_release_create',{repo,tag:'v1',name:'n',body:'é'.repeat(20000),draft:true,prerelease:false}),false);
 });
 
+test('environment reads exact own bearer and nullable unknown protection summary',async()=>{
+ const args={repo,name:'staging'},environment={id:7,name:'staging',created_at:'x',updated_at:'x',protection_rule_types:null,deployment_branch_policy:null};
+ assert.ok(validWfV1Args('wf_environment_get',args));assert.ok(!validWfV1Args('wf_environment_get',{...args,approve:true}));
+ assert.ok(validWfV1Response('wf_environment_get',{environment}));assert.ok(!validWfV1Response('wf_environment_get',{environment:{...environment,deployment_branch_policy:{protected_branches:'false',custom_branch_policies:false}}}));
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_environment_get'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({environment}));});assert.ok(!(await t.call('gr_wf_environment_get',args)).isError);
+});
 test('file delete fixed route own bearer and uncertain write',async()=>{
  const args={repo,path:'x.txt',branch:'feature/x',message:'Remove obsolete file',prior_sha:'a'.repeat(40)};
  assert.ok(validWfV1Args('wf_file_delete',args));assert.ok(!validWfV1Args('wf_file_delete',{...args,force:true}));
@@ -353,4 +359,15 @@ test('response budgets admit populated threads and discriminate hostile generic 
  const cycle={total:1,items:[],complete:false};cycle.items.push(cycle);assert.equal(validWfV1Response('wf_code_search',cycle),false);
  const oversized={...valid,items:[{path:'x'.repeat(1048577),sha:'b'}]};assert.equal(validWfV1Response('wf_code_search',oversized),false);
  let nested={};for(let i=0;i<13;i++)nested={x:nested};assert.equal(validWfV1Response('wf_code_search',{...valid,items:[nested]}),false);
+});
+
+test('environment receipts work without Node Buffer and refuse hostile nested data',()=>{
+ const prior=globalThis.Buffer;
+ try {
+  globalThis.Buffer=undefined;
+  const environment={id:7,name:'staging',created_at:'x',updated_at:'x',protection_rule_types:null,deployment_branch_policy:null};
+  assert.equal(validWfV1Response('wf_environment_get',{environment}),true);
+  assert.equal(validWfV1Response('wf_environment_get',{environment:{...environment,id:true}}),false);
+  const cycle={};cycle.environment=cycle;assert.equal(validWfV1Response('wf_environment_get',cycle),false);
+ } finally {globalThis.Buffer=prior;}
 });

@@ -23,6 +23,8 @@ const SPECS = {
   wf_reviewers_remove: ['reviewers remove.',obj(['repo', 'number', 'reviewers'],{repo:REPO,number:INT,reviewers:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
   wf_release_create: ['release create.',obj(['repo', 'tag', 'name', 'body', 'draft', 'prerelease'],{repo:REPO,tag:REF,name:{type:'string',minLength:1,maxLength:32768},body:{type:'string',minLength:1,maxLength:32768},draft:{type:'boolean'},prerelease:{type:'boolean'}})],
   wf_release_update: ['release update.',obj(['repo', 'release_id', 'name', 'body', 'draft', 'prerelease'],{repo:REPO,release_id:INT,name:{type:'string',minLength:1,maxLength:32768},body:{type:'string',minLength:1,maxLength:32768},draft:{type:'boolean'},prerelease:{type:'boolean'}})],
+ wf_environments:['Read bounded environment metadata, not full protection rules or reviewers; null means unknown/notreturned, not unprotected.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_environment_get:['Read exact environment metadata and protection-type summary; no environment creation, deletion, approval or policy changes.',obj(['repo','name'],{repo:REPO,name:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,99}$'}})],
  wf_file_delete:['Delete exact blob on non-default branch; workflow paths refused. Requires separate execution authority.',obj(['repo','path','branch','message','prior_sha'],{repo:REPO,path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},prior_sha:SHA})],
 
   wf_issue_list: ['List issues (not pull requests).', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE})],
@@ -97,7 +99,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -226,9 +228,13 @@ const readResponseSchemas={
  wf_run_get:z.object({run:runObject}).strict(),
  wf_run_artifacts:z.object({artifacts:objectWith({total_count:z.number().int().nonnegative(),artifacts:z.array(artifactObject).max(50)})}).strict(),
 };
+const environmentItem=z.object({id:z.number().int().positive(),name:z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=255),created_at:z.string().max(100),updated_at:z.string().max(100),protection_rule_types:z.array(z.string().min(1).max(100)).max(20).nullable(),deployment_branch_policy:z.object({protected_branches:z.boolean(),custom_branch_policies:z.boolean()}).strict().nullable()}).strict();
+const environmentResponses={wf_environment_get:z.object({environment:environmentItem}).strict(),wf_environments:z.object({environments:z.array(environmentItem).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()};
 export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
+
+ if(environmentResponses[action])return environmentResponses[action].safeParse(body).success;
 
   if (action === 'wf_release_list' && (!Array.isArray(body?.releases) || body.releases.length > 50 || !body.releases.every(x => x && Number.isInteger(x.id) && x.id > 0 && typeof x.draft === 'boolean' && typeof x.prerelease === 'boolean' && Object.keys(x).every(k => ['id','tag_name','name','html_url','created_at','published_at','draft','prerelease'].includes(k)) && ['tag_name','name','html_url','created_at','published_at'].every(k => x[k] === null || typeof x[k] === 'string' && new TextEncoder().encode(x[k]).length <= 2048)))) return false;
  const keysBeforeParse=RESPONSE_KEYS[action];
