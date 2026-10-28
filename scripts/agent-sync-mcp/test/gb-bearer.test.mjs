@@ -702,3 +702,20 @@ test("admin credential diagnostic failure is unknown, not absent or mintable", a
   assert.ok(!html.includes("No credentials loaded"));
   assert.ok(!html.includes('name="action" value="mint_gb_bearer"'));
 });
+
+test("legacy missing acceptance is distinct from explicit GR-only in status", async () => {
+  const store = S.memoryStore();
+  const { hash } = await newGbBearer(ID);
+  await S.gbBearerMint(store, {hash, by:"owner", expiresAt:NOW+10000, mcpAccept:false}, NOW);
+  const explicit = await S.gbBearerStatus(store, NOW+1);
+  assert.equal(explicit.mcp_accept_recorded, true);
+  // Find the actual stored bearer row without exposing its secret hash.
+  const keys = [...(await store.list()).keys()];
+  const bearerKey = keys.find(k => k.includes("bearer") && !k.includes("mismatch"));
+  assert.ok(bearerKey);
+  const row = await store.get(bearerKey);
+  delete row.mcp_accept; await store.put(bearerKey,row);
+  const legacy = await S.gbBearerStatus(store,NOW+1);
+  assert.equal(legacy.mcp_accept_recorded,false);
+  assert.equal((await S.gbBearerCheck(store,hash,NOW+1)).mcp_accept,false);
+});

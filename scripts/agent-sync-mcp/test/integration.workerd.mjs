@@ -1726,6 +1726,13 @@ try {
     const page = await (await browser("/admin")).text();
     assert.ok(!page.includes(bearer));
     assert.match(page, /Per-Identity Bearers/);
+    // A matched persona hash is not enough: explicit false refuses /mcp.
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+    const personaGate = ns.get(ns.idFromName(PERSONA));
+    const bearerHash = createHash("sha256").update(bearer).digest("hex");
+    await personaGate.gbBearerMint({hash:bearerHash, by:"test", expiresAt:Date.now()+600000, mcpAccept:false});
+    assert.equal((await mcp(bearer,"tools/list")).status,401,"GR-only persona must refuse hosted MCP");
+    await personaGate.gbBearerMint({hash:bearerHash, by:"test", expiresAt:Date.now()+600000, mcpAccept:true});
     const who = (await call(bearer, "whoami")).json.result;
     assert.equal(who.isError, undefined, JSON.stringify(who));
     assert.equal(who.structuredContent.seat, PERSONA);
