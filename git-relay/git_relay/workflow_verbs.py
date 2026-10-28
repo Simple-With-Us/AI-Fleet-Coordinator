@@ -54,6 +54,11 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_repo_variables": ({"variables": "read"}, False),
+    "wf_repo_variable_get": ({"variables": "read"}, False),
+    "wf_repo_variable_create": ({"variables": "write"}, True),
+    "wf_repo_variable_update": ({"variables": "write"}, True),
+    "wf_repo_variable_delete": ({"variables": "write"}, True),
     "wf_pr_get": ({"pull_requests": "read"}, False),
     "wf_pr_reviews": ({"pull_requests": "read"}, False),
     "wf_pr_comments": ({"pull_requests": "read"}, False),
@@ -270,6 +275,112 @@ class WorkflowVerbs:
         if action != self.action or args.get("repo") != self.repo:
             raise Refused("action or repository not authorized for this handle")
         return getattr(self, action)(self.repo, args)
+
+    @staticmethod
+    def _variable_name(args):
+        name = args.get("name")
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,99}", name)
+            or name.startswith("GITHUB_")
+        ):
+            raise Refused("invalid variable name")
+        return name
+
+    @staticmethod
+    def _variable_value(args):
+        value = args.get("value")
+        if (
+            not isinstance(value, str)
+            or len(value.encode("utf-8")) > 8192
+            or "\x00" in value
+            or find_secret(value)
+        ):
+            raise Refused("invalid or secret variable value; this is not a secrets API")
+        return value
+
+    @staticmethod
+    def _variable_receipt(data, name=None):
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get("name"), str)
+            or not re.fullmatch(r"[A-Z_][A-Z0-9_]{0,99}", data["name"])
+            or (name is not None and data["name"] != name)
+            or not isinstance(data.get("value"), str)
+            or len(data["value"].encode("utf-8")) > 8192
+            or any(
+                not isinstance(data.get(k), str) or len(data[k]) > 100
+                for k in ("created_at", "updated_at")
+            )
+        ):
+            raise RelayGitHubError(502, "variable receipt unverifiable")
+        return {k: data[k] for k in ("name", "value", "created_at", "updated_at")}
+
+    def wf_repo_variables(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/actions/variables?per_page={limit}&page={page}")
+        if (
+            not isinstance(data, dict)
+            or type(data.get("total_count")) is not int
+            or data["total_count"] < 0
+            or not isinstance(data.get("variables"), list)
+            or len(data["variables"]) > limit
+        ):
+            raise RelayGitHubError(502, "variables page unverifiable")
+        return {
+            "variables": [self._variable_receipt(x) for x in data["variables"]],
+            "total_count": data["total_count"],
+            "page": page,
+        }
+
+    def wf_repo_variable_get(self, repo, args):
+        _only(args, ("repo", "name"))
+        name = self._variable_name(args)
+        return {
+            "variable": self._variable_receipt(
+                self._get(f"/repos/{repo}/actions/variables/{name}"), name
+            )
+        }
+
+    def wf_repo_variable_create(self, repo, args):
+        _only(args, ("repo", "name", "value"))
+        name = self._variable_name(args)
+        value = self._variable_value(args)
+        self.client._call(
+            "POST",
+            f"/repos/{repo}/actions/variables",
+            {"name": name, "value": value},
+            bearer=self.bearer,
+            expected_status=201,
+        )
+        return {"completed": True, "name": name}
+
+    def wf_repo_variable_update(self, repo, args):
+        _only(args, ("repo", "name", "value"))
+        name = self._variable_name(args)
+        value = self._variable_value(args)
+        self.client._call(
+            "PATCH",
+            f"/repos/{repo}/actions/variables/{name}",
+            {"value": value},
+            bearer=self.bearer,
+            expected_status=204,
+        )
+        return {"completed": True, "name": name}
+
+    def wf_repo_variable_delete(self, repo, args):
+        _only(args, ("repo", "name"))
+        name = self._variable_name(args)
+        self.client._call(
+            "DELETE",
+            f"/repos/{repo}/actions/variables/{name}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
+        return {"completed": True, "name": name}
 
     def _asset_summary(self, data):
         if (
