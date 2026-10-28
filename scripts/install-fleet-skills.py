@@ -5,12 +5,10 @@ Canonical source: docs/fleet-skills (Monet / Claude.app pack).
 Home dirs, repo-tracked copies, and docs/fleet-skills/by-seat/<seat>/ get
 rewritten identity.  Skills in NEVER_INSTALL (ios-ship) are omitted, not
 copied as a Monet-voiced leftover.  Retired seats (Monet, Renoir, DSH, Kimi)
-have write_home=False and get no render at all:  no tool home (no
-~/Desktop/fleet-skills, ~/.deepseek, ~/.kimi, ~/.renoir) and no by-seat
-pack either -- Rule 12 holds that a retired artifact is frozen history, so a
-change to the one home must not write new text into a seat nobody runs.
-Clutch renders to ~/.clutch/dsh/skills, the DSH engine's own skill root (it
-outranks the shared ~/.agents/skills, which no installer here writes).
+have write_home=False: catalog/by-seat only, never a tool home (no
+~/Desktop/fleet-skills, ~/.deepseek, ~/.kimi, ~/.renoir).  Clutch renders to
+~/.clutch/dsh/skills, the DSH engine's own skill root (it outranks the shared
+~/.agents/skills, which no installer here writes).
 The shared ~/.claude/skills home renders as CLAUDE, the only Claude seat.
 
 Usage:
@@ -247,19 +245,14 @@ def main(argv: list[str] | None = None) -> None:
 
     print("\nUpload packs: docs/fleet-skills/by-seat/<seat>/")
     for seat in catalog_seats():
-        if seat.retired:
-            #  Rule 12:  a retired seat's catalog pack is frozen history.  The
-            #  renderer must not write new text into a seat nobody runs, so a
-            #  retired pack keeps the text it had at retirement and never gains
-            #  a skill it did not have.  The pack is not deleted -- it is an
-            #  upload pack -- and its retirement notice still came from the
-            #  renderer when it was written.
-            print(f"  {seat.tag:12}  {seat.seat_key}  (retired, frozen at its retirement text)")
-            continue
+        #  A retired seat's catalog copy is still rendered from the canonical pack:  a pack that
+        #  names a channel the realm no longer has is a stale consumer, and the retirement notice
+        #  comes from the renderer (it reads the seat's own retired block), not from a hand edit.
         key = seat.seat_key or seat.tag.lower()
         seat_root = os.path.join(BY_SEAT, key)
         written = _install_skill_set(seat_root, sources, seat, zip_each=True)
-        print(f"  {seat.tag:12}  {seat.seat_key}  ({len(written)} skills)")
+        note = "  (retired)" if seat.retired else ""
+        print(f"  {seat.tag:12}  {seat.seat_key}  ({len(written)} skills){note}")
 
     if args.repo_only:
         return
