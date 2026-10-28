@@ -10,24 +10,30 @@ SCRIPTS = Path(__file__).resolve().parents[2]
 
 
 class InstallerTests(unittest.TestCase):
+    def _run_installer(self, env, extra_args=()):
+        wrapper = Path(env["HOME"]) / "run-install.sh"
+        wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            "_fleet_secrets_uname_s() { echo Linux; }\n"
+            "_fleet_secrets_uid() { echo 0; }\n"
+            f'source "{SCRIPTS / "install-fleet-secrets.sh"}"\n'
+            'install_fleet_secrets_main "$@"\n'
+        )
+        wrapper.chmod(0o755)
+        args = [str(wrapper), *extra_args]
+        subprocess.run(args, env=env, capture_output=True, check=True)
+
     def test_installed_launchers_delegate_without_recursion_and_help_needs_no_auth(self):
         for opt_in in (False, True):
             with self.subTest(opt_in=opt_in), tempfile.TemporaryDirectory() as tmp:
                 home = Path(tmp)
-                fake = home / "fake-bin"
-                fake.mkdir()
-                for name, output in (("id", "0"), ("uname", "Linux")):
-                    executable = fake / name
-                    executable.write_text("#!/bin/sh\nprintf '%s\\n' " + output + "\n")
-                    executable.chmod(0o755)
-                env = dict(os.environ, HOME=tmp, PATH=str(fake) + os.pathsep + os.environ["PATH"])
+                env = dict(os.environ, HOME=tmp)
                 for key in list(env):
                     if key.startswith(("INFISICAL_", "FLEET_SECRETS_")):
                         env.pop(key)
-                args = ["bash", str(SCRIPTS / "install-fleet-secrets.sh")]
-                if opt_in:
-                    args.append("--linux-private-bootstrap")
-                subprocess.run(args, env=env, capture_output=True, check=True)
+                extra = ("--linux-private-bootstrap",) if opt_in else ()
+                self._run_installer(env, extra)
                 command = home / ".local/bin/fleet-secrets"
                 self.assertEqual(
                     command.resolve().name, "linux-entrypoint.py" if opt_in else "fleet-secrets"
@@ -43,8 +49,10 @@ class InstallerTests(unittest.TestCase):
                 self.assertEqual(completed.returncode, 0, completed.stderr)
                 self.assertIn("fleet-secrets", completed.stdout)
                 # A subsequent default install restores the default plain launcher.
-                subprocess.run(args[:2], env=env, capture_output=True, check=True)
+                self._run_installer(env)
                 self.assertEqual(command.resolve().name, "fleet-secrets")
+                self.assertFalse((home / ".local/share/fleet-secrets/linux-entrypoint.py").exists())
+                self.assertFalse((home / ".local/share/fleet-secrets/fleet-secrets-cli").exists())
 
     def test_rejects_unknown_flags_before_installing(self):
         result = subprocess.run(
@@ -53,3 +61,7 @@ class InstallerTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

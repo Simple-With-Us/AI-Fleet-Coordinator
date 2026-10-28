@@ -31,25 +31,27 @@ class BootstrapTests(unittest.TestCase):
     def bootstrap_context(self, payload=None, *, directory=None, file=None):
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
-        stack.enter_context(mock.patch.object(entry.sys, "platform", "linux"))
+        stack.enter_context(mock.patch.object(entry.core, "is_linux", return_value=True))
         stack.enter_context(mock.patch.object(entry.os, "geteuid", return_value=0))
         opened = stack.enter_context(
-            mock.patch.object(entry.os, "open", side_effect=[10, 11, 12, 13, 14])
+            mock.patch.object(entry.core.os, "open", side_effect=[10, 11, 12, 13, 14])
         )
-        closed = stack.enter_context(mock.patch.object(entry.os, "close"))
+        closed = stack.enter_context(mock.patch.object(entry.core.os, "close"))
         directory = directory or SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFDIR | 0o700)
         file = file or SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFREG | 0o600, st_nlink=1)
         stack.enter_context(
-            mock.patch.object(entry.os, "fstat", side_effect=[directory] * 3 + [file])
+            mock.patch.object(
+                entry.core.os, "fstat", side_effect=[directory] * 3 + [file]
+            )
         )
         stream = io.StringIO(json.dumps(PAIR) if payload is None else payload)
-        stack.enter_context(mock.patch.object(entry.os, "fdopen", return_value=stream))
+        stack.enter_context(mock.patch.object(entry.core.os, "fdopen", return_value=stream))
         return opened, closed
 
     def test_private_bootstrap_is_descriptor_scoped_and_validated(self):
         opened, closed = self.bootstrap_context()
         self.assertEqual(entry.private_bootstrap(), PAIR)
-        self.assertEqual(opened.call_args.args[0], "bootstrap.json")
+        self.assertEqual(opened.call_args.args[0], entry.core.LINUX_ROOT_PRIVATE_BOOTSTRAP_BASENAME)
         self.assertEqual(opened.call_args.kwargs["dir_fd"], 13)
         self.assertTrue(opened.call_args.args[1] & os.O_NOFOLLOW)
         self.assertEqual(
@@ -96,11 +98,11 @@ class BootstrapTests(unittest.TestCase):
             entry.private_bootstrap()
 
     def test_private_bootstrap_never_reads_on_other_platform_or_nonroot(self):
-        for platform, uid in (("darwin", 0), ("linux", 1000)):
+        for linux, uid in ((False, 0), (True, 1000)):
             with (
-                mock.patch.object(entry.sys, "platform", platform),
+                mock.patch.object(entry.core, "is_linux", return_value=linux),
                 mock.patch.object(entry.os, "geteuid", return_value=uid),
-                mock.patch.object(entry.os, "open") as opened,
+                mock.patch.object(entry.core.os, "open") as opened,
             ):
                 self.assertEqual(entry.private_bootstrap(), {})
             opened.assert_not_called()
@@ -116,10 +118,10 @@ class BootstrapTests(unittest.TestCase):
 
     def test_unsafe_open_is_sanitized_and_descriptor_closed(self):
         with (
-            mock.patch.object(entry.sys, "platform", "linux"),
+            mock.patch.object(entry.core, "is_linux", return_value=True),
             mock.patch.object(entry.os, "geteuid", return_value=0),
-            mock.patch.object(entry.os, "open", side_effect=[10, OSError("synthetic-secret")]),
-            mock.patch.object(entry.os, "close") as closed,
+            mock.patch.object(entry.core.os, "open", side_effect=[10, OSError("synthetic-secret")]),
+            mock.patch.object(entry.core.os, "close") as closed,
         ):
             with self.assertRaises(entry.EntryError) as caught:
                 entry.private_bootstrap()

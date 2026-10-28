@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import urllib.error
@@ -309,6 +310,81 @@ def _complete_or_none(label: str, keychain: str | None) -> bool:
 
 def is_linux() -> bool:
     return sys.platform.startswith("linux")
+
+
+LINUX_ROOT_PRIVATE_BOOTSTRAP_DIR_PARTS = ("root", ".config", "fleet-secrets")
+LINUX_ROOT_PRIVATE_BOOTSTRAP_BASENAME = "bootstrap.json"
+LINUX_ROOT_PRIVATE_BOOTSTRAP_MAX_BYTES = 16384
+LINUX_ROOT_PRIVATE_BOOTSTRAP_ERROR = "root-private bootstrap is invalid or unsafe"
+
+
+def _linux_root_private_bootstrap_pairs(pairs: list[tuple[str, str]]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError("duplicate bootstrap key")
+        result[name] = value
+    return result
+
+
+def load_linux_root_private_bootstrap() -> dict[str, str]:
+    """Approved on-disk fallback for Linux UID 0 only (INFISICAL.md).
+
+    Reads the fixed existing file under /root/.config/fleet-secrets/ using descriptor-scoped
+    opens that refuse symlinks.  This is the only fleet-secrets code path that reads a credential
+    file;  every other source is process environment or Infisical.
+    """
+    if not is_linux() or os.geteuid() != 0:
+        return {}
+    fd: int | None = None
+    try:
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        for name in LINUX_ROOT_PRIVATE_BOOTSTRAP_DIR_PARTS:
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) & 0o022:
+                raise ValueError("unsafe bootstrap directory")
+            if name == "fleet-secrets" and stat.S_IMODE(info.st_mode) != 0o700:
+                raise ValueError("unsafe bootstrap parent")
+        child = os.open(
+            LINUX_ROOT_PRIVATE_BOOTSTRAP_BASENAME,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=fd,
+        )
+        os.close(fd)
+        fd = child
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != 0
+            or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+        ):
+            raise ValueError("unsafe bootstrap file")
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            fd = None
+            text = stream.read(LINUX_ROOT_PRIVATE_BOOTSTRAP_MAX_BYTES + 1)
+        if len(text) > LINUX_ROOT_PRIVATE_BOOTSTRAP_MAX_BYTES:
+            raise ValueError("oversized bootstrap")
+        data = json.loads(text, object_pairs_hook=_linux_root_private_bootstrap_pairs)
+        expected = {ENV_AUTOMATION_ID, ENV_AUTOMATION_SECRET}
+        if (
+            not isinstance(data, dict)
+            or set(data) != expected
+            or any(not isinstance(v, str) or not v.strip() for v in data.values())
+        ):
+            raise ValueError("invalid bootstrap schema")
+        return data
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise SecretsError(LINUX_ROOT_PRIVATE_BOOTSTRAP_ERROR) from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def automation_env_presence(env: Mapping[str, str]) -> tuple[bool, bool]:
