@@ -103,7 +103,7 @@ The server half is read over a key that can do one thing:  run this doctor with 
 2. On the Mac, a `Host fleet-tools-ro` block in `~/.ssh/config` naming the server's **public** address (the address itself is private deployment inventory, so it lives in the operator's own inventory on that Mac), `User root`, `IdentityFile ~/.ssh/fleet-tools-ro`, `IdentitiesOnly yes`, `BatchMode yes`, `StrictHostKeyChecking yes` and `UserKnownHostsFile ~/.ssh/known_hosts_hetzner`.
 3. On the server, one line in `/root/.ssh/authorized_keys`:
    ```
-   restrict,command="/usr/bin/python3 -I /home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --json" ssh-ed25519 AAAA... fleet-tools-ro@jay-macbook
+   restrict,command="/usr/sbin/runuser -u jay -- /usr/bin/python3 -I /home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py --json" ssh-ed25519 AAAA... fleet-tools-ro@jay-macbook
    ```
    `restrict` and the fixed command are the whole permission:  the key can run that one command and nothing else, so it cannot open a shell, forward a port, use the agent, or reach the machine another way.  Removing the line revokes it.  The forced command drops to `jay` before it runs anything:  the key logs in as root, so a command that read jay's checkout directly would run code jay can replace as root.  `runuser -u jay --` runs the same script as the account that owns it, and the report then describes the fleet tools the seat actually has.  The second read-only key the Muster app uses (`fleet_config status --json`) is restricted the same way.
 
