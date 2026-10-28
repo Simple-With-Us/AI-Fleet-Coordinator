@@ -491,7 +491,7 @@ class WorkflowVerbs:
         owner, name = repo.split("/")
         query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id mergeQueueEntry{id state position jump enqueuedAt}}}}"
         result = self._fixed_graph(
-            query, {"owner": owner, "name": name, "number": number}, "repository", write=False
+            query, {"owner": owner, "name": name, "number": number}, "repository"
         )
         pull = _sub(result, "pullRequest")
         if not isinstance(pull.get("id"), str) or "mergeQueueEntry" not in pull:
@@ -542,7 +542,7 @@ class WorkflowVerbs:
             raise Refused("PR node unavailable")
         return node
 
-    def _fixed_graph(self, query, variables, field, write=True):
+    def _fixed_graph(self, query, variables, field):
         data = self.client._call(
             "POST", "/graphql", {"query": query, "variables": variables}, bearer=self.bearer
         )
@@ -606,12 +606,17 @@ class WorkflowVerbs:
         return {"pull": pull}
 
     def wf_review_threads(self, repo, args):
-        _only(args, ("repo", "number"))
+        _only(args, ("repo", "number", "cursor"))
         number = _int(args, "number")
+        cursor = args.get("cursor")
+        if cursor is not None and (
+            not isinstance(cursor, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,256}", cursor)
+        ):
+            raise Refused("invalid cursor")
         owner, name = repo.split("/")
-        query = "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:50) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first:20) { nodes { id databaseId body author { login } } pageInfo { hasNextPage endCursor } } } } } } }"
+        query = "query($owner:String!, $name:String!, $number:Int!, $cursor:String) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:5, after:$cursor) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first:2) { nodes { id databaseId body author { login } } pageInfo { hasNextPage endCursor } } } } } } }"
         result = self._fixed_graph(
-            query, {"owner": owner, "name": name, "number": number}, "repository", write=False
+            query, {"owner": owner, "name": name, "number": number, "cursor": cursor}, "repository"
         )
         threads = _sub(_sub(result, "pullRequest"), "reviewThreads")
         if not isinstance(threads.get("nodes"), list):

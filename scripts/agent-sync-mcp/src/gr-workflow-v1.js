@@ -25,7 +25,7 @@ const SPECS = {
   wf_pr_ready: ['pr ready.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_automerge_enable: ['automerge enable.',obj(['repo','number','method'],{repo:REPO,number:INT,method:{type:'string',enum:['SQUASH','MERGE','REBASE']}})],
   wf_automerge_disable: ['automerge disable.',obj(['repo','number'],{repo:REPO,number:INT})],
-  wf_review_threads: ['review threads.',obj(['repo','number'],{repo:REPO,number:INT})],
+  wf_review_threads: ['Read five threads/two comments each with thread cursor pagination.',obj(['repo','number'],{repo:REPO,number:INT,cursor:{type:'string',maxLength:256,pattern:'^[A-Za-z0-9_/=+-]{1,256}$'}})],
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_workflow_disable: ['workflow disable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_run_delete: ['run delete.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],

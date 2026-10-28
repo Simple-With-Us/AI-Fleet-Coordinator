@@ -93,3 +93,22 @@ class Queue(unittest.TestCase):
                 )
             self.assertEqual(error.exception.status, 502)
             self.assertEqual(len(c.calls), 2)
+
+    def test_thread_read_bounded_and_cursor_forwarded(self):
+        c = Client(
+            {
+                "data": {
+                    "repository": {
+                        "pullRequest": {
+                            "reviewThreads": {"nodes": [], "pageInfo": {"hasNextPage": False}}
+                        }
+                    }
+                }
+            }
+        )
+        self.handle(c, "wf_review_threads").run(
+            "wf_review_threads", {"repo": REPO, "number": 1, "cursor": "abc="}
+        )
+        self.assertIn("reviewThreads(first:5, after:$cursor)", c.calls[0][2]["query"])
+        self.assertIn("comments(first:2)", c.calls[0][2]["query"])
+        self.assertEqual(c.calls[0][2]["variables"]["cursor"], "abc=")
