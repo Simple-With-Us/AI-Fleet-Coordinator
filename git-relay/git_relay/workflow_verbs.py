@@ -1,6 +1,6 @@
 """Inactive read, search and workflow verbs for a PR-backlog seat.
 
-Not registered in server startup, policy action lists or the Worker. A broker that has
+Registered only behind the existing default-off workflow gates. A broker that has
 already authenticated a seat constructs it through ``for_action``. It never accepts a
 caller token, URL, raw query string or arbitrary path: every argument is validated into
 a fixed REST path. Each verb asks the existing minter for only the permissions it needs
@@ -25,8 +25,9 @@ import binascii
 import re
 from urllib.parse import quote
 
+from .github_client import RelayGitHubError
 from .secret_scan import find_secret
-from .server import _perm_within_ceiling
+from .server import PreReadUnavailable, _perm_within_ceiling
 
 
 class Refused(ValueError):
@@ -53,6 +54,9 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_review_submit": ({"pull_requests": "write"}, True),
+    "wf_review_inline": ({"pull_requests": "write"}, True),
+    "wf_branch_create": ({"contents": "write"}, True),
     "wf_pr_list": ({"pull_requests": "read"}, False),
     "wf_pr_files": ({"pull_requests": "read"}, False),
     "wf_file_get": ({"contents": "read"}, False),
@@ -247,6 +251,102 @@ class WorkflowVerbs:
         if action != self.action or args.get("repo") != self.repo:
             raise Refused("action or repository not authorized for this handle")
         return getattr(self, action)(self.repo, args)
+
+    def _text(self, args, key, limit=32768):
+        value = args.get(key)
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.encode("utf-8")) > limit
+            or find_secret(value)
+        ):
+            raise Refused(f"invalid {key}")
+        return value
+
+    def _pull_at_commit(self, repo, number, commit):
+        # Pre-read is not an atomic head lock; GitHub binds the review to commit_id.
+        try:
+            data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "review pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if _sub(data, "head").get("sha") != commit:
+            raise Refused("pull request head changed")
+
+    def wf_review_submit(self, repo, args):
+        _only(args, ("repo", "number", "commit_id", "event", "body"))
+        number, commit = _int(args, "number"), _sha(args, "commit_id")
+        event = _enum(args, "event", ("APPROVE", "REQUEST_CHANGES", "COMMENT"))
+        body = self._text(args, "body")
+        self._pull_at_commit(repo, number, commit)
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/pulls/{number}/reviews",
+            {"commit_id": commit, "event": event, "body": body},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+            or result["id"] <= 0
+            or result.get("commit_id") != commit
+        ):
+            raise RelayGitHubError(502, "review write outcome unverifiable")
+        if (
+            result.get("state")
+            != {
+                "APPROVE": "APPROVED",
+                "REQUEST_CHANGES": "CHANGES_REQUESTED",
+                "COMMENT": "COMMENTED",
+            }[event]
+        ):
+            raise RelayGitHubError(502, "review state unverifiable")
+        return {"review": {k: result.get(k) for k in ("id", "state", "commit_id", "html_url")}}
+
+    def wf_review_inline(self, repo, args):
+        _only(args, ("repo", "number", "commit_id", "path", "line", "side", "body"))
+        number, commit = _int(args, "number"), _sha(args, "commit_id")
+        path, line = _path(args), _int(args, "line", 1, 10000000)
+        side, body = _enum(args, "side", ("LEFT", "RIGHT")), self._text(args, "body")
+        self._pull_at_commit(repo, number, commit)
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/pulls/{number}/comments",
+            {"commit_id": commit, "path": path, "line": line, "side": side, "body": body},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+            or result["id"] <= 0
+            or result.get("commit_id") != commit
+        ):
+            raise RelayGitHubError(502, "inline write outcome unverifiable")
+        return {"comment": {k: result.get(k) for k in ("id", "commit_id", "html_url")}}
+
+    def wf_branch_create(self, repo, args):
+        _only(args, ("repo", "branch", "sha"))
+        branch, sha = _ref(args, "branch"), _sha(args, "sha")
+        # Creation only: GitHub refuses an existing ref; never force/update/delete.
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/git/refs",
+            {"ref": "refs/heads/" + branch, "sha": sha},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or result.get("ref") != "refs/heads/" + branch
+            or not isinstance(result.get("object"), dict)
+            or result["object"].get("sha") != sha
+        ):
+            raise RelayGitHubError(502, "branch write outcome unverifiable")
+        return {"ref": result["ref"], "sha": sha}
 
     # ---- reads ----
     def wf_pr_list(self, repo, args):
