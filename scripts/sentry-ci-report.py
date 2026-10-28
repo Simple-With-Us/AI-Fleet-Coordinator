@@ -17,10 +17,17 @@ data,  so four environment variables carry it:
       values.  The reporter runs from a checkout of THIS repository,  not the
       caller's,  so the caller's workflow files are not on disk to discover;  the
       observed list is what the cron-drift guard below checks the cron map
-      against.  Absent:  the local checkout is scanned instead,  which is exactly
-      what the per-repo workflow did.
+      against.  Absent:  an empty list,  and the cron-drift guard then reports
+      "cannot tell" instead of pretending no workflow was renamed.  Present but
+      not a JSON array:  a hard error,  because a broken list must never read as
+      an empty one.
   SENTRY_CRON_SCHEDULES — JSON object mapping an observed workflow `name:` to
-      its cron expression.  Absent:  the CRON_SCHEDULES constant below.
+      its cron expression.  Absent:  the CRON_SCHEDULES constant below,  which
+      is this repository's own.  Present but not a JSON object:  an empty map
+      and a warning,  NEVER that constant —  mirroring this repository's
+      schedules for another caller would create Crons monitors for workflows
+      that caller does not have,  while the caller's real monitors went
+      inactive.
   SENTRY_APP — the calling repository's display name,  the `app` tag on every
       event.  Absent:  "AI-Fleet-Coordinator".
   SENTRY_APP_IDENTITY — the stable lowercase identity used in the issue
@@ -171,27 +178,52 @@ ALERT_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure"})
 
 
 def _env_json(name: str):
-    """Parse one JSON environment variable, or None when it is absent or unusable."""
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return None
+    """Parse one JSON environment variable into a (value, present, valid) triple.
+
+    `present` is True whenever the variable is SET in the environment,  even
+    when its content is unusable,  so a caller can tell "the caller supplied
+    nothing" apart from "the caller supplied something broken".  The two must
+    never be confused:  answering a broken input with another repository's
+    built-in literal would report another repository's data as the caller's.
+    `valid` says whether the content actually parsed as JSON.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return None, False, False
+    text = raw.strip()
+    if not text:
+        return None, True, False
     try:
-        return json.loads(raw)
+        return json.loads(text), True, True
     except (TypeError, ValueError):
-        print(f"::warning::{name} is not valid JSON;  using the built-in fallback")
-        return None
+        return None, True, False
 
 
 def cron_schedules_from_env() -> dict[str, str]:
     """The effective cron map:  the caller's SENTRY_CRON_SCHEDULES, else the fallback.
 
     A shared reporter mirrors the CALLER's schedules,  so the reusable workflow
-    passes them in as JSON.  Absent or unusable input falls back to the literal
-    CRON_SCHEDULES above,  which is what a per-repo run used.
+    passes them in as JSON.  Absent:  the CRON_SCHEDULES literal above,  which is
+    what a per-repo run used.  Present but unusable:  an EMPTY map and a
+    warning,  never that literal —  the literal belongs to THIS repository,  and
+    mirroring it for another caller would create Crons monitors for workflows
+    the caller does not have,  while the caller's real monitors went inactive.
     """
-    parsed = _env_json("SENTRY_CRON_SCHEDULES")
-    if not isinstance(parsed, dict):
+    parsed, present, valid = _env_json("SENTRY_CRON_SCHEDULES")
+    if not present:
         return dict(CRON_SCHEDULES)
+    if not valid:
+        print(
+            "::warning::SENTRY_CRON_SCHEDULES is not valid JSON;  using an empty "
+            "cron map instead of the built-in fallback"
+        )
+        return {}
+    if not isinstance(parsed, dict):
+        print(
+            "::warning::SENTRY_CRON_SCHEDULES is not a JSON object;  using an empty "
+            "cron map instead of the built-in fallback"
+        )
+        return {}
     out: dict[str, str] = {}
     for key, value in parsed.items():
         if isinstance(key, str) and isinstance(value, str) and key.strip() and value.strip():
@@ -206,10 +238,25 @@ def observed_workflows_from_env() -> list[str]:
     reporter runs from a checkout of THIS repository,  so the caller's workflow
     files are not on disk to discover,  and the observed list is what the
     cron-drift guard must check against.
+
+    Absent:  an empty list.  Present but unusable:  a ValueError — a malformed
+    list must never be mistaken for "the caller observed nothing",  which would
+    silently disable the cron-drift guard.
     """
-    parsed = _env_json("SENTRY_OBSERVED_WORKFLOWS")
-    if not isinstance(parsed, list):
+    parsed, present, valid = _env_json("SENTRY_OBSERVED_WORKFLOWS")
+    if not present:
         return []
+    if not valid:
+        raise ValueError(
+            "SENTRY_OBSERVED_WORKFLOWS is not valid JSON;  it must be a JSON array of "
+            "observed workflow names,  and the shared reporter cannot check the cron map "
+            "for a renamed workflow without it"
+        )
+    if not isinstance(parsed, list):
+        raise ValueError(
+            "SENTRY_OBSERVED_WORKFLOWS must be a JSON array of observed workflow names;  "
+            "the shared reporter cannot check the cron map for a renamed workflow without it"
+        )
     return [name.strip() for name in parsed if isinstance(name, str) and name.strip()]
 
 
@@ -226,6 +273,10 @@ def discover_workflow_names(workflows_dir: Path = WORKFLOWS_DIR) -> set[str] | N
     deliberately dumb line scan rather than a YAML parse: this must not add a
     PyYAML dependency to a script whose whole point is having none, and the
     top-level `name:` of a GitHub workflow is always a plain unindented scalar.
+    The shared reusable checks out ONE file,  so its sparse checkout has no
+    .github/workflows directory at all and this scan cannot run there;  the
+    cron-drift guard uses the caller's observed-workflow list instead (see
+    known_workflow_names()).
     """
     if not workflows_dir.is_dir():
         return None
@@ -244,16 +295,23 @@ def discover_workflow_names(workflows_dir: Path = WORKFLOWS_DIR) -> set[str] | N
 
 
 def known_workflow_names() -> set[str] | None:
-    """The workflow names the cron-drift guard checks against.
+    """The workflow names the cron-drift guard checks against,  or None.
 
-    The observed list the caller passes is authoritative when it is present:  the
-    reporter runs from a checkout of ITS OWN repository,  so the caller's
-    workflow files are not on disk to discover.  Without it the local checkout is
-    scanned,  which is exactly what the per-repo workflow did.
+    The observed list the caller passes is the only source the shared reporter
+    can trust:  it runs from a checkout of ITS OWN repository,  where the
+    caller's workflow files are not on disk to discover.  An empty list means
+    "cannot tell":  it warns and returns None,  because reporting no drift from
+    an unknown workflow set would hide a renamed workflow,  and the local scan
+    cannot rescue it either — the reusable's sparse checkout has no
+    .github/workflows directory to scan.
     """
     if EFFECTIVE_OBSERVED_WORKFLOWS:
         return set(EFFECTIVE_OBSERVED_WORKFLOWS)
-    return discover_workflow_names()
+    print(
+        "::warning::no observed-workflow list is available,  so the cron-drift "
+        "guard cannot check the cron map for a renamed workflow"
+    )
+    return None
 
 
 def find_cron_schedule_drift(known_names: set[str] | None) -> list[str]:

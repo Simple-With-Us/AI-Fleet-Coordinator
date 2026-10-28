@@ -8,6 +8,10 @@ name: Sentry CI Report
 # simple-with-us).  ADDITIVE ONLY — this file must never modify the behavior
 # of the workflows it observes.
 #
+# It listens on BOTH activity types:  "requested" opens the Sentry Crons
+# check-in before the observed run finishes,  and "completed" closes it with
+# the run's outcome.
+#
 # Two independent signals per completed run:
 #   1. On conclusion == failure / timed_out / startup_failure: a Sentry error
 #      event, tagged with {app, workflow, branch, actor}, carrying the run URL,
@@ -63,12 +67,14 @@ on:
       - Agent Activity Calendar (manual only)
       - Backup fleet GitHub repositories
       - Fleet daily digest + calendars
-    # Completed runs only.  The shared reporter also has a requested phase
-    # (the in_progress check-in that opens a cron monitor before the observed
-    # run finishes),  and that phase needs the `requested` activity type;  with
-    # `completed` alone the reporter sends only the terminal check-in,  so the
-    # monitor's checkin_margin has to cover the whole observed runtime.
-    types: [completed]
+    # Both activity types,  not just "completed".  The shared reporter has two
+    # phases:  the requested phase sends the in_progress check-in that OPENS the
+    # Sentry Crons monitor before the observed run finishes,  and the completed
+    # phase sends the terminal check-in that closes it with the run's outcome.
+    # With "completed" alone the monitor only ever sees the terminal check-in,
+    # so its checkin_margin has to cover the whole observed runtime and a slow
+    # but healthy run can still page as a missed check-in.
+    types: [requested, completed]
 
 permissions:
   contents: read

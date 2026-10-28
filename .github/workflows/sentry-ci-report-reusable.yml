@@ -49,13 +49,21 @@ name: Sentry CI Report (Reusable)
 #   from a checkout of ITS OWN repository,  not the caller's,  so the caller's
 #   workflow files are not on disk to discover.
 #
-# THE SCRIPT IS THIS REPOSITORY'S, NOT THE CALLER'S:
-#   The job checks out scripts/sentry-ci-report.py from
-#   Simple-With-Us/AI-Fleet-Coordinator at the `reusable_ref` input.  The
-#   caller MUST pass the same commit SHA in `uses:` and in `reusable_ref`,  and
-#   the job asserts that the checked-out commit equals `reusable_ref` before it
-#   runs anything.  A caller that pins one SHA and passes another would
-#   otherwise run a script the caller never reviewed.
+# THE SCRIPT IS THIS REPOSITORY'S, NOT THE CALLER'S — TWO LAYERS:
+#   1. WHICH reusable runs:  the caller pins a commit SHA of this file in
+#      `uses:` and passes the same SHA in the `reusable_ref` input.  The job
+#      asserts that the checked-out commit equals `reusable_ref`,  so a caller
+#      that pins one SHA and passes another is caught.  That assertion is a
+#      CONSISTENCY check between two CALLER-supplied values,  not a security
+#      boundary:  the caller controls both.
+#   2. WHICH script revision runs:  the repository-owned blob SHA pinned below.
+#      The job asserts that scripts/sentry-ci-report.py in the checked-out
+#      commit hashes to that value.  A blob SHA is content-addressed,  so it
+#      survives a squash, rebase or merge,  and the caller cannot supply it:
+#      pinning an unreviewed commit in `uses:` still cannot run an unreviewed
+#      reporter script with the caller's token and DSN.
+#   Update the pinned blob SHA whenever the reporter script changes:
+#     git hash-object scripts/sentry-ci-report.py
 #
 # Secret: the caller's repo (or org) Actions secret `SENTRY_FLEET_DSN` must be
 # set to the fleet-infra project DSN.  Name only — never commit or print the
@@ -85,8 +93,9 @@ on:
         description: >-
           Commit SHA of this reusable workflow in Simple-With-Us/AI-Fleet-Coordinator.
           It must be the SAME SHA the caller pins in `uses:`.  The job checks the
-          script out at this SHA and refuses to run when the checked-out commit
-          differs.
+          script out at this SHA,  refuses to run when the checked-out commit
+          differs from this input,  and separately verifies that the reporter
+          script itself is the reviewed revision.
         required: true
         type: string
       app:
@@ -134,6 +143,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Require a usable observed_workflows list
+        # The cron-drift guard needs the CALLER's workflow names:  the reporter
+        # runs from a sparse checkout of THIS repository,  so the caller's
+        # workflow files are not on disk to discover.  Without this list a
+        # renamed workflow can never be detected,  so the shared run fails
+        # instead of reporting a "no drift" it cannot know about.
+        shell: bash
+        env:
+          OBSERVED_WORKFLOWS: ${{ inputs.observed_workflows }}
+        run: |
+          set -euo pipefail
+          if python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          raw = os.environ.get("OBSERVED_WORKFLOWS", "").strip()
+          try:
+              parsed = json.loads(raw)
+          except ValueError:
+              sys.exit(1)
+          if not isinstance(parsed, list):
+              sys.exit(1)
+          if not [name for name in parsed if isinstance(name, str) and name.strip()]:
+              sys.exit(1)
+          PY
+          then
+            echo "observed_workflows is a usable JSON array of workflow names"
+          else
+            echo "::error::observed_workflows must be a JSON array with at least one non-blank entry;  the shared reporter cannot detect a renamed workflow without it"
+            exit 1
+          fi
+
       - name: Checkout the canonical reporter script
         # Deliberately NOT the caller's copy and NOT the caller's default branch:
         # this repository owns the reporter,  so the script is checked out here at
@@ -149,6 +191,10 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Assert the checked-out commit matches the pinned ref
+        # CONSISTENCY check between two CALLER-supplied values:  the SHA the
+        # caller pinned in `uses:` and the SHA it passed as `reusable_ref`.
+        # The caller controls both,  so this is NOT the security boundary —
+        # the repository-owned blob SHA in the next step is.
         shell: bash
         env:
           EXPECTED_REF: ${{ inputs.reusable_ref }}
@@ -156,7 +202,25 @@ jobs:
           set -euo pipefail
           actual="$(git -C reusable rev-parse HEAD)"
           if [ "$actual" != "$EXPECTED_REF" ]; then
-            echo "::error::checked out $actual but reusable_ref is $EXPECTED_REF;  the caller must pin the same SHA in uses: and in reusable_ref"
+            echo "::error::checked out commit $actual but reusable_ref is $EXPECTED_REF;  the caller must pass the same SHA in uses: and in reusable_ref"
+            exit 1
+          fi
+
+      - name: Assert the reporter script is the reviewed revision
+        # THE security boundary.  The pinned value is the git BLOB SHA of
+        # scripts/sentry-ci-report.py as reviewed in this repository:  it is
+        # content-addressed,  so it survives a squash, rebase or merge,  and the
+        # caller cannot supply it.  A caller that pins an unreviewed commit in
+        # `uses:` still cannot run an unreviewed reporter script with the
+        # caller's token and SENTRY_FLEET_DSN.
+        shell: bash
+        env:
+          EXPECTED_SCRIPT_BLOB: dbdd998751d61d8c3810c1f72933b54af42e88ec
+        run: |
+          set -euo pipefail
+          actual_blob="$(git -C reusable rev-parse HEAD:scripts/sentry-ci-report.py)"
+          if [ "$actual_blob" != "$EXPECTED_SCRIPT_BLOB" ]; then
+            echo "::error::scripts/sentry-ci-report.py has blob $actual_blob but the reviewed revision is $EXPECTED_SCRIPT_BLOB;  the reporter script revision is not the reviewed one"
             exit 1
           fi
 
