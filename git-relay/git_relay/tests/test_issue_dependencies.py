@@ -90,3 +90,23 @@ class Dependencies(unittest.TestCase):
                 a,
                 REPO,
             )
+
+    def test_preread_malformed_is_definitely_unsent_and_rate_metadata_preserved(self):
+        a = "wf_issue_dependency_add"
+        args = {"repo": REPO, "number": 1, "blocker_number": 2}
+        c = Client({})
+        with self.assertRaises(Refused):
+            self.runverb(c, a, args)
+        self.assertTrue(all(x[0] == "GET" for x in c.calls))
+
+        class RateClient(Client):
+            def _call(self, *a, **kw):
+                raise RelayGitHubError(429, "rate", retry_after=42)
+
+        with self.assertRaises(RelayGitHubError) as ctx:
+            self.runverb(RateClient(), a, args)
+        self.assertEqual(ctx.exception.status, 429)
+        self.assertEqual(ctx.exception.retry_after, 42)
+        from git_relay.server import _WORKFLOW_AUDIT_SCALARS
+
+        self.assertIn("blocker_number", _WORKFLOW_AUDIT_SCALARS)

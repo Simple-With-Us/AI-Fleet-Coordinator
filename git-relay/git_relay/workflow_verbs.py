@@ -349,8 +349,11 @@ class WorkflowVerbs:
         except RelayGitHubError as exc:
             if exc.status == 0 or exc.status == 408 or exc.status >= 500:
                 raise PreReadUnavailable("dependency issue preread unavailable") from None
-            raise Refused("dependency issue preread refused") from None
-        item = self._relation_issue(data)
+            raise
+        try:
+            item = self._relation_issue(data)
+        except RelayGitHubError:
+            raise Refused("dependency issue preread receipt unverifiable") from None
         if item["repo"] != repo or item["number"] != number:
             raise Refused("dependency issue repository or number mismatch")
         return item

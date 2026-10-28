@@ -537,6 +537,7 @@ _REAPPLY_STATE_ACTIONS = frozenset(
 )
 
 _WORKFLOW_AUDIT_SCALARS = (
+    "blocker_number",
     "job_id",
     "run_id",
     "number",
