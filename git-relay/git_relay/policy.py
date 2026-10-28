@@ -166,6 +166,7 @@ class SeatPolicy:
         "wf_file_get",
         "wf_tree",
         "wf_branches",
+        "wf_file_history",
         "wf_commits",
         "wf_code_search",
         "wf_runs",

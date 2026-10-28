@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,101);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,102);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,101);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,102);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -440,4 +440,10 @@ test('review lifecycle projected receipts use cached strict schemas and own bear
  assert.equal(validWfV1Response('wf_review_dismiss',{review}),false);
  assert.equal(validWfV1Response('wf_review_pending_delete',{review:{...review,id:true}}),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_pending_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({review}));});assert.ok(!(await t.call('gr_wf_review_pending_delete',{repo,number:1,review_id:2})).isError);
+});
+test('file history immutable range and path correlated strict metadata receipt',async()=>{
+ const args={repo,path:'docs/a.txt',head_sha:'a'.repeat(40),page:2,per_page:1},receipt={commits:[{sha:'b'.repeat(40),parents:[]}],path:'docs/a.txt',head_sha:'a'.repeat(40),page:2,has_more:true};
+ assert.equal(validWfV1Response('wf_file_history',receipt,args),true);assert.ok(WF_V1_READ_ACTIONS.includes('wf_file_history'));
+ for(const bad of [{...receipt,path:'other'},{...receipt,has_more:false},{...receipt,commits:[{sha:'b'.repeat(40),parents:[],message:'private'}]}])assert.equal(validWfV1Response('wf_file_history',bad,args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_file_history'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_file_history',args)).isError);
 });

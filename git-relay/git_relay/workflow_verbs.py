@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_file_history": ({"contents": "read"}, False),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -2784,6 +2785,47 @@ class WorkflowVerbs:
                 for b in data[:MAX_PROJECT]
             ],
             "complete": False,
+        }
+
+    def wf_file_history(self, repo, args):
+        """Path-filtered metadata at an immutable starting SHA, not rename-follow history."""
+        _only(args, ("repo", "path", "head_sha", "page", "per_page"))
+        path, head = _path(args), _sha(args, "head_sha")
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        limit = _page(args)
+        if len(path) > 1024 or len(path.split("/")) > 16 or find_secret(path):
+            raise Refused("invalid history path")
+        data = self._get(
+            f"/repos/{repo}/commits?sha={head}&path={quote(path, safe='')}&per_page={limit}&page={page}"
+        )
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "file history page unverifiable")
+        commits = []
+        for item in data:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("sha"), str)
+                or not _SHA.fullmatch(item["sha"])
+                or not isinstance(item.get("parents"), list)
+                or len(item["parents"]) > 16
+            ):
+                raise RelayGitHubError(502, "file history commit unverifiable")
+            parents = []
+            for parent in item["parents"]:
+                if (
+                    not isinstance(parent, dict)
+                    or not isinstance(parent.get("sha"), str)
+                    or not _SHA.fullmatch(parent["sha"])
+                ):
+                    raise RelayGitHubError(502, "file history parent unverifiable")
+                parents.append(parent["sha"])
+            commits.append({"sha": item["sha"], "parents": parents})
+        return {
+            "commits": commits,
+            "path": path,
+            "head_sha": head,
+            "page": page,
+            "has_more": len(data) == limit,
         }
 
     def wf_commits(self, repo, args):
