@@ -18,7 +18,7 @@
 
 import { z } from "zod";
 import { callTypedV1 } from "./gr-typed-v1.js";
-import { WF_V1_READ_ACTIONS, validWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
+import { WF_V1_READ_ACTIONS, validWfV1Args, parseWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
@@ -108,8 +108,9 @@ export class GrRelayClient {
   // Workflow verbs get a bounded stream, longer deadline and conservative write
   // uncertainty.  No automatic retries.  Existing seven-action transport is unchanged.
   async callWorkflow(action, args) {
-    if (!validWfV1Args(action, args)) return {status:400,body:{error:"invalid_workflow_args"}};
-    const serialized = JSON.stringify(args);
+    const parsedArgs=parseWfV1Args(action,args);
+    if (parsedArgs===null) return {status:400,body:{error:"invalid_workflow_args"}};
+    const serialized = JSON.stringify(parsedArgs);
     if (new TextEncoder().encode(serialized).length > 65536) return {status:400,body:{error:"workflow_request_too_large"}};
     const write = !WF_V1_READ_ACTIONS.includes(action);
     const unavailable = () => ({status:502,body:{error:"upstream_unavailable", ...(write ? {outcome:"unknown",retryable:false} : {retryable:true})}});

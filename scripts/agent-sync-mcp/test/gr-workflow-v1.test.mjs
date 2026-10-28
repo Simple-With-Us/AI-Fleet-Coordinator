@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Args,validWfV1Response} from '../src/gr-workflow-v1.js';
+import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Args,parseWfV1Args,validWfV1Response} from '../src/gr-workflow-v1.js';
 const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',import.meta.url),'utf8');
 const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
 const onlyOf=name=>{
@@ -239,4 +239,16 @@ test('nonsecret repo variables own bearer closed inputs UNKNOWN writes',async()=
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_repo_variable_create'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({completed:true,name:'BUILD_MODE'}));});assert.ok(!(await t.call('gr_wf_repo_variable_create',a)).isError);
  const f=harness(async()=>{throw Error('lost');});assert.match((await f.call('gr_wf_repo_variable_create',a)).content[0].text,/unknown/i);
  assert.ok(!validWfV1Response('wf_repo_variable_get',{variable:{name:'BUILD_MODE',value:7,created_at:'x',updated_at:'x'}}));
+});
+
+test('variable inputs are strict Zod parsed copies with UTF8 byte refinement', async()=>{
+ const a={repo,name:'BUILD_MODE',value:'é'.repeat(4096)};
+ const parsed=parseWfV1Args('wf_repo_variable_create',a);
+ assert.deepEqual(parsed,a);assert.notEqual(parsed,a);
+ for(const action of ['wf_repo_variable_create','wf_repo_variable_update']) {
+  assert.equal(parseWfV1Args(action,{...a,value:'é'.repeat(4097)}),null);
+  assert.equal(parseWfV1Args(action,{...a,extra:true}),null);
+  let calls=0;const h=harness(async()=>{calls++;throw Error('not reached');});
+  assert.ok((await h.call('gr_'+action,{...a,value:'é'.repeat(4097)})).isError);assert.equal(calls,0);
+ }
 });

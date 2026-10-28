@@ -110,9 +110,27 @@ export function boundedWorkflowInput(args) {
 // mirror that here so bad input fails before network instead of as a relay 400.
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
-export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
-  (!action.startsWith('wf_repo_variable') || !('value' in args) || Buffer.byteLength(args.value,'utf8')<=8192) &&
-  (action !== 'wf_review_submit' && action !== 'wf_review_inline' || reviewBodyOk(args));
+function inputSchema(schema) {
+ if(schema.type==='object')return z.object(Object.fromEntries(Object.entries(schema.properties).map(([k,v])=>[k,schema.required.includes(k)?inputSchema(v):inputSchema(v).optional()]))).strict();
+ if(schema.type==='array')return z.array(inputSchema(schema.items)).min(schema.minItems).max(schema.maxItems);
+ if(schema.type==='integer')return z.number().int().min(schema.minimum).max(schema.maximum);
+ if(schema.type==='boolean')return z.boolean();
+ let out=z.string();if(schema.minLength)out=out.min(schema.minLength);if(schema.maxLength)out=out.max(schema.maxLength);if(schema.pattern)out=out.regex(new RegExp(schema.pattern));if(schema.enum)out=out.refine(v=>schema.enum.includes(v));return out;
+}
+const INPUT_SCHEMAS=Object.fromEntries(Object.entries(SPECS).map(([action,[,schema]])=>{
+ let parsed=inputSchema(schema);
+ if(['wf_repo_variable_create','wf_repo_variable_update'].includes(action)) parsed=parsed.extend({value:z.string().refine(v=>new TextEncoder().encode(v).length<=8192)});
+ return [action,parsed];
+}));
+export function parseWfV1Args(action,args){
+ if(!boundedWorkflowInput(args)||!WF_V1_ACTIONS.includes(action))return null;
+ const parsed=INPUT_SCHEMAS[action].safeParse(args);if(!parsed.success)return null;
+ const value=parsed.data;
+ if(!validWfV1Args2(SPECS[action][1],value))return null;
+ if(['wf_review_submit','wf_review_inline'].includes(action)&&!reviewBodyOk(value))return null;
+ return value;
+}
+export const validWfV1Args=(action,args)=>parseWfV1Args(action,args)!==null;
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {

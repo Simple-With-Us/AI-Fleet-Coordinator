@@ -113,3 +113,20 @@ class Variables(unittest.TestCase):
             WorkflowVerbs._variable_receipt(
                 {"name": "MODE", "value": "ghp_" + "x" * 36, "created_at": "x", "updated_at": "x"}
             )
+
+    def test_delete_absent_is_completed_other_errors_preserved(self):
+        from git_relay.github_client import RelayGitHubError
+
+        class ErrorClient(Client):
+            def _call(self, *args, **kwargs):
+                raise RelayGitHubError(self.status, "synthetic")
+
+        action = "wf_repo_variable_delete"
+        c = ErrorClient()
+        c.status = 404
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
+        self.assertEqual(h.run(action, {"repo": REPO, "name": "MODE"}), {"completed": True, "name": "MODE"})
+        for status in (403, 429, 502):
+            c.status = status
+            with self.assertRaises(RelayGitHubError):
+                h.run(action, {"repo": REPO, "name": "MODE"})

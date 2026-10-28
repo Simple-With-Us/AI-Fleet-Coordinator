@@ -377,13 +377,19 @@ class WorkflowVerbs:
     def wf_repo_variable_delete(self, repo, args):
         _only(args, ("repo", "name"))
         name = self._variable_name(args)
-        self.client._call(
-            "DELETE",
-            f"/repos/{repo}/actions/variables/{name}",
-            None,
-            bearer=self.bearer,
-            expected_status=204,
-        )
+        try:
+            self.client._call(
+                "DELETE",
+                f"/repos/{repo}/actions/variables/{name}",
+                None,
+                bearer=self.bearer,
+                expected_status=204,
+            )
+        except RelayGitHubError as exc:
+            # The desired absent state is already satisfied. Keep delete as a
+            # re-applicable setter so a later recreation can be deleted again.
+            if exc.status != 404:
+                raise
         return {"completed": True, "name": name}
 
     def _asset_summary(self, data):

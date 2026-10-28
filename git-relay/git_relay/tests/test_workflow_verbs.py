@@ -419,7 +419,7 @@ class Tests(unittest.TestCase):
                     if method == m and path.endswith(suffix):
                         c.calls.append((method, path, payload, bearer))
                         return reply
-                return base(method, path, payload, bearer)
+                return base(method, path, payload, bearer, expected_status=expected_status)
 
             c._call = call
             return c
