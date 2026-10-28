@@ -98,6 +98,59 @@ def main():
 '''
 
 
+class _FailingHandle:
+    """A temporary file whose write fails after it has written part of the text."""
+
+    def __init__(self, handle) -> None:
+        self._handle = handle
+
+    @property
+    def name(self) -> str:
+        return self._handle.name
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._handle.__exit__(*exc_info)
+
+    def write(self, text: str) -> int:
+        self._handle.write(text[: len(text) // 2])
+        self._handle.flush()
+        raise OSError(28, "No space left on device")
+
+    def flush(self) -> None:
+        self._handle.flush()
+
+    def fileno(self) -> int:
+        return self._handle.fileno()
+
+
+# The real factory, taken before any test replaces it.
+NAMED_TEMPORARY_FILE = tempfile.NamedTemporaryFile
+
+
+def failing_tempfile(*args, **kwargs):
+    """A stand-in for tempfile.NamedTemporaryFile whose write always fails."""
+    return _FailingHandle(NAMED_TEMPORARY_FILE(*args, **kwargs))
+
+
+class _OSProxy:
+    """The os module with one call replaced, so only this module sees it."""
+
+    def __init__(self, real, name: str, error: OSError) -> None:
+        self._real = real
+        self._name = name
+        self._error = error
+
+    def __getattr__(self, attribute):
+        if attribute == self._name:
+            def refuse(*args, **kwargs):
+                raise self._error
+            return refuse
+        return getattr(self._real, attribute)
+
+
 class ServerWorkingDirsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
@@ -691,6 +744,153 @@ class ServerWorkingDirsTest(unittest.TestCase):
         self.settings.unlink()
         self.assertEqual(self.apply(), 0)
         self.assertFalse(self.settings.exists())
+
+    # -- a knob the account cannot write is skipped, not fatal (Oct 28) ---- #
+    #
+    # Found live on the Hetzner host (Oct 28, 2026):  the apply died with a
+    # PermissionError while backing up a systemd unit, so the knobs after it and
+    # the final verify never ran.
+
+    def apply_output(self) -> tuple[int, str]:
+        """Run the apply and return its exit code and everything it printed."""
+        import io
+        from contextlib import redirect_stdout
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = self.apply()
+        return code, buffer.getvalue()
+
+    def stale_opencode_unit(self) -> Path:
+        """A unit that exists and is off, so the apply wants to rewrite it."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            "WorkingDirectory=/srv/old-volume/lanes\n"
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service\n"
+        )
+        return unit
+
+    def test_an_unwritable_knob_is_skipped_and_the_apply_continues(self) -> None:
+        """A knob the account cannot write must not abort the whole apply."""
+        unit = self.stale_opencode_unit()
+        original = unit.read_text()
+        real_write = swd.write
+
+        def refuse(path, text):
+            if path == unit:
+                raise PermissionError(13, "Permission denied")
+            real_write(path, text)
+
+        with mock.patch.object(swd, "write", refuse):
+            code, printed = self.apply_output()
+
+        self.assertIn("skipped  opencode-server.service", printed)
+        self.assertIn("not writable by this account", printed)
+        # The knob after the skipped one is still applied.
+        claude = self.systemd / "claude-remote-control.service"
+        self.assertTrue(claude.exists(), "the knob after the skipped one was not applied")
+        self.assertIn(f"WorkingDirectory={self.lanes}", claude.read_text())
+        # The unit that could not be written is untouched.
+        self.assertEqual(unit.read_text(), original)
+        self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
+
+    def test_the_final_verify_still_runs_after_a_skipped_knob(self) -> None:
+        """The apply still ends with the verify, so it reports the real state."""
+        unit = self.stale_opencode_unit()
+        real_write = swd.write
+
+        def refuse(path, text):
+            if path == unit:
+                raise PermissionError(13, "Permission denied")
+            real_write(path, text)
+
+        with mock.patch.object(swd, "write", refuse):
+            code, printed = self.apply_output()
+
+        self.assertIn("FAIL  opencode-server.service", printed)
+        self.assertIn("PASS  claude-remote-control.service", printed)
+        # The exit code is the verify's, not a guess.
+        self.assertEqual(code, self.verify())
+
+    def test_a_knob_that_cannot_be_written_is_reported_off_by_the_verify(self) -> None:
+        """A knob that could not be applied is off, and the verify says so."""
+        unit = self.stale_opencode_unit()
+        real_write = swd.write
+
+        def refuse(path, text):
+            if path == unit:
+                raise PermissionError(13, "Permission denied")
+            real_write(path, text)
+
+        with mock.patch.object(swd, "write", refuse):
+            code, _ = self.apply_output()
+
+        self.assertEqual(code, 1)
+        verdicts = {label: ok for label, ok, _ in swd.check(self.lanes)}
+        self.assertFalse(verdicts["opencode-server.service"])
+        self.assertTrue(verdicts["claude-remote-control.service"])
+
+    def test_an_unwritable_knob_of_any_kind_is_skipped_and_the_apply_continues(self) -> None:
+        """Every knob kind gets the same treatment, not only the systemd units."""
+        original = self.settings.read_text()
+        real_backup = swd.backup
+
+        def refuse(path):
+            if path == self.settings:
+                raise PermissionError(13, "Permission denied")
+            real_backup(path)
+
+        with mock.patch.object(swd, "backup", refuse):
+            code, printed = self.apply_output()
+
+        self.assertIn("skipped  claude desktop worktrees", printed)
+        self.assertIn("not writable by this account", printed)
+        # The knob after it is still applied, and the one before it too.
+        self.assertIn("changed  opencode-server.service", printed)
+        self.assertIn(str(self.lanes), self.read("apps/muse-acp-runtime/minimax-shellular-acp.py"))
+        # The file that could not be written is untouched.
+        self.assertEqual(self.settings.read_text(), original)
+        self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
+
+    def test_a_write_that_fails_leaves_the_file_it_had_intact(self) -> None:
+        """A write that fails at the last step leaves the old file whole."""
+        staged = self.tmp / "staged"
+        staged.mkdir()
+        path = staged / "unit.service"
+        path.write_text("original\n")
+        proxy = _OSProxy(os, "replace", OSError(28, "No space left on device"))
+        with mock.patch.object(swd, "os", proxy):
+            with self.assertRaises(OSError):
+                swd.write(path, "replacement\n")
+        self.assertEqual(path.read_text(), "original\n")
+        self.assertEqual([p.name for p in staged.iterdir()], ["unit.service"])
+
+    def test_a_write_that_fails_partway_leaves_no_half_written_file(self) -> None:
+        """A write that fails while staging never touches the file it had."""
+        staged = self.tmp / "staged"
+        staged.mkdir()
+        path = staged / "unit.service"
+        path.write_text("original\n")
+        with mock.patch.object(swd.tempfile, "NamedTemporaryFile", failing_tempfile):
+            with self.assertRaises(OSError):
+                swd.write(path, "replacement\n")
+        self.assertEqual(path.read_text(), "original\n")
+        self.assertEqual([p.name for p in staged.iterdir()], ["unit.service"])
+
+    def test_a_unit_that_cannot_be_written_is_never_left_half_written(self) -> None:
+        """A unit whose write fails partway keeps the content it had."""
+        unit = self.stale_opencode_unit()
+        original = unit.read_text()
+        with mock.patch.object(swd.tempfile, "NamedTemporaryFile", failing_tempfile):
+            code, printed = self.apply_output()
+        self.assertEqual(unit.read_text(), original)
+        self.assertIn("skipped  opencode-server.service", printed)
+        self.assertEqual(code, 1)
+        # No staged file is left beside the unit:  a staged write is named with a
+        # leading dot, and the unit that failed keeps the content it had.
+        staged = [p.name for p in self.systemd.iterdir() if p.name.startswith(".")]
+        self.assertEqual(staged, [])
 
 
 if __name__ == "__main__":
