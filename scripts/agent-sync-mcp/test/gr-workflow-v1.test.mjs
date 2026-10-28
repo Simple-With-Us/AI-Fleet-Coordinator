@@ -446,3 +446,7 @@ test('PR file pages are strict metadata only and correlate expected head',async(
  assert.equal(validWfV1Response('wf_pr_files_page',receipt,args),true);assert.equal(validWfV1Response('wf_pr_files_page',{...receipt,history_complete:true},args),false);assert.equal(validWfV1Response('wf_pr_files_page',{...receipt,files:[{...file,patch:'private'}]},args),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_pr_files_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_pr_files_page',args)).isError);
 });
+test('PR file cached receipt refuses oversized escaped page without truncation',()=>{
+ const args={repo,number:2,expected_head_sha:'a'.repeat(40)},row={sha:'b'.repeat(40),filename:''.repeat(1000),previous_filename:''.repeat(1000),status:'renamed',additions:1,deletions:1,changes:2};
+ assert.equal(validWfV1Response('wf_pr_files_page',{files:Array(30).fill(row),number:2,head_sha:args.expected_head_sha,page:1,has_more:true,history_complete:false},args),false);
+});

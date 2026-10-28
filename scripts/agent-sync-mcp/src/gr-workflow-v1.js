@@ -294,7 +294,7 @@ const prFileItem=z.object({sha:shaValue,filename:prFilePath,previous_filename:pr
 const prFilePage=z.object({files:z.array(prFileItem).max(50),number:z.number().int().positive(),head_sha:shaValue,page:z.number().int().min(1).max(100),has_more:z.boolean(),history_complete:z.literal(false)}).strict();
 export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
- if(action==='wf_pr_files_page')return prFilePage.safeParse(body).success && (!args || body.number===args.number && body.head_sha===args.expected_head_sha && body.page===(args.page??1) && body.files.length<=(args.per_page??30) && body.has_more===(body.files.length===(args.per_page??30)));
+ if(action==='wf_pr_files_page')return prFilePage.safeParse(body).success && new TextEncoder().encode(JSON.stringify(body)).length<=262144 && (!args || body.number===args.number && body.head_sha===args.expected_head_sha && body.page===(args.page??1) && body.files.length<=(args.per_page??30) && body.has_more===(body.files.length===(args.per_page??30)));
  if(threadStateResponses[action])return threadStateResponses[action].safeParse(body).success;
  if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;

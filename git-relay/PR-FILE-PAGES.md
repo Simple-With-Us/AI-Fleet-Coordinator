@@ -19,3 +19,7 @@ live PR-file read, new permission grant, deployment or review trigger.
 
 Official PR-file endpoint and3,000file limit verified:
 https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
+
+Serialized relay JSON additionally capped256KiB including escaping/metadata.
+Oversized pages refused as a whole, not clipped. Per-file bounds alone are not an
+aggregate transport-size guarantee.

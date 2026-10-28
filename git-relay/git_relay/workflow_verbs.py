@@ -25,6 +25,7 @@ import binascii
 import bz2
 import gzip
 import io
+import json
 import lzma
 import re
 import zipfile
@@ -2800,7 +2801,7 @@ class WorkflowVerbs:
                 }
             )
         verify_head()
-        return {
+        receipt = {
             "files": files,
             "number": number,
             "head_sha": head,
@@ -3005,6 +3006,9 @@ class WorkflowVerbs:
 
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
+        if len(json.dumps(receipt).encode("utf-8")) > 262144:
+            raise Refused("PR file serialized page exceeds supported size")
+        return receipt
 
     def wf_file_delete(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "prior_sha"))

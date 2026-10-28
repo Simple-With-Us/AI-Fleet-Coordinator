@@ -72,3 +72,12 @@ class Files(unittest.TestCase):
         out = self.handle(Client(self.pr(), [], self.pr())).run("wf_pr_files_page", self.args())
         self.assertFalse(out["has_more"])
         self.assertFalse(out["history_complete"])
+
+    def test_escaped_file_path_page_bound_refuses_whole_page(self):
+        rows = [
+            self.row(filename="\x01" * 1000, previous_filename="\x02" * 1000) for _ in range(30)
+        ]
+        c = Client(self.pr(), rows, self.pr())
+        with self.assertRaises(Refused):
+            self.handle(c).run("wf_pr_files_page", self.args())
+        self.assertEqual(len(c.calls), 3)
