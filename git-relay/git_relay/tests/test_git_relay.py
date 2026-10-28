@@ -556,6 +556,8 @@ class TestMcpWriteUncertainty(unittest.TestCase):
             (409, {"outcome": "pending"}, "outcome_unknown"),
             (503, {}, "outcome_unknown"),
             (503, {"retryable": True}, "unavailable"),
+            (429, {"retryable": True, "retry_after_seconds": 30}, "unavailable"),
+            (409, {"outcome": "unknown", "retryable": True}, "outcome_unknown"),
             (403, {}, "relay_refused"),
         ]
         for status, payload, expected in cases:
@@ -573,6 +575,8 @@ class TestMcpWriteUncertainty(unittest.TestCase):
                 self.assertEqual(error["code"], expected)
                 self.assertNotIn("private-seat-token", json.dumps(result))
                 self.assertEqual(error["retryable"], expected == "unavailable")
+                if status == 429:
+                    self.assertEqual(error["retry_after_seconds"], 30)
 
     def test_transport_loss_is_not_a_definite_refusal(self):
         def opener(_req, timeout):
@@ -588,6 +592,29 @@ class TestMcpWriteUncertainty(unittest.TestCase):
 
         result = self.call(opener)
         self.assertEqual(json.loads(result["content"][0]["text"])["code"], "outcome_unknown")
+
+    def test_unreadable_and_nonobject_4xx_stay_unknown(self):
+        from git_relay.mcp_server import MAX_LINE
+
+        for body in (b"not-json", b"[]", b"null", b"x" * (MAX_LINE + 1)):
+
+            def opener(_req, timeout):
+                raise urllib.error.HTTPError("u", 409, "error", {}, io.BytesIO(body))
+
+            error = json.loads(self.call(opener)["content"][0]["text"])
+            self.assertEqual(error["code"], "outcome_unknown")
+
+    def test_retry_hint_is_bounded_numeric_and_never_provider_prose(self):
+        for hint in ("private-seat-token", True, -1, float("inf"), float("nan"), 86401):
+
+            def opener(_req, timeout):
+                payload = {"retryable": True, "retry_after_seconds": hint}
+                raise urllib.error.HTTPError(
+                    "u", 429, "error", {}, io.BytesIO(json.dumps(payload).encode())
+                )
+
+            error = json.loads(self.call(opener)["content"][0]["text"])
+            self.assertNotIn("retry_after_seconds", error)
 
     def test_success_status_does_not_override_unknown_outcome(self):
         result = self.call(FakeOpener({"outcome": "unknown"}))

@@ -241,9 +241,15 @@ class RelayMcp:
                 error = None
             if isinstance(error, dict) and error.get("outcome") in ("unknown", "pending"):
                 return _tool_failure(message, "outcome_unknown", exc.code)
-            if exc.code >= 500:
-                if isinstance(error, dict) and error.get("retryable") is True:
-                    return _tool_failure(message, "unavailable", exc.code, retryable=True)
+            if isinstance(error, dict) and error.get("retryable") is True:
+                return _tool_failure(
+                    message,
+                    "unavailable",
+                    exc.code,
+                    retryable=True,
+                    retry_after=error.get("retry_after_seconds"),
+                )
+            if not isinstance(error, dict) or exc.code >= 500:
                 return _tool_failure(message, "outcome_unknown", exc.code)
             return _tool_failure(message, "relay_refused", exc.code)
         except (OSError, ValueError):
@@ -251,18 +257,25 @@ class RelayMcp:
         return _result(message, {"content": [{"type": "text", "text": json.dumps(payload)}]})
 
 
-def _tool_failure(message, code, status=None, retryable=False):
+def _tool_failure(message, code, status=None, retryable=False, retry_after=None):
     # Provider prose can contain private details.  Return only stable local
     # guidance and the HTTP status, never the response body or credentials.
     if code == "outcome_unknown":
         detail = (
-            "The write outcome is unknown.  Do not retry blindly; check the target state first."
+            "The write outcome is unknown.  Do not retry blindly; check the target state first."
         )
     elif code == "unavailable":
-        detail = "Relay reports a retryable pre-write failure.  Nothing was written."
+        detail = "Relay reports a retryable pre-write failure.  Nothing was written."
     else:
         detail = "Relay refused the request."
     error = {"code": code, "message": detail, "retryable": retryable}
+    if (
+        retryable
+        and isinstance(retry_after, (int, float))
+        and not isinstance(retry_after, bool)
+        and 0 <= retry_after <= 86400
+    ):
+        error["retry_after_seconds"] = retry_after
     if status is not None:
         error["http_status"] = status
     return _result(
