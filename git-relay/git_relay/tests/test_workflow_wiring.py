@@ -129,7 +129,11 @@ class WorkflowWiringTests(unittest.TestCase):
             }
             r.client._call = lambda m, p, payload=None, bearer=None: (
                 r.client.calls.append((m, p, payload, bearer))
-                or ({"default_branch": "main"} if m == "GET" else {"commit": {"sha": "a" * 40}, "content": {"path": "docs/a.md"}})
+                or (
+                    {"default_branch": "main"}
+                    if m == "GET"
+                    else {"commit": {"sha": "a" * 40}, "content": {"path": "docs/a.md"}}
+                )
             )
             first = r.handle(TOKEN, "wf_file_put", args)
             second = r.handle(TOKEN, "wf_file_put", args)
@@ -182,7 +186,9 @@ class WorkflowWiringTests(unittest.TestCase):
             exc.retry_after = 17
             r = relay(tmp, client=Client(fail=exc))
             status, body = r.handle(TOKEN, "wf_runs", {"repo": "example/x"})
-            self.assertEqual((status, body["retry_after_seconds"], body["retryable"]), (429, 17, True))
+            self.assertEqual(
+                (status, body["retry_after_seconds"], body["retryable"]), (429, 17, True)
+            )
 
     def test_malformed_prior_sha_is_refused_before_any_upstream_call(self):
         with tempfile.TemporaryDirectory() as tmp:

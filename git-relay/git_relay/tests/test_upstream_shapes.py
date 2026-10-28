@@ -3,9 +3,9 @@ import unittest
 try:
     from .test_workflow_verbs import REPO, SHA, Client, Policy
 except ImportError:
-    from test_workflow_verbs import REPO, SHA, Client, Policy
+    from test_workflow_verbs import REPO, Client, Policy
 from git_relay.github_client import RelayGitHubError
-from git_relay.workflow_verbs import WorkflowVerbs, _obj, _sub, _arr, _dicts
+from git_relay.workflow_verbs import WorkflowVerbs, _arr, _dicts, _obj, _sub
 
 
 class Shapes(unittest.TestCase):
