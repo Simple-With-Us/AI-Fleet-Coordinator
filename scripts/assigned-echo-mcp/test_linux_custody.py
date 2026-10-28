@@ -188,9 +188,11 @@ class CustodyTests(unittest.TestCase):
                 [(tag, perm if tag == 4 else perm_, ident) for tag, perm_, ident in good],
                 [(tag, perm if tag == 32 else perm_, ident) for tag, perm_, ident in good],
             ]:
-                with mock.patch.object(mod.os, "getxattr", return_value=encode(bad)):
-                    with self.assertRaises(ValueError):
-                        mod.check_service_acl(5, 64531, directory)
+                with (
+                    mock.patch.object(mod.os, "getxattr", return_value=encode(bad)),
+                    self.assertRaises(ValueError),
+                ):
+                    mod.check_service_acl(5, 64531, directory)
 
     def test_no_root_or_seat_flags_are_refused_without_effect(self):
         with (
