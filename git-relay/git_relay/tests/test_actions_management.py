@@ -32,8 +32,9 @@ class ActionsManagement(unittest.TestCase):
 
 class ActionsHTTPReceipt(unittest.TestCase):
     def test_only_empty_204_completes(self):
-        from git_relay.github_client import GitHubClient, RelayGitHubError
         import io
+
+        from git_relay.github_client import GitHubClient, RelayGitHubError
 
         class Response(io.BytesIO):
             def __init__(self, status, body):
