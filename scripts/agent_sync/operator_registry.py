@@ -28,7 +28,7 @@ import sqlite3
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from . import session_ids as SI
@@ -403,6 +403,14 @@ class SessionRegistry:
                         "outcome": "seat_mismatch",
                     }
                 outcome = "resumed_closed" if row["closed_at"] else "resumed"
+                if not row["closed_at"]:
+                    # The session is alive, so it was seen:  the sweep that ends a stale
+                    # letter's use reads this column, and a session that is being resumed
+                    # is by definition not stale.
+                    self._conn.execute(
+                        "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
+                        (now, record_id),
+                    )
                 self._insert_event(
                     conn,
                     record_id,
@@ -504,8 +512,14 @@ class SessionRegistry:
         at: str | None = None,
         actor: str = "registry",
         source: str = "registry",
+        reason: str = "",
     ) -> bool:
-        """Set closed_at once and retire the live alias.  Closing twice changes nothing."""
+        """Set closed_at once and retire the live alias.  Closing twice changes nothing.
+
+        The reason says why the letter's use ended ("stale", "replaced"), and it goes
+        into the event the close writes, so the letter's history says more than a
+        timestamp.
+        """
         with self._write_txn() as conn:
             now = at or _utcnow()
             row = self._get(record_id)
@@ -521,7 +535,9 @@ class SessionRegistry:
                 " WHERE record_id = ? AND retired_at IS NULL",
                 (now, record_id),
             )
-            self._insert_event(conn, record_id, letter, "close", actor, "closed", source, "", now)
+            self._insert_event(
+                conn, record_id, letter, "close", actor, "closed", source, reason, now
+            )
             self._enqueue_session_upsert(conn, record_id, now)
             return True
 
@@ -624,6 +640,247 @@ def register_session(
         registry.close_db()
     out["title_display"] = display_title(str(out.get("label") or ""), title)
     return out
+
+
+def update_session(
+    db_path: str,
+    *,
+    platform: str,
+    native_session_id: str,
+    title: str | None = None,
+    project: str | None = None,
+    thread_link: str | None = None,
+    apple_note_link: str | None = None,
+    wake_capability: str | None = None,
+) -> dict[str, Any]:
+    """Update the mutable fields of one registered session, found by its session id.
+
+    The session id is the identity here:  the same id always finds the same row, so
+    running this again with the same values changes nothing and reports "unchanged".
+    It never mints a letter — only the Operator issues one, and this cannot.
+
+    The title is the field that moves in practice:  a thread is named once the first
+    message lands, and the registry has to carry the name the thread actually carries,
+    not the placeholder it was registered under.
+
+    A session id that is not registered raises ValueError:  a caller that wants a
+    letter must register first, and a miss here is not a reason to invent a row.
+    """
+    native = SI.check(native_session_id, "the native session id")
+    namespace = normalize_platform(platform)
+    fields = {
+        "title": title,
+        "project": project,
+        "thread_link": thread_link,
+        "apple_note_link": apple_note_link,
+        "wake_capability": wake_capability,
+    }
+    wanted = {k: v for k, v in fields.items() if v is not None}
+    if not wanted:
+        raise ValueError("nothing to update: name at least one field")
+    bad = [k for k in wanted if k not in MUTABLE_ATTRS]
+    if bad:
+        raise ValueError(f"not mutable: {', '.join(bad)}")
+    registry = SessionRegistry(db_path)
+    try:
+        rows = registry._conn.execute(
+            "SELECT * FROM sessions WHERE platform = ? AND native_session_id = ?"
+            " ORDER BY registered_at DESC",
+            (namespace, native),
+        ).fetchall()
+        if not rows:
+            raise ValueError(
+                f"session {native} is not registered on {namespace}; register it first"
+            )
+        row = rows[0]
+        record_id = row["record_id"]
+        letter, generation = registry._active_alias(registry._conn, record_id)
+        changed = {k: v for k, v in wanted.items() if (row[k] or "") != v}
+        if changed:
+            registry.update_attrs(record_id, **changed)
+            registry.record_event(
+                record_id,
+                "update",
+                "registry",
+                "updated",
+                "registry",
+                ", ".join(sorted(changed)),
+            )
+            outcome = "updated"
+        else:
+            outcome = "unchanged"
+        current = registry._get(record_id)
+    finally:
+        registry.close_db()
+    out = {
+        "record_id": record_id,
+        "label": letter,
+        "generation": generation,
+        "title": current["title"],
+        "outcome": outcome,
+        "changed": sorted(changed),
+    }
+    out["title_display"] = display_title(letter, str(current["title"] or ""))
+    return out
+
+
+# ---- the letter's life:  it ends, and the history says when ------------------------
+
+
+def _parse_instant(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def close_session(
+    db_path: str,
+    *,
+    platform: str,
+    native_session_id: str,
+    reason: str = "",
+    actor: str = "registry",
+    source: str = "registry",
+) -> dict[str, Any]:
+    """End one session's letter:  close the row, retire the alias, keep the history.
+
+    The letter's row stays in alias_assignments with its retired_at, so the platform
+    keeps the history of every letter it has issued and the window each one was used
+    in.  The reason ("stale", "replaced") goes into the close event.
+    """
+    native = SI.check(native_session_id, "the native session id")
+    namespace = normalize_platform(platform)
+    registry = SessionRegistry(db_path)
+    try:
+        row = registry._conn.execute(
+            "SELECT * FROM sessions WHERE platform = ? AND native_session_id = ?"
+            " ORDER BY registered_at DESC LIMIT 1",
+            (namespace, native),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"session {native} is not registered on {namespace}")
+        record_id = row["record_id"]
+        letter, generation = registry._active_alias(registry._conn, record_id)
+        closed = registry.close(record_id, actor=actor, source=source, reason=reason)
+        current = registry._get(record_id)
+    finally:
+        registry.close_db()
+    return {
+        "record_id": record_id,
+        "label": letter,
+        "generation": generation,
+        "closed": bool(closed),
+        "outcome": "closed" if closed else "already_closed",
+        "reason": reason,
+        "closed_at": current["closed_at"],
+    }
+
+
+def sweep_stale(
+    db_path: str,
+    *,
+    platform: str,
+    seat: str,
+    stale_after_minutes: int = 120,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """End the letters of sessions that are stale AND have been replaced.
+
+    A letter is the seat's handle for replies, so it may only end when the session
+    behind it can no longer answer.  Two things have to be true:  the session has not
+    been seen for the stale window, and another session for the same seat has taken
+    over since.  A stale session nobody replaced keeps its letter, because a reply to
+    it is still this seat's business.
+
+    The letters themselves stay in alias_assignments with their start and end times,
+    so the history of the platform is complete after a sweep.
+    """
+    namespace = normalize_platform(platform)
+    moment = now or datetime.now(UTC)
+    cutoff = moment - timedelta(minutes=max(1, int(stale_after_minutes)))
+    registry = SessionRegistry(db_path)
+    ended: list[dict[str, Any]] = []
+    try:
+        rows = registry._conn.execute(
+            "SELECT * FROM sessions WHERE platform = ? AND seat = ? AND closed_at IS NULL"
+            " ORDER BY registered_at ASC",
+            (namespace, seat),
+        ).fetchall()
+        seen = [(r, _parse_instant(r["last_seen_at"])) for r in rows]
+        for row, last_seen in seen:
+            if last_seen is None or last_seen >= cutoff:
+                continue  # alive, or never seen:  not stale
+            replaced = any(
+                other is not row
+                and (other_seen is None or other_seen > last_seen)
+                and (parsed_registered is None or parsed_registered > last_seen)
+                for other, other_seen in seen
+                for parsed_registered in [_parse_instant(other["registered_at"])]
+            )
+            if not replaced:
+                continue
+            letter, generation = registry._active_alias(registry._conn, row["record_id"])
+            registry.close(
+                row["record_id"],
+                actor="registry",
+                source="stale_sweep",
+                reason="stale and replaced by a newer session",
+            )
+            ended.append(
+                {
+                    "record_id": row["record_id"],
+                    "label": letter,
+                    "generation": generation,
+                    "native_session_id": row["native_session_id"],
+                    "title": row["title"],
+                    "last_seen_at": row["last_seen_at"],
+                    "reason": "stale and replaced by a newer session",
+                }
+            )
+    finally:
+        registry.close_db()
+    return ended
+
+
+def letter_history(db_path: str, platform: str, limit: int = 50) -> list[dict[str, Any]]:
+    """Every letter the platform has issued, with the window it was used in.
+
+    A live letter has no end time;  a retired one carries the moment its use ended
+    and why, so "MM B" can be read as a window rather than only as a handle.
+    """
+    namespace = normalize_platform(platform)
+    if not os.path.isfile(str(db_path)):
+        raise RegistryUnavailable("the registry %s is not there" % db_path)
+    registry = SessionRegistry(str(db_path), read_only=True)
+    try:
+        rows = registry._conn.execute(
+            "SELECT a.letter AS letter, a.generation AS generation, a.record_id AS record_id,"
+            " a.assigned_at AS assigned_at, a.retired_at AS retired_at,"
+            " s.native_session_id AS native_session_id, s.seat AS seat, s.title AS title,"
+            " s.state AS state, s.verified_host AS verified_host, s.closed_at AS closed_at"
+            " FROM alias_assignments a JOIN sessions s ON s.record_id = a.record_id"
+            " WHERE a.platform = ? ORDER BY a.assigned_at DESC LIMIT ?",
+            (namespace, max(1, int(limit))),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            event = registry._conn.execute(
+                "SELECT recorded_at, details FROM events WHERE session_record_id = ?"
+                " AND event = 'close' ORDER BY recorded_at DESC LIMIT 1",
+                (row["record_id"],),
+            ).fetchone()
+            item = dict(row)
+            item["end_reason"] = (event["details"] if event else "") or ""
+            item["ended_at"] = (event["recorded_at"] if event else None) or row["retired_at"]
+            item["title_display"] = display_title(row["letter"], str(row["title"] or ""))
+            item["live"] = row["retired_at"] is None
+            out.append(item)
+        return out
+    finally:
+        registry.close_db()
 
 
 # ---- the other direction: a letter names a session (AFC-412) ------------------------
@@ -1125,6 +1382,38 @@ def main(argv: list[str] | None = None) -> int:
     rs.add_argument(
         "--generation", type=int, default=None, help="the generation of a recycled letter"
     )
+    u = sub.add_parser(
+        "update",
+        help="update the mutable fields of one registered session, found by its session id",
+    )
+    u.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    u.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    u.add_argument("--session-id", required=True, help="the native session id")
+    u.add_argument("--title", default=None)
+    u.add_argument("--project", default=None)
+    u.add_argument("--thread-link", default=None)
+    u.add_argument("--apple-note-link", default=None)
+    u.add_argument("--wake-capability", default=None)
+    c = sub.add_parser(
+        "close", help="end one session's letter and keep its history"
+    )
+    c.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    c.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    c.add_argument("--session-id", required=True, help="the native session id")
+    c.add_argument("--reason", default="", help="why the letter's use ended")
+    c.add_argument("--actor", default="registry")
+    c.add_argument("--source", default="registry")
+    w = sub.add_parser(
+        "sweep", help="end the letters of sessions that are stale and have been replaced"
+    )
+    w.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    w.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    w.add_argument("--seat", required=True)
+    w.add_argument("--stale-after-minutes", type=int, default=120)
+    h = sub.add_parser("history", help="every letter the platform has issued, with its window")
+    h.add_argument("--db", default="", help="the registry file (default: the shared path)")
+    h.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
+    h.add_argument("--limit", type=int, default=50)
     args = parser.parse_args(argv)
     if args.command == "pending-outbox":
         print(json.dumps(pending_outbox(args.db, args.limit)))
@@ -1163,6 +1452,55 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"error": str(exc)}))
             return 2
         print(json.dumps(out))
+        return 0
+    if args.command == "update":
+        try:
+            out = update_session(
+                args.db or _default_db(),
+                platform=args.platform,
+                native_session_id=args.session_id,
+                title=args.title,
+                project=args.project,
+                thread_link=args.thread_link,
+                apple_note_link=args.apple_note_link,
+                wake_capability=args.wake_capability,
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(out))
+        return 0
+    if args.command == "close":
+        try:
+            out = close_session(
+                args.db or _default_db(),
+                platform=args.platform,
+                native_session_id=args.session_id,
+                reason=args.reason,
+                actor=args.actor,
+                source=args.source,
+            )
+        except ValueError as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(out))
+        return 0
+    if args.command == "sweep":
+        ended = sweep_stale(
+            args.db or _default_db(),
+            platform=args.platform,
+            seat=args.seat,
+            stale_after_minutes=args.stale_after_minutes,
+        )
+        print(json.dumps({"ended": ended, "count": len(ended)}))
+        return 0
+    if args.command == "history":
+        try:
+            rows = letter_history(args.db or _default_db(), args.platform, args.limit)
+        except (ValueError, RegistryUnavailable) as exc:
+            print(json.dumps({"error": str(exc)}))
+            return 2
+        print(json.dumps(rows))
         return 0
     print(json.dumps({"marked": mark_exported(args.db, args.outbox_ids)}))
     return 0
