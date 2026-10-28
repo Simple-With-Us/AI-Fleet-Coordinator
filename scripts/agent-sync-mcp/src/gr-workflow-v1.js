@@ -156,6 +156,7 @@ export function validWfV1Response(action, body) {
     const suffix = {wf_run_rerun:'rerun-failed-jobs',wf_run_cancel:'cancel',wf_run_approve:'approve'};
     return body.requested === suffix[action] && Number.isInteger(body.run_id);
   }
+  if (action === 'wf_file_put' && (typeof body.path !== 'string' || body.path.length === 0)) return false;
   if (action !== 'wf_commit_get' && 'commit' in body && !/^[0-9a-f]{40}$/.test(body.commit)) return false;
   return true;
 }
