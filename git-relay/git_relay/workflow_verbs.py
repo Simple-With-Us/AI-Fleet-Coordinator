@@ -631,6 +631,7 @@ class WorkflowVerbs:
         path = "/repos/" + repo + "/labels/" + quote(name, safe="")
         data = self.client._call("DELETE", path, None, bearer=self.bearer)
         return {"completed": True}
+
     def wf_workflow_enable(self, repo, args):
         _only(args, ("repo", "workflow_id"))
         value = _int(args, "workflow_id")
