@@ -56,3 +56,14 @@ class EnvironmentReads(unittest.TestCase):
         for name in ["../x", "a//b", "/x"]:
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape("wf_environment_get", {"repo": REPO, "name": name}, REPO)
+
+    def test_exact_full_last_page_and_credential_names_fail_closed(self):
+        item = {"id": 1, "name": "staging", "created_at": "x", "updated_at": "x"}
+        a = "wf_environments"
+        args = {"repo": REPO, "page": 2, "per_page": 1}
+        for total, expected in [(2, False), (3, True)]:
+            c = Client({"total_count": total, "environments": [item]})
+            result = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(a, args)
+            self.assertEqual(result["has_more"], expected)
+        with self.assertRaises(Refused):
+            WorkflowVerbs._environment_summary({**item, "name": "ghp_" + "x" * 36})

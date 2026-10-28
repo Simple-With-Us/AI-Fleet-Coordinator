@@ -349,7 +349,7 @@ class WorkflowVerbs:
             "environments": [self._environment_summary(x) for x in data["environments"][:limit]],
             "total_count": data["total_count"],
             "page": page,
-            "has_more": len(data["environments"]) >= limit,
+            "has_more": page * limit < data["total_count"],
         }
 
     def wf_environment_get(self, repo, args):
