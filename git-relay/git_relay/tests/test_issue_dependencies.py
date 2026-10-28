@@ -19,9 +19,7 @@ def item(n):
 
 class Dependencies(unittest.TestCase):
     def runverb(self, c, a, args):
-        return WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
-            a, args
-        )
+        return WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(a, args)
 
     def test_fixed_routes_prereads_and_receipts(self):
         for a in ("wf_issue_dependency_add", "wf_issue_dependency_remove"):
@@ -36,8 +34,7 @@ class Dependencies(unittest.TestCase):
                 c.calls[-1],
                 (
                     "DELETE" if remove else "POST",
-                    f"/repos/{REPO}/issues/1/dependencies/blocked_by"
-                    + ("/102" if remove else ""),
+                    f"/repos/{REPO}/issues/1/dependencies/blocked_by" + ("/102" if remove else ""),
                     None if remove else {"issue_id": 102},
                     "own",
                 ),
@@ -46,9 +43,7 @@ class Dependencies(unittest.TestCase):
             self.assertIn(a, _REAPPLY_STATE_ACTIONS)
             self.assertEqual(SPECS[a], ({"issues": "write"}, True))
             self.assertIsNone(
-                WorkflowVerbs.check_shape(
-                    a, {"repo": REPO, "number": 1, "blocker_number": 2}, REPO
-                )
+                WorkflowVerbs.check_shape(a, {"repo": REPO, "number": 1, "blocker_number": 2}, REPO)
             )
 
     def test_bad_receipts_and_identity_are_not_success(self):
@@ -121,6 +116,7 @@ class Dependencies(unittest.TestCase):
         import json
         import tempfile
         from pathlib import Path
+
         from git_relay.audit import AuditLog
         from git_relay.policy import SeatPolicy
         from git_relay.server import Relay
@@ -170,7 +166,5 @@ class Dependencies(unittest.TestCase):
             self.assertFalse(body["retryable"])
             self.assertNotIn("synthetic-own", json.dumps(body))
             self.assertNotIn("untrusted", json.dumps(body))
-            self.assertEqual(
-                r.handle(seat_token, "wf_issue_dependency_add", args)[0], 409
-            )
+            self.assertEqual(r.handle(seat_token, "wf_issue_dependency_add", args)[0], 409)
             self.assertEqual(len([x for x in client.calls if x[0] == "POST"]), 1)

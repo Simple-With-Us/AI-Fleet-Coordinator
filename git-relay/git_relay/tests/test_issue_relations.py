@@ -21,9 +21,9 @@ class Relations(unittest.TestCase):
             ("wf_issue_blocking", "dependencies/blocking"),
         ]:
             c = Client([issue])
-            out = WorkflowVerbs(
-                c, Policy(), "swu-wise", "own", "swu-wise", action, REPO
-            ).run(action, {"repo": REPO, "number": 1, "per_page": 1, "page": 2})
+            out = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO).run(
+                action, {"repo": REPO, "number": 1, "per_page": 1, "page": 2}
+            )
             self.assertEqual(
                 c.calls,
                 [
@@ -47,9 +47,9 @@ class Relations(unittest.TestCase):
             {"id": 1, "number": 8, "state": "open", "title": "x", "pull_request": {}},
         ]:
             with self.assertRaises(RelayGitHubError):
-                WorkflowVerbs(
-                    Client(body), Policy(), "swu-wise", "own", "swu-wise", a, REPO
-                ).run(a, {"repo": REPO, "number": 1})
+                WorkflowVerbs(Client(body), Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
+                    a, {"repo": REPO, "number": 1}
+                )
 
     def test_closed_page_bounds(self):
         for extra in [
@@ -78,9 +78,7 @@ class Relations(unittest.TestCase):
             )["repo"]
         )
         a = "wf_issue_subissues"
-        c = Client(
-            [{**value, "repository_url": "https://api.github.com/repos/" + REPO}] * 2
-        )
+        c = Client([{**value, "repository_url": "https://api.github.com/repos/" + REPO}] * 2)
         out = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
             a, {"repo": REPO, "number": 1, "per_page": 1}
         )
