@@ -16,7 +16,13 @@ class PrControls(unittest.TestCase):
             ("wf_automerge_disable", "disablePullRequestAutoMerge"),
             ("wf_automerge_enable", "enablePullRequestAutoMerge"),
         ]:
-            pull = {"id": "PR_abc", "autoMergeRequest": {"enabledAt": "now"}}
+            pull = {
+                "id": "PR_abc",
+                "isDraft": action == "wf_pr_draft",
+                "autoMergeRequest": {"enabledAt": "now"}
+                if action == "wf_automerge_enable"
+                else None,
+            }
             c = Client({"node_id": "PR_abc"}, {"data": {field: {"pullRequest": pull}}})
             h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
             args = {
@@ -51,9 +57,36 @@ class PrControls(unittest.TestCase):
                 }
             }
         )
-        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_review_threads", REPO)
-        self.assertIn("threads", h.run("wf_review_threads", {"repo": REPO, "number": 1}))
+        h = WorkflowVerbs(
+            c, Policy(), "swu-wise", "private", "swu-wise", "wf_review_threads", "Example/demo"
+        )
+        self.assertIn("threads", h.run("wf_review_threads", {"repo": "Example/demo", "number": 1}))
         self.assertEqual(
             c.calls[0][2]["variables"],
-            {"owner": "Simple-With-Us", "name": "AI-Fleet-Coordinator", "number": 1},
+            {"owner": "Example", "name": "demo", "number": 1},
         )
+
+    def test_invalid_method_refused_before_preread(self):
+        c = Client()
+        h = WorkflowVerbs(
+            c, Policy(), "swu-wise", "private", "swu-wise", "wf_automerge_enable", REPO
+        )
+        with self.assertRaises(Refused):
+            h.run("wf_automerge_enable", {"repo": REPO, "number": 1, "method": "INVALID"})
+        self.assertEqual(c.calls, [])
+
+    def test_base64_node_slash_and_wrong_draft_receipt(self):
+        c = Client(
+            {"node_id": "PR/abc="},
+            {
+                "data": {
+                    "markPullRequestReadyForReview": {
+                        "pullRequest": {"id": "PR/abc=", "isDraft": True}
+                    }
+                }
+            },
+        )
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_pr_ready", REPO)
+        with self.assertRaises(RelayGitHubError):
+            h.run("wf_pr_ready", {"repo": REPO, "number": 1})
+        self.assertEqual(len(c.calls), 2)

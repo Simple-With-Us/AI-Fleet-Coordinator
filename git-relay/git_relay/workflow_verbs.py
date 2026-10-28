@@ -458,7 +458,7 @@ class WorkflowVerbs:
                 raise PreReadUnavailable("PR pre-read unavailable; no write attempted") from None
             raise
         node = data.get("node_id")
-        if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_=+-]{1,200}", node):
+        if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", node):
             raise Refused("PR node unavailable")
         return node
 
@@ -484,7 +484,7 @@ class WorkflowVerbs:
         query = "mutation($id: ID!) { convertPullRequestToDraft(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
         result = self._fixed_graph(query, {"id": node}, "convertPullRequestToDraft")
         pull = _sub(result, "pullRequest")
-        if pull.get("id") != node:
+        if pull.get("id") != node or pull.get("isDraft") is not True:
             raise RelayGitHubError(502, "PR mutation outcome unverifiable")
         return {"pull": pull}
 
@@ -494,24 +494,28 @@ class WorkflowVerbs:
         query = "mutation($id: ID!) { markPullRequestReadyForReview(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
         result = self._fixed_graph(query, {"id": node}, "markPullRequestReadyForReview")
         pull = _sub(result, "pullRequest")
-        if pull.get("id") != node:
+        if pull.get("id") != node or pull.get("isDraft") is not False:
             raise RelayGitHubError(502, "PR mutation outcome unverifiable")
         return {"pull": pull}
 
     def wf_automerge_disable(self, repo, args):
         _only(args, ("repo", "number"))
         node = self._pr_node(repo, _int(args, "number"))
-        query = "mutation($id: ID!) { disablePullRequestAutoMerge(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
+        query = "mutation($id: ID!) { disablePullRequestAutoMerge(input:{pullRequestId:$id}) { pullRequest { id autoMergeRequest { enabledAt } } } }"
         result = self._fixed_graph(query, {"id": node}, "disablePullRequestAutoMerge")
         pull = _sub(result, "pullRequest")
-        if pull.get("id") != node:
+        if (
+            pull.get("id") != node
+            or "autoMergeRequest" not in pull
+            or pull["autoMergeRequest"] is not None
+        ):
             raise RelayGitHubError(502, "PR mutation outcome unverifiable")
         return {"pull": pull}
 
     def wf_automerge_enable(self, repo, args):
         _only(args, ("repo", "number", "method"))
-        node = self._pr_node(repo, _int(args, "number"))
         method = _enum(args, "method", ("SQUASH", "MERGE", "REBASE"))
+        node = self._pr_node(repo, _int(args, "number"))
         query = "mutation($id: ID!, $method: PullRequestMergeMethod!) { enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method}) { pullRequest { id autoMergeRequest { enabledAt } } } }"
         result = self._fixed_graph(
             query, {"id": node, "method": method}, "enablePullRequestAutoMerge"
