@@ -40,7 +40,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# AGENT-SYNC.md is excluded because it is a Fleet-OPS mirror:  it is generated from
+# FLEET-PROTOCOL.md is excluded because it is a Fleet-OPS mirror:  it is generated from
 # the Fleet-OPS handbook, which carries the same fix, so this repo does not edit it.
 # FLEET-UI-COPY.md is excluded because it is owned by open PR #904, which carries the
 # same fix there; editing it here would collide with that pull request.

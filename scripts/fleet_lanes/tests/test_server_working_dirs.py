@@ -322,7 +322,7 @@ class ServerWorkingDirsTest(unittest.TestCase):
         unit.write_text(
             "[Unit]\nDescription=mine\n\n[Service]\n"
             "EnvironmentFile=/etc/opencode/secrets.env\nEnvironment=EXTRA=1\n"
-            "ExecStart=/root/.opencode/bin/opencode serve --service --hostname keepme --port 62306\n"
+            "ExecStart=/root/.opencode/bin/opencode serve --service --hostname example.test --port 62306\n"
         )
         self.apply()
         text = unit.read_text()
@@ -342,7 +342,7 @@ class ServerWorkingDirsTest(unittest.TestCase):
         unit.write_text(
             "[Unit]\nDescription=mine\n\n[Service]\n"
             'Environment="FLEET_CODE_ROOT=/srv/old-volume/Code"\n'
-            "ExecStart=/root/.opencode/bin/opencode serve --service --hostname keepme --port 62306\n"
+            "ExecStart=/root/.opencode/bin/opencode serve --service --hostname example.test --port 62306\n"
         )
         self.apply()
         text = unit.read_text()
@@ -357,7 +357,7 @@ class ServerWorkingDirsTest(unittest.TestCase):
         unit.write_text(
             "[Unit]\nDescription=mine\n\n[Service]\n"
             'Environment="FLEET_CODE_ROOT=/srv/old-volume/Code" EXTRA=1\n'
-            "ExecStart=/root/.opencode/bin/opencode serve --service --hostname keepme --port 62306\n"
+            "ExecStart=/root/.opencode/bin/opencode serve --service --hostname example.test --port 62306\n"
         )
         self.apply()
         text = unit.read_text()
@@ -375,6 +375,168 @@ class ServerWorkingDirsTest(unittest.TestCase):
             assignments,
             [("FLEET_CODE_ROOT", '"FLEET_CODE_ROOT=/mnt/a volume/Code"'), ("EXTRA", "EXTRA=1")],
         )
+
+    # -- the operator's own identity survives the rewrite (AFC-541) -------- #
+
+    OPERATOR_UNIT = (
+        "[Unit]\nDescription=mine\n\n[Service]\n"
+        "User=jay\nGroup=jay\nEnvironment=HOME=/srv/example/home\n"
+        "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service"
+        " --hostname example.test --port 62306\n"
+    )
+
+    def test_the_operator_s_identity_survives_the_apply(self) -> None:
+        """A unit the operator set up keeps the account, the group and the command.
+
+        The template carries a default for each of them and the default used to win,
+        so the apply rewrote the unit as a root-owned one that ran another binary and
+        the host had to be repaired by hand.
+        """
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(self.OPERATOR_UNIT)
+        self.apply()
+        text = unit.read_text()
+        self.assertIn("User=jay", text)
+        self.assertIn("Group=jay", text)
+        self.assertIn("Environment=HOME=/srv/example/home", text)
+        self.assertIn(
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service"
+            " --hostname example.test --port 62306",
+            text,
+        )
+        self.assertNotIn("User=root", text)
+        self.assertEqual(text.count("ExecStart="), 1)
+        self.assertEqual(self.verify(), 0)
+
+    def test_two_execstart_lines_stay_two(self) -> None:
+        """systemd runs every ExecStart line, so the operator's replace the template's."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service"
+            " --hostname example.test --port 62306\n"
+            "ExecStart=/srv/example/home/.opencode/bin/opencode worker"
+            " --hostname example.test --port 62306\n"
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertEqual(text.count("ExecStart="), 2)
+        self.assertNotIn(str(self.home / ".local" / "bin" / "opencode"), text)
+        self.assertEqual(self.verify(), 0)
+
+    def test_a_continued_execstart_stays_a_whole_command(self) -> None:
+        """systemd continues a line that ends with a backslash, so the command is one line.
+
+        A directive that keeps its backslash would read the line after it as part of
+        the command, and the apply would write a unit that runs the wrong thing.
+        """
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve \\\n"
+            "    --service --hostname example.test --port 62306\n"
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertNotIn("\\\n", text)
+        self.assertIn("--service --hostname example.test --port 62306", text)
+        self.assertEqual(
+            swd.unit_execstart_flags(text), " --hostname example.test --port 62306"
+        )
+        self.assertEqual(self.verify(), 0)
+
+    def test_a_continued_environment_line_survives_the_merge(self) -> None:
+        """An Environment= the unit continues is one value, and it is carried once."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            'Environment="EXTRA=one \\\n'
+            'two"\n'
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertEqual(text.count("EXTRA=one"), 1)
+        self.assertNotIn("\\\n", text)
+        self.assertIn("EXTRA=one two", text)
+
+    def test_a_stale_pair_in_the_operator_s_command_becomes_the_configured_one(self) -> None:
+        """The host and the port are the knob's policy, so the command carries the configured pair."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service"
+            " --hostname old.example --port 1234\n"
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertIn("--hostname example.test --port 62306", text)
+        self.assertNotIn("old.example", text)
+        self.assertEqual(self.verify(), 0)
+
+    def test_a_command_with_no_pair_gains_the_configured_one(self) -> None:
+        """A command that names no host and no port gains the configured pair."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service\n"
+        )
+        self.apply()
+        text = unit.read_text()
+        self.assertIn("--hostname example.test --port 62306", text)
+        self.assertEqual(self.verify(), 0)
+
+    def test_a_config_that_names_no_server_block_leaves_the_command_alone(self) -> None:
+        """No configured pair means no pair is invented and none is removed."""
+        self.write_config("{}\n")
+        command = (
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service"
+            " --hostname keep.example --port 1234\n"
+        )
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text("[Unit]\nDescription=mine\n\n[Service]\n" + command)
+        self.apply()
+        text = unit.read_text()
+        self.assertIn(command, text)
+        self.assertEqual(text.count("ExecStart="), 1)
+
+    def test_a_unit_that_sets_no_identity_gets_the_template_values(self) -> None:
+        """A directive the operator did not set keeps the template's value."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text("[Unit]\nDescription=mine\n\n[Service]\nType=simple\n")
+        self.apply()
+        text = unit.read_text()
+        self.assertIn("User=root", text)
+        self.assertIn(
+            f"ExecStart={self.home}/.local/bin/opencode serve --service"
+            " --hostname example.test --port 62306",
+            text,
+        )
+        self.assertEqual(self.verify(), 0)
+
+    def test_a_unit_that_keeps_its_own_execstart_needs_no_template_binary(self) -> None:
+        """The template's binary is resolved only when the template's own line survives."""
+        (self.home / ".local" / "bin" / "opencode").unlink()
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(self.OPERATOR_UNIT)
+        self.apply()
+        self.assertIn("ExecStart=/srv/example/home/.opencode/bin/opencode", unit.read_text())
+        self.assertEqual(self.verify(), 0)
+
+    def test_the_knob_passes_for_a_unit_with_the_operator_s_own_identity(self) -> None:
+        """The knob reads the working directory and the roots, never the identity."""
+        unit = self.systemd / "opencode-server.service"
+        unit.write_text(
+            "[Unit]\nDescription=mine\n\n[Service]\n"
+            "User=jay\nGroup=jay\n"
+            f"WorkingDirectory={self.lanes}\n"
+            f'Environment="FLEET_CODE_ROOT={self.home / "Code"}"\n'
+            f'Environment="FLEET_APPS_ROOT={self.apps}"\n'
+            f'Environment="FLEET_LANES_ROOT={self.lanes}"\n'
+            "ExecStart=/srv/example/home/.opencode/bin/opencode serve --service"
+            " --hostname example.test --port 62306\n"
+        )
+        ok, note = swd.knob_unit(unit, self.lanes, swd.opencode_server_flags())
+        self.assertTrue(ok, note)
 
     # -- the bashrc knob follows the resolved root (kody: medium) ---------- #
 

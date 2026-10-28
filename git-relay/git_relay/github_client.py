@@ -185,11 +185,17 @@ class GitHubClient:
         req = urllib.request.Request(
             url,
             method=method,
-            data=None if payload is None else json.dumps(payload).encode(),
+            data=None
+            if payload is None
+            else payload
+            if isinstance(payload, bytes)
+            else json.dumps(payload).encode(),
             headers={
                 "Accept": "application/vnd.github+json",
                 "Authorization": f"Bearer {bearer or self._token}",
-                "Content-Type": "application/json",
+                "Content-Type": "application/octet-stream"
+                if isinstance(payload, bytes)
+                else "application/json",
                 "User-Agent": "swu-git-relay",
             },
         )
@@ -237,6 +243,31 @@ class GitHubClient:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
             raise RelayGitHubError(0, "github response was not valid JSON") from exc
+
+    def upload_release_asset(self, repo, release_id, name, content, bearer):
+        """Fixed GitHub upload host, own bearer, no redirects or arbitrary URL."""
+        from urllib.parse import quote
+
+        self._check_repo(repo)
+        if (
+            not bearer
+            or isinstance(release_id, bool)
+            or not isinstance(release_id, int)
+            or release_id < 1
+            or not isinstance(name, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", name)
+            or name.endswith(".")
+            or not isinstance(content, bytes)
+            or not 1 <= len(content) <= 32768
+        ):
+            raise ValueError("bounded own-App asset upload required")
+        client = GitHubClient(bearer, "https://uploads.github.com", opener=self._opener)
+        return client._call(
+            "POST",
+            f"/repos/{repo}/releases/{release_id}/assets?name={quote(name, safe='')}",
+            content,
+            bearer=bearer,
+        )
 
     @staticmethod
     def _check_repo(repo: str) -> None:
@@ -339,8 +370,25 @@ class GitHubClient:
             first = errors[0] if isinstance(errors, list) and errors else {}
             kind = first.get("type") if isinstance(first, dict) else None
             detail = f" ({kind})" if isinstance(kind, str) and kind else ""
+            # Only a structured authorization denial at this sole mutation,
+            # with no mutation result, proves that no write took place.  Partial
+            # results, mixed errors and unscoped errors remain unknown.
+            payload = data.get("data")
+            no_result = payload is None or (
+                isinstance(payload, dict) and payload.get("resolveReviewThread") is None
+            )
+            definite_refusal = (
+                isinstance(errors, list)
+                and no_result
+                and all(
+                    isinstance(error, dict)
+                    and error.get("type") == "FORBIDDEN"
+                    and error.get("path") == ["resolveReviewThread"]
+                    for error in errors
+                )
+            )
             raise RelayGitHubError(
-                0,
+                403 if definite_refusal else 0,
                 f"graphql resolveReviewThread failed{detail}",
                 code=kind if isinstance(kind, str) and kind else None,
                 credential_preview=mask_credential(bearer),

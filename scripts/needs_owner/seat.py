@@ -3,7 +3,7 @@
 The seat is proven by `simple-board`, never by this process's environment:  the board CLI verifies the
 admin-minted bearer at the launcher-bound SIMPLE_BOARD_BEARER_LOCATOR against ST-MCP and reports the
 verified seat on its `whoami` seat line.  `--by` is only a check that the caller means the same seat
-(AGENT-SYNC Identity Rules).  `AGENT_SEAT` and `AGENT_LAUNCH_SEAT` are not consulted and are removed from
+(FLEET-PROTOCOL Identity Rules).  `AGENT_SEAT` and `AGENT_LAUNCH_SEAT` are not consulted and are removed from
 every child's environment, so no variable can pick an identity.  No locator, or any verification failure,
 refuses (fail closed).
 """

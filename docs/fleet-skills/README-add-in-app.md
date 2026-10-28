@@ -21,7 +21,7 @@ Updated **2026-10-08**: the installer **specializes identity per seat** (Zulip b
 
 These skills govern fleet operations across all apps (Socratic.Trade, Congress.Trade, Usage-Monitor, congress-trading-shared, DealDex, Personal-Site, Autorotate, ContactLogo, and AI-Fleet-Coordinator).
 
-Having explicit fleet skills installed significantly improves agent compliance with procedures across all chats and tools, reinforcing the protocols defined in `AGENT-SYNC.md` and `AGENTS.md`.
+Having explicit fleet skills installed significantly improves agent compliance with procedures across all chats and tools, reinforcing the protocols defined in `FLEET-PROTOCOL.md` and `AGENTS.md`.
 
 ---
 

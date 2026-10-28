@@ -64,7 +64,7 @@ The `app` tag + fingerprint component are required: fleet-infra is shared
 across repos, and this repo shares workflow names ("CI", "Security",
 "Effort Issues Sync") with Socratic.Trade / Congress.Trade, so without `app`
 a "CI" failure here would dedup into the same Sentry issue as one there.
-Per AGENT-SYNC.md "Observability", every event is tagged with `app:<repo>`.
+Per FLEET-PROTOCOL.md "Observability", every event is tagged with `app:<repo>`.
 
 Secrets: SENTRY_FLEET_DSN is read only from the environment (set by the
 workflow from the repo secret) and is NEVER printed or logged in any form,
@@ -80,7 +80,7 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # This repo's identity in the shared fleet-infra project. Tags every event and
@@ -112,7 +112,9 @@ DEFAULT_CHECKIN_MARGIN = 15
 CHECKIN_MARGIN_OVERRIDES = {
     "Backup fleet GitHub repositories": 600,
 }
-_CHECKIN_MARGINS_FOLDED = {name.casefold(): margin for name, margin in CHECKIN_MARGIN_OVERRIDES.items()}
+_CHECKIN_MARGINS_FOLDED = {
+    name.casefold(): margin for name, margin in CHECKIN_MARGIN_OVERRIDES.items()
+}
 
 DEFAULT_MAX_RUNTIME = 60
 MAX_RUNTIME_OVERRIDES = {}
@@ -190,7 +192,9 @@ def checkin_id_for_run(run_id: str, run_attempt: str) -> str:
     id, so its terminal check-in stands alone instead of trying to close
     attempt 1's check-in, which Sentry already closed.
     """
-    return uuid.uuid5(uuid.NAMESPACE_URL, f"sentry-ci-report/{APP_IDENTITY}/run/{run_id}/attempt/{run_attempt}").hex
+    return uuid.uuid5(
+        uuid.NAMESPACE_URL, f"sentry-ci-report/{APP_IDENTITY}/run/{run_id}/attempt/{run_attempt}"
+    ).hex
 
 
 def build_monitor_config(workflow_name: str, cron_expr: str) -> dict:
@@ -298,7 +302,10 @@ def fetch_observed_run_status(run_id: str) -> str | None:
     """
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
-    api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com").strip() or "https://api.github.com"
+    api_url = (
+        os.environ.get("GITHUB_API_URL", "https://api.github.com").strip()
+        or "https://api.github.com"
+    )
     run_id = (run_id or "").strip()
     if not token or not repo or not run_id:
         return None
@@ -329,13 +336,17 @@ def parse_dsn(dsn: str) -> tuple[str, str, str]:
     without ever including the raw DSN in the message."""
     m = re.match(r"^https://([^@]+)@([^/]+)/(.+)$", dsn.strip())
     if not m:
-        raise ValueError("SENTRY_FLEET_DSN is not in the expected https://<key>@<host>/<project> shape")
+        raise ValueError(
+            "SENTRY_FLEET_DSN is not in the expected https://<key>@<host>/<project> shape"
+        )
     return m.group(1), m.group(2), m.group(3)
 
 
 def send_envelope(envelope_url: str, auth_header: str, item_type: str, item_payload: dict) -> None:
     item_body = json.dumps(item_payload).encode("utf-8")
-    envelope_header = json.dumps({"sent_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}).encode("utf-8")
+    envelope_header = json.dumps(
+        {"sent_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    ).encode("utf-8")
     item_header = json.dumps({"type": item_type, "length": len(item_body)}).encode("utf-8")
     body = envelope_header + b"\n" + item_header + b"\n" + item_body + b"\n"
 
@@ -382,7 +393,7 @@ def send_config_drift_event(
     """
     payload = {
         "event_id": uuid.uuid4().hex,
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "platform": "other",
         "level": "warning",
         "environment": "fleet-ci",
@@ -518,7 +529,7 @@ def main() -> int:
     if conclusion in ALERT_CONCLUSIONS:
         event_payload = {
             "event_id": uuid.uuid4().hex,
-            "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "platform": "other",
             "level": "error",
             "environment": "fleet-ci",
@@ -530,9 +541,13 @@ def main() -> int:
             "fingerprint": ["ci-failure", APP_IDENTITY, workflow_name],
         }
         send_envelope(envelope_url, auth_header, "event", event_payload)
-        print(f"Sent Sentry {conclusion} event for workflow '{workflow_name}' on branch '{branch}'.")
+        print(
+            f"Sent Sentry {conclusion} event for workflow '{workflow_name}' on branch '{branch}'."
+        )
     else:
-        print(f"Workflow '{workflow_name}' concluded '{conclusion}' (no alert); no error event sent.")
+        print(
+            f"Workflow '{workflow_name}' concluded '{conclusion}' (no alert); no error event sent."
+        )
 
     # ── 3. Terminal cron check-in (only for schedule-triggered runs) ────────
     if event == "schedule":
@@ -583,7 +598,9 @@ def main() -> int:
                 f"(workflow '{workflow_name}', check_in_id {check_in_id})."
             )
     else:
-        print(f"Workflow '{workflow_name}' was triggered by '{event}' (not schedule); no cron check-in sent.")
+        print(
+            f"Workflow '{workflow_name}' was triggered by '{event}' (not schedule); no cron check-in sent."
+        )
 
     return 0
 
