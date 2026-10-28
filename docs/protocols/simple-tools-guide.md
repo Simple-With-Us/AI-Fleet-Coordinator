@@ -152,7 +152,7 @@ Search before re-deriving a lesson.  Hits are fenced between `BEGIN_UNTRUSTED_RE
 
 ### linear
 
-The identity's own Linear app, never the owner's account.  Output is fenced between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR`.  Stdio runs `board` as the identity (`AGENT_SEAT`), so board's per-seat app, viewer check and label protection apply;  hosted calls Linear from the Worker, and its writes need the server's `LINEAR_TOOLS_WRITES` switch.  Writes take an idempotency key where the tool lists one:  a retry with the same key returns the first result.
+The identity's own Linear app, never the owner's account.  Output is fenced between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR`.  Stdio runs `simple-board` as the identity its bearer proves (`SIMPLE_BOARD_BEARER_LOCATOR`), so board's per-seat app, viewer check and label protection apply;  hosted calls Linear from the Worker, and its writes need the server's `LINEAR_TOOLS_WRITES` switch.  Writes take an idempotency key where the tool lists one:  a retry with the same key returns the first result.
 
 The ten core tools:
 
