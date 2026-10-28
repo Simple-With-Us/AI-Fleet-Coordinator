@@ -127,8 +127,11 @@ class OutcomeStore:
         """
         with self._lock:
             existing = self._rows.get(key)
-            if existing and (existing["state"] in ("unknown", "pending") or
-                             existing["state"] == "ok" and not reapply_ok):
+            if existing and (
+                existing["state"] in ("unknown", "pending")
+                or existing["state"] == "ok"
+                and not reapply_ok
+            ):
                 return existing
             if existing and existing["state"] == "ok" and reapply_ok:
                 # Only a verified success is replaceable. Pending/unknown never re-arm.
