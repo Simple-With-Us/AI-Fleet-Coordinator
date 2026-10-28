@@ -132,7 +132,9 @@ def main() -> int:
     # An ABSENT cron map still falls back to this repository's own literal.
     with _env({"SENTRY_CRON_SCHEDULES": None, "SENTRY_OBSERVED_WORKFLOWS": None}):
         absent_cron = _load_module({})
-        assert absent_cron.EFFECTIVE_CRON_SCHEDULES == schedules, absent_cron.EFFECTIVE_CRON_SCHEDULES
+        assert absent_cron.EFFECTIVE_CRON_SCHEDULES == schedules, (
+            absent_cron.EFFECTIVE_CRON_SCHEDULES
+        )
         assert absent_cron.EFFECTIVE_CRON_SCHEDULES != {}, absent_cron.EFFECTIVE_CRON_SCHEDULES
     print("CRON_ABSENT_FALLBACK_OK", sorted(absent_cron.EFFECTIVE_CRON_SCHEDULES))
 
@@ -152,8 +154,12 @@ def main() -> int:
     # An ABSENT observed-workflow list is an empty list.
     with _env({"SENTRY_OBSERVED_WORKFLOWS": None, "SENTRY_CRON_SCHEDULES": None}):
         absent_observed = _load_module({})
-        assert absent_observed.EFFECTIVE_OBSERVED_WORKFLOWS == [], absent_observed.EFFECTIVE_OBSERVED_WORKFLOWS
-        assert absent_observed.observed_workflows_from_env() == [], absent_observed.EFFECTIVE_OBSERVED_WORKFLOWS
+        assert absent_observed.EFFECTIVE_OBSERVED_WORKFLOWS == [], (
+            absent_observed.EFFECTIVE_OBSERVED_WORKFLOWS
+        )
+        assert absent_observed.observed_workflows_from_env() == [], (
+            absent_observed.EFFECTIVE_OBSERVED_WORKFLOWS
+        )
     print("OBSERVED_ABSENT_EMPTY_OK", absent_observed.EFFECTIVE_OBSERVED_WORKFLOWS)
 
     # A SUPPLIED but unusable observed-workflow list RAISES:  it must not read
