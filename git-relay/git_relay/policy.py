@@ -80,7 +80,6 @@ class SeatPolicy:
         "wf_merge_queue_entry",
         "wf_merge_queue_enqueue",
         "wf_merge_queue_dequeue",
-
         "wf_pr_draft",
         "wf_pr_ready",
         "wf_automerge_enable",
