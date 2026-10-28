@@ -94,17 +94,20 @@ jobs:
     # The `uses:` ref and the `reusable_ref` input MUST be the same SHA:  the
     # shared workflow checks its own script out of this repository at
     # `reusable_ref` and refuses to run when the checked-out commit differs.
+    # The reusable additionally pins the reporter script by BLOB SHA,  and that
+    # blob survives a squash,  a rebase and a merge,  so re-pinning the commit
+    # below to the merge SHA does not invalidate it.
     #
-    # TODO(OWNER):  this pins the commit that introduced the reusable,  so the
-    # workflow loads and runs as soon as the branch is pushed.  Re-pin both
+    # TODO(OWNER):  this pins the branch commit that carries the reusable,  so
+    # the workflow loads and runs as soon as the branch is pushed.  Re-pin both
     # values to the merge SHA of .github/workflows/sentry-ci-report-reusable.yml
     # once that merge exists,  so the reporter runs the merged copy rather
     # than this branch's copy.
-    uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/sentry-ci-report-reusable.yml@c751ac219c1a26aab31f7a14dfb40b469af8f58d
+    uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/sentry-ci-report-reusable.yml@b59d85c173ae8a52acf0cab93643ca6d35d84c3e
     with:
       observed_workflows: '["Agent Activity Calendar (manual only)", "Backup fleet GitHub repositories", "Fleet daily digest + calendars"]'
       cron_schedules: '{"Backup fleet GitHub repositories": "0 7 * * *", "Fleet daily digest + calendars": "25 1,7,13,19 * * *"}'
-      reusable_ref: c751ac219c1a26aab31f7a14dfb40b469af8f58d
+      reusable_ref: b59d85c173ae8a52acf0cab93643ca6d35d84c3e
       app: AI-Fleet-Coordinator
     secrets:
       SENTRY_FLEET_DSN: ${{ secrets.SENTRY_FLEET_DSN }}
