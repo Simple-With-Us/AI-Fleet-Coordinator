@@ -48,6 +48,12 @@ targets:
     #
     # The `Model/` sources are the app's own logic, and they carry no SwiftUI:  the grid,
     # the store, the surface reader and the contract all compile in a plain test bundle.
+    #
+    # The `FleetServices/` sources are the ported BotFleet Control core:  the fleet
+    # services, the server control API, the process monitor and the remote VM providers.
+    # They carry no SwiftUI either and import only Foundation, so they compile in a plain
+    # test bundle as well.  Their tests live in `MusterTests/FleetServices/`, which the
+    # `MusterTests` directory below already picks up.
     sources:
       - path: MusterTests
       - path: Muster/FleetConfigCLI.swift
@@ -86,6 +92,20 @@ targets:
       - path: Muster/Model/WakeSettingsReader.swift
       - path: Muster/Model/WakeSettingsStore.swift
       - path: Muster/Model/WakeSettingsWriter.swift
+      - path: Muster/FleetServices/ControlAPI.swift
+      - path: Muster/FleetServices/FleetServiceControl.swift
+      - path: Muster/FleetServices/FleetServices.swift
+      - path: Muster/FleetServices/FleetSnapshotSequencer.swift
+      - path: Muster/FleetServices/ManagedServices.swift
+      - path: Muster/FleetServices/McpServerControl.swift
+      - path: Muster/FleetServices/OfflineDockerVM.swift
+      - path: Muster/FleetServices/OfflineVMHelper.swift
+      - path: Muster/FleetServices/PersistencePolicy.swift
+      - path: Muster/FleetServices/ProcessMonitor.swift
+      - path: Muster/FleetServices/ServerHost.swift
+      - path: Muster/FleetServices/ServerPresence.swift
+      - path: Muster/FleetServices/StartupPolicy.swift
+      - path: Muster/FleetServices/VMProvider.swift
     settings:
       base:
         PRODUCT_NAME: MusterTests
