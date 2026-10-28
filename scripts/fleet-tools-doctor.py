@@ -1358,18 +1358,20 @@ def infisical_names(
     return names
 
 
-def seat_has_fleetlink_token(seat: str, env: dict[str, str]) -> bool:
+def seat_has_fleetlink_token(seat: str, env: dict[str, str]) -> bool | None:
     """Whether this seat holds a FleetLink token, from the environment or from Infisical.
 
     A seat without one cannot run the fleetlink server, so the doctor does not ask it to
-    register one.
+    register one.  None is not the same as False:  it means the token names could not be
+    listed, and the doctor reports that as unknown rather than dropping the check.
     """
     code = seat_file(seat)
     if env.get(f"FLEETLINK_TOKEN_{code}"):
         return True
-    return f"FLEETLINK_TOKEN_{code}" in (
-        infisical_names("/fleetlink", env, "ai-fleet-coordinator") or frozenset()
-    )
+    names = infisical_names("/fleetlink", env, "ai-fleet-coordinator")
+    if names is None:
+        return None
+    return f"FLEETLINK_TOKEN_{code}" in names
 
 
 def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
@@ -1393,7 +1395,7 @@ def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
         for label, ok in (
             ("zulip bot", zulip),
             ("linear app", linear),
-            ("fleetlink token", fleetlink),
+            ("fleetlink token", fleetlink is True),
         )
         if not ok
     ]
@@ -1538,13 +1540,15 @@ def codex_mcp_names(text: str) -> list[str]:
         return []
 
 
-def check_mcp(report: Report, env: dict[str, str] | None = None) -> None:
+def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None] | None = None) -> None:
     """The registrations each seat holds:  the fleet's stdio server and FleetLink.
 
     A seat without a FleetLink token cannot run the fleetlink server, so it is not asked to
-    register one.
+    register one.  The token reading is passed in, so this check never lists credentials
+    itself and stays a pure function of the client files.  None means the token names could
+    not be read, and the row says so instead of passing the seat.
     """
-    env = env or {}
+    tokens = fleetlink_tokens or {}
     for seat in ("CODEX", "CLAUDE"):
         label = "mcp:" + seat.lower()
         try:
@@ -1553,21 +1557,31 @@ def check_mcp(report: Report, env: dict[str, str] | None = None) -> None:
             report.add(label, "FAIL", str(exc))
             continue
         registered = [name for name in MCP_STDIO_NAMES if name in names]
+        retired = [name for name in registered if name != MCP_CANONICAL_NAME]
         lacking = []
+        unreadable = []
         if not registered:
             lacking.append(MCP_CANONICAL_NAME)
-        if "fleetlink" not in names and seat_has_fleetlink_token(seat, env):
-            lacking.append("fleetlink")
+        if "fleetlink" not in names:
+            token = tokens.get(seat)
+            if token is True:
+                lacking.append("fleetlink")
+            elif token is None:
+                unreadable.append("fleetlink")
         status = "OK"
         detail = "registered: " + (", ".join(names) or "none")
         if lacking:
             status = "WARN"
             detail += ";  missing " + ", ".join(lacking)
-        if registered and registered != [MCP_CANONICAL_NAME]:
+        if unreadable:
+            status = "WARN"
+            detail += ";  " + ", ".join(unreadable) + " token names could not be read"
+        if retired:
             # The retired pre-rename key alone still serves the seat, but it is not the name the
             # fleet writes and the next apply retires it, so it is reported as drift.
             status = "WARN"
-            detail += ";  pre-rename name %s, canonical %s" % (registered[0], MCP_CANONICAL_NAME)
+            retired_names = ", ".join(retired)
+            detail += ";  pre-rename name %s, canonical %s" % (retired_names, MCP_CANONICAL_NAME)
         report.add(label, status, detail)
 
 
@@ -3084,10 +3098,13 @@ def run(
         check_server_tools(report, rt, checkouts, runner)
     if not args.no_registry:
         check_registry(report, host, network, runner, fetch)
+    fleetlink_tokens = {
+        seat: seat_has_fleetlink_token(seat, env) for seat in ("CODEX", "CLAUDE")
+    }
     for seat in [s.strip().upper() for s in args.seats.split(",") if s.strip()]:
         check_seat(report, seat, env)
         check_mcp_startup(report, seat)
-    check_mcp(report, env)
+    check_mcp(report, fleetlink_tokens)
     check_notes(report, host, env, runner, network=network)
     finalize_rows(report, host)
     doc = host_document(report, host, expected, network, updater)

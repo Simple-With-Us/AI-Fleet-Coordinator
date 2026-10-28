@@ -125,17 +125,18 @@ class SeatAndMcpTests(unittest.TestCase):
             doctor.check_seat(report, "GROK", {})
             self.assertEqual(report.rows[0]["status"], "WARN")
 
-    def mcp_rows(self, fleetlink_tokens=frozenset()):
-        """Run check_mcp with a fixed Infisical answer for the FleetLink token folder."""
+    def mcp_rows(self, fleetlink_tokens=frozenset(), readable=True):
+        """Run check_mcp with a fixed FleetLink token reading for the two seats.
 
-        def fake_names(folder, env, project="fleet-ops"):
-            if folder == "/fleetlink" and project == "ai-fleet-coordinator":
-                return frozenset(fleetlink_tokens)
-            return frozenset()
-
-        with mock.patch.object(doctor, "infisical_names", fake_names):
-            report = doctor.Report()
-            doctor.check_mcp(report, {})
+        The reading is passed in, the way run() does it, so the check never shells out to
+        fleet-secrets and the suite stays hermetic.
+        """
+        tokens = {
+            seat: (f"FLEETLINK_TOKEN_{seat}" in fleetlink_tokens) if readable else None
+            for seat in ("CODEX", "CLAUDE")
+        }
+        report = doctor.Report()
+        doctor.check_mcp(report, tokens)
         return {r["check"]: r for r in report.rows}
 
     def test_mcp_registrations(self):
@@ -174,6 +175,33 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertIn(
             "pre-rename name agent-sync, canonical simple-chat", rows["mcp:claude"]["detail"]
         )
+
+    def test_an_unreadable_token_listing_is_reported_as_unknown(self):
+        self.touch(".codex/config.toml", "[mcp_servers.simple-chat]\ncommand = 'x'\n")
+        self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
+        rows = self.mcp_rows(readable=False)
+        for seat in ("mcp:codex", "mcp:claude"):
+            self.assertEqual(rows[seat]["status"], "WARN")
+            self.assertIn("token names could not be read", rows[seat]["detail"])
+
+    def test_both_names_registered_name_the_retired_key_as_the_drift(self):
+        self.touch(
+            ".codex/config.toml",
+            "[mcp_servers.simple-chat]\ncommand = 'x'\n"
+            "[mcp_servers.agent-sync]\ncommand = 'y'\n"
+            "[mcp_servers.fleetlink]\nurl = 'z'\n",
+        )
+        self.touch(
+            ".claude.json",
+            json.dumps({"mcpServers": {"simple-chat": {}, "agent-sync": {}}}),
+        )
+        rows = self.mcp_rows()
+        for seat in ("mcp:codex", "mcp:claude"):
+            self.assertEqual(rows[seat]["status"], "WARN")
+            self.assertIn(
+                "pre-rename name agent-sync, canonical simple-chat", rows[seat]["detail"]
+            )
+            self.assertNotIn("pre-rename name simple-chat", rows[seat]["detail"])
 
     def test_a_seat_without_a_fleetlink_token_is_not_asked_to_register_it(self):
         self.touch(".codex/config.toml", "[mcp_servers.simple-chat]\ncommand = 'x'\n")
@@ -511,7 +539,7 @@ class RegisteredEnvTests(unittest.TestCase):
                 self.assertEqual(doctor.registered_env("CODEX", home), {})
                 report = doctor.Report()
                 with mock.patch.object(doctor, "HOME", home):
-                    doctor.check_mcp(report)
+                    doctor.check_mcp(report, {"CODEX": False, "CLAUDE": False})
         codex = [row for row in report.rows if row["check"] == "mcp:codex"]
         self.assertEqual(codex[0]["status"], "OK")
 
