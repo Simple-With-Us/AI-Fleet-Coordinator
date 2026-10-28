@@ -60,3 +60,24 @@ class Threads(unittest.TestCase):
                 "wf_review_thread_resolve", {"repo": REPO, "number": 1, "thread_id": "PRRT_fixture"}
             )
         self.assertEqual(error.exception.status, 502)
+
+    def test_required_permissions_do_not_widen_seat(self):
+        try:
+            from .test_workflow_verbs import Minter
+        except ImportError:
+            from test_workflow_verbs import Minter
+        for action in ("wf_review_thread_resolve", "wf_review_thread_unresolve"):
+            with self.assertRaises(Refused):
+                WorkflowVerbs.for_action(
+                    Client(),
+                    Policy({"pull_requests": "write", "contents": "read"}),
+                    Minter(),
+                    "swu-wise",
+                    action,
+                    REPO,
+                )
+            m = Minter()
+            WorkflowVerbs.for_action(Client(), Policy(), m, "swu-wise", action, REPO)
+            self.assertEqual(
+                m.calls[0][2], {"pull_requests": "write", "contents": "write", "metadata": "read"}
+            )

@@ -54,8 +54,8 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
-    "wf_review_thread_resolve": ({"pull_requests": "write"}, True),
-    "wf_review_thread_unresolve": ({"pull_requests": "write"}, True),
+    "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_pr_draft": ({"pull_requests": "write"}, True),
     "wf_pr_ready": ({"pull_requests": "write"}, True),
     "wf_automerge_enable": ({"pull_requests": "write"}, True),
