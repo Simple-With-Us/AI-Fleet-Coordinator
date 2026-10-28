@@ -19,7 +19,18 @@ class ActionsManagement(unittest.TestCase):
         for action, key, method, path in cases:
             c = Client({})
             h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", action, REPO)
-            self.assertEqual(h.run(action, {"repo": REPO, key: 7}), {"completed": True, key: 7})
+            self.assertEqual(
+                h.run(action, {"repo": REPO, key: 7}),
+                {
+                    "completed": True,
+                    key: 7,
+                    **(
+                        {"state": "enabled" if action == "wf_workflow_enable" else "disabled"}
+                        if action.startswith("wf_workflow_")
+                        else {}
+                    ),
+                },
+            )
             self.assertEqual(c.calls, [(method, "/repos/" + REPO + "/" + path, None, "private")])
             for value in [True, 0, -1, "7"]:
                 with self.assertRaises(Refused):

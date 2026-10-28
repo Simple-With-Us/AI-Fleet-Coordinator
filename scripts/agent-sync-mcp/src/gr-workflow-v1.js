@@ -110,8 +110,8 @@ const RESPONSE_KEYS = {
   wf_release_list:['releases', 'complete'],
   wf_release_get:['result'],
   wf_release_delete:['deleted'],
-  wf_workflow_enable:['completed','workflow_id'],
-  wf_workflow_disable:['completed','workflow_id'],
+  wf_workflow_enable:['completed','workflow_id','state'],
+  wf_workflow_disable:['completed','workflow_id','state'],
   wf_run_delete:['completed','run_id'],
   wf_artifact_delete:['completed','artifact_id'],
 
@@ -127,7 +127,7 @@ const RESPONSE_KEYS = {
   wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
   wf_merge_guarded: ['merged','sha'],
 };
-export function validWfV1Response(action, body) {
+export function validWfV1Response(action, body, args) {
   if (action === 'wf_release_list' && (!Array.isArray(body?.releases) || body.releases.length > 50 || !body.releases.every(x => x && Number.isInteger(x.id) && x.id > 0 && typeof x.draft === 'boolean' && typeof x.prerelease === 'boolean' && Object.keys(x).every(k => ['id','tag_name','name','html_url','created_at','published_at','draft','prerelease'].includes(k)) && ['tag_name','name','html_url','created_at','published_at'].every(k => x[k] === null || typeof x[k] === 'string' && new TextEncoder().encode(x[k]).length <= 2048)))) return false;
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
@@ -145,6 +145,8 @@ export function validWfV1Response(action, body) {
   if ('completed' in body && body.completed !== true) return false;
   const completedId = {wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
   if (completedId && (!Number.isInteger(body[completedId]) || body[completedId] < 1)) return false;
+  if (completedId && args && body[completedId] !== args[completedId]) return false;
+  if (action === 'wf_workflow_enable' && body.state !== 'enabled' || action === 'wf_workflow_disable' && body.state !== 'disabled') return false;
   if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
   if (action === 'wf_review_inline' && (!body.comment || !Number.isInteger(body.comment.id) || body.comment.id < 1 || !/^[0-9a-f]{40}$/.test(body.comment.commit_id))) return false;
   if (action === 'wf_branch_create' && (typeof body.ref !== 'string' || !body.ref.startsWith('refs/heads/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;

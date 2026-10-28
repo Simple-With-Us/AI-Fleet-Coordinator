@@ -606,7 +606,7 @@ class WorkflowVerbs:
         self.client._call(
             "PUT", f"/repos/{repo}/actions/workflows/{value}/enable", None, bearer=self.bearer
         )
-        return {"completed": True, "workflow_id": value}
+        return {"completed": True, "workflow_id": value, "state": "enabled"}
 
     def wf_workflow_disable(self, repo, args):
         _only(args, ("repo", "workflow_id"))
@@ -614,7 +614,7 @@ class WorkflowVerbs:
         self.client._call(
             "PUT", f"/repos/{repo}/actions/workflows/{value}/disable", None, bearer=self.bearer
         )
-        return {"completed": True, "workflow_id": value}
+        return {"completed": True, "workflow_id": value, "state": "disabled"}
 
     def wf_run_delete(self, repo, args):
         _only(args, ("repo", "run_id"))
