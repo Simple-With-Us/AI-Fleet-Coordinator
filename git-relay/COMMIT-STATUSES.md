@@ -13,3 +13,9 @@ No live status was created. Description 140 UTF-8 bytes, context 255 UTF-8 bytes
 nonblank. Status writes use the existing durable UNKNOWN/no-replay ledger. Target URLs,
 combined-status API and status history pagination beyond the bounded first page are
 not implemented here.
+
+Status-create context is fixed to the authenticated App namespace `<seat>/report`.
+It cannot write `test`, `gitleaks`, another App namespace or arbitrary gate contexts.
+This report namespace must not be configured as independent CI evidence. No source
+capability can prove the truth of a caller-supplied report; owner authorization and
+actual result evidence still apply to every execution.

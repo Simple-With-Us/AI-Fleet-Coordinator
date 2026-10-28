@@ -45,7 +45,7 @@ class Statuses(unittest.TestCase):
         row = {
             "id": 1,
             "state": "pending",
-            "context": "build",
+            "context": "swu-wise/report",
             "description": "queued",
             "private": "omit",
         }
@@ -53,7 +53,7 @@ class Statuses(unittest.TestCase):
             ("wf_commit_statuses", {}, [row]),
             (
                 "wf_commit_status_create",
-                {"state": "pending", "context": "build", "description": "queued"},
+                {"state": "pending", "context": "swu-wise/report", "description": "queued"},
                 row,
             ),
         ]:
@@ -70,7 +70,7 @@ class Statuses(unittest.TestCase):
                 )
 
     def test_malformed_receipt_is_unknown(self):
-        c = Client({"id": True, "state": "success", "context": "build"})
+        c = Client({"id": True, "state": "success", "context": "swu-wise/report"})
         h = WorkflowVerbs(
             c, Policy(), "swu-wise", "own", "swu-wise", "wf_commit_status_create", REPO
         )
@@ -81,7 +81,26 @@ class Statuses(unittest.TestCase):
                     "repo": REPO,
                     "sha": SHA,
                     "state": "success",
-                    "context": "build",
+                    "context": "swu-wise/report",
                     "description": "done",
                 },
             )
+
+    def test_cannot_impersonate_required_ci_or_other_app_context(self):
+        for context in ("test", "gitleaks", "swu-echo/report"):
+            c = Client()
+            h = WorkflowVerbs(
+                c, Policy(), "swu-wise", "own", "swu-wise", "wf_commit_status_create", REPO
+            )
+            with self.assertRaises(Refused):
+                h.run(
+                    "wf_commit_status_create",
+                    {
+                        "repo": REPO,
+                        "sha": SHA,
+                        "state": "success",
+                        "context": context,
+                        "description": "done",
+                    },
+                )
+            self.assertEqual(c.calls, [])

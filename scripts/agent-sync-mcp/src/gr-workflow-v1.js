@@ -18,7 +18,7 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
   wf_commit_statuses: ['Read commit statuses, not check runs. Requires statuses:read in the seat ceiling.',obj(['repo','sha'],{repo:REPO,sha:SHA,per_page:PER_PAGE})],
-  wf_commit_status_create: ['Create a commit status only under separate owner authority; never fabricate a CI result or bypass a gate. Requires statuses:write in the seat ceiling.',obj(['repo','sha','state','context','description'],{repo:REPO,sha:SHA,state:{type:'string',enum:['error','failure','pending','success']},context:{type:'string',minLength:1,maxLength:255},description:{type:'string',minLength:1,maxLength:140}})],
+  wf_commit_status_create: ['Create a commit status only under separate owner authority; never fabricate a CI result or bypass a gate. Requires statuses:write in the seat ceiling.',obj(['repo','sha','state','context','description'],{repo:REPO,sha:SHA,state:{type:'string',enum:['error','failure','pending','success']},context:{type:'string',minLength:1,maxLength:255,pattern:'^swu-[a-z0-9-]+/report$'},description:{type:'string',minLength:1,maxLength:140}})],
 
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],

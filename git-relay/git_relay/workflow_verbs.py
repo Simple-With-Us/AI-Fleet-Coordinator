@@ -436,7 +436,15 @@ class WorkflowVerbs:
             or value["id"] <= 0
             or value.get("state") not in ("error", "failure", "pending", "success")
             or not isinstance(value.get("context"), str)
+            or not value["context"].strip()
             or not 1 <= len(value["context"].encode("utf-8")) <= 255
+            or value.get("description") is not None
+            and (
+                not isinstance(value["description"], str)
+                or len(value["description"].encode("utf-8")) > 140
+            )
+            or value.get("created_at") is not None
+            and (not isinstance(value["created_at"], str) or len(value["created_at"]) > 100)
         ):
             raise RelayGitHubError(502, "commit status receipt unverifiable")
         return {k: value.get(k) for k in ("id", "state", "context", "description", "created_at")}
@@ -457,6 +465,10 @@ class WorkflowVerbs:
             self._text(args, "context", 255),
             self._text(args, "description", 140),
         )
+        if not re.fullmatch(r"swu-[a-z0-9-]+/report", context) or (
+            self.seat != "probe" and context != self.seat + "/report"
+        ):
+            raise Refused("status context must be own App report namespace")
         result = self._status_summary(
             self.client._call(
                 "POST",
