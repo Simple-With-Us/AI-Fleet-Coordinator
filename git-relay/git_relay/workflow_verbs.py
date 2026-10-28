@@ -428,7 +428,8 @@ class WorkflowVerbs:
 
     @staticmethod
     def _status_summary(value):
-        value = _obj(value)
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "status receipt unverifiable")
         if (
             isinstance(value.get("id"), bool)
             or not isinstance(value.get("id"), int)
