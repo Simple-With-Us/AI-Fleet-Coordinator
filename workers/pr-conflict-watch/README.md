@@ -42,7 +42,7 @@ Store plain values, not Infisical references: expanding a reference would need t
 
 ### The service token
 
-Create one read-only service token named `pr-conflict-watch-read`, scoped to exactly environment `prod` and folder `/pr-conflict-watch`.  The Worker discovers the project id from the token itself and checks the token's own scope and permissions at runtime: a token that is not read-only, or that is not scoped to `prod` + `/pr-conflict-watch`, is refused.
+Create one read-only service token named `pr-conflict-watch-read`, scoped to exactly environment `prod` and folder `/pr-conflict-watch`.  The Worker discovers the project id from the token itself and checks the token's own scope and permissions at runtime: the token must report its scopes, and every scope must name environment `prod` and folder `/pr-conflict-watch` and nothing else, and the token must report permissions that include `read` and not include `write`.  A token that does not report its scope or its permissions, a token that may write, and a token scoped to anything other than `prod` + `/pr-conflict-watch` are all refused before a single secret is read.
 
 Bind it:
 

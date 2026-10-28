@@ -9,8 +9,9 @@
 // This repo is public, so the project id is not committed here.  It is
 // discovered from the token itself (GET /api/v2/service-token) and the
 // token's own scope and permissions are checked before a single secret is
-// read: the token must be read-only and must be scoped to exactly this
-// environment and this folder.
+// read: the token must report its scope, it must be scoped to exactly this
+// environment and this folder, and it must report read-only permissions.
+// A token that does not report them is refused, not used.
 //
 // There are no npm dependencies in this Worker, so the response shapes are
 // validated by hand at the boundary, in the same style as index.js's
@@ -138,9 +139,10 @@ async function readJsonBody(response, maxBytes) {
  * Fetch the service token's own info.
  *
  * The response carries the project id (as `workspace`, or `projectId` when
- * `workspace` is absent) and, when present, the scopes and the permissions
- * of the token.  The scopes must name this environment and this folder, and
- * the permissions must not include write.
+ * `workspace` is absent) and the scopes and the permissions of the token.
+ * Both are required: the scopes must name this environment and this folder,
+ * and the permissions must include read and not include write.  A token that
+ * does not report them is refused before a single secret is read.
  *
  * @param {{token: string, fetchImpl: Function}} args
  * @returns {Promise<{projectId: string}>}
@@ -174,31 +176,36 @@ async function fetchTokenInfo({ token, fetchImpl }) {
   const projectId = workspace || fallbackProjectId;
   if (!projectId) throw new InfisicalError("invalid_response");
 
-  if (json.scopes !== undefined) {
-    if (!Array.isArray(json.scopes)) throw new InfisicalError("invalid_response");
-    for (const scope of json.scopes) {
-      if (!isPlainObject(scope)) throw new InfisicalError("invalid_response");
-      if (typeof scope.environment !== "string" || typeof scope.secretPath !== "string") {
-        throw new InfisicalError("invalid_response");
-      }
-    }
-    // Exact scope:  every scope must be this environment and this folder,
-    // so a token that can also read another folder is refused, not used.
-    const exact = (scope) =>
-      scope.environment.trim() === INFISICAL_ENVIRONMENT &&
-      scope.secretPath.trim().replace(/\/+$/, "") === INFISICAL_SECRET_PATH;
-    if (json.scopes.length === 0 || !json.scopes.every(exact)) {
-      throw new InfisicalError("token_scope_mismatch");
+  // Fail closed: the token must name its own scope, and every scope must be
+  // this environment and this folder, so a token that can also read another
+  // folder is refused, not used.
+  if (json.scopes === undefined) throw new InfisicalError("token_scope_mismatch");
+  if (!Array.isArray(json.scopes)) throw new InfisicalError("invalid_response");
+  for (const scope of json.scopes) {
+    if (!isPlainObject(scope)) throw new InfisicalError("invalid_response");
+    if (typeof scope.environment !== "string" || typeof scope.secretPath !== "string") {
+      throw new InfisicalError("invalid_response");
     }
   }
+  const exact = (scope) =>
+    scope.environment.trim() === INFISICAL_ENVIRONMENT &&
+    scope.secretPath.trim().replace(/\/+$/, "") === INFISICAL_SECRET_PATH;
+  if (json.scopes.length === 0 || !json.scopes.every(exact)) {
+    throw new InfisicalError("token_scope_mismatch");
+  }
 
-  if (json.permissions !== undefined) {
-    if (!Array.isArray(json.permissions)) throw new InfisicalError("invalid_response");
-    const writable = json.permissions.some(
-      (permission) =>
-        typeof permission === "string" && permission.trim().toLowerCase() === "write"
-    );
-    if (writable) throw new InfisicalError("token_not_read_only");
+  // Fail closed: the token must prove it is read-only, so a token that may
+  // write is refused before a single secret is read.
+  if (json.permissions === undefined) throw new InfisicalError("token_not_read_only");
+  if (!Array.isArray(json.permissions)) throw new InfisicalError("invalid_response");
+  const permissions = json.permissions.map((permission) =>
+    typeof permission === "string" ? permission.trim().toLowerCase() : null
+  );
+  if (permissions.some((permission) => permission === null)) {
+    throw new InfisicalError("invalid_response");
+  }
+  if (!permissions.includes("read") || permissions.includes("write")) {
+    throw new InfisicalError("token_not_read_only");
   }
 
   return { projectId };

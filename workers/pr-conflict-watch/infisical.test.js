@@ -128,6 +128,7 @@ describe("resolveInfisicalConfig", () => {
         jsonResponse({
           projectId: "11111111-2222-3333-4444-555555555555",
           scopes: [{ environment: "prod", secretPath: "/pr-conflict-watch" }],
+          permissions: ["read"],
         }),
       listing: () => jsonResponse(listingBody()),
     });
@@ -192,15 +193,66 @@ describe("resolveInfisicalConfig", () => {
     );
   });
 
-  it("accepts a token without scopes or permissions", async () => {
+  it("refuses a token that does not report its scopes", async () => {
     const { impl } = fakeFetch({
-      tokenInfo: () => jsonResponse({ workspace: "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5" }),
+      tokenInfo: () =>
+        jsonResponse({
+          workspace: "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5",
+          permissions: ["read"],
+        }),
       listing: () => jsonResponse(listingBody()),
     });
+    captureErrors();
 
-    const config = await resolveInfisicalConfig({ token: SERVICE_TOKEN, fetchImpl: impl });
+    await assert.rejects(
+      () => resolveInfisicalConfig({ token: SERVICE_TOKEN, fetchImpl: impl }),
+      (error) => error instanceof InfisicalError && error.code === "token_scope_mismatch"
+    );
+  });
 
-    assert.deepEqual(config, SECRETS);
+  it("refuses a token that does not report its permissions", async () => {
+    const { impl } = fakeFetch({
+      tokenInfo: () =>
+        jsonResponse({
+          workspace: "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5",
+          scopes: [{ environment: INFISICAL_ENVIRONMENT, secretPath: INFISICAL_SECRET_PATH }],
+        }),
+      listing: () => jsonResponse(listingBody()),
+    });
+    captureErrors();
+
+    await assert.rejects(
+      () => resolveInfisicalConfig({ token: SERVICE_TOKEN, fetchImpl: impl }),
+      (error) => error instanceof InfisicalError && error.code === "token_not_read_only"
+    );
+  });
+
+  it("refuses a token whose permissions do not include read", async () => {
+    const { impl } = fakeFetch({
+      tokenInfo: () => jsonResponse(tokenInfoBody({ permissions: ["admin"] })),
+      listing: () => jsonResponse(listingBody()),
+    });
+    captureErrors();
+
+    await assert.rejects(
+      () => resolveInfisicalConfig({ token: SERVICE_TOKEN, fetchImpl: impl }),
+      (error) => error instanceof InfisicalError && error.code === "token_not_read_only"
+    );
+  });
+
+  it("refuses a token whose permissions are not an array of names", async () => {
+    for (const permissions of ["read", [1], null]) {
+      const { impl } = fakeFetch({
+        tokenInfo: () => jsonResponse(tokenInfoBody({ permissions })),
+        listing: () => jsonResponse(listingBody()),
+      });
+      captureErrors();
+
+      await assert.rejects(
+        () => resolveInfisicalConfig({ token: SERVICE_TOKEN, fetchImpl: impl }),
+        (error) => error instanceof InfisicalError && error.code === "invalid_response"
+      );
+    }
   });
 
   it("refuses a token that may write", async () => {

@@ -6,6 +6,9 @@
 // Bindings:
 //   INFISICAL_SERVICE_TOKEN  Worker secret: a read-only Infisical service
 //                            token.  It is the Worker's only secret binding.
+//                            Its own scope and permissions are verified at
+//                            runtime, and a token that does not report them
+//                            is refused.
 //   PR_STATE                KV namespace: the dedupe records.
 //
 // Every other secret (GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN, ZULIP_SITE,
@@ -98,46 +101,70 @@ function isPlainObject(value) {
   return proto === Object.prototype || proto === null;
 }
 
+/** The outcome labels a Zulip response can have. */
+const ZULIP_OUTCOME_SUCCESS = "success";
+const ZULIP_OUTCOME_ERROR = "error";
+const ZULIP_OUTCOME_UNPARSEABLE = "unparseable";
+
 /**
  * Validate a Zulip response body at the boundary.
  *
  * This Worker has no npm dependencies, so there is no zod here: the shape
  * check is by hand.  Only a plain object with a string `result` and a string
  * `msg` (when present) is trusted.  Anything else is a failure with a fixed
- * message, so an unexpected body is never echoed into the logs and never
- * mistaken for a success.
+ * message, so an unexpected body is never mistaken for a success.
+ *
+ * @param {unknown} json the parsed response body.
+ * @returns {{ok: boolean, msg?: string, outcome: string}} ok is true only for
+ *   result "success".  The outcome is the allow-listed label a failure log
+ *   carries; the message is returned to the caller but never logged.
+ */
+function parseZulipBody(json) {
+  if (!isPlainObject(json)) {
+    return { ok: false, msg: UNPARSEABLE_RESPONSE, outcome: ZULIP_OUTCOME_UNPARSEABLE };
+  }
+
+  const result = json.result;
+  if (typeof result !== "string") {
+    return { ok: false, msg: UNPARSEABLE_RESPONSE, outcome: ZULIP_OUTCOME_UNPARSEABLE };
+  }
+
+  const msg = json.msg;
+  if (msg !== undefined && typeof msg !== "string") {
+    return { ok: false, msg: UNPARSEABLE_RESPONSE, outcome: ZULIP_OUTCOME_UNPARSEABLE };
+  }
+
+  const ok = result === "success";
+  const parsed = { ok, outcome: ok ? ZULIP_OUTCOME_SUCCESS : ZULIP_OUTCOME_ERROR };
+  if (typeof msg === "string") parsed.msg = msg;
+  return parsed;
+}
+
+/**
+ * Validate a Zulip response body at the boundary.
+ *
+ * The exported contract is the shape a caller can rely on: ok is true only
+ * for result "success", and msg carries Zulip's own message when the body had
+ * one.  The message is never logged: the failure log carries the HTTP status
+ * and an outcome label only.
  *
  * @param {unknown} json the parsed response body.
  * @returns {{ok: boolean, msg?: string}} ok is true only for result "success".
  */
 export function parseZulipResult(json) {
-  if (!isPlainObject(json)) return { ok: false, msg: UNPARSEABLE_RESPONSE };
-
-  const result = json.result;
-  if (typeof result !== "string") return { ok: false, msg: UNPARSEABLE_RESPONSE };
-
-  const msg = json.msg;
-  if (msg !== undefined && typeof msg !== "string") {
-    return { ok: false, msg: UNPARSEABLE_RESPONSE };
-  }
-
-  const parsed = { ok: result === "success" };
-  if (typeof msg === "string") parsed.msg = msg;
+  const { ok, msg } = parseZulipBody(json);
+  const parsed = { ok };
+  if (msg !== undefined) parsed.msg = msg;
   return parsed;
-}
-
-/** The message to log for a failed post: Zulip's own, or a safe placeholder. */
-function failureMessage(parsed) {
-  if (typeof parsed.msg !== "string" || parsed.msg.trim() === "") return "no message";
-  return parsed.msg;
 }
 
 /**
  * Post one message to Zulip #Alerts.
  *
  * The API key never leaves this function: the request carries it in a Basic
- * auth header, and a failure logs the HTTP status and Zulip's own error
- * message, which never contain the credential.
+ * auth header.  A failure logs allow-listed fields only -- the HTTP status
+ * and a fixed outcome label -- and never Zulip's own message, so nothing the
+ * server said reaches the logs.
  *
  * @param {object} config the config resolved from Infisical.
  * @returns {Promise<boolean>} true when Zulip accepted the message.
@@ -166,14 +193,25 @@ export async function postZulip(config, topic, content) {
   } catch {
     json = null;
   }
-  const parsed = parseZulipResult(json);
+  const parsed = parseZulipBody(json);
+
+  // The failure log carries allow-listed fields only: the HTTP status and a
+  // fixed outcome label.  Zulip's own message is never logged.
+  const logFailure = () =>
+    console.error(
+      JSON.stringify({
+        event: "zulip_post_failed",
+        status: res.status,
+        result: parsed.outcome,
+      })
+    );
 
   if (!res.ok) {
-    console.error(`zulip post failed: http ${res.status}: ${failureMessage(parsed)}`);
+    logFailure();
     return false;
   }
   if (!parsed.ok) {
-    console.error(`zulip post failed: http ${res.status}: ${failureMessage(parsed)}`);
+    logFailure();
     return false;
   }
   return true;

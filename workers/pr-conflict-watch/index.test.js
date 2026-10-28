@@ -98,10 +98,13 @@ function kvStub(initial = {}) {
 describe("postZulip", () => {
   it("posts a form-encoded message to the Alerts stream", async () => {
     const calls = stubFetch(jsonResponse({ result: "success", id: 7 }));
+    const errors = [];
+    console.error = (...args) => errors.push(args.join(" "));
 
     const ok = await postZulip(CONFIG, "pr-conflicts BotFleet", "hello");
 
     assert.equal(ok, true);
+    assert.equal(errors.length, 0, "a delivered message logs nothing");
     assert.equal(calls.length, 1);
     const { url, init } = calls[0];
     assert.equal(url, "https://zulip.example.com/api/v1/messages");
@@ -125,8 +128,9 @@ describe("postZulip", () => {
 
     assert.equal(ok, false);
     assert.equal(errors.length, 1);
-    assert.match(errors[0], /401/);
-    assert.match(errors[0], /Invalid API key/);
+    const line = JSON.parse(errors[0]);
+    assert.deepEqual(line, { event: "zulip_post_failed", status: 401, result: "error" });
+    assert.ok(!errors[0].includes("Invalid API key"), "Zulip's message was logged");
     assert.ok(!errors[0].includes("zulip-api-key"), "the api key was logged");
     assert.ok(!errors[0].includes("alerts-bot@example.com"), "the bot email was logged");
   });
@@ -139,7 +143,10 @@ describe("postZulip", () => {
     const ok = await postZulip(CONFIG, "pr-conflicts BotFleet", "hello");
 
     assert.equal(ok, false);
-    assert.match(errors[0], /Topic not found/);
+    assert.equal(errors.length, 1);
+    const line = JSON.parse(errors[0]);
+    assert.deepEqual(line, { event: "zulip_post_failed", status: 200, result: "error" });
+    assert.ok(!errors[0].includes("Topic not found"), "Zulip's message was logged");
   });
 
   it("does not throw when the response body is not JSON", async () => {
@@ -150,7 +157,10 @@ describe("postZulip", () => {
     const ok = await postZulip(CONFIG, "pr-conflicts BotFleet", "hello");
 
     assert.equal(ok, false);
-    assert.match(errors[0], /504/);
+    assert.equal(errors.length, 1);
+    const line = JSON.parse(errors[0]);
+    assert.deepEqual(line, { event: "zulip_post_failed", status: 504, result: "unparseable" });
+    assert.ok(!errors[0].includes("gateway timeout"), "the body was logged");
   });
 });
 
@@ -201,7 +211,10 @@ describe("parseZulipResult", () => {
     const ok = await postZulip(CONFIG, "pr-conflicts BotFleet", "hello");
 
     assert.equal(ok, false);
-    assert.match(errors[0], /unparseable Zulip response/);
+    assert.equal(errors.length, 1);
+    const line = JSON.parse(errors[0]);
+    assert.deepEqual(line, { event: "zulip_post_failed", status: 200, result: "unparseable" });
+    assert.ok(!errors[0].includes("unparseable Zulip response"), "the body was logged");
   });
 });
 
@@ -542,7 +555,11 @@ describe("the request flow", () => {
       const target = String(url);
       if (target.includes("/api/v2/service-token")) {
         calls.infisical.push({ url: target, init });
-        return jsonResponse({ workspace: "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5" });
+        return jsonResponse({
+          workspace: "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5",
+          scopes: [{ environment: "prod", secretPath: "/pr-conflict-watch" }],
+          permissions: ["read"],
+        });
       }
       if (target.includes("/api/v3/secrets/raw")) {
         calls.infisical.push({ url: target, init });
