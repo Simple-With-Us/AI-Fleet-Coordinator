@@ -398,6 +398,15 @@ def cached_letter(session_id: str) -> str:
     return ""
 
 
+def space_for(session_id: str) -> str:
+    """The letter space a session belongs in:  single for a conversation, double for a
+    subthread, so a subthread never takes the letter a conversation holds."""
+    row = session_row(session_id) or {}
+    if row.get("parent_session_id") or row.get("session_kind") == "task":
+        return "double"
+    return "single"
+
+
 def letter_for(session_id: str, topic: str = "", space: str = "single") -> str:
     """The letter for a session:  the cache first, the Operator otherwise."""
     letter = cached_letter(session_id)
@@ -448,9 +457,7 @@ def hook_session_start() -> int:
     if not session_id:
         return 0
     row = session_row(session_id) or {}
-    space = "single"
-    if row.get("parent_session_id") or row.get("session_kind") == "task":
-        space = "double"  # a subthread takes a double letter (owner 2026-10-28)
+    space = space_for(session_id)
     try:
         letter = letter_for(session_id, str(row.get("title") or ""), space)
     except RegistryError:
@@ -458,7 +465,7 @@ def hook_session_start() -> int:
             "Session letter: none yet (the Operator could not be reached).  Name this thread "
             "in English; if a letter arrives later, prefix the title with it."
         )
-        return 0
+        return 0 9bd92874 (fix(mm-session-letter): one rule for the letter space, used by every hook)
     if not letter:
         print(
             "Session letter: none yet (the Operator could not be reached).  Name this thread "
@@ -497,9 +504,9 @@ def hook_pre_tool_use() -> int:
     if not isinstance(tool_input, dict):
         return 0
     try:
-        letter = cached_letter(session_id) or letter_for(session_id)
+        letter = cached_letter(session_id) or letter_for(session_id, "", space_for(session_id))
     except RegistryError:
-        return 0
+        return 0 9bd92874 (fix(mm-session-letter): one rule for the letter space, used by every hook)
     if not letter:
         return 0
     text = ""
@@ -546,9 +553,9 @@ def hook_stop() -> int:
     if row.get("parent_session_id") or row.get("session_kind") not in (None, "conversation"):
         return 0
     try:
-        letter = cached_letter(session_id) or letter_for(session_id)
+        letter = cached_letter(session_id) or letter_for(session_id, "", space_for(session_id))
     except RegistryError:
-        return 0
+        return 0 9bd92874 (fix(mm-session-letter): one rule for the letter space, used by every hook)
     if not letter:
         return 0
     title = str(row.get("title") or "")
