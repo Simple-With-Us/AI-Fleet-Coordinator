@@ -91,7 +91,7 @@ export function noConnectionPage() {
     "No Connection Expected",
     `<h1>No Connection Expected</h1><p>${sentences(
       "No seat is armed for this app right now, so nothing was granted.",
-      "If you meant to connect, open ST-MCP + GR-MCP Admin, arm the seat, and start again within 10 minutes.",
+      "If you meant to connect, open Fleet MCP Admin, arm the seat, and start again within 10 minutes.",
     )}</p>`,
     { status: 403 },
   );
@@ -133,7 +133,7 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
   }
   const verified = clientDomain
     ? `Published by <strong>${escapeHtml(clientDomain)}</strong> (a client metadata document on that domain).`
-    : `Registered by hand in ST-MCP + GR-MCP Admin.${SENTENCE_GAP}Its name is not verified.`;
+    : `Registered by hand in Fleet MCP Admin.${SENTENCE_GAP}Its name is not verified.`;
   const replaceLine = replacing.length
     ? `<p class="warn">${replacing
         .map((g) => `This replaces the grant from ${escapeHtml(g.client)}, created ${escapeHtml(ownerTime(g.createdAt))}.`)
@@ -179,7 +179,7 @@ function gbBearerSection(rows, csrf, mintId = "") {
     .map((r) => {
       const st = r.status ?? {};
       const state = r.status === null ? "Unknown (diagnostic read failed)" : st.active ? `<span class="ok">Active</span>` : st.expired ? `<span class="warn">Expired</span>` : "None";
-      const mcpState = st.active || st.expired ? (st.mcp_accept_recorded === false ? "No recorded /mcp acceptance (legacy); /mcp refused" : st.mcp_accept ? "also accepted on /mcp" : "GR-MCP only") : "";
+      const mcpState = st.active || st.expired ? (st.mcp_accept_recorded === false ? "No recorded /mcp acceptance (legacy); /mcp refused" : st.mcp_accept ? "also accepted on /mcp" : "Git Relay only") : "";
       const detail = st.created_at ? `minted ${escapeHtml(ownerTime(st.created_at))}, expires ${escapeHtml(ownerTime(st.expires_at))}${st.last_used_at ? `, last used ${escapeHtml(ownerTime(st.last_used_at))}` : ", never used"}` : "";
       // Wrong-secret presentations against this identity:  counts and a time,
       // never a hash (the narrowing review verdict:  make a guessing storm visible here).
@@ -202,7 +202,7 @@ function gbBearerSection(rows, csrf, mintId = "") {
       // A rotation without the box ticked drops a seat's existing /mcp access:
       // a block-level warning ABOVE the actions, before the owner commits.
       const rotateDrops = r.kind === "seat" && (st.active || st.expired) && st.mcp_accept === true
-        ? `<div class="warn bearer-warn">This bearer is currently accepted on /mcp.  Rotating without the box ticked removes that:  the new bearer will be GR-MCP only.</div>`
+        ? `<div class="warn bearer-warn">This bearer is currently accepted on /mcp.  Rotating without the box ticked removes that:  the new bearer will be Git Relay only.</div>`
         : "";
       const mint = r.credentialsUnavailable
         ? `<span class="warn">Credential readiness unknown (diagnostic read failed)</span>`
@@ -219,8 +219,8 @@ function gbBearerSection(rows, csrf, mintId = "") {
     })
     .join("");
   return `<h2>Per-Identity Bearers</h2>
-<p>${sentences("A bearer is one credential per identity, and every bearer is honored by GR-MCP (git-relay).", "The same bearer is the identity's credential for fleet tools that verify with this Worker;  support lands per tool, starting with simple-board.", "Minting shows it once, and the server keeps only its hash.", "Rotating replaces the old one at once.", "Each lasts 90 days.")}</p>
-<p>${sentences("A Grok Bot's bearer is its only credential, so it is also accepted on ST-MCP's /mcp.", "A seat's bearer is accepted on ST-MCP's /mcp only when minted with the box ticked;  minted unticked, ST-MCP refuses it and GR-MCP still honors it.", "Ticking the box lets that seat act without the consent screen:  it is your per-seat choice, recorded with the mint.")}</p>
+<p>${sentences("A bearer is one credential per identity, and every bearer is honored by Git Relay (git-relay).", "The same bearer is the identity's credential for fleet tools that verify with this Worker;  support lands per tool, starting with simple-board.", "Minting shows it once, and the server keeps only its hash.", "Rotating replaces the old one at once.", "Each lasts 90 days.")}</p>
+<p>${sentences("A Grok Bot's bearer is its only credential, so it is also accepted on Fleet MCP's /mcp.", "A seat's bearer is accepted on Fleet MCP's /mcp only when minted with the box ticked;  minted unticked, Fleet MCP refuses it and Git Relay still honors it.", "Ticking the box lets that seat act without the consent screen:  it is your per-seat choice, recorded with the mint.")}</p>
 <table><tr><th>Identity</th><th>Bearer</th><th>Service Readiness</th><th>Actions</th></tr>${body}</table>`;
 }
 
@@ -243,8 +243,8 @@ function actionButton(csrf, action, label, fields = {}) {
  * accidental refresh or resubmit cannot touch the bearer - it is acked from
  * the stored outcome instead (gbBearerMintCompletedPage).  The
  * send line states what THIS minted bearer can actually do:  a persona bearer
- * and a seat bearer minted with the acceptance reach ST-MCP's /mcp and GR-MCP;
- * a seat bearer minted without it is GR-MCP only.  Both forms also note that a
+ * and a seat bearer minted with the acceptance reach Fleet MCP's /mcp and Git Relay;
+ * a seat bearer minted without it is Git Relay only.  Both forms also note that a
  * fleet tool verifying with this Worker (simple-board is the first) uses the
  * same bearer - the /mcp acceptance does not gate that, and per-tool support
  * is stated as landing, never as already shipped.
@@ -252,24 +252,24 @@ function actionButton(csrf, action, label, fields = {}) {
 export function gbBearerRevealPage({ identity, token, expiresAt, kind = "persona", mcpAccept = true }) {
   const onMcp = kind !== "seat" || mcpAccept === true;
   const send = onMcp
-    ? "Send it as an Authorization: Bearer header to ST-MCP's /mcp URL and to GR-MCP;  it acts only as this identity.  A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity's credential."
-    : "Send it as an Authorization: Bearer header to GR-MCP (git-relay) only;  it acts only as this identity.  ST-MCP's /mcp refuses this bearer because it was minted without /mcp acceptance.  A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity's credential.  If this seat should act on /mcp too, mint a new one with the box ticked.";
+    ? "Send it as an Authorization: Bearer header to Fleet MCP's /mcp URL and to Git Relay;  it acts only as this identity.  A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity's credential."
+    : "Send it as an Authorization: Bearer header to Git Relay (git-relay) only;  it acts only as this identity.  Fleet MCP's /mcp refuses this bearer because it was minted without /mcp acceptance.  A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity's credential.  If this seat should act on /mcp too, mint a new one with the box ticked.";
   const body = `<h1>Bearer For ${escapeHtml(identity)}</h1>
 <p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only its hash, so it cannot show it again.", "Refreshing or resubmitting cannot mint a replacement by accident:  this form was single-use, so a resubmit only shows this bearer's details again (never the token) and the bearer stays exactly as it is.", "To replace it on purpose, mint a new one from the admin page.")}</p>
 <p><code id="gb-bearer-token">${escapeHtml(token)}</code></p>
 <p>${sentences(`Expires ${ownerTime(expiresAt)}.`)}${SENTENCE_GAP}${gapped(send)}</p>
-<p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
+<p><a href="/admin">Back to Fleet MCP Admin</a></p>`;
   return htmlResponse(`Bearer For ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
 /** A form whose mint already completed:  the stored outcome, never the token. */
 export function gbBearerMintCompletedPage({ identity, result = null }) {
   const detail = result
-    ? [`That form already minted this identity's bearer ${ownerTime(result.created_at)}.`, `It expires ${ownerTime(result.expires_at)}.`, `This is mint #${Number(result.mint_count) || 1} for the identity.`, result.mcp_accept ? "It was minted with /mcp acceptance." : "It was minted for GR-MCP only (no /mcp acceptance)."]
+    ? [`That form already minted this identity's bearer ${ownerTime(result.created_at)}.`, `It expires ${ownerTime(result.expires_at)}.`, `This is mint #${Number(result.mint_count) || 1} for the identity.`, result.mcp_accept ? "It was minted with /mcp acceptance." : "It was minted for Git Relay only (no /mcp acceptance)."]
     : ["That form already minted this identity's bearer."];
   const body = `<h1>Already Minted</h1>
 <p>${sentences(...detail, "The token itself is never shown again - the server keeps only its hash.", "If you lost it, mint a new one from the admin page (that replaces it).")}</p>
-<p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
+<p><a href="/admin">Back to Fleet MCP Admin</a></p>`;
   return htmlResponse(`Already Minted - ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
@@ -283,7 +283,7 @@ export function gbBearerMintRefusedPage({ identity, reason = "stale" }) {
     : "Reload the admin page and mint again from the fresh form.";
   const body = `<h1>Nothing Was Minted</h1>
 <p>${sentences(why, "No bearer was minted and the current one is unchanged.", next)}</p>
-<p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
+<p><a href="/admin">Back to Fleet MCP Admin</a></p>`;
   return htmlResponse(`Nothing Was Minted - ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
@@ -374,7 +374,7 @@ export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, 
   // Owner controls first, then everything long folded behind a summary that shows its count (AFC-347).
   const fold = (title, count, inner) =>
     `<details class="fold"><summary><h2>${escapeHtml(title)}</h2> <span class="count">${escapeHtml(count)}</span></summary>${inner}</details>`;
-  const body = `<h1>ST-MCP + GR-MCP Admin</h1>
+  const body = `<h1>Fleet MCP Admin</h1>
 <p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}A seat serves tools only with its key installed and a live member role.</p>
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Seats</h2>
@@ -398,5 +398,5 @@ ${fold("Refused Token Requests (Unauthenticated, Counted)", `${tokenRefusals.len
 ${fold("Tool Calls", `${calls.length} calls`, `<p>${sentences("One row per call, newest first.", "Bodies, keys and tokens are never stored.", "A topic that looked like a secret shows as its hash.")}</p>
 <table><tr><th>When</th><th>Seat</th><th>Tool</th><th>Outcome</th><th>Stream</th><th>Topic</th><th>Message</th><th>Ms</th><th>Grant</th><th>Network</th></tr>${callRows}</table>`)}
 ${fold("Audit", `${audits.length} events`, `<table><tr><th>When</th><th>Seat</th><th>Event</th><th>Detail</th></tr>${auditRows}</table>`)}`;
-  return htmlResponse("ST-MCP + GR-MCP Admin", body, { headers });
+  return htmlResponse("Fleet MCP Admin", body, { headers });
 }

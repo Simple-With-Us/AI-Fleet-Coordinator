@@ -150,7 +150,7 @@ test("the completed-ack page shows outcome metadata, never a token, and is not c
   assert.match(html, /Already Minted/);
   assert.match(html, /never shown again/);
   assert.match(html, /mint #3/);
-  assert.match(html, /GR-MCP only/);
+  assert.match(html, /Git Relay only/);
   assert.ok(html.includes("identity&#39;s"), "single-escaped apostrophe");
   assert.ok(!html.includes("&#38;"), "no double-escaping");
   assert.ok(!html.includes('<code id="gb-bearer-token">'), "no token element");
@@ -165,20 +165,20 @@ test("the reveal send line matches what the minted bearer can actually do", asyn
   // that.  It names simple-board as the first tool and claims landing
   // support, never a shipped one.
   const fleetNote = "A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity&#39;s credential.";
-  // Persona:  ST-MCP /mcp and GR-MCP.
+  // Persona:  Fleet MCP /mcp and Git Relay.
   const persona = await gbBearerRevealPage({ identity: ID, token: "t", expiresAt: NOW, kind: "persona", mcpAccept: true }).text();
-  assert.ok(persona.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  assert.ok(persona.includes("Fleet MCP&#39;s /mcp URL and to Git Relay"));
   assert.ok(persona.includes(fleetNote));
   // Ticked seat:  same reach.
   const ticked = await gbBearerRevealPage({ identity: "JET", token: "t", expiresAt: NOW, kind: "seat", mcpAccept: true }).text();
-  assert.ok(ticked.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  assert.ok(ticked.includes("Fleet MCP&#39;s /mcp URL and to Git Relay"));
   assert.ok(ticked.includes(fleetNote));
-  // Unticked seat:  GR-MCP ONLY, and the page says /mcp refuses it - it must
-  // never imply the bearer works on ST-MCP's /mcp.
+  // Unticked seat:  Git Relay ONLY, and the page says /mcp refuses it - it must
+  // never imply the bearer works on Fleet MCP's /mcp.
   const unticked = await gbBearerRevealPage({ identity: "JET", token: "t", expiresAt: NOW, kind: "seat", mcpAccept: false }).text();
-  assert.ok(unticked.includes("to GR-MCP (git-relay) only"));
-  assert.ok(unticked.includes("ST-MCP&#39;s /mcp refuses this bearer"));
-  assert.ok(!unticked.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"));
+  assert.ok(unticked.includes("to Git Relay (git-relay) only"));
+  assert.ok(unticked.includes("Fleet MCP&#39;s /mcp refuses this bearer"));
+  assert.ok(!unticked.includes("Fleet MCP&#39;s /mcp URL and to Git Relay"));
   assert.ok(unticked.includes(fleetNote), "fleet tools are not gated by the /mcp acceptance");
 });
 
@@ -690,7 +690,7 @@ test("bearer reveal copy preserves every internal rendered sentence gap in all m
     assert.ok(copy.includes(".\u00a0 A fleet tool"), "the new fleet-tool sentence keeps its rendered gap");
     assert.ok(!/\. +[A-Z]/.test(copy), "no internal ASCII-only sentence gap may collapse in HTML");
     if (kind === "seat" && !mcpAccept) {
-      assert.ok(copy.includes(".\u00a0 ST-MCP"));
+      assert.ok(copy.includes(".\u00a0 Fleet MCP"));
       assert.ok(copy.includes(".\u00a0 If this seat"));
     }
   }
