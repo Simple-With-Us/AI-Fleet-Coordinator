@@ -96,8 +96,25 @@ class ValidateTests(unittest.TestCase):
         schema = json.loads(W.schema_text())
         self.assertIn("risk", schema["required"])
         self.assertEqual(schema["properties"]["risk"], {"enum": ["low", "uncertain", "high", None]})
-        self.assertEqual(sorted(schema["properties"]), sorted(schema["required"]))
         self.assertEqual(W.RISKS, ("low", "uncertain", "high"))
+
+    def test_the_schema_requires_exactly_the_keys_the_validator_requires(self) -> None:
+        # The schema and the daemon's own validator have to name the same required set.  A schema
+        # that demands a key the model naturally leaves out refuses the whole answer before the
+        # daemon ever sees it, and the runtime that enforces the schema hard (mcode, muse) then
+        # fails the wake outright.  route, chat_target and chat_inspect are optional here, because
+        # the validator has always treated them as optional.
+        schema = json.loads(W.schema_text())
+        required = set(schema["required"])
+        self.assertEqual(required, {"action", "reply", "board", "owner_note", "risk"})
+        for optional in ("route", "chat_target", "chat_inspect"):
+            self.assertIn(optional, schema["properties"])
+            self.assertNotIn(optional, required)
+        result, why = W.validate(
+            {"action": "reply", "reply": "hi", "board": None, "owner_note": None, "risk": "low"}
+        )
+        self.assertIsNone(why)
+        self.assertEqual(result["action"], "reply")
 
     def test_high_and_uncertain_risk_always_become_escalate(self) -> None:
         for risk in ("high", "uncertain"):
@@ -824,9 +841,6 @@ class ClaudeRunnerTests(ListenerHarness):
                 "board",
                 "owner_note",
                 "risk",
-                "route",
-                "chat_target",
-                "chat_inspect",
             ],
         )
         self.assertTrue(
