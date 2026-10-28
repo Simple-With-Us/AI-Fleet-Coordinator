@@ -523,7 +523,7 @@ Each GB persona can have one bearer token, minted on `/admin` ("Grok Bot Bearers
 
 ## git-relay rollout (GR-MCP)
 
-The relay (`git-relay/`) ships as code, policy and tests only.  Nothing in this section has been run live yet:  no service is installed, no hostname, tunnel or Access resource exists for it, no Worker variable is set, and no seat is pointed at it.  Each step names its authority state;  "pending" means the owner's go has not been given as of this writing.
+State on Wed, Oct 28 (read on the server):  steps 1 to 3 are live.  `git-relay.service` runs from `/opt/git-relay` on 127.0.0.1:8471, `cloudflared-git-relay.service` carries the public hostname, which answers 403 without the Access service token, and Fleet-OPS `/gr-front` holds the Access pair.  The audit log shows ECHO's calls since Oct 26.  Step 4's reviewed file is `git-relay/deploy/seat-policy.json` (git-relay README, "The reviewed seat policy file").  The steps below are kept as the record of how it was built.
 
 ### 1. Host
 
@@ -542,7 +542,7 @@ The Worker reaches the relay through `GR_UPSTREAM_URL` with a Cloudflare Access 
 
 ### 4. Seat policy
 
-`GIT_RELAY_SEATS_JSON` comes from a reviewed file (or an audited Infisical write).  Initial shape, grounded in the owner's Oct 21-22 direction and the implemented dispatch (policy.py):  `open_pr` is the one action authored as the owner, so PRs open under the owner's name;  every other write - `edit_pr`, `reply_thread`, `comment_pr` included - runs under each seat's own App via a relay-minted token, along with `merge_pr`, `workflow_dispatch` and `resolve_thread`;  `app_slug` must be the seat's own bot.  Bearer values come from the ST-MCP + GR-MCP Admin page (one shared bearer per identity);  never invent or hand-write a bearer into the file.  Repos start at `Simple-With-Us/*`.
+`GIT_RELAY_SEATS_JSON` comes from the reviewed file `git-relay/deploy/seat-policy.json`, installed with `git-relay/deploy/seat_policy.py install --apply` as root on the relay host.  Every seat in it is `auth: shared`, so the file holds no bearer.  Initial shape, grounded in the owner's Oct 21-22 direction and the implemented dispatch (policy.py):  `open_pr` is the one action authored as the owner, so PRs open under the owner's name;  every other write - `edit_pr`, `reply_thread`, `comment_pr` included - runs under each seat's own App via a relay-minted token, along with `merge_pr`, `workflow_dispatch` and `resolve_thread`;  `app_slug` must be the seat's own bot.  Bearer values come from the ST-MCP + GR-MCP Admin page (one shared bearer per identity);  never invent or hand-write a bearer into the file.  Repos start at `Simple-With-Us/*`.
 
 ### 5. Worker variables
 

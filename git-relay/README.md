@@ -25,11 +25,19 @@ is bypassed, or if the broker's real router can reach a mint.
 
 ## Status
 
-Undeployed and unwired:  this PR adds code, policy, and tests only - no hosting, no daemon, no
-seat is pointed at it, and nothing in the fleet calls it yet.  The credential custody described
-here (App keys in Infisical, the relay minting per-seat tokens) is the TARGET state.  Seats keep
-using the interim AFC-460 shell/cache path until a separate, owner-decided cutover;  this PR does
-not perform or schedule that cutover.
+Deployed on the fleet server as `git-relay.service`, run from `/opt/git-relay` and bound to
+127.0.0.1:8471, behind its own Cloudflare tunnel (`cloudflared-git-relay.service`) and an Access
+service token on the public hostname.  The App keys live in Fleet-OPS `/github-apps` and the relay
+mints every seat's App token itself.
+
+A seat reaches it through ST-MCP's `gr_*` tools on a bearer connection:  its own `sbt_<seat>_`
+bearer, or `gbb_<role>_` for a Grok Bot persona, minted on the ST-MCP + GR-MCP Admin page.  The
+Worker forwards that bearer and the relay resolves it through the Worker's verifier.  An OAuth
+connection carries no bearer, so its `gr_*` tools answer `not_configured`.
+
+The seat policy is [deploy/seat-policy.json](deploy/seat-policy.json), installed with
+`deploy/seat_policy.py` (see Policy).  Moving seats off the interim `gh` and shell path is still
+the owner's cutover decision.
 
 ## Actions
 
@@ -119,6 +127,31 @@ at load, so a bearer can never act through a GitHub App that is not its own bot.
 Every check is an allowlist: an action or repo not named is denied. Token comparison is
 constant-time over all seats. A per-seat hourly call cap (`GIT_RELAY_RATE_PER_HOUR`, default 120)
 limits a leaked seat token's blast radius.
+
+### The reviewed seat policy file
+
+[deploy/seat-policy.json](deploy/seat-policy.json) is the production policy.  It holds no secret:
+every seat is `auth: shared` and signs in with its own admin-minted bearer.  It lists one entry
+for each of the 38 identities the Worker can mint a bearer for, each acting as the `swu-` App
+whose GitHub description names that seat.  Three slugs are not `swu-<identity>`:  MA is
+`swu-rob`, GROK is `swu-grok-build` and MM is `swu-minimax`.  JET-CHAT has no entry, because it
+is a second login on Jet's bot and one bot has one App (Q7).  Seats share the `fleet` profile
+(the same actions, repositories and permission ceiling);  Echo keeps its own narrower repository
+set.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
+Worker's identity lists and each action's permission needs.
+
+On the relay host, as root:
+
+```
+python3 -I git-relay/deploy/seat_policy.py install            # validate with the deployed code, show the diff
+python3 -I git-relay/deploy/seat_policy.py install --apply    # back up, write, restart, check health (restores on failure)
+python3 -I git-relay/deploy/seat_policy.py verify-apps        # every seat's own App mints read-only and reads a repo
+```
+
+`verify-apps` runs the deployed minter in a transient unit with the relay's own credential binding,
+so it reads the App keys exactly as the service does, and it never prints a token.  A policy entry
+does not make a seat usable alone:  the seat also needs its bearer, minted by the owner on the
+Admin page.
 
 ## Outbound hygiene
 
