@@ -6,7 +6,7 @@ description: >-
 
 # Secret handoff (CURSOR)
 
-> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `cursor-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CURSOR_ZULIP_EMAIL`, `CURSOR_ZULIP_KEY`, `CURSOR_ZULIP_SITE`).  Session tag `[CURSOR·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `CURSOR`, credential in Infisical Fleet-OPS `/zulip` (`CURSOR_ZULIP_EMAIL`, `CURSOR_ZULIP_KEY`, `CURSOR_ZULIP_SITE`).  Session tag `[CURSOR·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime fork (Cursor).**  Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER, GB-ENGINEER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
@@ -36,7 +36,7 @@ On the Mac:
 
 Cloud: there is no key-names endpoint now (the old `mac.jays.services/files/key-names` was retired 2026-10-19); ask a Mac seat or the owner.  Runtime keys are managed via Infisical per app.
 
-Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  Copy cross-app keys into the consuming Infisical project (store-to-store), and do not teach an app to read `fleet-secrets` or the retired flat file.
+Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  Every app reads only its own project's keys, so a credential another app owns is never that app's credential: a shared service gets its own scoped token in the consuming app's own project instead of a copy of another app's key, and no app is taught to read `fleet-secrets` or the retired flat file.
 
 When the owner hands you a new secret, it arrives as the path to a `chmod 600` file (never chat text).  Never print the value.  Prefer scoped, revocable credentials.  Remind the owner they can revoke when the task is done.
 
@@ -75,7 +75,7 @@ TOKEN="$(fleet-secrets get SOME_KEY)" || exit $?
 fleet-secrets run --only SOME_KEY -- some-command
 ```
 
-Never add `2>&1` to a command that touches a secret.  If you must keep a value out of output you will see, redact on stdout only (`some-command | sed "s/${TOKEN}/[REDACTED]/g"`).
+Never add `2>&1` to a command that touches a secret.  If you must keep a value out of output you will see, redact on stdout only, with the secret on file descriptor 3 so it never reaches the process table (`some-command | python3 -c 'import sys; tok = open(3).read().rstrip("\n"); data = sys.stdin.read(); sys.stdout.write(data.replace(tok, "[REDACTED]") if tok else data)' 3<<<"$TOKEN"`).  The `secret-safety` pack carries the full form; never write `sed "s/$TOKEN/[REDACTED]/g"`.
 
 Your file-read tool is `cat` for this purpose.  Do not "just look" with Read because quoting confused you.
 

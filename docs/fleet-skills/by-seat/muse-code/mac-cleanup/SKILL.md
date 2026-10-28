@@ -10,7 +10,7 @@ description: Optimize Mac workstation and Hetzner Coolify disk space, prune merg
 
 # Mac & Hetzner Disk Cleanup Skill (ALL AGENTS)
 
-> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MC_ZULIP_EMAIL`, `MC_ZULIP_KEY`, `MC_ZULIP_SITE`).  Session tag `[MC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `MC`, credential in Infisical Fleet-OPS `/zulip` (`MC_ZULIP_EMAIL`, `MC_ZULIP_KEY`, `MC_ZULIP_SITE`).  Session tag `[MC·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (Muse Code).**  Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
@@ -65,7 +65,7 @@ the operator's own inventory on that Mac, not in this pack.
 
 - **Mac cleanup**: a scheduled Mac job runs the cleanup sweep automatically every 4 hours.
 - **Resource watch**: a scheduled Mac job every 5 minutes.  Samples disk/RAM/CPU, runs this script on a hit, and POSTs BotFleet Housekeeper.  See the `housekeeper` skill.
-- **Hog Hunter robotic vacuum**: a scheduled Mac job every 300 seconds.  This is the **primary** automatic path, since the older disk-janitor daemon was retired on 2026-10-11. It takes the same shared housekeeper lock as the scripts above, so the two never reclaim at once.
+- **Hog Hunter robotic vacuum**: a scheduled Mac job every 300 seconds.  This is the **primary** automatic path, since the older disk-janitor daemon was retired on `2026-10-11`.  It takes the same shared housekeeper lock as the scripts above, so the two never reclaim at once.
 - **Hetzner cleanup**: a scheduled job on the remote host runs automatically every 4 hours.
 
 ## Quick Status Check

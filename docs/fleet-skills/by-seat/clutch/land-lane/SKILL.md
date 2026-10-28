@@ -5,7 +5,7 @@ description: Land a Clutch feature branch to main across the fleet — seat work
 
 # Land a feature branch (CLUTCH)
 
-> **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `clutch-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLUTCH_ZULIP_EMAIL`, `CLUTCH_ZULIP_KEY`, `CLUTCH_ZULIP_SITE`).  Session tag `[CLUTCH·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `CLUTCH`, credential in Infisical Fleet-OPS `/zulip` (`CLUTCH_ZULIP_EMAIL`, `CLUTCH_ZULIP_KEY`, `CLUTCH_ZULIP_SITE`).  Session tag `[CLUTCH·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
@@ -16,7 +16,7 @@ Seat: **CLUTCH**.  Branch: `clutch/<slug>`.  Never `claude/`.  Never land fro
 
 ## Preconditions
 
-1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, which on the server is the lanes root the environment names in `FLEET_LANES_ROOT`, made with `~/apps/lane new` on the Mac and with `lane new` on the server; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves, or a flat `~/apps/<prefix>-<seat>[-<lane>]`, which retires where it is) that already exists is fine).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, which on the server is the lanes root the environment names in `FLEET_LANES_ROOT`, made with `~/apps/lane new` on the Mac and with `lane new` on the server; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves) that already exists is fine).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 
@@ -31,13 +31,13 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[TEAM_KEY, Agent] …`.
 
-Prose:  commit bodies, rollout docs, Notes source, PR titles, bodies and comments, and chat replies to the owner all take a real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23; convert with the `perl` recipe in `sentence-gap`).  The one exception: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.  See `owner-copy`.
+Prose:  commit bodies, rollout docs, Notes source, PR titles, bodies and comments, and chat replies to the owner all take a real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23; convert with the `perl` recipe in `sentence-gap`).  The two exceptions: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space, and an Apple Note body takes the narrow no-break space plus a normal space (AFC-552).  See `owner-copy`.
 
 ## Gate
 
 ### Socratic.Trade — `scripts/land.sh`
 
-Homebrew default `node` may be v26. ST `better-sqlite3` is Node 24 (MODULE_VERSION 137).  Confirm `node --version` is v24.x:
+Homebrew default `node` may be `v26`.  ST `better-sqlite3` is Node 24 (MODULE_VERSION 137).  Confirm `node --version` is v24.x:
 
 ```bash
 export PATH=/opt/homebrew/opt/node@24/bin:$PATH

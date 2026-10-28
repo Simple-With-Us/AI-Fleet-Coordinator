@@ -6,7 +6,7 @@ description: >-
 
 # Secret handoff (GROK)
 
-> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `GROK`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime fork (Grok).**  Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build: one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10): the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
@@ -36,7 +36,7 @@ On the Mac:
 
 Cloud: there is no key-names endpoint now (the old `mac.jays.services/files/key-names` was retired 2026-10-19); ask a Mac seat or the owner.  Runtime keys are managed via Infisical per app.
 
-Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  Copy cross-app keys into the consuming Infisical project (store-to-store), and do not teach an app to read `fleet-secrets` or the retired flat file.
+Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  Every app reads only its own project's keys, so a credential another app owns is never that app's credential: a shared service gets its own scoped token in the consuming app's own project instead of a copy of another app's key, and no app is taught to read `fleet-secrets` or the retired flat file.
 
 When the owner hands you a new secret, it arrives as the path to a `chmod 600` file (never chat text).  Never print the value.  Prefer scoped, revocable credentials.  Remind the owner they can revoke when the task is done.
 
@@ -75,7 +75,7 @@ TOKEN="$(fleet-secrets get SOME_KEY)" || exit $?
 fleet-secrets run --only SOME_KEY -- some-command
 ```
 
-Never add `2>&1` to a command that touches a secret.  If you must keep a value out of output you will see, redact on stdout only (`some-command | sed "s/${TOKEN}/[REDACTED]/g"`).
+Never add `2>&1` to a command that touches a secret.  If you must keep a value out of output you will see, redact on stdout only, with the secret on file descriptor 3 so it never reaches the process table (`some-command | python3 -c 'import sys; tok = open(3).read().rstrip("\n"); data = sys.stdin.read(); sys.stdout.write(data.replace(tok, "[REDACTED]") if tok else data)' 3<<<"$TOKEN"`).  The `secret-safety` pack carries the full form; never write `sed "s/$TOKEN/[REDACTED]/g"`.
 
 Your file-read tool is `cat` for this purpose.  Do not "just look" with Read because quoting confused you.
 

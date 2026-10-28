@@ -5,7 +5,7 @@ description: Access private fleet infrastructure inventory (host IPs, Tailscale 
 
 # Fleet Infrastructure & Private Inventory Access (ALL AGENTS)
 
-> **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `clutch-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLUTCH_ZULIP_EMAIL`, `CLUTCH_ZULIP_KEY`, `CLUTCH_ZULIP_SITE`).  Session tag `[CLUTCH·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `CLUTCH`.**  Chat tag `[CLUTCH·session8]`.  Notes `Clutch`.  Branches `clutch/`.  Lanes `~/apps/lanes/<Repo>/clutch-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `CLUTCH`, credential in Infisical Fleet-OPS `/zulip` (`CLUTCH_ZULIP_EMAIL`, `CLUTCH_ZULIP_KEY`, `CLUTCH_ZULIP_SITE`).  Session tag `[CLUTCH·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
 
@@ -23,7 +23,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
   ```bash
   gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'
   ```
-  A seat without access asks a Mac seat or the owner.  The old Mac relay (`mac.jays.services/files/ATTACK-MAP.md`) was retired 2026-10-19.
+  A seat without access asks a Mac seat or the owner.  The old Mac relay copy of the map was retired 2026-10-19.
 
 ## What Lives in `fleet-ops:ATTACK-MAP.md`
 
@@ -35,7 +35,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
    - The values themselves are private deployment inventory: they live in `fleet-ops:ATTACK-MAP.md` and in the operator's own host table on that Mac, and this pack names where they live rather than carrying them.
 
 2. **Coolify Container & Server UUIDs:**
-   - Server UUIDs for Hetzner (`fleet-hetzner-nbg1`).
+   - Server UUIDs for Hetzner (in the operator's private inventory on that Mac).
    - Application UUIDs for `Socratic.Trade`, `Congress.Trade`, and `Usage-Monitor`.
 
 3. **Infisical Project IDs:**
@@ -52,7 +52,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
    Always read values from environment variables (`INFISICAL_PROJECT_ID`, `COOLIFY_ST_APP_UUID`, `HETZNER_HOST_IP`, etc.) or query them dynamically via authenticated APIs.
 
 2. **Secrets Handoff Protection:**
-   Read credentials with `fleet-secrets get NAME` (Infisical Fleet-OPS) or from the app's own Infisical project.  Never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
+   Read credentials from the process environment when it already holds the value, and `fleet-secrets get NAME` (Infisical Fleet-OPS) or the app's own Infisical project only as the fallback.  Never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
 
 3. **Mock Data in Tests & Documentation:**
    Use RFC 5737 documentation ranges (`192.0.2.1`, `198.51.100.1`, `203.0.113.1`) and generic mock UUIDs (`mock-app-uuid`, `mock-project-id`) in test fixtures and public rollouts.

@@ -5,7 +5,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `GROK`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime fork (Grok).**  Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build: one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10): the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
@@ -162,7 +162,8 @@ Visibly wider gap (two visible spaces) after terminal punctuation (`.`, `!`, `?`
 | Surface | Syntax | Why |
 | :--- | :--- | :--- |
 | **Every surface** (owner ruling 2026-10-23):  chat replies in any other pane, Zulip, GitHub PR and issue text, review comments, Linear, commit messages, repo docs, skills, agent instructions, rendered UI copy | A real U+00A0 plus a normal space, generated in the shell | One rule everywhere.  Two ASCII spaces collapse on rendered surfaces, and the `&nbsp;` entity shows literally in squash commits and plain text. |
-| **Claude Code Code tab and the MiniMax Code chat pane: chat replies** | The `&nbsp;` entity plus a normal space, outside code spans | The one exception (owner ruling 2026-10-23):  those two panes normalize a raw U+00A0 away, so the entity is the form that renders a real gap there.  The entity is never the form anywhere else. |
+| **Claude Code Code tab and the MiniMax Code chat pane: chat replies** | The `&nbsp;` entity plus a normal space, outside code spans | The first exception (owner ruling 2026-10-23):  those two panes normalize a raw U+00A0 away, so the entity is the form that renders a real gap there.  The entity is never the form anywhere else. |
+| **Apple Notes** — the body of a note in the Coding folder, written by `scripts/apple-notes-coding.sh` | the narrow no-break space plus a normal space: the numeric reference `&#8239; ` | AFC-552: the second exception, measured `Oct 26, 2026`.  Apple Notes normalizes a NO-BREAK space away on import, so the reference for one comes back as two ordinary spaces, which the renderer collapses to one, and the gap never reaches the owner.  The narrow no-break space (U+202F) survives the import unchanged, so the note helper writes it. |
 | **HTML / JSX / Swift source for product copy** | Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant | Same rendered gap; never `&nbsp; ` |
 | **Code, identifiers, machine-readable config** | No gap character | Never put U+00A0 into code |
 

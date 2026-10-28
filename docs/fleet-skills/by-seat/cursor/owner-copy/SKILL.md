@@ -1,11 +1,11 @@
 ---
 name: owner-copy
-description: Fleet human-facing prose — two spaces between sentences (a real U+00A0 plus a space on every surface, except the Claude Code Code tab and the MiniMax Code chat pane, which take the &nbsp; entity plus a space), system theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation.  Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read.  Also when changing theme defaults or taking screenshots.
+description: Fleet human-facing prose — two spaces between sentences (a real U+00A0 plus a space on every surface, except the Claude Code Code tab and the MiniMax Code chat pane, which take the &nbsp; entity plus a space, and except an Apple Note body, which takes the narrow no-break space plus a normal space), system theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation.  Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read.  Also when changing theme defaults or taking screenshots.
 ---
 
 # Owner-facing copy (CURSOR)
 
-> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `cursor-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CURSOR_ZULIP_EMAIL`, `CURSOR_ZULIP_KEY`, `CURSOR_ZULIP_SITE`).  Session tag `[CURSOR·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `CURSOR`.**  Chat tag `[CURSOR·session8]`.  Notes `Cursor`.  Branches `cursor/`.  Lanes `~/apps/lanes/<Repo>/cursor-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `CURSOR`, credential in Infisical Fleet-OPS `/zulip` (`CURSOR_ZULIP_EMAIL`, `CURSOR_ZULIP_KEY`, `CURSOR_ZULIP_SITE`).  Session tag `[CURSOR·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime fork (Cursor).**  Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER, GB-ENGINEER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
@@ -22,7 +22,7 @@ Binding for every paragraph a human reads — in-app UI, ASC description / promo
 Every message to Jay needs the gap, including a one-line progress note and an acknowledgement: getting it right in artifacts while writing plain single spaces in the chat is still a failure (owner ruling 2026-10-20).  **Read the reply back before sending it** and check every `.`, `!` and `?` boundary.
 
 - **Every surface** (owner ruling 2026-10-23):  chat replies in any other pane, Zulip, GitHub PR and issue text and review comments, Linear, commit messages, repo docs, skills, agent instructions and UI copy all take a real U+00A0 plus a normal space after each sentence.  Generate it in the shell rather than typing it.
-- **The one exception:  the Claude Code Code tab and the MiniMax Code chat pane.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans.  The entity is never the form anywhere else.
+- **The two exceptions:  the Claude Code Code tab and the MiniMax Code chat pane, and the body of an Apple Note.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans.  The entity is never the form anywhere else.  An Apple Note body takes the narrow no-break space plus a normal space, because Apple Notes normalizes a no-break space away on import (AFC-552).
 - **Never the `&nbsp;` entity anywhere else.**  It shows up as literal text in squash-merge commits, plain-text email and many APIs.
 - **Never two plain ASCII spaces.**  Rendered surfaces collapse them to one.
 - Code, identifiers and machine-readable config never get a U+00A0.  If any other surface strips it, leave the text as it is and report the surface;  do not switch to the entity.

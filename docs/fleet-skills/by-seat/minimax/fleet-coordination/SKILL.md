@@ -5,7 +5,7 @@ description: Comprehensive master skill for multi-agent fleet operations across 
 
 # Fleet Coordination Protocol (Universal)
 
-> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mm-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MM_ZULIP_EMAIL`, `MM_ZULIP_KEY`, `MM_ZULIP_SITE`).  Session tag `[MM·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `MM`, credential in Infisical Fleet-OPS `/zulip` (`MM_ZULIP_EMAIL`, `MM_ZULIP_KEY`, `MM_ZULIP_SITE`).  Session tag `[MM·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (MiniMax).**  MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
@@ -162,7 +162,8 @@ Visibly wider gap (two visible spaces) after terminal punctuation (`.`, `!`, `?`
 | Surface | Syntax | Why |
 | :--- | :--- | :--- |
 | **Every surface** (owner ruling 2026-10-23):  chat replies in any other pane, Zulip, GitHub PR and issue text, review comments, Linear, commit messages, repo docs, skills, agent instructions, rendered UI copy | A real U+00A0 plus a normal space, generated in the shell | One rule everywhere.  Two ASCII spaces collapse on rendered surfaces, and the `&nbsp;` entity shows literally in squash commits and plain text. |
-| **Claude Code Code tab and the MiniMax Code chat pane: chat replies** | The `&nbsp;` entity plus a normal space, outside code spans | The one exception (owner ruling 2026-10-23):  those two panes normalize a raw U+00A0 away, so the entity is the form that renders a real gap there.  The entity is never the form anywhere else. |
+| **Claude Code Code tab and the MiniMax Code chat pane: chat replies** | The `&nbsp;` entity plus a normal space, outside code spans | The first exception (owner ruling 2026-10-23):  those two panes normalize a raw U+00A0 away, so the entity is the form that renders a real gap there.  The entity is never the form anywhere else. |
+| **Apple Notes** — the body of a note in the Coding folder, written by `scripts/apple-notes-coding.sh` | the narrow no-break space plus a normal space: the numeric reference `&#8239; ` | AFC-552: the second exception, measured `Oct 26, 2026`.  Apple Notes normalizes a NO-BREAK space away on import, so the reference for one comes back as two ordinary spaces, which the renderer collapses to one, and the gap never reaches the owner.  The narrow no-break space (U+202F) survives the import unchanged, so the note helper writes it. |
 | **HTML / JSX / Swift source for product copy** | Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant | Same rendered gap; never `&nbsp; ` |
 | **Code, identifiers, machine-readable config** | No gap character | Never put U+00A0 into code |
 

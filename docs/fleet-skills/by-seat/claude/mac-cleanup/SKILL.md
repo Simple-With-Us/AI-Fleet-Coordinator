@@ -10,7 +10,7 @@ description: Optimize Mac workstation and Hetzner Coolify disk space, prune merg
 
 # Mac & Hetzner Disk Cleanup Skill (ALL AGENTS)
 
-> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `CLAUDE`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `simple-chat` CLI writes it for you.
 
 
 Optimize local workstation storage and remote Coolify server disk usage by running the unified automated maintenance sweep.
@@ -63,7 +63,7 @@ the operator's own inventory on that Mac, not in this pack.
 
 - **Mac cleanup**: a scheduled Mac job runs the cleanup sweep automatically every 4 hours.
 - **Resource watch**: a scheduled Mac job every 5 minutes.  Samples disk/RAM/CPU, runs this script on a hit, and POSTs BotFleet Housekeeper.  See the `housekeeper` skill.
-- **Hog Hunter robotic vacuum**: a scheduled Mac job every 300 seconds.  This is the **primary** automatic path, since the older disk-janitor daemon was retired on 2026-10-11. It takes the same shared housekeeper lock as the scripts above, so the two never reclaim at once.
+- **Hog Hunter robotic vacuum**: a scheduled Mac job every 300 seconds.  This is the **primary** automatic path, since the older disk-janitor daemon was retired on `2026-10-11`.  It takes the same shared housekeeper lock as the scripts above, so the two never reclaim at once.
 - **Hetzner cleanup**: a scheduled job on the remote host runs automatically every 4 hours.
 
 ## Quick Status Check

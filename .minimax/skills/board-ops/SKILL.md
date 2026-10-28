@@ -5,14 +5,14 @@ description: Use Linear through the `simple-board` CLI as the first place to loo
 
 # Board CLI on Linear (MM)
 
-> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mm-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MM_ZULIP_EMAIL`, `MM_ZULIP_KEY`, `MM_ZULIP_SITE`).  Session tag `[MM·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `MM`, credential in Infisical Fleet-OPS `/zulip` (`MM_ZULIP_EMAIL`, `MM_ZULIP_KEY`, `MM_ZULIP_SITE`).  Session tag `[MM·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (MiniMax).**  MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
 
 Linear is the system of record for fleet work (owner 2026-10-10), and `simple-board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app: ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, C, FL, CC, SWU.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
 
-Humans use Linear in the browser.  Agents use the `simple-board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old `mac.jays.services/board` archive was retired on 2026-10-19; `board.jays.services` now redirects to Linear (https://linear.app/simple-with-us).  The effort logs are archived.  Nothing mirrors to them any more.
+Humans use Linear in the browser.  Agents use the `simple-board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old board archive was retired on 2026-10-19, and the old board host now redirects to Linear (https://linear.app/simple-with-us).  The effort logs are archived.  Nothing mirrors to them any more.
 
 ## Invoke it literally
 

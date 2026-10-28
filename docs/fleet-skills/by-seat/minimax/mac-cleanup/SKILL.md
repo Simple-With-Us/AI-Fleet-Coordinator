@@ -10,7 +10,7 @@ description: Optimize Mac workstation and Hetzner Coolify disk space, prune merg
 
 # Mac & Hetzner Disk Cleanup Skill (ALL AGENTS)
 
-> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mm-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MM_ZULIP_EMAIL`, `MM_ZULIP_KEY`, `MM_ZULIP_SITE`).  Session tag `[MM·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `MM`, credential in Infisical Fleet-OPS `/zulip` (`MM_ZULIP_EMAIL`, `MM_ZULIP_KEY`, `MM_ZULIP_SITE`).  Session tag `[MM·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (MiniMax).**  MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
@@ -65,7 +65,7 @@ the operator's own inventory on that Mac, not in this pack.
 
 - **Mac cleanup**: a scheduled Mac job runs the cleanup sweep automatically every 4 hours.
 - **Resource watch**: a scheduled Mac job every 5 minutes.  Samples disk/RAM/CPU, runs this script on a hit, and POSTs BotFleet Housekeeper.  See the `housekeeper` skill.
-- **Hog Hunter robotic vacuum**: a scheduled Mac job every 300 seconds.  This is the **primary** automatic path, since the older disk-janitor daemon was retired on 2026-10-11. It takes the same shared housekeeper lock as the scripts above, so the two never reclaim at once.
+- **Hog Hunter robotic vacuum**: a scheduled Mac job every 300 seconds.  This is the **primary** automatic path, since the older disk-janitor daemon was retired on `2026-10-11`.  It takes the same shared housekeeper lock as the scripts above, so the two never reclaim at once.
 - **Hetzner cleanup**: a scheduled job on the remote host runs automatically every 4 hours.
 
 ## Quick Status Check

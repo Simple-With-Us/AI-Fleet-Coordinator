@@ -1,12 +1,12 @@
 ---
 name: sentence-gap
 description: >-
-  Always put a visibly wider gap between sentences in every human-readable reply and file.  Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs.  Follows the canonical portable protocol.  Mechanism (owner ruling 2026-10-23, the same on every surface): a real U+00A0 plus a normal space between sentences; never two plain ASCII spaces, which collapse on rendered surfaces, and never the &nbsp; entity — except in the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane), which normalize a raw U+00A0 away and take the &nbsp; entity plus a normal space.  Use whenever writing any prose a human will read.
+  Always put a visibly wider gap between sentences in every human-readable reply and file.  Applies on every turn — Cursor desktop, Cursor cloud, CLI, Grok, chat, commits, PRs, and docs.  Follows the canonical portable protocol.  Mechanism (owner ruling 2026-10-23, the same on every surface): a real U+00A0 plus a normal space between sentences; never two plain ASCII spaces, which collapse on rendered surfaces, and never the &nbsp; entity — except in the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane), which normalize a raw U+00A0 away and take the &nbsp; entity plus a normal space, and except in an Apple Note body, which takes the narrow no-break space plus a normal space.  Use whenever writing any prose a human will read.
 ---
 
 # Sentence gap (portable — always on)
 
-> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `GROK`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime fork (Grok).**  Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build: one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10): the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
@@ -25,7 +25,7 @@ notes, design docs.
 Do **not** add a gap after a non-terminal abbreviation (`e.g.`, `i.e.`, `Dr.`, `v1.2.3`),
 inside a URL, email, filename, or a brand name containing a period.
 
-### Current rule (owner ruling 2026-10-23) — one mechanism on every surface, and one exception
+### Current rule (owner ruling 2026-10-23) — one mechanism on every surface, and two exceptions
 
 Jay, Fri, Oct 23:  update the rule everywhere, so it is the same on every surface.  Between
 sentences, write a **real U+00A0 (no-break space) followed by a normal space**.  That covers
@@ -33,7 +33,7 @@ chat replies, Zulip, GitHub PR and issue text and review comments, Linear,
 commit messages, repo docs and Markdown, skills, agent instructions, and UI copy, on every
 surface but the two chat panes named below.
 
-- **The one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane).**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.`  The entity is never the form anywhere else.
+- **The two exceptions:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane), and the body of an Apple Note.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.`  The entity is never the form anywhere else.  An Apple Note body takes the narrow no-break space plus a normal space, because Apple Notes normalizes a no-break space away on import (AFC-552).
 - **Never write the `&nbsp;` entity anywhere else.**  It shows up as literal text in squash-merge commits,
   plain-text email and many APIs.
 - **Two plain ASCII spaces are not enough.**  Rendered surfaces (Zulip, GitHub, Linear, HTML,
@@ -48,7 +48,7 @@ surface but the two chat panes named below.
 
 This replaces every earlier per-surface rule:  the entity on GitHub (2026-10-22), and two plain
 ASCII spaces in files, commits, terminals and untested surfaces (2026-10-20).  The 2026-10-08
-and 2026-10-18 entity rules survive only as the one exception above.  Where older text below
+and 2026-10-18 entity rules survive only as the chat-pane exception above.  Where older text below
 disagrees, this section wins.
 
 ### The gap covers your CHAT PROSE, not only your artifacts
@@ -73,12 +73,12 @@ can have it normalized to a plain space:
 printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
 ```
 
-`\302\240` is the UTF-8 encoding of U+00A0. Send the generated text to a file, then
+`\302\240` is the UTF-8 encoding of `U+00A0`.  Send the generated text to a file, then
 verify that same file, so the check reads the bytes you just produced and never a stale
 copy of the same name:
 
 ```sh
-grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' reply.txt | wc -l
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' reply.txt | wc -l
 grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' reply.txt
 ```
 
@@ -127,8 +127,8 @@ depends on the surface, so pick by destination:
 | Destination | Use | Why |
 |---|---|---|
 | **Every surface** — chat replies in any other pane, Zulip, GitHub PR and issue titles, bodies and comments, review comments, Linear, commit messages, repo docs and Markdown, skills and agent instructions, rendered product copy | a real U+00A0 plus a normal space | Owner ruling 2026-10-23:  one rule everywhere.  Two ASCII spaces collapse on rendered surfaces, and the `&nbsp;` entity shows as literal text in squash commits, plain-text email and many APIs.  This replaces every earlier per-surface row. |
-| **Claude Code Code tab and the MiniMax Code chat pane: chat replies** (owner-verified 2026-10-08 with a screenshot, and 2026-10-18 for the MiniMax Code pane) | the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.` | The one exception.  These panes normalize a raw U+00A0 away (a verified reply held 0 NBSPs) and collapse two ASCII spaces, so the entity is the form that renders a real gap there.  The entity is never the form anywhere else. |
-| **Apple Notes** — the body of a note in the Coding folder, written by `scripts/apple-notes-coding.sh` | the narrow no-break space plus a normal space: the numeric reference `&#8239; ` | AFC-552: the second exception, measured Oct 26, 2026. Apple Notes normalizes a NO-BREAK space away on import, so the reference for one comes back as two ordinary spaces, which the renderer collapses to one, and the gap never reaches the owner.  The narrow no-break space (U+202F) survives the import unchanged, so the note helper writes it. |
+| **Claude Code Code tab and the MiniMax Code chat pane: chat replies** (owner-verified 2026-10-08 with a screenshot, and 2026-10-18 for the MiniMax Code pane) | the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.` | The first exception.  These panes normalize a raw U+00A0 away (a verified reply held 0 NBSPs) and collapse two ASCII spaces, so the entity is the form that renders a real gap there.  The entity is never the form anywhere else. |
+| **Apple Notes** — the body of a note in the Coding folder, written by `scripts/apple-notes-coding.sh` | the narrow no-break space plus a normal space: the numeric reference `&#8239; ` | AFC-552: the second exception, measured `Oct 26, 2026`.  Apple Notes normalizes a NO-BREAK space away on import, so the reference for one comes back as two ordinary spaces, which the renderer collapses to one, and the gap never reaches the owner.  The narrow no-break space (U+202F) survives the import unchanged, so the note helper writes it. |
 | **HTML / JSX / Swift source for product copy** | Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant | The rendered result is the same U+00A0 plus a space.  Never `&nbsp; `. |
 | **Code, identifiers and machine-readable config** | no gap character | Never put U+00A0 into code, identifiers or config. |
 | **A surface that strips U+00A0** | leave the text as it is | Do not switch to the `&nbsp;` entity.  Report the surface in #Work-In-Progress.  Apple Notes is the one surface measured to have a better answer: the narrow no-break space, above. |
@@ -205,7 +205,7 @@ partly-converted body can have real U+00A0 and still carry a leftover ASCII gap 
 spaces.
 
 ```sh
-grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*\xc2\xa0' body.nbsp.txt | wc -l  # must be > 0
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])*(&nbsp; |\xc2\xa0)' body.nbsp.txt | wc -l  # must be > 0
 grep -cE $'[^0-9][.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'’”])* +[A-Z0-9"*`#@\'‘“[]' body.nbsp.txt  # must be 0
 ```
 
@@ -240,6 +240,22 @@ therefore carries the converter's whole lookahead, the opening quotes and the re
 the same defect one level up: a body already carrying one real U+00A0 and still holding a
 missed gap before a digit, a `*`, a backtick, `#` or `@` reads as converted, and the check
 that exists to catch exactly that returns 0.
+
+
+### One count check, two modes
+
+The first check above counts a real U+00A0, and in the entity mode that count is
+structurally 0 on a body that converted perfectly, because the entity is six literal
+characters where the byte pair is one.  The count check therefore takes either
+form of the gap, so one command serves both modes: the pattern holds the entity and
+the byte pair side by side, `(&nbsp; |\xc2\xa0)`.
+
+Point the command at the file that holds the body you produced: `body.nbsp.txt` for
+the real-byte bodies above, and the file that holds the entity bodies when the body
+targets the two chat panes.  The leftover check is the same in both modes,
+and it is worth saying why: a converted boundary is followed by the gap itself, the
+byte pair in the real mode and the entity in the entity mode, and neither of them
+begins with a space, so only an unconverted boundary matches the leftover check.
 
 
 ### The program that runs it — one pass, code-aware

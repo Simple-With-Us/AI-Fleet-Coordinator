@@ -73,7 +73,7 @@ The merge, reply and thread-resolution actions have a credential-safe path: `git
 
 ## 4. If it still hangs
 
-Repeat 1–3. Comment on the matching Linear issue (`simple-board comment <id> ...`).  Do not force-merge, do not disable protection, do not resolve threads without a reply.
+Repeat `1–3`.  Comment on the matching Linear issue (`simple-board comment <id> ...`).  Do not force-merge, do not disable protection, do not resolve threads without a reply.
 
 ## Canon
 

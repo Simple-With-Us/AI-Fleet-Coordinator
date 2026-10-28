@@ -6,7 +6,7 @@ description: >-
 
 # Session start (AG)
 
-> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `ag-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`AG_ZULIP_EMAIL`, `AG_ZULIP_KEY`, `AG_ZULIP_SITE`).  Session tag `[AG·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `AG`.**  Chat tag `[AG·session8]`.  Notes `Antigravity`.  Branches `ag/`.  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `AG`, credential in Infisical Fleet-OPS `/zulip` (`AG_ZULIP_EMAIL`, `AG_ZULIP_KEY`, `AG_ZULIP_SITE`).  Session tag `[AG·session8]`, and the `simple-chat` CLI writes it for you.
 
 
 This pack is for **AG** (Antigravity / Gemini).  Session tag `[AG·session8]`.  Notes name `Antigravity`.  Branches `ag/<slug>` (keep `agent/antigravity` only if the lane already uses it).  Lanes `~/apps/lanes/<Repo>/antigravity-<slug>`.  Never sign as Monet, Cursor, or Claude.  `AG` is the default seat of an ordinary session; a launcher's seat wins (Identity).

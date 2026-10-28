@@ -5,7 +5,7 @@ description: Land a Muse Code feature branch to main across the fleet — seat w
 
 # Land a feature branch (MC)
 
-> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MC_ZULIP_EMAIL`, `MC_ZULIP_KEY`, `MC_ZULIP_SITE`).  Session tag `[MC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `MC`, credential in Infisical Fleet-OPS `/zulip` (`MC_ZULIP_EMAIL`, `MC_ZULIP_KEY`, `MC_ZULIP_SITE`).  Session tag `[MC·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (Muse Code).**  Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
@@ -16,7 +16,7 @@ Seat: **MC**.  Branch: `muse-code/<slug>`.  Never `claude/`.  Never land from
 
 ## Preconditions
 
-1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, which on the server is the lanes root the environment names in `FLEET_LANES_ROOT`, made with `~/apps/lane new` on the Mac and with `lane new` on the server; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves, or a flat `~/apps/<prefix>-<seat>[-<lane>]`, which retires where it is) that already exists is fine).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, which on the server is the lanes root the environment names in `FLEET_LANES_ROOT`, made with `~/apps/lane new` on the Mac and with `lane new` on the server; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves) that already exists is fine).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 
@@ -31,13 +31,13 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[TEAM_KEY, Agent] …`.
 
-Prose:  commit bodies, rollout docs, Notes source, PR titles, bodies and comments, and chat replies to the owner all take a real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23; convert with the `perl` recipe in `sentence-gap`).  The one exception: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.  See `owner-copy`.
+Prose:  commit bodies, rollout docs, Notes source, PR titles, bodies and comments, and chat replies to the owner all take a real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23; convert with the `perl` recipe in `sentence-gap`).  The two exceptions: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space, and an Apple Note body takes the narrow no-break space plus a normal space (AFC-552).  See `owner-copy`.
 
 ## Gate
 
 ### Socratic.Trade — `scripts/land.sh`
 
-Homebrew default `node` may be v26. ST `better-sqlite3` is Node 24 (MODULE_VERSION 137).  Confirm `node --version` is v24.x:
+Homebrew default `node` may be `v26`.  ST `better-sqlite3` is Node 24 (MODULE_VERSION 137).  Confirm `node --version` is v24.x:
 
 ```bash
 export PATH=/opt/homebrew/opt/node@24/bin:$PATH

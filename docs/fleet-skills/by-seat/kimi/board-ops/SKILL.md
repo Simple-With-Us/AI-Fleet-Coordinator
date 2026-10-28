@@ -10,7 +10,7 @@ description: Use Linear through the `simple-board` CLI as the first place to loo
 
 Linear is the system of record for fleet work (owner 2026-10-10), and `simple-board` is how agents use it.  Workspace Simple With Us, `https://linear.app/simple-with-us`, one public team per app: ST, CT, UM, CTS, DD, AFC, PS, AR, CL, BF, HH, OPS, C, FL, CC, SWU.  Every issue has an identifier such as `BF-123`.  The old board's rows, the GitHub issues and the effort-log items were all imported, so the history is there too.
 
-Humans use Linear in the browser.  Agents use the `simple-board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old `mac.jays.services/board` archive was retired on 2026-10-19; `board.jays.services` now redirects to Linear (https://linear.app/simple-with-us).  The effort logs are archived.  Nothing mirrors to them any more.
+Humans use Linear in the browser.  Agents use the `simple-board` CLI, which is the same command with the same flags as before; it now reads and writes Linear and signs each write with your seat.  The old board archive was retired on 2026-10-19, and the old board host now redirects to Linear (https://linear.app/simple-with-us).  The effort logs are archived.  Nothing mirrors to them any more.
 
 ## Invoke it literally
 

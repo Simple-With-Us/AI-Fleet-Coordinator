@@ -5,7 +5,7 @@ description: Access private fleet infrastructure inventory (host IPs, Tailscale 
 
 # Fleet Infrastructure & Private Inventory Access (ALL AGENTS)
 
-> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM): use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot `muse-assist-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `MA`.**  Chat tag `[MA·session8]`.  Notes `Muse Assist`.  Branches `muse-assist/`.  No Mac lane (cloud VM): use the durable VM checkout `muse-assist-<repo>`, one per repo.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `MA`, credential in Infisical Fleet-OPS `/zulip` (`MA_ZULIP_EMAIL`, `MA_ZULIP_KEY`, `MA_ZULIP_SITE`).  Session tag `[MA·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Cloud VM batch agent.**  Muse Assist (`[MA]`, former tag `[MUSE]`) is the Meta Muse cloud VM batch compute and creative assistant dispatched via Mac/iOS apps.  Unmetered VM compute for multi-day heavy jobs (transcoding, large migrations).  Distinct from **Muse Code** (`[MC]`, branches `muse-code/`).  This catalog copy is reference-only — do not install to `~/.muse`.
 
@@ -23,7 +23,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
   ```bash
   gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'
   ```
-  A seat without access asks a Mac seat or the owner.  The old Mac relay (`mac.jays.services/files/ATTACK-MAP.md`) was retired 2026-10-19.
+  A seat without access asks a Mac seat or the owner.  The old Mac relay copy of the map was retired 2026-10-19.
 
 ## What Lives in `fleet-ops:ATTACK-MAP.md`
 
@@ -35,7 +35,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
    - The values themselves are private deployment inventory: they live in `fleet-ops:ATTACK-MAP.md` and in the operator's own host table on that Mac, and this pack names where they live rather than carrying them.
 
 2. **Coolify Container & Server UUIDs:**
-   - Server UUIDs for Hetzner (`fleet-hetzner-nbg1`).
+   - Server UUIDs for Hetzner (in the operator's private inventory on that Mac).
    - Application UUIDs for `Socratic.Trade`, `Congress.Trade`, and `Usage-Monitor`.
 
 3. **Infisical Project IDs:**
@@ -52,7 +52,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
    Always read values from environment variables (`INFISICAL_PROJECT_ID`, `COOLIFY_ST_APP_UUID`, `HETZNER_HOST_IP`, etc.) or query them dynamically via authenticated APIs.
 
 2. **Secrets Handoff Protection:**
-   Read credentials with `fleet-secrets get NAME` (Infisical Fleet-OPS) or from the app's own Infisical project.  Never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
+   Read credentials from the process environment when it already holds the value, and `fleet-secrets get NAME` (Infisical Fleet-OPS) or the app's own Infisical project only as the fallback.  Never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
 
 3. **Mock Data in Tests & Documentation:**
    Use RFC 5737 documentation ranges (`192.0.2.1`, `198.51.100.1`, `203.0.113.1`) and generic mock UUIDs (`mock-app-uuid`, `mock-project-id`) in test fixtures and public rollouts.

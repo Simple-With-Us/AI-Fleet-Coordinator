@@ -5,7 +5,7 @@ description: Land a MiniMax feature branch to main across the fleet — seat wor
 
 # Land a feature branch (MM)
 
-> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mm-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MM_ZULIP_EMAIL`, `MM_ZULIP_KEY`, `MM_ZULIP_SITE`).  Session tag `[MM·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `MM`.**  Chat tag `[MM·session8]`.  Notes `MiniMax`.  Branches `minimax/`.  Lanes `~/apps/lanes/<Repo>/minimax-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `MM`, credential in Infisical Fleet-OPS `/zulip` (`MM_ZULIP_EMAIL`, `MM_ZULIP_KEY`, `MM_ZULIP_SITE`).  Session tag `[MM·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime (MiniMax).**  MiniMax Code has no global rules file.  The fleet pointer lives in `~/.minimax/memory/user.md` (user memory, injected into every session's system prompt); per-repo `AGENTS.md` is project memory.  Skills here are loaded on demand from `<available_skills>`, so read the one that matches before acting — nothing in this directory is auto-applied.  `config.yaml` ships `permissionMode: bypassPermissions`, so nothing prompts: hold the destructive-op pause yourself.
 
@@ -16,7 +16,7 @@ Seat: **MM**.  Branch: `minimax/<slug>`.  Never `claude/`.  Never land from `
 
 ## Preconditions
 
-1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, which on the server is the lanes root the environment names in `FLEET_LANES_ROOT`, made with `~/apps/lane new` on the Mac and with `lane new` on the server; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves, or a flat `~/apps/<prefix>-<seat>[-<lane>]`, which retires where it is) that already exists is fine).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, which on the server is the lanes root the environment names in `FLEET_LANES_ROOT`, made with `~/apps/lane new` on the Mac and with `lane new` on the server; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves) that already exists is fine).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 
@@ -31,13 +31,13 @@ git config user.email "12656028+jaywedgeworth22@users.noreply.github.com"
 3. `docs/rollouts/YYYY-MM-DD-slug.md` — summary, why, files, verification commands actually run, follow-ups.
 4. Substantial owner-facing work: living Apple Note via the `apple-notes` skill, title `[TEAM_KEY, Agent] …`.
 
-Prose:  commit bodies, rollout docs, Notes source, PR titles, bodies and comments, and chat replies to the owner all take a real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23; convert with the `perl` recipe in `sentence-gap`).  The one exception: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.  See `owner-copy`.
+Prose:  commit bodies, rollout docs, Notes source, PR titles, bodies and comments, and chat replies to the owner all take a real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23; convert with the `perl` recipe in `sentence-gap`).  The two exceptions: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space, and an Apple Note body takes the narrow no-break space plus a normal space (AFC-552).  See `owner-copy`.
 
 ## Gate
 
 ### Socratic.Trade — `scripts/land.sh`
 
-Homebrew default `node` may be v26. ST `better-sqlite3` is Node 24 (MODULE_VERSION 137).  Confirm `node --version` is v24.x:
+Homebrew default `node` may be `v26`.  ST `better-sqlite3` is Node 24 (MODULE_VERSION 137).  Confirm `node --version` is v24.x:
 
 ```bash
 export PATH=/opt/homebrew/opt/node@24/bin:$PATH

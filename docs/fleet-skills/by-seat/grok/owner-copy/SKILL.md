@@ -1,11 +1,11 @@
 ---
 name: owner-copy
-description: Fleet human-facing prose — two spaces between sentences (a real U+00A0 plus a space on every surface, except the Claude Code Code tab and the MiniMax Code chat pane, which take the &nbsp; entity plus a space), system theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation.  Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read.  Also when changing theme defaults or taking screenshots.
+description: Fleet human-facing prose — two spaces between sentences (a real U+00A0 plus a space on every surface, except the Claude Code Code tab and the MiniMax Code chat pane, which take the &nbsp; entity plus a space, and except an Apple Note body, which takes the narrow no-break space plus a normal space), system theme default, Title Case headings, no agent names in App Store/TestFlight notes, 12-hour am/pm, no timezone abbreviation.  Use when writing UI strings, ASC listing fields, PR/commit/chat/Notes prose, release notes, or any paragraph a human will read.  Also when changing theme defaults or taking screenshots.
 ---
 
 # Owner-facing copy (GROK)
 
-> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `GROK`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
 
 > **Runtime fork (Grok).**  Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build: one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10): the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
@@ -22,7 +22,7 @@ Binding for every paragraph a human reads — in-app UI, ASC description / promo
 Every message to Jay needs the gap, including a one-line progress note and an acknowledgement: getting it right in artifacts while writing plain single spaces in the chat is still a failure (owner ruling 2026-10-20).  **Read the reply back before sending it** and check every `.`, `!` and `?` boundary.
 
 - **Every surface** (owner ruling 2026-10-23):  chat replies in any other pane, Zulip, GitHub PR and issue text and review comments, Linear, commit messages, repo docs, skills, agent instructions and UI copy all take a real U+00A0 plus a normal space after each sentence.  Generate it in the shell rather than typing it.
-- **The one exception:  the Claude Code Code tab and the MiniMax Code chat pane.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans.  The entity is never the form anywhere else.
+- **The two exceptions:  the Claude Code Code tab and the MiniMax Code chat pane, and the body of an Apple Note.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans.  The entity is never the form anywhere else.  An Apple Note body takes the narrow no-break space plus a normal space, because Apple Notes normalizes a no-break space away on import (AFC-552).
 - **Never the `&nbsp;` entity anywhere else.**  It shows up as literal text in squash-merge commits, plain-text email and many APIs.
 - **Never two plain ASCII spaces.**  Rendered surfaces collapse them to one.
 - Code, identifiers and machine-readable config never get a U+00A0.  If any other surface strips it, leave the text as it is and report the surface;  do not switch to the entity.

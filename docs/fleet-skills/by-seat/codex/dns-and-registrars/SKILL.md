@@ -5,7 +5,7 @@ description: Fleet DNS and registrar playbook.  Cloudflare is DNS for every fle
 
 # Fleet DNS and Registrars (ALL AGENTS)
 
-> **This install is for `CODEX`.**  Chat tag `[CODEX·session8]`.  Notes `Codex`.  Branches `codex/`.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `codex-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CODEX_ZULIP_EMAIL`, `CODEX_ZULIP_KEY`, `CODEX_ZULIP_SITE`).  Session tag `[CODEX·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `CODEX`.**  Chat tag `[CODEX·session8]`.  Notes `Codex`.  Branches `codex/`.  Lanes `~/apps/lanes/<Repo>/codex-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot for seat `CODEX`, credential in Infisical Fleet-OPS `/zulip` (`CODEX_ZULIP_EMAIL`, `CODEX_ZULIP_KEY`, `CODEX_ZULIP_SITE`).  Session tag `[CODEX·session8]`, and the `simple-chat` CLI writes it for you.
 
 
 Cloudflare is the DNS manager for every fleet domain.  Registrar and Cloudflare account are separate.
@@ -16,7 +16,7 @@ Do not change DNS, buy domains, mint Cloudflare accounts, install products, or s
 
 ## Account vs zone vs hostname
 
-**Usage.Jays.Services is a Cloudflare account name** (login `mail@jays.services`).  It is not a zone and not a hostname.  `usage.jays.services` is an already-live hostname.  `jays.services` is an existing DNS-only zone on that same account.
+**Usage.Jays.Services is a Cloudflare account name**.  It is not a zone and not a hostname.  `usage.jays.services` is an already-live hostname.  `jays.services` is an existing DNS-only zone.
 
 A new app such as ContactLogo gets its **own** new Cloudflare zone for that apex (`contactlogo.com`), created on account Usage.Jays.Services.  Do not put ContactLogo — or any new app — records on `usage.jays.services` or `jays.services`.
 
@@ -28,7 +28,7 @@ A new app such as ContactLogo gets its **own** new Cloudflare zone for that apex
 
 ## Default for a new DNS-only zone
 
-App hosted on Vercel, Coolify, or elsewhere, with no Workers / R2 / WAF / other Cloudflare products: create a **new zone for that app's apex** on the **Usage.Jays.Services** account.  That account already holds Usage-Monitor plus DNS-only zones `jaywedgeworth.com` and `jays.services`.
+App hosted on Vercel, Coolify, or elsewhere, with no Workers / R2 / WAF / other Cloudflare products: create a **new zone for that app's apex** on the **Usage.Jays.Services** account.
 
 Example (ContactLogo): add zone `contactlogo.com` on account Usage.Jays.Services, then move Namecheap nameservers (`dns1.registrar-servers.com` / `dns2.registrar-servers.com`) to the nameservers Cloudflare shows for that new zone.
 
@@ -36,18 +36,20 @@ If an app later needs extra Cloudflare services, create a dedicated Cloudflare a
 
 ## Cloudflare accounts
 
-| Account | Login | Holds | Do not |
-|---------|-------|-------|--------|
-| Usage.Jays.Services | `mail@jays.services` | Usage-Monitor + DNS-only zones + **new app zones** (each app's own apex) | Put ST/CT product services here.  Do not attach new-app records to `usage.jays.services` or `jays.services`. |
-| SocraticTrade.com | `socratic.trade@jays.services` | ST registrar for SocraticTrade.com and Socratic.Trade, ST DNS, ST R2 weekly backups | Move unrelated new zones here |
-| Congress.Trade | `congress.trade@jays.services` | CT DNS, CT R2 weekly backups | Move unrelated new zones here |
-| old | unused Gmail login (do not print it) | unused | Create or move anything here.  Leave it. |
+| Account | Do not |
+|---------|--------|
+| Usage.Jays.Services | Put ST/CT product services here.  Do not attach new-app records to `usage.jays.services` or `jays.services`. |
+| SocraticTrade.com | Move unrelated new zones here |
+| Congress.Trade | Move unrelated new zones here |
+| old | Create or move anything here.  Leave it. |
+
+Each account's login, and the zones each account holds, are private inventory in the Operator's own store, so this pack carries neither.  Load them from there before you touch an account.
 
 ## Registrars
 
 | Registrar | Use for |
 |-----------|---------|
-| Namecheap | Default for most domains.  `NAMECHEAP_API_KEY` lives in global API keys (do not print or commit it). |
+| Namecheap | Default for most domains.  `NAMECHEAP_API_KEY` lives in Infisical Fleet-OPS via `fleet-secrets` (do not print or commit it). |
 | UnstoppableDomains | `jays.services` only |
 | Cloudflare registrar | SocraticTrade.com and Socratic.Trade only (the ST Cloudflare account) |
 

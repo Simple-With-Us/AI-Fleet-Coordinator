@@ -1583,7 +1583,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         "**FX**, or a Grok Bot `[GB-<NAME>]` role).\u00a0 "
         "Terminal Grok and Grok Build are one seat, **GROK** (GROK-BUILD in any spelling is an alias, not a tag).\u00a0 "
         "Use your own Zulip session "
-        "tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-FIXER]`, "
+        "tag (e.g.\u00a0 `[AG·session8]`, `[CURSOR·session8]`, `[GB-FIXER]`, "
         "`[DSH·session8]`, `[MM·session8]`), your seat's own bot and "
         "`<BOT>_ZULIP_*` names in Infisical Fleet-OPS `/zulip`, branch "
         "prefix (`<seat>/<slug>`), lane (`~/apps/lanes/<Repo>/<seat>-<slug>`), and Apple "
@@ -1664,7 +1664,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         ("Use whenever Monet", "Use whenever an agent"),
         (
             "Notes name `Monet`",
-            "Notes name in Title Case (e.g. `Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`)",
+            "Notes name in Title Case (e.g.\u00a0 `Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`)",
         ),
         ("then `Monet` (Title Case", "then `<Agent>` (Title Case"),
         ("then `Monet`", "then `<Agent>`"),
@@ -1677,7 +1677,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         ("parallel Monet lanes", "parallel agent lanes"),
         (
             "Acronyms first, then `Monet` (Title Case, not all-caps seat tags).",
-            "Acronyms first, then agent name in Title Case (e.g. `Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek`, `Fx`), not all-caps seat tags.",
+            "Acronyms first, then agent name in Title Case (e.g.\u00a0 `Antigravity`, `Cursor`, `Codex`, `Grok`, `Claude`, `Monet`, `DeepSeek`, `Fx`), not all-caps seat tags.",
         ),
         ("Acronyms first, then `Monet`", "Acronyms first, then agent name in Title Case"),
         ("Monet/peer", "peer"),
