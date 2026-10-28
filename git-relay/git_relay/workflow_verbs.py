@@ -471,7 +471,9 @@ class WorkflowVerbs:
         data = self.client._call(
             "PUT", f"/repos/{repo}/issues/{number}/labels", {"labels": labels}, bearer=self.bearer
         )
-        result = _arr(data)
+        if not isinstance(data, list):
+            raise RelayGitHubError(502, "label receipt unverifiable")
+        result = data
         if any(
             not isinstance(x, dict)
             or isinstance(x.get("id"), bool)
@@ -509,7 +511,9 @@ class WorkflowVerbs:
             {"reviewers": reviewers},
             bearer=self.bearer,
         )
-        result = _obj(data)
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
         if (
             not isinstance(result.get("requested_reviewers"), list)
             or isinstance(result.get("id"), bool)
@@ -545,7 +549,9 @@ class WorkflowVerbs:
             {"reviewers": reviewers},
             bearer=self.bearer,
         )
-        result = _obj(data)
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
         if (
             not isinstance(result.get("requested_reviewers"), list)
             or isinstance(result.get("id"), bool)
@@ -583,7 +589,9 @@ class WorkflowVerbs:
             {"tag_name": tag, "name": name, "body": body, "draft": draft, "prerelease": prerelease},
             bearer=self.bearer,
         )
-        result = _obj(data)
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
         if (
             not isinstance(result.get("id"), int)
             or isinstance(result.get("id"), bool)
@@ -619,7 +627,9 @@ class WorkflowVerbs:
             {"name": name, "body": body, "draft": draft, "prerelease": prerelease},
             bearer=self.bearer,
         )
-        result = _obj(data)
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
         if (
             not isinstance(result.get("id"), int)
             or isinstance(result.get("id"), bool)
