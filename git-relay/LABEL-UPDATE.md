@@ -14,7 +14,7 @@ requires the same ID and exact requested metadata; only that projection returns.
 Transient pre-reads are definitely unsent. Uncertain writes or malformed success
 receipts stay UNKNOWN in the existing file-backed outcome store. Changing only
 the lookup name after a possible rename cannot re-arm the same desired update;
-restart tests prove no second dispatch. No forced replay or new credentials.
+restart tests prove no second dispatch. Only a verified successful desired-state update can be applied again, so A-to-B-to-A works under the existing state-setter rules. Pending and UNKNOWN writes remain held. No forced replay or new credentials.
 Offline synthetic tests only. No live label was changed, and implementing this
 command grants no authority to change labels or deploy it.
 

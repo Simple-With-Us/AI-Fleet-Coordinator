@@ -63,7 +63,7 @@ class LabelUpdate(unittest.TestCase):
         WorkflowVerbs.for_action(c, Policy(), m, "swu-wise", "wf_label_update", REPO)
         self.assertEqual(m.calls[0][2], {"issues": "write", "metadata": "read"})
         self.assertEqual(SPECS["wf_label_update"], ({"issues": "write"}, True))
-        self.assertNotIn("wf_label_update", _REAPPLY_STATE_ACTIONS)
+        self.assertIn("wf_label_update", _REAPPLY_STATE_ACTIONS)
 
     def test_preflight_closed_bounded_scanned(self):
         # Synthetic assembled credential fixtures only, never actual credentials.
