@@ -60,6 +60,11 @@ SPECS = {
     "wf_issue_subissues": ({"issues": "read"}, False),
     "wf_issue_blocked_by": ({"issues": "read"}, False),
     "wf_issue_blocking": ({"issues": "read"}, False),
+    "wf_pr_draft": ({"pull_requests": "write"}, True),
+    "wf_pr_ready": ({"pull_requests": "write"}, True),
+    "wf_automerge_enable": ({"pull_requests": "write"}, True),
+    "wf_automerge_disable": ({"pull_requests": "write"}, True),
+    "wf_review_threads": ({"pull_requests": "read"}, False),
     "wf_assignees_add": ({"issues": "write"}, True),
     "wf_assignees_remove": ({"issues": "write"}, True),
     "wf_issue_lock": ({"issues": "write"}, True),
@@ -590,6 +595,94 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def _pr_node(self, repo, number):
+        try:
+            data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("PR pre-read unavailable; no write attempted") from None
+            raise
+        node = data.get("node_id")
+        if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", node):
+            raise Refused("PR node unavailable")
+        return node
+
+    def _fixed_graph(self, query, variables, field, write=True):
+        data = self.client._call(
+            "POST", "/graphql", {"query": query, "variables": variables}, bearer=self.bearer
+        )
+        # GraphQL HTTP200 errors may follow partial mutation application; never call them definitely unsent.
+        if (
+            not isinstance(data, dict)
+            or data.get("errors")
+            or not isinstance(data.get("data"), dict)
+        ):
+            raise RelayGitHubError(502, "GraphQL outcome unverifiable")
+        result = data["data"].get(field)
+        if not isinstance(result, dict):
+            raise RelayGitHubError(502, "GraphQL result unverifiable")
+        return result
+
+    def wf_pr_draft(self, repo, args):
+        _only(args, ("repo", "number"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!) { convertPullRequestToDraft(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
+        result = self._fixed_graph(query, {"id": node}, "convertPullRequestToDraft")
+        pull = _sub(result, "pullRequest")
+        if pull.get("id") != node or pull.get("isDraft") is not True:
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_pr_ready(self, repo, args):
+        _only(args, ("repo", "number"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!) { markPullRequestReadyForReview(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
+        result = self._fixed_graph(query, {"id": node}, "markPullRequestReadyForReview")
+        pull = _sub(result, "pullRequest")
+        if pull.get("id") != node or pull.get("isDraft") is not False:
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_automerge_disable(self, repo, args):
+        _only(args, ("repo", "number"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!) { disablePullRequestAutoMerge(input:{pullRequestId:$id}) { pullRequest { id autoMergeRequest { enabledAt } } } }"
+        result = self._fixed_graph(query, {"id": node}, "disablePullRequestAutoMerge")
+        pull = _sub(result, "pullRequest")
+        if (
+            pull.get("id") != node
+            or "autoMergeRequest" not in pull
+            or pull["autoMergeRequest"] is not None
+        ):
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_automerge_enable(self, repo, args):
+        _only(args, ("repo", "number", "method"))
+        method = _enum(args, "method", ("SQUASH", "MERGE", "REBASE"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!, $method: PullRequestMergeMethod!) { enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method}) { pullRequest { id autoMergeRequest { enabledAt } } } }"
+        result = self._fixed_graph(
+            query, {"id": node, "method": method}, "enablePullRequestAutoMerge"
+        )
+        pull = _sub(result, "pullRequest")
+        if pull.get("id") != node or not isinstance(pull.get("autoMergeRequest"), dict):
+            raise RelayGitHubError(502, "auto-merge outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_review_threads(self, repo, args):
+        _only(args, ("repo", "number"))
+        number = _int(args, "number")
+        owner, name = repo.split("/")
+        query = "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:50) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first:20) { nodes { id databaseId body author { login } } pageInfo { hasNextPage endCursor } } } } } } }"
+        result = self._fixed_graph(
+            query, {"owner": owner, "name": name, "number": number}, "repository", write=False
+        )
+        threads = _sub(_sub(result, "pullRequest"), "reviewThreads")
+        if not isinstance(threads.get("nodes"), list):
+            raise RelayGitHubError(502, "thread result unverifiable")
+        return {"threads": threads}
 
     def wf_assignees_add(self, repo, args):
         _only(
