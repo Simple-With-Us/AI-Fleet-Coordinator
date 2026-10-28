@@ -986,7 +986,7 @@ class WorkflowVerbs:
                 bearer=self.bearer,
             )
         except RelayGitHubError as exc:
-            if exc.status in (0, 408, 429) or exc.status >= 500:
+            if exc.status in (0, 408) or exc.status >= 500:
                 raise RelayGitHubError(502, "dependency write outcome unverifiable") from None
             raise
         # GitHub documents an issue body for BOTH201 add and200 delete.

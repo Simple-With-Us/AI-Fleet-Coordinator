@@ -126,12 +126,16 @@ class Dependencies(unittest.TestCase):
                     raise RelayGitHubError(self.write_status, "upstream")
                 return super()._call(method, path, payload, bearer)
 
-        for status in (0, 408, 429, 502):
+        for status in (0, 408, 502):
             with self.subTest(status=status):
                 with self.assertRaises(RelayGitHubError) as ctx:
                     self.runverb(WriteTransportDown(status), a, args)
                 self.assertEqual(ctx.exception.status, 502)
                 self.assertIn("dependency write outcome unverifiable", str(ctx.exception))
+
+        with self.assertRaises(RelayGitHubError) as ctx:
+            self.runverb(WriteTransportDown(429), a, args)
+        self.assertEqual(ctx.exception.status, 429)
 
     def test_preread_auth_preserves_masked_credential_preview(self):
         a = "wf_issue_dependency_add"
