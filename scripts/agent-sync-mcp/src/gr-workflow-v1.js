@@ -45,9 +45,9 @@ const SPECS = {
   wf_workflow_disable: ['Disable a workflow; no expected-state fence.  Requires explicit per-seat action/repo authorization and owner execution authority, never a CI bypass.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_run_delete: ['Irreversibly delete an Actions run and logs; no concurrency fence.  Requires explicit per-seat action/repo authorization and separate owner execution authority.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
   wf_artifact_delete: ['Irreversibly delete an artifact; no concurrency fence.  Requires explicit per-seat action/repo authorization and separate owner execution authority.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
-  wf_workflow_disable: ['Disable a workflow, stopping future CI triggers; can break required checks. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_run_delete: ['Irreversibly delete run and logs. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
-  wf_artifact_delete: ['Irreversibly remove artifact data. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
+  wf_workflow_disable: ['Disable a workflow, stopping future CI triggers; can break required checks. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
+  wf_run_delete: ['Irreversibly delete run and logs. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
+  wf_artifact_delete: ['Irreversibly remove artifact data. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
 
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
