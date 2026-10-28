@@ -257,3 +257,8 @@ test('Git create UTF8 budgets and strict receipt parent sets',()=>{
  assert.ok(!validWfV1Response('wf_git_commit_create',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[]}}));
  assert.ok(!validWfV1Response('wf_git_commit_create',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:['c'.repeat(40),'c'.repeat(40)]}}));
 });
+
+test('all actions parse strict Zod before dispatch including nongit',async()=>{
+ for(const args of [{repo,number:1,extra:1},{repo,number:true}])assert.equal(validWfV1Args('wf_pr_get',args),false);
+ const t=harness(async()=>{throw Error('must not dispatch');});const r=await t.call('gr_wf_pr_get',{repo,number:1,extra:1});assert.ok(r.isError);
+});
