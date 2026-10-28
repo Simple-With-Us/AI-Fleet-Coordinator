@@ -448,3 +448,9 @@ test('review/comment pages preserve provenance and do not turn text into authori
  assert.equal(validWfV1Response('wf_pr_reviews_page',{...receipt,reviews:[{...row,body:'ghp_'+'x'.repeat(36)}]},args),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_pr_reviews_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_pr_reviews_page',args)).isError);
 });
+
+test('discussion cached receipt refuses escaped aggregate overflow without dropping records',()=>{
+ const args={repo,number:2,expected_head_sha:'a'.repeat(40)},row={id:1,author:{id:2,login:'reviewer',type:'User'},body:'\x01'.repeat(30000),body_withheld:false,state:'COMMENTED',commit_id:'b'.repeat(40)};
+ const receipt={reviews:[row,{...row,id:3}],number:2,head_sha:args.expected_head_sha,page:1,has_more:false};
+ assert.equal(validWfV1Response('wf_pr_reviews_page',receipt,args),false);
+});
