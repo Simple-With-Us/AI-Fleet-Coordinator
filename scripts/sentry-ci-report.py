@@ -359,8 +359,7 @@ def resolve_cron_expr(
         envelope_url,
         auth_header,
         "unmapped-schedule",
-        f"sentry-ci-report has no cron map entry for scheduled workflow "
-        f"'{workflow_name}' [{APP}]",
+        f"sentry-ci-report has no cron map entry for scheduled workflow '{workflow_name}' [{APP}]",
         ["ci-report-config-drift", APP_IDENTITY, "unmapped-schedule", workflow_name],
         {"workflow": workflow_name, "run_url": run_url, "run_id": run_id},
     )

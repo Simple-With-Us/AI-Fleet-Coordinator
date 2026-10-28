@@ -94,7 +94,9 @@ def main() -> int:
 
     # The drift guard reads the caller's observed names,  not this repository's
     # workflow files:  the reporter runs from a checkout of its own repo.
-    assert shared.find_cron_schedule_drift(set(observed)) == [], shared.find_cron_schedule_drift(set(observed))
+    assert shared.find_cron_schedule_drift(set(observed)) == [], shared.find_cron_schedule_drift(
+        set(observed)
+    )
     drifted = shared.find_cron_schedule_drift({"Push To Production"})
     assert drifted == ["Nightly Build", "Weekly Audit"], drifted
     print("DRIFT_USES_OBSERVED_OK", drifted)
