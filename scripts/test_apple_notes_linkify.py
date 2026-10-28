@@ -30,7 +30,12 @@ What is pinned here:
   a pull request lookup that hangs does not hang the note save;
   a team key further down the block does not veto the team named right above the reference;
   a team named a long way from the reference is asked of GitHub, exactly as a nearby one is;
-  a qualified reference names a pull request, so the link is the pull request and not the issue that shares its number.
+  a qualified reference names a pull request, so the link is the pull request and not the issue that shares its number;
+  a fleet shortcut (fl/fleet-tools, fleetlink/zulip) becomes a link to that page, and a shortcut inside a URL or a
+  longer path is left alone (AFC-562);
+  a site page (SWU/docs), a repository (GH@user/repo), an incident (PagerDuty#384), a Sentry short id
+  (BOTFLEET-16) and a Cursor agent id (bc-a1b2c3d4-e5f6) each become a link to what they name, and each is
+  counted under its own kind.
 
 The fixture is synthetic end to end.  Every hostname, owner, repository name and workspace slug in this file belongs
 to no one and exists nowhere but here (Kody rule:  use synthetic hostnames and paths in test fixtures).  The world
@@ -135,6 +140,13 @@ LINEAR_URL = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/issue/"
 #  named in full:  the reference a writer types, and the URL of that project.
 PROJECT_URL = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/project/fixture-project-abc123"
 
+#  The other hosts the linkifier writes, all synthetic like the rest of the fixture (AFC-562).
+FLEETLINK_HOST = "fleetlink.example.test"
+SWU_HOST = "site.example.test"
+PAGERDUTY_HOST = "pager.example.test"
+SENTRY_HOST = "sentry.example.test"
+CURSOR_HOST = "agents.example.test"
+
 #  A stand-in for the gh CLI, which the helper asks which repository holds a pull request.  It says
 #  every repository holds every pull request unless GH_STUB_MISSING names one that does not, or is
 #  the star for all of them.  GH_STUB_ERROR makes it fail the way a broken network does, which is
@@ -228,6 +240,11 @@ class LinkifyTestCase(unittest.TestCase):
             "APPLE_NOTES_ACTION_LOG": str(self.log),
             #  the synthetic world, in force for every test unless a test overrides it
             "NOTES_LINKIFY_GITHUB_HOST": GITHUB_HOST,
+            "NOTES_LINKIFY_FLEETLINK_HOST": FLEETLINK_HOST,
+            "NOTES_LINKIFY_SWU_HOST": SWU_HOST,
+            "NOTES_LINKIFY_PAGERDUTY_HOST": PAGERDUTY_HOST,
+            "NOTES_LINKIFY_SENTRY_HOST": SENTRY_HOST,
+            "NOTES_LINKIFY_CURSOR_HOST": CURSOR_HOST,
             "NOTES_LINKIFY_LINEAR_HOST": LINEAR_HOST,
             "NOTES_GITHUB_OWNER": GITHUB_OWNER,
             "NOTES_LINKIFY_REPO": FLEET_REPO,
@@ -273,6 +290,11 @@ class LinkifyTests(LinkifyTestCase):
             "github.com",
             "linear.app",
             "simple-with-us",
+            "fleetlink.online",
+            "simplewithus.com",
+            "cursor.com",
+            "pagerduty.com",
+            "sentry.io",
         ):
             self.assertNotIn(real, out)
 
@@ -439,7 +461,7 @@ class LinkifyTests(LinkifyTestCase):
         (line,) = self.log_lines()
         self.assertEqual(
             line["reformatted"]["links"],
-            {"issues": 2, "prs": 1, "projects": 0},
+            {"issues": 2, "prs": 1, "projects": 0, "fleetlink": 0, "swu": 0, "repos": 0, "pagerduty": 0, "sentry": 0, "cursor": 0},
             line["reformatted"],
         )
 
@@ -461,7 +483,7 @@ class LinkifyTests(LinkifyTestCase):
         (line,) = self.log_lines()
         self.assertEqual(
             line["reformatted"]["links"],
-            {"issues": 2, "prs": 1, "projects": 0},
+            {"issues": 2, "prs": 1, "projects": 0, "fleetlink": 0, "swu": 0, "repos": 0, "pagerduty": 0, "sentry": 0, "cursor": 0},
             line["reformatted"],
         )
 
@@ -646,6 +668,153 @@ class LinkifyTests(LinkifyTestCase):
         missing = self.html("⭐️ Background Jobs Master List", body, GH_STUB_MISSING="*")
         self.assertNotIn("pull/957", missing)
         self.assertIn("PR #957", missing)
+
+    def test_fl_and_fleetlink_paths_become_links(self):
+        #  the owner's example, and a nested path ending a sentence:  the sentence's dot stays
+        #  outside the link, because a path never ends on punctuation
+        out = self.html(
+            "[AFC, MM] Notes", "See fl/fleet-tools and fleetlink/zulip/zulip-fleet-guide.md."
+        )
+        self.assertIn(
+            f'<a href="https://{FLEETLINK_HOST}/fleet-tools">fl/fleet-tools</a>', out
+        )
+        self.assertIn(
+            f'<a href="https://{FLEETLINK_HOST}/zulip/zulip-fleet-guide.md">'
+            "fleetlink/zulip/zulip-fleet-guide.md</a>.",
+            out,
+        )
+        self.assertNotIn("guide.md.</a>", out)
+
+    def test_a_shortcut_inside_a_url_or_path_is_left_alone(self):
+        #  fl/ inside a URL or a longer path is part of that address, not a shortcut
+        out = self.html("[AFC, MM] Notes", "See https://x/fl/y and foo/fl/x for it.")
+        self.assertNotIn(FLEETLINK_HOST, out)
+        self.assertIn("https://x/fl/y", out)
+        self.assertIn("foo/fl/x", out)
+
+    def test_a_swu_page_becomes_a_link(self):
+        out = self.html("[AFC, MM] Notes", "Read SWU/docs for the background.")
+        self.assertIn(f'<a href="https://{SWU_HOST}/docs">SWU/docs</a>', out)
+        #  the control:  the issue form of the same key still links to the issue
+        issues = self.html("[AFC, MM] Notes", "Read SWU-4 for the background.")
+        self.assertIn(f'<a href="{LINEAR_URL}SWU-4">SWU-4</a>', issues)
+
+    def test_a_gh_user_repo_becomes_a_link_to_that_repository(self):
+        out = self.html("[AFC, MM] Notes", "Vendored from GH@example-org/widget for now")
+        self.assertIn(
+            f'<a href="https://{GITHUB_HOST}/example-org/widget">GH@example-org/widget</a>',
+            out,
+        )
+
+    def test_a_pagerduty_incident_becomes_a_link_and_wins_over_the_qualified_rule(self):
+        #  a pound sign usually names a pull request, but PagerDuty names an incident instead
+        out = self.html("[AFC, MM] Notes", "Paged as PagerDuty#384 and PagerDuty#Q1ABC23.")
+        self.assertIn(
+            f'<a href="https://{PAGERDUTY_HOST}/incidents/384">PagerDuty#384</a>', out
+        )
+        self.assertIn(
+            f'<a href="https://{PAGERDUTY_HOST}/incidents/Q1ABC23">PagerDuty#Q1ABC23</a>',
+            out,
+        )
+        self.assertNotIn("/pull/", out)
+
+    def test_a_cursor_agent_id_becomes_a_link(self):
+        out = self.html("[AFC, MM] Notes", "Continued in bc-a1b2c3d4-e5f6 for review")
+        self.assertIn(
+            f'<a href="https://{CURSOR_HOST}/agents/bc-a1b2c3d4-e5f6">bc-a1b2c3d4-e5f6</a>',
+            out,
+        )
+        #  the control:  fewer than eight hex digits is not an agent id
+        short = self.html("[AFC, MM] Notes", "Continued in bc-12 for review")
+        self.assertNotIn(CURSOR_HOST, short)
+        self.assertIn("bc-12", short)
+
+    def test_a_sentry_short_id_becomes_a_link_and_not_a_linear_issue(self):
+        out = self.html("[AFC, MM] Notes", "Filed as BOTFLEET-16 and CONGRESS-TRADE-4A.")
+        self.assertIn(
+            f'<a href="https://{SENTRY_HOST}/issues/?query=BOTFLEET-16">BOTFLEET-16</a>',
+            out,
+        )
+        self.assertIn(
+            f'<a href="https://{SENTRY_HOST}/issues/?query=CONGRESS-TRADE-4A">'
+            "CONGRESS-TRADE-4A</a>",
+            out,
+        )
+        self.assertNotIn("/issue/", out)
+
+    def test_the_new_kinds_leave_code_and_a_hand_written_link_alone(self):
+        out = self.html(
+            "[AFC, MM] Notes",
+            f"The code `fl/tools` stays, and [SWU/docs](https://{SWU_HOST}/docs) is kept.",
+        )
+        self.assertEqual(out.count("<a href="), 1, out)
+        self.assertIn("fl/tools</code>", out)
+
+    def test_every_live_project_reference_becomes_a_link(self):
+        #  the eight P-* rules of the live Zulip set, each coded by hand like P-BF-6
+        refs = {
+            "P-AFC-7": "muster-fleet-admin-mac-app-9c28cf61dcc8",
+            "P-AFC-8": "fleet-gitops-272cdd72e951",
+            "P-BF-1": "system-prompt-receipt-port-bf-1411-cc08b4cf163b",
+            "P-BF-6": "botfleet-native-macos-rewrite-5afcbc055535",
+            "P-CTS-5": "cts-shared-dependency-a04bf2274b2d",
+            "P-OPS-2": "mac-resource-mgmt-22f992634f02",
+            "P-OPS-4": "fleet-hygiene-cross-team-32fd751b0b36",
+            "P-SWU-3": "public-websites-6e26b4c70c72",
+        }
+        out = self.html("[AFC, MM] Notes", "The plan covers " + ", ".join(refs) + ".")
+        base = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/project/"
+        for ref, slug in refs.items():
+            with self.subTest(ref=ref):
+                self.assertIn(f'<a href="{base}{slug}">{ref}</a>', out)
+
+    def test_the_writer_says_what_the_new_kinds_became(self):
+        p = self.run_script(
+            "--session",
+            SESSION,
+            "[AFC, MM] Notes",
+            "See fl/tools and SWU/docs and GH@example-org/widget and PagerDuty#384 and "
+            "BOTFLEET-16 and bc-a1b2c3d4-e5f6 for the lot.",
+            APPLE_NOTES_PRINT_HTML="1",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        for kind in (
+            "1 fleetlink reference",
+            "1 SWU reference",
+            "1 repository reference",
+            "1 PagerDuty reference",
+            "1 Sentry reference",
+            "1 Cursor agent reference",
+        ):
+            with self.subTest(kind=kind):
+                self.assertIn(kind, p.stderr)
+
+    def test_the_log_keeps_the_new_kinds_too(self):
+        p = self.run_script(
+            "--update",
+            "--existing-only",
+            "--session",
+            SESSION,
+            NOTES[2]["title"],
+            "See fl/tools and SWU/docs for the background.",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        (line,) = self.log_lines()
+        self.assertEqual(
+            line["reformatted"]["links"],
+            {
+                "issues": 0,
+                "prs": 0,
+                "projects": 0,
+                "fleetlink": 1,
+                "swu": 1,
+                "repos": 0,
+                "pagerduty": 0,
+                "sentry": 0,
+                "cursor": 0,
+            },
+            line["reformatted"],
+        )
 
 
 if __name__ == "__main__":
