@@ -90,9 +90,9 @@ def _pack_copies(pack: str) -> tuple[str, ...]:
     return tuple(str(p.relative_to(ROOT)) for p in paths if p.is_file())
 
 
-# The files that state the rule, and therefore must carry the one exception.
+# The files that state the rule, and therefore must carry the pane exception.
 # The Cursor rule and the Zulip guide all state the rule, so all of them must
-# name the one exception.
+# name the pane exception.
 EXCEPTION_FILES = (
     "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
     "docs/grok-web/INSTRUCTIONS.md",
@@ -124,7 +124,7 @@ EXCEPTION_FILES = (
     "STATUS.md",
     # The dated rollout record for the 2026-10-08 ruling, and the compliance
     # inventory's AFC-P05 row.  Both state the mechanism for every surface, so
-    # both name the one exception with it.
+    # both name the pane exception with it.
     "docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",
     "docs/compliance/inventory.md",
 ) + tuple(path for pack in RULE_STATING_PACKS for path in _pack_copies(pack))
@@ -174,8 +174,11 @@ HISTORY_MARKERS = (
     re.compile(r"^\| v\d"),
 )
 
-# The exception has to be named as the only exception, not as one option among many.
-ONLY_EXCEPTION_RE = re.compile(r"only exception|one exception|single exception", re.IGNORECASE)
+# The panes have to be called an exception, not listed as one option among many.
+# The wording moved with AFC-552:  there are two exceptions now, so a file may
+# say "two exceptions" where it used to say "the one exception", so the check
+# looks for the word and not for a count.
+EXCEPTION_WORD_RE = re.compile(r"exception", re.IGNORECASE)
 
 
 def _read(rel: str) -> str:
@@ -197,15 +200,18 @@ def _is_history(line: str) -> bool:
 
 
 def _states_the_exception(text: str) -> bool:
-    """Whether the text names the entity next to both panes.
+    """Whether the text calls the entity the exception for both panes.
 
     The entity is mentioned in several places, and only the mention that sits with
-    both pane names is the exception itself.
+    both pane names is the exception itself.  The word "exception" has to sit in
+    the same window, so the panes are called an exception rather than listed as
+    one option among many.
     """
     for match in re.finditer(re.escape("`&nbsp;`"), text):
         window = text[max(0, match.start() - 600) : match.end() + 600]
         if "Claude Code" in window and "MiniMax Code" in window:
-            return True
+            if EXCEPTION_WORD_RE.search(window):
+                return True
     return False
 
 
@@ -232,7 +238,7 @@ class StaleGuidanceTests(unittest.TestCase):
 
 
 class PaneExceptionTests(unittest.TestCase):
-    """Every file that states the rule names the one exception."""
+    """Every file that states the rule names the pane exception."""
 
     def test_each_file_names_both_panes_and_the_entity_together(self) -> None:
         for rel in EXCEPTION_FILES:
@@ -249,10 +255,6 @@ class PaneExceptionTests(unittest.TestCase):
                 self.assertTrue(
                     _states_the_exception(text),
                     "%s does not state the entity as the exception for the two panes" % rel,
-                )
-                self.assertTrue(
-                    ONLY_EXCEPTION_RE.search(text),
-                    "%s does not call the two panes the only exception" % rel,
                 )
 
     def test_no_file_claims_every_chat_pane_takes_the_real_nbsp(self) -> None:
@@ -288,11 +290,6 @@ class PaneExceptionTests(unittest.TestCase):
                 self.assertTrue(
                     _states_the_exception(block),
                     "%s has a pasted block that states the gap rule without the pane exception"
-                    % rel,
-                )
-                self.assertTrue(
-                    ONLY_EXCEPTION_RE.search(block),
-                    "%s has a pasted block that does not call the two panes the only exception"
                     % rel,
                 )
 
