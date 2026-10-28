@@ -1,9 +1,11 @@
 #!/usr/bin/env -S python3 -I
-"""On-demand Linux environment auth for fleet-secrets.  No credential file is read."""
+"""Scoped Linux auth for fleet-secrets, with an existing root-private bootstrap fallback."""
 
 import importlib.util
+import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -34,8 +36,75 @@ class Interrupted(Exception):
         self.signum = signum
 
 
+def _bootstrap_pairs(pairs):
+    result = {}
+    for name, value in pairs:
+        if name in result:
+            raise ValueError("duplicate bootstrap key")
+        result[name] = value
+    return result
+
+
+def private_bootstrap():
+    """Read only the fixed existing root bootstrap, without following symlinks.
+
+    Every directory is opened relative to the last checked descriptor. The file is
+    bounded and read from the descriptor whose ownership and mode were checked.
+    Nothing is written or retained outside the scoped login environment.
+    """
+    if not sys.platform.startswith("linux") or os.geteuid() != 0:
+        return {}
+    fd = None
+    try:
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+        for name in ("root", ".config", "fleet-secrets"):
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            if info.st_uid != 0 or info.st_gid != 0 or stat.S_IMODE(info.st_mode) & 0o022:
+                raise ValueError("unsafe bootstrap directory")
+            if name == "fleet-secrets" and stat.S_IMODE(info.st_mode) != 0o700:
+                raise ValueError("unsafe bootstrap parent")
+        child = os.open("bootstrap.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        os.close(fd)
+        fd = child
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != 0
+            or info.st_gid != 0
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or info.st_nlink != 1
+        ):
+            raise ValueError("unsafe bootstrap file")
+        with os.fdopen(fd, "r", encoding="utf-8") as stream:
+            fd = None
+            text = stream.read(16385)
+        if len(text) > 16384:
+            raise ValueError("oversized bootstrap")
+        data = json.loads(text, object_pairs_hook=_bootstrap_pairs)
+        expected = {core.ENV_AUTOMATION_ID, core.ENV_AUTOMATION_SECRET}
+        if (
+            not isinstance(data, dict)
+            or set(data) != expected
+            or any(not isinstance(v, str) or not v.strip() for v in data.values())
+        ):
+            raise ValueError("invalid bootstrap schema")
+        return data
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, UnicodeError):
+        raise EntryError("root-private bootstrap is invalid or unsafe") from None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def load_machine_credentials(env):
     names = (core.ENV_AUTOMATION_ID, core.ENV_AUTOMATION_SECRET)
+    if not any((env.get(name) or "").strip() for name in names):
+        env = private_bootstrap()
     missing = [name for name in names if not (env.get(name) or "").strip()]
     if missing:
         raise EntryError("missing required environment variables: " + ", ".join(missing))
@@ -114,6 +183,9 @@ def cli_path(env):
     explicit = (env.get("FLEET_SECRETS_CLI") or "").strip()
     if explicit:
         return Path(os.path.expanduser(explicit))
+    installed = Path(__file__).resolve().parent / "fleet-secrets-cli"
+    if installed.is_file():
+        return installed
     return (
         Path(env.get("FLEET_SECRETS_HOME") or Path.home() / ".local/share/fleet-secrets")
         / "fleet-secrets"
