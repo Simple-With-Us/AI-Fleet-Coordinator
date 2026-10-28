@@ -80,8 +80,8 @@
       "build": "202608250600"
     },
     "com.socratictrade.ios": {
-      "marketingVersion": "1.0.115",
-      "build": "2546",
+      "marketingVersion": "0.1.0",
+      "build": "0.1.2",
       "appleId": 6815511597,
       "displayName": "Socratic-Trade"
     },
