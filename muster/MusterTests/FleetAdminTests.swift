@@ -85,11 +85,10 @@ final class FleetAdminTests: XCTestCase {
             FileManager.default.createFile(atPath: agents.appendingPathComponent("\(label).plist").path,
                                            contents: Data("<plist/>".utf8))
         }
-        FleetAdminServer.current = server
 
         let startup = StartupPolicy(home: home, commands: commands, uid: 501, environment: [:])
         let api = ControlAPI(session: FleetAdminServer.session(),
-                             baseURL: URL(string: "http://127.0.0.1:8799")!)
+                             baseURL: URL(string: "http://127.0.0.1:\(server.port)")!)
         let control = FleetServiceControl(
             pm2: PM2Client(commands: commands, nodePath: "/usr/bin/node", pm2Path: "/usr/bin/pm2"),
             startup: startup,
@@ -97,7 +96,7 @@ final class FleetAdminTests: XCTestCase {
             stopServer: { try await api.stopServer() })
         return FleetAdmin(control: control,
                           startup: startup,
-                          presence: ServerPresenceProbe(port: 8799, connect: { _ in server.presence() }),
+                          presence: ServerPresenceProbe(port: server.port, connect: { _ in server.presence() }),
                           api: api)
     }
 }
@@ -139,16 +138,58 @@ private final class FleetAdminCommands: CommandRunning {
 }
 
 /// The BotFleet Server the admin talks to,  and the port it listens on.
+///
+/// Every server has a port of its own,  so a request that arrives late finds the
+/// server it was meant for and not whichever one the rig happens to be on.
 final class FleetAdminServer {
+    /// The servers the rig knows about,  by port.
+    private static let lock = NSLock()
+    private static var servers: [Int: FleetAdminServer] = [:]
+    /// The port the next server is given.
+    private static var lastPort = 21000
+
+    /// The port this server answers on.
+    let port: Int
+
+    private let state = NSLock()
+    private var stoppedNow = false
+    private var looks = 0
+
     /// True once the server has been asked to stop.
-    private(set) var stopped = false
+    var stopped: Bool {
+        state.lock()
+        defer { state.unlock() }
+        return stoppedNow
+    }
+
     /// How many times the port was asked after the stop was requested.
-    private(set) var looksAfterTheStop = 0
-    /// The server the requests go to.
-    static var current: FleetAdminServer?
+    var looksAfterTheStop: Int {
+        state.lock()
+        defer { state.unlock() }
+        return looks
+    }
+
+    init() {
+        FleetAdminServer.lock.lock()
+        FleetAdminServer.lastPort += 1
+        self.port = FleetAdminServer.lastPort
+        FleetAdminServer.servers[self.port] = self
+        FleetAdminServer.lock.unlock()
+    }
+
+    /// The server that answers on a port.
+    static func server(for port: Int) -> FleetAdminServer? {
+        lock.lock()
+        defer { lock.unlock() }
+        return servers[port]
+    }
 
     /// The server has been asked to stop.
-    func requestStop() { stopped = true }
+    func requestStop() {
+        state.lock()
+        stoppedNow = true
+        state.unlock()
+    }
 
     /// What the port says.
     ///
@@ -156,9 +197,11 @@ final class FleetAdminServer {
     /// moment later:  the first look after the stop still finds it,  and the second
     /// does not.
     func presence() -> ServerPresence {
-        guard stopped else { return .present }
-        looksAfterTheStop += 1
-        return looksAfterTheStop >= 2 ? .absent : .present
+        state.lock()
+        defer { state.unlock() }
+        guard stoppedNow else { return .present }
+        looks += 1
+        return looks >= 2 ? .absent : .present
     }
 
     /// A session that answers like the server does.
@@ -175,7 +218,8 @@ final class FleetAdminURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
-        let server = FleetAdminServer.current
+        let port = request.url?.port ?? 0
+        let server = FleetAdminServer.server(for: port)
         let path = request.url?.path ?? ""
         var status = 200
         var body = "{}"
