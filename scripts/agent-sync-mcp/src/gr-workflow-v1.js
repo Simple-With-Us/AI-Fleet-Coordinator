@@ -26,6 +26,11 @@ const SPECS = {
  wf_issue_blocked_by:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_issue_blocking:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
 
+  wf_branch_update: ['branch update; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'branch', 'sha', 'expected_sha'],{repo:REPO,branch:REF,sha:SHA,expected_sha:SHA})],
+  wf_branch_delete: ['branch delete; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'branch', 'expected_sha'],{repo:REPO,branch:REF,expected_sha:SHA})],
+  wf_tag_create: ['tag create; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag', 'sha'],{repo:REPO,tag:REF,sha:SHA})],
+  wf_tag_get: ['tag get; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag'],{repo:REPO,tag:REF})],
+  wf_tag_delete: ['tag delete; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag', 'expected_sha'],{repo:REPO,tag:REF,expected_sha:SHA})],
   wf_pr_draft: ['pr draft.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_pr_ready: ['pr ready.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_automerge_enable: ['automerge enable.',obj(['repo','number','method'],{repo:REPO,number:INT,method:{type:'string',enum:['SQUASH','MERGE','REBASE']}})],
@@ -50,9 +55,9 @@ const SPECS = {
   wf_run_get: ['Read run get.', obj(['repo', 'run_id'], {repo:REPO,run_id:INT})],
   wf_run_artifacts: ['Read run artifacts.', obj(['repo', 'run_id'], {repo:REPO,run_id:INT,per_page:PER_PAGE})],
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_workflow_disable: ['Disable a workflow, stopping future CI triggers; can break required checks. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_run_delete: ['Irreversibly delete run and logs. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
-  wf_artifact_delete: ['Irreversibly remove artifact data. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
+  wf_workflow_disable: ['Disable a workflow, stopping future CI triggers; can break required checks. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
+  wf_run_delete: ['Irreversibly delete run and logs. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
+  wf_artifact_delete: ['Irreversibly remove artifact data. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
 
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
@@ -81,7 +86,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_review_threads','wf_repo_tags','wf_repo_languages','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_tag_get','wf_review_threads','wf_repo_tags','wf_repo_languages','wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -143,6 +148,11 @@ export const validWfV1Args = (action, args) => parseWfV1Args(action,args)!==null
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+  wf_branch_update:['ref', 'sha'],
+  wf_branch_delete:['deleted', 'ref'],
+  wf_tag_create:['ref', 'sha'],
+  wf_tag_get:['ref', 'sha'],
+  wf_tag_delete:['deleted', 'ref'],
   wf_pr_draft:['pull'],
   wf_pr_ready:['pull'],
   wf_automerge_enable:['pull'],
@@ -222,11 +232,16 @@ export function validWfV1Response(action, body) {
  if(!keysBeforeParse)return false;
  const shape=Object.fromEntries(keysBeforeParse.map(k=>[k,jsonValue]));
  if(action==='wf_file_put'||action==='wf_files_put'){shape.branch=z.string().min(1);shape.commit=shaValue;if(action==='wf_file_put')shape.path=z.string().min(1);else shape.files=z.number().int().min(1).max(20);}
- const parsed=z.object(shape).strict().safeParse(body);
- if(!parsed.success)return false;
- body=parsed.data;
- const key={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
- if(key){const parsed=z.object({completed:z.literal(true),[key]:z.number().int().positive()}).strict().safeParse(body);if(!parsed.success)return false;body=parsed.data;}
+ const result=z.object(shape).strict().safeParse(body);
+ if(!result.success)return false;
+ body=result.data;
+
+  const completedKey={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
+  if(completedKey){
+    const parsed=z.object({completed:z.literal(true),[completedKey]:z.number().int().positive()}).strict().safeParse(body);
+    if(!parsed.success)return false;
+    body=parsed.data;
+  }
 
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
@@ -238,6 +253,8 @@ export function validWfV1Response(action, body) {
     const assetOk = x => x && !Array.isArray(x) && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string' && x.name.length > 0 && x.name.length <= 255 && ['uploaded','open','starter'].includes(x.state) && Number.isInteger(x.size) && x.size >= 0;
     if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;
   }
+  if (['wf_branch_update','wf_tag_create','wf_tag_get'].includes(action) && (typeof body.ref !== 'string' || !body.ref.startsWith(action.startsWith('wf_branch_') ? 'refs/heads/' : 'refs/tags/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;
+  if (['wf_branch_delete','wf_tag_delete'].includes(action) && (body.deleted !== true || typeof body.ref !== 'string' || !body.ref.startsWith(action.startsWith('wf_branch_') ? 'refs/heads/' : 'refs/tags/'))) return false;
   for (const key of ['pull','threads']) if (key in body && (!body[key] || typeof body[key] !== 'object' || Array.isArray(body[key]))) return false;
   if ('result' in body && (!Number.isInteger(body.result?.id) || body.result.id < 1)) return false;
   if (action.startsWith('wf_assignees_') && (!Number.isInteger(body.result?.number) || !Array.isArray(body.result?.assignees) || !body.result.assignees.every(x => typeof x?.login === 'string'))) return false;
