@@ -527,6 +527,16 @@ class WorkflowVerbs:
             or result["id"] <= 0
         ):
             raise RelayGitHubError(502, "write outcome unverifiable")
+        if result.get("number") != number or type(result.get("number")) is not int:
+            raise RelayGitHubError(502, "reviewer receipt PR identity unverifiable")
+        observed = set()
+        for person in result["requested_reviewers"]:
+            if not isinstance(person, dict) or not isinstance(person.get("login"), str):
+                raise RelayGitHubError(502, "reviewer receipt unverifiable")
+            observed.add(person["login"].casefold())
+        requested = {name.casefold() for name in reviewers}
+        if not requested <= observed:
+            raise RelayGitHubError(502, "reviewer receipt membership unverifiable")
         return {"result": result}
 
     def wf_reviewers_remove(self, repo, args):
@@ -565,6 +575,16 @@ class WorkflowVerbs:
             or result["id"] <= 0
         ):
             raise RelayGitHubError(502, "write outcome unverifiable")
+        if result.get("number") != number or type(result.get("number")) is not int:
+            raise RelayGitHubError(502, "reviewer receipt PR identity unverifiable")
+        observed = set()
+        for person in result["requested_reviewers"]:
+            if not isinstance(person, dict) or not isinstance(person.get("login"), str):
+                raise RelayGitHubError(502, "reviewer receipt unverifiable")
+            observed.add(person["login"].casefold())
+        requested = {name.casefold() for name in reviewers}
+        if requested & observed:
+            raise RelayGitHubError(502, "reviewer receipt membership unverifiable")
         return {"result": result}
 
     def wf_release_create(self, repo, args):
@@ -641,6 +661,7 @@ class WorkflowVerbs:
             not isinstance(result.get("id"), int)
             or isinstance(result.get("id"), bool)
             or result["id"] <= 0
+            or result["id"] != release_id
         ):
             raise RelayGitHubError(502, "write outcome unverifiable")
         return {"result": result}

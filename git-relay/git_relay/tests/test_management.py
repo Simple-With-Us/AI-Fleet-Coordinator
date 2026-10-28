@@ -24,7 +24,7 @@ class Management(unittest.TestCase):
                 {"number": 3, "reviewers": ["swu-wise"]},
                 "POST",
                 "pulls/3/requested_reviewers",
-                {"id": 1, "requested_reviewers": []},
+                {"id": 1, "number": 3, "requested_reviewers": [{"login": "swu-wise"}]},
                 {"reviewers": ["swu-wise"]},
             ),
             (
@@ -32,7 +32,7 @@ class Management(unittest.TestCase):
                 {"number": 3, "reviewers": ["swu-wise"]},
                 "DELETE",
                 "pulls/3/requested_reviewers",
-                {"id": 1, "requested_reviewers": []},
+                {"id": 1, "number": 3, "requested_reviewers": []},
                 {"reviewers": ["swu-wise"]},
             ),
             (
@@ -129,3 +129,40 @@ class Management(unittest.TestCase):
                 h.run(action, {"repo": REPO, **args})
             self.assertEqual(error.exception.status, 502)
             self.assertEqual(len(c.calls), 1)
+
+    def test_reviewer_pr_identity_and_membership_and_release_identity(self):
+        from git_relay.github_client import RelayGitHubError
+
+        for action, args, receipt in [
+            (
+                "wf_reviewers_request",
+                {"number": 3, "reviewers": ["swu-wise"]},
+                {"id": 1, "number": 4, "requested_reviewers": [{"login": "swu-wise"}]},
+            ),
+            (
+                "wf_reviewers_request",
+                {"number": 3, "reviewers": ["swu-wise"]},
+                {"id": 1, "number": 3, "requested_reviewers": []},
+            ),
+            (
+                "wf_reviewers_remove",
+                {"number": 3, "reviewers": ["swu-wise"]},
+                {"id": 1, "number": 3, "requested_reviewers": [{"login": "swu-wise"}]},
+            ),
+            (
+                "wf_release_update",
+                {
+                    "release_id": 2,
+                    "name": "Name",
+                    "body": "Body",
+                    "draft": True,
+                    "prerelease": False,
+                },
+                {"id": 3},
+            ),
+        ]:
+            c = Client(receipt)
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
+            with self.assertRaises(RelayGitHubError) as error:
+                h.run(action, {"repo": REPO, **args})
+            self.assertEqual(error.exception.status, 502)
