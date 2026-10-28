@@ -2881,7 +2881,8 @@ class WorkflowVerbs:
             ):
                 raise RelayGitHubError(502, "run metadata unverifiable")
             if (
-                not isinstance(row.get("head_sha"), str)
+                "head_branch" not in row
+                or not isinstance(row.get("head_sha"), str)
                 or not _SHA.fullmatch(row["head_sha"])
                 or row.get("head_branch") is not None
                 and (

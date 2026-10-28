@@ -70,3 +70,15 @@ class RunPages(unittest.TestCase):
         out = self.handle(Client(self.value([]))).run("wf_runs_page", {"repo": REPO, "page": 1000})
         self.assertIsNone(out["search_cap"])
         self.assertFalse(out["has_more"])
+
+    def test_missing_nullable_metadata_key_refused_not_keyerror(self):
+        row = self.row()
+        del row["head_branch"]
+        with self.assertRaises(RelayGitHubError):
+            self.handle(Client(self.value([row]))).run("wf_runs_page", {"repo": REPO})
+
+    def test_explicit_null_branch_kept_as_observation(self):
+        out = self.handle(Client(self.value([self.row(head_branch=None)]))).run(
+            "wf_runs_page", {"repo": REPO}
+        )
+        self.assertIsNone(out["runs"][0]["head_branch"])
