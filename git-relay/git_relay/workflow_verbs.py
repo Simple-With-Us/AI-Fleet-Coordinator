@@ -196,14 +196,19 @@ def _only(args, allowed):
         raise Refused("unexpected argument")
 
 
-def _bounded_read(stream, limit):
-    chunks, total = [], 0
+def _new_budget():
+    """Expansion and member budget shared by one whole scan, every nesting level."""
+    return {"bytes": MAX_ARCHIVE_EXPANDED, "members": MAX_ARCHIVE_MEMBERS}
+
+
+def _bounded_read(stream, budget):
+    chunks = []
     while True:
         block = stream.read(65536)
         if not block:
             return b"".join(chunks)
-        total += len(block)
-        if total > limit:
+        budget["bytes"] -= len(block)
+        if budget["bytes"] < 0:
             raise Refused("asset archive expands past the scan bound")
         chunks.append(block)
 
@@ -218,7 +223,7 @@ def _scan_bytes(blob):
             raise Refused("invalid asset content")
 
 
-def _scan_asset_bytes(content, depth=0):
+def _scan_asset_bytes(content, depth=0, budget=None):
     """Refuse content that carries a credential shape, including inside common archives.
 
     Opaque or encrypted containers the scanner cannot open are refused rather than
@@ -228,16 +233,16 @@ def _scan_asset_bytes(content, depth=0):
     """
     if depth > 1:
         raise Refused("asset archive nesting is not supported")
+    if budget is None:
+        budget = _new_budget()
     _scan_bytes(content)
     head = content[:8]
     if head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06"):
         try:
             archive = zipfile.ZipFile(io.BytesIO(content))
             infos = archive.infolist()
-            if (
-                len(infos) > MAX_ARCHIVE_MEMBERS
-                or sum(i.file_size for i in infos) > MAX_ARCHIVE_EXPANDED
-            ):
+            budget["members"] -= len(infos)
+            if budget["members"] < 0 or sum(i.file_size for i in infos) > budget["bytes"]:
                 raise Refused("asset archive expands past the scan bound")
             for info in infos:
                 if info.flag_bits & 0x1:
@@ -246,28 +251,39 @@ def _scan_asset_bytes(content, depth=0):
                 if info.is_dir():
                     continue
                 with archive.open(info) as member:
-                    inner = _bounded_read(member, MAX_ARCHIVE_EXPANDED)
-                _scan_asset_bytes(inner, depth + 1)
-        except (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, OSError):
+                    inner = _bounded_read(member, budget)
+                _scan_asset_bytes(inner, depth + 1, budget)
+        except (
+            zipfile.BadZipFile,
+            NotImplementedError,
+            RuntimeError,
+            EOFError,
+            OSError,
+            zlib.error,
+            lzma.LZMAError,
+            ValueError,
+        ) as exc:
+            if isinstance(exc, Refused):
+                raise
             raise Refused("asset archive could not be scanned") from None
     elif head.startswith(b"\x1f\x8b"):
         try:
-            inner = _bounded_read(gzip.GzipFile(fileobj=io.BytesIO(content)), MAX_ARCHIVE_EXPANDED)
-        except (OSError, EOFError, zlib.error):
+            inner = _bounded_read(gzip.GzipFile(fileobj=io.BytesIO(content)), budget)
+        except (OSError, EOFError, zlib.error, ValueError):
             raise Refused("asset archive could not be scanned") from None
-        _scan_asset_bytes(inner, depth + 1)
+        _scan_asset_bytes(inner, depth + 1, budget)
     elif head.startswith(b"BZh"):
         try:
-            inner = _bounded_read(bz2.BZ2File(io.BytesIO(content)), MAX_ARCHIVE_EXPANDED)
-        except (OSError, EOFError, ValueError):
+            inner = _bounded_read(bz2.BZ2File(io.BytesIO(content)), budget)
+        except (OSError, EOFError, ValueError, zlib.error):
             raise Refused("asset archive could not be scanned") from None
-        _scan_asset_bytes(inner, depth + 1)
+        _scan_asset_bytes(inner, depth + 1, budget)
     elif head.startswith(b"\xfd7zXZ\x00"):
         try:
-            inner = _bounded_read(lzma.LZMAFile(io.BytesIO(content)), MAX_ARCHIVE_EXPANDED)
-        except (lzma.LZMAError, OSError, EOFError):
+            inner = _bounded_read(lzma.LZMAFile(io.BytesIO(content)), budget)
+        except (lzma.LZMAError, OSError, EOFError, ValueError, zlib.error):
             raise Refused("asset archive could not be scanned") from None
-        _scan_asset_bytes(inner, depth + 1)
+        _scan_asset_bytes(inner, depth + 1, budget)
     elif head.startswith(
         (b"\x28\xb5\x2f\xfd", b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x5d\x00\x00")
     ) or head[:2] in (b"\x1f\x9d", b"\x1f\xa0"):
@@ -447,7 +463,12 @@ class WorkflowVerbs:
         _only(args, ("repo", "release_id", "name", "content_b64"))
         release_id = _int(args, "release_id")
         name = args.get("name")
-        if not isinstance(name, str) or not _ASSET_NAME.fullmatch(name) or name.endswith("."):
+        if (
+            not isinstance(name, str)
+            or not _ASSET_NAME.fullmatch(name)
+            or name.endswith(".")
+            or find_secret(name)
+        ):
             raise Refused("invalid asset name")
         encoded = args.get("content_b64")
         if not isinstance(encoded, str) or not 1 <= len(encoded) <= MAX_BINARY_ASSET_B64:
@@ -519,7 +540,12 @@ class WorkflowVerbs:
         patch = {}
         if "name" in args:
             name = args["name"]
-            if not isinstance(name, str) or not _ASSET_NAME.fullmatch(name) or name.endswith("."):
+            if (
+                not isinstance(name, str)
+                or not _ASSET_NAME.fullmatch(name)
+                or name.endswith(".")
+                or find_secret(name)
+            ):
                 raise Refused("invalid asset name")
             patch["name"] = name
         if "label" in args:
@@ -616,13 +642,28 @@ class WorkflowVerbs:
         _only(args, ("repo", "job_id", "offset", "length"))
         job_id = _int(args, "job_id")
         offset, length = self._range(args)
+        # Fetch a little past the bound so a character wider than a tiny length still
+        # fits whole and next_offset always advances.
         data, total = self.client.download_chunk(
-            f"/repos/{repo}/actions/jobs/{job_id}/logs", self.bearer, offset, length
+            f"/repos/{repo}/actions/jobs/{job_id}/logs",
+            self.bearer,
+            offset,
+            min(length + 3, MAX_DOWNLOAD_CHUNK),
         )
+        if len(data) > length:
+            end = length
+            while end > 0 and (data[end] & 0xC0) == 0x80:
+                end -= 1
+            if end == 0:
+                end = 1
+                while end < len(data) and end < 4 and (data[end] & 0xC0) == 0x80:
+                    end += 1
+            data = data[:end]
         meta = self._chunk_meta(offset, data, total)
-        # Never split a multibyte character across chunks: next_offset follows the cut.
         text = None
         for cut in range(4 if not meta["complete"] else 1):
+            if cut >= len(data):
+                break
             try:
                 text = data[: len(data) - cut].decode("utf-8")
                 data = data[: len(data) - cut]

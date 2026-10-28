@@ -100,6 +100,8 @@ def safe_error_diagnostics(headers=None, message=None):
 
 MAX_DOWNLOAD_CHUNK = 256 * 1024
 MAX_DOWNLOAD_OFFSET = 512 * 1024 * 1024
+# A 200 means the storage host ignored Range; skipping to the offset would drain the stream.
+MAX_200_SKIP = 1024 * 1024
 # Signed download origins GitHub redirects to.  Matched on whole labels, https only.
 _SIGNED_HOST_SUFFIXES = (
     ".githubusercontent.com",
@@ -387,6 +389,8 @@ class GitHubClient:
                     total = None if match.group(3) == "*" else int(match.group(3))
                     data = resp.read(length + 1)
                 elif status == 200:
+                    if offset > MAX_200_SKIP:
+                        raise RelayGitHubError(0, "download range not honored")
                     skipped = 0
                     while skipped < offset:
                         block = resp.read(min(65536, offset - skipped))

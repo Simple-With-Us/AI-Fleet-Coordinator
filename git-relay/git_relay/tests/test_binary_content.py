@@ -2,6 +2,7 @@ import base64
 import gzip
 import io
 import unittest
+import zlib
 import urllib.error
 import zipfile
 from email.message import Message
@@ -117,6 +118,11 @@ class DownloadClient(unittest.TestCase):
         opener, _ = redirecting(loc, Resp(200, b"0123456789", hdrs(Content_Length="10")))
         data, total = GitHubClient("t", opener=opener).download_chunk("/repos/o/r/x", "own", 4, 3)
         self.assertEqual((data, total), (b"456", 10))
+        opener, _ = redirecting(loc, Resp(200, b"0123456789", hdrs(Content_Length="10")))
+        with self.assertRaises(RelayGitHubError):
+            GitHubClient("t", opener=opener).download_chunk(
+                "/repos/o/r/x", "own", 512 * 1024 * 1024, 3
+            )
         opener, _ = redirecting(loc, Resp(206, b"abcdef", hdrs(Content_Range="bytes 0-2/10")))
         with self.assertRaises(RelayGitHubError):
             GitHubClient("t", opener=opener).download_chunk("/repos/o/r/x", "own", 0, 3)
@@ -250,6 +256,97 @@ class VerbTests(unittest.TestCase):
             self.upload(z.getvalue())
         with self.assertRaises(Refused):
             self.upload(gzip.compress(b"\x00" * (9 * 1024 * 1024)))
+
+    def test_zip_expansion_budget_is_cumulative(self):
+        from git_relay import workflow_verbs
+
+        z = io.BytesIO()
+        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+            for i in range(2):
+                zf.writestr(f"m{i}", b"\x00" * (5 * 1024 * 1024))
+        self.assertLess(len(z.getvalue()), 180 * 1024)
+        with self.assertRaises(Refused):
+            self.upload(z.getvalue())
+        # One budget spans every member and level: two 5 MiB reads cannot both pass.
+        budget = workflow_verbs._new_budget()
+        workflow_verbs._bounded_read(io.BytesIO(b"\x00" * (5 * 1024 * 1024)), budget)
+        with self.assertRaises(Refused):
+            workflow_verbs._bounded_read(io.BytesIO(b"\x00" * (5 * 1024 * 1024)), budget)
+        # Members count against one shared member budget too.
+        many = io.BytesIO()
+        with zipfile.ZipFile(many, "w") as zf:
+            for i in range(501):
+                zf.writestr(f"f{i}", b"x")
+        with self.assertRaises(Refused):
+            self.upload(many.getvalue())
+
+    def test_corrupt_compressed_members_fail_closed(self):
+        z = io.BytesIO()
+        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("x.txt", b"hello world " * 200)
+        raw = bytearray(z.getvalue())
+        raw[40:48] = b"\xff" * 8  # inside the deflate stream
+        with self.assertRaises(Refused):
+            self.upload(bytes(raw))
+        from git_relay import workflow_verbs
+
+        class Boom:
+            def read(self, n=-1):
+                raise zlib.error("bad stream")
+
+        ok_zip = io.BytesIO()
+        with zipfile.ZipFile(ok_zip, "w") as zf:
+            zf.writestr("x.txt", "fine")
+        orig = zipfile.ZipFile.open
+        zipfile.ZipFile.open = lambda self, *a, **k: Boom_ctx()
+
+        class Boom_ctx:
+            def __enter__(self):
+                return Boom()
+
+            def __exit__(self, *a):
+                return False
+
+        try:
+            with self.assertRaises(Refused):
+                workflow_verbs._scan_asset_bytes(ok_zip.getvalue())
+        finally:
+            zipfile.ZipFile.open = orig
+
+    def test_secret_shaped_asset_names_refused(self):
+        for action, extra in [
+            ("wf_release_asset_upload_binary", {"release_id": 3, "content_b64": "aGk="}),
+            ("wf_release_asset_update", {"asset_id": 7, "expected_name": "a.bin"}),
+        ]:
+            with self.assertRaises(Refused):
+                handle(action, DL(ASSET)).run(action, {"repo": REPO, "name": TOKEN, **extra})
+
+    def test_artifact_expired_must_be_exactly_false(self):
+        for meta in [
+            {"id": 5, "expired": True},
+            {"id": 5, "expired": None},
+            {"id": 5},
+            {"id": 5, "expired": 0},
+        ]:
+            with self.assertRaises(Refused, msg=meta):
+                handle("wf_artifact_download", DL(meta)).run(
+                    "wf_artifact_download", {"repo": REPO, "artifact_id": 5}
+                )
+
+    def test_job_log_tiny_length_still_advances(self):
+        data = "\u00e9b".encode()  # 3 bytes
+        for length in (1, 2):
+            c = DL(chunk=(data[: length + 3], 100))
+            out = handle("wf_job_log", c).run(
+                "wf_job_log", {"repo": REPO, "job_id": 4, "length": length}
+            )
+            self.assertEqual((out["content"], out["next_offset"]), ("\u00e9", 2), length)
+            self.assertGreater(c.dl[0][3], length)
+        four = "\U0001f600".encode()
+        out = handle("wf_job_log", DL(chunk=(four, 100))).run(
+            "wf_job_log", {"repo": REPO, "job_id": 4, "length": 1}
+        )
+        self.assertEqual((out["content"], out["next_offset"]), ("\U0001f600", 4))
 
     def test_binary_upload_name_and_base64(self):
         c = DL()
