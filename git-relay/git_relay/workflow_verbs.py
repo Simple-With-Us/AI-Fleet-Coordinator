@@ -711,6 +711,8 @@ class WorkflowVerbs:
         _only(args, ("repo", "sha"))
         sha = _sha(args, "sha")
         value = self._get(f"/repos/{repo}/git/blobs/{sha}")
+        if isinstance(value, dict) and type(value.get("size")) is int and value["size"] > 40000:
+            raise Refused("blob exceeds supported text size")
         if (
             not isinstance(value, dict)
             or value.get("sha") != sha
@@ -724,8 +726,10 @@ class WorkflowVerbs:
         try:
             raw = base64.b64decode(value["content"].replace("\n", ""), validate=True)
             text = raw.decode("utf-8")
-        except (ValueError, UnicodeError, binascii.Error):
-            raise RelayGitHubError(502, "blob is not bounded UTF-8 text") from None
+        except UnicodeError:
+            raise Refused("binary blob text is not supported") from None
+        except (ValueError, binascii.Error):
+            raise RelayGitHubError(502, "blob encoding unverifiable") from None
         if (
             len(raw) != value["size"]
             or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() != sha
@@ -789,6 +793,12 @@ class WorkflowVerbs:
         _only(args, ("repo", "sha"))
         sha = _sha(args, "sha")
         result = self._get(f"/repos/{repo}/git/trees/{sha}")
+        if (
+            isinstance(result, dict)
+            and isinstance(result.get("tree"), list)
+            and len(result["tree"]) > 100
+        ):
+            raise Refused("tree exceeds supported entry count")
         if (
             not isinstance(result, dict)
             or result.get("sha") != sha

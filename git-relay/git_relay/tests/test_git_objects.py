@@ -81,5 +81,20 @@ class Objects(unittest.TestCase):
             ("wf_git_blob_get", {"sha": SHA, "encoding": "base64", "size": 40001, "content": ""}),
         ]:
             c = Client(reply)
-            with self.assertRaises(RelayGitHubError):
+            with self.assertRaises((RelayGitHubError, Refused)):
                 self.handle(c, a).run(a, {"repo": REPO, "sha": SHA})
+
+    def test_deterministic_read_limits_are_terminal_refusals(self):
+        for action, reply in [
+            ("wf_git_tree_get", {"tree": [{}] * 101}),
+            ("wf_git_blob_get", {"size": 40001}),
+        ]:
+            with self.assertRaises(Refused):
+                self.handle(Client(reply), action).run(action, {"repo": REPO, "sha": SHA})
+        raw = b"\xff"
+        sha = hashlib.sha1(b"blob 1\0" + raw).hexdigest()
+        with self.assertRaises(Refused):
+            self.handle(
+                Client({"sha": sha, "encoding": "base64", "size": 1, "content": "/w=="}),
+                "wf_git_blob_get",
+            ).run("wf_git_blob_get", {"repo": REPO, "sha": sha})
