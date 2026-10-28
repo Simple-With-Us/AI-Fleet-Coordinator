@@ -50,3 +50,26 @@ class Milestones(unittest.TestCase):
                 {"repo": REPO, "title": "Ship", "description": "ghp_" + "A" * 36, "state": "open"},
                 REPO,
             )
+
+    def test_delete_requests_strict_204_and_malformed_writes_hold_unknown(self):
+        class StrictClient:
+            def _call(self, method, path, payload=None, bearer=None, expected_status=None):
+                self.expected_status = expected_status
+                return {}
+
+        c = StrictClient()
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_milestone_delete", REPO)
+        self.assertEqual(
+            h.run("wf_milestone_delete", {"repo": REPO, "milestone": 2}),
+            {"deleted": True, "number": 2},
+        )
+        self.assertEqual(c.expected_status, 204)
+        for action in ["wf_milestone_create", "wf_milestone_update"]:
+            for receipt in [[], None, "bad"]:
+                c = Client(receipt)
+                h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
+                args = {"repo": REPO, "title": "Ship", "description": "notes", "state": "open"}
+                if action == "wf_milestone_update":
+                    args["milestone"] = 2
+                with self.assertRaises(RelayGitHubError):
+                    h.run(action, args)
