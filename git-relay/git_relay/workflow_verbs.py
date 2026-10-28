@@ -468,7 +468,11 @@ class WorkflowVerbs:
             bearer=self.bearer,
         )
         result = _obj(data)
-        if result.get("id") != comment_id or isinstance(result.get("id"), bool):
+        if (
+            result.get("id") != comment_id
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
             raise RelayGitHubError(502, "response unverifiable")
         return {"result": result}
 
@@ -504,7 +508,11 @@ class WorkflowVerbs:
             bearer=self.bearer,
         )
         result = _obj(data)
-        if result.get("id") != comment_id or isinstance(result.get("id"), bool):
+        if (
+            result.get("id") != comment_id
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
             raise RelayGitHubError(502, "response unverifiable")
         return {"result": result}
 
@@ -522,12 +530,36 @@ class WorkflowVerbs:
         )
         return {"deleted": True}
 
+    @staticmethod
+    def _release_summary(value):
+        value = _obj(value)
+        if (
+            isinstance(value.get("id"), bool)
+            or not isinstance(value.get("id"), int)
+            or value["id"] <= 0
+        ):
+            raise RelayGitHubError(502, "release receipt unverifiable")
+        result = {"id": value["id"]}
+        for key in ("tag_name", "name", "html_url", "created_at", "published_at"):
+            item = value.get(key)
+            if item is not None and (not isinstance(item, str) or len(item.encode("utf-8")) > 2048):
+                raise RelayGitHubError(502, "release receipt unverifiable")
+            result[key] = item
+        for key in ("draft", "prerelease"):
+            if not isinstance(value.get(key), bool):
+                raise RelayGitHubError(502, "release flags unverifiable")
+            result[key] = value[key]
+        return result
+
     def wf_release_list(self, repo, args):
         _only(args, ("repo",))
         data = self.client._call(
             "GET", f"/repos/{repo}/releases?per_page=50", None, bearer=self.bearer
         )
-        return {"releases": _arr(data)[:MAX_PAGE], "complete": False}
+        return {
+            "releases": [self._release_summary(x) for x in _arr(data)[:MAX_PAGE]],
+            "complete": False,
+        }
 
     def wf_release_get(self, repo, args):
         _only(
@@ -542,7 +574,11 @@ class WorkflowVerbs:
             "GET", f"/repos/{repo}/releases/{release_id}", None, bearer=self.bearer
         )
         result = _obj(data)
-        if result.get("id") != release_id or isinstance(result.get("id"), bool):
+        if (
+            result.get("id") != release_id
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
             raise RelayGitHubError(502, "response unverifiable")
         return {"result": result}
 

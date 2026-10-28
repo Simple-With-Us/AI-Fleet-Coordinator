@@ -55,3 +55,17 @@ class CommentLifecycle(unittest.TestCase):
                 {"repo": REPO, "comment_id": 1, "body": "ghp_" + "A" * 36},
                 REPO,
             )
+
+    def test_release_projection_and_float_comment_refusal(self):
+        from git_relay.github_client import RelayGitHubError
+
+        c = Client([{"id": 2, "draft": False, "prerelease": False, "body": "private"}])
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_release_list", REPO)
+        result = h.run("wf_release_list", {"repo": REPO})
+        self.assertNotIn("body", result["releases"][0])
+        c = Client({"id": 2.0})
+        h = WorkflowVerbs(
+            c, Policy(), "swu-wise", "private", "swu-wise", "wf_issue_comment_update", REPO
+        )
+        with self.assertRaises(RelayGitHubError):
+            h.run("wf_issue_comment_update", {"repo": REPO, "comment_id": 2, "body": "updated"})
