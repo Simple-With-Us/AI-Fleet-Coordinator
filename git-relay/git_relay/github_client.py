@@ -339,8 +339,26 @@ class GitHubClient:
             first = errors[0] if isinstance(errors, list) and errors else {}
             kind = first.get("type") if isinstance(first, dict) else None
             detail = f" ({kind})" if isinstance(kind, str) and kind else ""
+            # Only a structured authorization denial at this sole mutation,
+            # with no mutation result, proves that no write took place. Partial
+            # results, mixed errors and unscoped errors remain unknown.
+            payload = data.get("data")
+            no_result = payload is None or (
+                isinstance(payload, dict)
+                and payload.get("resolveReviewThread") is None
+            )
+            definite_refusal = (
+                isinstance(errors, list)
+                and no_result
+                and all(
+                    isinstance(error, dict)
+                    and error.get("type") == "FORBIDDEN"
+                    and error.get("path") == ["resolveReviewThread"]
+                    for error in errors
+                )
+            )
             raise RelayGitHubError(
-                0,
+                403 if definite_refusal else 0,
                 f"graphql resolveReviewThread failed{detail}",
                 code=kind if isinstance(kind, str) and kind else None,
                 credential_preview=mask_credential(bearer),
