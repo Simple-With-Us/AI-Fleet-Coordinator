@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import stat
+import struct
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -103,24 +104,93 @@ class CustodyTests(unittest.TestCase):
         source = io.BytesIO(SYNTHETIC)
         with (
             mock.patch.object(mod, "check_code"),
+            mock.patch.object(
+                Path, "lstat", return_value=SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+            ),
             mock.patch.object(mod.os, "geteuid", return_value=123),
             mock.patch.object(mod.os, "open", return_value=5) as opened,
             mock.patch.object(mod.os, "fdopen") as fdopen,
             mock.patch.object(
                 mod.os,
                 "fstat",
-                return_value=SimpleNamespace(st_mode=stat.S_IFREG | 0o400, st_uid=123),
+                side_effect=[
+                    SimpleNamespace(st_mode=stat.S_IFDIR | 0o550, st_uid=0, st_gid=0, st_dev=9),
+                    SimpleNamespace(
+                        st_mode=stat.S_IFREG | 0o440, st_uid=0, st_gid=0, st_dev=9, st_nlink=1
+                    ),
+                ],
             ),
+            mock.patch.object(
+                mod.os, "fstatvfs", return_value=SimpleNamespace(f_flag=mod.os.ST_RDONLY)
+            ),
+            mock.patch.object(mod, "check_service_acl") as acl,
+            mock.patch.object(mod.os, "close"),
             mock.patch.object(mod.os, "execve") as execute,
         ):
             fdopen.return_value.__enter__.return_value = source
             source.fileno = lambda: 5
             mod.child()
-        self.assertEqual(opened.call_args.args[0], mod.CREDENTIAL)
+        self.assertEqual(opened.call_args.args[0], mod.CREDENTIAL.name)
+        self.assertEqual(opened.call_args.kwargs["dir_fd"], 5)
+        self.assertEqual(acl.call_count, 2)
         exe, argv, env = execute.call_args.args
         self.assertEqual(exe, "/usr/bin/python3")
         self.assertEqual(argv[-1], str(mod.CODE / "assigned-hosted-stdio.py"))
         self.assertEqual(env, {"PATH": "/usr/bin:/bin", "ASSIGNED_MCP_BEARER": SYNTHETIC.decode()})
+
+    def test_child_rejects_writable_mount_or_wrong_owner_before_read(self):
+        parent = SimpleNamespace(st_mode=stat.S_IFDIR | 0o550, st_uid=0, st_gid=0, st_dev=9)
+        for info, flag in [
+            (parent, 0),
+            (
+                SimpleNamespace(st_mode=stat.S_IFDIR | 0o550, st_uid=123, st_gid=0, st_dev=9),
+                mod.os.ST_RDONLY,
+            ),
+        ]:
+            with (
+                mock.patch.object(mod, "check_code"),
+                mock.patch.object(mod.os, "geteuid", return_value=64531),
+                mock.patch.object(
+                    Path,
+                    "lstat",
+                    return_value=SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0),
+                ),
+                mock.patch.object(mod.os, "open", return_value=5) as opened,
+                mock.patch.object(mod.os, "close"),
+                mock.patch.object(mod.os, "fstat", return_value=info),
+                mock.patch.object(mod.os, "fstatvfs", return_value=SimpleNamespace(f_flag=flag)),
+                mock.patch.object(mod.os, "execve") as execute,
+            ):
+                with self.assertRaises(ValueError):
+                    mod.child()
+                self.assertEqual(opened.call_count, 1)
+                execute.assert_not_called()
+
+    def test_native_acl_exact_service_user_and_no_broad_access(self):
+        def encode(entries):
+            return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *entry) for entry in entries)
+
+        for directory in (False, True):
+            perm = 5 if directory else 4
+            good = [
+                (1, perm, 0xFFFFFFFF),
+                (2, perm, 64531),
+                (4, 0, 0xFFFFFFFF),
+                (16, perm, 0xFFFFFFFF),
+                (32, 0, 0xFFFFFFFF),
+            ]
+            with mock.patch.object(mod.os, "getxattr", return_value=encode(good)):
+                mod.check_service_acl(5, 64531, directory)
+            for bad in [
+                good[:-1],
+                good + [(2, perm, 999)],
+                [(tag, perm_, 123 if tag == 2 else ident) for tag, perm_, ident in good],
+                [(tag, perm if tag == 4 else perm_, ident) for tag, perm_, ident in good],
+                [(tag, perm if tag == 32 else perm_, ident) for tag, perm_, ident in good],
+            ]:
+                with mock.patch.object(mod.os, "getxattr", return_value=encode(bad)):
+                    with self.assertRaises(ValueError):
+                        mod.check_service_acl(5, 64531, directory)
 
     def test_no_root_or_seat_flags_are_refused_without_effect(self):
         with (
