@@ -27,7 +27,7 @@ from urllib.parse import quote
 
 from .github_client import RelayGitHubError
 from .secret_scan import find_secret
-from .server import _perm_within_ceiling
+from .server import PreReadUnavailable, _perm_within_ceiling
 
 
 class Refused(ValueError):
@@ -269,7 +269,9 @@ class WorkflowVerbs:
             data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
-                raise Unknown("review pre-read unavailable; no write attempted") from None
+                raise PreReadUnavailable(
+                    "review pre-read unavailable; no write attempted"
+                ) from None
             raise
         if _sub(data, "head").get("sha") != commit:
             raise Refused("pull request head changed")

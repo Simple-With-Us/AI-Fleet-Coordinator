@@ -197,6 +197,10 @@ class PolicyDenied(Exception):
     """The seat authenticated but its policy refused the call."""
 
 
+class PreReadUnavailable(Exception):
+    """A failed pre-read proves that no write was attempted."""
+
+
 class ServerUnavailable(Exception):
     """A configured-on-paper backend (app-token minting) is not wired."""
 
@@ -339,6 +343,14 @@ class Relay:
                 outcome = "denied"
                 detail = {"reason": str(exc)}
                 return 403, {"error": str(exc)}
+            except PreReadUnavailable:
+                self._release(key, "refused")
+                outcome = "unavailable"
+                detail = {"reason": "pre_read_unavailable"}
+                return 503, {
+                    "error": "upstream pre-read unavailable; no write attempted",
+                    "retryable": True,
+                }
             except ServerUnavailable as exc:
                 self._release(key, "refused")
                 outcome = "unavailable"
