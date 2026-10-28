@@ -25,7 +25,7 @@ Provide `INFISICAL_TOKEN` or the complete `INFISICAL_AUTOMATION_CLIENT_ID` and `
 
 The generated wrappers for `simple-chat`, `simple-board`, `recall`, and the CODEX stdio MCP exec with their inherited environment (`wrapper()` in `scripts/fleet-cli-release.py` does not load this entry point or inject a token), so provision approved authentication in that environment.  A direct Infisical consumer such as fleet knobs can exchange the complete automation pair through its fleet-secrets helper;  a consumer that requires a token must receive one through its approved launcher.  Token injection by separately installed server wrappers is unverified here;  a code update alone does not establish it.
 
-Verify `fleet-secrets doctor`, `simple-chat --as CODEX whoami`, and `AGENT_SEAT=CODEX simple-board whoami`.  Linear should identify the Codex app.  A server retaining the old cutover gate also needs `LINEAR_BOARD_WRITES=1` in its board wrapper.  App Store Connect's existing client reads `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_KEY_P8` from Fleet-OPS prod `/asc`; a read of `/v1/apps?limit=1` verifies authentication without registering or releasing an app.
+Verify `fleet-secrets doctor`, `simple-chat --as CODEX whoami`, and `simple-board whoami` with the seat's bearer locator bound.  Linear should identify the Codex app.  A server needs no write switch:  the bearer-verified seat is the write gate.  App Store Connect's existing client reads `ASC_KEY_ID`, `ASC_ISSUER_ID`, and `ASC_KEY_P8` from Fleet-OPS prod `/asc`; a read of `/v1/apps?limit=1` verifies authentication without registering or releasing an app.
 
 ## Server Commands
 

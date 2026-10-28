@@ -476,12 +476,14 @@ class BoardWriteTests(unittest.TestCase):
     # ---- the table ------------------------------------------------------------------------
     def test_the_classifier_reads_the_board_codes(self) -> None:
         table = {2: notifymod.TERMINAL, 3: notifymod.RETRYABLE, 4: notifymod.TERMINAL,
-                 5: notifymod.RETRYABLE, 6: notifymod.TERMINAL, 7: notifymod.TERMINAL}
+                 5: notifymod.RETRYABLE, 6: notifymod.TERMINAL}
         for code, want in table.items():
             self.assertEqual(notifymod._classify(Result(code, "", "board: refused")), want, code)
         self.assertEqual(notifymod._classify(Result(0, "commented")), notifymod.OK)
         self.assertEqual(notifymod._classify(Result(124, "", "timed out", timed_out=True)), notifymod.UNKNOWN)
         self.assertEqual(notifymod._classify(Result(1, "", "board: Linear refused the comment: x")), notifymod.UNKNOWN)
+        # Exit 7 is retired:  the board does not return it, and an unclassified code is unknown.
+        self.assertEqual(notifymod._classify(Result(7, "", "board: refused")), notifymod.UNKNOWN)
 
     # ---- retryable ------------------------------------------------------------------------
     def test_exit_3_is_retryable_and_leaves_the_item_pending(self) -> None:
@@ -545,14 +547,20 @@ class BoardWriteTests(unittest.TestCase):
         self.assertNotIn("LINEAR_CLIENT_SECRET", message, "a name with a value is not a missing variable")
         self.assertNotIn("hunter2", message)
 
-    def test_exits_2_6_and_7_are_terminal(self) -> None:
-        for code in (2, 6, 7):
+    def test_exits_2_and_6_are_terminal(self) -> None:
+        for code in (2, 6):
             runner = self.stub(Result(code, "", "board: refused"))
             with self.assertRaises(BoardFailed) as raised:
                 notifymod.notify(runner, self.item)
             self.assertIn("exit %d" % code, str(raised.exception))
-            # errors.py passes the board's own code through for 4 to 7, and 1 for the rest.
-            self.assertEqual(raised.exception.exit_code, code if code in (4, 5, 6, 7) else 1)
+            # errors.py passes the board's own code through for 4 to 6, and 1 for the rest.
+            self.assertEqual(raised.exception.exit_code, code if code in (4, 5, 6) else 1)
+
+    def test_exit_7_is_not_a_terminal_code_anymore(self) -> None:
+        # Exit 7 was the writes-off switch.  The board retired it:  a write with no
+        # bearer-verified seat exits 6.  A stale 7 must not read as a definite refusal.
+        self.assertNotIn(7, notifymod.BOARD_TERMINAL_CODES)
+        self.assertNotIn(7, notifymod.BOARD_RETRYABLE_CODES)
 
     def test_a_terminal_failure_is_not_tried_twice(self) -> None:
         # A terminal failure is decided before the board writes anything, and it is the same on a

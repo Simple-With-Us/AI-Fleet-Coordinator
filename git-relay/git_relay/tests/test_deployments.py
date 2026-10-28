@@ -62,3 +62,21 @@ class Deployments(unittest.TestCase):
                 WorkflowVerbs.check_shape(
                     action, {"repo": REPO, **args, "url": "https://example.invalid"}, REPO
                 )
+
+    def test_status_append_never_reapplies_and_delete_expects_204(self):
+        from git_relay.server import _REAPPLY_STATE_ACTIONS
+
+        self.assertNotIn("wf_deployment_status_create", _REAPPLY_STATE_ACTIONS)
+
+        class StrictClient:
+            def _call(self, method, path, payload=None, bearer=None, expected_status=None):
+                self.expected_status = expected_status
+                return {}
+
+        c = StrictClient()
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_deployment_delete", REPO)
+        self.assertEqual(
+            h.run("wf_deployment_delete", {"repo": REPO, "deployment_id": 2}),
+            {"deleted": True, "deployment_id": 2},
+        )
+        self.assertEqual(c.expected_status, 204)

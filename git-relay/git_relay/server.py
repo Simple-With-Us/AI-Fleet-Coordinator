@@ -558,6 +558,7 @@ _WORKFLOW_AUDIT_SCALARS = (
     "workflow_id",
     "artifact_id",
     "per_page",
+    "page",
     "state",
     "tail_bytes",
     "method",
