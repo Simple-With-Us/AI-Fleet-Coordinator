@@ -55,7 +55,7 @@ def notes_project_paths(shell: str) -> dict[str, str]:
 
 def notes_env_default(shell: str, name: str) -> str:
     """The default of one _env("NAME", "default") in the Notes script."""
-    match = re.search(r'_env\("%s", "([^"]+)"\)' % re.escape(name), shell)
+    match = re.search(f'_env\\("{re.escape(name)}", "([^"]+)"\\)', shell)
     if match is None:  # pragma: no cover - the names below always exist
         raise AssertionError(f"{name} has no default in apple-notes-coding.sh")
     return match.group(1)
@@ -78,8 +78,8 @@ class ProjectParityTest(unittest.TestCase):
         missing = sorted(set(projects) - set(paths))
         self.assertFalse(
             missing,
-            "these TARGET project rules are missing from the Notes PROJECT_PATHS:  %s"
-            % ", ".join(missing),
+            "these TARGET project rules are missing from the Notes PROJECT_PATHS:  "
+            + ", ".join(missing),
         )
 
     def test_notes_names_no_project_target_does_not(self):
@@ -87,7 +87,7 @@ class ProjectParityTest(unittest.TestCase):
         extra = sorted(set(paths) - set(target_projects()))
         self.assertFalse(
             extra,
-            "these Notes PROJECT_PATHS entries have no TARGET rule:  %s" % ", ".join(extra),
+            "these Notes PROJECT_PATHS entries have no TARGET rule:  " + ", ".join(extra),
         )
 
     def test_both_sides_build_the_same_project_url(self):
