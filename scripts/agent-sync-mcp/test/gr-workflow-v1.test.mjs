@@ -170,4 +170,7 @@ test('review/inline/branch additions keep bounded shapes and uncertain write fai
  }
  assert.ok(!validWfV1Args('wf_review_inline',{...requests[1][1],line:true}));
  assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'x'.repeat(32769)}));
+ assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'   '}));
+ assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'é'.repeat(20000)}));
+ assert.ok(validWfV1Args('wf_review_submit',{...requests[0][1],body:'héllo'}));
 });

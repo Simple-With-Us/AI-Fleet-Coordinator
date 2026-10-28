@@ -79,7 +79,12 @@ export function boundedWorkflowInput(args) {
   }
   return true;
 }
-export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args);
+// The relay measures review bodies in UTF-8 bytes and refuses blank ones;
+// mirror that here so bad input fails before network instead of as a relay 400.
+const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
+  new TextEncoder().encode(args.body).length <= 32768;
+export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
+  (action !== 'wf_review_submit' && action !== 'wf_review_inline' || reviewBodyOk(args));
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {

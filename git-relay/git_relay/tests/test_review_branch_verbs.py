@@ -3,12 +3,15 @@ import os
 import tempfile
 import unittest
 
-from test_workflow_wiring import TOKEN, Minter
+try:
+    from test_workflow_wiring import TOKEN, Minter
+except ImportError:
+    from .test_workflow_wiring import TOKEN, Minter
 
 from git_relay.audit import AuditLog
 from git_relay.github_client import RelayGitHubError
 from git_relay.policy import SeatPolicy
-from git_relay.server import Relay
+from git_relay.server import Relay, _workflow_audit_detail
 
 try:
     from test_workflow_verbs import REPO, SHA, Client, Policy
@@ -105,6 +108,34 @@ class ReviewBranchTests(unittest.TestCase):
         ]:
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(action, {"repo": REPO, **args}, REPO)
+
+
+class ReviewAuditDetailTests(unittest.TestCase):
+    def test_review_and_inline_audit_keeps_ids_not_bodies(self):
+        detail = _workflow_audit_detail(
+            {"repo": REPO, "number": 2, "commit_id": SHA, "event": "APPROVE", "body": "hello"},
+            {"review": {"id": 3, "state": "APPROVED", "commit_id": SHA}},
+        )
+        self.assertEqual(detail["result_review_id"], 3)
+        self.assertEqual(detail["event"], "APPROVE")
+        self.assertEqual(detail["commit_id"], SHA)
+        self.assertNotIn("body", detail)
+        detail = _workflow_audit_detail(
+            {
+                "repo": REPO,
+                "number": 2,
+                "commit_id": SHA,
+                "path": "src/a.py",
+                "line": 3,
+                "side": "RIGHT",
+                "body": "hello",
+            },
+            {"comment": {"id": 4, "commit_id": SHA}},
+        )
+        self.assertEqual(detail["result_comment_id"], 4)
+        self.assertEqual(detail["line"], 3)
+        self.assertEqual(detail["side"], "RIGHT")
+        self.assertNotIn("body", detail)
 
 
 class ReviewBranchWiringTests(unittest.TestCase):

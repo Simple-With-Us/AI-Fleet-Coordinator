@@ -500,6 +500,10 @@ _WORKFLOW_AUDIT_SCALARS = (
     "job_id",
     "run_id",
     "number",
+    "commit_id",
+    "event",
+    "side",
+    "line",
     "ref",
     "branch",
     "base",
@@ -531,6 +535,14 @@ def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
         value = result.get(key)
         if isinstance(value, (int, bool)) or (isinstance(value, str) and len(value) <= 64):
             detail[f"result_{key}"] = value
+    # Review and inline writes nest their new ids one level down; keep the ids
+    # (bounded ints) so the audit row says which review or comment was created.
+    for key, result_key in (("review", "result_review_id"), ("comment", "result_comment_id")):
+        nested = result.get(key)
+        if isinstance(nested, dict):
+            value = nested.get("id")
+            if isinstance(value, int) and not isinstance(value, bool):
+                detail[result_key] = value
     return detail
 
 
