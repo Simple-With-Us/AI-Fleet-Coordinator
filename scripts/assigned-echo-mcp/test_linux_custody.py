@@ -1,9 +1,12 @@
 """Synthetic only: no native command, secret, installed path or service touched."""
 
+import errno
 import importlib.util
 import io
+import os
 import stat
 import struct
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -165,6 +168,14 @@ class CustodyTests(unittest.TestCase):
                     mod.child()
                 self.assertEqual(opened.call_count, 1)
                 execute.assert_not_called()
+
+    def test_real_getxattr_accepts_held_integer_descriptor(self):
+        # Real syscall boundary, no mocked getxattr: no ACL is expected on a temp file.
+        with tempfile.TemporaryFile() as source:
+            try:
+                os.getxattr(source.fileno(), "system.posix_acl_access")
+            except OSError as exc:
+                self.assertIn(exc.errno, (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP))
 
     def test_native_acl_exact_service_user_and_no_broad_access(self):
         def encode(entries):
