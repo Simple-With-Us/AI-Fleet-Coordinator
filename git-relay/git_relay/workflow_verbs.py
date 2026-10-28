@@ -365,6 +365,8 @@ class WorkflowVerbs:
         try:
             data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
             observed_head = _sub(data, "head").get("sha")
+            if not isinstance(observed_head, str) or not re.fullmatch(r"[0-9a-f]{40}", observed_head):
+                raise RelayGitHubError(502, "unexpected upstream shape")
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable(

@@ -3,7 +3,7 @@ import unittest
 try:
     from .test_workflow_verbs import REPO, SHA, Client, Policy
 except ImportError:
-    from test_workflow_verbs import REPO, Client, Policy
+    from test_workflow_verbs import REPO, SHA, Client, Policy
 from git_relay.github_client import RelayGitHubError
 from git_relay.workflow_verbs import WorkflowVerbs, _arr, _dicts, _obj, _sub
 
@@ -41,11 +41,12 @@ class Shapes(unittest.TestCase):
     def test_malformed_review_preread_is_definitely_unsent(self):
         from git_relay.server import PreReadUnavailable
 
-        c = Client({"head": []})
-        h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_review_submit", REPO)
-        with self.assertRaises(PreReadUnavailable):
-            h.run(
-                "wf_review_submit",
-                {"repo": REPO, "number": 1, "commit_id": SHA, "event": "COMMENT", "body": "Review"},
-            )
-        self.assertEqual(len(c.calls), 1)
+        for payload in ({}, {"head": None}, {"head": []}, {"head": {}}, {"head": {"sha": None}}, {"head": {"sha": "bad"}}):
+            c = Client(payload)
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_review_submit", REPO)
+            with self.assertRaises(PreReadUnavailable):
+                h.run(
+                    "wf_review_submit",
+                    {"repo": REPO, "number": 1, "commit_id": SHA, "event": "COMMENT", "body": "Review"},
+                )
+            self.assertEqual(len(c.calls), 1)
