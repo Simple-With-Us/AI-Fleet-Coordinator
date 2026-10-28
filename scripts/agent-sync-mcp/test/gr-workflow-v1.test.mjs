@@ -217,3 +217,8 @@ test('read object checks preserve valid existing file-write string receipts',()=
  assert.ok(!validWfV1Response('wf_branch_get',{branch:'main'}));
  assert.ok(!validWfV1Response('wf_commit_get',{commit:'a'.repeat(40)}));
 });
+
+test('file write receipts require string branch and path',()=>{
+ for (const bad of [{path:'x',branch:{},commit:'a'.repeat(40)},{path:2,branch:'b',commit:'a'.repeat(40)},{path:'x',branch:'',commit:'a'.repeat(40)}]) assert.equal(validWfV1Response('wf_file_put',bad),false);
+ assert.equal(validWfV1Response('wf_file_put',{path:'x',branch:'b',commit:'a'.repeat(40)}),true);
+});

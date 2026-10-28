@@ -141,7 +141,7 @@ export function validWfV1Response(action, body) {
     if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;
   }
   for (const k of ['pull','commit','comparison','branch','repository','workflows','run','artifacts']) {
-    if ((action === 'wf_file_put' || action === 'wf_files_put') && (k === 'branch' || k === 'commit')) continue;
+    if ((action === 'wf_file_put' || action === 'wf_files_put') && (k === 'branch' || k === 'commit')) { if (typeof body[k] !== 'string' || body[k].length === 0) return false; continue; }
     if (k in body && (!body[k] || typeof body[k] !== 'object' || Array.isArray(body[k]))) return false;
   }
   if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
