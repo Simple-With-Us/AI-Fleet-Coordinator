@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_label_update": ({"issues": "write"}, True),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -2495,6 +2496,79 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "label outcome unverifiable")
         return {"result": {k: result.get(k) for k in ("id", "name", "color", "description")}}
+
+    def wf_label_update(self, repo, args):
+        """Update bounded metadata of an exact pre-read label, not archive or deletion."""
+        _only(args, ("repo", "name", "expected_label_id", "new_name", "color", "description"))
+        expected = _int(args, "expected_label_id")
+
+        def text(key, limit, blank=False):
+            value = args.get(key)
+            if (
+                not isinstance(value, str)
+                or (not blank and not value.strip())
+                or "\x00" in value
+                or any(ord(c) < 32 or ord(c) == 127 for c in value)
+            ):
+                raise Refused("invalid label text")
+            try:
+                raw = value.encode("utf-8")
+            except UnicodeEncodeError:
+                raise Refused("invalid label text") from None
+            if (
+                len(raw) > limit
+                or find_secret(value)
+                or re.search(
+                    r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                    value,
+                )
+            ):
+                raise Refused("invalid label text")
+            return value
+
+        name, new_name = text("name", 100), text("new_name", 100)
+        description = text("description", 100, True)
+        color = args.get("color")
+        if not isinstance(color, str) or not re.fullmatch(r"[A-Fa-f0-9]{6}", color):
+            raise Refused("invalid label color")
+        path = f"/repos/{repo}/labels/{quote(name, safe='')}"
+        try:
+            old = self._get(path)
+            if (
+                not isinstance(old, dict)
+                or type(old.get("id")) is not int
+                or old.get("id") != expected
+                or old.get("name") != name
+            ):
+                raise Refused("label identity does not match")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("label pre-read unavailable; no write attempted") from None
+            raise
+        result = self.client._call(
+            "PATCH",
+            path,
+            {"new_name": new_name, "color": color, "description": description},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or type(result.get("id")) is not int
+            or result.get("id") != expected
+            or result.get("name") != new_name
+            or not isinstance(result.get("color"), str)
+            or result["color"].lower() != color.lower()
+            or result.get("description") != description
+        ):
+            raise RelayGitHubError(502, "label update receipt unverifiable")
+        return {
+            "label": {
+                "id": expected,
+                "name": new_name,
+                "color": color.lower(),
+                "description": description,
+            }
+        }
 
     def wf_label_delete(self, repo, args):
         _only(

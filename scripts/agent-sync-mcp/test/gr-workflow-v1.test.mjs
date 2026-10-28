@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,101);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,102);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,101);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,102);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -440,4 +440,13 @@ test('review lifecycle projected receipts use cached strict schemas and own bear
  assert.equal(validWfV1Response('wf_review_dismiss',{review}),false);
  assert.equal(validWfV1Response('wf_review_pending_delete',{review:{...review,id:true}}),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_pending_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({review}));});assert.ok(!(await t.call('gr_wf_review_pending_delete',{repo,number:1,review_id:2})).isError);
+});
+test('label update metadata uses closed bounded args and exact correlated receipt',async()=>{
+ const args={repo,name:'old/label',expected_label_id:7,new_name:'New label',color:'AaBbee',description:''};
+ const receipt={label:{id:7,name:'New label',color:'aabbee',description:''}};
+ assert.equal(validWfV1Args('wf_label_update',args),true);assert.equal(validWfV1Response('wf_label_update',receipt,args),true);
+ for(const bad of [{label:{...receipt.label,id:8}},{label:{...receipt.label,name:'wrong'}},{label:{...receipt.label,extra:true}}])assert.equal(validWfV1Response('wf_label_update',bad,args),false);
+ // Synthetic assembled fixture, never a credential.
+ for(const bad of [{...args,archived:true},{...args,description:'é'.repeat(51)},{...args,new_name:'ghp_'+'x'.repeat(36)},{...args,new_name:' '}])assert.equal(validWfV1Args('wf_label_update',bad),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_label_update'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');assert.deepEqual(JSON.parse(i.body),args);return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_label_update',args)).isError);
 });

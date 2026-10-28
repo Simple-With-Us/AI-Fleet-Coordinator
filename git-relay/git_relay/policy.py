@@ -130,6 +130,7 @@ class SeatPolicy:
         "wf_assignees_remove",
         "wf_issue_lock",
         "wf_issue_unlock",
+        "wf_label_update",
         "wf_label_create",
         "wf_label_delete",
         "wf_pr_get",
