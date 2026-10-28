@@ -113,7 +113,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         return "Infisical Fleet-OPS %s %s" % (Z.INFISICAL_PATH, Z.infisical_key_names(seat)[1])
 
     lines = [
-        "# agent-sync listener config.  Local to this Mac; it holds no secrets.",
+        "# simple-chat listener config.  Local to this Mac; it holds no secrets.",
         "# Design: docs/protocols/agent-sync-listener.md in AI-Fleet-Coordinator.",
         "# Changes take effect on `simple-chat daemon reload` (SIGHUP) or a restart.",
         "",
@@ -161,7 +161,7 @@ def sample_config(secrets_dir: str | None, env: Mapping[str, str] | None = None)
         "",
         "# The muse wake (docs/protocols/agent-sync-listener.md 3.3a) is verified and available, and",
         "# no seat below uses it:  a seat moves to it only when the owner switches it over on purpose,",
-        "# after `agent-sync daemon test-wake --seat <SEAT> --run` and then --pin on that seat's own",
+        "# after `simple-chat daemon test-wake --seat <SEAT> --run` and then --pin on that seat's own",
         "# muse pin file.  Uncomment for a seat that is meant to wake on it.",
         "# [seat.MM]",
         '# bot = "MiniMax"',

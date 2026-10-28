@@ -1,7 +1,7 @@
 """The listener's per-seat records as plain views (AFC-330, part B):  status, the seat inbox, the owner
 queue, the wake ledger, held-back wakes, leases and live inboxes, and chat nudges.
 
-Three readers share these functions:  `agent-sync listener ...` (the CLI), the stdio MCP's listener_*
+Three readers share these functions:  `simple-chat listener ...` (the CLI), the stdio MCP's listener_*
 tools, and the server listener's signed read API (listener_api.py), which the hosted Worker calls.
 Every view is for ONE seat, the caller's own:  callers pass the seat their identity resolved (the CLI
 and stdio) or the seat a request was signed for (the read API), never a seat taken from arguments.

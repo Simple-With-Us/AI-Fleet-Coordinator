@@ -1,4 +1,4 @@
-# agent-sync listener config for the SERVER instance (the Coolify container on the Hetzner box).
+# simple-chat listener config for the SERVER instance (the Coolify container on the Hetzner box).
 # Design:  docs/protocols/agent-sync-server.md in AI-Fleet-Coordinator.
 #
 # It holds no secrets.  Each seat's Zulip email and API key, ZULIP_SITE, and each routine's URL and sender key reach
@@ -18,8 +18,8 @@
 # other names.
 #
 # The container copies this file onto its volume (AGENT_SYNC_CONFIG) on first start.  Then
-# `agent-sync daemon init` pins owner_user_id (and the optional eligible_user_ids) in that copy, and
-# `agent-sync daemon reload` (or a restart) applies it.  Until then nothing is treated as the
+# `simple-chat daemon init` pins owner_user_id (and the optional eligible_user_ids) in that copy, and
+# `simple-chat daemon reload` (or a restart) applies it.  Until then nothing is treated as the
 # owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
 # variable reaches the listener only when the container restarts.  A section changed here never reaches a live
 # volume by itself:  server/apply_live_config.py copies the JET and GB sections into /data/listener.toml, adds
@@ -55,7 +55,7 @@ presence_topics = [["work-in-progress", "roll call"], ["work-in-progress", "flee
 # so its @-mentions and DMs are captured at zero tokens under /data/<SEAT>/, and its key is checked at
 # connect (a member or moderator bot, and the key's own bot must be the seat).  They have no wake
 # adapter, so nothing is woken, and nothing reads those inboxes yet:  the hosted MCP inbox tool asks
-# Zulip itself.  Read one inside the container with `agent-sync inbox --local --as <SEAT>`.  Their
+# Zulip itself.  Read one inside the container with `simple-chat inbox --local --as <SEAT>`.  Their
 # variables are ZULIP_<CODE>_EMAIL and ZULIP_<CODE>_API_KEY, and they reach the container only when the
 # app restarts (a reload does not read the environment).  The partition gives all five to "server".
 # Enable only after the public reverse proxy is ready.  Empty tokens deny every seat.

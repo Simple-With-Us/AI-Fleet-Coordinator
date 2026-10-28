@@ -1231,8 +1231,8 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
             return 0
         _fenced(
             rt,
-            "[agent-sync listener inbox] %d item%s for %s (cursor %d, next_seq %s;  ack with "
-            "agent-sync listener ack --seq %s)"
+            "[simple-chat listener inbox] %d item%s for %s (cursor %d, next_seq %s;  ack with "
+            "simple-chat listener ack --seq %s)"
             % (
                 len(view["items"]),
                 "" if len(view["items"]) == 1 else "s",
@@ -1347,7 +1347,7 @@ def cmd_listener(rt: Any, args: argparse.Namespace) -> int:
             return 0
         _fenced(
             rt,
-            "[agent-sync listener %s] %d item%s from lease %s"
+            "[simple-chat listener %s] %d item%s from lease %s"
             % (
                 action,
                 len(view["items"]),

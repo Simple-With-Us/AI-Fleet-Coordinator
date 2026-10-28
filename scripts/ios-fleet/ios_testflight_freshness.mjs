@@ -397,7 +397,7 @@ export function makeDeps(env = process.env) {
       fs.writeFileSync(file, body, { mode: 0o600 });
       try {
         const seat = env.IOS_TF_FRESHNESS_SEAT || "CLAUDE";
-        await runCmd("agent-sync", ["post", "--as", seat, "--session", "tfresh", "--channel", ALERT_CHANNEL,
+        await runCmd("simple-chat", ["post", "--as", seat, "--session", "tfresh", "--channel", ALERT_CHANNEL,
           "--topic", ALERT_TOPIC, "--body-file", file], { env, timeout: 60_000 });
       } finally {
         fs.rmSync(file, { force: true });
