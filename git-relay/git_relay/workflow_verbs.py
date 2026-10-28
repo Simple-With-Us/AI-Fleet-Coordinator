@@ -54,6 +54,12 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_assignees_add": ({"issues": "write"}, True),
+    "wf_assignees_remove": ({"issues": "write"}, True),
+    "wf_issue_lock": ({"issues": "write"}, True),
+    "wf_issue_unlock": ({"issues": "write"}, True),
+    "wf_label_create": ({"issues": "write"}, True),
+    "wf_label_delete": ({"issues": "write"}, True),
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
@@ -442,6 +448,122 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def wf_assignees_add(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "assignees",
+            ),
+        )
+        number = _int(args, "number")
+        assignees = args.get("assignees")
+        if (
+            not isinstance(assignees, list)
+            or not 1 <= len(assignees) <= 10
+            or any(
+                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", v)
+                for v in assignees
+            )
+        ):
+            raise Refused("invalid assignees")
+        path = f"/repos/{repo}/issues/{number}/assignees"
+        data = self.client._call("POST", path, {"assignees": assignees}, bearer=self.bearer)
+        result = _obj(data)
+        return {"result": result}
+
+    def wf_assignees_remove(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "assignees",
+            ),
+        )
+        number = _int(args, "number")
+        assignees = args.get("assignees")
+        if (
+            not isinstance(assignees, list)
+            or not 1 <= len(assignees) <= 10
+            or any(
+                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", v)
+                for v in assignees
+            )
+        ):
+            raise Refused("invalid assignees")
+        path = f"/repos/{repo}/issues/{number}/assignees"
+        data = self.client._call("DELETE", path, {"assignees": assignees}, bearer=self.bearer)
+        result = _obj(data)
+        return {"result": result}
+
+    def wf_issue_lock(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "reason",
+            ),
+        )
+        number = _int(args, "number")
+        reason = _enum(args, "reason", ("off-topic", "too heated", "resolved", "spam"))
+        path = f"/repos/{repo}/issues/{number}/lock"
+        data = self.client._call("PUT", path, {"lock_reason": reason}, bearer=self.bearer)
+        return {"completed": True}
+
+    def wf_issue_unlock(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+            ),
+        )
+        number = _int(args, "number")
+        path = f"/repos/{repo}/issues/{number}/lock"
+        data = self.client._call("DELETE", path, None, bearer=self.bearer)
+        return {"completed": True}
+
+    def wf_label_create(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "name",
+                "color",
+                "description",
+            ),
+        )
+        name = self._text(args, "name", 100)
+        color = self._text(args, "color", 1024)
+        if not re.fullmatch(r"[0-9a-fA-F]{6}", color):
+            raise Refused("invalid color")
+        description = self._text(args, "description", 1024)
+        path = f"/repos/{repo}/labels"
+        data = self.client._call(
+            "POST",
+            path,
+            {"name": name, "color": color, "description": description},
+            bearer=self.bearer,
+        )
+        result = _obj(data)
+        return {"result": result}
+
+    def wf_label_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "name",
+            ),
+        )
+        name = self._text(args, "name", 100)
+        path = "/repos/" + repo + "/labels/" + quote(name, safe="")
+        data = self.client._call("DELETE", path, None, bearer=self.bearer)
+        return {"completed": True}
 
     # ---- reads ----
     def wf_pr_list(self, repo, args):
