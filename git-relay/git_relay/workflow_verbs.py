@@ -317,10 +317,12 @@ class WorkflowVerbs:
     def _issue_before_write(self, repo, number):
         # Only this GET is caught.  No upstream write has been attempted here.
         # Existing held UNKNOWN rows are never cleared or reclassified.
+        # Transient matches Relay.handle's classification (transport/timeout,
+        # 408, 5xx):  any of them must release the key, never hold it unknown.
         try:
             data = self._get(f"/repos/{repo}/issues/{number}")
         except RelayGitHubError as exc:
-            if exc.status >= 500:
+            if exc.status in (0, 408) or exc.status >= 500:
                 raise Unknown("issue pre-read unavailable; no write attempted") from None
             raise
         return self._issue_summary(data)

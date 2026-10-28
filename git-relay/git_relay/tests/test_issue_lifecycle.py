@@ -1,6 +1,11 @@
 import unittest
 
-from test_workflow_verbs import REPO, Client, Minter, Policy
+try:
+    from test_workflow_verbs import REPO, Client, Minter, Policy
+except ImportError:
+    # Discovered as git_relay.tests.* (the repo CI invocation):  the sibling
+    # helper is a package-relative module there, not a top-level one.
+    from .test_workflow_verbs import REPO, Client, Minter, Policy
 
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
@@ -136,12 +141,79 @@ class IssueTests(unittest.TestCase):
             ("wf_issue_update", {"number": 2, "state": "closed"}),
             ("wf_issue_comment", {"number": 2, "body": "x"}),
         ]:
+            # Every transient Relay.handle treats as unknown-worthy (transport
+            # failure, 408, 5xx) must surface as Unknown here instead, so the
+            # key is released and the seat can retry.
+            for status in (0, 408, 503):
+                client = Client()
+
+                def fail(*args, _status=status, **kwargs):
+                    raise RelayGitHubError(_status, "private upstream text")
+
+                client._call = fail
+                h = WorkflowVerbs(client, Policy(), "swu-wise", "opaque", "swu-wise", action, REPO)
+                with self.assertRaises(Unknown):
+                    h.run(action, {"repo": REPO, **args})
+            # A terminal pre-read failure is still the upstream error, not Unknown.
             client = Client()
 
-            def fail(*args, **kwargs):
-                raise RelayGitHubError(503, "private upstream text")
+            def fail_terminal(*args, **kwargs):
+                raise RelayGitHubError(404, "Not Found")
 
-            client._call = fail
+            client._call = fail_terminal
             h = WorkflowVerbs(client, Policy(), "swu-wise", "opaque", "swu-wise", action, REPO)
-            with self.assertRaises(Unknown):
+            with self.assertRaises(RelayGitHubError):
                 h.run(action, {"repo": REPO, **args})
+
+    def test_transient_pre_read_releases_key_for_retry(self):
+        import json
+        import os
+        import tempfile
+
+        from git_relay.audit import AuditLog
+        from git_relay.github_client import RelayGitHubError
+        from git_relay.outcomes import OutcomeStore
+        from git_relay.policy import SeatPolicy
+        from git_relay.server import Relay
+
+        token = "w" * 32
+        seats = json.dumps(
+            {
+                "swu-wise": {
+                    "token": token,
+                    "actions": ["wf_issue_update"],
+                    "repos": [REPO],
+                    "app_slug": "swu-wise",
+                    "mint_permissions": {"issues": "write", "metadata": "read"},
+                }
+            }
+        )
+        args = {"repo": REPO, "number": 2, "state": "closed"}
+        calls = []
+
+        def flaky(method, path, payload=None, bearer=None):
+            calls.append((method, path))
+            if len(calls) == 1:
+                raise RelayGitHubError(0, "connection failed: timed out")
+            if method == "GET":
+                return dict(ISSUE)
+            return {**ISSUE, "state": "closed"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = Client()
+            client._call = flaky
+            r = Relay(
+                SeatPolicy(seats),
+                client,
+                AuditLog(os.path.join(tmp, "audit")),
+                app_minter=Minter(),
+                outcomes=OutcomeStore(os.path.join(tmp, "outcomes")),
+                workflow_verbs_enabled=True,
+            )
+            status, _body = r.handle(token, "wf_issue_update", args)
+            self.assertEqual(status, 503)
+            # The key was released, not held unknown: the retry runs the write.
+            status2, body2 = r.handle(token, "wf_issue_update", args)
+            self.assertEqual(status2, 200)
+            self.assertEqual(body2["issue"]["state"], "closed")
+            self.assertEqual([c[0] for c in calls], ["GET", "GET", "PATCH"])
