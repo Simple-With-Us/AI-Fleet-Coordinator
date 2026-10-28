@@ -63,6 +63,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -672,6 +673,23 @@ class LinkifyTests(LinkifyTestCase):
         self.assertIn("OPS-1000", out)
         self.assertIn(f'<a href="{gh_url(OTHER_REPO, "957", OTHER_OWNER)}">PR #957</a>', out)
 
+    def test_a_hung_lookup_is_capped_by_the_remaining_budget(self):
+        #  the budget caps the call itself, not just the decision to call it.  A hung gh with a
+        #  small budget returns in roughly the budget, not the full timeout.
+        stub = self.bindir / "gh"
+        stub.write_text(f"#!/bin/sh\nexec {sys.executable} -c 'import time; time.sleep(30)'\n")
+        stub.chmod(0o700)
+        start = time.monotonic()
+        out = self.html(
+            "[AFC, MM] Notes",
+            "OPS-1000 in PR #957.",
+            NOTES_LINKIFY_GH_BUDGET_S="2",
+            NOTES_LINKIFY_GH_TIMEOUT_S="15",
+        )
+        elapsed = time.monotonic() - start
+        self.assertIn(f'<a href="{gh_url(OTHER_REPO, "957", OTHER_OWNER)}">PR #957</a>', out)
+        self.assertLess(elapsed, 8, f"a hung gh blocked {elapsed:.1f}s with a 2s budget")
+
     def test_a_team_key_below_the_reference_does_not_veto_the_one_above_it(self):
         #  a team key further down the block says nothing about what came before it
         out = self.html(
@@ -735,6 +753,15 @@ class LinkifyTests(LinkifyTestCase):
             out,
         )
 
+    def test_a_gh_reference_ending_a_sentence_keeps_its_dot_outside(self):
+        #  a repository name may hold dots but never ends on one, so the sentence dot stays outside
+        out = self.html("[AFC, MM] Notes", "See GH@example-org/widget.")
+        self.assertIn(
+            f'<a href="https://{GITHUB_HOST}/example-org/widget">GH@example-org/widget</a>.',
+            out,
+        )
+        self.assertNotIn("widget.</a>", out)
+
     def test_a_pagerduty_incident_becomes_a_link_and_wins_over_the_qualified_rule(self):
         #  a pound sign usually names a pull request, but PagerDuty names an incident instead
         out = self.html("[AFC, MM] Notes", "Paged as PagerDuty#384 and PagerDuty#Q1ABC23.")
@@ -744,6 +771,17 @@ class LinkifyTests(LinkifyTestCase):
             out,
         )
         self.assertNotIn("/pull/", out)
+
+    def test_a_pagerduty_id_followed_by_more_word_chars_is_not_a_link(self):
+        #  without a right boundary PagerDuty#384abc links only its 384 prefix.  A full id still links.
+        out = self.html("[AFC, MM] Notes", "Paged as PagerDuty#384abc for it.")
+        self.assertNotIn(PAGERDUTY_HOST, out)
+        self.assertIn("PagerDuty#384abc", out)
+        linked = self.html("[AFC, MM] Notes", "Paged as PagerDuty#Q1ABC2 for it.")
+        self.assertIn(
+            f'<a href="https://{PAGERDUTY_HOST}/incidents/Q1ABC2">PagerDuty#Q1ABC2</a>',
+            linked,
+        )
 
     def test_a_cursor_agent_id_becomes_a_link(self):
         out = self.html("[AFC, MM] Notes", "Continued in bc-a1b2c3d4-e5f6 for review")

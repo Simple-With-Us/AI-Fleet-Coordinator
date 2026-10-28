@@ -1723,7 +1723,8 @@ def _gh_has_pr(repo, num):
         _budget = 8.0
     result = None
     gh = None
-    if _gh_spent < _budget:
+    _remaining = _budget - _gh_spent
+    if _remaining > 0:
         gh = _gh_path()
     if gh:
         url = "repos/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/pulls/" + num
@@ -1731,6 +1732,9 @@ def _gh_has_pr(repo, num):
             _timeout = float(_env("NOTES_LINKIFY_GH_TIMEOUT_S", "10") or 10)
         except ValueError:
             _timeout = 10.0
+        #  The budget caps the call itself, not just the decision to call it.  A call that starts
+        #  with little budget left must not block the full timeout, so it waits at most what is left.
+        _timeout = min(_timeout, _remaining)
         try:
             with tempfile.TemporaryFile() as err:
                 with open(os.devnull, "w") as devnull:
@@ -1884,7 +1888,7 @@ SWU_RE = re.compile(r"(?<![A-Za-z0-9_/-])SWU/(?P<slug>[A-Za-z0-9_-]+)")
 GH_RE = re.compile(
     r"(?<![A-Za-z0-9_/-])GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]*[A-Za-z0-9_-])"
 )
-PAGERDUTY_RE = re.compile(r"(?<![A-Za-z0-9_/-])PagerDuty#(?P<id>[A-Z0-9]+)")
+PAGERDUTY_RE = re.compile(r"(?<![A-Za-z0-9_/-])PagerDuty#(?P<id>[A-Z0-9]+)(?![A-Za-z0-9_-])")
 CURSOR_RE = re.compile(r"(?<![A-Za-z0-9_/-])bc-(?P<id>[0-9a-f]{8}[A-Za-z0-9_-]*)")
 
 #  Sentry projects in org simple-with-us, the thirteen slugs of the live rule.  A short id is the
