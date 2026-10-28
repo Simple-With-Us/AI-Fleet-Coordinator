@@ -340,5 +340,35 @@ class Remote(unittest.TestCase):
             self.assertFalse(board.remote_selected())
 
 
+
+class NativeEcho(unittest.TestCase):
+    def test_native_transport_uses_fixed_custody_and_no_secret_environment(self):
+        reply = b'{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18"}}\n{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"seat":"ECHO"},"content":[]}}\n'
+        calls = []
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return type("Reply", (), {"returncode":0, "stdout":reply})()
+        with unittest.mock.patch.dict(os.environ, {"SIMPLE_BOARD_NATIVE_ECHO":"1", "SIMPLE_TOOLS_BEARER":"must-not-export"}, clear=True), unittest.mock.patch.object(board.os,"geteuid",return_value=0), unittest.mock.patch.object(board.subprocess,"run",run):
+            result = board.remote_call("linear_whoami", {})
+        self.assertEqual(result["structured"]["seat"],"ECHO")
+        self.assertEqual(calls[0][0], ["/usr/bin/python3","-I","/usr/local/libexec/assigned-echo-mcp/linux-custody.py"])
+        self.assertEqual(calls[0][1]["env"], {"PATH":"/usr/bin:/bin"})
+        messages=[json.loads(x) for x in calls[0][1]["input"].splitlines()]
+        self.assertEqual([x["method"] for x in messages], ["initialize","notifications/initialized","tools/call"])
+        self.assertNotIn("must-not-export", str(calls))
+
+    def test_native_failure_is_unknown_for_write_and_does_not_print_stderr(self):
+        fake=type("Reply", (), {"returncode":3,"stdout":b"", "stderr":b"private-detail"})()
+        out=io.StringIO()
+        with unittest.mock.patch.object(board.os,"geteuid",return_value=0), unittest.mock.patch.object(board.subprocess,"run",return_value=fake), contextlib.redirect_stderr(out), self.assertRaises(SystemExit):
+            board._native_echo_post(b'{}',True)
+        self.assertIn("outcome unknown",out.getvalue())
+        self.assertNotIn("private-detail",out.getvalue())
+
+    def test_native_nonroot_refuses_before_spawn(self):
+        with unittest.mock.patch.object(board.os,"geteuid",return_value=501), unittest.mock.patch.object(board.subprocess,"run") as run, contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            board._native_echo_post(b'{}',False)
+        run.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

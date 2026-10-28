@@ -268,3 +268,27 @@ Covered:  an imported In Progress issue shaped like UM-1447 (reported by CLAUDE,
 - Until the relabel runs, `list --mine` misses imported claims (it filters on the label); it never lists an issue a seat only reported.
 - `--session` is a `Sessions:` comment line, not the Usage-Monitor attachment the design sketches.
 - Session ids are required (AFC-361):  `file`, `claim`, `status` and `comment` exit 2 before they write when a seat that is not exempt has no id (`--session`, then `AGENT_SESSION`, then the seat's platform variable above).  `file` also records it as a `Sessions:` line in the footer.  Grok bots (`GROK-BOT`, `GB-*`), `MA`, `JET`, `WISE` and `ECHO` have one thread with the owner and need none;  the bearer-verified seat decides that and no flag can.  `fleet-apps.json` `sessionIds` is the data, and `scripts/test_session_ids_parity.py` keeps this CLI's copy equal.
+
+### ECHO native-custody canonical CLI bridge
+
+`SIMPLE_BOARD_NATIVE_ECHO=1 simple-board whoami` uses the existing fixed
+`/usr/local/libexec/assigned-echo-mcp/linux-custody.py` launcher as root. This is
+an internal transport for the canonical CLI, not a new user-facing tool. The
+launcher must already be installed, reviewed and host-qualified with the existing
+ECHO encrypted store. This option creates no service, secret, reader or policy.
+Only the existing native service and adapter see the bearer. The CLI sends JSON-RPC
+on private stdin and reads responses; its child environment contains only PATH.
+It never reads a token, copies one to Infisical, or exports one to an environment.
+There is no caller-supplied executable, endpoint, seat or credential path.
+
+Supported commands are `whoami`, `list`, `show`, `claim`, `comment`, `status`,
+and `file`, with the existing remote-mode argument restrictions. Existing
+`SIMPLE_BOARD_REMOTE_WRITES=1` and hosted write gates still apply to the four
+writes. This is not full direct-mode parity: unsupported verbs/options refuse,
+never fall back to direct credentials. The host owner sets the native mode in the
+canonical command's existing launch context, then verifies CLI-level whoami,
+list/show and approved write behavior. Merely proving MCP works is insufficient.
+This does not install sudo rules or permit nonroot launches. Shared root access
+is not a new security boundary. Concurrent native sessions may refuse because the
+existing custody launcher uses one fixed transient unit. A transport failure on
+a write reports an unknown outcome; inspect the target before any replay.

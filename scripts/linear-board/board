@@ -4789,7 +4789,7 @@ REMOTE_BEARER_RE = re.compile(r"[A-Za-z0-9_\-]{20,200}")
 
 
 def remote_selected() -> bool:
-    return env("SIMPLE_BOARD_REMOTE") == "1"
+    return env("SIMPLE_BOARD_REMOTE") == "1" or native_echo_selected()
 
 
 REMOTE_MAX_BYTES = 4_000_000
@@ -5037,6 +5037,37 @@ def _remote_scan_arguments(scanner, arguments, bearer: str) -> str | None:
     return None
 
 
+def native_echo_selected() -> bool:
+    return env("SIMPLE_BOARD_NATIVE_ECHO") == "1"
+
+
+def _native_echo_post(body: bytes, write: bool):
+    """Fixed existing root-controlled ECHO custody transport; no credential export."""
+    if os.geteuid() != 0:
+        die("native ECHO board transport requires the existing root-controlled launch context", EXIT_AUTH)
+    initialize = {"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+        "protocolVersion": REMOTE_PROTOCOL_VERSION, "capabilities": {},
+        "clientInfo": {"name": "simple-board", "version": "1"}}}
+    notification = {"jsonrpc": "2.0", "method": "notifications/initialized"}
+    data = json.dumps(initialize).encode() + b"\n" + json.dumps(notification).encode() + b"\n" + body + b"\n"
+    try:
+        proc = subprocess.run(["/usr/bin/python3", "-I", "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"],
+            input=data, capture_output=True, timeout=REMOTE_TIMEOUT_S,
+            env={"PATH": "/usr/bin:/bin"}, check=False)
+        if proc.returncode or len(proc.stdout) > 3 * REMOTE_MAX_BYTES:
+            raise ValueError("native transport failed")
+        lines = [json.loads(line) for line in proc.stdout.splitlines() if line.strip()]
+        if len(lines) != 2 or any(not isinstance(x, dict) for x in lines):
+            raise ValueError("invalid native response")
+        hello, answer = lines
+        if hello.get("id") != 0 or not isinstance(hello.get("result"), dict) or answer.get("id") != 1:
+            raise ValueError("native response mismatch")
+        return 200, "application/json", json.dumps(answer).encode()
+    except (OSError, ValueError, subprocess.SubprocessError):
+        die("native ECHO transport unavailable; " +
+            ("write outcome unknown, do not replay before checking the target" if write else "no direct-credential fallback"), EXIT_ERROR)
+
+
 def remote_bearer() -> str:
     v = env(REMOTE_BEARER_ENV)
     if not v:
@@ -5065,14 +5096,14 @@ def _remote_scanner():
 
 def remote_call(tool: str, arguments: dict, write: bool = False) -> dict:
     """One tools/call to the fixed endpoint.  Returns the tool's structuredContent."""
-    bearer = remote_bearer()
+    bearer = "" if native_echo_selected() else remote_bearer()
     hit = _remote_scan_arguments(_remote_scanner(), arguments, bearer)
     if hit:
         die(f"refused before sending: {hit}", EXIT_USAGE)
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                        "params": {"name": tool, "arguments": arguments}}).encode()
     try:
-        status, ctype, raw = _remote_post(REMOTE_MCP_URL, {
+        status, ctype, raw = _native_echo_post(body, write) if native_echo_selected() else _remote_post(REMOTE_MCP_URL, {
             "Content-Type": "application/json", "Accept": "application/json, text/event-stream",
             "MCP-Protocol-Version": REMOTE_PROTOCOL_VERSION, "Authorization": "Bearer " + bearer,
             "User-Agent": "simple-board-remote/1"}, body, REMOTE_TIMEOUT_S)
