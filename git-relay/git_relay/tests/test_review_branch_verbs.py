@@ -139,6 +139,48 @@ class ReviewAuditDetailTests(unittest.TestCase):
 
 
 class ReviewBranchWiringTests(unittest.TestCase):
+    def test_review_pre_read_transport_failure_is_definitely_unsent(self):
+        for status in (0, 408, 503):
+            with tempfile.TemporaryDirectory() as tmp:
+                seats = json.dumps(
+                    {
+                        "swu-wise": {
+                            "token": TOKEN,
+                            "actions": ["wf_review_submit"],
+                            "repos": [REPO],
+                            "app_slug": "swu-wise",
+                            "mint_permissions": {"pull_requests": "write", "metadata": "read"},
+                        }
+                    }
+                )
+                client = Client()
+                calls = []
+
+                def fail(method, *args, **kwargs):
+                    calls.append(method)
+                    raise RelayGitHubError(status, "private")
+
+                client._call = fail
+                r = Relay(
+                    SeatPolicy(seats),
+                    client,
+                    AuditLog(os.path.join(tmp, "a.jsonl")),
+                    app_minter=Minter(),
+                    workflow_verbs_enabled=True,
+                )
+                args = {
+                    "repo": REPO,
+                    "number": 2,
+                    "commit_id": SHA,
+                    "event": "COMMENT",
+                    "body": "hello",
+                }
+                for _ in range(2):
+                    code, body = r.handle(TOKEN, "wf_review_submit", args)
+                    self.assertEqual((code, body["retryable"]), (503, True))
+                    self.assertNotIn("outcome", body)
+                self.assertEqual(calls, ["GET", "GET"])
+
     def test_malformed_or_uncertain_write_is_held_without_replay(self):
         for reply in [{}, {"id": True}, RelayGitHubError(503, "private")]:
             with tempfile.TemporaryDirectory() as tmp:
