@@ -118,7 +118,7 @@ class OutcomeStore:
         self._save()
         return rows
 
-    def begin(self, key: str) -> dict | None:
+    def begin(self, key: str, *, reapply_ok: bool = False) -> dict | None:
         """Mark a key in flight;  return the existing row when the key is already taken.
 
         Refuses (OutcomeStoreError) when the registry is at capacity with no
@@ -127,8 +127,17 @@ class OutcomeStore:
         """
         with self._lock:
             existing = self._rows.get(key)
-            if existing and existing["state"] in ("ok", "unknown", "pending"):
+            if existing and (
+                existing["state"] in ("unknown", "pending")
+                or existing["state"] == "ok"
+                and not reapply_ok
+            ):
                 return existing
+            if existing and existing["state"] == "ok" and reapply_ok:
+                # Only a verified success is replaceable.  Pending/unknown never re-arm.
+                self._rows[key] = {"state": "pending", "ts": self._clock()}
+                self._save()
+                return None
             self._trim(MAX_ENTRIES - 1)
             if len(self._rows) >= MAX_ENTRIES:
                 raise OutcomeStoreError(
