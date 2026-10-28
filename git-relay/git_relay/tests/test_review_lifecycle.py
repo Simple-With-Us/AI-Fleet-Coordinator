@@ -1,7 +1,9 @@
 import unittest
-from .test_workflow_verbs import REPO, Client, Policy
-from git_relay.workflow_verbs import WorkflowVerbs, Refused
+
 from git_relay.github_client import RelayGitHubError
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
+
+from .test_workflow_verbs import REPO, Client, Policy
 
 
 class Reviews(unittest.TestCase):
