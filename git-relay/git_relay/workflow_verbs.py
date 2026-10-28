@@ -605,6 +605,7 @@ class WorkflowVerbs:
             raise Refused("ref changed")
         data = self.client._call("DELETE", path, None, bearer=self.bearer)
         return {"deleted": True, "ref": "refs/tags/" + name}
+
     def wf_workflow_enable(self, repo, args):
         _only(args, ("repo", "workflow_id"))
         value = _int(args, "workflow_id")
