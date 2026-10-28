@@ -40,9 +40,10 @@ Checks:
   fleet-mode-doc  the Mac's ~/apps/FLEET-MODE.md equals the repo's docs/FLEET-MODE.md (WARN if not)
   seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical
               (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
-  mcp:codex   Codex registers the fleet's stdio server (agent-sync, or simple-chat by its
-              older name) and FleetLink when a token exists
-  mcp:claude  Claude Code registers the same two (agent-sync or simple-chat, FleetLink)
+  mcp:codex   Codex registers the fleet's stdio server (simple-chat) and FleetLink when a
+              token exists;  a host that still carries the retired agent-sync name still
+              serves the seat, and is reported as the drift it is
+  mcp:claude  Claude Code registers the same two (the stdio server, FleetLink)
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
               fleet-secrets, fleetlink), then each registry tool's install and version
   updater:<U> the job that keeps the runtime on main (the Mac's runtime-sync LaunchAgent,
@@ -1450,13 +1451,23 @@ def client_servers(seat: str, home: Path = HOME) -> dict:
     return servers
 
 
+# The stdio MCP server the seats register is the fleet's own local Agent-Sync server.  The name
+# the fleet writes is "simple-chat":  fleet-cli-release.py writes that key into a host's Codex
+# config and install_mcp.py installs the server under it.  "agent-sync" is the retired
+# pre-rename registration key;  a host installed before the rename may still carry it and it
+# still serves the seat, but it is not the name to write, and the next apply retires it.
+MCP_STDIO_NAMES = ("simple-chat", "agent-sync")
+MCP_CANONICAL_NAME = "simple-chat"
+
+
 def registered_env(seat: str, home: Path = HOME) -> dict[str, str]:
     """Client files supply only nonsecret locale settings, never credentials or identity.
 
     Approved credentials come from the process environment or fleet-secrets.  Client-file
     values cannot override either source or redirect credential lookup.
     """
-    server = client_servers(seat, home).get("simple-chat", {})
+    servers = client_servers(seat, home)
+    server = next((servers[name] for name in MCP_STDIO_NAMES if name in servers), {})
     env = server.get("env", {})
     return {key: value for key, value in env.items() if key in {"LANG", "LC_ALL"}}
 
@@ -1515,12 +1526,6 @@ def codex_mcp_names(text: str) -> list[str]:
         return []
 
 
-# The stdio server the seats register is the fleet's own Agent-Sync MCP server.  The
-# fleet registers it under the name "agent-sync"; "simple-chat" is the older name for
-# the same stdio server, and a seat that still uses it counts.
-MCP_STDIO_NAMES = ("agent-sync", "simple-chat")
-
-
 def check_mcp(report: Report) -> None:
     for seat in ("CODEX", "CLAUDE"):
         label = "mcp:" + seat.lower()
@@ -1529,18 +1534,23 @@ def check_mcp(report: Report) -> None:
         except ClientConfigError as exc:
             report.add(label, "FAIL", str(exc))
             continue
+        registered = [name for name in MCP_STDIO_NAMES if name in names]
         lacking = []
-        if not any(name in names for name in MCP_STDIO_NAMES):
-            lacking.append("agent-sync")
+        if not registered:
+            lacking.append(MCP_CANONICAL_NAME)
         if "fleetlink" not in names:
             lacking.append("fleetlink")
-        report.add(
-            label,
-            "WARN" if lacking else "OK",
-            "registered: "
-            + (", ".join(names) or "none")
-            + (";  missing " + ", ".join(lacking) if lacking else ""),
-        )
+        status = "OK"
+        detail = "registered: " + (", ".join(names) or "none")
+        if lacking:
+            status = "WARN"
+            detail += ";  missing " + ", ".join(lacking)
+        if registered and registered != [MCP_CANONICAL_NAME]:
+            # The retired pre-rename key alone still serves the seat, but it is not the name the
+            # fleet writes and the next apply retires it, so it is reported as drift.
+            status = "WARN"
+            detail += ";  pre-rename name %s, canonical %s" % (registered[0], MCP_CANONICAL_NAME)
+        report.add(label, status, detail)
 
 
 # --- AFC-461:  fleet tool currency ------------------------------------------------------------
