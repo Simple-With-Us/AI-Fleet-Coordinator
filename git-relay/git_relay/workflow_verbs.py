@@ -580,7 +580,7 @@ class WorkflowVerbs:
             or not isinstance(result.get("id"), int)
         ):
             raise RelayGitHubError(502, "response unverifiable")
-        return {"result": result}
+        return {"result": self._release_summary(result)}
 
     def wf_release_delete(self, repo, args):
         _only(

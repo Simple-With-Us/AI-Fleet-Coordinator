@@ -30,7 +30,7 @@ class CommentLifecycle(unittest.TestCase):
             ),
             ("wf_review_comment_delete", {"comment_id": 2}, "DELETE", "pulls/comments/2", None, {}),
             ("wf_release_list", {}, "GET", "releases?per_page=50", None, []),
-            ("wf_release_get", {"release_id": 4}, "GET", "releases/4", None, {"id": 4}),
+            ("wf_release_get", {"release_id": 4}, "GET", "releases/4", None, {"id": 4, "draft": False, "prerelease": False}),
             ("wf_release_delete", {"release_id": 4}, "DELETE", "releases/4", None, {}),
         ]
         for action, args, method, path, payload, reply in cases:
