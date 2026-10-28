@@ -18,6 +18,9 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_issue_dependency_add:['Make issue blocked by another exact same-repository issue. Identity prereads are non-atomic, not a version fence; cycles and remote policy refused by GitHub; no replacement parent or transfer.',obj(['repo','number','blocker_number'],{repo:REPO,number:INT,blocker_number:INT})],
+ wf_issue_dependency_remove:['Remove same-repo issue dependency by validated blocker identity. No head/version CAS; concurrent relation changes remain possible. Not authority to hide work or bypass policy.',obj(['repo','number','blocker_number'],{repo:REPO,number:INT,blocker_number:INT})],
+
  wf_issue_parent:['Read issue parent in exact repo; missing parent, visibility and other upstream refusals are indistinguishable; never a fabricated empty parent.',obj(['repo','number'],{repo:REPO,number:INT})],
  wf_issue_subissues:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_issue_blocked_by:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
@@ -159,6 +162,8 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 export function validWfV1Response(action, body) {
+ if(['wf_issue_dependency_add','wf_issue_dependency_remove'].includes(action))return z.object({completed:z.literal(true),number:z.number().int().positive(),blocker_number:z.number().int().positive(),blocking:z.literal(action==='wf_issue_dependency_add')}).strict().safeParse(body).success;
+
  if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action)){
   const issue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>Buffer.byteLength(v,'utf8')<=4096).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).nullable()}).strict();
   return (action==='wf_issue_parent'?z.object({issue}).strict():z.object({issues:z.array(issue).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()).safeParse(body).success;

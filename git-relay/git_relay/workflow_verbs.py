@@ -54,6 +54,8 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_issue_dependency_add": ({"issues": "write"}, True),
+    "wf_issue_dependency_remove": ({"issues": "write"}, True),
     "wf_issue_parent": ({"issues": "read"}, False),
     "wf_issue_subissues": ({"issues": "read"}, False),
     "wf_issue_blocked_by": ({"issues": "read"}, False),
@@ -339,6 +341,60 @@ class WorkflowVerbs:
     def wf_issue_blocking(self, repo, args):
         _only(args, ("repo", "number", "per_page", "page"))
         return self._relation_read(repo, args, "dependencies/blocking")
+
+    def _dependency_target(self, repo, number):
+        # Before either mutation. A missing/unverifiable read is not a write.
+        try:
+            data = self._get(f"/repos/{repo}/issues/{number}")
+        except RelayGitHubError as exc:
+            if exc.status == 0 or exc.status == 408 or exc.status >= 500:
+                raise PreReadUnavailable("dependency issue preread unavailable") from None
+            raise Refused("dependency issue preread refused") from None
+        item = self._relation_issue(data)
+        if item["repo"] != repo or item["number"] != number:
+            raise Refused("dependency issue repository or number mismatch")
+        return item
+
+    def _dependency_write(self, repo, args, remove=False):
+        _only(args, ("repo", "number", "blocker_number"))
+        number = _int(args, "number")
+        blocker_number = _int(args, "blocker_number")
+        if number == blocker_number:
+            raise Refused("self dependency refused")
+        issue = self._dependency_target(repo, number)
+        blocker = self._dependency_target(repo, blocker_number)
+        if issue["id"] == blocker["id"]:
+            raise Refused("duplicate dependency identity")
+        path = f"/repos/{repo}/issues/{number}/dependencies/blocked_by"
+        result = self.client._call(
+            "DELETE" if remove else "POST",
+            path + f"/{blocker['id']}" if remove else path,
+            None if remove else {"issue_id": blocker["id"]},
+            bearer=self.bearer,
+        )
+        # GitHub documents an issue body for BOTH201 add and200 delete.
+        # It may identify either participant, never an arbitrary third issue.
+        try:
+            receipt = self._relation_issue(result)
+        except (Refused, TypeError, KeyError, RelayGitHubError):
+            raise RelayGitHubError(502, "dependency write receipt unverifiable") from None
+        expected = {issue["id"]: number, blocker["id"]: blocker_number}
+        if receipt["repo"] != repo or expected.get(receipt["id"]) != receipt["number"]:
+            raise RelayGitHubError(502, "dependency write receipt identity mismatch")
+        return {
+            "completed": True,
+            "number": number,
+            "blocker_number": blocker_number,
+            "blocking": not remove,
+        }
+
+    def wf_issue_dependency_add(self, repo, args):
+        _only(args, ("repo", "number", "blocker_number"))
+        return self._dependency_write(repo, args)
+
+    def wf_issue_dependency_remove(self, repo, args):
+        _only(args, ("repo", "number", "blocker_number"))
+        return self._dependency_write(repo, args, True)
 
     def _asset_summary(self, data):
         if (
