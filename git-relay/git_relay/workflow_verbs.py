@@ -289,6 +289,8 @@ class WorkflowVerbs:
             or data.get("state") not in ("open", "closed")
         ):
             raise RelayGitHubError(502, "issue relation receipt unverifiable")
+        if find_secret(data["title"]):
+            raise Refused("relation title contains credential pattern")
         url = data.get("repository_url")
         bound = None
         if isinstance(url, str):

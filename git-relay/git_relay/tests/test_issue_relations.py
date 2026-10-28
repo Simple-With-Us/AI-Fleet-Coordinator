@@ -71,3 +71,19 @@ class Relations(unittest.TestCase):
         )
         self.assertEqual(len(out["issues"]), 1)
         self.assertTrue(out["has_more"])
+
+    def test_all_positive_shapes_and_title_secret_boundary(self):
+        for a in (
+            "wf_issue_parent",
+            "wf_issue_subissues",
+            "wf_issue_blocked_by",
+            "wf_issue_blocking",
+        ):
+            args = {"repo": REPO, "number": 1}
+            if a != "wf_issue_parent":
+                args.update(page=2, per_page=1)
+            self.assertIsNone(WorkflowVerbs.check_shape(a, args, REPO))
+        with self.assertRaises(Refused):
+            WorkflowVerbs._relation_issue(
+                {"id": 1, "number": 2, "state": "open", "title": "ghp_" + "x" * 36}
+            )

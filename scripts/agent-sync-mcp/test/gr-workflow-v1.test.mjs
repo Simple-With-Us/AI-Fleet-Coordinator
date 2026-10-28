@@ -239,3 +239,8 @@ test('issue relation pages closed boundary and own bearer',async()=>{
  assert.ok(validWfV1Response('wf_issue_subissues',reply));assert.ok(!validWfV1Response('wf_issue_subissues',{...reply,issues:[{id:true,number:8,title:'x',state:'open'}]}));
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_issue_subissues'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_wf_issue_subissues',a)).isError);
 });
+
+test('relations title credential rejected and closed nongit Zod before dispatch',()=>{
+ assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ghp_'+'x'.repeat(36),state:'open',repo:null}}),false);
+ assert.equal(validWfV1Args('wf_issue_blocking',{repo,number:1,raw:true}),false);
+});
