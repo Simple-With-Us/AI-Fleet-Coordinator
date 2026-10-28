@@ -23,6 +23,11 @@ const SPECS = {
   wf_tag_create: ['tag create; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag', 'sha'],{repo:REPO,tag:REF,sha:SHA})],
   wf_tag_get: ['tag get; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag'],{repo:REPO,tag:REF})],
   wf_tag_delete: ['tag delete; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag', 'expected_sha'],{repo:REPO,tag:REF,expected_sha:SHA})],
+  wf_pr_draft: ['pr draft.',obj(['repo','number'],{repo:REPO,number:INT})],
+  wf_pr_ready: ['pr ready.',obj(['repo','number'],{repo:REPO,number:INT})],
+  wf_automerge_enable: ['automerge enable.',obj(['repo','number','method'],{repo:REPO,number:INT,method:{type:'string',enum:['SQUASH','MERGE','REBASE']}})],
+  wf_automerge_disable: ['automerge disable.',obj(['repo','number'],{repo:REPO,number:INT})],
+  wf_review_threads: ['review threads.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_assignees_add: ['assignees add.',obj(['repo', 'number', 'assignees'],{repo:REPO,number:INT,assignees:{type:'array',minItems:1,maxItems:10,items:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'}}})],
   wf_assignees_remove: ['assignees remove.',obj(['repo', 'number', 'assignees'],{repo:REPO,number:INT,assignees:{type:'array',minItems:1,maxItems:10,items:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'}}})],
   wf_issue_lock: ['issue lock.',obj(['repo', 'number', 'reason'],{repo:REPO,number:INT,reason:{type:'string',enum:['off-topic','too heated','resolved','spam']}})],
@@ -73,7 +78,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_tag_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_review_threads','wf_tag_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -125,6 +130,11 @@ const RESPONSE_KEYS = {
   wf_tag_create:['ref', 'sha'],
   wf_tag_get:['ref', 'sha'],
   wf_tag_delete:['deleted', 'ref'],
+  wf_pr_draft:['pull'],
+  wf_pr_ready:['pull'],
+  wf_automerge_enable:['pull'],
+  wf_automerge_disable:['pull'],
+  wf_review_threads:['threads'],
   wf_assignees_add:['result'],
   wf_assignees_remove:['result'],
   wf_issue_lock:['completed'],
@@ -210,6 +220,7 @@ export function validWfV1Response(action, body) {
   }
   if (['wf_branch_update','wf_tag_create','wf_tag_get'].includes(action) && (typeof body.ref !== 'string' || !body.ref.startsWith(action.startsWith('wf_branch_') ? 'refs/heads/' : 'refs/tags/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;
   if (['wf_branch_delete','wf_tag_delete'].includes(action) && (body.deleted !== true || typeof body.ref !== 'string' || !body.ref.startsWith(action.startsWith('wf_branch_') ? 'refs/heads/' : 'refs/tags/'))) return false;
+  for (const key of ['pull','threads']) if (key in body && (!body[key] || typeof body[key] !== 'object' || Array.isArray(body[key]))) return false;
   if ('result' in body && (!Number.isInteger(body.result?.id) || body.result.id < 1)) return false;
   if (action.startsWith('wf_assignees_') && (!Number.isInteger(body.result?.number) || !Array.isArray(body.result?.assignees) || !body.result.assignees.every(x => typeof x?.login === 'string'))) return false;
   if (action === 'wf_label_create' && (typeof body.result?.name !== 'string' || !/^[0-9a-fA-F]{6}$/.test(body.result?.color))) return false;
