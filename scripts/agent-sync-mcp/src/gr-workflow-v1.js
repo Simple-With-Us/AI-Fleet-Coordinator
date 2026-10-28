@@ -17,6 +17,9 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_git_tree_create:['Create unattached tree from base tree and up to20 text files; no workflow paths/ref changes.',obj(['repo','base_tree','files'],{repo:REPO,base_tree:SHA,files:{type:'array',minItems:1,maxItems:20,items:obj(['path','text','mode'],{path:PATH,text:{type:'string',maxLength:40000},mode:{type:'string',enum:['100644','100755']}})}})],
+ wf_git_commit_create:['Create unattached commit with exact tree and one/two parents. No arbitrary author/signature/ref changes.',obj(['repo','tree_sha','parents','message'],{repo:REPO,tree_sha:SHA,parents:{type:'array',minItems:1,maxItems:2,items:SHA},message:{type:'string',minLength:1,maxLength:32768}})],
+
  wf_git_blob_get:['Read bounded UTF-8 blob by exact SHA (40KiB maximum).',obj(['repo','sha'],{repo:REPO,sha:SHA})],
  wf_git_blob_create:['Create unattached bounded UTF-8 blob; no ref or tree changes.',obj(['repo','text'],{repo:REPO,text:{type:'string',maxLength:40000}})],
  wf_git_commit_get:['Read bounded Git commit object, not full REST commit diff.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
@@ -61,7 +64,7 @@ export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.free
 })));
 const typeOk = (schema, v) => schema.type === 'integer' ? Number.isInteger(v) && v >= schema.minimum && v <= schema.maximum
   : schema.type === 'boolean' ? typeof v === 'boolean'
-  : schema.type === 'array' ? Array.isArray(v) && v.length >= schema.minItems && v.length <= schema.maxItems && v.every(x => validWfV1Args2(schema.items, x))
+  : schema.type === 'array' ? Array.isArray(v) && v.length >= schema.minItems && v.length <= schema.maxItems && v.every(x => schema.items.type === 'object' ? validWfV1Args2(schema.items, x) : typeOk(schema.items, x))
   : typeof v === 'string' && (!schema.pattern || new RegExp(schema.pattern).test(v)) && (!schema.enum || schema.enum.includes(v)) &&
     (!schema.minLength || v.length >= schema.minLength) && (!schema.maxLength || v.length <= schema.maxLength);
 function validWfV1Args2(schema, args) {
@@ -101,6 +104,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_git_tree_create:['tree'],wf_git_commit_create:['commit'],
  wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
   wf_workflow_enable:['completed','workflow_id'],
   wf_workflow_disable:['completed','workflow_id'],
@@ -121,11 +125,12 @@ const RESPONSE_KEYS = {
 };
 export function validWfV1Response(action, body) {
  if(action.startsWith('wf_git_')){
-   const key=action.includes('_blob_')?'blob':action==='wf_git_commit_get'?'commit':'tree',v=body?.[key];
+   const key=action.includes('_blob_')?'blob':action.startsWith('wf_git_commit_')?'commit':'tree',v=body?.[key];
    if(!v || typeof v.sha !== 'string' || !/^[0-9a-f]{40}$/.test(v.sha)) return false;
    if(key==='blob' && (!Number.isInteger(v.size) || v.size<0 || v.size>40000 || action==='wf_git_blob_get' && (typeof v.text!=='string' || new TextEncoder().encode(v.text).length!==v.size)))return false;
    if(key==='commit' && (typeof v.tree_sha!=='string' || !/^[0-9a-f]{40}$/.test(v.tree_sha) || !Array.isArray(v.parents) || v.parents.length>20 || !v.parents.every(x=>typeof x==='string'&&/^[0-9a-f]{40}$/.test(x)) || typeof v.message!=='string' || new TextEncoder().encode(v.message).length>32768)) return false;
-   if(key==='tree' && (!Array.isArray(v.entries) || v.entries.length>100 || typeof v.truncated!=='boolean' || !v.entries.every(x=>x&&typeof x.sha==='string'&&/^[0-9a-f]{40}$/.test(x.sha)&&['blob','tree','commit'].includes(x.type)&&['100644','100755','040000','120000','160000'].includes(x.mode)&&typeof x.path==='string'&&x.path.length>0&&new TextEncoder().encode(x.path).length<=1024))) return false;
+   if(action==='wf_git_tree_create' && (!Number.isInteger(v.files) || v.files<1 || v.files>20))return false;
+   if(action==='wf_git_tree_get' && (!Array.isArray(v.entries) || v.entries.length>100 || typeof v.truncated!=='boolean' || !v.entries.every(x=>x&&typeof x.sha==='string'&&/^[0-9a-f]{40}$/.test(x.sha)&&['blob','tree','commit'].includes(x.type)&&['100644','100755','040000','120000','160000'].includes(x.mode)&&typeof x.path==='string'&&x.path.length>0&&new TextEncoder().encode(x.path).length<=1024))) return false;
  }
 
   const keys = RESPONSE_KEYS[action];
@@ -153,6 +158,6 @@ export function validWfV1Response(action, body) {
     const suffix = {wf_run_rerun:'rerun-failed-jobs',wf_run_cancel:'cancel',wf_run_approve:'approve'};
     return body.requested === suffix[action] && Number.isInteger(body.run_id);
   }
-  if ('commit' in body && action !== 'wf_git_commit_get' && !/^[0-9a-f]{40}$/.test(body.commit)) return false;
+  if ('commit' in body && !action.startsWith('wf_git_commit_') && !/^[0-9a-f]{40}$/.test(body.commit)) return false;
   return true;
 }

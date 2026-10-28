@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,31);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,33);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,31);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,33);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -213,4 +213,12 @@ test('bounded git object fixed own-bearer calls and unknown blob creates',async(
   const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
  }
  const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_wf_git_blob_create',{repo,text:'hi'});assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
+});
+
+test('unattached tree commit writes have closed schemas own bearer and UNKNOWN',async()=>{
+ for(const [action,args,reply] of [['wf_git_tree_create',{base_tree:'a'.repeat(40),files:[{path:'x.txt',text:'hi',mode:'100644'}]},{tree:{sha:'b'.repeat(40),files:1}}],['wf_git_commit_create',{tree_sha:'a'.repeat(40),parents:['b'.repeat(40)],message:'edit'},{commit:{sha:'c'.repeat(40),tree_sha:'a'.repeat(40),parents:['b'.repeat(40)],message:'edit'}}]]){
+  assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,author:'other'}));
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
+  const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_'+action,{repo,...args});assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
+ }
 });
