@@ -260,5 +260,6 @@ test('Git create UTF8 budgets and strict receipt parent sets',()=>{
 
 test('all actions parse strict Zod before dispatch including nongit',async()=>{
  for(const args of [{repo,number:1,extra:1},{repo,number:true}])assert.equal(validWfV1Args('wf_pr_get',args),false);
- const t=harness(async()=>{throw Error('must not dispatch');});const r=await t.call('gr_wf_pr_get',{repo,number:1,extra:1});assert.ok(r.isError);
+ let calls=0;const t=harness(async()=>{calls++;throw Error('must not dispatch');});const r=await t.call('gr_wf_pr_get',{repo,number:1,extra:1});assert.ok(r.isError);assert.equal(calls,0);
+ let sent=0;const ok=harness(async(url,init)=>{sent++;assert.ok(url.endsWith('/v1/wf_git_commit_create'));assert.equal(JSON.parse(init.body).message,'edit');return new Response(JSON.stringify({commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:['c'.repeat(40)]}}));});assert.ok(!(await ok.call('gr_wf_git_commit_create',{repo,tree_sha:'b'.repeat(40),parents:['c'.repeat(40)],message:'edit'})).isError);assert.equal(sent,1);
 });

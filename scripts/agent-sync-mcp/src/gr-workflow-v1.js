@@ -121,8 +121,8 @@ function gitSchema(schema){
  if(schema.type==='boolean')return z.boolean();
  let out=z.string();if(schema.minLength)out=out.min(schema.minLength);if(schema.maxLength)out=out.max(schema.maxLength);if(schema.pattern)out=out.regex(new RegExp(schema.pattern));if(schema.enum)out=out.refine(v=>schema.enum.includes(v));return out;
 }
+const ARG_SCHEMAS=Object.fromEntries(Object.entries(SPECS).map(([a,[,s]])=>[a,gitSchema(s)]));
 const gitArgsOk=(action,args)=>{
- if(!gitSchema(SPECS[action][1]).safeParse(args).success)return false;
  if(action==='wf_git_blob_create')return utfBytes(40000).safeParse(args.text).success;
  if(action==='wf_git_commit_create')return utfBytes(32768,true).safeParse(args.message).success&&new Set(args.parents).size===args.parents.length;
  if(action==='wf_git_tree_create')return args.files.reduce((n,x)=>n+new TextEncoder().encode(x.text).length,0)<=40000;
@@ -130,7 +130,7 @@ const gitArgsOk=(action,args)=>{
 };
 export function parseWfV1Args(action,args){
  if(!boundedWorkflowInput(args)||!WF_V1_ACTIONS.includes(action))return null;
- const parsed=gitSchema(SPECS[action][1]).safeParse(args);
+ const parsed=ARG_SCHEMAS[action].safeParse(args);
  if(!parsed.success)return null;
  const value=parsed.data;
  if(!validWfV1Args2(SPECS[action][1],value)||!gitArgsOk(action,value))return null;
