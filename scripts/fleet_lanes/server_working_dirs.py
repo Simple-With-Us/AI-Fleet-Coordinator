@@ -227,9 +227,13 @@ def write_atomic(path: Path, text: str) -> None:
     account cannot write, the staged replace cannot happen there, so the write
     goes through the link in place instead:  that needs write access to the
     file itself, which is what the file the account already edits.
+
+    That in-place write is the account's own edit and is not atomic, so a write
+    interrupted partway can leave the file truncated:  re-running `--apply`
+    writes it again from the source, so the knob recovers.
     """
     target = Path(os.path.realpath(path)) if path.is_symlink() else path
-    if path.is_symlink() and not os.access(target.parent, os.W_OK):
+    if path.is_symlink() and not os.access(target.parent, os.W_OK | os.X_OK):
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(text)
         return
