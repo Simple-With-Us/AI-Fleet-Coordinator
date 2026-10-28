@@ -362,13 +362,14 @@ class WorkflowVerbs:
         # Pre-read is not an atomic head lock; GitHub binds the review to commit_id.
         try:
             data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
+            observed_head = _sub(data, "head").get("sha")
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable(
                     "review pre-read unavailable; no write attempted"
                 ) from None
             raise
-        if _sub(data, "head").get("sha") != commit:
+        if observed_head != commit:
             raise Refused("pull request head changed")
 
     def wf_review_submit(self, repo, args):
