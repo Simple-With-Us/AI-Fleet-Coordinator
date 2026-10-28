@@ -103,6 +103,7 @@ class SeatPolicy:
         "wf_release_update",
         "wf_environments",
         "wf_environment_get",
+        "wf_file_rename",
         "wf_file_delete",
         "wf_issue_list",
         "wf_issue_get",
