@@ -77,11 +77,15 @@ class BroadcastTokenParserTests(unittest.TestCase):
             "@**everyone** please",
             "ST @all look",
             "prefix @**all** suffix",
+            "@channel please",
+            "@**channel** please",
+            "@stream please",
+            "@**stream** please",
         )
         for text in positives:
             with self.subTest(text=text):
                 tokens = R.broadcast_tokens(text)
-                self.assertTrue(tokens & {"all", "everyone"}, text)
+                self.assertTrue(tokens & {"all", "everyone", "channel", "stream"}, text)
 
     def test_negative_spellings(self) -> None:
         negatives = (
@@ -92,10 +96,9 @@ class BroadcastTokenParserTests(unittest.TestCase):
             "```\n@all\n```",
             "\\@all escaped",
             "mail@**all**",
-            "@channel",
-            "@**channel**",
-            "@stream",
             "@**topic**",
+            "@channelish",
+            "@streams",
         )
         for text in negatives:
             with self.subTest(text=text):
@@ -127,10 +130,13 @@ class OwnerAllWakeTests(unittest.TestCase):
         d = self.wake(msg(content="@**everyone** FYI", **POLICY))
         self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, None, "group_or_wildcard"))
 
-    def test_peer_at_all_still_does_not_wake(self) -> None:
+    def test_peer_at_all_wakes_as_a_peer(self) -> None:
+        """Jay's Oct 27 2026 rule:  a fleet bot's `@all` wakes like the owner's."""
         peer = msg(sender=11, content="@all look", client="ZulipPython", **POLICY)
-        d = R.route(peer, ME, ctx(eligible_user_ids=[11], is_bot={11: True, 20: True}), [])[1]
-        self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, None, "group_or_wildcard"))
+        c, d = R.route(peer, ME, ctx(eligible_user_ids=[11], is_bot={11: True, 20: True}), [])
+        self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, "peer", None))
+        self.assertTrue(c.peer_broadcast)
+        self.assertIn("peer_broadcast", c.labels())
 
 
 class OwnerEveryoneLeaseTests(unittest.TestCase):
@@ -420,6 +426,130 @@ class OwnerTopicBroadcastTests(unittest.TestCase):
         )
         d = R.route(message, ME, ctx(), [])[1]
         self.assertIsNone(d.wake)
+
+
+class PeerBroadcastRuleTests(unittest.TestCase):
+    """Jay's Oct 27 2026 rule, at the router level:  a fleet bot's `@all` wakes like the owner's."""
+
+    def peer_ctx(self, **kw):
+        return ctx(eligible_user_ids=[11], is_bot={11: True, 20: True}, **kw)
+
+    def peer(self, content, **kw):
+        return msg(sender=11, content=content, client="ZulipPython", **kw)
+
+    def test_a_stale_peer_at_all_does_not_wake(self) -> None:
+        stale = dict(self.peer("@all look", **POLICY), timestamp=NOW - 9999)
+        d = R.route(stale, ME, self.peer_ctx(stale_after=100.0), [])[1]
+        self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, None, "stale"))
+
+    def test_a_peer_at_all_in_an_owner_topic_does_not_wake(self) -> None:
+        peer = self.peer(
+            "@all look", topic="OWNER AFC-12 decision", channel="agent-sync"
+        )
+        c, d = R.route(peer, ME, self.peer_ctx(), [])
+        self.assertIsNone(d.wake)
+        self.assertEqual(d.wake_block, "owner_topic")
+        self.assertFalse(c.peer_broadcast)
+
+    def test_the_owner_at_channel_and_at_stream_wake_the_owner(self) -> None:
+        for token in ("@channel", "@stream", "@**channel**", "@**stream**"):
+            with self.subTest(token=token):
+                d = R.route(msg(content="%s heads up" % token, **POLICY), ME, ctx(), [])[1]
+                self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, "owner", None))
+
+    def test_a_peer_at_channel_wakes_as_a_peer(self) -> None:
+        d = R.route(self.peer("@channel look", **POLICY), ME, self.peer_ctx(), [])[1]
+        self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, "peer", None))
+
+    def test_a_bot_at_everyone_does_not_wake(self) -> None:
+        d = R.route(self.peer("@**everyone** FYI", **POLICY), ME, self.peer_ctx(), [])[1]
+        self.assertEqual((d.seat_inbox, d.wake, d.wake_block), (True, None, "group_or_wildcard"))
+
+    def test_an_eyes_prefixed_peer_at_all_wakes_nobody(self) -> None:
+        c, d = R.route(self.peer(":eyes: @all look", **POLICY), ME, self.peer_ctx(), [])
+        self.assertTrue(c.no_wake)
+        self.assertEqual(d.drop_reason, "no_wake")
+
+    def test_a_silent_at_all_is_not_a_broadcast(self) -> None:
+        """`@_**all**` is the escaped mention:  it notifies nobody, so it is not a broadcast."""
+        c, d = R.route(self.peer("@_**all** look", **POLICY), ME, self.peer_ctx(), [])
+        self.assertFalse(c.broadcast_all)
+        self.assertFalse(c.peer_broadcast)
+        self.assertIsNone(d.wake)
+
+    def test_a_peer_at_all_interrupts_a_leased_topic(self) -> None:
+        on = lease("A", topics=[("policy", "general")])
+        d = R.route(self.peer("@all FYI", **POLICY), ME, self.peer_ctx(), [on])[1]
+        self.assertEqual(d.lease_items[0][1], "interrupt")
+
+
+class PeerBroadcastDaemonTests(DaemonHarness):
+    """A fleet bot's `@all` takes the owner's road (owner, Oct 27 2026), and the listener keeps the
+    book:  one audit per broadcast, and none for the owner."""
+
+    def peer_all(self) -> int:
+        return self.fake.add_message("Codex", "agent-sync", "t", "@all the deploy is broken")
+
+    def log_rows(self, daemon) -> list[dict]:
+        return L.read_jsonl(daemon.log.path)
+
+    def test_a_peer_at_all_fans_out_and_lands_in_the_inboxes_once(self) -> None:
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.peer_all()
+        self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
+        self.pump_until(daemon, lambda: message_id in daemon._inbox_seen)
+        self.assertIn(message_id, daemon._fanout_seen)
+        self.assertIn(message_id, daemon._inbox_seen)
+        # A second seat's route of the same message must not start a second fanout or delivery.
+        message = next(m for m in self.fake.messages if m["id"] == message_id)
+        daemon.route_message(
+            daemon.seats["CLAUDE"], dict(message, flags=["stream_wildcard_mentioned"])
+        )
+        self.assertEqual(list(daemon._fanout_seen).count(message_id), 1)
+        self.assertEqual(list(daemon._inbox_seen).count(message_id), 1)
+
+    def test_a_peer_at_all_schedules_exactly_one_audit(self) -> None:
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.peer_all()
+        self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
+        self.assertEqual(list(daemon._broadcast_audits), [message_id])
+        message = next(m for m in self.fake.messages if m["id"] == message_id)
+        daemon.route_message(
+            daemon.seats["CLAUDE"], dict(message, flags=["stream_wildcard_mentioned"])
+        )
+        self.assertEqual(len(daemon._broadcast_audits), 1)
+
+    def test_the_owner_at_all_schedules_no_audit(self) -> None:
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.fake.add_message(
+            "Jay Wedgeworth", "agent-sync", "t", "@all the deploy is broken"
+        )
+        self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
+        self.assertEqual(daemon._broadcast_audits, {})
+
+    def test_the_audit_reminds_the_owner_when_nothing_explained_the_broadcast(self) -> None:
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.peer_all()
+        self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
+        self.assertEqual(len(daemon._broadcast_audits), 1)
+        # The audit is due ten minutes later.
+        self.clock.advance(11 * 60)
+        daemon.tick()
+        self.pump_until(
+            daemon,
+            lambda: any(
+                row.get("event") == "peer-broadcast-all" for row in self.log_rows(daemon)
+            ),
+        )
+        rows = [r for r in self.log_rows(daemon) if r.get("event") == "peer-broadcast-all"]
+        self.assertEqual(rows[-1].get("outcome"), "reminded")
+        self.assertEqual(rows[-1].get("id"), message_id)
+        self.assertNotIn("broken", json.dumps(rows[-1]), "the log never holds the content")
+
 
 
 if __name__ == "__main__":

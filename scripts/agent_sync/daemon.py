@@ -43,6 +43,7 @@ from typing import Any
 
 from . import __version__, secretscan
 from . import adapters as A
+from . import broadcast_audit as BAUD
 from . import chat_fanout as FAN
 from . import chat_nudges as CN
 from . import chat_transport as CT
@@ -690,6 +691,13 @@ class Daemon:
         self._broadcast_wakes: queue.SimpleQueue[tuple[Mapping[str, Any], frozenset[str]]] = (
             queue.SimpleQueue()
         )
+        # The peer-broadcast audits (owner, Oct 27 2026, broadcast_audit.py):  one pending audit
+        # per fleet bot's `@all`, keyed by message id, with the time it comes due.  They live in
+        # memory only, so a restart drops them:  the cost is one unexplained broadcast, never a
+        # wrong wake.  The cap on reminders per seat and per hour lives in the limiter.
+        self._broadcast_audits: dict[int, tuple[BAUD.Broadcast, float]] = {}
+        self._broadcast_rate = BAUD.RateLimiter()
+        self.log.write("peer-broadcast-audit-start", pending=0)
         self.coalescer = W.Coalescer(
             window=self.config.coalesce_seconds,
             max_window=self.config.coalesce_max_seconds,
@@ -1741,20 +1749,28 @@ class Daemon:
         )
         # A marker message wakes nobody, and the owner typing `@**all**` is exactly the case
         # where the fanout would wake every seat, so the fanout checks the marker too (AFC-468).
-        if self._owner_broadcast(c):
+        # A fleet bot's `@all` takes the same road (owner, Oct 27 2026):  it wakes like the
+        # owner's, under the peer budgets.
+        if self._broadcast_all(c):
             self.start_fanout(message, c)
         # The owner's channel-wide note also belongs UNREAD in every fleet bot's own Zulip
         # inbox (AFC-938).  This is a second copy, not a replacement:  the `@**all**` wake path
         # above is untouched, and `@**everyone**` keeps waking nobody.
-        if self._owner_inbox_broadcast(c):
+        if self._inbox_broadcast(c):
             self.start_inbox_delivery(message, c)
+        # A fleet bot's `@all` has to be explained to the owner (owner, Oct 27 2026):  the audit
+        # asks, ten minutes later, whether Jay asked for it or the bot told him why.  Only the
+        # first seat that sees the message schedules it, and a marker message never does.
+        if first_seen and c.peer_broadcast and not c.no_wake:
+            self.schedule_broadcast_audit(message, c)
+        # The seats this listener holds that cannot take a routine/headless wake for a
+        # channel-wide `@all`.  This is not owner-only bookkeeping:  a fleet bot's `@all` wakes
+        # exactly like the owner's now (owner, Oct 27 2026), so the same seats are blocked, and
+        # the same line says so.  The owner's own `@all` in an OWNER topic keeps its old
+        # behaviour (the fanout runs, no seat wakes there), which is why the topic stays excluded.
         if (
             first_seen
-            and c.owner
-            and c.broadcast_all
-            and not c.no_wake
-            and not c.dm
-            and not c.stale
+            and self._broadcast_all(c)
             and not c.owner_topic
         ):
             threading.Thread(
@@ -1825,7 +1841,7 @@ class Daemon:
                 # adapter configured, but never start it in parallel with a bridge decision.
                 done.add("wake")
             if d.wake and not d.delivered_to and "wake" not in done:
-                if self._owner_broadcast(c):
+                if self._broadcast_all(c):
                     # Handed off, not delivered:  start_fanout (above, same gate) owns this wake.  The
                     # fanout always hands every seat it did not nudge back to the event thread, even
                     # when catalog discovery fails, and tick() offers it there through offer_wake like
@@ -3161,10 +3177,24 @@ class Daemon:
         self._surface(runner, pending, listed, lost, finished)
 
     @staticmethod
-    def _owner_broadcast(c: R.Classes) -> bool:
-        """The owner's `@all` that start_fanout handles:  one gate for the fanout and for the
-        route's hand-off, so the two can never disagree about who owns the wake."""
-        return bool(c.owner and c.broadcast_all and not c.dm and not c.stale and not c.no_wake)
+    def _broadcast_all(c: R.Classes) -> bool:
+        """The channel-wide `@all` that start_fanout handles:  one gate for the fanout and for the
+        route's hand-off, so the two can never disagree about who owns the wake.
+
+        The owner's `@all` behaves exactly as it always has (owner, Oct 27 2026:  the owner's own
+        broadcast in an OWNER topic still fans out, it only never wakes a seat there).  A fleet
+        bot's `@all` now takes the same road:  it wakes like the owner's, under the peer budgets,
+        the loop guard and the stale rule, so the fanout carries it to the fleet.  A peer's
+        broadcast in an OWNER topic is excluded, like every other peer post there."""
+        if c.owner:
+            return bool(c.broadcast_all and not c.dm and not c.stale and not c.no_wake)
+        return bool(
+            c.peer_broadcast
+            and not c.owner_topic
+            and not c.dm
+            and not c.stale
+            and not c.no_wake
+        )
 
     def _log_broadcast_wake_unsupported(self, message_id: int) -> None:
         """Seats this listener holds that cannot take a routine/headless wake (for owner `@all`).
@@ -3209,16 +3239,29 @@ class Daemon:
             self.log.write("fanout-start-failed", id=message_id, error=type(exc).__name__)
 
     @staticmethod
-    def _owner_inbox_broadcast(c: R.Classes) -> bool:
-        """The owner's channel-wide note that belongs UNREAD in every bot's Zulip inbox.
+    def _inbox_broadcast(c: R.Classes) -> bool:
+        """The channel-wide note that belongs UNREAD in every bot's Zulip inbox.
 
-        `@**all**` (the `_owner_broadcast` gate) gets it too, and keeps its existing wake path:
-        the delivery adds an inbox copy, it never replaces a wake.  `@**everyone**` gets the
-        inbox copy and wakes nobody, which is what it already does.  The `:eyes:` marker keeps
-        the message out of the fleet's inboxes as well as out of every wake."""
+        The owner's `@all` (the `_broadcast_all` gate) gets it too, and keeps its existing wake
+        path:  the delivery adds an inbox copy, it never replaces a wake.  The owner's
+        `@everyone` gets the inbox copy and wakes nobody, which is what it already does.  The
+        `:eyes:` marker keeps the message out of the fleet's inboxes as well as out of every
+        wake.
+
+        A fleet bot's `@all` gets the same inbox copy (owner, Oct 27 2026):  a serious broadcast
+        lands unread in every bot's inbox, so no seat misses it while it is doing something else.
+        A bot's `@everyone` stays as it is today:  it is not a broadcast (it wakes nobody), so
+        there is no inbox delivery for it either."""
+        if c.owner:
+            return bool(
+                (c.broadcast_all or c.everyone_inert)
+                and not c.dm
+                and not c.stale
+                and not c.no_wake
+            )
         return bool(
-            c.owner
-            and (c.broadcast_all or c.everyone_inert)
+            c.peer_broadcast
+            and not c.owner_topic
             and not c.dm
             and not c.stale
             and not c.no_wake
@@ -3276,6 +3319,193 @@ class Daemon:
             except ValueError:
                 pass
             self._inbox_pending.pop(message_id, None)
+
+    def schedule_broadcast_audit(
+        self, message: Mapping[str, Any], c: R.Classes
+    ) -> None:
+        """Remember a fleet bot's `@all` so the listener can ask the owner for a reason.
+
+        One audit per message id:  the first seat that routes the message owns it, and a second
+        seat's route of the same message finds the id already there.  The audit comes due in
+        `peer_broadcast_reminder_minutes`;  0 turns the reminder off, and the wake is untouched
+        either way.
+
+        The pending audits live in memory (owner, Oct 27 2026):  a restart drops them, which
+        costs one unexplained broadcast and never a wrong wake.  The daemon logs that at start."""
+        minutes = float(self.config.peer_broadcast_reminder_minutes)
+        message_id = message.get("id")
+        if not isinstance(message_id, int) or minutes <= 0:
+            return
+        seat = BAUD.sender_seat_for(
+            str(message.get("sender_email") or ""), seats=self._fleet_seat_tags()
+        )
+        broadcast = BAUD.Broadcast(
+            message_id=message_id,
+            sender_seat=seat,
+            sender_email=str(message.get("sender_email") or ""),
+            channel=c.channel,
+            topic=c.topic,
+            timestamp=float(message.get("timestamp") or self.clock.time()),
+        )
+        with self._fanout_lock:
+            if message_id in self._broadcast_audits:
+                return
+            due = self.clock.time() + minutes * 60.0
+            self._broadcast_audits[message_id] = (broadcast, due)
+        self.log.write("peer-broadcast-audit-scheduled", id=message_id, seat=seat or "unknown")
+
+    def _fleet_seat_tags(self) -> frozenset[str]:
+        """The seat tags this instance knows:  the partition's seats and the fleet's own list.
+
+        A sender whose email maps to no seat of the fleet is not a seat, so its `@all` cannot be
+        checked against a seat's own Zulip account."""
+        return frozenset(set(self.partition) | set(C.FLEET_SEATS))
+
+    def _start_due_broadcast_audits(self, now: float) -> None:
+        """Hand the audits that are due to their own threads.
+
+        The event thread only picks them up:  the check reads Zulip (the sender bot's own
+        account) and posts one DM, so it must not run where the coalescer lives.  A thread that
+        never started owns nothing, so the audit is logged as failed."""
+        due: list[BAUD.Broadcast] = []
+        with self._fanout_lock:
+            for message_id, (broadcast, due_at) in list(self._broadcast_audits.items()):
+                if due_at <= now:
+                    due.append(broadcast)
+                    self._broadcast_audits.pop(message_id, None)
+        for broadcast in due:
+            try:
+                threading.Thread(
+                    target=self._run_broadcast_audit,
+                    args=(broadcast,),
+                    name="broadcast-audit",
+                    daemon=True,
+                ).start()
+            except Exception as exc:  # noqa: BLE001 - an audit that never started owns nothing
+                self.log.write(
+                    "peer-broadcast-all",
+                    id=broadcast.message_id,
+                    seat=broadcast.sender_seat or "unknown",
+                    outcome=BAUD.REMINDER_FAILED,
+                    error=type(exc).__name__,
+                )
+
+    def _run_broadcast_audit(self, broadcast: BAUD.Broadcast) -> None:
+        """Check one fleet bot's `@all` and, when nobody explained it, DM the owner.
+
+        Runs off the event thread.  The check reads the SENDER bot's own Zulip account, with
+        that bot's own credentials from Infisical only (`zulip.infisical_credentials`, the same
+        path the inbox delivery uses):  no environment fallback, no zuliprc fallback.  When
+        those credentials cannot be read, the check did not run, and the reminder says so in its
+        second line instead of pretending the bot explained itself.
+
+        Every log line carries the seat, the message id and the outcome:  never a key, an email
+        or the message content."""
+        message_id = broadcast.message_id
+        seat = broadcast.sender_seat or "unknown"
+        owner_id = int(self.config.owner_user_id)
+        if owner_id <= 0:
+            self.log.write(
+                "peer-broadcast-all", id=message_id, seat=seat, outcome=BAUD.REMINDER_FAILED,
+                error="no_owner_id",
+            )
+            return
+        runner = self._alert_runner()
+        alert_seat = runner.seat if runner is not None else ""
+        permalink = broadcast.permalink(self.realm)
+        minutes = int(self.config.peer_broadcast_reminder_minutes)
+        http = None
+        reason = ""
+        if not broadcast.sender_seat:
+            reason = "its seat is not known"
+        else:
+            try:
+                creds = Z.infisical_credentials(
+                    broadcast.sender_seat, env=self.env, home=Path(self.home)
+                )
+                http = IDEL.zulip_http(creds, self.realm)
+            except Exception as exc:  # noqa: BLE001 - an unreadable vault is a reason, not a pass
+                reason = "its credentials could not be read (%s)" % type(exc).__name__
+        if http is None and not self._broadcast_rate.allow(broadcast.sender_seat or "unknown", self.clock.time()):
+            # The could-not-check reminder obeys the same per-seat cap as a checked one.
+            verdict = BAUD.Verdict(BAUD.RATE_LIMITED)
+        elif http is None:
+            verdict = BAUD.Verdict(
+                BAUD.REMIND,
+                reason=reason,
+                text=BAUD.reminder_text(
+                    alert_seat,
+                    broadcast.sender_seat or "an unknown seat",
+                    broadcast.channel,
+                    broadcast.topic,
+                    permalink,
+                    minutes=minutes,
+                    reason=reason,
+                ),
+            )
+        else:
+            verdict = BAUD.evaluate(
+                broadcast,
+                owner_user_id=owner_id,
+                http=http,
+                permalink=permalink,
+                rate=self._broadcast_rate,
+                now=self.clock.time(),
+                alert_seat=alert_seat,
+                minutes=minutes,
+            )
+        if verdict.outcome in (BAUD.OWNER_CONTEXT, BAUD.EXPLAINED, BAUD.RATE_LIMITED):
+            self.log.write(
+                "peer-broadcast-all", id=message_id, seat=seat, outcome=verdict.outcome
+            )
+            return
+        text = W.neutralize_mentions(verdict.text)
+        found = secretscan.scan(text, self.hidden)
+        if found:
+            # The scanner refuses and the message is not sent:  a reminder is not worth a leak.
+            self.log.write(
+                "peer-broadcast-all",
+                id=message_id,
+                seat=seat,
+                outcome=BAUD.REMINDER_FAILED,
+                error="secret scanner",
+            )
+            return
+        if runner is None or runner.client is None or runner.fatal:
+            self.log.write(
+                "peer-broadcast-all",
+                id=message_id,
+                seat=seat,
+                outcome=BAUD.REMINDER_FAILED,
+                error="no_alert_seat",
+            )
+            return
+        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
+        if wait > 0:
+            self.clock.sleep(wait)
+        try:
+            result = runner.client.post(
+                "messages", {"type": "direct", "to": [owner_id], "content": text}
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed DM is logged, never raised
+            self.log.write(
+                "peer-broadcast-all",
+                id=message_id,
+                seat=seat,
+                outcome=BAUD.REMINDER_FAILED,
+                error=type(exc).__name__,
+            )
+            return
+        finally:
+            runner.last_post = self.clock.monotonic()
+        reminder_id = result.get("id")
+        self.log.write(
+            "peer-broadcast-all",
+            id=message_id,
+            seat=seat,
+            outcome=BAUD.REMINDED,
+            reminder_id=int(reminder_id) if isinstance(reminder_id, int) else None,
+        )
 
     def _owner_email(self) -> str:
         """The owner's own account email, when a seat's realm user list knows it.
@@ -6060,6 +6290,7 @@ class Daemon:
             self.reload()
         self._drain_broadcast_wakes()
         self._start_due_inbox_retries(now)
+        self._start_due_broadcast_audits(now)
         for pending in self.coalescer.take_due(now):
             self.finalize(pending)
         if now - self.last_tick["reap"] >= 10:
