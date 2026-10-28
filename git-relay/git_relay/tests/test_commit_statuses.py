@@ -13,6 +13,20 @@ class Statuses(unittest.TestCase):
         for action in ("wf_commit_statuses", "wf_commit_status_create"):
             with self.assertRaises(Refused):
                 WorkflowVerbs.for_action(Client(), Policy(), Minter(), "swu-wise", action, REPO)
+        from git_relay.policy import SeatPolicy
+
+        policy = SeatPolicy(
+            {
+                "swu-wise": {
+                    "token": "x" * 32,
+                    "app_slug": "swu-wise",
+                    "mint_permissions": {"statuses": "write"},
+                    "actions": ["wf_commit_status_create"],
+                    "repos": ["example/repo"],
+                }
+            }
+        )
+        self.assertIsNone(policy.authorize("swu-wise", "wf_commit_status_create", "example/repo"))
         m = Minter()
         WorkflowVerbs.for_action(
             Client(),

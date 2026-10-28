@@ -3,7 +3,9 @@
 wf_commit_statuses reads bounded status rows; wf_commit_status_create creates a status
 on an exact commit SHA with state/context/description. No caller URL input. These are
 not check-run commands. They require explicit statuses:read or statuses:write in the
-existing seat ceiling; contents permission does not imply statuses permission.
+seat ceiling. The minter recognizes the statuses permission name, but no configured
+seat or App is given it by this source change; contents permission does not imply
+statuses permission.
 
 Default off, per-seat repo/action allowlists, own App and secret scanning remain.
 Adding code grants no authority to manufacture CI results or bypass review/merge gates.
