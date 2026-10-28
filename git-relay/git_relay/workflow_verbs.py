@@ -735,6 +735,22 @@ class WorkflowVerbs:
             raise
         if branch == info["default_branch"]:
             raise Refused("default branch is not writable")
+        try:
+            target = self._get(f"/repos/{repo}/branches/{quote(branch, safe='')}")
+            if (
+                not isinstance(target, dict)
+                or target.get("name") != branch
+                or not isinstance(target.get("commit"), dict)
+                or not isinstance(target["commit"].get("sha"), str)
+                or not _SHA.fullmatch(target["commit"]["sha"])
+            ):
+                raise RelayGitHubError(502, "branch pre-read unverifiable")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "branch pre-read unavailable; no write attempted"
+                ) from None
+            raise
         result = self.client._call(
             "DELETE",
             f"/repos/{repo}/contents/{quote(path, safe='/')}",

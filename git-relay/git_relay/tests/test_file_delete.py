@@ -24,7 +24,11 @@ class Delete(unittest.TestCase):
         return WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_file_delete", REPO)
 
     def test_delete_exact_blob_on_nondefault_branch(self):
-        c = Client({"default_branch": "main"}, {"content": None, "commit": {"sha": "b" * 40}})
+        c = Client(
+            {"default_branch": "main"},
+            {"name": "feature/x", "commit": {"sha": SHA}},
+            {"content": None, "commit": {"sha": "b" * 40}},
+        )
         out = self.handle(c).run("wf_file_delete", self.args())
         self.assertEqual(out["commit"], "b" * 40)
         self.assertEqual(
@@ -59,11 +63,13 @@ class Delete(unittest.TestCase):
             {"content": {}, "commit": {"sha": SHA}},
             {"content": None, "commit": {"sha": True}},
         ]:
-            c = Client({"default_branch": "main"}, result)
+            c = Client(
+                {"default_branch": "main"}, {"name": "feature/x", "commit": {"sha": SHA}}, result
+            )
             with self.assertRaises(RelayGitHubError) as err:
                 self.handle(c).run("wf_file_delete", self.args())
             self.assertEqual(err.exception.status, 502)
-            self.assertEqual(len(c.calls), 2)
+            self.assertEqual(len(c.calls), 3)
 
     def test_closed_and_scanned_args(self):
         for kwargs in [
@@ -82,3 +88,9 @@ class Delete(unittest.TestCase):
             with self.assertRaises(Refused):
                 self.handle(c).run("wf_file_delete", self.args(branch=branch))
             self.assertEqual(c.calls, [])
+
+    def test_tag_or_sha_does_not_count_as_branch(self):
+        c = Client({"default_branch": "main"}, {"name": "different", "commit": {"sha": SHA}})
+        with self.assertRaises(PreReadUnavailable):
+            self.handle(c).run("wf_file_delete", self.args())
+        self.assertEqual(len(c.calls), 2)

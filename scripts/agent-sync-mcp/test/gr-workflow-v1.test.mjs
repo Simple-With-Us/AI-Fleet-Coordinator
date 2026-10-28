@@ -214,3 +214,10 @@ test('file delete fixed route own bearer and uncertain write',async()=>{
  assert.ok(!(await t.call('gr_wf_file_delete',args)).isError);
  const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_wf_file_delete',args);assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
 });
+
+test('file deletion message byte limit and nonblank parity',()=>{
+ const a={repo,path:'x',branch:'feature/x',message:'Remove',prior_sha:'a'.repeat(40)};
+ assert.ok(!validWfV1Args('wf_file_delete',{...a,message:' '}));
+ assert.ok(!validWfV1Args('wf_file_delete',{...a,message:'é'.repeat(251)}));
+ assert.ok(validWfV1Args('wf_file_delete',{...a,message:'é'.repeat(250)}));
+});
