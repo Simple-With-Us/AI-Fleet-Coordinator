@@ -24,6 +24,18 @@ const SPECS = {
   wf_release_list: ['release list.',obj(['repo'],{repo:REPO})],
   wf_release_get: ['release get.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
   wf_release_delete: ['release delete.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
+  wf_pr_get: ['Read pr get.', obj(['repo', 'number'], {repo:REPO,number:INT})],
+  wf_pr_reviews: ['Read pr reviews.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
+  wf_pr_comments: ['Read pr comments.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
+  wf_issue_comments: ['Read issue comments.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
+  wf_commit_get: ['Read commit get.', obj(['repo', 'sha'], {repo:REPO,sha:SHA})],
+  wf_compare: ['Read compare.', obj(['repo', 'base', 'head'], {repo:REPO,base:REF,head:REF})],
+  wf_branch_get: ['Read branch get.', obj(['repo', 'branch'], {repo:REPO,branch:REF})],
+  wf_repo_get: ['Read repo get.', obj(['repo'], {repo:REPO})],
+  wf_labels: ['Read labels.', obj(['repo'], {repo:REPO,per_page:PER_PAGE})],
+  wf_workflows: ['Read workflows.', obj(['repo'], {repo:REPO,per_page:PER_PAGE})],
+  wf_run_get: ['Read run get.', obj(['repo', 'run_id'], {repo:REPO,run_id:INT})],
+  wf_run_artifacts: ['Read run artifacts.', obj(['repo', 'run_id'], {repo:REPO,run_id:INT,per_page:PER_PAGE})],
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_workflow_disable: ['workflow disable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_run_delete: ['run delete.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
@@ -56,7 +68,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_list','wf_release_get','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_list','wf_release_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -112,6 +124,18 @@ const RESPONSE_KEYS = {
   wf_release_delete:['deleted'],
   wf_workflow_enable:['completed','workflow_id','state'],
   wf_workflow_disable:['completed','workflow_id','state'],
+  wf_pr_get:['pull'],
+  wf_pr_reviews:['reviews','complete'],
+  wf_pr_comments:['comments','complete'],
+  wf_issue_comments:['comments','complete'],
+  wf_commit_get:['commit'],
+  wf_compare:['comparison'],
+  wf_branch_get:['branch'],
+  wf_repo_get:['repository'],
+  wf_labels:['labels','complete'],
+  wf_workflows:['workflows'],
+  wf_run_get:['run'],
+  wf_run_artifacts:['artifacts'],
   wf_run_delete:['completed','run_id'],
   wf_artifact_delete:['completed','artifact_id'],
 
@@ -132,7 +156,7 @@ export function validWfV1Response(action, body, args) {
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;
-  for (const k of ['pulls','files','entries','branches','commits','items','runs','jobs','checks']) {
+  for (const k of ['pulls','files','entries','branches','commits','items','runs','jobs','checks','reviews','comments','labels']) {
     if (k in body && !(action === 'wf_files_put' && k === 'files') && !Array.isArray(body[k])) return false;
   }
   if (action.startsWith('wf_release_asset')) {
@@ -142,6 +166,10 @@ export function validWfV1Response(action, body, args) {
   if (['wf_issue_comment_delete','wf_review_comment_delete','wf_release_delete'].includes(action) && body.deleted !== true) return false;
   if (action === 'wf_release_list' && !Array.isArray(body.releases)) return false;
   if ('result' in body && (!body.result || typeof body.result !== 'object' || Array.isArray(body.result))) return false;
+  for (const k of ['pull','commit','comparison','branch','repository','workflows','run','artifacts']) {
+    if ((action === 'wf_file_put' || action === 'wf_files_put') && (k === 'branch' || k === 'commit')) { if (typeof body[k] !== 'string' || body[k].length === 0) return false; continue; }
+    if (k in body && (!body[k] || typeof body[k] !== 'object' || Array.isArray(body[k]))) return false;
+  }
   if ('completed' in body && body.completed !== true) return false;
   const completedId = {wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
   if (completedId && (!Number.isInteger(body[completedId]) || body[completedId] < 1)) return false;
@@ -159,6 +187,7 @@ export function validWfV1Response(action, body, args) {
     const suffix = {wf_run_rerun:'rerun-failed-jobs',wf_run_cancel:'cancel',wf_run_approve:'approve'};
     return body.requested === suffix[action] && Number.isInteger(body.run_id);
   }
-  if ('commit' in body && !/^[0-9a-f]{40}$/.test(body.commit)) return false;
+  if (action === 'wf_file_put' && (typeof body.path !== 'string' || body.path.length === 0)) return false;
+  if (action !== 'wf_commit_get' && 'commit' in body && !/^[0-9a-f]{40}$/.test(body.commit)) return false;
   return true;
 }
