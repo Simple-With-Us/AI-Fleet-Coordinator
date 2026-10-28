@@ -92,3 +92,19 @@ class Checks(unittest.TestCase):
                     },
                 )
             self.assertEqual(c.calls, [])
+
+    def test_stale_is_github_only_not_a_writable_conclusion(self):
+        for action in ("wf_check_create", "wf_check_update"):
+            args = {
+                "repo": REPO,
+                "name": "swu-wise/report",
+                "status": "completed",
+                "conclusion": "stale",
+                "title": "Report",
+                "summary": "Done",
+            }
+            args.update(
+                {"sha": SHA} if action.endswith("create") else {"check_id": 1, "expected_sha": SHA}
+            )
+            with self.assertRaises(Refused):
+                WorkflowVerbs.check_shape(action, args, REPO)

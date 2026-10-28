@@ -446,7 +446,6 @@ class WorkflowVerbs:
                 "neutral",
                 "success",
                 "skipped",
-                "stale",
                 "timed_out",
             ),
         )
