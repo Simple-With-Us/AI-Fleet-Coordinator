@@ -464,7 +464,8 @@ class WorkflowVerbs:
             not isinstance(assignees, list)
             or not 1 <= len(assignees) <= 10
             or any(
-                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", v)
+                not isinstance(v, str)
+                or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", v)
                 for v in assignees
             )
         ):
@@ -472,7 +473,33 @@ class WorkflowVerbs:
         path = f"/repos/{repo}/issues/{number}/assignees"
         data = self.client._call("POST", path, {"assignees": assignees}, bearer=self.bearer)
         result = _obj(data)
-        return {"result": result}
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("number") != number
+            or not isinstance(result.get("assignees"), list)
+        ):
+            raise RelayGitHubError(502, "assignee outcome unverifiable")
+        logins = []
+        for item in result["assignees"]:
+            login = item.get("login") if isinstance(item, dict) else None
+            if not isinstance(login, str) or not re.fullmatch(
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login
+            ):
+                raise RelayGitHubError(502, "assignee outcome unverifiable")
+            logins.append(login)
+        requested = {x.lower() for x in assignees}
+        actual = {x.lower() for x in logins}
+        if not requested <= actual:
+            raise RelayGitHubError(502, "assignee state unverifiable")
+        return {
+            "result": {
+                "id": result["id"],
+                "number": number,
+                "assignees": [{"login": x} for x in logins],
+            }
+        }
 
     def wf_assignees_remove(self, repo, args):
         _only(
@@ -489,7 +516,8 @@ class WorkflowVerbs:
             not isinstance(assignees, list)
             or not 1 <= len(assignees) <= 10
             or any(
-                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", v)
+                not isinstance(v, str)
+                or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", v)
                 for v in assignees
             )
         ):
@@ -497,7 +525,33 @@ class WorkflowVerbs:
         path = f"/repos/{repo}/issues/{number}/assignees"
         data = self.client._call("DELETE", path, {"assignees": assignees}, bearer=self.bearer)
         result = _obj(data)
-        return {"result": result}
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("number") != number
+            or not isinstance(result.get("assignees"), list)
+        ):
+            raise RelayGitHubError(502, "assignee outcome unverifiable")
+        logins = []
+        for item in result["assignees"]:
+            login = item.get("login") if isinstance(item, dict) else None
+            if not isinstance(login, str) or not re.fullmatch(
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login
+            ):
+                raise RelayGitHubError(502, "assignee outcome unverifiable")
+            logins.append(login)
+        requested = {x.lower() for x in assignees}
+        actual = {x.lower() for x in logins}
+        if requested & actual:
+            raise RelayGitHubError(502, "assignee state unverifiable")
+        return {
+            "result": {
+                "id": result["id"],
+                "number": number,
+                "assignees": [{"login": x} for x in logins],
+            }
+        }
 
     def wf_issue_lock(self, repo, args):
         _only(
@@ -550,7 +604,16 @@ class WorkflowVerbs:
             bearer=self.bearer,
         )
         result = _obj(data)
-        return {"result": result}
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("name") != name
+            or not isinstance(result.get("color"), str)
+            or result["color"].lower() != color.lower()
+        ):
+            raise RelayGitHubError(502, "label outcome unverifiable")
+        return {"result": {k: result.get(k) for k in ("id", "name", "color", "description")}}
 
     def wf_label_delete(self, repo, args):
         _only(

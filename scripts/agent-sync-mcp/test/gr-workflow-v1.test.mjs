@@ -197,10 +197,15 @@ test('review/inline/branch additions keep bounded shapes and uncertain write fai
 });
 
 test('issue assignment labels and locking preserve own-bearer writes and UNKNOWN',async()=>{
- const cases=[['wf_assignees_add',{number:2,assignees:['swu-wise']},{result:{}}],['wf_assignees_remove',{number:2,assignees:['swu-wise']},{result:{}}],['wf_issue_lock',{number:2,reason:'resolved'},{completed:true}],['wf_issue_unlock',{number:2},{completed:true}],['wf_label_create',{name:'n',color:'aabbcc',description:'d'},{result:{}}],['wf_label_delete',{name:'n'},{completed:true}]];
+ const cases=[['wf_assignees_add',{number:2,assignees:['swu-wise']},{result:{id:1,number:2,assignees:[{login:'swu-wise'}]}}],['wf_assignees_remove',{number:2,assignees:['swu-wise']},{result:{id:1,number:2,assignees:[]}}],['wf_issue_lock',{number:2,reason:'resolved'},{completed:true}],['wf_issue_unlock',{number:2},{completed:true}],['wf_label_create',{name:'n',color:'aabbcc',description:'d'},{result:{id:1,name:'n',color:'aabbcc'}}],['wf_label_delete',{name:'n'},{completed:true}]];
  for(const [action,args,reply] of cases){
   const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});
   assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError,action);
   const fail=harness(async()=>{throw Error('no response');});const r=await fail.call('gr_'+action,{repo,...args});assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);
  }
+});
+
+test('issue management rejects empty receipts and invalid logins',()=>{
+ assert.equal(validWfV1Response('wf_assignees_add',{result:{}}),false);
+ assert.equal(validWfV1Args('wf_assignees_add',{repo,number:1,assignees:['-bad']}),false);
 });
