@@ -926,12 +926,8 @@ def sweep_stale(
                 (namespace, seat),
             ).fetchall()
             open_rows = list(rows)
-            seen_at = {
-                r["record_id"]: _parse_instant(r["last_seen_at"]) for r in open_rows
-            }
-            registered_at = {
-                r["record_id"]: _parse_instant(r["registered_at"]) for r in open_rows
-            }
+            seen_at = {r["record_id"]: _parse_instant(r["last_seen_at"]) for r in open_rows}
+            registered_at = {r["record_id"]: _parse_instant(r["registered_at"]) for r in open_rows}
             for row in open_rows:
                 last_seen = seen_at.get(row["record_id"])
                 if last_seen is None or last_seen >= cutoff:
