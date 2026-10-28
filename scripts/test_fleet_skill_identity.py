@@ -308,6 +308,31 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn("description: Guides Cloudflare One Zero Trust work.", out)
         self.assertNotIn("description: >-", out)
 
+    def test_seat_banner_stays_after_the_front_matter_when_the_skill_has_no_h1(self) -> None:
+        """A skill that starts at `## ` has no top-level heading to insert after.
+
+        The seat banner was prepended ahead of the YAML front matter in that
+        case, so no front-matter parser could read the name or the description
+        of any seat copy that carried one.  The banner belongs after the
+        closing delimiter.
+        """
+        seat = SEATS["clutch"]
+        src = (
+            "---\n"
+            "name: secret-safety\n"
+            "description: >-\n"
+            "  Hardcoded, mandatory safeguards for handling secrets.\n"
+            "---\n\n"
+            "## Why this exists\n\n"
+            "Because.\n"
+        )
+        out = specialize_from_monet(src, seat, skill_name="secret-safety")
+        self.assertTrue(out.startswith("---\nname: secret-safety\n"))
+        self.assertIn("Runtime (Clutch)", out)
+        closing = out.index("\n---\n", 4) + len("\n---\n")
+        self.assertLess(closing, out.index("Runtime (Clutch)"))
+        self.assertLess(out.index("Runtime (Clutch)"), out.index("## Why this exists"))
+
 
 DOCS = os.path.join(ROOT, "docs", "fleet-skills")
 
