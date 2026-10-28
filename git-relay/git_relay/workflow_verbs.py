@@ -381,6 +381,7 @@ class WorkflowVerbs:
         ):
             raise WriteOutcomeUnknown("issue comment outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "html_url")}}
+
     def _asset_summary(self, data):
         if (
             not isinstance(data, dict)
