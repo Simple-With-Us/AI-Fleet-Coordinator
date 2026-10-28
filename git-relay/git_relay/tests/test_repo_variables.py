@@ -90,3 +90,25 @@ class Variables(unittest.TestCase):
             self.assertIsNone(store.begin(keys[0], reapply_ok=True))
             store.finish(keys[0], "unknown")
             self.assertEqual(store.begin(keys[0], reapply_ok=True)["state"], "unknown")
+
+    def test_supported_permission_key_not_a_configured_grant(self):
+        from git_relay.app_tokens import MINT_PERMISSION_CEILING
+
+        self.assertIn("variables", MINT_PERMISSION_CEILING)
+        self.test_permission_never_assumed_from_shared_ceiling()
+
+    def test_read_blocks_external_credential_and_create_201_empty_object(self):
+        from git_relay.github_client import GitHubClient
+        import io
+
+        class Response(io.BytesIO):
+            status = 201
+
+        client = GitHubClient("synthetic", opener=lambda *a, **k: Response(b"{}"))
+        self.assertEqual(
+            client._call("POST", "/repos/a/b/actions/variables", expected_status=201), {}
+        )
+        with self.assertRaises(Refused):
+            WorkflowVerbs._variable_receipt(
+                {"name": "MODE", "value": "ghp_" + "x" * 36, "created_at": "x", "updated_at": "x"}
+            )

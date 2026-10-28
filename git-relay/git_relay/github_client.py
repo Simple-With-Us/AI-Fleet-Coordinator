@@ -204,7 +204,9 @@ class GitHubClient:
         try:
             with self._opener(req, timeout=TIMEOUT_SECONDS) as resp:
                 raw = resp.read(MAX_BODY + 1)
-                if expected_status is not None and (resp.status != expected_status or raw):
+                if expected_status is not None and (
+                    resp.status != expected_status or (expected_status == 204 and raw)
+                ):
                     raise RelayGitHubError(502, "unexpected upstream completion status or body")
         except urllib.error.HTTPError as exc:
             preview = exc.read(MAX_ERROR_PREVIEW).decode("utf-8", "replace")

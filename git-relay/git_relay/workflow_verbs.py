@@ -314,6 +314,8 @@ class WorkflowVerbs:
             )
         ):
             raise RelayGitHubError(502, "variable receipt unverifiable")
+        if find_secret(data["name"]) or find_secret(data["value"]):
+            raise Refused("variable contains a credential pattern")
         return {k: data[k] for k in ("name", "value", "created_at", "updated_at")}
 
     def wf_repo_variables(self, repo, args):
@@ -348,13 +350,15 @@ class WorkflowVerbs:
         _only(args, ("repo", "name", "value"))
         name = self._variable_name(args)
         value = self._variable_value(args)
-        self.client._call(
+        receipt = self.client._call(
             "POST",
             f"/repos/{repo}/actions/variables",
             {"name": name, "value": value},
             bearer=self.bearer,
             expected_status=201,
         )
+        if receipt != {}:
+            raise RelayGitHubError(502, "unexpected variable create receipt")
         return {"completed": True, "name": name}
 
     def wf_repo_variable_update(self, repo, args):

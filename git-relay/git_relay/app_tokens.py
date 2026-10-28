@@ -23,7 +23,15 @@ import time
 
 TIMEOUT_SECONDS = 30
 REFRESH_MARGIN_SECONDS = 300
-MINT_PERMISSION_CEILING = ("contents", "pull_requests", "issues", "actions", "checks", "metadata")
+MINT_PERMISSION_CEILING = (
+    "contents",
+    "pull_requests",
+    "issues",
+    "actions",
+    "checks",
+    "variables",
+    "metadata",
+)
 
 
 class AppTokenError(Exception):

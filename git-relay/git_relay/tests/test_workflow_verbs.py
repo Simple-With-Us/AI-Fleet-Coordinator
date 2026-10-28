@@ -303,7 +303,7 @@ class Tests(unittest.TestCase):
         }
 
         class Routed(Client):
-            def _call(self, method, path, payload=None, bearer=None):
+            def _call(self, method, path, payload=None, bearer=None, expected_status=None):
                 self.calls.append((method, path, payload, bearer))
                 return routes[(method, path)]
 
@@ -414,7 +414,7 @@ class Tests(unittest.TestCase):
             c = self._git_data_client()
             base = c._call
 
-            def call(method, path, payload=None, bearer=None):
+            def call(method, path, payload=None, bearer=None, expected_status=None):
                 for (m, suffix), reply in patch.items():
                     if method == m and path.endswith(suffix):
                         c.calls.append((method, path, payload, bearer))

@@ -19,10 +19,10 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
  wf_repo_variables:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
- wf_repo_variable_get:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name'],{repo:REPO,name:{type:'string',pattern:'^[A-Z_][A-Z0-9_]{0,99}$'}})],
- wf_repo_variable_create:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name', 'value'],{repo:REPO,name:{type:'string',pattern:'^[A-Z_][A-Z0-9_]{0,99}$'},value:{type:'string',maxLength:8192}})],
- wf_repo_variable_update:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name', 'value'],{repo:REPO,name:{type:'string',pattern:'^[A-Z_][A-Z0-9_]{0,99}$'},value:{type:'string',maxLength:8192}})],
- wf_repo_variable_delete:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name'],{repo:REPO,name:{type:'string',pattern:'^[A-Z_][A-Z0-9_]{0,99}$'}})],
+ wf_repo_variable_get:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'}})],
+ wf_repo_variable_create:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name', 'value'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'},value:{type:'string',maxLength:8192}})],
+ wf_repo_variable_update:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name', 'value'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'},value:{type:'string',maxLength:8192}})],
+ wf_repo_variable_delete:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'}})],
 
   wf_pr_get: ['Read pr get.', obj(['repo', 'number'], {repo:REPO,number:INT})],
   wf_pr_reviews: ['Read pr reviews.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
@@ -111,6 +111,7 @@ export function boundedWorkflowInput(args) {
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
 export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
+  (!action.startsWith('wf_repo_variable') || !('value' in args) || Buffer.byteLength(args.value,'utf8')<=8192) &&
   (action !== 'wf_review_submit' && action !== 'wf_review_inline' || reviewBodyOk(args));
 
 // Check the fixed success envelope before returning service data to a caller.
