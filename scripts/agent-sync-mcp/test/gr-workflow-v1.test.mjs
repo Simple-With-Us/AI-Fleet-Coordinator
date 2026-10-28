@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,80);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,86);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,80);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,86);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -372,6 +372,11 @@ test('environment receipts work without Node Buffer and refuse hostile nested da
  } finally {globalThis.Buffer=prior;}
 });
 
+test('deployment deletion uses strict real id envelope and own bearer',async()=>{
+ assert.equal(validWfV1Response('wf_deployment_delete',{deleted:true,deployment_id:2}),true);
+ for(const body of [{deleted:true},{deleted:true,deployment_id:true},{deleted:true,deployment_id:2,extra:1}])assert.equal(validWfV1Response('wf_deployment_delete',body),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_deployment_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({deleted:true,deployment_id:2}));});assert.ok(!(await t.call('gr_wf_deployment_delete',{repo,deployment_id:2})).isError);
+});
 test('milestone delete receipt and writes use strict envelopes and own-bearer route',async()=>{
  const a={repo,milestone:2};
  assert.equal(validWfV1Response('wf_milestone_delete',{deleted:true,number:2}),true);

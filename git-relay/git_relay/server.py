@@ -553,6 +553,7 @@ _WORKFLOW_AUDIT_SCALARS = (
     "sha",
     "expected_sha",
     "comment_id",
+    "deployment_id",
     "milestone",
     "release_id",
     "asset_id",
