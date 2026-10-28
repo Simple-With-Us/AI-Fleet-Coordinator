@@ -72,7 +72,7 @@ class Tests(unittest.TestCase):
     def test_every_action_has_a_handler_and_spec(self):
         for action in ACTIONS:
             self.assertTrue(callable(getattr(WorkflowVerbs, action)))
-        self.assertEqual(len(ACTIONS), 17)
+        self.assertEqual(len(ACTIONS), 20)
 
     def test_least_permission_minted_and_ceiling_enforced(self):
         minter = Minter()
@@ -402,7 +402,13 @@ class Tests(unittest.TestCase):
 
     def test_wf_files_put_upstream_shape_and_special_entries(self):
         files = [{"path": "scripts/run.sh", "content_b64": "eA=="}]
-        args = {"repo": REPO, "branch": "feat/x", "message": "m", "expected_head_sha": SHA, "files": files}
+        args = {
+            "repo": REPO,
+            "branch": "feat/x",
+            "message": "m",
+            "expected_head_sha": SHA,
+            "files": files,
+        }
 
         def routed(patch):
             c = self._git_data_client()
@@ -429,7 +435,13 @@ class Tests(unittest.TestCase):
                 Multi(c).run("wf_files_put", args)
             self.assertFalse([1 for m, p, *_ in c.calls if m == "PATCH"], "no ref update")
         # An existing symlink (or submodule) at the path is refused, not overwritten.
-        c = routed({("GET", f"/git/trees/{'c' * 40}"): {"tree": [{"path": "run.sh", "type": "blob", "sha": "d" * 40, "mode": "120000"}]}})
+        c = routed(
+            {
+                ("GET", f"/git/trees/{'c' * 40}"): {
+                    "tree": [{"path": "run.sh", "type": "blob", "sha": "d" * 40, "mode": "120000"}]
+                }
+            }
+        )
         with self.assertRaises(Refused):
             Multi(c).run("wf_files_put", args)
         self.assertFalse([1 for m, p, *_ in c.calls if m == "PATCH"])

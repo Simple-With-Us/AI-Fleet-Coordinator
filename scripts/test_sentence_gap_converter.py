@@ -79,7 +79,7 @@ DATED_RECORDS = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
 # mirror added here is asserted too and not silently left unchecked.
 # The document is being renamed:  both names are generated mirrors, and exactly one exists at a time.
 # Remove the old name when the rename is complete.
-GENERATED_MIRRORS = ("AGENT-SYNC.md", "FLEET-PROTOCOL.md")
+GENERATED_MIRRORS = ("FLEET-PROTOCOL.md",)
 
 # This file holds the checks themselves, so the sweep below finds its own command
 # templates.  A checker is not guidance.
@@ -758,7 +758,7 @@ class AssertionCommandTests(unittest.TestCase):
 
 
 class GeneratedMirrorTests(unittest.TestCase):
-    """AGENT-SYNC.md is the file every seat reads first, so it is asserted, not skipped.
+    """FLEET-PROTOCOL.md is the file every seat reads first, so it is asserted, not skipped.
 
     The mirror is built from the Fleet-OPS handbook and this repository cannot change it:
     scripts/check-generated-mirror.py refuses any hand edit from a branch that is not
@@ -795,7 +795,7 @@ class GeneratedMirrorTests(unittest.TestCase):
 
     POINTER = (
         "A generated mirror is built from the Fleet-OPS handbook, so it cannot be fixed "
-        "here:  change the handbook page behind it (for AGENT-SYNC.md, "
+        "here:  change the handbook page behind it (for FLEET-PROTOCOL.md, "
         "handbook/owner/writing-for-owner.md) in a Fleet-OPS pull request and the sync "
         "job writes the mirror from the merge.  A hand edit is refused by "
         "scripts/check-generated-mirror.py."
