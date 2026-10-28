@@ -23,6 +23,11 @@ const SPECS = {
  wf_git_commit_get:['Read bounded Git commit object, not full REST commit diff.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
  wf_git_tree_get:['Read nonrecursive tree with at most100 entries; larger trees refused.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
 
+  wf_pr_draft: ['pr draft.',obj(['repo','number'],{repo:REPO,number:INT})],
+  wf_pr_ready: ['pr ready.',obj(['repo','number'],{repo:REPO,number:INT})],
+  wf_automerge_enable: ['automerge enable.',obj(['repo','number','method'],{repo:REPO,number:INT,method:{type:'string',enum:['SQUASH','MERGE','REBASE']}})],
+  wf_automerge_disable: ['automerge disable.',obj(['repo','number'],{repo:REPO,number:INT})],
+  wf_review_threads: ['review threads.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_assignees_add: ['assignees add.',obj(['repo', 'number', 'assignees'],{repo:REPO,number:INT,assignees:{type:'array',minItems:1,maxItems:10,items:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'}}})],
   wf_assignees_remove: ['assignees remove.',obj(['repo', 'number', 'assignees'],{repo:REPO,number:INT,assignees:{type:'array',minItems:1,maxItems:10,items:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'}}})],
   wf_issue_lock: ['issue lock.',obj(['repo', 'number', 'reason'],{repo:REPO,number:INT,reason:{type:'string',enum:['off-topic','too heated','resolved','spam']}})],
@@ -73,7 +78,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_review_threads','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -89,25 +94,25 @@ function validWfV1Args2(schema, args) {
   return Object.keys(args).every(k => Object.hasOwn(schema.properties,k) && typeOk(schema.properties[k], args[k]));
 }
 // Iterative guard runs before recursive schema code or JSON serialization.
-export function boundedWorkflowInput(args) {
+export function boundedWorkflowInput(args, {maxDepth=6,maxNodes=500,maxBytes=65536,maxString=65536,maxKeys=100}={}) {
   const stack=[[args,0]], seen=new Set(); let nodes=0, bytes=0;
   while(stack.length) {
     const [value,depth]=stack.pop();
-    if(++nodes>500 || depth>6) return false;
+    if(++nodes>maxNodes || depth>maxDepth) return false;
     if(typeof value==='string') {
-      if(value.length>65536) return false;
+      if(value.length>maxString) return false;
       bytes+=new TextEncoder().encode(value).length;
     } else if(value && typeof value==='object') {
       if(seen.has(value)) return false; seen.add(value);
       if(Object.getPrototypeOf(value)!==Object.prototype && !Array.isArray(value) && Object.getPrototypeOf(value)!==null) return false;
-      const keys=Object.keys(value); if(keys.length>100) return false;
+      const keys=Object.keys(value); if(keys.length>maxKeys) return false;
       for(const key of keys) {
         const d=Object.getOwnPropertyDescriptor(value,key);
         if(!d || !Object.hasOwn(d,'value')) return false;
         bytes+=key.length; stack.push([d.value,depth+1]);
       }
     } else if(!['number','boolean'].includes(typeof value) && value!==null) return false;
-    if(bytes>65536) return false;
+    if(bytes>maxBytes) return false;
   }
   return true;
 }
@@ -136,6 +141,11 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
  wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
+  wf_pr_draft:['pull'],
+  wf_pr_ready:['pull'],
+  wf_automerge_enable:['pull'],
+  wf_automerge_disable:['pull'],
+  wf_review_threads:['threads'],
   wf_assignees_add:['result'],
   wf_assignees_remove:['result'],
   wf_issue_lock:['completed'],
@@ -171,7 +181,28 @@ const RESPONSE_KEYS = {
   wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
   wf_merge_guarded: ['merged','sha'],
 };
+const shaValue=z.string().regex(/^[0-9a-f]{40}$/),positive=z.number().int().positive();
+let jsonValueUnion=null;
+const jsonValue=z.lazy(()=>jsonValueUnion??=z.union([z.string(),z.number().finite(),z.boolean(),z.null(),z.array(jsonValue),z.record(z.string(),jsonValue)]));
+const objectWith=shape=>z.object(shape).catchall(jsonValue);
+const commitObject=objectWith({sha:shaValue,commit:objectWith({message:z.string()}),parents:z.array(objectWith({sha:shaValue}))});
+const branchObject=objectWith({name:z.string().min(1),commit:objectWith({sha:shaValue})});
+const runObject=objectWith({id:positive,head_sha:shaValue,status:z.string(),conclusion:z.string().nullable()});
+const artifactObject=objectWith({id:positive,name:z.string(),size_in_bytes:z.number().int().nonnegative(),expired:z.boolean()});
+const workflowObject=objectWith({id:positive,name:z.string(),path:z.string(),state:z.string()});
+const pullObject=objectWith({id:positive,number:positive,state:z.enum(['open','closed']),head:objectWith({sha:shaValue}),base:objectWith({sha:shaValue})});
+const readResponseSchemas={
+ wf_pr_get:z.object({pull:pullObject}).strict(),
+ wf_commit_get:z.object({commit:commitObject}).strict(),
+ wf_compare:z.object({comparison:objectWith({status:z.string(),ahead_by:z.number().int().nonnegative(),behind_by:z.number().int().nonnegative(),total_commits:z.number().int().nonnegative(),commits:z.array(commitObject)})}).strict(),
+ wf_branch_get:z.object({branch:branchObject}).strict(),
+ wf_repo_get:z.object({repository:objectWith({id:positive,name:z.string().min(1),full_name:z.string().min(3),default_branch:z.string().min(1),private:z.boolean()})}).strict(),
+ wf_workflows:z.object({workflows:objectWith({total_count:z.number().int().nonnegative(),workflows:z.array(workflowObject).max(50)})}).strict(),
+ wf_run_get:z.object({run:runObject}).strict(),
+ wf_run_artifacts:z.object({artifacts:objectWith({total_count:z.number().int().nonnegative(),artifacts:z.array(artifactObject).max(50)})}).strict(),
+};
 export function validWfV1Response(action, body) {
+ if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(action.startsWith('wf_git_')){
    const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768)}).strict();
    const schemas={
@@ -182,6 +213,18 @@ export function validWfV1Response(action, body) {
    };
    const parsed=schemas[action]?.safeParse(body);if(!parsed?.success)return false;body=parsed.data;
  }
+ if(action==='wf_pr_get'){
+  const credential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|sk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|st\.[A-Za-z0-9]{20,})/;
+  for(const key of ['title','body']){const v=body?.pull?.[key];if(v!=null&&(typeof v!=='string'||credential.test(v)))return false;}
+ }
+ if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
+ const keysBeforeParse=RESPONSE_KEYS[action];
+ if(!keysBeforeParse)return false;
+ const shape=Object.fromEntries(keysBeforeParse.map(k=>[k,jsonValue]));
+ if(action==='wf_file_put'||action==='wf_files_put'){shape.branch=z.string().min(1);shape.commit=shaValue;if(action==='wf_file_put')shape.path=z.string().min(1);else shape.files=z.number().int().min(1).max(20);}
+ const parsed=z.object(shape).strict().safeParse(body);
+ if(!parsed.success)return false;
+ body=parsed.data;
  const key={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
  if(key){const parsed=z.object({completed:z.literal(true),[key]:z.number().int().positive()}).strict().safeParse(body);if(!parsed.success)return false;body=parsed.data;}
 
@@ -195,6 +238,7 @@ export function validWfV1Response(action, body) {
     const assetOk = x => x && !Array.isArray(x) && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string' && x.name.length > 0 && x.name.length <= 255 && ['uploaded','open','starter'].includes(x.state) && Number.isInteger(x.size) && x.size >= 0;
     if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;
   }
+  for (const key of ['pull','threads']) if (key in body && (!body[key] || typeof body[key] !== 'object' || Array.isArray(body[key]))) return false;
   if ('result' in body && (!Number.isInteger(body.result?.id) || body.result.id < 1)) return false;
   if (action.startsWith('wf_assignees_') && (!Number.isInteger(body.result?.number) || !Array.isArray(body.result?.assignees) || !body.result.assignees.every(x => typeof x?.login === 'string'))) return false;
   if (action === 'wf_label_create' && (typeof body.result?.name !== 'string' || !/^[0-9a-fA-F]{6}$/.test(body.result?.color))) return false;
