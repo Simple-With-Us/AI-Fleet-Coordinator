@@ -1302,7 +1302,7 @@ class AlwaysOnRuleFileTests(unittest.TestCase):
     def test_the_installed_gap_rule_is_the_current_one(self) -> None:
         rel = ".cursor/rules/sentence-gap.mdc"
         self.assertIn(rel, self.installer.ALWAYS_ON_RULE_FILES)
-        with io.open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
             body = fh.read()
         self.assertIn("Current rule (owner ruling 2026-10-23)", body)
         # The retired per-surface table: two literal ASCII spaces for files,
@@ -1327,7 +1327,7 @@ class AlwaysOnRuleFileTests(unittest.TestCase):
                 path = os.path.join(home, dest_rel.replace("~/", "", 1))
                 self.assertTrue(os.path.isfile(path), path)
                 src = os.path.join(ROOT, src_rel)
-                with io.open(path, "rb") as a, io.open(src, "rb") as b:
+                with open(path, "rb") as a, open(src, "rb") as b:
                     self.assertEqual(a.read(), b.read())
 
 
