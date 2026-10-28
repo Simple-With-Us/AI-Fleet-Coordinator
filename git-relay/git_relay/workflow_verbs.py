@@ -1,6 +1,6 @@
 """Inactive read, search and workflow verbs for a PR-backlog seat.
 
-Registered only behind the existing default-off workflow gates. A broker that has
+Not registered in server startup, policy action lists or the Worker. A broker that has
 already authenticated a seat constructs it through ``for_action``. It never accepts a
 caller token, URL, raw query string or arbitrary path: every argument is validated into
 a fixed REST path. Each verb asks the existing minter for only the permissions it needs
@@ -38,6 +38,10 @@ class CeilingDenied(Refused):
     """The seat's App ceiling does not cover the verb's permissions (a 403, not a bad request)."""
 
 
+class WriteOutcomeUnknown(RuntimeError):
+    """A write was sent but its result cannot be verified."""
+
+
 class Unknown(RuntimeError):
     """Own App credential unavailable."""
 
@@ -54,6 +58,11 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_issue_list": ({"issues": "read"}, False),
+    "wf_issue_get": ({"issues": "read"}, False),
+    "wf_issue_create": ({"issues": "write"}, True),
+    "wf_issue_update": ({"issues": "write"}, True),
+    "wf_issue_comment": ({"issues": "write"}, True),
     "wf_issue_comment_update": ({"issues": "write"}, True),
     "wf_issue_comment_delete": ({"issues": "write"}, True),
     "wf_review_comment_update": ({"pull_requests": "write"}, True),
@@ -490,6 +499,127 @@ class WorkflowVerbs:
             raise Refused("action or repository not authorized for this handle")
         result = getattr(self, action)(self.repo, args)
         return _validate_read(action, result) if action in _NEW_READS else result
+
+    # Fixed issue endpoints only.  No assignee, label, milestone or admin expansion.
+    @staticmethod
+    def _issue_summary(data):
+        if not isinstance(data, dict):
+            raise Refused("unexpected issue response")
+        if "pull_request" in data:
+            raise Refused("pull requests are not issue lifecycle targets")
+        if (
+            isinstance(data.get("number"), bool)
+            or not isinstance(data.get("number"), int)
+            or data["number"] < 1
+            or data.get("state") not in ("open", "closed")
+        ):
+            raise Refused("unexpected issue response")
+        return {k: data.get(k) for k in ("number", "state", "title", "updated_at", "html_url")}
+
+    @staticmethod
+    def _issue_text(args, key, required=True):
+        value = args.get(key)
+        if value is None and not required:
+            return None
+        if not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 32768:
+            raise Refused(f"invalid {key}")
+        if find_secret(value):
+            raise Refused("credential-shaped outbound text")
+        return value
+
+    def wf_issue_list(self, repo, args):
+        _only(args, ("repo", "state", "per_page"))
+        state = _enum(args, "state", ("open", "closed", "all"), "open")
+        data = _arr(self._get(f"/repos/{repo}/issues?state={state}&per_page={_page(args)}"))
+        return {
+            "issues": [
+                self._issue_summary(x)
+                for x in data[:MAX_PROJECT]
+                if not isinstance(x, dict) or "pull_request" not in x
+            ],
+            "complete": False,
+        }
+
+    def wf_issue_get(self, repo, args):
+        _only(args, ("repo", "number"))
+        number = _int(args, "number")
+        return {"issue": self._issue_summary(self._get(f"/repos/{repo}/issues/{number}"))}
+
+    def wf_issue_create(self, repo, args):
+        _only(args, ("repo", "title", "body"))
+        title = self._issue_text(args, "title")
+        body = self._issue_text(args, "body")
+        result = self.client._call(
+            "POST", f"/repos/{repo}/issues", {"title": title, "body": body}, bearer=self.bearer
+        )
+        try:
+            summary = self._issue_summary(result)
+            if (
+                not isinstance(summary["number"], int)
+                or isinstance(summary["number"], bool)
+                or summary["state"] not in ("open", "closed")
+            ):
+                raise Refused("unexpected issue response")
+        except (Refused, KeyError, TypeError) as exc:
+            raise WriteOutcomeUnknown("issue write outcome unverifiable") from exc
+        return {"issue": summary}
+
+    def _issue_before_write(self, repo, number):
+        # Only this GET is caught.  No upstream write has been attempted here.
+        # Existing held UNKNOWN rows are never cleared or reclassified.
+        # Transient matches Relay.handle's classification (transport/timeout,
+        # 408, 5xx):  any of them must release the key, never hold it unknown.
+        try:
+            data = self._get(f"/repos/{repo}/issues/{number}")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("issue pre-read unavailable; no write attempted") from None
+            raise
+        return self._issue_summary(data)
+
+    def wf_issue_update(self, repo, args):
+        _only(args, ("repo", "number", "title", "body", "state"))
+        number = _int(args, "number")
+        payload = {}
+        for key in ("title", "body"):
+            if key in args:
+                payload[key] = self._issue_text(args, key)
+        if "state" in args:
+            payload["state"] = _enum(args, "state", ("open", "closed"))
+        if not payload:
+            raise Refused("issue update requires a change")
+        # Read rejects PR targets.  This is not an atomic compare-and-swap claim.
+        self._issue_before_write(repo, number)
+        result = self.client._call(
+            "PATCH", f"/repos/{repo}/issues/{number}", payload, bearer=self.bearer
+        )
+        try:
+            summary = self._issue_summary(result)
+            if (
+                not isinstance(summary["number"], int)
+                or isinstance(summary["number"], bool)
+                or summary["state"] not in ("open", "closed")
+            ):
+                raise Refused("unexpected issue response")
+        except (Refused, KeyError, TypeError) as exc:
+            raise WriteOutcomeUnknown("issue write outcome unverifiable") from exc
+        return {"issue": summary}
+
+    def wf_issue_comment(self, repo, args):
+        _only(args, ("repo", "number", "body"))
+        number = _int(args, "number")
+        body = self._issue_text(args, "body")
+        self._issue_before_write(repo, number)
+        result = self.client._call(
+            "POST", f"/repos/{repo}/issues/{number}/comments", {"body": body}, bearer=self.bearer
+        )
+        if (
+            not isinstance(result, dict)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
+            raise WriteOutcomeUnknown("issue comment outcome unverifiable")
+        return {"comment": {k: result.get(k) for k in ("id", "html_url")}}
 
     def _asset_summary(self, data):
         if (
@@ -1255,7 +1385,11 @@ class WorkflowVerbs:
         _only(args, ("repo", "workflow_id"))
         value = _int(args, "workflow_id")
         self.client._call(
-            "PUT", f"/repos/{repo}/actions/workflows/{value}/enable", None, bearer=self.bearer
+            "PUT",
+            f"/repos/{repo}/actions/workflows/{value}/enable",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
         return {"completed": True, "workflow_id": value, "state": "enabled"}
 
@@ -1263,21 +1397,35 @@ class WorkflowVerbs:
         _only(args, ("repo", "workflow_id"))
         value = _int(args, "workflow_id")
         self.client._call(
-            "PUT", f"/repos/{repo}/actions/workflows/{value}/disable", None, bearer=self.bearer
+            "PUT",
+            f"/repos/{repo}/actions/workflows/{value}/disable",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
         return {"completed": True, "workflow_id": value, "state": "disabled"}
 
     def wf_run_delete(self, repo, args):
         _only(args, ("repo", "run_id"))
         value = _int(args, "run_id")
-        self.client._call("DELETE", f"/repos/{repo}/actions/runs/{value}", None, bearer=self.bearer)
+        self.client._call(
+            "DELETE",
+            f"/repos/{repo}/actions/runs/{value}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
         return {"completed": True, "run_id": value}
 
     def wf_artifact_delete(self, repo, args):
         _only(args, ("repo", "artifact_id"))
         value = _int(args, "artifact_id")
         self.client._call(
-            "DELETE", f"/repos/{repo}/actions/artifacts/{value}", None, bearer=self.bearer
+            "DELETE",
+            f"/repos/{repo}/actions/artifacts/{value}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
         return {"completed": True, "artifact_id": value}
 
