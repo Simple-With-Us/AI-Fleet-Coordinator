@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {WF_V1_ACTIONS,WF_V1_TOOLS,validWfV1Args} from '../src/gr-workflow-v1.js';
+import {WF_V1_ACTIONS,WF_V1_TOOLS,validWfV1Response,validWfV1Args} from '../src/gr-workflow-v1.js';
 const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',import.meta.url),'utf8');
 const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
 const onlyOf=name=>{
@@ -205,3 +205,5 @@ test('management writes use fixed routes, own bearer and UNKNOWN on transport fa
     const r=await fail.call('gr_'+action,{repo,...args});assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);
   }
 });
+
+test('actual review regression',()=>{assert.ok(!validWfV1Args('wf_labels_set',{repo,number:1,labels:['\nattack']})); assert.ok(!validWfV1Args('wf_reviewers_request',{repo,number:1,reviewers:['\nattack']}));});

@@ -17,9 +17,9 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
-  wf_labels_set: ['labels set.',obj(['repo', 'number', 'labels'],{repo:REPO,number:INT,labels:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100}}})],
-  wf_reviewers_request: ['reviewers request.',obj(['repo', 'number', 'reviewers'],{repo:REPO,number:INT,reviewers:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100}}})],
-  wf_reviewers_remove: ['reviewers remove.',obj(['repo', 'number', 'reviewers'],{repo:REPO,number:INT,reviewers:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100}}})],
+  wf_labels_set: ['labels set.',obj(['repo', 'number', 'labels'],{repo:REPO,number:INT,labels:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
+  wf_reviewers_request: ['reviewers request.',obj(['repo', 'number', 'reviewers'],{repo:REPO,number:INT,reviewers:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
+  wf_reviewers_remove: ['reviewers remove.',obj(['repo', 'number', 'reviewers'],{repo:REPO,number:INT,reviewers:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
   wf_release_create: ['release create.',obj(['repo', 'tag', 'name', 'body', 'draft', 'prerelease'],{repo:REPO,tag:REF,name:STR,body:STR,draft:{type:'boolean'},prerelease:{type:'boolean'}})],
   wf_release_update: ['release update.',obj(['repo', 'release_id', 'name', 'body', 'draft', 'prerelease'],{repo:REPO,release_id:INT,name:STR,body:STR,draft:{type:'boolean'},prerelease:{type:'boolean'}})],
 
