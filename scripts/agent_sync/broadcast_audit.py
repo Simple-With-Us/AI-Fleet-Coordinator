@@ -98,6 +98,7 @@ class Broadcast:
 
     `sender_seat` is the seat tag the bot signs its posts with; `sender_email` is only used to
     find that seat.  Neither the content nor any credential is here."""
+
     message_id: int
     sender_seat: str
     sender_email: str
@@ -275,14 +276,17 @@ def reminder_text(
 
     When the check could not run, the reason follows as a second line, in the same no-break
     space convention as every other sentence the fleet writes."""
-    first = "[%s\u00b7%s] %s used @all in #%s > %s (%s) and has not DMed you a reason within %d minutes." % (
-        alert_seat,
-        NOTE_TAG,
-        sender_seat,
-        L.escape_line(str(channel or ""), 60),
-        L.escape_line(str(topic or ""), 80),
-        permalink,
-        int(minutes),
+    first = (
+        "[%s\u00b7%s] %s used @all in #%s > %s (%s) and has not DMed you a reason within %d minutes."
+        % (
+            alert_seat,
+            NOTE_TAG,
+            sender_seat,
+            L.escape_line(str(channel or ""), 60),
+            L.escape_line(str(topic or ""), 80),
+            permalink,
+            int(minutes),
+        )
     )
     if not reason:
         return first

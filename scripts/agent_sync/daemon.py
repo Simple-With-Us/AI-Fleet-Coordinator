@@ -1768,11 +1768,7 @@ class Daemon:
         # exactly like the owner's now (owner, Oct 27 2026), so the same seats are blocked, and
         # the same line says so.  The owner's own `@all` in an OWNER topic keeps its old
         # behaviour (the fanout runs, no seat wakes there), which is why the topic stays excluded.
-        if (
-            first_seen
-            and self._broadcast_all(c)
-            and not c.owner_topic
-        ):
+        if first_seen and self._broadcast_all(c) and not c.owner_topic:
             threading.Thread(
                 target=self._log_broadcast_wake_unsupported,
                 args=(int(message["id"]),),
@@ -3189,11 +3185,7 @@ class Daemon:
         if c.owner:
             return bool(c.broadcast_all and not c.dm and not c.stale and not c.no_wake)
         return bool(
-            c.peer_broadcast
-            and not c.owner_topic
-            and not c.dm
-            and not c.stale
-            and not c.no_wake
+            c.peer_broadcast and not c.owner_topic and not c.dm and not c.stale and not c.no_wake
         )
 
     def _log_broadcast_wake_unsupported(self, message_id: int) -> None:
@@ -3254,17 +3246,10 @@ class Daemon:
         there is no inbox delivery for it either."""
         if c.owner:
             return bool(
-                (c.broadcast_all or c.everyone_inert)
-                and not c.dm
-                and not c.stale
-                and not c.no_wake
+                (c.broadcast_all or c.everyone_inert) and not c.dm and not c.stale and not c.no_wake
             )
         return bool(
-            c.peer_broadcast
-            and not c.owner_topic
-            and not c.dm
-            and not c.stale
-            and not c.no_wake
+            c.peer_broadcast and not c.owner_topic and not c.dm and not c.stale and not c.no_wake
         )
 
     def start_inbox_delivery(self, message: Mapping[str, Any], c: R.Classes) -> None:
@@ -3320,9 +3305,7 @@ class Daemon:
                 pass
             self._inbox_pending.pop(message_id, None)
 
-    def schedule_broadcast_audit(
-        self, message: Mapping[str, Any], c: R.Classes
-    ) -> None:
+    def schedule_broadcast_audit(self, message: Mapping[str, Any], c: R.Classes) -> None:
         """Remember a fleet bot's `@all` so the listener can ask the owner for a reason.
 
         One audit per message id:  the first seat that routes the message owns it, and a second
@@ -3406,7 +3389,10 @@ class Daemon:
         owner_id = int(self.config.owner_user_id)
         if owner_id <= 0:
             self.log.write(
-                "peer-broadcast-all", id=message_id, seat=seat, outcome=BAUD.REMINDER_FAILED,
+                "peer-broadcast-all",
+                id=message_id,
+                seat=seat,
+                outcome=BAUD.REMINDER_FAILED,
                 error="no_owner_id",
             )
             return
@@ -3426,7 +3412,9 @@ class Daemon:
                 http = IDEL.zulip_http(creds, self.realm)
             except Exception as exc:  # noqa: BLE001 - an unreadable vault is a reason, not a pass
                 reason = "its credentials could not be read (%s)" % type(exc).__name__
-        if http is None and not self._broadcast_rate.allow(broadcast.sender_seat or "unknown", self.clock.time()):
+        if http is None and not self._broadcast_rate.allow(
+            broadcast.sender_seat or "unknown", self.clock.time()
+        ):
             # The could-not-check reminder obeys the same per-seat cap as a checked one.
             verdict = BAUD.Verdict(BAUD.RATE_LIMITED)
         elif http is None:
@@ -3455,9 +3443,7 @@ class Daemon:
                 minutes=minutes,
             )
         if verdict.outcome in (BAUD.OWNER_CONTEXT, BAUD.EXPLAINED, BAUD.RATE_LIMITED):
-            self.log.write(
-                "peer-broadcast-all", id=message_id, seat=seat, outcome=verdict.outcome
-            )
+            self.log.write("peer-broadcast-all", id=message_id, seat=seat, outcome=verdict.outcome)
             return
         text = W.neutralize_mentions(verdict.text)
         found = secretscan.scan(text, self.hidden)
