@@ -421,9 +421,7 @@ class RepoTemplates(unittest.TestCase):
             self.assertEqual(data["StartInterval"], interval)
             self.assertTrue(data["RunAtLoad"])
             self.assertIn("--write", args)
-            self.assertTrue(
-                "/.local/state/fleet-tools/" in args[args.index("--write") + 1]
-            )
+            self.assertTrue("/.local/state/fleet-tools/" in args[args.index("--write") + 1])
 
 
 if __name__ == "__main__":
