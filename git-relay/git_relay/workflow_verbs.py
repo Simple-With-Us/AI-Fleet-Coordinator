@@ -473,9 +473,9 @@ class WorkflowVerbs:
         default_branch = repository.get("default_branch")
         if not isinstance(default_branch, str) or not default_branch or name == default_branch:
             raise Refused("default branch mutation refused")
-        path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='')}"
+        path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='/')}"
         try:
-            prior = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(name, safe='')}"))
+            prior = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(name, safe='/')}"))
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
@@ -517,9 +517,9 @@ class WorkflowVerbs:
         default_branch = repository.get("default_branch")
         if not isinstance(default_branch, str) or not default_branch or name == default_branch:
             raise Refused("default branch mutation refused")
-        path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='')}"
+        path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='/')}"
         try:
-            prior = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(name, safe='')}"))
+            prior = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(name, safe='/')}"))
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
@@ -541,7 +541,7 @@ class WorkflowVerbs:
         tag = _ref(args, "tag")
         sha = _sha(args, "sha")
         name = tag
-        path = f"/repos/{repo}/git/refs/tags/{quote(name, safe='')}"
+        path = f"/repos/{repo}/git/refs/tags/{quote(name, safe='/')}"
         path = f"/repos/{repo}/git/refs"
         data = self.client._call(
             "POST", path, {"ref": "refs/tags/" + name, "sha": sha}, bearer=self.bearer
@@ -567,7 +567,7 @@ class WorkflowVerbs:
         )
         tag = _ref(args, "tag")
         name = tag
-        path = f"/repos/{repo}/git/refs/tags/{quote(name, safe='')}"
+        path = f"/repos/{repo}/git/ref/tags/{quote(name, safe='/')}"
         data = self.client._call("GET", path, None, bearer=self.bearer)
         result = _obj(data)
         got_sha = _sub(result, "object").get("sha")
@@ -591,9 +591,9 @@ class WorkflowVerbs:
         tag = _ref(args, "tag")
         expected_sha = _sha(args, "expected_sha")
         name = tag
-        path = f"/repos/{repo}/git/refs/tags/{quote(name, safe='')}"
+        path = f"/repos/{repo}/git/refs/tags/{quote(name, safe='/')}"
         try:
-            prior = _obj(self._get(f"/repos/{repo}/git/ref/tags/{quote(name, safe='')}"))
+            prior = _obj(self._get(f"/repos/{repo}/git/ref/tags/{quote(name, safe='/')}"))
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None

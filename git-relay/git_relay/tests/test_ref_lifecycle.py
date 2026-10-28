@@ -25,7 +25,7 @@ class Refs(unittest.TestCase):
             h.run(action, args)
             self.assertEqual(c.calls[0][0], "GET")
             self.assertEqual(c.calls[1][0], "GET")
-            self.assertIn("/git/ref/heads/feature%2Fx", c.calls[1][1])
+            self.assertIn("/git/ref/heads/feature/x", c.calls[1][1])
             self.assertEqual(c.calls[2][0], "PATCH" if action.endswith("update") else "DELETE")
             if action.endswith("update"):
                 self.assertEqual(c.calls[2][2], {"sha": "b" * 40, "force": False})
@@ -59,3 +59,9 @@ class Refs(unittest.TestCase):
             h, c = self.handle(action, replies)
             h.run(action, {"repo": REPO, **args})
             self.assertEqual(c.calls[-1][0], method)
+
+    def test_tag_get_singular_endpoint_and_nested_name(self):
+        c = Client({"ref": "refs/tags/release/v1", "object": {"sha": SHA}})
+        h = WorkflowVerbs(c, Policy(), "swu-wise", "private", "swu-wise", "wf_tag_get", REPO)
+        h.run("wf_tag_get", {"repo": REPO, "tag": "release/v1"})
+        self.assertTrue(c.calls[0][1].endswith("/git/ref/tags/release/v1"))
