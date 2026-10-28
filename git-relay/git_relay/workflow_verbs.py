@@ -209,11 +209,27 @@ def _only(args, allowed):
         raise Refused("unexpected argument")
 
 
-_NEW_READS = frozenset({"wf_pr_get", "wf_pr_reviews", "wf_pr_comments", "wf_issue_comments", "wf_commit_get", "wf_compare", "wf_branch_get", "wf_repo_get", "wf_labels", "wf_workflows", "wf_run_get", "wf_run_artifacts"})
+_NEW_READS = frozenset(
+    {
+        "wf_pr_get",
+        "wf_pr_reviews",
+        "wf_pr_comments",
+        "wf_issue_comments",
+        "wf_commit_get",
+        "wf_compare",
+        "wf_branch_get",
+        "wf_repo_get",
+        "wf_labels",
+        "wf_workflows",
+        "wf_run_get",
+        "wf_run_artifacts",
+    }
+)
 
 
 def _validate_read(action, result):
     """Bound untrusted JSON and verify each newly exposed endpoint's core shape."""
+
     def bad():
         raise RelayGitHubError(502, "workflow read receipt unverifiable")
 
@@ -253,22 +269,132 @@ def _validate_read(action, result):
     text = lambda v: isinstance(v, str)
     sha = lambda v: isinstance(v, str) and bool(_SHA.fullmatch(v))
     boolean = lambda v: type(v) is bool
-    seq = lambda v, check, limit=50: isinstance(v, list) and len(v) <= limit and all(check(x) for x in v)
-    commit = lambda v: fields(v, {"sha": sha, "commit": lambda x: fields(x, {"message": text}), "parents": lambda x: seq(x, lambda y: fields(y, {"sha": sha}), 100)})
+    seq = lambda v, check, limit=50: (
+        isinstance(v, list) and len(v) <= limit and all(check(x) for x in v)
+    )
+    commit = lambda v: fields(
+        v,
+        {
+            "sha": sha,
+            "commit": lambda x: fields(x, {"message": text}),
+            "parents": lambda x: seq(x, lambda y: fields(y, {"sha": sha}), 100),
+        },
+    )
     comment = lambda v: fields(v, {"id": positive, "body": lambda x: text(x) and len(x) <= 32768})
     schemas = {
-        "wf_pr_get": {"pull": lambda v: fields(v, {"id": positive, "number": positive, "state": lambda x: x in ("open", "closed"), "head": lambda x: fields(x, {"sha": sha}), "base": lambda x: fields(x, {"sha": sha})})},
-        "wf_pr_reviews": {"reviews": lambda v: seq(v, lambda x: fields(x, {"id": positive, "state": text, "commit_id": sha})), "complete": boolean},
+        "wf_pr_get": {
+            "pull": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "number": positive,
+                    "state": lambda x: x in ("open", "closed"),
+                    "head": lambda x: fields(x, {"sha": sha}),
+                    "base": lambda x: fields(x, {"sha": sha}),
+                },
+            )
+        },
+        "wf_pr_reviews": {
+            "reviews": lambda v: seq(
+                v, lambda x: fields(x, {"id": positive, "state": text, "commit_id": sha})
+            ),
+            "complete": boolean,
+        },
         "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
         "wf_issue_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
         "wf_commit_get": {"commit": commit},
-        "wf_compare": {"comparison": lambda v: fields(v, {"status": text, "ahead_by": nonnegative, "behind_by": nonnegative, "total_commits": nonnegative, "commits": lambda x: seq(x, commit, 250)})},
-        "wf_branch_get": {"branch": lambda v: fields(v, {"name": lambda x: text(x) and bool(x), "commit": lambda x: fields(x, {"sha": sha})})},
-        "wf_repo_get": {"repository": lambda v: fields(v, {"id": positive, "name": lambda x: text(x) and bool(x), "full_name": lambda x: text(x) and len(x) >= 3, "default_branch": lambda x: text(x) and bool(x), "private": boolean})},
-        "wf_labels": {"labels": lambda v: seq(v, lambda x: fields(x, {"id": positive, "name": text, "color": lambda y: text(y) and bool(re.fullmatch(r"[0-9a-fA-F]{6}", y))})), "complete": boolean},
-        "wf_workflows": {"workflows": lambda v: fields(v, {"total_count": nonnegative, "workflows": lambda x: seq(x, lambda y: fields(y, {"id": positive, "name": text, "path": text, "state": text}))})},
-        "wf_run_get": {"run": lambda v: fields(v, {"id": positive, "head_sha": sha, "status": text, "conclusion": lambda x: x is None or text(x)})},
-        "wf_run_artifacts": {"artifacts": lambda v: fields(v, {"total_count": nonnegative, "artifacts": lambda x: seq(x, lambda y: fields(y, {"id": positive, "name": text, "size_in_bytes": nonnegative, "expired": boolean}))})},
+        "wf_compare": {
+            "comparison": lambda v: fields(
+                v,
+                {
+                    "status": text,
+                    "ahead_by": nonnegative,
+                    "behind_by": nonnegative,
+                    "total_commits": nonnegative,
+                    "commits": lambda x: seq(x, commit, 250),
+                },
+            )
+        },
+        "wf_branch_get": {
+            "branch": lambda v: fields(
+                v,
+                {
+                    "name": lambda x: text(x) and bool(x),
+                    "commit": lambda x: fields(x, {"sha": sha}),
+                },
+            )
+        },
+        "wf_repo_get": {
+            "repository": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "name": lambda x: text(x) and bool(x),
+                    "full_name": lambda x: text(x) and len(x) >= 3,
+                    "default_branch": lambda x: text(x) and bool(x),
+                    "private": boolean,
+                },
+            )
+        },
+        "wf_labels": {
+            "labels": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "name": text,
+                        "color": lambda y: text(y) and bool(re.fullmatch(r"[0-9a-fA-F]{6}", y)),
+                    },
+                ),
+            ),
+            "complete": boolean,
+        },
+        "wf_workflows": {
+            "workflows": lambda v: fields(
+                v,
+                {
+                    "total_count": nonnegative,
+                    "workflows": lambda x: seq(
+                        x,
+                        lambda y: fields(
+                            y, {"id": positive, "name": text, "path": text, "state": text}
+                        ),
+                    ),
+                },
+            )
+        },
+        "wf_run_get": {
+            "run": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "head_sha": sha,
+                    "status": text,
+                    "conclusion": lambda x: x is None or text(x),
+                },
+            )
+        },
+        "wf_run_artifacts": {
+            "artifacts": lambda v: fields(
+                v,
+                {
+                    "total_count": nonnegative,
+                    "artifacts": lambda x: seq(
+                        x,
+                        lambda y: fields(
+                            y,
+                            {
+                                "id": positive,
+                                "name": text,
+                                "size_in_bytes": nonnegative,
+                                "expired": boolean,
+                            },
+                        ),
+                    ),
+                },
+            )
+        },
     }
     shape = schemas[action]
     if not isinstance(result, dict) or set(result) != set(shape):

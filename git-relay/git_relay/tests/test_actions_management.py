@@ -23,7 +23,9 @@ class ActionsManagement(unittest.TestCase):
         ]
         for action, key, method, path in cases:
             c = Client({})
-            h = WorkflowVerbs(c, FixturePolicy(), "fixture-seat", "private", "fixture-seat", action, REPO)
+            h = WorkflowVerbs(
+                c, FixturePolicy(), "fixture-seat", "private", "fixture-seat", action, REPO
+            )
             self.assertEqual(
                 h.run(action, {"repo": REPO, key: 7}),
                 {

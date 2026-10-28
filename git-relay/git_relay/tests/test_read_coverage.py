@@ -22,12 +22,48 @@ CASES = [
         {"status": "ahead", "ahead_by": 0, "behind_by": 0, "total_commits": 0, "commits": []},
         "comparison",
     ),
-    ("wf_branch_get", {"branch": "feature/x"}, "/branches/feature%2Fx", {"name":"feature/x","commit":{"sha":SHA}}, "branch"),
-    ("wf_repo_get", {}, "", {"id":1,"name":"fixture","full_name":"fixture-org/fixture","default_branch":"main","private":True}, "repository"),
+    (
+        "wf_branch_get",
+        {"branch": "feature/x"},
+        "/branches/feature%2Fx",
+        {"name": "feature/x", "commit": {"sha": SHA}},
+        "branch",
+    ),
+    (
+        "wf_repo_get",
+        {},
+        "",
+        {
+            "id": 1,
+            "name": "fixture",
+            "full_name": "fixture-org/fixture",
+            "default_branch": "main",
+            "private": True,
+        },
+        "repository",
+    ),
     ("wf_labels", {}, "/labels?per_page=30", [], "labels"),
-    ("wf_workflows", {}, "/actions/workflows?per_page=30", {"total_count":0,"workflows":[]}, "workflows"),
-    ("wf_run_get", {"run_id": 9}, "/actions/runs/9", {"id":9,"head_sha":SHA,"status":"completed","conclusion":"success"}, "run"),
-    ("wf_run_artifacts", {"run_id": 9}, "/actions/runs/9/artifacts?per_page=30", {"total_count":0,"artifacts":[]}, "artifacts"),
+    (
+        "wf_workflows",
+        {},
+        "/actions/workflows?per_page=30",
+        {"total_count": 0, "workflows": []},
+        "workflows",
+    ),
+    (
+        "wf_run_get",
+        {"run_id": 9},
+        "/actions/runs/9",
+        {"id": 9, "head_sha": SHA, "status": "completed", "conclusion": "success"},
+        "run",
+    ),
+    (
+        "wf_run_artifacts",
+        {"run_id": 9},
+        "/actions/runs/9/artifacts?per_page=30",
+        {"total_count": 0, "artifacts": []},
+        "artifacts",
+    ),
 ]
 
 
@@ -54,9 +90,14 @@ class ReadCoverage(unittest.TestCase):
             )
 
     def test_new_reads_reject_empty_and_nested_invalid_receipts(self):
-        from git_relay.workflow_verbs import _validate_read
         from git_relay.github_client import RelayGitHubError
+        from git_relay.workflow_verbs import _validate_read
 
-        for action, result in [("wf_pr_get", {"pull": {}}), ("wf_pr_reviews", {"reviews": [None], "complete": False}), ("wf_workflows", {"workflows": {"arbitrary": True}}), ("wf_run_artifacts", {"artifacts": {"total_count": 1, "artifacts": [{}]}})]:
+        for action, result in [
+            ("wf_pr_get", {"pull": {}}),
+            ("wf_pr_reviews", {"reviews": [None], "complete": False}),
+            ("wf_workflows", {"workflows": {"arbitrary": True}}),
+            ("wf_run_artifacts", {"artifacts": {"total_count": 1, "artifacts": [{}]}}),
+        ]:
             with self.assertRaises(RelayGitHubError):
                 _validate_read(action, result)
