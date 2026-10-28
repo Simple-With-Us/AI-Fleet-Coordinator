@@ -255,7 +255,9 @@ def _tool_failure(message, code, status=None, retryable=False):
     # Provider prose can contain private details.  Return only stable local
     # guidance and the HTTP status, never the response body or credentials.
     if code == "outcome_unknown":
-        detail = "The write outcome is unknown.  Do not retry blindly; check the target state first."
+        detail = (
+            "The write outcome is unknown.  Do not retry blindly; check the target state first."
+        )
     elif code == "unavailable":
         detail = "Relay reports a retryable pre-write failure.  Nothing was written."
     else:
