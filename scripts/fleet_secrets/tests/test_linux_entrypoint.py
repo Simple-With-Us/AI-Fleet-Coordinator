@@ -40,9 +40,7 @@ class BootstrapTests(unittest.TestCase):
         directory = directory or SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFDIR | 0o700)
         file = file or SimpleNamespace(st_uid=0, st_gid=0, st_mode=stat.S_IFREG | 0o600, st_nlink=1)
         stack.enter_context(
-            mock.patch.object(
-                entry.core.os, "fstat", side_effect=[directory] * 3 + [file]
-            )
+            mock.patch.object(entry.core.os, "fstat", side_effect=[directory] * 3 + [file])
         )
         stream = io.StringIO(json.dumps(PAIR) if payload is None else payload)
         stack.enter_context(mock.patch.object(entry.core.os, "fdopen", return_value=stream))
