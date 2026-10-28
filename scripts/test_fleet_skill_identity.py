@@ -156,6 +156,11 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn("Platform Defaults", out_sess)
         self.assertIn("`[<YOUR_TAG>·session8]` tag", out_sess)
         self.assertIn("<seat>/<slug>", out_sess)
+        self.assertNotRegex(
+            out_sess,
+            r"e\.g\.\u00a0",
+            "non-terminal abbreviation e.g. must not take a sentence gap",
+        )
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
 
         out_not = specialize_universal(_notes(), skill_name="apple-notes")

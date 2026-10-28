@@ -491,7 +491,12 @@ PERL
 perl -CSDA -0777 -p gap.pl body.txt > body.nbsp.txt
 perl -CSDA -0777 -p gap.pl body.nbsp.txt > body.check.txt
 cmp body.nbsp.txt body.check.txt     # must be silent:  the program is idempotent
-rm -f gap.pl body.check.txt
+
+perl -CSDA -0777 -p gap.pl --entity body.txt > body.entity.txt
+perl -CSDA -0777 -p gap.pl --entity body.entity.txt > body.check.txt
+cmp body.entity.txt body.check.txt   # must be silent:  entity mode is idempotent too
+
+rm -f gap.pl body.check.txt body.entity.txt
 ```
 
 The program also lives in the checkout at `scripts/sentence_gap_convert.pl`, and the copy above is

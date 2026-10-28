@@ -15,19 +15,19 @@ Do not change DNS, buy domains, mint Cloudflare accounts, install products, or s
 
 **Usage.Jays.Services is a Cloudflare account name**.  It is not a zone and not a hostname.  `usage.jays.services` is an already-live hostname.  `jays.services` is an existing DNS-only zone.
 
-A new app such as ContactLogo gets its **own** new Cloudflare zone for that apex (`contactlogo.com`), created on account Usage.Jays.Services.  Do not put ContactLogo — or any new app — records on `usage.jays.services` or `jays.services`.
+Each new app gets its **own** new Cloudflare zone for that app's apex on account Usage.Jays.Services.  Do not attach a new app's records to `usage.jays.services` or `jays.services`.
 
 | Term | Example |
 |------|---------|
 | **Account** | Usage.Jays.Services |
-| **New zone** | `contactlogo.com` on that account |
+| **New zone** | `example.com` on that account |
 | **Do not use as the new-app zone** | `usage.jays.services`, `jays.services` |
 
 ## Default for a new DNS-only zone
 
 App hosted on Vercel, Coolify, or elsewhere, with no Workers / R2 / WAF / other Cloudflare products: create a **new zone for that app's apex** on the **Usage.Jays.Services** account.
 
-Example (ContactLogo): add zone `contactlogo.com` on account Usage.Jays.Services, then move Namecheap nameservers (`dns1.registrar-servers.com` / `dns2.registrar-servers.com`) to the nameservers Cloudflare shows for that new zone.
+Example: add zone `example.com` on account Usage.Jays.Services, then move Namecheap nameservers (`dns1.registrar-servers.com` / `dns2.registrar-servers.com`) to the nameservers Cloudflare shows for that new zone.
 
 If an app later needs extra Cloudflare services, create a dedicated Cloudflare account for that app and migrate its zone(s) there.  Do not pile product services onto the Usage.Jays.Services account.
 
@@ -46,7 +46,7 @@ Each account's login, and the zones each account holds, are private inventory in
 
 | Registrar | Use for |
 |-----------|---------|
-| Namecheap | Default for most domains.  `NAMECHEAP_API_KEY` lives in Infisical Fleet-OPS via `fleet-secrets` (do not print or commit it). |
+| Namecheap | Default for most domains.  `NAMECHEAP_API_KEY` is in Infisical Fleet-OPS: read the process environment first when it already holds the value, and use `fleet-secrets get NAMECHEAP_API_KEY` only as the approved fallback (never print or commit it). |
 | UnstoppableDomains | `jays.services` only |
 | Cloudflare registrar | SocraticTrade.com and Socratic.Trade only (the ST Cloudflare account) |
 

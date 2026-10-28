@@ -493,6 +493,17 @@ class ProgramBehaviourTests(unittest.TestCase):
             "the checkout's program and the pack's copy no longer agree",
         )
 
+    def test_the_checkout_program_agrees_with_the_pack_copy_in_entity_mode(self) -> None:
+        """The pack's embedded program must match the checkout in entity mode too."""
+        match = _HEREDOC_RE.search((ROOT / SURFACES[0]).read_text(encoding="utf-8"))
+        self.assertIsNotNone(match, "%s embeds no program" % SURFACES[0])
+        body = "Plain sentence.  Next sentence.\n"
+        self.assertEqual(
+            run_program(program_text(), body, "--entity"),
+            run_program(match.group("program"), body, "--entity"),
+            "the checkout's program and the pack's copy disagree in entity mode",
+        )
+
     def test_the_program_holds_a_fence_that_is_never_closed(self) -> None:
         """An unclosed fence holds the rest of the body, so the rest is not converted.
 
