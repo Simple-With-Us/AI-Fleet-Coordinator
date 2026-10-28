@@ -1454,6 +1454,7 @@ export async function gbBearerStatus(store, now = Date.now()) {
     active: Number(row.expires_at) > now,
     expired: Number(row.expires_at) <= now,
     mcp_accept: row.mcp_accept === true,
+    mcp_accept_recorded: typeof row.mcp_accept === "boolean",
     created_at: Number(row.created_at) || 0,
     created_by: String(row.created_by ?? ""),
     expires_at: Number(row.expires_at) || 0,
