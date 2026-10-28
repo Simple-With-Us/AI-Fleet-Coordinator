@@ -514,6 +514,7 @@ class Relay:
 _REAPPLY_STATE_ACTIONS = frozenset(
     {
         "wf_issue_update",
+        "wf_review_update",
         "wf_labels_set",
         "wf_reviewers_request",
         "wf_reviewers_remove",
@@ -530,7 +531,7 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_pr_ready",
         "wf_automerge_enable",
         "wf_automerge_disable",
-        "wf_asset_update",
+        "wf_release_asset_update",
     }
 )
 
@@ -552,6 +553,7 @@ _WORKFLOW_AUDIT_SCALARS = (
     "sha",
     "expected_sha",
     "comment_id",
+    "review_id",
     "release_id",
     "asset_id",
     "workflow_id",
