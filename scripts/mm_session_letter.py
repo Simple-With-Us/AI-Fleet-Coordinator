@@ -93,12 +93,31 @@ def registry_db() -> str:
 
 
 def repo_scripts_dir() -> str:
-    """This host's checkout of the fleet scripts, where the registry CLI lives."""
-    for candidate in (
-        os.path.join(os.path.expanduser("~"), "Code", REPO_REL),
-        os.path.join("/mnt/fleet-extra/Code", REPO_REL),
-    ):
-        if os.path.isdir(candidate):
+    """This host's checkout of the fleet scripts, where the registry CLI lives.
+
+    The checkout is host configuration, so the host names it and this file never
+    writes a path:  the code root comes from the environment, the fleet's code root
+    sits beside its apps root, the Mac has its own layout, and a checkout running
+    this script is its own parent.
+    """
+    candidates = []
+    code_root = os.environ.get("FLEET_CODE_ROOT", "").strip()
+    if code_root:
+        candidates.append(os.path.join(code_root, "AI-Fleet-Coordinator", "scripts"))
+    apps_root = os.environ.get("FLEET_APPS_ROOT", "").strip()
+    if apps_root:
+        candidates.append(
+            os.path.join(os.path.dirname(apps_root), "Code", "AI-Fleet-Coordinator", "scripts")
+        )
+    candidates.append(
+        os.path.join(os.path.expanduser("~"), "Code", "AI-Fleet-Coordinator", "scripts")
+    )
+    # A checkout running this script:  the scripts sit beside it.
+    candidates.append(os.path.dirname(os.path.realpath(__file__)))
+    for candidate in candidates:
+        if os.path.isdir(candidate) and os.path.isfile(
+            os.path.join(candidate, "agent_sync", "operator_registry.py")
+        ):
             return candidate
     return ""
 
@@ -174,9 +193,11 @@ def register(session_id: str, title: str = "", space: str = "single") -> dict:
         SEAT,
         "--source",
         "the MM seat's session-letter hook",
-        "--letter-space",
-        space,
     ]
+    if space != "single":
+        # Only the double space is asked for:  the single space is the default of every
+        # registry CLI, so a conversation's registration still answers an older one.
+        args += ["--letter-space", space]
     if title:
         _scan_title(title)
         args += ["--title", title]
