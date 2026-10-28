@@ -42,8 +42,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # FLEET-PROTOCOL.md is excluded because it is a Fleet-OPS mirror:  it is generated from
 # the Fleet-OPS handbook, which carries the same fix, so this repo does not edit it.
-# FLEET-UI-COPY.md is excluded because it is owned by open PR #904, which carries the
-# same fix there; editing it here would collide with that pull request.
+# FLEET-UI-COPY.md is excluded for the same reason:  it is a Fleet-OPS mirror, generated
+# from the Fleet-OPS handbook, so this repo does not edit it.  PR #904, which used to own
+# that fix here, merged on 2026-10-24.  The gate can only take the file in once the
+# handbook gives its one stale line a history marker, and that marker is authored there.
 # The Cursor rule is not listed here:  like the canonical sentence-gap skill it keeps
 # the 2026-08-19/20 findings block, which records what was found that day rather than
 # prescribing a rule, so the stale-split scan would read that block as a prescription.
