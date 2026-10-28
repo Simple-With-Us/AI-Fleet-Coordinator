@@ -937,6 +937,13 @@ class ServiceTests(unittest.TestCase):
                     ("docker@backup.service", "system", False),
                 ],
             )
+            # The report reads a larger file than the helper will,  and the helper's own
+            # size limit wins.
+            padded = dict(good, pad="x" * (70 * 1024))
+            self.assertEqual(
+                [row[2] for row in collector.control_units(self.control(tmp, padded))],
+                [False, False],
+            )
             # A helper that cannot be loaded acts on nothing.
             absent = Path(tmp) / "absent.py"
             self.assertEqual(

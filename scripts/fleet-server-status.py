@@ -743,7 +743,7 @@ def control_units(path=DEFAULT_CONTROL, controller=DEFAULT_CONTROLLER):
     entries = server.get("units")
     if not isinstance(entries, list):
         return []
-    accepted = accepted_units(document, controller)
+    accepted = accepted_units(path, controller)
     units = []
     seen = set()
     for entry in entries:
@@ -760,10 +760,10 @@ def control_units(path=DEFAULT_CONTROL, controller=DEFAULT_CONTROLLER):
     return units
 
 
-def accepted_units(document, controller=DEFAULT_CONTROLLER):
-    """{unit: scope} for the units the control helper accepts in this allowlist.
+def accepted_units(path, controller=DEFAULT_CONTROLLER):
+    """{unit: scope} for the units the control helper accepts in the allowlist at `path`.
 
-    The helper's own `validate_config` decides,  so this reader can never be wider than
+    The helper's own `load_config` decides,  so this reader can never be wider than
     it.  The helper refuses the whole file for one bad entry,  and a helper that cannot
     be loaded acts on nothing,  so either way the answer is no units.
     """
@@ -771,10 +771,12 @@ def accepted_units(document, controller=DEFAULT_CONTROLLER):
         spec = importlib.util.spec_from_file_location("fleet_ops_control", controller)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-    except (OSError, ImportError, SyntaxError, AttributeError):
+    except Exception:  # noqa: BLE001 - a helper that will not load acts on nothing
         return {}
     try:
-        verdict = module.validate_config(document)
+        # `load_config`, not just `validate_config`: the helper's own size and file checks
+        # count too.
+        verdict = module.load_config(path)
     except Exception:  # noqa: BLE001 - anything the helper raises is a refusal
         return {}
     return {unit: entry["scope"] for unit, entry in verdict["units"].items()}

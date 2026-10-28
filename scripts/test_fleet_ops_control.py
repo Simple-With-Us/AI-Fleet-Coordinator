@@ -494,6 +494,10 @@ class RedeployTests(Base):
             ("https://127.0.0.1.example.test", False),
             ("http://localhost:8000/api", False),
             ("http://user@localhost:8000", False),
+            ("http://@127.0.0.1:8000", False),
+            ("http://127.0.0.1:8000#", False),
+            ("http://127.0.0.1:8000?", False),
+            ("http://[::1:8000", False),
             ("http://localhost:notaport", False),
             ("file:///etc/passwd", False),
         ):

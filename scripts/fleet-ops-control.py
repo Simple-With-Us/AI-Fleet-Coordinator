@@ -441,8 +441,12 @@ def coolify_base(ctx):
     may change the scheme or the port, never the host, so no environment can carry the
     token to another machine."""
     base = (ctx.environ.get("COOLIFY_BASE_URL") or COOLIFY_DEFAULT_BASE).strip().rstrip("/")
-    parts = urllib.parse.urlsplit(base)
+    # The path is appended to the base as text, so an empty query or fragment (`?`, `#`)
+    # or empty userinfo (`@`) would move it; none of them belongs in an origin.
+    if any(c in base for c in "@?#"):
+        raise Refused("COOLIFY_BASE_URL must be a loopback origin")
     try:
+        parts = urllib.parse.urlsplit(base)
         parts.port
     except ValueError:
         raise Refused("COOLIFY_BASE_URL must be a loopback origin") from None
@@ -450,10 +454,6 @@ def coolify_base(ctx):
         parts.scheme not in ("http", "https")
         or parts.hostname not in ("127.0.0.1", "localhost", "::1")
         or parts.path
-        or parts.query
-        or parts.fragment
-        or parts.username
-        or parts.password
     ):
         raise Refused("COOLIFY_BASE_URL must be a loopback origin")
     return base
