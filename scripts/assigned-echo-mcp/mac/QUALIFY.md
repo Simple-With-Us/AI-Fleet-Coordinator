@@ -1,6 +1,9 @@
 # Mac native qualification gate
 
-UNCOMPILED SOURCE until Echo's single existing Mac host lane runs compile-only.sh.
+Echo's single existing Mac host lane reports compile-only PASS for exact8173fbab:
+helper and isolated fixture build with -Wall -Wextra -Werror. The linker ad hoc
+ARM64 artifact has no Developer ID/TeamIdentifier. This closes the compile/ABI
+block only, not signature, ACL, storage or runtime qualification.
 That harness compiles and inspects an unsigned temporary binary only, then removes
 it. It neither signs nor installs, opens the Keychain, provisions an item or reads
 a secret. Native APIs are deprecated but supported legacy login-Keychain APIs;
