@@ -134,7 +134,9 @@ class InfisicalTests(T.BoardTest):
     def legacy_host(self, **extra):
         """A server or cloud host:  no fleet-secrets, so the pair comes from the environment (AFC-473).  Such
         a host cannot verify a seat bearer, so it runs without an identity:  reads use the shared Fleet app."""
-        return dict({"LINEAR_BOARD_FLEET_SECRETS": str(self.tmp / "no-such-fleet-secrets")}, **extra)
+        return dict(
+            {"LINEAR_BOARD_FLEET_SECRETS": str(self.tmp / "no-such-fleet-secrets")}, **extra
+        )
 
     def fleet_env(self):
         """The shared Fleet app's pair in the environment, as a host with no fleet-secrets must export it."""
@@ -147,7 +149,8 @@ class InfisicalTests(T.BoardTest):
         p = self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(**self.fleet_env()))
         self.assertIn("viewer:      Fleet (app user)", p.stdout)
         self.assertIn(
-            "credentials: environment (LINEAR_FLEET_CLIENT_ID, LINEAR_FLEET_CLIENT_SECRET)", p.stdout
+            "credentials: environment (LINEAR_FLEET_CLIENT_ID, LINEAR_FLEET_CLIENT_SECRET)",
+            p.stdout,
         )
         self.assertIn(
             "token store: Infisical AI Fleet Coordinator prod /linear LINEAR_FLEET_CACHE_TOKEN (no token on disk)",
@@ -174,7 +177,9 @@ class InfisicalTests(T.BoardTest):
         second = json.loads(self.vault.secrets["LINEAR_FLEET_CACHE_TOKEN"])
         self.assertNotEqual(second["access_token"], first["access_token"])
 
-    def test_a_host_without_fleet_secrets_and_without_a_pair_fails_closed_naming_the_variables(self):
+    def test_a_host_without_fleet_secrets_and_without_a_pair_fails_closed_naming_the_variables(
+        self,
+    ):
         p = self.board("whoami", drop=("AGENT_SEAT",), extra=self.legacy_host(), code=4)
         self.assertIn("FLEET_LINEAR_CLIENT_ID", p.stderr)
         self.assertIn("LINEAR_FLEET_CLIENT_ID", p.stderr)
@@ -191,10 +196,10 @@ class InfisicalTests(T.BoardTest):
             p.stdout,
         )
         # the loader was asked for that project by name, and the direct Infisical call was never made
-        self.assertIn(
-            "get LINEAR_CLAUDE_CLIENT_ID --project ai-fleet-coordinator", self.fs_verbs()
+        self.assertIn("get LINEAR_CLAUDE_CLIENT_ID --project ai-fleet-coordinator", self.fs_verbs())
+        self.assertEqual(
+            [r for r in self.vault.requests if r[1].startswith("/api/v3/secrets/raw")], []
         )
-        self.assertEqual([r for r in self.vault.requests if r[1].startswith("/api/v3/secrets/raw")], [])
 
     def test_the_environment_pair_beats_the_stored_pair(self):
         cid, secret = self.seat_app("CLAUDE", "Claude", file=False)
@@ -209,10 +214,13 @@ class InfisicalTests(T.BoardTest):
             },
         )
         self.assertIn(
-            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)", p.stdout
+            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)",
+            p.stdout,
         )
         # the stored pair was never read:  the environment came first
-        self.assertEqual([v for v in self.fs_verbs() if v.startswith("get LINEAR_CLAUDE_CLIENT_ID")], [])
+        self.assertEqual(
+            [v for v in self.fs_verbs() if v.startswith("get LINEAR_CLAUDE_CLIENT_ID")], []
+        )
 
     def test_identity_from_fleet_secrets_when_not_in_the_environment(self):
         cid, secret = self.seat_app("CLAUDE", "Claude", file=False)

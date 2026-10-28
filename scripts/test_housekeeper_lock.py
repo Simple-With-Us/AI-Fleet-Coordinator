@@ -24,7 +24,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -71,7 +70,7 @@ def _canonical_text() -> str:
 
 def _blocks(text: str) -> list:
     """Every bash block in the skill, in document order."""
-    return re.findall(r"```bash\n(.*?)```", text, re.S)
+    return re.findall(r"```bash\n(.*?)```", text, re.DOTALL)
 
 
 def _remote_block(text: str) -> str:
@@ -159,9 +158,7 @@ class _LockRunTest(unittest.TestCase):
         full = dict(os.environ)
         full["PATH"] = "%s%s%s" % (self.bin, os.pathsep, full.get("PATH", ""))
         full.update(env)
-        return subprocess.run(
-            ["bash", "-c", block], capture_output=True, text=True, env=full
-        )
+        return subprocess.run(["bash", "-c", block], capture_output=True, text=True, env=full)
 
 
 class RemoteLockBehaviourTest(_LockRunTest):

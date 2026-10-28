@@ -3244,27 +3244,43 @@ class SeatAppTests(BoardTest):
     def test_the_environment_seat_pair_wins_over_the_stored_one(self):
         """AFC-473:  the process environment is consulted first, so an exported pair beats the stored one."""
         self.seat_app("CLAUDE", "Claude")
-        envs = {"LINEAR_CLAUDE_CLIENT_ID": "env-claude-id", "LINEAR_CLAUDE_CLIENT_SECRET": "env-claude-secret"}
+        envs = {
+            "LINEAR_CLAUDE_CLIENT_ID": "env-claude-id",
+            "LINEAR_CLAUDE_CLIENT_SECRET": "env-claude-secret",
+        }
         self.mock.add_client("env-claude-id", "env-claude-secret", "Claude")
         p = self.as_seat("CLAUDE", "whoami", extra=envs)
         self.assertIn(
-            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)", p.stdout
+            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)",
+            p.stdout,
         )
-        self.assertNotIn("credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID", p.stdout)
+        self.assertNotIn(
+            "credentials: Infisical Fleet-OPS prod /linear (CLAUDE_LINEAR_CLIENT_ID", p.stdout
+        )
         # the stored pair was never read:  the environment came first
-        self.assertEqual([v for v in self.fs_verbs() if v.startswith("get CLAUDE_LINEAR_CLIENT_ID")], [])
+        self.assertEqual(
+            [v for v in self.fs_verbs() if v.startswith("get CLAUDE_LINEAR_CLIENT_ID")], []
+        )
         self.assertEqual(self.mock.mints_by, {"env-claude-id": 1})
 
     def test_the_environment_fleet_pair_wins_over_the_stored_one(self):
         """AFC-473:  the shared app's environment pair beats the stored Fleet-OPS pair."""
-        envs = {"LINEAR_FLEET_CLIENT_ID": "env-fleet-id", "LINEAR_FLEET_CLIENT_SECRET": "env-fleet-secret"}
+        envs = {
+            "LINEAR_FLEET_CLIENT_ID": "env-fleet-id",
+            "LINEAR_FLEET_CLIENT_SECRET": "env-fleet-secret",
+        }
         self.mock.add_client("env-fleet-id", "env-fleet-secret", "Fleet")
         p = self.as_seat("CLAUDE", "whoami", extra=envs)
         self.assertIn(
-            "credentials: environment (LINEAR_FLEET_CLIENT_ID, LINEAR_FLEET_CLIENT_SECRET)", p.stdout
+            "credentials: environment (LINEAR_FLEET_CLIENT_ID, LINEAR_FLEET_CLIENT_SECRET)",
+            p.stdout,
         )
-        self.assertNotIn("credentials: Infisical Fleet-OPS prod /linear (FLEET_LINEAR_CLIENT_ID", p.stdout)
-        self.assertEqual([v for v in self.fs_verbs() if v.startswith("get FLEET_LINEAR_CLIENT_ID")], [])
+        self.assertNotIn(
+            "credentials: Infisical Fleet-OPS prod /linear (FLEET_LINEAR_CLIENT_ID", p.stdout
+        )
+        self.assertEqual(
+            [v for v in self.fs_verbs() if v.startswith("get FLEET_LINEAR_CLIENT_ID")], []
+        )
         self.assertEqual(self.mock.mints_by, {"env-fleet-id": 1})
 
     def test_the_ai_fleet_folder_is_read_through_fleet_secrets_with_the_project(self):
@@ -3297,7 +3313,8 @@ class SeatAppTests(BoardTest):
         p = self.as_seat("CLAUDE", "whoami", extra=envs)
         self.assertIn("identity:    Claude (the CLAUDE seat's own Linear app)", p.stdout)
         self.assertIn(
-            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)", p.stdout
+            "credentials: environment (LINEAR_CLAUDE_CLIENT_ID, LINEAR_CLAUDE_CLIENT_SECRET)",
+            p.stdout,
         )
 
     def test_cloud_pair_wins_and_may_hold_fleet_or_the_seat_app(self):
