@@ -2416,7 +2416,7 @@ class GuardedBlockSyntaxTests(unittest.TestCase):
     lock the prose describes.
     """
 
-    FENCE = re.compile(r"```[a-zA-Z0-9_-]*\n(.*?)```", re.S)
+    FENCE = re.compile(r"```[a-zA-Z0-9_-]*\n(.*?)```", re.DOTALL)
     GUARD = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}]*\}")
 
     def _texts(self):
@@ -2436,8 +2436,10 @@ class GuardedBlockSyntaxTests(unittest.TestCase):
         for path, text in self._texts():
             for match in self.GUARD.finditer(text):
                 if "'" in match.group(0) or '"' in match.group(0):
-                    line = text[:match.start()].count("\n") + 1
-                    offenders.append("%s:%d %s" % (os.path.relpath(path, ROOT), line, match.group(0)))
+                    line = text[: match.start()].count("\n") + 1
+                    offenders.append(
+                        "%s:%d %s" % (os.path.relpath(path, ROOT), line, match.group(0))
+                    )
         self.assertEqual(
             offenders,
             [],
