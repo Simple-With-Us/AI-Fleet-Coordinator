@@ -6,9 +6,9 @@ import json
 import os
 import subprocess
 import tempfile
-from pathlib import Path
 import unittest
 import urllib.error
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
     "adapter", Path(__file__).with_name("assigned-hosted-stdio.py")
@@ -111,7 +111,7 @@ class AdapterTests(unittest.TestCase):
         for exc in cases:
             calls = []
 
-            def opener(*a, **kw):
+            def opener(*a, calls=calls, exc=exc, **kw):
                 calls.append(1)
                 raise exc
 
@@ -131,7 +131,9 @@ class AdapterTests(unittest.TestCase):
             b'{"jsonrpc":"2.0","id":8,"result":{}}',
         ]
         for raw in cases:
-            result = mod.Adapter(TOKEN, lambda *a, **kw: Response(raw)).call(self.message())
+            result = mod.Adapter(TOKEN, lambda *a, raw=raw, **kw: Response(raw)).call(
+                self.message()
+            )
             self.assertTrue(result["result"]["isError"])
             self.assertNotIn(TOKEN, json.dumps(result))
         raw = b'data: {"jsonrpc":"2.0","id":7,"result":{}}\n\n' * 2

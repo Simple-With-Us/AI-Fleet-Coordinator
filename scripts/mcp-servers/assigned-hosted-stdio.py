@@ -80,10 +80,9 @@ class Adapter:
         params = message.get("params")
         if message.get("method") == "tools/call" and isinstance(params, dict):
             args = params.get("arguments")
-            if isinstance(args, dict) and "identity" in args:
-                # No alias selection: the hosted server independently enforces its own binding.
-                if args["identity"] != self.identity:
-                    return failure(message, "identity_not_allowed")
+            # No alias selection: the hosted server independently enforces its binding.
+            if isinstance(args, dict) and "identity" in args and args["identity"] != self.identity:
+                return failure(message, "identity_not_allowed")
         if message.get("method") == "tools/call" and isinstance(params, dict):
             args = params.get("arguments", {})
             if isinstance(args, dict):
