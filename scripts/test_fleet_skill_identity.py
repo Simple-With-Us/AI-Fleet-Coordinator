@@ -1295,21 +1295,13 @@ class AlwaysOnRuleFileTests(unittest.TestCase):
             if name.endswith(".mdc")
         )
         self.assertTrue(repo_rules, "no repo cursor rules found to check")
-        mapped = {
-            rel
-            for rules in self.installer.ALWAYS_ON_RULE_FILES.values()
-            for rel in rules
-        }
+        mapped = {rel for rules in self.installer.ALWAYS_ON_RULE_FILES.values() for rel in rules}
         for rel in repo_rules:
             self.assertIn(rel, mapped, f"{rel} is not installed to a tool home")
 
     def test_the_installed_gap_rule_is_the_current_one(self) -> None:
         rel = ".cursor/rules/sentence-gap.mdc"
-        mapped = {
-            rule
-            for rules in self.installer.ALWAYS_ON_RULE_FILES.values()
-            for rule in rules
-        }
+        mapped = {rule for rules in self.installer.ALWAYS_ON_RULE_FILES.values() for rule in rules}
         self.assertIn(rel, mapped)
         with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
             body = fh.read()
