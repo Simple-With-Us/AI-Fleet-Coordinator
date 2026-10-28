@@ -283,9 +283,9 @@ class WorkflowVerbs:
             not isinstance(data, dict)
             or "pull_request" in data
             or type(data.get("id")) is not int
-            or data["id"] < 1
+            or not 1 <= data["id"] <= 9007199254740991
             or type(data.get("number")) is not int
-            or data["number"] < 1
+            or not 1 <= data["number"] <= 9007199254740991
             or not isinstance(data.get("title"), str)
             or len(data["title"].encode("utf-8")) > 4096
             or data.get("state") not in ("open", "closed")
@@ -389,7 +389,7 @@ class WorkflowVerbs:
             not isinstance(data, dict)
             or isinstance(data.get("id"), bool)
             or not isinstance(data.get("id"), int)
-            or data["id"] < 1
+            or not 1 <= data["id"] <= 9007199254740991
         ):
             raise RelayGitHubError(502, "invalid release asset summary")
         if (

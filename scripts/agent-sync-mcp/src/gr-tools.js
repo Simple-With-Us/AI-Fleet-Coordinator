@@ -18,7 +18,7 @@
 
 import { z } from "zod";
 import { callTypedV1 } from "./gr-typed-v1.js";
-import { WF_V1_READ_ACTIONS, validWfV1Args, parseWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
+import { WF_V1_READ_ACTIONS, validWfV1Args, boundedWorkflowInput, parseWfV1Args, validWfV1Response } from "./gr-workflow-v1.js";
 import { resolveSecret } from "./infisical.js";
 
 /** The relay's response envelope (kody discussion_r4372745180):  every body
@@ -108,6 +108,11 @@ export class GrRelayClient {
   // Workflow verbs get a bounded stream, longer deadline and conservative write
   // uncertainty.  No automatic retries.  Existing seven-action transport is unchanged.
   async callWorkflow(action, args) {
+    // Bound depth/nodes/cycles before serialization, then cap raw JSON bytes
+    // before recursive Zod parsing. Keep the normalized payload check below.
+    if(!boundedWorkflowInput(args))return {status:400,body:{error:"invalid_workflow_args"}};
+    const rawSerialized=JSON.stringify(args);
+    if(new TextEncoder().encode(rawSerialized).length>65536)return {status:400,body:{error:"workflow_request_too_large"}};
     const parsedArgs=parseWfV1Args(action,args);
     if(parsedArgs===null)return {status:400,body:{error:"invalid_workflow_args"}};
     args=parsedArgs;

@@ -119,9 +119,10 @@ function gitSchema(schema){
  if(schema.type==='boolean')return z.boolean();
  let out=z.string();if(schema.minLength)out=out.min(schema.minLength);if(schema.maxLength)out=out.max(schema.maxLength);if(schema.pattern)out=out.regex(new RegExp(schema.pattern));if(schema.enum)out=out.refine(v=>schema.enum.includes(v));return out;
 }
+const ARG_SCHEMAS=Object.fromEntries(Object.entries(SPECS).map(([a,[,s]])=>[a,gitSchema(s)]));
 export function parseWfV1Args(action,args){
  if(!boundedWorkflowInput(args)||!WF_V1_ACTIONS.includes(action))return null;
- const parsed=gitSchema(SPECS[action][1]).safeParse(args);
+ const parsed=ARG_SCHEMAS[action].safeParse(args);
  if(!parsed.success)return null;
  if(['wf_review_submit','wf_review_inline'].includes(action)&&!reviewBodyOk(parsed.data))return null;
  return parsed.data;
@@ -131,7 +132,6 @@ export const validWfV1Args = (action, args) => parseWfV1Args(action,args)!==null
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
- wf_issue_parent:['issue'],wf_issue_subissues:['issues','page','has_more'],wf_issue_blocked_by:['issues','page','has_more'],wf_issue_blocking:['issues','page','has_more'],
   wf_pr_get:['pull'],
   wf_pr_reviews:['reviews','complete'],
   wf_pr_comments:['comments','complete'],
@@ -161,6 +161,7 @@ const RESPONSE_KEYS = {
   wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
   wf_merge_guarded: ['merged','sha'],
 };
+const credentialPattern=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/;
 export function validWfV1Response(action, body) {
  if(action==='wf_repo_tags'||action==='wf_repo_languages'){
   if(!boundedWorkflowInput(body))return false;
@@ -169,7 +170,7 @@ export function validWfV1Response(action, body) {
  }
 
  if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action)){
-  const issue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>Buffer.byteLength(v,'utf8')<=4096).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).nullable()}).strict();
+  const issue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>Buffer.byteLength(v,'utf8')<=4096).refine(v=>!credentialPattern.test(v)).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).refine(v=>!credentialPattern.test(v)).nullable()}).strict();
   return (action==='wf_issue_parent'?z.object({issue}).strict():z.object({issues:z.array(issue).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()).safeParse(body).success;
  }
 

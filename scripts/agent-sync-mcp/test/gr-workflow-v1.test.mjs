@@ -241,7 +241,7 @@ test('issue relation pages closed boundary and own bearer',async()=>{
 });
 
 test('relations title credential rejected and closed nongit Zod before dispatch',()=>{
- assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ghp_'+'x'.repeat(36),state:'open',repo:null}}),false);
+ assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ghp_'+'x'.repeat(36),state:'open',repo:null}}),false); // Synthetic scanner-shape fixture only, never a credential.
  assert.equal(validWfV1Args('wf_issue_blocking',{repo,number:1,raw:true}),false);
 });
 
@@ -250,4 +250,18 @@ test('repo metadata exact own-bearer reads and bounded closed receipts',async()=
  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);assert.ok(!validWfV1Args(action,{repo,...args,url:'x'}));
  }
  assert.equal(validWfV1Response('wf_repo_languages',{languages:[{name:'Python',bytes:true}]}),false);assert.equal(validWfV1Response('wf_repo_tags',{tags:[{name:'x',sha:'main'}],page:1,has_more:false}),false);
+});
+
+test('relation provider-pattern scanner and request bounds fail closed',async()=>{
+ // Runtime-assembled synthetic scanner fixtures only, never credentials.
+ const issue={id:1,number:2,title:'fixture',state:'open',repo:null};
+ for(const prefix of ['sk-','sk-proj-','sk-ant-']){
+  const fake=prefix+'x'.repeat(30);
+  assert.equal(validWfV1Response('wf_issue_parent',{issue:{...issue,title:fake}}),false);
+  assert.equal(validWfV1Response('wf_issue_parent',{issue:{...issue,repo:'fixture/'+fake}}),false);
+ }
+ let calls=0;const h=harness(async()=>{calls++;throw Error('not reached');});
+ const cycle={repo};cycle.self=cycle;
+ for(const args of [cycle,{repo,term:'x'.repeat(70000)}, {repo,extra:[[[[[[[1]]]]]]]}])assert.ok((await h.call('gr_wf_repo_tags',args)).isError);
+ assert.equal(calls,0);
 });

@@ -49,3 +49,11 @@ class Metadata(unittest.TestCase):
             self.assertEqual(m.calls[0][2], perms)
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(a, {"repo": REPO, "url": "x"}, REPO)
+
+    def test_relation_safe_integer_and_page_audit_contract(self):
+        from git_relay.server import _WORKFLOW_AUDIT_SCALARS
+        from git_relay.github_client import RelayGitHubError
+        self.assertIn("page", _WORKFLOW_AUDIT_SCALARS)
+        for key in ("id", "number"):
+            with self.assertRaises(RelayGitHubError):
+                WorkflowVerbs._relation_issue({"id": 1, "number": 2, "title": "fixture", "state": "open", key: 9007199254740992})
