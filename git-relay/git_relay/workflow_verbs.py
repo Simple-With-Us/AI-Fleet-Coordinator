@@ -964,6 +964,7 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "commit status write unverifiable")
         return {"status": result}
+
     def _check_payload(self, args):
         name = self._text(args, "name", 100)
         if not re.fullmatch(r"swu-[a-z0-9-]+/report", name) or (
