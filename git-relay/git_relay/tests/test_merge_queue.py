@@ -95,7 +95,7 @@ class Queue(unittest.TestCase):
                     raise RelayGitHubError(self.graphql_status, "upstream")
                 return super()._call(method, path, payload, bearer)
 
-        for status in (0, 408, 429, 502):
+        for status in (0, 408, 502):
             with self.subTest(status=status):
                 c = GraphQLDown(status)
                 with self.assertRaises(RelayGitHubError) as error:
@@ -106,6 +106,14 @@ class Queue(unittest.TestCase):
                 self.assertEqual(error.exception.status, 502)
                 self.assertIn("GraphQL outcome unverifiable", str(error.exception))
                 self.assertEqual(len(c.calls), 2)
+
+        c429 = GraphQLDown(429)
+        with self.assertRaises(RelayGitHubError) as error:
+            self.handle(c429, "wf_merge_queue_enqueue").run(
+                "wf_merge_queue_enqueue",
+                {"repo": REPO, "number": 1, "expected_sha": SHA},
+            )
+        self.assertEqual(error.exception.status, 429)
 
     def test_null_or_malformed_postmutation_receipt_is_unknown(self):
         for value in (None, [], {}, "bad"):

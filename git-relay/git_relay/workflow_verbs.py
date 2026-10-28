@@ -566,7 +566,7 @@ class WorkflowVerbs:
                 bearer=self.bearer,
             )
         except RelayGitHubError as exc:
-            if write and (exc.status in (0, 408, 429) or exc.status >= 500):
+            if write and (exc.status in (0, 408) or exc.status >= 500):
                 raise RelayGitHubError(502, "GraphQL outcome unverifiable") from None
             raise
         # GraphQL HTTP200 errors may follow partial mutation application; never call them definitely unsent.
