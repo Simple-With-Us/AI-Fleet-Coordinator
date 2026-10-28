@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,44);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,50);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,44);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,50);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -204,6 +204,29 @@ test('fixed PR controls and thread reads preserve scope and UNKNOWN',async()=>{
   if(action!=='wf_review_threads'){const fail=harness(async()=>{throw Error('lost');});const r=await fail.call('gr_'+action,args);assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);}
  }
 });
+test('issue assignment labels and locking preserve own-bearer writes and UNKNOWN',async()=>{
+ const cases=[['wf_assignees_add',{number:2,assignees:['swu-wise']},{result:{id:1,number:2,assignees:[{login:'swu-wise'}]}}],['wf_assignees_remove',{number:2,assignees:['swu-wise']},{result:{id:1,number:2,assignees:[]}}],['wf_issue_lock',{number:2,reason:'resolved'},{completed:true}],['wf_issue_unlock',{number:2},{completed:true}],['wf_label_create',{name:'n',color:'aabbcc',description:'d'},{result:{id:1,name:'n',color:'aabbcc'}}],['wf_label_delete',{name:'n'},{completed:true}]];
+ for(const [action,args,reply] of cases){
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});
+  assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError,action);
+  const fail=harness(async()=>{throw Error('no response');});const r=await fail.call('gr_'+action,{repo,...args});assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);
+ }
+});
+
+test('issue management rejects empty receipts and invalid logins',()=>{
+ assert.equal(validWfV1Response('wf_assignees_add',{result:{}}),false);
+ assert.equal(validWfV1Args('wf_assignees_add',{repo,number:1,assignees:['-bad']}),false);
+});
+test('workflow state and run/artifact deletion preserve own-bearer writes and UNKNOWN',async()=>{
+ const cases=[['wf_workflow_enable','workflow_id'],['wf_workflow_disable','workflow_id'],['wf_run_delete','run_id'],['wf_artifact_delete','artifact_id']];
+ for(const [action,key] of cases){
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({completed:true,[key]:7}));});
+  assert.ok(!(await t.call('gr_'+action,{repo,[key]:7})).isError,action);
+  const fail=harness(async()=>{throw Error('no response');});const r=await fail.call('gr_'+action,{repo,[key]:7});assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);
+ }
+});
+
+test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
 test('new read envelopes reject malformed objects and fixed routes use own bearer',async()=>{
   const cases=[['wf_pr_get',{number:1},{pull:{id:1,number:1,state:'open',head:{sha:'a'.repeat(40)},base:{sha:'b'.repeat(40)}}}],['wf_compare',{base:'main',head:'feature/x'},{comparison:{status:'ahead',ahead_by:1,behind_by:0,total_commits:0,commits:[]}}],['wf_repo_get',{},{repository:{id:1,name:'x',full_name:'a/x',default_branch:'main',private:true}}],['wf_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),commit:{message:'x'},parents:[]}}],['wf_run_get',{run_id:1},{run:{id:1,head_sha:'a'.repeat(40),status:'completed',conclusion:'success'}}],['wf_run_artifacts',{run_id:1},{artifacts:{total_count:0,artifacts:[]}}]];
   for(const [action,args,result] of cases){
@@ -230,17 +253,6 @@ test('file write receipts require string branch and path',()=>{
  for (const bad of [{path:'x',branch:{},commit:'a'.repeat(40)},{path:2,branch:'b',commit:'a'.repeat(40)},{path:'x',branch:'',commit:'a'.repeat(40)}]) assert.equal(validWfV1Response('wf_file_put',bad),false);
  assert.equal(validWfV1Response('wf_file_put',{path:'x',branch:'b',commit:'a'.repeat(40)}),true);
 });
-test('workflow state and run/artifact deletion preserve own-bearer writes and UNKNOWN',async()=>{
- const cases=[['wf_workflow_enable','workflow_id'],['wf_workflow_disable','workflow_id'],['wf_run_delete','run_id'],['wf_artifact_delete','artifact_id']];
- for(const [action,key] of cases){
-  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({completed:true,[key]:7}));});
-  assert.ok(!(await t.call('gr_'+action,{repo,[key]:7})).isError,action);
-  const fail=harness(async()=>{throw Error('no response');});const r=await fail.call('gr_'+action,{repo,[key]:7});assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);
- }
-});
-
-test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
-
 test('untrusted nested read response Zod boundary rejects malformed fields',()=>{
  for(const [a,b] of [['wf_pr_get',{pull:{}}],['wf_commit_get',{commit:{sha:true}}],['wf_branch_get',{branch:{name:'x',commit:{sha:7}}}],['wf_repo_get',{repository:{id:true}}],['wf_workflows',{workflows:{total_count:1,workflows:[{id:true}]}}],['wf_run_get',{run:{id:1,head_sha:'a'.repeat(40),status:'done',conclusion:7}}],['wf_run_artifacts',{artifacts:{total_count:1,artifacts:[{id:1,name:'x',size_in_bytes:-1,expired:false}]}}]])assert.equal(validWfV1Response(a,b),false,a);
  assert.equal(validWfV1Response('wf_file_put',{branch:'x',path:'a',commit:'a'.repeat(40),unexpected:true}),false);
