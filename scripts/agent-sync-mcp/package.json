@@ -24,7 +24,7 @@
   },
   "devDependencies": {
     "standardwebhooks": "1.1.1",
-    "wrangler": "4.150.0"
+    "wrangler": "4.151.0"
   },
   "overrides": {
     "agents": {
