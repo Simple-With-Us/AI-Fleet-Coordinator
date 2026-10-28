@@ -254,9 +254,7 @@ def main(argv: list[str] | None = None) -> None:
             #  a skill it did not have.  The pack is not deleted -- it is an
             #  upload pack -- and its retirement notice still came from the
             #  renderer when it was written.
-            print(
-                f"  {seat.tag:12}  {seat.seat_key}  (retired, frozen at its retirement text)"
-            )
+            print(f"  {seat.tag:12}  {seat.seat_key}  (retired, frozen at its retirement text)")
             continue
         key = seat.seat_key or seat.tag.lower()
         seat_root = os.path.join(BY_SEAT, key)
