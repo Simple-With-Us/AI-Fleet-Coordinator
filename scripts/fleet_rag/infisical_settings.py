@@ -5,11 +5,14 @@ Implements the fleet-wide canonical pattern (see repo-root INFISICAL.md):
 
 1. **Load at startup.**  ``init_settings()`` fetches the full managed settings set from
    the app's Infisical project (universal-auth login -> access token ->
-   GET /api/v3/secrets/raw) into an in-memory cache.  When no Infisical identity is
-   configured (local dev without the machine identity), the managed keys are populated
-   from the process environment instead and a warning is logged -- the service keeps
-   its old env-based behavior.  Missing *required* keys fail fast with a SettingsError
-   naming the key and pointing at INFISICAL.md.
+   GET /api/v3/secrets/raw) into an in-memory cache.  The credential is first match
+   wins:  an ``INFISICAL_TOKEN`` service token in the environment is the bearer
+   directly, with no universal-auth login on that path at all;  otherwise the machine
+   identity is logged in.  When no Infisical credential is configured (local dev
+   without the machine identity), the managed keys are populated from the process
+   environment instead and a warning is logged -- the service keeps its old env-based
+   behavior.  Missing *required* keys fail fast with a SettingsError naming the key and
+   pointing at INFISICAL.md.
 2. **Never fetch per-request.**  ``get()`` reads memory only.  All runtime reads come
    from the cache; no per-request (or per-tick, per-event) Infisical call exists.
 3. **Background refresh.**  ``start_refresh()`` runs a daemon thread that re-fetches on
@@ -60,10 +63,47 @@ IDENTITY_FILE_ENV = "INFISICAL_MACHINE_IDENTITY"
 # Fleet convention (see the Infisical SOT rollout brief): the machine identity JSON lives
 # under ~/workspace/.secrets on agent machines; the Mac runs under `fleet-secrets run`.
 IDENTITY_FILE_DEFAULT = pathlib.Path("~/workspace/.secrets/infisical-machine-identity.json")
+# The service token a consumer binds in the environment, used as the bearer directly:
+# no universal-auth login happens on that path.  First match wins, so it sits ahead of
+# the machine identity.
+ENV_TOKEN = "INFISICAL_TOKEN"
+# The shape the fleet uses for a service token (the BotFleet reader's rule):  the st.
+# prefix, 20 to 2048 characters, and no whitespace anywhere.
+SERVICE_TOKEN_PREFIX = "st."
+MIN_SERVICE_TOKEN_LENGTH = 20
+MAX_SERVICE_TOKEN_LENGTH = 2048
+# Where the bearer came from, so a 401 is answered the right way:  a machine identity
+# can log in again, a service token cannot.
+SOURCE_SERVICE_TOKEN = "service-token"
+SOURCE_MACHINE_IDENTITY = "machine-identity"
 
 
 class SettingsError(Exception):
     """Startup / write-through failure.  The message names the key and points at INFISICAL.md."""
+
+
+def _is_service_token(token: str) -> bool:
+    """Whether a value has the shape of an Infisical service token.
+
+    The fleet's rule:  the st. prefix, 20 to 2048 characters, no whitespace.  A value
+    that fails it is refused before it ever reaches the API."""
+    return (
+        token.startswith(SERVICE_TOKEN_PREFIX)
+        and MIN_SERVICE_TOKEN_LENGTH <= len(token) <= MAX_SERVICE_TOKEN_LENGTH
+        and not any(ch.isspace() for ch in token)
+    )
+
+
+def _service_token_401_message() -> str:
+    """The error a 401 on the service-token path raises.
+
+    A service token cannot be refreshed by a re-login, so the message names the
+    variable and says what to check.  The token itself never appears in it."""
+    return (
+        f"Infisical rejected the {ENV_TOKEN} service token (status 401);  check that the "
+        f"token is current, is scoped to this project and environment, and is bound as "
+        f"{ENV_TOKEN}; see INFISICAL.md"
+    )
 
 
 class InfisicalSettings:
@@ -92,8 +132,15 @@ class InfisicalSettings:
         ).rstrip("/")
         self.identity_prefixes = identity_prefixes
         self._lock = threading.Lock()
+        # The login lock is separate from the cache lock on purpose:  a slow
+        # universal-auth login must not block a reader that only wants the
+        # cache, and the two locks are always taken in the same order (login
+        # lock, then cache lock) so they cannot deadlock.
+        self._login_lock = threading.Lock()
+        self._identity_lock = threading.Lock()
         self._cache: dict[str, str] = {}
         self._access_token: str | None = None
+        self._credential_source: str | None = None
         self._identity: tuple[str | None, str | None] | None = None
         self._refresh_thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -145,13 +192,88 @@ class InfisicalSettings:
         return None, None
 
     def identity(self) -> tuple[str | None, str | None]:
-        """(client_id, client_secret); resolved once and cached.  Values never logged."""
-        if self._identity is None:
-            cid, csec = self._identity_from_env()
-            if not cid:
-                cid, csec = self._identity_from_file()
-            self._identity = (cid, csec)
-        return self._identity
+        """(client_id, client_secret); resolved once and cached.  Values never logged.
+
+        The resolution runs under its own lock so two cold-start callers cannot
+        both read the identity file, and so the cached tuple is published once.
+        """
+        with self._identity_lock:
+            if self._identity is None:
+                cid, csec = self._identity_from_env()
+                if not cid:
+                    cid, csec = self._identity_from_file()
+                self._identity = (cid, csec)
+            return self._identity
+
+    # -- credential ---------------------------------------------------------
+
+    def _service_token(self) -> str | None:
+        """The INFISICAL_TOKEN service token, validated, or None when it is not set.
+
+        A token that is set but unusable is refused here, before any API call, and its
+        value never reaches an error message.  An empty or whitespace-only value counts
+        as not set, so the next leg of the chain gets its turn."""
+        raw = os.environ.get(ENV_TOKEN)
+        if raw is None:
+            return None
+        token = raw.strip()
+        if not token:
+            return None
+        if not _is_service_token(token):
+            raise SettingsError(
+                f"{ENV_TOKEN} is not a usable Infisical service token:  it must start with "
+                f"the {SERVICE_TOKEN_PREFIX} prefix, carry no whitespace and be "
+                f"{MIN_SERVICE_TOKEN_LENGTH} to {MAX_SERVICE_TOKEN_LENGTH} characters long; "
+                "see INFISICAL.md"
+            )
+        return token
+
+    def _credential(self) -> tuple[str | None, str]:
+        """The bearer for the next Infisical call and where it came from, first match wins.
+
+        The INFISICAL_TOKEN service token is the bearer directly:  no universal-auth
+        login happens on that path.  The machine identity is logged in and its session
+        token is the bearer;  a session token already held is reused, and concurrent
+        cold-start callers share one login.  With neither, the caller gets (None, "")
+        and the module's own fail-closed behaviour applies.  Neither value is ever
+        logged."""
+        token = self._service_token()
+        if token:
+            return token, SOURCE_SERVICE_TOKEN
+        cid, _csec = self.identity()
+        if not cid:
+            return None, ""
+        return self._machine_session_token(), SOURCE_MACHINE_IDENTITY
+
+    def _machine_session_token(self, *, stale_token: str | None = None) -> str:
+        """The machine-identity session token, with at most one login per cache miss.
+
+        Concurrent cold-start callers share one universal-auth login:  the first
+        one to arrive logs in and caches the token, and the others wait on the
+        login lock and then read the cached token instead of logging in again.
+        The login runs under its own lock rather than the cache lock, so a slow
+        login never blocks a reader that only wants the cache, and the two locks
+        are always taken in the same order (login lock, then cache lock) so they
+        cannot deadlock.
+
+        ``stale_token`` is a token the server has already rejected with a 401.
+        It is dropped from the cache so the login below produces a different
+        one;  a token cached in the meantime that is not the stale one is reused,
+        so a burst of concurrent 401s still costs exactly one login.  The
+        comparison happens in memory and the value is never logged.
+        """
+        with self._login_lock:
+            with self._lock:
+                cached = self._access_token
+                cached_source = self._credential_source
+                if stale_token is not None and cached == stale_token:
+                    self._access_token = None
+                    self._credential_source = None
+                    cached = None
+                    cached_source = None
+            if cached and cached_source == SOURCE_MACHINE_IDENTITY:
+                return cached
+            return self._login()
 
     # -- HTTP ---------------------------------------------------------------
 
@@ -194,10 +316,23 @@ class InfisicalSettings:
                 f"Infisical universal-auth login failed (status {status}); "
                 "check the machine identity in INFISICAL.md"
             )
-        self._access_token = token
+        self._cache_machine_token(token)
         return token
 
-    def _fetch_all(self, token: str) -> dict[str, str]:
+    def _cache_machine_token(self, token: str) -> None:
+        """Cache a machine-identity session token with the source that owns it.
+
+        The token and the source are one fact, so they are written together
+        under the lock:  a reader that sees the source always sees the token
+        that goes with it.  The service-token path never writes here, so a
+        service token can never end up paired with the machine-identity
+        source and sent down a re-login path that cannot refresh it.
+        """
+        with self._lock:
+            self._access_token = token
+            self._credential_source = SOURCE_MACHINE_IDENTITY
+
+    def _fetch_all(self, token: str, source: str) -> dict[str, str]:
         self._require_prod()
         path = (
             "/api/v3/secrets/raw?workspaceId="
@@ -207,8 +342,12 @@ class InfisicalSettings:
         )
         status, payload = self._request("GET", path, token=token)
         if status == 401:
+            if source == SOURCE_SERVICE_TOKEN:
+                # A service token cannot be refreshed by a re-login, so there is
+                # nothing to retry with.
+                raise SettingsError(_service_token_401_message())
             # Token expired or rotated: one re-login, then retry once.
-            token = self._login()
+            token = self._machine_session_token(stale_token=token)
             status, payload = self._request("GET", path, token=token)
         if status != 200:
             raise SettingsError(
@@ -220,7 +359,10 @@ class InfisicalSettings:
             key = secret.get("secretKey")
             if key in self.managed_keys:
                 out[key] = str(secret.get("secretValue") or "")
-        self._access_token = token
+        if source == SOURCE_MACHINE_IDENTITY:
+            # Only the machine identity owns the session-token cache.  A
+            # service token is its own credential and never goes in there.
+            self._cache_machine_token(token)
         return out
 
     # -- lifecycle ----------------------------------------------------------
@@ -230,23 +372,22 @@ class InfisicalSettings:
 
         Infisical is authoritative; any managed key still missing after the fetch
         is backfilled from the process environment (the migration bridge -- logged
-        by name so the fallback is always visible).  With no identity configured
-        at all, every managed key comes from the environment and the service keeps
-        its old env-only behavior.
+        by name so the fallback is always visible).  With no credential configured
+        at all (no service token and no identity), every managed key comes from the
+        environment and the service keeps its old env-only behavior.
 
         A non-prod environment is refused first, even with no identity configured, so
         a bad INFISICAL_ENVIRONMENT surfaces at startup rather than the day an identity
         is added.
         """
         self._require_prod()
-        cid, _csec = self.identity()
-        if cid:
-            token = self._login()
-            fetched = self._fetch_all(token)
+        token, source = self._credential()
+        if token:
+            fetched = self._fetch_all(token, source)
         else:
             logger.warning(
-                "infisical-settings: no machine identity; "
-                "populating managed keys from the process environment"
+                "infisical-settings: no Infisical credential (no service token and no "
+                "machine identity); populating managed keys from the process environment"
             )
             fetched = {}
         backfilled = [k for k in self.managed_keys if k not in fetched and os.environ.get(k)]
@@ -270,7 +411,7 @@ class InfisicalSettings:
         logger.info(
             "infisical-settings: loaded %d managed key(s) from %s",
             len(self._cache),
-            "Infisical" if cid else "environment",
+            "Infisical" if token else "environment",
         )
 
     def get(self, key: str, default: str | None = None) -> str | None:
@@ -293,12 +434,21 @@ class InfisicalSettings:
                 len(self._cache),
             )
             return False
-        cid, _csec = self.identity()
-        if not cid:
-            return False  # env-backed: nothing to refresh
         try:
-            token = self._access_token or self._login()
-            fetched = self._fetch_all(token)
+            token, source = self._credential()
+            if not token:
+                return False  # env-backed: nothing to refresh
+            fetched = self._fetch_all(token, source)
+        except SettingsError as e:
+            # The message names the credential and what to check; it never carries a
+            # value, so it is safe to log.
+            logger.error(
+                "infisical-settings: refresh failed (%s); keeping last-known-good "
+                "cache of %d key(s)",
+                e,
+                len(self._cache),
+            )
+            return False
         except Exception as e:  # noqa: BLE001 - staleness beats an outage
             logger.error(
                 "infisical-settings: refresh failed (%s); keeping last-known-good "
@@ -337,14 +487,15 @@ class InfisicalSettings:
                 f"refusing to write unmanaged key {key!r}; "
                 "see INFISICAL.md for the managed key inventory"
             )
-        cid, _csec = self.identity()
-        if not cid:
+        token, source = self._credential()
+        if not token:
             raise SettingsError(
-                "no Infisical identity configured; cannot write through to the "
-                "source of truth (see INFISICAL.md)"
+                "no Infisical credential configured; cannot write through to the "
+                f"source of truth (set {ENV_TOKEN} or the machine identity; "
+                "see INFISICAL.md)"
             )
 
-        def _write(method: str) -> int:
+        def _write(method: str, bearer: str) -> int:
             status, _payload = self._request(
                 method,
                 "/api/v3/secrets/raw/" + urllib.parse.quote(key, safe=""),
@@ -355,18 +506,30 @@ class InfisicalSettings:
                     "secretValue": value,
                     "type": "shared",
                 },
-                token=self._access_token or self._login(),
+                token=bearer,
             )
             return status
 
         try:
-            status = _write("PATCH")
+            status = _write("PATCH", token)
             if status == 401:
+                if source == SOURCE_SERVICE_TOKEN:
+                    # A service token cannot be refreshed by a re-login, so there is
+                    # nothing to retry with.
+                    raise SettingsError(_service_token_401_message())
                 # Token may have expired mid-flight: re-login once and retry.
-                self._login()
-                status = _write("PATCH")
+                token = self._machine_session_token(stale_token=token)
+                status = _write("PATCH", token)
             if status == 404:
-                status = _write("POST")
+                status = _write("POST", token)
+                if status == 401:
+                    if source == SOURCE_SERVICE_TOKEN:
+                        # A service token cannot be refreshed by a re-login, so
+                        # there is nothing to retry with.
+                        raise SettingsError(_service_token_401_message())
+                    # Token may have expired mid-flight: re-login once and retry.
+                    token = self._machine_session_token(stale_token=token)
+                    status = _write("POST", token)
         except SettingsError:
             raise
         except Exception as e:
@@ -424,9 +587,14 @@ class InfisicalSettings:
 
     def export_env(self, keys: tuple[str, ...]) -> list[str]:
         """Mirror non-empty cached values into os.environ (for backend libraries that
-        read the environment).  Returns the key names that were exported -- never values."""
+        read the environment).  Returns the key names that were exported -- never values.
+
+        The service token is never mirrored:  it is a credential, not a setting, so it
+        stays out of the export path."""
         exported = []
         for key in keys:
+            if key == ENV_TOKEN:
+                continue
             val = self.get(key)
             if val:
                 os.environ[key] = val
@@ -441,7 +609,7 @@ class InfisicalSettings:
         out: dict[str, dict] = {}
         for key in keys:
             val = cache.get(key, "")
-            if key in self.secret_keys:
+            if key in self.secret_keys or key == ENV_TOKEN:
                 out[key] = {"set": bool(val), "value": "set" if val else "empty"}
             else:
                 out[key] = {"set": bool(val), "value": val}

@@ -197,6 +197,10 @@ class PolicyDenied(Exception):
     """The seat authenticated but its policy refused the call."""
 
 
+class PreReadUnavailable(Exception):
+    """A failed pre-read proves that no write was attempted."""
+
+
 class ServerUnavailable(Exception):
     """A configured-on-paper backend (app-token minting) is not wired."""
 
@@ -339,6 +343,14 @@ class Relay:
                 outcome = "denied"
                 detail = {"reason": str(exc)}
                 return 403, {"error": str(exc)}
+            except PreReadUnavailable:
+                self._release(key, "refused")
+                outcome = "unavailable"
+                detail = {"reason": "pre_read_unavailable"}
+                return 503, {
+                    "error": "upstream pre-read unavailable; no write attempted",
+                    "retryable": True,
+                }
             except ServerUnavailable as exc:
                 self._release(key, "refused")
                 outcome = "unavailable"
@@ -500,6 +512,10 @@ _WORKFLOW_AUDIT_SCALARS = (
     "job_id",
     "run_id",
     "number",
+    "commit_id",
+    "event",
+    "side",
+    "line",
     "ref",
     "branch",
     "base",
@@ -531,6 +547,14 @@ def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
         value = result.get(key)
         if isinstance(value, (int, bool)) or (isinstance(value, str) and len(value) <= 64):
             detail[f"result_{key}"] = value
+    # Review and inline writes nest their new ids one level down; keep the ids
+    # (bounded ints) so the audit row says which review or comment was created.
+    for key, result_key in (("review", "result_review_id"), ("comment", "result_comment_id")):
+        nested = result.get(key)
+        if isinstance(nested, dict):
+            value = nested.get("id")
+            if isinstance(value, int) and not isinstance(value, bool):
+                detail[result_key] = value
     return detail
 
 

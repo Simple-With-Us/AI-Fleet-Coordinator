@@ -73,13 +73,13 @@ const sorted = (list) => [...list].sort();
 
 // ---------------------------------------------------------------- the sets (rows 1 to 4)
 
-test("row 1:  a CURSOR grant may act as CURSOR, GROK-WEB and every enabled persona, on purpose", () => {
-  assert.deepEqual(sorted(allowedIdentities("CURSOR")), sorted(["CURSOR", "GROK-WEB", ...GB_IDENTITIES]));
+test("row 1:  a CURSOR credential assigns only CURSOR", () => {
+  assert.deepEqual(sorted(allowedIdentities("CURSOR")), ["CURSOR"]);
   assert.equal(allowedIdentities("CURSOR")[0], "CURSOR");
 });
 
-test("row 2:  a GROK-WEB grant has the same set, and its default is GROK-WEB, not CURSOR", async () => {
-  assert.deepEqual(sorted(allowedIdentities("GROK-WEB")), sorted(allowedIdentities("CURSOR")));
+test("row 2:  a GROK-WEB credential assigns only GROK-WEB", async () => {
+  assert.deepEqual(sorted(allowedIdentities("GROK-WEB")), ["GROK-WEB"]);
   const { r, caller } = router("GROK-WEB");
   await r.call("zulip_topics", {});
   assert.deepEqual(caller.calls, [{ name: "zulip_topics", args: {} }]);
@@ -116,9 +116,7 @@ test("row 4:  a persona that GB_IDENTITIES leaves out is in no set", () => {
   assert.ok(GB_IDENTITIES.includes("GB-ENGINEER"));
   assert.ok(!GB_IDENTITIES.includes("GB-RETIRED"));
   for (const seat of KNOWN_SEATS) {
-    const expected = SHARED_IDENTITY_SEATS.includes(seat)
-      ? [seat, ...SHARED_IDENTITY_SEATS.filter((other) => other !== seat), ...GB_IDENTITIES]
-      : [seat];
+    const expected = [seat];
     assert.deepEqual([...allowedIdentities(seat)], expected, seat);
   }
 });
@@ -146,16 +144,20 @@ test("row 5:  a write without identity is refused with identity_required;  a rea
   }
 });
 
-test("a named identity runs on that identity's own tools, with identity removed from the arguments", async () => {
-  const { r, caller, built, created } = router("CURSOR");
-  for (const identity of allowedIdentities("CURSOR").slice(1)) {
-    await r.call("zulip_post", { topic: "t", text: "x", identity });
-    assert.deepEqual(built.get(identity).calls, [{ name: "zulip_post", args: { topic: "t", text: "x" } }], identity);
+test("legacy shared credentials cannot select any other seat or persona in any tool family", async () => {
+  for (const seat of ["CURSOR", "GROK-WEB", "WISE", "ECHO", ...GB_IDENTITIES]) {
+    const { r, caller, created } = router(seat);
+    for (const identity of ["CURSOR", "GROK-WEB", "WISE", "ECHO", ...GB_IDENTITIES].filter(other => other !== seat)) {
+      for (const name of ["whoami", "zulip_topics", "zulip_post", "linear_whoami", "notes_list", "recall_stats", "fleetlink_whoami", "gr_merge_pr"]) {
+        const error = errorOf(await r.call(name, { identity }));
+        assert.equal(error.code, "identity_not_allowed", `${seat} as ${identity}: ${name}`);
+      }
+    }
+    assert.deepEqual(created, [], "no peer credential loader ran");
+    assert.deepEqual(caller.calls, [], "no family backend called");
+    await r.call("zulip_post", { topic: "t", text: "own", identity: seat });
+    assert.deepEqual(caller.calls, [{ name: "zulip_post", args: { topic: "t", text: "own" } }]);
   }
-  await r.call("zulip_post", { topic: "t", text: "again", identity: "grok_web" });  // case and _ are forgiven
-  assert.equal(built.get("GROK-WEB").calls.length, 2);
-  assert.deepEqual(created, allowedIdentities("CURSOR").slice(1), "each identity is built once per request");
-  assert.deepEqual(caller.calls, []);
 });
 
 test("an identity that is not a name, or is outside the set, is refused without echoing it", async () => {
@@ -179,10 +181,10 @@ test("a published alias names its seat:  INSTINCT on a WISE grant and MUSE-ASSIS
   assert.equal(errorOf(await r.call("zulip_post", { topic: "t", text: "x", identity: "MUSE-ASSIST" })).code, "identity_not_allowed");
 });
 
-test("the grant's scope and pause govern a call made as another identity", async () => {
+test("cross-seat assertions are refused before building a peer even while paused", async () => {
   const { r, caller, created } = router("GROK-WEB");
   caller.paused = true;
-  assert.equal(errorOf(await r.call("zulip_post", { topic: "t", text: "x", identity: "CURSOR" })).code, "paused");
+  assert.equal(errorOf(await r.call("zulip_post", { topic: "t", text: "x", identity: "CURSOR" })).code, "identity_not_allowed");
   assert.deepEqual(created, []);
 });
 
@@ -198,7 +200,8 @@ test("row 6:  each grant's tools/list offers exactly its own set, required on wr
     assert.deepEqual(list.slice(0, 3).map((t) => t.name), ["whoami", "identities", "guide"]);
     // The whatsapp tools ride with the full Jet login (JET-CHAT);  every other seat
     // has them withheld, so only JET-CHAT advertises the complete catalog.
-    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET-CHAT" ? 0 : 1));
+    const withheld = HOSTED_TOOL_LIST.filter((t) => t.name.startsWith("whatsapp_")).length;
+    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET-CHAT" ?  0 : withheld));
     for (const tool of list) {
       const properties = tool.inputSchema.properties ?? {};
       if (tool.name === "identities") {

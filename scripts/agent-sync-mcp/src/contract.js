@@ -182,7 +182,7 @@ export function newNonce(random = crypto.getRandomValues.bind(crypto)) {
 export function envelope(tool, args, summary, items, nonce = newNonce()) {
   const shown = args.map(([name, value]) => `${name} ${JSON.stringify(clean(value, NAME_LIMIT)[0])}`).join(", ");
   const lines = [
-    oneLine(`agent-sync ${tool}${shown ? `:  ${shown}` : ""}`),
+    oneLine(`simple-tools ${tool}${shown ? `:  ${shown}` : ""}`),
     summary,
     UNTRUSTED_NOTE,
     `${MARKER_BEGIN} nonce=${nonce}`,

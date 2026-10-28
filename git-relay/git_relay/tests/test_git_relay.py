@@ -534,6 +534,99 @@ class TestMcpWrapper(unittest.TestCase):
         self.assertIn("403", reply["result"]["content"][0]["text"])
 
 
+class TestMcpWriteUncertainty(unittest.TestCase):
+    def call(self, opener):
+        from git_relay.mcp_server import RelayMcp
+
+        return RelayMcp("http://relay.test", "private-seat-token", opener=opener).handle(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "comment_pr",
+                    "arguments": {"repo": "a/b", "number": 1, "body": "x"},
+                },
+            }
+        )["result"]
+
+    def test_http_errors_preserve_write_uncertainty_without_leaking_prose(self):
+        cases = [
+            (502, {"outcome": "unknown"}, "outcome_unknown"),
+            (409, {"outcome": "pending"}, "outcome_unknown"),
+            (503, {}, "outcome_unknown"),
+            (503, {"retryable": True}, "unavailable"),
+            (503, {"retryable": 1}, "outcome_unknown"),
+            (503, {"retryable": "true"}, "outcome_unknown"),
+            (429, {"retryable": True, "retry_after_seconds": 30}, "unavailable"),
+            (409, {"outcome": "unknown", "retryable": True}, "outcome_unknown"),
+            (403, {}, "relay_refused"),
+        ]
+        for status, payload, expected in cases:
+            with self.subTest(status=status, payload=payload):
+                payload["error"] = "private-seat-token"
+
+                def opener(_req, timeout):
+                    raise urllib.error.HTTPError(
+                        "u", status, "error", {}, io.BytesIO(json.dumps(payload).encode())
+                    )
+
+                result = self.call(opener)
+                self.assertTrue(result["isError"])
+                error = json.loads(result["content"][0]["text"])
+                self.assertEqual(error["code"], expected)
+                self.assertNotIn("private-seat-token", json.dumps(result))
+                self.assertEqual(error["retryable"], expected == "unavailable")
+                if status == 429:
+                    self.assertEqual(error["retry_after_seconds"], 30)
+
+    def test_transport_loss_is_not_a_definite_refusal(self):
+        def opener(_req, timeout):
+            raise OSError("private-seat-token")
+
+        result = self.call(opener)
+        self.assertEqual(json.loads(result["content"][0]["text"])["code"], "outcome_unknown")
+        self.assertNotIn("private-seat-token", json.dumps(result))
+
+    def test_unreadable_server_error_stays_unknown(self):
+        def opener(_req, timeout):
+            raise urllib.error.HTTPError("u", 502, "error", {}, io.BytesIO(b"not-json"))
+
+        result = self.call(opener)
+        self.assertEqual(json.loads(result["content"][0]["text"])["code"], "outcome_unknown")
+
+    def test_unreadable_and_nonobject_4xx_stay_unknown(self):
+        from git_relay.mcp_server import MAX_LINE
+
+        for body in (b"not-json", b"[]", b"null", b"x" * (MAX_LINE + 1)):
+
+            def opener(_req, timeout):
+                raise urllib.error.HTTPError("u", 409, "error", {}, io.BytesIO(body))
+
+            error = json.loads(self.call(opener)["content"][0]["text"])
+            self.assertEqual(error["code"], "outcome_unknown")
+
+    def test_retry_hint_is_bounded_numeric_and_never_provider_prose(self):
+        for hint in ("private-seat-token", True, -1, float("inf"), float("nan"), 86401):
+
+            def opener(_req, timeout):
+                payload = {"retryable": True, "retry_after_seconds": hint}
+                raise urllib.error.HTTPError(
+                    "u", 429, "error", {}, io.BytesIO(json.dumps(payload).encode())
+                )
+
+            error = json.loads(self.call(opener)["content"][0]["text"])
+            self.assertNotIn("retry_after_seconds", error)
+
+    def test_success_status_does_not_override_unknown_outcome(self):
+        result = self.call(FakeOpener({"outcome": "unknown"}))
+        self.assertEqual(json.loads(result["content"][0]["text"])["code"], "outcome_unknown")
+
+    def test_nonobject_success_stays_unknown(self):
+        result = self.call(FakeOpener(["not-an-envelope"]))
+        self.assertEqual(json.loads(result["content"][0]["text"])["code"], "outcome_unknown")
+
+
 APP_SEATS_JSON = json.dumps(
     {
         "swu-echo": {

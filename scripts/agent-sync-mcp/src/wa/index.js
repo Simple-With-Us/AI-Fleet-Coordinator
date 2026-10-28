@@ -37,7 +37,12 @@ export async function deliverPending(gate, fetchFn, deadline = Date.now() + 1000
 export async function serveWa(request, env, config, gate, fetchFn = fetch) {
   if (!config.whatsappEnabled || !config.hostedSeats.includes("JET")) return reply({ ok: false, reason: "disabled" }, 404);
   if (config.mcpDisabled) return reply({ ok: false, reason: "mcp_disabled" }, 503);
-  const kind = new URL(request.url).pathname === "/internal/wa-operator/JET" ? "operator" : "ingest";
+  // AFC-545: the bridge's outbox claim and the result it posts back ride the
+  // same signed channel as the ingest.
+  const path = new URL(request.url).pathname;
+  const kind = path === "/internal/wa-operator/JET" ?  "operator"
+    : path === "/internal/wa-outbox/JET" ?  "outbox"
+      : path === "/internal/wa-outbox/JET/result" ?  "outbox_result" : "ingest";
   const owner = binding(env.WA_OWNER_BINDING_JET);
   const keyName = kind === "operator" ? "WA_OPERATOR_HMAC_KEY_JET" : "WA_BRIDGE_HMAC_KEY_JET";
   const otherWaName = kind === "operator" ? "WA_BRIDGE_HMAC_KEY_JET" : "WA_OPERATOR_HMAC_KEY_JET";
@@ -52,6 +57,7 @@ export async function serveWa(request, env, config, gate, fetchFn = fetch) {
   const resolvedKeys = viaInfisical ? (await Promise.all([otherWaName, ...Object.values(WAKE_SECRETS)].map(wakeRead))).map((v) => v.trim()).filter(Boolean) : [];
   const otherKeys = [...new Set([...bindingKeys, ...resolvedKeys])];
   if (kind === "ingest" && !owner) return reply({ ok: false, reason: "not_configured", required: "WA_OWNER_BINDING_JET" }, 404);
+  if ((kind === "outbox" || kind === "outbox_result") && !owner) return reply({ ok: false, reason: "not_configured", required: "WA_OWNER_BINDING_JET" }, 404);
   if (typeof rawKey !== "string" || rawKey.trim().length < 32) return reply({ ok: false, reason: "not_configured", required: keyName }, 404);
   if (otherKeys.includes(rawKey.trim())) return reply({ ok: false, reason: "key_reused", required: keyName }, 404);
   if (request.method !== "POST") return reply({ ok: false }, 405);
@@ -76,7 +82,11 @@ export async function serveWa(request, env, config, gate, fetchFn = fetch) {
   for (const c of chunks) { bytes.set(c, at); at += c.length; }
   const checked = await verifyRequest(bytes, request.headers.get(WA_HEADER), rawKey, kind);
   if (checked.status !== 200) return reply({ ok: false }, checked.status);
-  const result = kind === "ingest" ? await gate.waIngest({ body: checked.body, owner, known: [rawKey, ...otherKeys] }) : await gate.waOperator({ requestId: checked.body.request_id });
+  let result;
+  if (kind === "ingest") result = await gate.waIngest({ body: checked.body, owner, known: [rawKey, ...otherKeys] });
+  else if (kind === "operator") result = await gate.waOperator({ requestId: checked.body.request_id });
+  else if (kind === "outbox") result = await gate.waOutboxClaim({});
+  else result = await gate.waOutboxResult({ body: checked.body });
   if (!result.ok) {
     if (result.reason === "operator_busy") {
       // A new request can recover an older pending wake even if the WhatsApp
@@ -89,6 +99,8 @@ export async function serveWa(request, env, config, gate, fetchFn = fetch) {
     }
     return reply(result, 403);
   }
+  // The outbox routes carry no wake: they answer the bridge, not Jet.
+  if (kind === "outbox" || kind === "outbox_result") return reply(result);
   let delivery = { delivered: 0, disabled: true };
   if (config.whatsappWakeEnabled) {
     try { delivery = await deliverPending(gate, fetchFn, Date.now() + 10000, kind === "operator" ? "operator" : undefined); }
