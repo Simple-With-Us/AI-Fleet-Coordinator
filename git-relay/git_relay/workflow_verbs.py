@@ -299,7 +299,9 @@ class WorkflowVerbs:
             or data.get("state") not in ("open", "closed")
         ):
             raise RelayGitHubError(502, "issue relation receipt unverifiable")
-        if find_secret(data["title"]) or re.search(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", data["title"]):
+        if find_secret(data["title"]) or re.search(
+            r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", data["title"]
+        ):
             raise Refused("relation title contains credential pattern")
         url = data.get("repository_url")
         bound = None
@@ -314,7 +316,9 @@ class WorkflowVerbs:
                 and not parsed.fragment
                 and _REPO.fullmatch(candidate)
             ):
-                if find_secret(candidate) or re.search(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", candidate):
+                if find_secret(candidate) or re.search(
+                    r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", candidate
+                ):
                     raise Refused("relation repository contains credential pattern")
                 bound = candidate
         return {**{k: data[k] for k in ("id", "number", "title", "state")}, "repo": bound}
