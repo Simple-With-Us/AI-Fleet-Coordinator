@@ -465,7 +465,7 @@ def hook_session_start() -> int:
             "Session letter: none yet (the Operator could not be reached).  Name this thread "
             "in English; if a letter arrives later, prefix the title with it."
         )
-        return 0 9bd92874 (fix(mm-session-letter): one rule for the letter space, used by every hook)
+        return 0
     if not letter:
         print(
             "Session letter: none yet (the Operator could not be reached).  Name this thread "
@@ -506,7 +506,7 @@ def hook_pre_tool_use() -> int:
     try:
         letter = cached_letter(session_id) or letter_for(session_id, "", space_for(session_id))
     except RegistryError:
-        return 0 9bd92874 (fix(mm-session-letter): one rule for the letter space, used by every hook)
+        return 0
     if not letter:
         return 0
     text = ""
@@ -555,7 +555,7 @@ def hook_stop() -> int:
     try:
         letter = cached_letter(session_id) or letter_for(session_id, "", space_for(session_id))
     except RegistryError:
-        return 0 9bd92874 (fix(mm-session-letter): one rule for the letter space, used by every hook)
+        return 0
     if not letter:
         return 0
     title = str(row.get("title") or "")
