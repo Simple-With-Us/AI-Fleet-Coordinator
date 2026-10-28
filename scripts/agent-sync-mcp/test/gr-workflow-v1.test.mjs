@@ -197,7 +197,7 @@ test('review/inline/branch additions keep bounded shapes and uncertain write fai
 });
 
 test('new read envelopes reject malformed objects and fixed routes use own bearer',async()=>{
-  const cases=[['wf_pr_get',{number:1},{pull:{number:1}}],['wf_compare',{base:'main',head:'feature/x'},{comparison:{}}],['wf_repo_get',{},{repository:{}}],['wf_commit_get',{sha:'a'.repeat(40)},{commit:{}}],['wf_run_get',{run_id:1},{run:{}}],['wf_run_artifacts',{run_id:1},{artifacts:{}}]];
+  const cases=[['wf_pr_get',{number:1},{pull:{id:1,number:1,state:'open',head:{sha:'a'.repeat(40)},base:{sha:'b'.repeat(40)}}}],['wf_compare',{base:'main',head:'feature/x'},{comparison:{status:'ahead',ahead_by:1,behind_by:0,total_commits:0,commits:[]}}],['wf_repo_get',{},{repository:{id:1,name:'x',full_name:'a/x',default_branch:'main',private:true}}],['wf_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),commit:{message:'x'},parents:[]}}],['wf_run_get',{run_id:1},{run:{id:1,head_sha:'a'.repeat(40),status:'completed',conclusion:'success'}}],['wf_run_artifacts',{run_id:1},{artifacts:{total_count:0,artifacts:[]}}]];
   for(const [action,args,result] of cases){
     let calls=0;
     const t=harness(async(url,init)=>{
@@ -249,4 +249,8 @@ test('Actions completion receipt state and request id are bound',()=>{
  assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:2},{run_id:1}));
  assert.ok(!validWfV1Response('wf_workflow_enable',{completed:true,workflow_id:1,state:'disabled'},{workflow_id:1}));
  assert.ok(validWfV1Response('wf_workflow_enable',{completed:true,workflow_id:1,state:'enabled'},{workflow_id:1}));
+});
+
+test('all new read endpoint boundaries reject untyped nested collections',()=>{
+ for(const [action,body] of [['wf_pr_get',{pull:{}}],['wf_pr_reviews',{reviews:[null],complete:false}],['wf_pr_comments',{comments:[{}],complete:false}],['wf_issue_comments',{comments:[{id:true,body:'x'}],complete:false}],['wf_labels',{labels:[{id:1,name:'x',color:'bad'}],complete:false}],['wf_workflows',{workflows:{arbitrary:true}}],['wf_run_artifacts',{artifacts:{total_count:1,artifacts:[{}]}}]]) assert.equal(validWfV1Response(action,body),false,action);
 });

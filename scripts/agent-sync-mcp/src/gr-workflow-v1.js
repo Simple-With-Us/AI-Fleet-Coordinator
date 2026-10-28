@@ -1,3 +1,4 @@
+import {z} from 'zod';
 // Default-off caller contract. hosted-tools registers these tools, but they are neither listed nor
 // callable unless the owner sets GR_WORKFLOW_TOOLS=on (config.grWorkflowEnabled).
 // Contract for the git-relay wf_ workflow verbs (git-relay/git_relay/workflow_verbs.py).
@@ -151,7 +152,37 @@ const RESPONSE_KEYS = {
   wf_file_put: ['path','branch','commit'], wf_files_put: ['branch','commit','files'],
   wf_merge_guarded: ['merged','sha'],
 };
+const shaValue=z.string().regex(/^[0-9a-f]{40}$/),positive=z.number().int().positive();
+let jsonValueUnion=null;
+const jsonValue=z.lazy(()=>jsonValueUnion??=z.union([z.string(),z.number().finite(),z.boolean(),z.null(),z.array(jsonValue),z.record(z.string(),jsonValue)]));
+const objectWith=shape=>z.object(shape).catchall(jsonValue);
+const commitObject=objectWith({sha:shaValue,commit:objectWith({message:z.string()}),parents:z.array(objectWith({sha:shaValue}))});
+const branchObject=objectWith({name:z.string().min(1),commit:objectWith({sha:shaValue})});
+const runObject=objectWith({id:positive,head_sha:shaValue,status:z.string(),conclusion:z.string().nullable()});
+const artifactObject=objectWith({id:positive,name:z.string(),size_in_bytes:z.number().int().nonnegative(),expired:z.boolean()});
+const workflowObject=objectWith({id:positive,name:z.string(),path:z.string(),state:z.string()});
+const pullObject=objectWith({id:positive,number:positive,state:z.enum(['open','closed']),head:objectWith({sha:shaValue}),base:objectWith({sha:shaValue})});
+const reviewObject=objectWith({id:positive,state:z.string().max(100),commit_id:shaValue});
+const commentObject=objectWith({id:positive,body:z.string().max(32768)});
+const labelObject=objectWith({id:positive,name:z.string().max(100),color:z.string().regex(/^[0-9a-fA-F]{6}$/)});
+const readResponseSchemas={
+ wf_pr_reviews:z.object({reviews:z.array(reviewObject).max(50),complete:z.boolean()}).strict(),
+ wf_pr_comments:z.object({comments:z.array(commentObject).max(50),complete:z.boolean()}).strict(),
+ wf_issue_comments:z.object({comments:z.array(commentObject).max(50),complete:z.boolean()}).strict(),
+ wf_labels:z.object({labels:z.array(labelObject).max(50),complete:z.boolean()}).strict(),
+ wf_pr_get:z.object({pull:pullObject}).strict(),
+ wf_commit_get:z.object({commit:commitObject}).strict(),
+ wf_compare:z.object({comparison:objectWith({status:z.string(),ahead_by:z.number().int().nonnegative(),behind_by:z.number().int().nonnegative(),total_commits:z.number().int().nonnegative(),commits:z.array(commitObject)})}).strict(),
+ wf_branch_get:z.object({branch:branchObject}).strict(),
+ wf_repo_get:z.object({repository:objectWith({id:positive,name:z.string().min(1),full_name:z.string().min(3),default_branch:z.string().min(1),private:z.boolean()})}).strict(),
+ wf_workflows:z.object({workflows:objectWith({total_count:z.number().int().nonnegative(),workflows:z.array(workflowObject).max(50)})}).strict(),
+ wf_run_get:z.object({run:runObject}).strict(),
+ wf_run_artifacts:z.object({artifacts:objectWith({total_count:z.number().int().nonnegative(),artifacts:z.array(artifactObject).max(50)})}).strict(),
+};
 export function validWfV1Response(action, body, args) {
+ if(!boundedWorkflowInput(body))return false;
+ if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
+
   if (action === 'wf_release_list' && (!Array.isArray(body?.releases) || body.releases.length > 50 || !body.releases.every(x => x && Number.isInteger(x.id) && x.id > 0 && typeof x.draft === 'boolean' && typeof x.prerelease === 'boolean' && Object.keys(x).every(k => ['id','tag_name','name','html_url','created_at','published_at','draft','prerelease'].includes(k)) && ['tag_name','name','html_url','created_at','published_at'].every(k => x[k] === null || typeof x[k] === 'string' && new TextEncoder().encode(x[k]).length <= 2048)))) return false;
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
