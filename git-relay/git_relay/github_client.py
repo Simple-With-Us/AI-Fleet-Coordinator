@@ -344,8 +344,7 @@ class GitHubClient:
             # results, mixed errors and unscoped errors remain unknown.
             payload = data.get("data")
             no_result = payload is None or (
-                isinstance(payload, dict)
-                and payload.get("resolveReviewThread") is None
+                isinstance(payload, dict) and payload.get("resolveReviewThread") is None
             )
             definite_refusal = (
                 isinstance(errors, list)

@@ -1636,10 +1636,15 @@ class TestFailClosedBearer(unittest.TestCase):
 
     def test_scoped_forbidden_without_mutation_result_is_definite_refusal(self):
         for payload in (None, {"resolveReviewThread": None}):
-            client = GitHubClient("PAT", opener=FakeOpener({
-                "data": payload,
-                "errors": [{"type": "FORBIDDEN", "path": ["resolveReviewThread"]}],
-            }))
+            client = GitHubClient(
+                "PAT",
+                opener=FakeOpener(
+                    {
+                        "data": payload,
+                        "errors": [{"type": "FORBIDDEN", "path": ["resolveReviewThread"]}],
+                    }
+                ),
+            )
             with self.assertRaises(RelayGitHubError) as ctx:
                 client.resolve_thread("PRRT_abc", bearer="MINTED")
             self.assertEqual(ctx.exception.status, 403)
@@ -1650,15 +1655,28 @@ class TestFailClosedBearer(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             outcomes = OutcomeStore(os.path.join(tmp, "out.json"))
-            client = GitHubClient("PAT", opener=FakeOpener({
-                "data": {"resolveReviewThread": None},
-                "errors": [{"type": "FORBIDDEN", "path": ["resolveReviewThread"]}],
-            }))
+            client = GitHubClient(
+                "PAT",
+                opener=FakeOpener(
+                    {
+                        "data": {"resolveReviewThread": None},
+                        "errors": [{"type": "FORBIDDEN", "path": ["resolveReviewThread"]}],
+                    }
+                ),
+            )
             audit_path = os.path.join(tmp, "a.jsonl")
-            relay = Relay(SeatPolicy(APP_SEATS_JSON), client, AuditLog(audit_path),
-                          outcomes=outcomes, app_minter=FakeMinter())
-            code, payload = relay.handle(SEAT_TOKEN, "resolve_thread", {
-                "repo": "example/fixture-repo", "thread_id": "PRRT_kwDOAbc-123_x"})
+            relay = Relay(
+                SeatPolicy(APP_SEATS_JSON),
+                client,
+                AuditLog(audit_path),
+                outcomes=outcomes,
+                app_minter=FakeMinter(),
+            )
+            code, payload = relay.handle(
+                SEAT_TOKEN,
+                "resolve_thread",
+                {"repo": "example/fixture-repo", "thread_id": "PRRT_kwDOAbc-123_x"},
+            )
             self.assertEqual(code, 400)
             self.assertEqual(payload["github_status"], 403)
             self.assertEqual(payload["github_code"], "FORBIDDEN")
@@ -1673,8 +1691,10 @@ class TestFailClosedBearer(unittest.TestCase):
             {"errors": [{"type": "FORBIDDEN"}]},
             {"errors": [{"type": "FORBIDDEN", "path": ["other"]}]},
             {"errors": [forbidden, {"type": "INTERNAL"}]},
-            {"errors": [forbidden], "data": {"resolveReviewThread": {
-                "thread": {"isResolved": True}}}},
+            {
+                "errors": [forbidden],
+                "data": {"resolveReviewThread": {"thread": {"isResolved": True}}},
+            },
             {"errors": [forbidden], "data": "malformed"},
         ]
         for response in cases:
