@@ -1,6 +1,7 @@
 import unittest
 
 from git_relay.github_client import RelayGitHubError
+from git_relay.server import _workflow_audit_detail
 from git_relay.workflow_verbs import SPECS, Refused, WorkflowVerbs
 
 from .test_workflow_verbs import REPO, Client, Policy
@@ -67,3 +68,6 @@ class EnvironmentReads(unittest.TestCase):
             self.assertEqual(result["has_more"], expected)
         with self.assertRaises(Refused):
             WorkflowVerbs._environment_summary({**item, "name": "ghp_" + "x" * 36})
+
+    def test_page_is_audited(self):
+        self.assertEqual(_workflow_audit_detail({"page": 2}, {})["page"], 2)
