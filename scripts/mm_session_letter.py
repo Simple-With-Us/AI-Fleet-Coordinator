@@ -33,9 +33,11 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
+import time
 import unicodedata
 
 SEAT = "MM"
@@ -109,10 +111,10 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         remote = "cd ~/Code/%s && %s -m agent_sync.operator_registry %s" % (
             REPO_REL,
             "python3",
-            " ".join(args),
+            " ".join(shlex.quote(a) for a in args),
         )
         if local_db:
-            remote += " --db %s" % local_db
+            remote += " --db %s" % shlex.quote(local_db)
         proc = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", OPERATOR_HOST, remote],
             capture_output=True,
@@ -128,9 +130,13 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         return {"error": "unreadable answer: %s" % out[:200]}
 
 
-def register(session_id: str, title: str = "") -> dict:
+def register(session_id: str, title: str = "", space: str = "single") -> dict:
     """Ask the Operator for this session's letter.  Idempotent: the same session id
-    always answers with the same letter."""
+    always answers with the same letter.
+
+    The space is "single" for a main conversation and "double" for a subthread, so a
+    subthread never takes the letter a conversation is holding.
+    """
     args = [
         "register",
         "--platform",
@@ -145,6 +151,8 @@ def register(session_id: str, title: str = "") -> dict:
         SEAT,
         "--source",
         "the MM seat's session-letter hook",
+        "--letter-space",
+        space,
     ]
     if title:
         args += ["--title", title]
@@ -155,6 +163,21 @@ def update_title(session_id: str, title: str) -> dict:
     """Carry the thread's own title into the registry, keyed on the session id."""
     return registry_call(
         ["update", "--platform", PLATFORM, "--session-id", session_id, "--title", title]
+    )
+
+
+def close_letter(session_id: str, reason: str) -> dict:
+    """End a letter's use.  The row stays, so the history keeps the window."""
+    return registry_call(
+        [
+            "close",
+            "--platform",
+            PLATFORM,
+            "--session-id",
+            session_id,
+            "--reason",
+            reason,
+        ]
     )
 
 
@@ -257,10 +280,10 @@ def letter_cache_dir() -> str:
     return path
 
 
-def cache_letter(session_id: str, letter: str, topic: str = "") -> None:
+def cache_letter(session_id: str, letter: str, topic: str = "", space: str = "single") -> None:
     path = os.path.join(letter_cache_dir(), session_id + ".json")
     with open(path, "w", encoding="utf-8") as fh:
-        json.dump({"letter": letter, "topic": topic, "host": location()}, fh)
+        json.dump({"letter": letter, "topic": topic, "host": location(), "space": space}, fh)
 
 
 def cached_letter(session_id: str) -> str:
@@ -272,15 +295,15 @@ def cached_letter(session_id: str) -> str:
         return ""
 
 
-def letter_for(session_id: str, topic: str = "") -> str:
+def letter_for(session_id: str, topic: str = "", space: str = "single") -> str:
     """The letter for a session:  the cache first, the Operator otherwise."""
     letter = cached_letter(session_id)
     if letter:
         return letter
-    answer = register(session_id, topic)
+    answer = register(session_id, topic, space)
     letter = str(answer.get("label") or "")
     if letter:
-        cache_letter(session_id, letter, topic)
+        cache_letter(session_id, letter, topic, space)
     return letter
 
 
@@ -308,9 +331,10 @@ def hook_session_start() -> int:
     if not session_id:
         return 0
     row = session_row(session_id) or {}
-    if row.get("parent_session_id") or row.get("session_kind") not in (None, "conversation"):
-        return 0  # a subthread rides on its parent's letter
-    letter = letter_for(session_id, str(row.get("title") or ""))
+    space = "single"
+    if row.get("parent_session_id") or row.get("session_kind") == "task":
+        space = "double"  # a subthread takes a double letter (owner 2026-10-28)
+    letter = letter_for(session_id, str(row.get("title") or ""), space)
     if not letter:
         print(
             "Session letter: none yet (the Operator could not be reached).  Name this thread "
@@ -407,30 +431,106 @@ def hook_stop() -> int:
 
 # ---- the sweep --------------------------------------------------------------------
 
+# A wake session's title is the prompt it was woken with, not a thread anybody reads.
+# Those sessions get no letter:  a letter is the address of a thread.
+PROMPT_PREFIXES = (
+    "you are ",
+    "reply with",
+    "respond with",
+    "reply to",
+    "say ok",
+    "ping",
+    "pong",
+    "run exactly",
+    "run this",
+    "run ps",
+    "run echo",
+    "run the",
+    "use the write tool",
+    "use the read tool",
+    "do not call any tool",
+    "apply ",
+    "explain ",
+    "telemetry!",
+    "muster ",
+    "watch-",
+    "daemon header",
+    "<",
+    "botfleet-ok",
+)
 
-def sweep(apply: bool) -> int:
-    """Name the sessions this host already has:  letter, English title, registry in step."""
+
+def looks_like_prompt(title: str) -> bool:
+    """True when the title is a wake prompt rather than a thread name."""
+    text = title.strip().lower()
+    if not text or text == "main":
+        return True
+    return text.startswith(PROMPT_PREFIXES)
+
+
+def is_live(row: dict, live_hours: int) -> bool:
+    """A thread is live while it was touched inside the window."""
+    created = row.get("created_at_ms") or 0
+    try:
+        age_hours = (time.time() * 1000 - float(created)) / 3600000.0
+    except (TypeError, ValueError):
+        return True
+    return age_hours <= max(1, int(live_hours))
+
+
+def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
+    """Name the sessions this host already has:  letter, English title, registry in step.
+
+    A main conversation takes a single letter and a subthread a double one.  A thread
+    that is not live has its letter ended straight away, so the letter returns to the
+    pool for the next thread and the registry keeps the window it was used in.
+    """
+    topics: dict[str, str] = {}
+    if topics_file:
+        try:
+            with open(topics_file, encoding="utf-8") as fh:
+                topics = json.load(fh)
+        except (OSError, ValueError) as exc:
+            print("cannot read the topic file: %s" % exc, file=sys.stderr)
+            return 2
     out = []
-    for row in sessions(only_conversations=True):
-        session_id = row["session_id"]
+    for row in sessions():
+        kind = str(row.get("session_kind") or "")
+        if kind not in ("conversation", "task"):
+            continue
         title = str(row.get("title") or "")
-        letter = letter_for(session_id, title)
+        if looks_like_prompt(title):
+            continue
+        session_id = row["session_id"]
+        space = "single" if kind == "conversation" else "double"
+        letter = letter_for(session_id, title, space)
         if not letter:
             out.append({"session_id": session_id, "error": "no letter"})
             continue
-        wanted = wanted_title(letter, title)
+        topic = topics.get(session_id) or (title if is_english(title) else "")
+        if not topic:
+            out.append(
+                {"session_id": session_id, "letter": letter, "error": "needs an English topic"}
+            )
+            continue
+        wanted = wanted_title(letter, topic)
         entry = {
             "session_id": session_id,
+            "kind": kind,
             "letter": letter,
             "current_title": title,
             "wanted_title": wanted,
-            "english": is_english(title),
             "already_ok": title_ok(title, letter)[0],
+            "live": is_live(row, live_hours),
         }
         if apply and not entry["already_ok"]:
             set_title(session_id, wanted)
             update_title(session_id, wanted)
             entry["applied"] = True
+        if apply and not entry["live"]:
+            # The thread is old:  its letter's use ends, and the history keeps the window.
+            closed = close_letter(session_id, "stale and replaced by a newer session")
+            entry["letter_ended"] = closed.get("outcome")
         out.append(entry)
     print(json.dumps(out, indent=2))
     return 0
@@ -444,6 +544,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("hook-stop")
     sw = sub.add_parser("sweep")
     sw.add_argument("--apply", action="store_true")
+    sw.add_argument("--live-hours", type=int, default=36)
+    sw.add_argument("--topics-file", default="")
     lt = sub.add_parser("letter")
     lt.add_argument("--session-id", required=True)
     lt.add_argument("--title", default="")
@@ -458,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "hook-stop":
         return hook_stop()
     if args.command == "sweep":
-        return sweep(args.apply)
+        return sweep(args.apply, args.live_hours, args.topics_file)
     if args.command == "letter":
         print(json.dumps(register(args.session_id, args.title)))
         return 0

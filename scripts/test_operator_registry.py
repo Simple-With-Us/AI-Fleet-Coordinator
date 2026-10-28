@@ -151,6 +151,37 @@ class RegistryTest(unittest.TestCase):
     def test_display_title_format(self):
         self.assertEqual(R.display_title("H", "Thread Title"), "H: Thread Title")
 
+    # ---- two letter spaces:  a conversation takes one letter, a subthread two ----
+
+    def test_a_subthread_takes_a_double_letter(self):
+        r = self.reg.resolve_or_register(ident(platform="minimax", letter_space="double"))
+        self.assertEqual(len(r["label"]), 2)
+        self.assertIn(r["label"], R.LETTER_SPACES["double"])
+
+    def test_a_conversation_still_takes_a_single_letter(self):
+        r = self.reg.resolve_or_register(ident(platform="minimax"))
+        self.assertEqual(len(r["label"]), 1)
+        self.assertIn(r["label"], R.LETTERS)
+
+    def test_the_two_spaces_do_not_collide(self):
+        one = self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
+        two = self.reg.resolve_or_register(
+            ident(platform="minimax", native="native-2", letter_space="double")
+        )
+        self.assertNotEqual(one["label"], two["label"])
+        self.assertEqual(len(one["label"]), 1)
+        self.assertEqual(len(two["label"]), 2)
+
+    def test_a_subthread_resumes_with_the_same_double_letter(self):
+        first = self.reg.resolve_or_register(
+            ident(platform="minimax", native="native-1", letter_space="double")
+        )
+        again = self.reg.resolve_or_register(
+            ident(platform="minimax", native="native-1", letter_space="double")
+        )
+        self.assertEqual(again["label"], first["label"])
+        self.assertFalse(again["created"])
+
     # ---- update_session: the title follows the thread, keyed on the session id ----
 
     def test_update_session_sets_the_title_and_keeps_the_letter(self):

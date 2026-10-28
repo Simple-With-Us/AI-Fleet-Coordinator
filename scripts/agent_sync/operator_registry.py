@@ -35,6 +35,16 @@ from . import session_ids as SI
 from .operator_registry_schema import DDL, SCHEMA_VERSION
 
 LETTERS = tuple("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+# Two letter spaces on one platform (owner 2026-10-28):  a main conversation takes a
+# single letter, a subthread takes a double one.  The space is decided when the session
+# is registered and never changes afterwards:  a resume finds the row that already
+# holds the letter, so a session id always answers with the same letter.
+LETTER_SPACES = {
+    "single": LETTERS,
+    "double": tuple(a + b for a in LETTERS for b in LETTERS),
+}
+ALL_LETTERS = tuple(sorted(set(LETTERS) | set(LETTER_SPACES["double"])))
 MUTABLE_ATTRS = ("title", "project", "thread_link", "apple_note_link", "state", "wake_capability")
 IDENTITY_FIELDS = ("platform", "verified_host", "profile_scope", "native_session_id")
 
@@ -304,11 +314,19 @@ class SessionRegistry:
     # ---- writes (each one transaction:  state + events + outbox) ----------------
 
     def _allocate(
-        self, conn: sqlite3.Connection, platform: str, record_id: str, now: str
+        self,
+        conn: sqlite3.Connection,
+        platform: str,
+        record_id: str,
+        now: str,
+        space: str = "single",
     ) -> tuple[str, int]:
         """Lowest letter with no active assignment, wrapping after Z to A (RECYCLE on).  A reused
-        letter gets the next generation.  Raises LabelExhausted when all 26 are live."""
-        for letter in LETTERS:
+        letter gets the next generation.  Raises LabelExhausted when the space is full.
+
+        The space is chosen by the caller:  "single" for a main conversation, "double"
+        for a subthread."""
+        for letter in LETTER_SPACES.get(space, LETTERS):
             live = conn.execute(
                 "SELECT 1 FROM alias_assignments"
                 " WHERE platform = ? AND letter = ? AND retired_at IS NULL",
@@ -327,7 +345,10 @@ class SessionRegistry:
                 (platform, letter, generation, record_id, now),
             )
             return letter, generation
-        raise LabelExhausted(f"all {len(LETTERS)} letters are active on platform {platform!r}")
+        raise LabelExhausted(
+            f"all {len(LETTER_SPACES.get(space, LETTERS))} letters are active on"
+            f" platform {platform!r}"
+        )
 
     def _insert_event(
         self,
@@ -452,7 +473,13 @@ class SessionRegistry:
                     identity["source"],
                 ),
             )
-            letter, generation = self._allocate(conn, identity["platform"], record_id, now)
+            letter, generation = self._allocate(
+                conn,
+                identity["platform"],
+                record_id,
+                now,
+                str(identity.get("letter_space") or "single"),
+            )
             self._insert_event(
                 conn,
                 record_id,
@@ -589,6 +616,7 @@ def register_session(
     apple_note_link: str = "",
     wake_capability: str = "unknown",
     issuer: str = "",
+    letter_space: str = "single",
 ) -> dict[str, Any]:
     """Register one session and hand back its letter.
 
@@ -634,6 +662,7 @@ def register_session(
                 "thread_link": thread_link,
                 "apple_note_link": apple_note_link,
                 "wake_capability": wake_capability,
+                "letter_space": letter_space,
             }
         )
     finally:
@@ -932,8 +961,8 @@ def resolve_label(
     if not isinstance(letter, str) or not letter.strip():
         raise ValueError("letter is required")
     want = letter.strip().upper()
-    if want not in LETTERS:
-        raise ValueError("letter must be one of A-Z")
+    if want not in ALL_LETTERS:
+        raise ValueError("letter must be A-Z, or two letters for a subthread")
     _check_generation(generation)
     if not db_path:
         raise RegistryUnavailable("no registry path was given")
@@ -1097,7 +1126,7 @@ def candidates_for(
     retired.  A closed session can never hold a letter again.
     """
     want = str(letter or "").strip().upper()
-    if not want or want not in LETTERS:
+    if not want or want not in ALL_LETTERS:
         return []
     if not db_path or not os.path.isfile(str(db_path)):
         return []
@@ -1155,7 +1184,7 @@ def candidates_for_letter(db_path: str, letter: str) -> list[dict[str, Any]]:
     query that finds them.
     """
     want = str(letter or "").strip().upper()
-    if not want or want not in LETTERS or not db_path or not os.path.isfile(str(db_path)):
+    if not want or want not in ALL_LETTERS or not db_path or not os.path.isfile(str(db_path)):
         return []
     try:
         registry = SessionRegistry(str(db_path), read_only=True)
@@ -1375,6 +1404,12 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--thread-link", default="")
     r.add_argument("--apple-note-link", default="")
     r.add_argument("--wake-capability", default="unknown")
+    r.add_argument(
+        "--letter-space",
+        default="single",
+        choices=sorted(LETTER_SPACES),
+        help="single for a main conversation, double for a subthread",
+    )
     rs = sub.add_parser("resolve", help="name the session a letter points at")
     rs.add_argument("--db", default="", help="the registry file (default: the shared path)")
     rs.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
@@ -1445,6 +1480,7 @@ def main(argv: list[str] | None = None) -> int:
                 apple_note_link=args.apple_note_link,
                 wake_capability=args.wake_capability,
                 issuer=ISSUER_OPERATOR,
+                letter_space=args.letter_space,
             )
         except ValueError as exc:
             print(json.dumps({"error": str(exc)}))
