@@ -51,12 +51,13 @@ class StateReapply(unittest.TestCase):
 
     def test_relay_known_state_reapply_but_unknown_holds(self):
         import json
+        from unittest.mock import patch
+
         from git_relay.audit import AuditLog
         from git_relay.github_client import RelayGitHubError
         from git_relay.policy import SeatPolicy
         from git_relay.server import Relay
         from git_relay.workflow_verbs import SPECS
-        from unittest.mock import patch
 
         seat_token = "s" * 32
         config = json.dumps(
