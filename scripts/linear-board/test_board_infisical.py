@@ -136,11 +136,6 @@ class InfisicalTests(T.BoardTest):
         a host cannot verify a seat bearer, so it runs without an identity:  reads use the shared Fleet app."""
         return dict({"LINEAR_BOARD_FLEET_SECRETS": str(self.tmp / "no-such-fleet-secrets")}, **extra)
 
-    def afc_put(self, name, value):
-        """Put one key in the AI Fleet Coordinator prod /linear folder, which the fake loader serves under
-        `--project ai-fleet-coordinator`."""
-        (self.afc_vault / name).write_text(value)
-
     def fleet_env(self):
         """The shared Fleet app's pair in the environment, as a host with no fleet-secrets must export it."""
         return {
