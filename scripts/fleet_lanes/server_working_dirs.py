@@ -231,7 +231,10 @@ def prepare_staged_directory(path: Path) -> Path:
 
     A missing directory is created, the way the non-symlink path creates it, so
     a knob whose target directory does not exist yet is not refused with a
-    permission message that hides the real reason.  A directory that is there
+    permission message that hides the real reason.  The directory is created
+    private, because it holds a staged copy of the operator's own file.  A
+    path that is a symlink and not a directory is refused:  it would send the
+    staged file somewhere the operator did not name.  A directory that is there
     but is neither writable nor searchable is refused with a `PermissionError`
     that names it, before anything is written, so the file the link points at
     cannot be truncated.
@@ -241,7 +244,11 @@ def prepare_staged_directory(path: Path) -> Path:
     """
     directory = staged_directory(path)
     if not directory.is_dir():
-        directory.mkdir(parents=True, exist_ok=True)
+        if directory.is_symlink():
+            raise PermissionError(
+                f"the staged directory {directory} is a symlink and not a directory"
+            )
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path.is_symlink() and not os.access(directory, os.W_OK | os.X_OK):
         raise PermissionError(
             f"the staged replacement of {path} needs write and search access to"

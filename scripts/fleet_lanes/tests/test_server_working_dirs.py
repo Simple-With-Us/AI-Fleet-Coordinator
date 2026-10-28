@@ -1081,6 +1081,34 @@ class ServerWorkingDirsTest(unittest.TestCase):
         )
         self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
 
+    def test_a_staged_directory_that_does_not_exist_is_created_private(self) -> None:
+        """A staged directory the tool creates holds a copy of the operator's file.
+
+        It is created private, so the staged copy is not readable by the other
+        accounts on the host.
+        """
+        missing = self.tmp / "missing" / "deeper"
+        swd.prepare_staged_directory(missing / "settings.json")
+        self.assertTrue(missing.is_dir(), "the directory is created")
+        self.assertEqual(
+            missing.stat().st_mode & 0o777,
+            0o700,
+            "a directory the tool creates must be private",
+        )
+
+    def test_a_staged_directory_that_is_a_symlink_is_refused(self) -> None:
+        """A symlink where the directory belongs would send the file elsewhere."""
+        elsewhere = self.tmp / "elsewhere"
+        elsewhere.mkdir()
+        redirect = self.tmp / "redirect"
+        redirect.symlink_to(elsewhere / "not-there")
+        with self.assertRaises(PermissionError):
+            swd.prepare_staged_directory(redirect / "settings.json")
+        self.assertFalse(
+            (elsewhere / "not-there").exists(),
+            "nothing may be created through the symlink",
+        )
+
     def test_a_refused_group_change_is_reported(self) -> None:
         """A group the account cannot keep is reported, not changed silently."""
         path = self.tmp / "grouped"
