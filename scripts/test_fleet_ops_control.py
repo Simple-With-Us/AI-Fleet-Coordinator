@@ -26,9 +26,7 @@ NOW = 1_800_000_000.0
 
 
 def stamp(epoch):
-    return datetime.datetime.fromtimestamp(epoch, datetime.UTC).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    return datetime.datetime.fromtimestamp(epoch, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 CONFIG = {
