@@ -77,6 +77,12 @@ class SeatPolicy:
     # permission in SPECS.  They need the seat's own App, like APP_ACTIONS, but are not
     # wired into the HTTP dispatch: the server refuses them as registered-not-wired.
     WORKFLOW_ACTIONS = (
+        "wf_assignees_add",
+        "wf_assignees_remove",
+        "wf_issue_lock",
+        "wf_issue_unlock",
+        "wf_label_create",
+        "wf_label_delete",
         "wf_pr_get",
         "wf_pr_reviews",
         "wf_pr_comments",
