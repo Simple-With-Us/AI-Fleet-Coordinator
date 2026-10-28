@@ -175,7 +175,7 @@ class ValidateTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
-    """The responder's contract is code:  it must carry the same screen as AGENT-SYNC Precedence rule 3."""
+    """The responder's contract is code:  it must carry the same screen as FLEET-PROTOCOL Precedence rule 3."""
 
     def contract(self) -> str:
         with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
@@ -210,21 +210,13 @@ class ContractTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)
                 self.assertIn(
-                    phrase, self.protocol(), "the contract and AGENT-SYNC rule 3 name the same risk"
+                    phrase, self.protocol(), "the contract and FLEET-PROTOCOL rule 3 name the same risk"
                 )
 
     def protocol(self) -> str:
-        # The protocol document is being renamed:  read whichever name the mirror holds.  Remove the old name
-        # when the rename is complete.
+        # The document was renamed:  the mirror carries one name now, and the old one is gone.
         root = os.path.join(os.path.dirname(W.CONTRACT_PATH), "..", "..", "..")
-        path = next(
-            (
-                os.path.join(root, n)
-                for n in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md")
-                if os.path.isfile(os.path.join(root, n))
-            ),
-            os.path.join(root, "FLEET-PROTOCOL.md"),
-        )
+        path = os.path.join(root, "FLEET-PROTOCOL.md")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 

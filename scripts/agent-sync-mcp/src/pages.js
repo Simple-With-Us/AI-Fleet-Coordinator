@@ -179,7 +179,7 @@ function gbBearerSection(rows, csrf, mintId = "") {
     .map((r) => {
       const st = r.status ?? {};
       const state = r.status === null ? "Unknown (diagnostic read failed)" : st.active ? `<span class="ok">Active</span>` : st.expired ? `<span class="warn">Expired</span>` : "None";
-      const mcpState = st.active || st.expired ? (st.mcp_accept ? "also accepted on /mcp" : "GR-MCP only") : "";
+      const mcpState = st.active || st.expired ? (st.mcp_accept_recorded === false ? "No recorded /mcp acceptance (legacy); /mcp refused" : st.mcp_accept ? "also accepted on /mcp" : "GR-MCP only") : "";
       const detail = st.created_at ? `minted ${escapeHtml(ownerTime(st.created_at))}, expires ${escapeHtml(ownerTime(st.expires_at))}${st.last_used_at ? `, last used ${escapeHtml(ownerTime(st.last_used_at))}` : ", never used"}` : "";
       // Wrong-secret presentations against this identity:  counts and a time,
       // never a hash (the narrowing review verdict:  make a guessing storm visible here).

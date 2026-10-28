@@ -30,7 +30,7 @@
 //                        sentryRows: <events response `data` array or null> }
 //
 // Posting (no --dry-run): shells out to the canonical Mac-local relay
-// helper, per AGENT-SYNC.md -- never hand-rolls a Zulip client call and
+// helper, per FLEET-PROTOCOL.md -- never hand-rolls a Zulip client call and
 // never reads a bot key directly:
 //   simple-chat post --as CLAUDE --topic "fleet-mode digest" "<message>"
 //
@@ -88,7 +88,7 @@ function resolveTier(raw) {
 
 // Frontier vs non-frontier per fleet-mode: opus is frontier-tier; haiku and
 // sonnet are non-frontier (mechanical/default).  fable is Claude's historical
-// frontier-equivalent tag (see AGENT-SYNC.md seat registry note) so it counts
+// frontier-equivalent tag (see FLEET-PROTOCOL.md seat registry note) so it counts
 // as frontier too.
 const FRONTIER_TIERS = new Set(["opus", "fable"]);
 

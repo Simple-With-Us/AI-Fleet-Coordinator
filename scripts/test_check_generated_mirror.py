@@ -229,12 +229,11 @@ class ContentRules(RepoCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("is missing", problems[0])
 
-    def test_the_real_pin_is_the_imported_text(self) -> None:
+    def test_the_shipped_entry_is_the_current_document_with_no_stale_pin(self) -> None:
         spec = gm.GENERATED_PATHS[0]
-        self.assertEqual(spec.path, "AGENT-SYNC.md")
-        self.assertEqual(
-            spec.pre_flip_sha256, "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef"
-        )
+        self.assertEqual(spec.path, "FLEET-PROTOCOL.md")
+        self.assertIsNone(spec.pre_flip_sha256)
+        self.assertIsNone(spec.alternate)
 
 
 class BranchRule(RepoCase):
@@ -502,10 +501,10 @@ class RenameInFlight(RepoCase):
         problems, _ = self.run_pair(base=True, branch="handbook-sync/mirror")
         self.assertTrue(any("may change generated paths only" in m for m in problems), problems)
 
-    def test_the_shipped_list_names_both_during_the_rename(self) -> None:
+    def test_the_shipped_list_names_only_the_current_document(self) -> None:
         shipped = {s.path: s.alternate for s in gm.GENERATED_PATHS}
-        self.assertEqual(shipped.get("AGENT-SYNC.md"), "FLEET-PROTOCOL.md")
-        self.assertEqual(shipped.get("FLEET-PROTOCOL.md"), "AGENT-SYNC.md")
+        self.assertEqual(shipped.get("FLEET-PROTOCOL.md"), None)
+        self.assertNotIn("AGENT-SYNC.md", shipped)
 
 
 class CommandLine(RepoCase):

@@ -125,6 +125,13 @@ HELD_BACK_MIN_DIGEST_MINUTES = 15
 # sooner than the window, and a seat one under its cap would otherwise post every 30s tick.
 HELD_ALERT_DEFAULT_MINUTES = 60
 HELD_ALERT_LIMITS: dict[str, tuple[float, float]] = {"held_alert_minutes": (0, 1440)}
+# The peer-broadcast reminder (owner, Oct 27 2026, broadcast_audit.py):  how long a fleet bot has to
+# explain its `@all` to the owner before the listener DMs the owner about it.  0 turns the reminder
+# off;  the wake itself is untouched either way.
+PEER_BROADCAST_REMINDER_DEFAULT_MINUTES = 10
+PEER_BROADCAST_LIMITS: dict[str, tuple[float, float]] = {
+    "peer_broadcast_reminder_minutes": (0, 1440)
+}
 # Seat tags whose bots are always eligible senders, on top of every tag the seat partition lists
 # (fleet_tags).  Owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to wake
 # anyone else", so every fleet bot (Mac and cloud seats, GB personas, BF role bots) is eligible.
@@ -402,6 +409,9 @@ class Config:
         # bot carries the post;  it defaults to the claude seat, then to the first enabled seat.
         self.held_alert_minutes = float(HELD_ALERT_DEFAULT_MINUTES)
         self.held_alert_seat: str | None = None
+        # The peer-broadcast reminder (owner, Oct 27 2026).  How long a fleet bot's `@all` may go
+        # unexplained before the listener DMs the owner about it;  0 turns the reminder off.
+        self.peer_broadcast_reminder_minutes = float(PEER_BROADCAST_REMINDER_DEFAULT_MINUTES)
         self.auto_subscribe = (
             True  # daemon.auto_subscribe:  held seats join every public channel (owner 2026-10-10)
         )
@@ -694,6 +704,21 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                 errors.append("daemon.held_alert_minutes must be between %g and %g" % (low, high))
             else:
                 cfg.held_alert_minutes = value
+    # The peer-broadcast reminder (owner, Oct 27 2026).  Ten minutes by default;  0 turns it off.
+    if "peer_broadcast_reminder_minutes" in daemon:
+        value = _number(
+            daemon["peer_broadcast_reminder_minutes"],
+            "daemon.peer_broadcast_reminder_minutes",
+            errors,
+        )
+        if value is not None:
+            low, high = PEER_BROADCAST_LIMITS["peer_broadcast_reminder_minutes"]
+            if not low <= value <= high:
+                errors.append(
+                    "daemon.peer_broadcast_reminder_minutes must be between %g and %g" % (low, high)
+                )
+            else:
+                cfg.peer_broadcast_reminder_minutes = value
     # Which seat's bot carries the digest.  Optional:  the daemon falls back to the claude seat, then
     # to the first enabled seat, so an unset value still posts rather than silently going quiet.
     if "held_alert_seat" in daemon:
