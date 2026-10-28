@@ -853,6 +853,119 @@ class ServerWorkingDirsTest(unittest.TestCase):
         self.assertEqual(self.settings.read_text(), original)
         self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
 
+    # -- the findings Kody raised on the first review (Oct 28) ----------- #
+
+    def test_a_skipped_knob_the_verify_would_call_installed_is_still_off(self) -> None:
+        """A unit that could not be created is off, not a silent success.
+
+        `knob_unit` calls a unit that does not exist "not installed", which is a
+        pass.  A unit the account could not write is not installed because the
+        write was refused, so the apply must not report success for it.
+        """
+        unit = self.systemd / "opencode-server.service"
+        self.assertFalse(unit.exists())
+        real_write = swd.write
+
+        def refuse(path, text):
+            if path == unit:
+                raise PermissionError(13, "Permission denied")
+            real_write(path, text)
+
+        with mock.patch.object(swd, "write", refuse):
+            code, printed = self.apply_output()
+
+        self.assertIn("skipped  opencode-server.service", printed)
+        self.assertIn("FAIL  opencode-server.service", printed)
+        self.assertEqual(code, 1, "a knob that could not be applied must not report success")
+
+    def test_a_refused_knob_still_lets_the_knobs_after_it_apply(self) -> None:
+        """A knob the tool refuses to write must not abort the whole apply.
+
+        `opencode_server_flags` refuses a host or port it will not interpolate,
+        and `which` refuses to invent a path for a binary that is not there.
+        Both raise SystemExit, which the apply catches so the knob after it and
+        the final verify still run.  The refusal itself still ends the apply.
+        """
+        self.write_config('{"server": {"host": "--user root", "port": 62306}}\n')
+        with self.assertRaises(SystemExit):
+            self.apply()
+        # The knob after the refused one was applied.
+        claude = self.systemd / "claude-remote-control.service"
+        self.assertTrue(claude.exists(), "the knob after the refused one was not applied")
+        self.assertIn(f"WorkingDirectory={self.lanes}", claude.read_text())
+
+    def test_a_refused_knob_is_reported_off_by_the_verify(self) -> None:
+        """A knob the tool refused to write is off, and the verify says so."""
+        self.write_config('{"server": {"host": "--user root", "port": 62306}}\n')
+        with self.assertRaises(SystemExit):
+            self.apply()
+        verdicts = {label: ok for label, ok, _ in swd.check(self.lanes)}
+        self.assertFalse(verdicts["opencode-server.service"])
+        self.assertTrue(verdicts["claude-remote-control.service"])
+
+    def test_a_symlinked_knob_is_written_through_the_link(self) -> None:
+        """A symlinked knob keeps its link, and the file it points at changes."""
+        target = self.tmp / "volume" / "settings.json"
+        target.parent.mkdir(parents=True)
+        target.write_text('{"old": true}\n')
+        self.settings.unlink()
+        self.settings.symlink_to(target)
+        self.apply()
+        self.assertTrue(self.settings.is_symlink(), "the link must stay a link")
+        self.assertEqual(json.loads(target.read_text())["worktree"]["location"], str(self.lanes.resolve()))
+
+    def test_a_symlinked_knob_in_a_read_only_directory_is_written_in_place(self) -> None:
+        """A link into a directory the account cannot write is still written.
+
+        The staged replace cannot happen in a directory the account cannot
+        write, so the write goes through the link in place instead of being
+        skipped:  the file the account already edits is the one that changes.
+        """
+        volume = self.tmp / "volume"
+        volume.mkdir()
+        target = volume / "settings.json"
+        target.write_text('{"old": true}\n')
+        self.settings.unlink()
+        self.settings.symlink_to(target)
+        volume.chmod(0o500)
+        real_access = os.access
+
+        def access(path, mode, **kwargs):
+            if str(path) == str(target.parent):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        try:
+            with mock.patch.object(swd.os, "access", access):
+                self.apply()
+        finally:
+            volume.chmod(0o700)
+        self.assertTrue(self.settings.is_symlink(), "the link must stay a link")
+        self.assertEqual(
+            json.loads(target.read_text())["worktree"]["location"],
+            str(self.lanes.resolve()),
+        )
+
+    def test_a_refused_group_change_is_reported(self) -> None:
+        """A group the account cannot keep is reported, not changed silently."""
+        path = self.tmp / "grouped"
+        path.write_text("original\n")
+        path.chmod(0o640)
+
+        def refuse(path, uid, gid):
+            raise PermissionError(1, "Operation not permitted")
+
+        with mock.patch.object(swd.os, "chown", refuse):
+            import io
+            from contextlib import redirect_stdout
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                swd.write(path, "replacement\n")
+        printed = buffer.getvalue()
+        self.assertIn("could not keep the group", printed)
+        self.assertEqual(path.read_text(), "replacement\n")
+
     def test_a_write_that_fails_leaves_the_file_it_had_intact(self) -> None:
         """A write that fails at the last step leaves the old file whole."""
         staged = self.tmp / "staged"
