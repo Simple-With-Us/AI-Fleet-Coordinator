@@ -3209,9 +3209,7 @@ def run(
         check_server_tools(report, rt, checkouts, runner)
     if not args.no_registry:
         check_registry(report, host, network, runner, fetch)
-    fleetlink_tokens = {
-        seat: seat_has_fleetlink_token(seat, env) for seat in ("CODEX", "CLAUDE")
-    }
+    fleetlink_tokens = {seat: seat_has_fleetlink_token(seat, env) for seat in ("CODEX", "CLAUDE")}
     for seat in [s.strip().upper() for s in args.seats.split(",") if s.strip()]:
         check_seat(report, seat, env)
         check_mcp_startup(report, seat)

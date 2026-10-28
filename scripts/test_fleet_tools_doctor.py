@@ -198,9 +198,7 @@ class SeatAndMcpTests(unittest.TestCase):
         rows = self.mcp_rows()
         for seat in ("mcp:codex", "mcp:claude"):
             self.assertEqual(rows[seat]["status"], "WARN")
-            self.assertIn(
-                "pre-rename name agent-sync, canonical simple-chat", rows[seat]["detail"]
-            )
+            self.assertIn("pre-rename name agent-sync, canonical simple-chat", rows[seat]["detail"])
             self.assertNotIn("pre-rename name simple-chat", rows[seat]["detail"])
 
     def test_a_seat_without_a_fleetlink_token_is_not_asked_to_register_it(self):
