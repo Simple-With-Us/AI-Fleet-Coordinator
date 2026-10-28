@@ -326,7 +326,9 @@ class WorkflowVerbs:
         data = _arr(self._get(f"/repos/{repo}/issues?state={state}&per_page={_page(args)}"))
         return {
             "issues": [
-                self._issue_summary(x) for x in data[:MAX_PROJECT] if not isinstance(x, dict) or "pull_request" not in x
+                self._issue_summary(x)
+                for x in data[:MAX_PROJECT]
+                if not isinstance(x, dict) or "pull_request" not in x
             ],
             "complete": False,
         }
