@@ -17,6 +17,10 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+  wf_merge_queue_entry:['Read one PR merge-queue entry.',obj(['repo','number'],{repo:REPO,number:INT})],
+  wf_merge_queue_enqueue:['Enqueue exact PR head without jumping the queue. Requires separate execution authority, never bypasses GitHub gates.',obj(['repo','number','expected_sha'],{repo:REPO,number:INT,expected_sha:SHA})],
+  wf_merge_queue_dequeue:['Dequeue PR with non-atomic expected-head pre-read; requires separate execution authority.',obj(['repo','number','expected_sha'],{repo:REPO,number:INT,expected_sha:SHA})],
+
   wf_pr_draft: ['pr draft.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_pr_ready: ['pr ready.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_automerge_enable: ['automerge enable.',obj(['repo','number','method'],{repo:REPO,number:INT,method:{type:'string',enum:['SQUASH','MERGE','REBASE']}})],
@@ -54,7 +58,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_review_threads','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_merge_queue_entry','wf_review_threads','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -101,6 +105,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_merge_queue_entry:['entry'],wf_merge_queue_enqueue:['entry'],wf_merge_queue_dequeue:['entry'],
   wf_pr_draft:['pull'],
   wf_pr_ready:['pull'],
   wf_automerge_enable:['pull'],
@@ -124,6 +129,13 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 export function validWfV1Response(action, body) {
+  if (action.startsWith('wf_merge_queue_')) {
+    if (!body || !Object.hasOwn(body,'entry')) return false;
+    const e=body.entry;
+    if (action === 'wf_merge_queue_entry') { if(e !== null && (!e || typeof e.id !== 'string' || !e.id || !['AWAITING_CHECKS','LOCKED','MERGEABLE','QUEUED','UNMERGEABLE'].includes(e.state) || !Number.isInteger(e.position) || e.position < 1 || typeof e.jump !== 'boolean' || typeof e.enqueuedAt !== 'string')) return false; }
+    else if (!e || typeof e.id !== 'string' || !e.id || typeof e.pull_request_id !== 'string' || !e.pull_request_id) return false;
+  }
+
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;
