@@ -1,15 +1,17 @@
 import base64
-import unittest
 import json
 import os
 import tempfile
+import unittest
+
+from test_workflow_verbs import REPO, Client, Policy
+from test_workflow_wiring import TOKEN, Minter
+
 from git_relay.audit import AuditLog
+from git_relay.github_client import GitHubClient, RelayGitHubError
 from git_relay.policy import SeatPolicy
 from git_relay.server import Relay
-from test_workflow_wiring import Minter, TOKEN
-from test_workflow_verbs import Client, Policy, REPO
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
-from git_relay.github_client import RelayGitHubError, GitHubClient
 
 ASSET = {"id": 7, "name": "proof.txt", "state": "uploaded", "size": 2}
 

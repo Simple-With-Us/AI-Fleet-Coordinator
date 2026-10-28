@@ -402,7 +402,13 @@ class Tests(unittest.TestCase):
 
     def test_wf_files_put_upstream_shape_and_special_entries(self):
         files = [{"path": "scripts/run.sh", "content_b64": "eA=="}]
-        args = {"repo": REPO, "branch": "feat/x", "message": "m", "expected_head_sha": SHA, "files": files}
+        args = {
+            "repo": REPO,
+            "branch": "feat/x",
+            "message": "m",
+            "expected_head_sha": SHA,
+            "files": files,
+        }
 
         def routed(patch):
             c = self._git_data_client()
@@ -429,7 +435,13 @@ class Tests(unittest.TestCase):
                 Multi(c).run("wf_files_put", args)
             self.assertFalse([1 for m, p, *_ in c.calls if m == "PATCH"], "no ref update")
         # An existing symlink (or submodule) at the path is refused, not overwritten.
-        c = routed({("GET", f"/git/trees/{'c' * 40}"): {"tree": [{"path": "run.sh", "type": "blob", "sha": "d" * 40, "mode": "120000"}]}})
+        c = routed(
+            {
+                ("GET", f"/git/trees/{'c' * 40}"): {
+                    "tree": [{"path": "run.sh", "type": "blob", "sha": "d" * 40, "mode": "120000"}]
+                }
+            }
+        )
         with self.assertRaises(Refused):
             Multi(c).run("wf_files_put", args)
         self.assertFalse([1 for m, p, *_ in c.calls if m == "PATCH"])
