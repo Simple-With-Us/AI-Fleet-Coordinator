@@ -1011,8 +1011,8 @@ class WakeTests(DaemonHarness):
         self.assertNotIn("AGENT_SEAT", board_envs[0])
         self.assertNotIn("AGENT_LAUNCH_SEAT", board_envs[0])
         # simple-board is a plain symlink to scripts/simple-board and exports nothing itself, so the
-        # daemon must pass the write switch the old ~/.local/bin/board wrapper used to export.
-        self.assertEqual(board_envs[0].get("LINEAR_BOARD_WRITES"), "1")
+        # daemon passes no write switch:  the bearer-verified seat is the write gate.
+        self.assertNotIn("LINEAR_BOARD_WRITES", board_envs[0])
 
     def test_board_filing_without_a_bearer_locator_files_nothing_and_offers_no_seat(self) -> None:
         board_calls = []
