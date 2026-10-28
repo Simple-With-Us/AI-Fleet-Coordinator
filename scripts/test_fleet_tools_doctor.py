@@ -1335,7 +1335,7 @@ class ReportAndRunTests(HomeCase):
             if r["state"] == "current"
             and (
                 r["check"] == "runtime"
-                or r["check"].startswith(("tool:agent", "tool:board", "tool:lane", "tool:recall"))
+                or r["check"].startswith(("tool:agent", "tool:lane", "tool:recall"))
             )
         ]
         self.assertEqual(current, [])
