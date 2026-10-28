@@ -25,6 +25,7 @@ import binascii
 import re
 from urllib.parse import quote
 
+from .github_client import RelayGitHubError
 from .secret_scan import find_secret
 from .server import _perm_within_ceiling
 
@@ -313,6 +314,17 @@ class WorkflowVerbs:
             raise WriteOutcomeUnknown("issue write outcome unverifiable") from exc
         return {"issue": summary}
 
+    def _issue_before_write(self, repo, number):
+        # Only this GET is caught.  No upstream write has been attempted here.
+        # Existing held UNKNOWN rows are never cleared or reclassified.
+        try:
+            data = self._get(f"/repos/{repo}/issues/{number}")
+        except RelayGitHubError as exc:
+            if exc.status >= 500:
+                raise Unknown("issue pre-read unavailable; no write attempted") from None
+            raise
+        return self._issue_summary(data)
+
     def wf_issue_update(self, repo, args):
         _only(args, ("repo", "number", "title", "body", "state"))
         number = _int(args, "number")
@@ -325,7 +337,7 @@ class WorkflowVerbs:
         if not payload:
             raise Refused("issue update requires a change")
         # Read rejects PR targets.  This is not an atomic compare-and-swap claim.
-        self._issue_summary(self._get(f"/repos/{repo}/issues/{number}"))
+        self._issue_before_write(repo, number)
         result = self.client._call(
             "PATCH", f"/repos/{repo}/issues/{number}", payload, bearer=self.bearer
         )
@@ -345,7 +357,7 @@ class WorkflowVerbs:
         _only(args, ("repo", "number", "body"))
         number = _int(args, "number")
         body = self._issue_text(args, "body")
-        self._issue_summary(self._get(f"/repos/{repo}/issues/{number}"))
+        self._issue_before_write(repo, number)
         result = self.client._call(
             "POST", f"/repos/{repo}/issues/{number}/comments", {"body": body}, bearer=self.bearer
         )

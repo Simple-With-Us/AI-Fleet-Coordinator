@@ -127,3 +127,21 @@ class IssueTests(unittest.TestCase):
                     rows = [json.loads(x) for x in f]
                 self.assertEqual(len(rows), 2)
                 self.assertNotIn("details", json.dumps(rows))
+
+    def test_pre_read_failure_does_not_hold_a_never_sent_write(self):
+        from git_relay.github_client import RelayGitHubError
+        from git_relay.workflow_verbs import Unknown
+
+        for action, args in [
+            ("wf_issue_update", {"number": 2, "state": "closed"}),
+            ("wf_issue_comment", {"number": 2, "body": "x"}),
+        ]:
+            client = Client()
+
+            def fail(*args, **kwargs):
+                raise RelayGitHubError(503, "private upstream text")
+
+            client._call = fail
+            h = WorkflowVerbs(client, Policy(), "swu-wise", "opaque", "swu-wise", action, REPO)
+            with self.assertRaises(Unknown):
+                h.run(action, {"repo": REPO, **args})
