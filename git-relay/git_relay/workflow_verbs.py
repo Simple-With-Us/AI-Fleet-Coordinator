@@ -475,7 +475,6 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
 
-
     # ---- reads ----
     def wf_pr_list(self, repo, args):
         _only(args, ("repo", "state", "head", "base", "per_page"))
