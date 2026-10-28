@@ -1,4 +1,4 @@
-"""`agent-sync daemon install` and `uninstall`:  the LaunchAgent plist and the sample config.
+"""`simple-chat daemon install` and `uninstall`:  the LaunchAgent plist and the sample config.
 
 They write files only.  They never run launchctl:  they print the bootstrap or bootout command
 for the person (or orchestrator) doing the install.  Every path is derived from HOME, so tests
@@ -264,8 +264,8 @@ def install(
     out.write("  launchctl bootstrap gui/%d %s\n" % (uid, target))
     out.write("After an update to the checkout:  launchctl kickstart -k gui/%d/%s\n" % (uid, LABEL))
     out.write(
-        "Before wakes can run:  agent-sync daemon init, then agent-sync daemon test-wake --seat CLAUDE --run, "
-        "read the result, then agent-sync daemon test-wake --seat CLAUDE --pin\n"
+        "Before wakes can run:  simple-chat daemon init, then simple-chat daemon test-wake --seat CLAUDE --run, "
+        "read the result, then simple-chat daemon test-wake --seat CLAUDE --pin\n"
     )
     if dry_run:
         out.write("dry run: nothing was changed\n")

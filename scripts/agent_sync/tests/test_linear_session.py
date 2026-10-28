@@ -9,6 +9,7 @@ from agent_sync.mcp import linear_tools as LT
 from agent_sync.tests.mcp_harness import (
     SESSION as SERVER_SESSION,
 )  # the harness's CLAUDE_CODE_SESSION_ID
+from agent_sync.tests.mcp_harness import seat_bearer_locator
 from agent_sync.tests.test_mcp_extras import FakePrograms
 from agent_sync.tests.test_mcp_identity import ENABLED, PERSONA
 
@@ -23,7 +24,10 @@ class ChildEnvTests(unittest.TestCase):
         out = LT.child_env(server, "CLAUDE", {}, session_env=server)
         self.assertEqual(out["CLAUDE_CODE_SESSION_ID"], "cc-sess-0001")
         self.assertNotIn("ZULIP_API_KEY", out)
-        self.assertEqual(out["AGENT_SEAT"], "CLAUDE")
+        # board proves its seat from the bearer and never reads AGENT_SEAT, so the seat variables are
+        # stripped from the child and no caller can put one back.
+        self.assertNotIn("AGENT_SEAT", out)
+        self.assertNotIn("AGENT_LAUNCH_SEAT", out)
 
     def test_no_session_var_is_forwarded_unless_the_caller_hands_it_over(self):
         server = {
@@ -34,6 +38,11 @@ class ChildEnvTests(unittest.TestCase):
         out = LT.child_env(server, "CURSOR", {})
         self.assertNotIn("CLAUDE_CODE_SESSION_ID", out)
         self.assertNotIn("AGENT_SESSION", out)
+
+    def test_the_bearer_locator_is_the_only_identity_the_child_gets(self):
+        out = LT.child_env({"PATH": "/usr/bin"}, "CLAUDE", {}, locator=seat_bearer_locator("CLAUDE"))
+        self.assertEqual(out["SIMPLE_BOARD_BEARER_LOCATOR"], seat_bearer_locator("CLAUDE"))
+        self.assertNotIn("AGENT_SEAT", out)
 
     def test_an_explicit_session_argument_wins(self):
         out = LT.child_env(
@@ -111,6 +120,43 @@ class LinearSessionToolTests(FakePrograms):
     def test_reads_do_not_need_one(self):
         session = self.session(self.env())
         self.assertNotIn("isError", session.call("linear_list", {"limit": 1}, identity="CURSOR"))
+
+
+class BearerLocatorTests(FakePrograms):
+    """A stdio Linear write is signed with the acting seat's own bearer locator.
+
+    board proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT, so
+    the locator comes from the seat's own trusted daemon config, and a write with no locator is refused
+    before board runs.
+    """
+
+    def test_the_seats_own_locator_reaches_board(self):
+        session = self.session(self.env())
+        self.assertNotIn("isError", session.call("linear_claim", {"id": "AFC-1"}))
+        for call in self.calls(self.board_out):
+            self.assertEqual(call["bearer"], seat_bearer_locator("CLAUDE"))
+            self.assertNotIn("AGENT_SEAT", call["env"])
+            self.assertNotIn("AGENT_LAUNCH_SEAT", call["env"])
+
+    def test_a_write_with_no_locator_is_refused_before_board_runs(self):
+        self.pin_seat_bearers({})
+        session = self.session(self.env(SIMPLE_BOARD_BEARER_LOCATOR=None))
+        error = self.assert_tool_error(session.call("linear_claim", {"id": "AFC-1"}), "not_authorized")
+        self.assertIn("CLAUDE", error["message"])
+        self.assertIn("bearer_locator", error["message"])
+        self.assertEqual(self.calls(self.board_out), [], "board must not run when there is no locator")
+
+    def test_a_read_with_no_locator_still_works(self):
+        self.pin_seat_bearers({})
+        session = self.session(self.env(SIMPLE_BOARD_BEARER_LOCATOR=None))
+        self.assertNotIn("isError", session.call("linear_list", {"limit": 1}))
+
+    def test_the_locator_from_the_listeners_own_config_is_used(self):
+        self.pin_seat_bearers({"CLAUDE": seat_bearer_locator("CLAUDE")})
+        session = self.session(self.env(SIMPLE_BOARD_BEARER_LOCATOR=None))
+        self.assertNotIn("isError", session.call("linear_claim", {"id": "AFC-1"}))
+        for call in self.calls(self.board_out):
+            self.assertEqual(call["bearer"], seat_bearer_locator("CLAUDE"))
 
 
 if __name__ == "__main__":

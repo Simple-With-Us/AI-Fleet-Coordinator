@@ -9,7 +9,7 @@
        stable copy that scripts/needs_owner/install.sh (its apply mode) puts at ~/apps/needs-owner, in isolated mode
        (python3 -I), and does these things as CLAUDE:  posts a notice for an item whose own seat could not
        (after 2 minutes), records the owner's answer (a tap on a low-stakes option, a message that
-       agent-sync verify-owner-msg passes, or a Linear comment by OWNER_LINEAR_USER_ID) as one Linear comment,
+       simple-chat verify-owner-msg passes, or a Linear comment by OWNER_LINEAR_USER_ID) as one Linear comment,
        wakes the filing seat with one directed note, and mirrors Grok Bot needs-owner-request blocks into
        Linear.  Caps, the pause and OWNER_LINEAR_USER_ID are Infisical knobs (NEEDS_OWNER_CAPS,
        NEEDS_OWNER_NOTIFY_PAUSED).  Docs: docs/protocols/needs-owner.md.
@@ -44,14 +44,14 @@
   <string>/Users/jay/Library/Logs/needs-owner-notify.log</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <!-- The tools it runs (board, agent-sync, infisical) live in ~/.local/bin and /opt/homebrew/bin. -->
+    <!-- The tools it runs (board, simple-chat, infisical) live in ~/.local/bin and /opt/homebrew/bin. -->
     <key>PATH</key>
     <string>/Users/jay/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>/Users/jay</string>
-    <!-- The seat this agent acts as.  Only CLAUDE runs the notifier, and AGENT_LAUNCHER is deliberately not set. -->
-    <key>AGENT_SEAT</key>
-    <string>CLAUDE</string>
+    <!-- No identity variable lives here:  the seat is proven by CLAUDE's own bearer.  Provisioning adds
+         SIMPLE_BOARD_BEARER_LOCATOR (a FOLDER:KEY_NAME location, never a value) for the CLAUDE seat bearer;  until
+         it is added the notifier refuses (no verified seat) instead of acting as anyone. -->
   </dict>
 </dict>
 </plist>

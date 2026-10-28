@@ -1,4 +1,4 @@
-# agent-sync MCP Worker
+# ST-MCP Worker
 
 Every tool, the identity rule and the error codes are in `docs/protocols/simple-tools-guide.md` (the `guide` tool serves it;  after editing it run `node scripts/export-guide.mjs`).  The hosted half of `docs/protocols/agent-sync-mcp.md`:  one Cloudflare Worker at `https://agents.simplewithus.com/mcp` that cloud-only seats add as a custom MCP connector.  It serves the same seven Zulip tools as the stdio server (`simple-chat mcp`), with public hosted names prefixed `zulip_`; old unprefixed names remain hidden aliases for compatible calls.  `whoami` remains unprefixed and reports shared seat/configuration metadata together with the verified Zulip identity.  Hosted inventory also includes three DM tools, three fleet recall tools, seven Linear convenience tools, three broad Linear API tools, 175 named Linear commands, 11 fixed official Linear MCP tools and 15 FleetLink tools:  224 hosted tools total, including 196 Linear tools.
 
@@ -103,6 +103,23 @@ Or update a project with `linear_mutation`:
 ```
 
 These tools use the same grant-bound identity, authentication, budgets and secret scanning as the existing Linear tools.  A mutation is available only when Linear writes are enabled and the seat has its own app identity.  App permissions still limit which schema fields and operations are available.  Fleet claim and seat-label changes remain protected and must use the existing `linear_claim` convenience tool.
+
+## Linear Wakes
+
+`POST /webhooks/linear` is the door that lets a Linear post or comment wake a fleet seat:  a mention or
+an assignment of a Grok Bot persona or a BotFleet role seat wakes that seat.  A post that carries a
+Zulip topic thread is skipped, so a Zulip wake is not duplicated.
+
+The door is Infisical only (`INFISICAL_MODE=required`, no env fallback), signed with the
+`linear-signature` HMAC over the raw body bytes, and it reads its secret from Fleet-OPS prod
+`/linear:LINEAR_WAKE_WEBHOOK_SECRET`.  A GB persona is woken through the endpoint the server listener
+already uses (`/zulip:ZULIP_ALERT_GB_<ROLE>_ENDPOINT` and `_KEY`);  a BF role seat through
+`/linear:BF_LINEAR_WAKE_<ROLE>_URL` and `_SECRET`.  The delivery body is the contract
+`fleet-linear-wake/1`, and it never carries the whole comment body:  at most a 280-character excerpt,
+scrubbed by the Worker's own secret scanner.
+
+Design, filters, the Infisical names and the Jay-only config steps:  `docs/protocols/linear-wake.md`.
+Code:  `src/linear-wake.js`.  Tests:  `test/linear-wake.test.mjs`.
 
 ## Versions and the two-week rule
 

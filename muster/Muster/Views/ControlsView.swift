@@ -2,11 +2,13 @@ import SwiftUI
 
 /// The controls surface:  every variable that governs a script or a background process.
 ///
-/// This is the read side.  It shows what the knob is,  who owns it,  what it may be,
-/// which way it is allowed to move,  and what it holds now.  It does not write:
-/// a write needs the owner-only identity that AFC-393 is building,  and a panel that
-/// could write a fleet's control surface before that identity exists is the thing the
-/// fleet must not have.
+/// It shows what the knob is,  who owns it,  what it may be,  which way it is allowed to
+/// move,  and what it holds now.  A non-secret knob has an Edit button:  the sheet offers an
+/// editor for the knob's kind,  and Save hands the value to `OpsController`,  which runs
+/// `python3 -m fleet_knobs set KEY VALUE --plan`,  shows the plan,  asks Touch ID and only
+/// then runs `--yes`.  The knob engine checks the value against the knob's own spec and
+/// writes through its own write token,  so the app still holds no credential.  A secret knob
+/// is never edited here.
 struct ControlsView: View {
     enum KnobFilter: String, CaseIterable, Identifiable {
         case all = "All Knobs"
@@ -28,6 +30,14 @@ struct ControlsView: View {
     /// Without it the tab would say the registry could not be read for as long as
     /// the read takes,  which is a false report about a read that is still running.
     @State private var loading = true
+    /// The knob whose editor is open.
+    @State private var editing: KnobRegistry.Row?
+    /// The write the editor asked for,  started once the editor has closed.
+    ///
+    /// The plan sheet hangs off the window root,  and a window shows one sheet at a time,  so
+    /// the plan is asked for after the editor is gone.
+    @State private var pendingAction: OpsAction?
+    @ObservedObject private var controller = OpsController.shared
 
     private func filteredRows(_ registry: KnobRegistry) -> [KnobRegistry.Row] {
         let overriddenNames: Set<String> = Set(
@@ -93,6 +103,30 @@ struct ControlsView: View {
             .padding(.vertical, 18)
         }
         .task { await load() }
+        // A write refreshes the engine's local copy,  so the registry is read again.
+        .onChange(of: controller.completedRuns) { _, _ in
+            Task {
+                loading = true
+                await load()
+            }
+        }
+        .sheet(item: $editing, onDismiss: startPendingAction) { row in
+            KnobEditSheet(
+                row: row,
+                onSave: { value in
+                    pendingAction = .knobSet(key: row.name, value: value)
+                    editing = nil
+                },
+                onCancel: { editing = nil }
+            )
+        }
+    }
+
+    /// Ask for the plan of the write the editor saved.
+    private func startPendingAction() {
+        guard let action = pendingAction else { return }
+        pendingAction = nil
+        controller.plan(action)
     }
 
     private var header: some View {
@@ -124,7 +158,7 @@ struct ControlsView: View {
                             .font(.caption)
                             .foregroundStyle(Color.orange)
                     }
-                    Text("Read only:  writing needs the owner identity.")
+                    Text("Edit shows the plan and asks Touch ID before anything is written.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -158,9 +192,13 @@ struct ControlsView: View {
                     .foregroundStyle(.secondary)
             }
             VStack(alignment: .leading, spacing: 0) {
-                GridRowHeader(labels: ["Knob", "Owner", "Kind", "Now", "Local files may"])
+                GridRowHeader(labels: ["Knob", "Owner", "Kind", "Now", "Local files may", ""])
                 ForEach(rows) { row in
-                    KnobRowView(row: row)
+                    KnobRowView(
+                        row: row,
+                        canEdit: !controller.isPresenting,
+                        onEdit: { editing = row }
+                    )
                 }
             }
         }
@@ -208,6 +246,9 @@ struct ControlsView: View {
 /// it.  The note goes under the row at the full width,  where it can be read.
 private struct KnobRowView: View {
     let row: KnobRegistry.Row
+    /// False while another action is planned or running.
+    var canEdit: Bool = true
+    var onEdit: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -227,6 +268,19 @@ private struct KnobRowView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 GridCellText(value: row.localMay)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                // A secret row has no button at all,  so nothing on it can start a write.
+                Group {
+                    if row.editor != nil {
+                        Button("Edit", action: onEdit)
+                            .controlSize(.small)
+                            .disabled(!canEdit)
+                    } else {
+                        Text("secret")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.vertical, 2)
             if !row.note.isEmpty {
@@ -236,6 +290,158 @@ private struct KnobRowView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.bottom, 6)
             }
+        }
+    }
+}
+
+/// The editor for one non-secret knob.
+///
+/// The editor follows the knob's kind:  a toggle for a bool,  a picker for an enum,  a
+/// stepper for an int inside its bounds,  and a text field for the rest.  Its check is a
+/// convenience:  the knob engine checks the value again,  and the plan says what it found.
+private struct KnobEditSheet: View {
+    let row: KnobRegistry.Row
+    let onSave: (String) -> Void
+    let onCancel: () -> Void
+
+    @State private var text: String
+    @State private var flag: Bool
+    @State private var number: Int
+    /// The integer field's text.  A formatted `TextField(value:format:)` binding
+    /// commits only on Return or focus loss,  so clicking Show Plan straight after
+    /// typing could submit the stale `number`.  The string binds every keystroke,
+    /// and `value` reads it back,  so the plan always sees what is on screen.
+    @State private var numberText: String
+
+    init(row: KnobRegistry.Row, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
+        self.row = row
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _text = State(initialValue: row.editValue)
+        _flag = State(initialValue: row.editValue.lowercased() == "true")
+        var start = Int(row.editValue) ?? 0
+        if case .integer(let low, let high)? = row.editor {
+            if let low, start < low { start = low }
+            if let high, start > high { start = high }
+        }
+        _number = State(initialValue: start)
+        _numberText = State(initialValue: String(start))
+    }
+
+    /// The value the editor holds,  as the knob engine takes it.
+    private var value: String {
+        switch row.editor {
+        case .toggle?: return flag ? "true" : "false"
+        case .integer?: return numberText.trimmingCharacters(in: .whitespaces)
+        case .choice?, .text?, nil: return text.trimmingCharacters(in: .whitespaces)
+        }
+    }
+
+    private var problem: String? {
+        guard let editor = row.editor else { return "A secret is never edited here." }
+        return editor.problem(with: value)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Edit \(row.name)")
+                .font(.title3.weight(.semibold))
+            HStack(spacing: 10) {
+                Text(row.kind)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Text("now \(row.now)")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            if !row.note.isEmpty {
+                Text(row.note)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if !row.localMay.isEmpty {
+                Text("Local files may \(row.localMay).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            editor
+            if let problem {
+                Text(problem)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Spacer(minLength: 0)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Show Plan") { onSave(value) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(problem != nil)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 480, idealWidth: 520, minHeight: 260)
+    }
+
+    @ViewBuilder
+    private var editor: some View {
+        switch row.editor {
+        case .toggle?:
+            Toggle(isOn: $flag) {
+                Text(flag ? "true" : "false")
+                    .font(.system(size: 12, design: .monospaced))
+            }
+            .toggleStyle(.switch)
+        case .choice(let choices)?:
+            Picker("Value", selection: $text) {
+                ForEach(choices, id: \.self) { choice in
+                    Text(choice).tag(choice)
+                }
+            }
+            .pickerStyle(.segmented)
+        case .integer(let low, let high)?:
+            let lower = low ?? 0
+            let upper = max(high ?? 1_000_000_000, lower)
+            HStack(spacing: 10) {
+                TextField("Value", text: $numberText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(width: 140)
+                    .onChange(of: numberText) { _, fresh in
+                        // The stepper only takes a number the registry allows (no bound
+                        // means unbounded,  as in `problem`);  any other text stays on
+                        // screen and `problem` holds Show Plan back.
+                        if let parsed = Int(fresh.trimmingCharacters(in: .whitespaces)),
+                           low.map({ parsed >= $0 }) ?? true,
+                           high.map({ parsed <= $0 }) ?? true {
+                            number = parsed
+                        }
+                    }
+                    .onChange(of: number) { _, fresh in
+                        // Only a stepper click changes the number away from the text,  so
+                        // what the operator typed (`007`,  `+5`) is never rewritten.
+                        if Int(numberText.trimmingCharacters(in: .whitespaces)) != fresh {
+                            numberText = String(fresh)
+                        }
+                    }
+                Stepper("", value: $number, in: lower...upper)
+                    .labelsHidden()
+                if low != nil || high != nil {
+                    Text("\(lower) to \(upper)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        case .text(let hint)?:
+            TextField(hint, text: $text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+        case nil:
+            Text("A secret is never edited here.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
         }
     }
 }

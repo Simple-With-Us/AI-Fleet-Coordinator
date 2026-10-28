@@ -12,7 +12,7 @@ The owner ordered Linear to replace THE BOARD on Sat, Oct 10, 2026.  This design
 - **Shared app.**  Phase 1 shipped as designed in section 2:  one `Fleet` Linear app for every seat, claims as `claimed:<SEAT>` labels (not delegates), `seat:<SEAT>` labels as attribution only.  `scripts/linear-board/README.md` is the CLI contract.
 - **History.**  13,551 issues in 13 public per-app teams under the `SWU` parent, imported with their original dates (board rows, GitHub issues and effort-log items), not the 3,935-row subset sketched in section 6.
 - **Cutover.**  The runbook, the non-repo patch bundle and the rollback live outside git in `~/.local/share/linear-migration/cutover/` (`cutover.sh` is dry by default).  The docs, skills, scripts and hooks changes in the step 4 list below landed in one PR that is merged as a cutover step.
-- **Rules at cutover.**  Writes need `AGENT_SEAT`, reads do not;  the board stays read-only for 14 days with litestream running and is retired at about day 30;  one `[fleet]` announcement is posted at cutover.
+- **Rules at cutover.**  Writes need a bearer-verified seat (`AGENT_SEAT` is ignored), reads do not;  the board stays read-only for 14 days with litestream running and is retired at about day 30;  one `[fleet]` announcement is posted at cutover.
 - **Not built.**  The server-side 410 on the old board's write routes (the old server has no read-only mode, so the freeze stops sync and writeback instead), the nightly API dump, the counts snapshot Worker, per-seat apps, and the `linear` recall source.
 
 ## 1. Can bots use their Zulip emails for Linear accounts?
@@ -79,7 +79,7 @@ The owner ordered Linear to replace THE BOARD on Sat, Oct 10, 2026.  This design
 
 - **Why the cache.**  Every CLI call is a new process, and the admin Worker, digests and bots restart often.  Minting per call would reach the 1,000 parallel-token cap within days, and behavior past it is undocumented.  This bends Linear's "mint per run" wording with a bounded cache.
 - **Rotation.**  On suspected leak, and every 90 days; on retirement, delete the app.  Rotate in Linear, update Infisical, sync.  Rotation invalidates that app's client-credentials tokens immediately [DOC], so only that seat re-mints.  Revoke (`POST https://api.linear.app/oauth/revoke`) only on rotation or retirement.
-- **Mac caveat.**  All Mac seat files sit under one Unix user, so per-seat identity on the Mac is enforced by policy, not isolation.  The CLI refuses to run without `AGENT_SEAT`, loads only that seat's file, and checks `--by` against the credential's seat; `--by` is never the source of identity.
+- **Mac caveat.**  All Mac seat files sit under one Unix user, so per-seat identity on the Mac is enforced by policy, not isolation.  The CLI refuses to write without a bearer-verified seat, loads only that seat's file, and checks `--by` against the credential's seat; `--by` is never the source of identity.
 
 ## 3. Workspace model
 
@@ -210,7 +210,7 @@ The owner ordered Linear to replace THE BOARD on Sat, Oct 10, 2026.  This design
 | 4. Cutover | **Gate:** every writer seen in the last 14 days (including cloud CODEX and GROK, and every BF and GB identity) passes `whoami` from its runtime; for INSTINCT, option A is live or Jay has accepted report-in-Zulip only; and a dry delta fits the remaining hourly budget.  Then: one fleet-wake post in #Work-In-Progress, topic `fleet`; board write routes return a machine-readable 410 naming the replacement command; final delta; swap `board` to the Linear CLI; merge the skills, protocol, hook and deny-rule PR; stop `mac-collab-sync` and `mac-collab-writeback`, remove them from `mac-process-watch.sh` and from `pm2-ecosystem.config.cjs`, then `pm2 delete` and `pm2 save`; set the effort-log marker and disable the effort-issues workflows; turn on PR automations, one-way GitHub sync, the Zulip webhook and the new linkifier; rotate or delete `Board Import`'s secret.  | CLAUDE, Jay for admin toggles |
 | 4a. Right after cutover | With sync_board stopped: backfill GitHub issues created since its last pass; post "Moved to AFC-123" on each deduped live GitHub issue (about 636) and close it as not planned, throttled under GitHub's content limit of roughly 500 writes an hour (about 3 hours); link still-open PRs whose bodies cite 8-to-32-character board ids, via `board-ids.txt` and `attachmentLinkGitHubPR`. | CLAUDE |
 | 5. Hold, 14 days | Board read-only.  Litestream keeps running.  Recall reads the archived DB. | — |
-| 6. Retire, day 30 | Move the `recall` symlink out of `~/apps/mac-collab`.  Either keep the server in files-only mode with one token limited to `/files` (cloud agents read AGENT-SYNC, MAC-LOCAL-PROCESSES and key names there, and `/files` requires a token), or move that hosting first and update the `fleet-sentry-monitor/monitor.py` `/health` probe in the same change.  Final DB snapshot to B2 and Drive, stop litestream, revoke the per-seat `MAC_COLLAB_TOKEN_<SEAT>` write tokens.  Update `MAC-LOCAL-PROCESSES.md`, the Note, the admin panel and DNS. | CLAUDE, Jay for revokes |
+| 6. Retire, day 30 | Move the `recall` symlink out of `~/apps/mac-collab`.  Either keep the server in files-only mode with one token limited to `/files` (cloud agents read FLEET-PROTOCOL, MAC-LOCAL-PROCESSES and key names there, and `/files` requires a token), or move that hosting first and update the `fleet-sentry-monitor/monitor.py` `/health` probe in the same change.  Final DB snapshot to B2 and Drive, stop litestream, revoke the per-seat `MAC_COLLAB_TOKEN_<SEAT>` write tokens.  Update `MAC-LOCAL-PROCESSES.md`, the Note, the admin panel and DNS. | CLAUDE, Jay for revokes |
 
 **Pilot gates (step 0)**
 
@@ -230,7 +230,7 @@ The owner ordered Linear to replace THE BOARD on Sat, Oct 10, 2026.  This design
 | 12 | Duplicate-pair count and unmapped attribution count | Fix the maps before step 3 |
 
 - **Rollback.**  Steps 0 to 3: stop the mirror.  Step 5: set `BOARD_BACKEND=mac-collab` in the CLI, lift the 410s, replay Linear changes since cutover into the board as `Fleet Reader` (issue UUID = board id; new issues filed as `external_uid=linear:<uuid>`), re-enable the pm2 jobs and watch entries.  Closed-as-moved GitHub issues use "not planned", which the replay ignores.  After day 30: restore from the nightly API dump.
-- **Docs to rewrite in the step 4 PR:** `AGENT-SYNC.md` § THE BOARD and the triple claim; `EFFORT-LOG-PROTOCOL.md`; `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.fx/AGENTS.md`; the Zulip guide's topic, claim and closeout sections; the listener design; the canonical skills and `fleet_skill_identity.py`, then regenerate and reinstall the per-seat copies.
+- **Docs to rewrite in the step 4 PR:** `FLEET-PROTOCOL.md` § THE BOARD and the triple claim; `EFFORT-LOG-PROTOCOL.md`; `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.fx/AGENTS.md`; the Zulip guide's topic, claim and closeout sections; the listener design; the canonical skills and `fleet_skill_identity.py`, then regenerate and reinstall the per-seat copies.
 
 ## 7. Risks and open owner decisions
 

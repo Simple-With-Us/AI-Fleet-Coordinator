@@ -8,6 +8,10 @@ belongs to the same place and the same shape:  a rewrite the writer does, counte
 What is pinned here:
 
   a Linear issue identifier (OPS-1000) becomes a link to that issue in the fleet workspace;
+  a Linear project reference (P-ST-9) becomes a link to that project, and a project is coded by hand
+  because a project URL carries a slug and a hash that nothing can derive from the reference;
+  a project reference is never read as an issue, so the number inside it never becomes an issue link;
+  a project reference that names no known project stays plain text;
   a pull request reference (PR #957) becomes a link to the pull request, and the text is normalised to the house form;
   a qualified reference (AFC#957) links to the pull request it names in the repository it names;
   a list of pull requests (PRs #380, #386 and #389) becomes one link per number, and a file count that follows a
@@ -26,11 +30,16 @@ What is pinned here:
   a pull request lookup that hangs does not hang the note save;
   a team key further down the block does not veto the team named right above the reference;
   a team named a long way from the reference is asked of GitHub, exactly as a nearby one is;
-  a qualified reference names a pull request, so the link is the pull request and not the issue that shares its number.
+  a qualified reference names a pull request, so the link is the pull request and not the issue that shares its number;
+  a fleet shortcut (fl/fleet-tools, fleetlink/zulip) becomes a link to that page, and a shortcut inside a URL or a
+  longer path is left alone (AFC-562);
+  a site page (SWU/docs), a repository (GH@user/repo), an incident (PagerDuty#384), a Sentry short id
+  (BOTFLEET-16) and a Cursor agent id (bc-a1b2c3d4-e5f6) each become a link to what they name, and each is
+  counted under its own kind.
 
-The fixture is synthetic end to end.  Every hostname, owner, repository name and workspace slug in this file belongs
-to no one and exists nowhere but here (Kody rule:  use synthetic hostnames and paths in test fixtures).  The world
-the tests describe is:
+The fixture is synthetic end to end, with one honest exception.  Every hostname, owner, repository name and workspace
+slug in this file belongs to no one and exists nowhere but here (Kody rule:  use synthetic hostnames and paths in test
+fixtures).  The world the tests describe is:
 
   the GitHub host         example.test
   the GitHub owner        example-org, and other-org for the one repository that is not under it
@@ -39,6 +48,11 @@ the tests describe is:
   the fleet repository    Fixture-Repo
   the team keys           AFC -> Fixture-Repo, ST -> Title-Repo, OPS -> Other-Repo, CTS -> three repositories
   the named services      widget -> Fixture-Repo2, gadget -> Fixture-Repo3
+
+The five service hosts are the exception, and they are not secrets:  the fleet shortcut, the site, PagerDuty, Sentry and
+Cursor are public addresses, and the helper holds them as constants (owner rule:  no environment overrides), so a test
+cannot point the helper at a synthetic host and has to name the real one.  Those five constants are the only real
+hostnames in this file.
 
 The script runs with `osascript`, `shortcuts`, `open`, `pgrep` and `sleep` stubbed on PATH, as in
 test_apple_notes_actions.py, so nothing reaches Notes.  The link assertions use the preview hook
@@ -54,6 +68,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -127,6 +142,18 @@ def gh_path(repo: str, num: str, owner: str = GITHUB_OWNER) -> str:
 
 LINEAR_URL = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/issue/"
 
+#  A project the fixture codes by hand.  A project URL carries a slug and a hash, so a project is
+#  named in full:  the reference a writer types, and the URL of that project.
+PROJECT_URL = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/project/fixture-project-abc123"
+
+#  The other hosts the linkifier writes.  These are the real public addresses, because the helper holds
+#  them as constants and there is no environment knob to point them somewhere else (AFC-562).
+FLEETLINK_HOST = "fleetlink.online"
+SWU_HOST = "simplewithus.com"
+PAGERDUTY_HOST = "jays-services.pagerduty.com"
+SENTRY_HOST = "simple-with-us.sentry.io"
+CURSOR_HOST = "cursor.com"
+
 #  A stand-in for the gh CLI, which the helper asks which repository holds a pull request.  It says
 #  every repository holds every pull request unless GH_STUB_MISSING names one that does not, or is
 #  the star for all of them.  GH_STUB_ERROR makes it fail the way a broken network does, which is
@@ -155,10 +182,11 @@ esac
 exit 0
 """
 
-#  A stand-in for the gh CLI that never answers, the way a network that hangs does.  The helper has to
-#  give up on it and carry on.
+#  A stand-in for the gh CLI that never answers, the way a network that hangs does.  It waits in
+#  Python and not with sleep, because the fixture puts a stub on PATH that would make sleep return
+#  at once, and the gh would answer instead of hanging.
 GH_STUB_HANG = """#!/bin/sh
-exec sleep 30
+exec {python} -c 'import time; time.sleep(30)'
 """
 
 #  A stand-in for mktemp that cannot make the file the date counts are written to.  The helper then
@@ -264,14 +292,103 @@ class LinkifyTests(LinkifyTestCase):
             "jaywedgeworth22",
             "github.com",
             "linear.app",
-            "simple-with-us",
         ):
             self.assertNotIn(real, out)
+
+    def test_the_service_hosts_are_the_real_public_addresses(self):
+        #  the helper holds these five hosts as constants, so a note links to the real public
+        #  addresses and a caller cannot point them somewhere else
+        self.assertEqual(
+            (
+                FLEETLINK_HOST,
+                SWU_HOST,
+                PAGERDUTY_HOST,
+                SENTRY_HOST,
+                CURSOR_HOST,
+            ),
+            (
+                "fleetlink.online",
+                "simplewithus.com",
+                "jays-services.pagerduty.com",
+                "simple-with-us.sentry.io",
+                "cursor.com",
+            ),
+        )
+        out = self.html(
+            "[AFC, MM] Notes",
+            "See fl/tools and SWU/docs and PagerDuty#384 and BOTFLEET-16 and bc-a1b2c3d4-e5f6.",
+        )
+        for host in (FLEETLINK_HOST, SWU_HOST, PAGERDUTY_HOST, SENTRY_HOST, CURSOR_HOST):
+            with self.subTest(host=host):
+                self.assertIn("https://" + host + "/", out)
 
     def test_a_linear_issue_identifier_becomes_a_link_to_the_issue(self):
         out = self.html("[AFC, MM] Notes", "Filed as OPS-1000 and tracked under AFC-547.")
         self.assertIn(f'<a href="{LINEAR_URL}OPS-1000">OPS-1000</a>', out)
         self.assertIn(f'<a href="{LINEAR_URL}AFC-547">AFC-547</a>', out)
+
+    def test_a_coded_project_reference_becomes_a_link_to_that_project(self):
+        #  a project has no URL that can be derived from its reference, so it is coded:  the
+        #  reference a writer types, and the URL of that project
+        out = self.html(
+            "[AFC, MM] Notes",
+            "The rewrite is P-ST-9.",
+            NOTES_LINEAR_PROJECTS="P-ST-9=" + PROJECT_URL,
+        )
+        self.assertIn(f'<a href="{PROJECT_URL}">P-ST-9</a>', out)
+
+    def test_the_projects_in_the_table_link_into_the_configured_workspace(self):
+        #  the project the fleet names, built from the host and the workspace the note is written
+        #  for, so a note written for another workspace links into that one
+        out = self.html("[AFC, MM] Notes", "The rewrite is P-BF-6.")
+        self.assertIn('href="https://' + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/project/", out)
+        self.assertIn(">P-BF-6</a>", out)
+
+    def test_a_project_reference_is_never_read_as_an_issue(self):
+        #  the number in a project reference is a project number, so it never becomes an issue link
+        out = self.html("[AFC, MM] Notes", "The rewrite is P-BF-6 and the other is P-ST-8.")
+        self.assertNotIn("/issue/BF-6", out)
+        self.assertNotIn("/issue/ST-8", out)
+        self.assertIn("P-BF-6", out)
+        self.assertIn("P-ST-8", out)
+
+    def test_a_short_project_reference_is_never_read_as_an_issue(self):
+        #  a writer may leave the team out of a project reference, and the number in it is still a
+        #  project number, so the short form is claimed as a project and never becomes an issue
+        out = self.html("[AFC, MM] Notes", "The rewrite is P-6 and the issue is BF-6.")
+        self.assertNotIn("/issue/6", out)
+        self.assertNotIn(">P-6</a>", out)
+        self.assertIn("P-6", out)
+        self.assertIn(f'<a href="{LINEAR_URL}BF-6">BF-6</a>', out)
+
+    def test_a_short_project_reference_can_be_coded_too(self):
+        #  the short form is a reference of its own, so it links only when it is coded, exactly
+        #  like the long form
+        out = self.html(
+            "[AFC, MM] Notes",
+            "The rewrite is P-6.",
+            NOTES_LINEAR_PROJECTS="P-6=" + PROJECT_URL,
+        )
+        self.assertIn(f'<a href="{PROJECT_URL}">P-6</a>', out)
+
+    def test_a_project_reference_that_is_not_coded_stays_plain_text(self):
+        #  a project that is not in the table is left alone:  a link to the wrong thing is worse
+        #  than no link, and the reference is never guessed at
+        out = self.html("[AFC, MM] Notes", "The rewrite is P-ST-8.")
+        self.assertNotIn("<a href=", out.split("<h1>")[1].split("</h1>")[1].split("</p>")[2])
+        self.assertIn("P-ST-8", out)
+
+    def test_the_writer_counts_a_project_reference_as_a_project(self):
+        p = self.run_script(
+            "--session",
+            SESSION,
+            "[AFC, MM] Notes",
+            "The rewrite is P-BF-6.",
+            APPLE_NOTES_PRINT_HTML="1",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("1 project reference", p.stderr)
+        self.assertIn("0 issue references", p.stderr)
 
     def test_a_pull_request_reference_becomes_a_link_and_keeps_the_house_form(self):
         out = self.html("[AFC, MM] Notes", "Shipped in PR #957 and PR 958.")
@@ -348,7 +465,8 @@ class LinkifyTests(LinkifyTestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("notes: linkified:", p.stderr)
-        self.assertIn("1 project reference", p.stderr)
+        self.assertIn("1 issue reference", p.stderr)
+        self.assertIn("0 project references", p.stderr)
         self.assertIn("1 pull request reference", p.stderr)
         #  and it says it once:  a second pass over the same body would double the summary
         self.assertEqual(p.stderr.count("notes: linkified:"), 1, p.stderr)
@@ -365,7 +483,21 @@ class LinkifyTests(LinkifyTestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         (line,) = self.log_lines()
-        self.assertEqual(line["reformatted"]["links"], {"issues": 2, "prs": 1}, line["reformatted"])
+        self.assertEqual(
+            line["reformatted"]["links"],
+            {
+                "issues": 2,
+                "prs": 1,
+                "projects": 0,
+                "fleetlink": 0,
+                "swu": 0,
+                "repos": 0,
+                "pagerduty": 0,
+                "sentry": 0,
+                "cursor": 0,
+            },
+            line["reformatted"],
+        )
 
     def test_the_log_keeps_the_link_counts_when_the_date_counts_are_missing(self):
         #  the file the date counts are written to could not be made, so the log has no dates to
@@ -383,7 +515,21 @@ class LinkifyTests(LinkifyTestCase):
         )
         self.assertEqual(p.returncode, 0, p.stderr)
         (line,) = self.log_lines()
-        self.assertEqual(line["reformatted"]["links"], {"issues": 2, "prs": 1}, line["reformatted"])
+        self.assertEqual(
+            line["reformatted"]["links"],
+            {
+                "issues": 2,
+                "prs": 1,
+                "projects": 0,
+                "fleetlink": 0,
+                "swu": 0,
+                "repos": 0,
+                "pagerduty": 0,
+                "sentry": 0,
+                "cursor": 0,
+            },
+            line["reformatted"],
+        )
 
     def test_a_network_error_that_only_looks_like_a_404_is_not_a_missing_pull_request(self):
         #  "pulls/1404" is not a 404:  GitHub was never asked, so the repository of the team is the
@@ -524,20 +670,55 @@ class LinkifyTests(LinkifyTestCase):
         self.assertIn("Shipped in", bad)
         self.assertIn(f'<a href="{gh_url(FLEET_REPO, "957")}">PR #957</a>', bad)
 
-    def test_a_pull_request_lookup_that_hangs_does_not_hang_the_note_save(self):
-        #  a gh that never answers must not stall the write path
+    def test_a_hung_lookup_spends_the_budget_of_the_run_once(self):
+        #  the budget of a run is a constant, so the budget caps the call itself, not just the
+        #  decision to call it:  a hung gh with a long timeout returns in roughly the budget, and a
+        #  run that has spent the budget stops asking
+        calls = self.tmp / "gh-calls"
         stub = self.bindir / "gh"
-        stub.write_text(GH_STUB_HANG)
+        stub.write_text(
+            "#!/bin/sh\n"
+            f"echo called >> {calls}\n"
+            f"exec {sys.executable} -c 'import time; time.sleep(30)'\n"
+        )
         stub.chmod(0o700)
+        start = time.monotonic()
+        out = self.html(
+            "[AFC, MM] Notes",
+            "OPS-1000 in PR #957 and PR #958.",
+            NOTES_LINKIFY_GH_TIMEOUT_S="30",
+        )
+        elapsed = time.monotonic() - start
+        #  the first call hung until the budget was spent, and the second reference was never asked
+        #  of gh:  a question that was not asked is answered from the block, the same as one that
+        #  was never answered
+        self.assertEqual(calls.read_text().split(), ["called"], out)
+        for num in ("957", "958"):
+            self.assertIn(f'<a href="{gh_url(OTHER_REPO, num, OTHER_OWNER)}">PR #{num}</a>', out)
+        #  the budget of eight seconds was waited out, and the timeout of thirty was not
+        self.assertGreaterEqual(
+            elapsed, 7, f"the budget of the run did not bound the call:  {elapsed:.1f}s"
+        )
+        self.assertLess(elapsed, 13, f"a hung gh blocked {elapsed:.1f}s behind a 30s timeout")
+
+    def test_a_pull_request_lookup_that_hangs_does_not_hang_the_note_save(self):
+        #  a gh that never answers must not stall the write path:  the timeout ends it, and the
+        #  reference still resolves to the repository of the team
+        stub = self.bindir / "gh"
+        stub.write_text(GH_STUB_HANG.format(python=sys.executable))
+        stub.chmod(0o700)
+        start = time.monotonic()
         out = self.html(
             "[AFC, MM] Notes",
             "OPS-1000 in PR #957.",
             NOTES_LINKIFY_GH_TIMEOUT_S="1",
         )
+        elapsed = time.monotonic() - start
         #  the control:  the note still has its body, and the reference still resolves to the
         #  repository of the team, because a question that was not answered is not a no
         self.assertIn("OPS-1000", out)
         self.assertIn(f'<a href="{gh_url(OTHER_REPO, "957", OTHER_OWNER)}">PR #957</a>', out)
+        self.assertLess(elapsed, 8, f"a hung gh blocked {elapsed:.1f}s behind a 1s timeout")
 
     def test_a_team_key_below_the_reference_does_not_veto_the_one_above_it(self):
         #  a team key further down the block says nothing about what came before it
@@ -566,6 +747,169 @@ class LinkifyTests(LinkifyTestCase):
         missing = self.html("⭐️ Background Jobs Master List", body, GH_STUB_MISSING="*")
         self.assertNotIn("pull/957", missing)
         self.assertIn("PR #957", missing)
+
+    def test_fl_and_fleetlink_paths_become_links(self):
+        #  the owner's example, and a nested path ending a sentence:  the sentence's dot stays
+        #  outside the link, because a path never ends on punctuation
+        out = self.html(
+            "[AFC, MM] Notes", "See fl/fleet-tools and fleetlink/zulip/zulip-fleet-guide.md."
+        )
+        self.assertIn(f'<a href="https://{FLEETLINK_HOST}/fleet-tools">fl/fleet-tools</a>', out)
+        self.assertIn(
+            f'<a href="https://{FLEETLINK_HOST}/zulip/zulip-fleet-guide.md">'
+            "fleetlink/zulip/zulip-fleet-guide.md</a>.",
+            out,
+        )
+        self.assertNotIn("guide.md.</a>", out)
+
+    def test_a_shortcut_inside_a_url_or_path_is_left_alone(self):
+        #  fl/ inside a URL or a longer path is part of that address, not a shortcut
+        out = self.html("[AFC, MM] Notes", "See https://x/fl/y and foo/fl/x for it.")
+        self.assertNotIn(FLEETLINK_HOST, out)
+        self.assertIn("https://x/fl/y", out)
+        self.assertIn("foo/fl/x", out)
+
+    def test_a_swu_page_becomes_a_link(self):
+        out = self.html("[AFC, MM] Notes", "Read SWU/docs for the background.")
+        self.assertIn(f'<a href="https://{SWU_HOST}/docs">SWU/docs</a>', out)
+        #  the control:  the issue form of the same key still links to the issue
+        issues = self.html("[AFC, MM] Notes", "Read SWU-4 for the background.")
+        self.assertIn(f'<a href="{LINEAR_URL}SWU-4">SWU-4</a>', issues)
+
+    def test_a_gh_user_repo_becomes_a_link_to_that_repository(self):
+        out = self.html("[AFC, MM] Notes", "Vendored from GH@example-org/widget for now")
+        self.assertIn(
+            f'<a href="https://{GITHUB_HOST}/example-org/widget">GH@example-org/widget</a>',
+            out,
+        )
+
+    def test_a_gh_reference_ending_a_sentence_keeps_its_dot_outside(self):
+        #  a repository name may hold dots but never ends on one, so the sentence dot stays outside
+        out = self.html("[AFC, MM] Notes", "See GH@example-org/widget.")
+        self.assertIn(
+            f'<a href="https://{GITHUB_HOST}/example-org/widget">GH@example-org/widget</a>.',
+            out,
+        )
+        self.assertNotIn("widget.</a>", out)
+
+    def test_a_pagerduty_incident_becomes_a_link_and_wins_over_the_qualified_rule(self):
+        #  a pound sign usually names a pull request, but PagerDuty names an incident instead
+        out = self.html("[AFC, MM] Notes", "Paged as PagerDuty#384 and PagerDuty#Q1ABC23.")
+        self.assertIn(f'<a href="https://{PAGERDUTY_HOST}/incidents/384">PagerDuty#384</a>', out)
+        self.assertIn(
+            f'<a href="https://{PAGERDUTY_HOST}/incidents/Q1ABC23">PagerDuty#Q1ABC23</a>',
+            out,
+        )
+        self.assertNotIn("/pull/", out)
+
+    def test_a_pagerduty_id_followed_by_more_word_chars_is_not_a_link(self):
+        #  without a right boundary PagerDuty#384abc links only its 384 prefix.  A full id still links.
+        out = self.html("[AFC, MM] Notes", "Paged as PagerDuty#384abc for it.")
+        self.assertNotIn(PAGERDUTY_HOST, out)
+        self.assertIn("PagerDuty#384abc", out)
+        linked = self.html("[AFC, MM] Notes", "Paged as PagerDuty#Q1ABC2 for it.")
+        self.assertIn(
+            f'<a href="https://{PAGERDUTY_HOST}/incidents/Q1ABC2">PagerDuty#Q1ABC2</a>',
+            linked,
+        )
+
+    def test_a_cursor_agent_id_becomes_a_link(self):
+        out = self.html("[AFC, MM] Notes", "Continued in bc-a1b2c3d4-e5f6 for review")
+        self.assertIn(
+            f'<a href="https://{CURSOR_HOST}/agents/bc-a1b2c3d4-e5f6">bc-a1b2c3d4-e5f6</a>',
+            out,
+        )
+        #  the control:  fewer than eight hex digits is not an agent id
+        short = self.html("[AFC, MM] Notes", "Continued in bc-12 for review")
+        self.assertNotIn(CURSOR_HOST, short)
+        self.assertIn("bc-12", short)
+
+    def test_a_sentry_short_id_becomes_a_link_and_not_a_linear_issue(self):
+        out = self.html("[AFC, MM] Notes", "Filed as BOTFLEET-16 and CONGRESS-TRADE-4A.")
+        self.assertIn(
+            f'<a href="https://{SENTRY_HOST}/issues/?query=BOTFLEET-16">BOTFLEET-16</a>',
+            out,
+        )
+        self.assertIn(
+            f'<a href="https://{SENTRY_HOST}/issues/?query=CONGRESS-TRADE-4A">'
+            "CONGRESS-TRADE-4A</a>",
+            out,
+        )
+        self.assertNotIn("/issue/", out)
+
+    def test_the_new_kinds_leave_code_and_a_hand_written_link_alone(self):
+        out = self.html(
+            "[AFC, MM] Notes",
+            f"The code `fl/tools` stays, and [SWU/docs](https://{SWU_HOST}/docs) is kept.",
+        )
+        self.assertEqual(out.count("<a href="), 1, out)
+        self.assertIn("fl/tools</code>", out)
+
+    def test_every_live_project_reference_becomes_a_link(self):
+        #  the eight P-* rules of the live Zulip set, each coded by hand like P-BF-6
+        refs = {
+            "P-AFC-7": "muster-fleet-admin-mac-app-9c28cf61dcc8",
+            "P-AFC-8": "fleet-gitops-272cdd72e951",
+            "P-BF-1": "system-prompt-receipt-port-bf-1411-cc08b4cf163b",
+            "P-BF-6": "botfleet-native-macos-rewrite-5afcbc055535",
+            "P-CTS-5": "cts-shared-dependency-a04bf2274b2d",
+            "P-OPS-2": "mac-resource-mgmt-22f992634f02",
+            "P-OPS-4": "fleet-hygiene-cross-team-32fd751b0b36",
+            "P-SWU-3": "public-websites-6e26b4c70c72",
+        }
+        out = self.html("[AFC, MM] Notes", "The plan covers " + ", ".join(refs) + ".")
+        base = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/project/"
+        for ref, slug in refs.items():
+            with self.subTest(ref=ref):
+                self.assertIn(f'<a href="{base}{slug}">{ref}</a>', out)
+
+    def test_the_writer_says_what_the_new_kinds_became(self):
+        p = self.run_script(
+            "--session",
+            SESSION,
+            "[AFC, MM] Notes",
+            "See fl/tools and SWU/docs and GH@example-org/widget and PagerDuty#384 and "
+            "BOTFLEET-16 and bc-a1b2c3d4-e5f6 for the lot.",
+            APPLE_NOTES_PRINT_HTML="1",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        for kind in (
+            "1 fleetlink reference",
+            "1 SWU reference",
+            "1 repository reference",
+            "1 PagerDuty reference",
+            "1 Sentry reference",
+            "1 Cursor agent reference",
+        ):
+            with self.subTest(kind=kind):
+                self.assertIn(kind, p.stderr)
+
+    def test_the_log_keeps_the_new_kinds_too(self):
+        p = self.run_script(
+            "--update",
+            "--existing-only",
+            "--session",
+            SESSION,
+            NOTES[2]["title"],
+            "See fl/tools and SWU/docs for the background.",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        (line,) = self.log_lines()
+        self.assertEqual(
+            line["reformatted"]["links"],
+            {
+                "issues": 0,
+                "prs": 0,
+                "projects": 0,
+                "fleetlink": 1,
+                "swu": 1,
+                "repos": 0,
+                "pagerduty": 0,
+                "sentry": 0,
+                "cursor": 0,
+            },
+            line["reformatted"],
+        )
 
 
 if __name__ == "__main__":

@@ -94,7 +94,7 @@ function seatSummary(seat, calls, diagnostics, generatedAt, diagnosticsUnavailab
   const hasRecent = last && Number.isFinite(generatedAt) && generatedAt - last.ts <= 24 * 60 * 60 * 1000;
   const diagnosticAfterSuccess = seatDiagnostics.some((row) => !success || row.ts >= success.ts);
   const currentError = hasRecent && (failure(last) || diagnosticAfterSuccess);
-  const recentSuccess = hasRecent && !currentError && !diagnosticsUnavailable;
+  const recentSuccess = configured && hasRecent && !currentError && !diagnosticsUnavailable;
   const readiness = readsUnknown ? "Diagnostics unavailable" : seat.paused ? "Paused" : !configured ? `Needs setup: ${missing.join(", ")}` : currentError ? "Recent failure" : recentSuccess ? "Recent success" : roleUnchecked ? "Configured; role not checked yet" : "Configured; no recent traffic";
   const tone = recentSuccess ? "state-ready" : "state-attention";
   return `<article class="status-card"><h3>${e.escape(e.seatLabel ? e.seatLabel(seat.seat) : seat.seat)}</h3><p class="status-state ${tone}">${e.escape(readiness)}</p>

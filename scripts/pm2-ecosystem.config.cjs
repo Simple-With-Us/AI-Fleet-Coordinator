@@ -20,7 +20,7 @@
  *
  * Slack retired (hard cut to Zulip, owner 2026-10-07): agent-sync-push and
  * cursor-slack-sync are removed.  Do not resurrect them; coordination runs
- * through the `agent-sync` CLI and its always-on listener.
+ * through the `simple-chat` CLI and its always-on listener.
  */
 const home = "/Users/jay";
 const logs = `${home}/.pm2/logs`;

@@ -609,7 +609,7 @@ class MusePinTest(unittest.TestCase):
 
     def test_the_muse_red_entry_labels_unreadable_as_unverifiable_and_omits_run(self) -> None:
         # A `pin_stale` or `pin_unverified` line ends in the operator running the re-pin
-        # remediation, which begins with the verb "`agent-sync daemon test-wake ...`".  An
+        # remediation, which begins with the verb "`simple-chat daemon test-wake ...`".  An
         # unreadable line must say "unverifiable" (re-pinning would refuse again on the same
         # missing contract) and must not prefix its own "run" before the remediation, which
         # begins with "restore the wake contract".  Tested as the function the daemon calls,

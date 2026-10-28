@@ -333,7 +333,7 @@ test("admin page puts the owner's controls first and folds the long sections (AF
   const html = await adminPage({ ...adminFacts, calls, statusCalls: calls, generatedAt: Date.parse("2026-10-18T12:00:00Z") }).text();
   // The renamed unified title is pinned:  a rename regression fails here
   // (kody 4372747419 - the visual harness covers the static site only).
-  assert.match(html, /<title>ST-MCP \+ GR-MCP Admin<\/title>/);
+  assert.match(html, /<title>Fleet MCP Admin<\/title>/);
   const at = (s) => html.indexOf(s);
   assert.ok(at("<h2>Seats</h2>") > 0 && at("<h2>Seats</h2>") < at("Hand-Registered Clients"));
   assert.ok(at("Hand-Registered Clients") < at('id="status-overview"'));
@@ -399,4 +399,14 @@ test("the mismatch count line labels its lifetime retention", async () => {
   }).text();
   assert.ok(html.includes("3 wrong-secret attempts"), "count renders");
   assert.ok(html.includes("(approximate; updates at most once a minute)"), "the write-throttled, lower-bound nature is labelled");
+});
+
+test("past successful traffic cannot color a missing-service seat ready", async () => {
+  const html = await adminPage({ ...adminFacts,
+    seats: [{seat: "JET", paused: false, keyInstalled: false, role: {ok: true}, grants: [{client: "Client", scope: [], createdAt: 0}]}],
+    statusCalls: [{ts: Date.parse("2026-10-18T12:00:00Z"), seat: "JET", tool: "zulip_read", error_code: "ok"}],
+    generatedAt: Date.parse("2026-10-18T12:01:00Z"),
+  }).text();
+  assert.match(html, /status-state state-attention">Needs setup: Zulip key/);
+  assert.doesNotMatch(html, /status-state state-ready">Needs setup/);
 });

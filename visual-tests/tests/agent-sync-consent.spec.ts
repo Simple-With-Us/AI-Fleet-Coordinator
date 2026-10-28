@@ -15,9 +15,9 @@ const base = {
 };
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-  // kody 4363358439: the hand-registered branch ("Registered by hand in ST-MCP
+  // kody 4363358439: the hand-registered branch ("Registered by hand in Fleet MCP
   // Admin. Its name is not verified.") needs pixel coverage.
-  test(`ST-MCP consent hand-registered client ${viewport.width}`, async ({ page }) => {
+  test(`Fleet MCP consent hand-registered client ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const response = consentPage({ ...base, clientDomain: null }, {});
     const html = await response.text();
@@ -25,12 +25,12 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await page.goto('/authorize');
     // The consent heading names the seat by its admin display label (adminSeatLabel).
     await expect(page.getByRole('heading', { name: 'Connect Example Desktop as Cursor & Grok Bots?', exact: true })).toBeVisible();
-    await expect(page.getByText('Registered by hand in ST-MCP + GR-MCP Admin.')).toBeVisible();
+    await expect(page.getByText('Registered by hand in Fleet MCP Admin.')).toBeVisible();
     await expect(page.locator('body')).toHaveScreenshot(`agent-sync-consent-manual-${viewport.width}.png`, { animations: 'disabled', fullPage: true });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
-  test(`ST-MCP consent published client ${viewport.width}`, async ({ page }) => {
+  test(`Fleet MCP consent published client ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const response = consentPage({ ...base, clientDomain: 'example.test' }, {});
     const html = await response.text();

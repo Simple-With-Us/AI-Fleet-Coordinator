@@ -1,4 +1,4 @@
-"""The `guide` tool (AFC-331, docs/protocols/per-call-identity.md section 7):  the Agent-Sync tools guide,
+"""The `guide` tool (AFC-331, docs/protocols/per-call-identity.md section 7):  the ST-MCP tools guide,
 whole or one `##` section.  The text is docs/protocols/simple-tools-guide.md, read from beside the
 package (the repo root, or the server mirror's copy of it).  The hosted Worker bundles the same file at
 build time and applies the same section rule (src/guide.js).

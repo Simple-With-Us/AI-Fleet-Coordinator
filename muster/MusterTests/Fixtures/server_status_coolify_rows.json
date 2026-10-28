@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "tool": "fleet-server-status",
+  "generatedAt": "2026-10-28T15:00:00Z",
+  "host": "example-host",
+  "coolify": [
+    {"uuid": "labeluuid1", "name": "labelled-app", "type": "application", "status": "running", "uuidSource": "label"},
+    {"uuid": "plainuuid2", "name": "plain-app", "type": "application", "status": "running"},
+    {"uuid": "serviceuuid3", "name": "a-service", "type": "service", "status": "running"},
+    {"uuid": "dbuuid4", "name": "a-database", "type": "database", "status": "running"},
+    {"uuid": "standalone-box", "name": "standalone-box", "type": "standalone", "status": "running"},
+    {"uuid": "named-app", "name": "named-app", "type": "application", "status": "running"},
+    {"uuid": "suffixed", "name": "suffixed (service)", "type": "application", "status": "running"},
+    {"uuid": "sourceuuid8", "name": "source-name", "type": "application", "status": "running", "uuidSource": "name"},
+    {"uuid": "sourceuuid9", "name": "source-odd", "type": "application", "status": "running", "uuidSource": 9},
+    {"uuid": "shareduuid", "name": "shared-db", "type": "service", "status": "running"},
+    {"uuid": "shareduuid", "name": "shared-app", "type": "application", "status": "running"},
+    {"uuid": "goneuuid12", "name": "gone-app", "type": "application", "status": "absent"}
+  ],
+  "processes": [],
+  "files": []
+}

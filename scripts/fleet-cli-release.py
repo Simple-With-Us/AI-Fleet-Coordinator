@@ -127,6 +127,10 @@ TOOL_REQUIRED = frozenset(
         # The fleetlink_* MCP tools:  `simple-chat mcp` reads it at startup.  Not in BASE_REQUIRED, so a retained
         # release built before it stays a valid rollback target.
         "scripts/agent_sync/mcp/fleetlink-tools.json",
+        # The fleet secret scanner (standard library only):  every remote transport scans its arguments with it
+        # before anything is sent, and sends nothing if it is missing.  Not in BASE_REQUIRED, so a retained release
+        # built before it stays a valid rollback target.
+        "scripts/agent_sync/secretscan.py",
     }
 )
 REQUIRED = BASE_REQUIRED | TOOL_REQUIRED
@@ -302,7 +306,25 @@ BASH_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane", "scripts/fleet-mode"})
 # wrappers carry the roots, so every shell that calls them resolves the same
 # directories, with or without an interactive login (owner 2026-10-25).
 ENV_SERVER_VOLUME = "FLEET_SERVER_VOLUME"
+ENV_CODE_ROOT = "FLEET_CODE_ROOT"
+ENV_APPS_ROOT = "FLEET_APPS_ROOT"
+ENV_LANES_ROOT = "FLEET_LANES_ROOT"
 ROOTED_SCRIPTS = frozenset({"scripts/fleet_lanes/bin/lane"})
+
+
+def expand(candidate: str, home: Path) -> Path:
+    """A path the host named, with `~` expanded against the given home.
+
+    The home is the one the release runs under, and a test runs inside a throwaway
+    home, so a `~` never resolves against the real one.  A `~user` spelling names
+    another account's home, and it is left exactly as it was named.
+    """
+    text = candidate.strip()
+    if text == "~":
+        text = str(home)
+    elif text.startswith("~/"):
+        text = str(home) + text[1:]
+    return Path(text)
 
 
 def host_root(home: Path, name: str) -> str:
@@ -312,28 +334,50 @@ def host_root(home: Path, name: str) -> str:
     fleet is using.  Then the copy under the home wins when it is there; then the
     volume the host names holds these folders, and it holds the real trees when
     the home holds no alias for them.
+
+    The authoritative resolution for the fleet is `server_working_dirs.py`
+    (server_volume(), code_root(), apps_root(), lanes_root()) and the roots the
+    lane tools read in `fleet_lanes/layout.py`.  This is the release's own copy,
+    because the release payload ships no fleet_lanes module, and the two must
+    agree.
     """
-    configured = os.environ.get("FLEET_CODE_ROOT" if name == "Code" else "FLEET_APPS_ROOT")
+    configured = (os.environ.get(ENV_CODE_ROOT if name == "Code" else ENV_APPS_ROOT) or "").strip()
     if configured:
-        return configured
+        return str(expand(configured, home))
     local = home / name
     if local.is_dir():
         return str(local)
     raw = (os.environ.get(ENV_SERVER_VOLUME) or "").strip()
     if raw:
-        volume = Path(raw).expanduser() / name
+        volume = expand(raw, home) / name
         if volume.is_dir():
             return str(volume)
     return str(local)
 
 
+def host_lanes_root(home: Path, apps: str) -> str:
+    """The lanes root this host names, or the one beside the apps folder.
+
+    A host that names its lanes root carries that one:  the lanes do not always sit
+    beside the apps folder, and a wrapper that derived one would point the lane
+    tools at a directory the host does not use.
+    """
+    named = (os.environ.get(ENV_LANES_ROOT) or "").strip()
+    if named:
+        return str(expand(named, home))
+    candidate = os.path.join(apps, "lanes")
+    return candidate if os.path.isdir(candidate) else ""
+
+
 def root_exports(home: Path) -> str:
-    """The root exports a wrapper sets when the caller has not set them itself."""
+    """The root exports a wrapper sets when the caller has not set them itself.
+
+    Every line is a setdefault and never an assignment, so the environment wins
+    over the wrapper.
+    """
     code = host_root(home, "Code")
     apps = host_root(home, "apps")
-    lanes = os.path.join(apps, "lanes")
-    if not os.path.isdir(lanes):
-        lanes = ""
+    lanes = host_lanes_root(home, apps)
     return (
         f"os.environ.setdefault('FLEET_CODE_ROOT', {code!r})\n"
         f"os.environ.setdefault('FLEET_APPS_ROOT', {apps!r})\n"
@@ -393,6 +437,10 @@ def wrapper_files(home: Path) -> dict[Path, tuple[bytes, int]]:
 
 
 LEGACY_CODEX_MCP = "agent-sync-codex-mcp"
+LEGACY_CODEX_KEY = "agent-sync"  # the retired registration key; migrated, never written
+CODEX_KEY = (
+    "simple-chat"  # local stdio MCP mode of the simple-chat CLI (the hosted server is ST-MCP)
+)
 
 
 def codex_mcp_expected(bin_dir: Path) -> dict:
@@ -409,14 +457,14 @@ def codex_mcp_expected(bin_dir: Path) -> dict:
 
 
 def migrate_codex_mcp(home: Path, files: dict) -> None:
-    """Rewrite a host's pre-rename Codex registration to the new wrapper, in `files` if it applies.
+    """Rewrite a host's pre-rename Codex registration to `[mcp_servers.simple-chat]`, in `files` if it applies.
 
-    Every host installed before the AFC CLI rename carries `[mcp_servers.agent-sync]` pointing at
-    `<bin>/agent-sync-codex-mcp`, which execs `scripts/agent-sync`, a path this release does not
-    ship:  the seat's Codex MCP server would die with a FileNotFoundError.  So the one line naming
-    the legacy wrapper is replaced with the new one, and only when the host's table is exactly the
-    registration this tool wrote (same `env_vars`, command the legacy wrapper).  Anything else is
-    still a conflict and still refused:  this never rewrites a hand-edited registration.
+    Hosts installed before the rename carry `[mcp_servers.agent-sync]`, whose command is either the
+    legacy wrapper `<bin>/agent-sync-codex-mcp` (it execs `scripts/agent-sync`, a path this release does
+    not ship) or the renamed wrapper under the old key.  The table header and the one command line are
+    rewritten, and only when the host's table is exactly the registration this tool wrote (same
+    `env_vars`, command one of those two wrappers).  The old key is not kept.  Anything else is still a
+    conflict and still refused:  this never rewrites a hand-edited registration.
     """
     bin_dir = home / ".local/bin"
     expected = codex_mcp_expected(bin_dir)
@@ -430,22 +478,38 @@ def migrate_codex_mcp(home: Path, files: dict) -> None:
         before = tomllib.loads(original.decode())
     except (ValueError, UnicodeError):
         raise Refused("invalid_codex_config") from None
-    present = before.get("mcp_servers", {}).get("agent-sync")
+    servers = before.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        raise Refused("invalid_codex_config")
+    current = servers.get(CODEX_KEY)
+    if current is not None and current != expected:
+        raise Refused("existing_simple_chat_mcp_conflict")
+    present = servers.get(LEGACY_CODEX_KEY)
     if present is None:
         return
-    if present == expected:
-        return
+    if not isinstance(present, dict):
+        raise Refused("existing_agent_sync_mcp_conflict")
     legacy_command = str(bin_dir / LEGACY_CODEX_MCP)
-    if present.get("command") != legacy_command or present.get("env_vars") != expected["env_vars"]:
+    if (
+        set(present) != {"command", "env_vars"}
+        or present.get("command") not in (legacy_command, expected["command"])
+        or present.get("env_vars") != expected["env_vars"]
+    ):
         raise Refused("existing_agent_sync_mcp_conflict")
-    old_line = ("command = " + json.dumps(legacy_command)).encode()
+    old_header = ("[mcp_servers." + LEGACY_CODEX_KEY + "]").encode()
+    new_header = ("[mcp_servers." + CODEX_KEY + "]").encode()
+    old_line = ("command = " + json.dumps(present["command"])).encode()
     new_line = ("command = " + json.dumps(expected["command"])).encode()
-    # Exactly one such line:  an ambiguous file is not one this tool wrote, so do not guess.
-    if original.count(old_line) != 1:
+    # Exactly one of each:  an ambiguous file is not one this tool wrote, so do not guess.
+    if original.count(old_header) != 1 or original.count(old_line) != 1:
         raise Refused("existing_agent_sync_mcp_conflict")
-    after_raw = original.replace(old_line, new_line)
+    if current is not None:
+        # Both keys present: not a state this tool wrote, so do not guess which to keep.
+        raise Refused("existing_agent_sync_mcp_conflict")
+    after_raw = original.replace(old_header, new_header).replace(old_line, new_line)
     desired = copy.deepcopy(before)
-    desired.setdefault("mcp_servers", {})["agent-sync"] = expected
+    del desired["mcp_servers"][LEGACY_CODEX_KEY]
+    desired["mcp_servers"][CODEX_KEY] = expected
     if tomllib.loads(after_raw.decode()) != desired:
         raise Refused("codex_config_semantics_changed")
     mode = stat.S_IMODE(config.stat().st_mode) if config.exists() else 0o600
@@ -485,17 +549,20 @@ def install_plan(home: Path) -> dict[Path, tuple[bytes, int]]:
         before = tomllib.loads(original.decode())
     except (ValueError, UnicodeError):
         raise Refused("invalid_codex_config") from None
-    present = before.get("mcp_servers", {}).get("agent-sync")
-    if present is None:
+    servers = before.get("mcp_servers", {})
+    if not isinstance(servers, dict):
+        raise Refused("invalid_codex_config")
+    present = servers.get(CODEX_KEY)
+    if present is None and config not in files:
         addition = (
-            "\n# Local CODEX-only fleet MCP; no credentials or pinned seat.\n"
-            "[mcp_servers.agent-sync]\ncommand = " + json.dumps(expected["command"]) + "\n"
+            "\n# Local CODEX-only fleet MCP (simple-chat mcp); no credentials or pinned seat.\n"
+            "[mcp_servers.simple-chat]\ncommand = " + json.dumps(expected["command"]) + "\n"
             "env_vars = " + json.dumps(expected["env_vars"]) + "\n"
         ).encode()
         after_raw = original.rstrip(b"\n") + b"\n" + addition
         after = tomllib.loads(after_raw.decode())
         desired = copy.deepcopy(before)
-        desired.setdefault("mcp_servers", {})["agent-sync"] = expected
+        desired.setdefault("mcp_servers", {})[CODEX_KEY] = expected
         if after != desired:
             raise Refused("codex_config_semantics_changed")
         mode = stat.S_IMODE(config.stat().st_mode) if config.exists() else 0o600

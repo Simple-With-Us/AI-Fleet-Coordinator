@@ -218,7 +218,7 @@ class FileSourceTests(unittest.TestCase):
         (repo / "docs" / "big.md").write_text("x" * (sources.DOC_MAX_BYTES + 1))
         (repo / "node_modules" / "x" / "README.md").write_text("# nm\n")
         (repo / ".claude" / "skills" / "s1" / "SKILL.md").write_text("---\nname: s1\n---\n# S1\n")
-        extra = self.root / "AGENT-SYNC.md"
+        extra = self.root / "FLEET-PROTOCOL.md"
         extra.write_text("# Agent sync\n")
         (repo / "docs" / "dist").mkdir()
         (repo / "docs" / "dist" / "out.md").write_text("# dist\n")
@@ -239,7 +239,7 @@ class FileSourceTests(unittest.TestCase):
         }
         names = {pathlib.Path(p).name for p in docs}
         # the repo's .claude/skills copy is the skill source's job (mirror rule b)
-        self.assertEqual(names, {"README.md", "A.md", "2026-review.md", "AGENT-SYNC.md"})
+        self.assertEqual(names, {"README.md", "A.md", "2026-review.md", "FLEET-PROTOCOL.md"})
         self.assertEqual(docs[str(repo / "docs" / "A.md")].category, "doc")
         # not a git repo -> no url, local doc id, mtime dates
         a = docs[str(repo / "docs" / "A.md")]
@@ -616,7 +616,7 @@ class ExtraDocWalkerTests(unittest.TestCase):
         (um / "README.md").write_text("# Usage Monitor\n")
 
         self.apps.mkdir()
-        (self.apps / "AGENT-SYNC.md").write_text("# Agent sync protocol\n")
+        (self.apps / "FLEET-PROTOCOL.md").write_text("# Agent sync protocol\n")
         (self.apps / "COOLIFY.md").write_text("# Coolify\n")
         (self.apps / "SOCRATIC-TRADE-EFFORT-LOG.md").write_text("# ST effort\n")
         (self.apps / "EFFORT-LOG-PROTOCOL.md").write_text("# Protocol\n")
@@ -647,7 +647,7 @@ class ExtraDocWalkerTests(unittest.TestCase):
         self.assertNotIn("SOCRATIC-TRADE-EFFORT-LOG.md", names)
         self.assertNotIn("EFFORT-LOG-PROTOCOL.md", names)
         self.assertIn("COOLIFY.md", names)
-        self.assertIn("AGENT-SYNC.md", names)
+        self.assertIn("FLEET-PROTOCOL.md", names)
         self.assertIn("sessions.md", names)
         self.assertNotIn("SKILL.md", names)  # ~/.grok/skills is a skill-source tree now
         self.assertNotIn("out.md", names)
@@ -717,16 +717,16 @@ class MirrorSkipTests(unittest.TestCase):
         return kept, skipped
 
     def test_rule_a_live_apps_copy_beats_the_repo_mirror(self):
-        live_sync = self._w(self.apps / "AGENT-SYNC.md", "# Agent sync (live)\n")
+        live_sync = self._w(self.apps / "FLEET-PROTOCOL.md", "# Agent sync (live)\n")
         live_mlp = self._w(self.apps / "MAC-LOCAL-PROCESSES.md", "# Mac local processes (live)\n")
         live_ui = self._w(self.apps / "FLEET-UI-COPY.md")
         self._w(self.apps / "README.md", "# apps readme\n")
-        mirror_sync = self._w(self.fleet / "AGENT-SYNC.md", "# Agent sync (mirror)\n")
+        mirror_sync = self._w(self.fleet / "FLEET-PROTOCOL.md", "# Agent sync (mirror)\n")
         mirror_mlp = self._w(self.fleet / "docs" / "MAC-LOCAL-PROCESSES.md", "# mirror\n")
         mirror_ui = self._w(self.fleet / "FLEET-UI-COPY.md")
         fleet_readme = self._w(self.fleet / "README.md", "# Fleet coordinator\n")
         fleet_only = self._w(self.fleet / "docs" / "RAG-FLEET-INFRA.md")
-        st_sync = self._w(self.st / "docs" / "AGENT-SYNC.md", "# ST's own copy\n")
+        st_sync = self._w(self.st / "docs" / "FLEET-PROTOCOL.md", "# ST's own copy\n")
         kept, skipped = self._walk()
         for live in (live_sync, live_mlp, live_ui, fleet_readme, fleet_only, st_sync):
             self.assertIn(str(live), kept, live)
@@ -736,7 +736,7 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIn(str(self.apps / "README.md"), kept)
 
     def test_rule_a_only_when_the_live_copy_exists(self):
-        mirror = self._w(self.fleet / "AGENT-SYNC.md")
+        mirror = self._w(self.fleet / "FLEET-PROTOCOL.md")
         kept, skipped = self._walk()
         self.assertIn(str(mirror), kept)
         self.assertEqual(skipped, {})
@@ -794,8 +794,8 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIn(str(other), kept)
 
     def test_skips_are_logged_once_per_rule(self):
-        self._w(self.apps / "AGENT-SYNC.md")
-        self._w(self.fleet / "AGENT-SYNC.md")
+        self._w(self.apps / "FLEET-PROTOCOL.md")
+        self._w(self.fleet / "FLEET-PROTOCOL.md")
         for i in range(5):
             self._w(
                 self.fleet / "docs" / "fleet-skills" / "by-seat" / f"seat{i}" / "x" / "SKILL.md"
@@ -821,7 +821,7 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertTrue(
             by_rule[sources.SKIP_APPS_MIRROR].startswith("doc: skipped 1 apps-mirror file(s): ")
         )
-        self.assertIn("AGENT-SYNC.md", by_rule[sources.SKIP_APPS_MIRROR])
+        self.assertIn("FLEET-PROTOCOL.md", by_rule[sources.SKIP_APPS_MIRROR])
         self.assertTrue(
             by_rule[sources.SKIP_SKILL_COPY].startswith("doc: skipped 5 skill-copy file(s): ")
         )
@@ -864,10 +864,10 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIsNone(r(pathlib.Path("/x/.claude/CLAUDE.md")))
         self.assertIsNone(r(pathlib.Path("/x/Code/Socratic.Trade/docs/skills.md")))
         # rule (a) needs a real checkout to resolve against; use the temp fleet dir
-        live = {"AGENT-SYNC.md", "README.md"}
-        mirror = self._w(self.fleet / "AGENT-SYNC.md")
+        live = {"FLEET-PROTOCOL.md", "README.md"}
+        mirror = self._w(self.fleet / "FLEET-PROTOCOL.md")
         readme = self._w(self.fleet / "README.md")
-        outside = self._w(self.st / "AGENT-SYNC.md")
+        outside = self._w(self.st / "FLEET-PROTOCOL.md")
         self.assertEqual(
             r(mirror, fleet_repos=[self.fleet], live_basenames=live), sources.SKIP_APPS_MIRROR
         )
@@ -875,7 +875,7 @@ class MirrorSkipTests(unittest.TestCase):
         self.assertIsNone(r(outside, fleet_repos=[self.fleet], live_basenames=live))
         self.assertIsNone(r(mirror, fleet_repos=[self.fleet], live_basenames=()))
 
-    # ---- rule (d): the Fleet-OPS handbook.  Its public pages and generated/ are the text of the live AGENT-SYNC.md.
+    # ---- rule (d): the Fleet-OPS handbook.  Its public pages and generated/ are the text of the live FLEET-PROTOCOL.md.
 
     PUBLIC = (
         "---\ntitle: {t}\norder: {o}\nvisibility: public\nsection: {s}\n---\n## {t}\n\n{body}\n"
@@ -887,11 +887,11 @@ class MirrorSkipTests(unittest.TestCase):
 
     def _handbook(self):
         """The shapes build.mjs makes: public pages, a private page, a ruling log whose front matter says public by
-        mistake, the README, and generated/AGENT-SYNC.md; plus the live file and the AFC mirror that hold the same text."""
-        live = self._w(self.apps / "AGENT-SYNC.md", f"# Agent sync (live)\n\n{self.RULE}\n")
-        mirror = self._w(self.fleet / "AGENT-SYNC.md", f"# Agent sync (mirror)\n\n{self.RULE}\n")
+        mistake, the README, and generated/FLEET-PROTOCOL.md; plus the live file and the AFC mirror that hold the same text."""
+        live = self._w(self.apps / "FLEET-PROTOCOL.md", f"# Agent sync (live)\n\n{self.RULE}\n")
+        mirror = self._w(self.fleet / "FLEET-PROTOCOL.md", f"# Agent sync (mirror)\n\n{self.RULE}\n")
         generated = self._w(
-            self.ops / "generated" / "AGENT-SYNC.md", f"# Agent sync (generated)\n\n{self.RULE}\n"
+            self.ops / "generated" / "FLEET-PROTOCOL.md", f"# Agent sync (generated)\n\n{self.RULE}\n"
         )
         h = self.ops / "handbook"
         public = [
@@ -971,7 +971,7 @@ class MirrorSkipTests(unittest.TestCase):
         )
         skipped = {path: rule for rule, path in sources.take_doc_skips()}
         kept = {d.path for d in docs}
-        # the mirror is the one AGENT-SYNC.md the walk ingests, so the public pages are dropped for it, as they are
+        # the mirror is the one FLEET-PROTOCOL.md the walk ingests, so the public pages are dropped for it, as they are
         # for the live file:  a handbook rule is one hit, which is what it was before the handbook was walked at all
         self.assertIn(str(mirror), kept)
         for page in public:
@@ -1007,7 +1007,7 @@ class MirrorSkipTests(unittest.TestCase):
         live.unlink()
         mirror.unlink()
         self._w(
-            self.st / "docs" / "AGENT-SYNC.md", f"# ST's own copy\n\n{self.RULE}\n"
+            self.st / "docs" / "FLEET-PROTOCOL.md", f"# ST's own copy\n\n{self.RULE}\n"
         )  # not the coordinator's mirror
         kept, skipped = self._walk()
         for page in public:
@@ -1130,14 +1130,14 @@ class MirrorSkipTests(unittest.TestCase):
         late = self._w(
             h / "chat" / "late.md", "## No front matter\n\n---\nvisibility: public\n---\n"
         )
-        gen = self._w(self.ops / "generated" / "AGENT-SYNC.md")
+        gen = self._w(self.ops / "generated" / "FLEET-PROTOCOL.md")
         docs_gen = self._w(self.ops / "docs" / "generated" / "x.md")
         elsewhere = self._w(
             self.st / "handbook" / "chat" / "posting.md",
             self.PUBLIC.format(t="P", o="1", s="chat", body="x"),
         )
         ops = [self.ops]
-        live = {"AGENT-SYNC.md"}
+        live = {"FLEET-PROTOCOL.md"}
         self.assertEqual(r(pub, ops_repos=ops, live_basenames=live), sources.SKIP_HANDBOOK_MIRROR)
         self.assertEqual(r(gen, ops_repos=ops, live_basenames=live), sources.SKIP_HANDBOOK_MIRROR)
         for kept in (priv, ruling, quoted, nofm, crlf, late, docs_gen):
@@ -1480,12 +1480,13 @@ class ChatLogTests(unittest.TestCase):
 
 
 class ProtocolDocRename(unittest.TestCase):
-    """The protocol document is being renamed;  readers accept either name until the old one is retired."""
+    """The protocol document was renamed;  readers know the current name only."""
 
-    def test_both_names_are_known_and_the_extra_docs_list_both(self) -> None:
-        self.assertEqual(set(sources.PROTOCOL_DOC_NAMES), {"FLEET-PROTOCOL.md", "AGENT-SYNC.md"})
+    def test_only_the_current_name_is_known_and_the_extra_docs_list_it(self) -> None:
+        self.assertEqual(set(sources.PROTOCOL_DOC_NAMES), {"FLEET-PROTOCOL.md"})
         names = {p.name for p in sources.EXTRA_DOCS}
-        self.assertTrue({"FLEET-PROTOCOL.md", "AGENT-SYNC.md"} <= names)
+        self.assertTrue({"FLEET-PROTOCOL.md"} <= names)
+        self.assertNotIn("AGENT-SYNC.md", names)
 
 if __name__ == "__main__":
     unittest.main()

@@ -6190,7 +6190,7 @@ UID:a95046133f888925d841c3fe61aa287c25927d5f-AI-Fleet-Coordinator@AI-Fleet-
 DTSTAMP:20260927T002535Z
 DTSTART:20260917T180748Z
 DTEND:20260917T182748Z
-SUMMARY:[AI-Fleet-Coordinator] docs: sync AGENT-SYNC.md mirror to live (Mac
+SUMMARY:[AI-Fleet-Coordinator] docs: sync FLEET-PROTOCOL.md mirror to live (Mac
   app builds\, Fleet mode/delegation) (#255)
 DESCRIPTION:Repo: AI-Fleet-Coordinator\nCommit: a9504613\ndocs: sync AGENT-
  SYNC.md mirror to live (Mac app builds\, Fleet mode/delegation) (#255)\nht
@@ -6262,9 +6262,9 @@ DTSTAMP:20260927T002535Z
 DTSTART:20260917T161330Z
 DTEND:20260917T163330Z
 SUMMARY:[AI-Fleet-Coordinator] docs: name needs-mac label and request-mac-s
- eat.sh in AGENT-SYNC.md (#250)
+ eat.sh in FLEET-PROTOCOL.md (#250)
 DESCRIPTION:Repo: AI-Fleet-Coordinator\nCommit: 0f1b87c8\ndocs: name needs-
- mac label and request-mac-seat.sh in AGENT-SYNC.md (#250)\nhttps://github.
+ mac label and request-mac-seat.sh in FLEET-PROTOCOL.md (#250)\nhttps://github.
  com/jaywedgeworth22/AI-Fleet-Coordinator/commit/0f1b87c82d03bef7d1eb5f06ff
  9af0bec326a440
 URL:https://github.com/jaywedgeworth22/AI-Fleet-Coordinator/commit/0f1b87c8

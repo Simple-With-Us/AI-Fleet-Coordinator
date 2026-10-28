@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.jay.fleet-mac-services (Muster ops control):  every 5 minutes, write which fleet LaunchAgents
+  are installed and loaded on this Mac, ~/.local/state/fleet-tools/mac-services.json (0600, atomic),
+  for Muster's Operations tab.  It runs the managed runtime's copy of fleet-mac-services.py, so the
+  expected list (scripts/launchd/*.plist plus mac.agents in scripts/fleet-ops-control.json) moves
+  with main, under /usr/bin/python3 -I (Python 3.9 on macOS).  It only runs `launchctl print` and
+  reads ~/Library/LaunchAgents;  it starts, stops and changes nothing.
+  Install:  cp this file to ~/Library/LaunchAgents/ and
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.fleet-mac-services.plist
+  Stop:     launchctl bootout gui/$(id -u)/com.jay.fleet-mac-services
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.fleet-mac-services</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-I</string>
+    <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet-mac-services.py</string>
+    <string>--write</string>
+    <string>/Users/jay/.local/state/fleet-tools/mac-services.json</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/apps/logs/fleet-mac-services.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/apps/logs/fleet-mac-services.launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+  </dict>
+</dict>
+</plist>

@@ -155,7 +155,7 @@ test("a call acts as the grant's seat on FleetLink's MCP, and comes back fenced 
 
   const text = result.content[0].text;
   const lines = text.split("\n");
-  assert.match(lines[0], /^agent-sync fleetlink_share_to_team:  as JET's FleetLink account$/);
+  assert.match(lines[0], /^simple-tools fleetlink_share_to_team:  as JET's FleetLink account$/);
   const begin = lines.findIndex((l) => l.startsWith(FLEETLINK_MARKER_BEGIN));
   const nonce = lines[begin].split("nonce=")[1];
   assert.match(nonce, /^[0-9a-f]{16,}$/);

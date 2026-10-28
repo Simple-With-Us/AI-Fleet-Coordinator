@@ -11,8 +11,8 @@
 # key_env to use other names.
 #
 # The container copies this file onto its volume (AGENT_SYNC_CONFIG) on first start.  Then
-# `agent-sync daemon init` pins owner_user_id and eligible_user_ids in that copy, and
-# `agent-sync daemon reload` (or a restart) applies it.  Until then nothing is treated as the
+# `simple-chat daemon init` pins owner_user_id and eligible_user_ids in that copy, and
+# `simple-chat daemon reload` (or a restart) applies it.  Until then nothing is treated as the
 # owner and nothing wakes.  A reload re-reads only this file:  a new or changed environment
 # variable reaches the listener only when the container restarts.  Edit this copy in place (the
 # image has no editor; see the server doc), and never mount it as a single file, because
@@ -21,7 +21,7 @@
 
 [daemon]
 instance = "server"
-owner_user_id = 1000001                 # pinned by `agent-sync daemon init`, never derived at runtime
+owner_user_id = 1000001                 # pinned by `simple-chat daemon init`, never derived at runtime
 eligible_user_ids = [1000002, 1000003, 1000004]
 owner_clients = ["website", "ZulipMobile", "ZulipFlutter", "ZulipElectron", "ZulipDesktop"]
 stale_after_minutes = 120

@@ -125,6 +125,13 @@ HELD_BACK_MIN_DIGEST_MINUTES = 15
 # sooner than the window, and a seat one under its cap would otherwise post every 30s tick.
 HELD_ALERT_DEFAULT_MINUTES = 60
 HELD_ALERT_LIMITS: dict[str, tuple[float, float]] = {"held_alert_minutes": (0, 1440)}
+# The peer-broadcast reminder (owner, Oct 27 2026, broadcast_audit.py):  how long a fleet bot has to
+# explain its `@all` to the owner before the listener DMs the owner about it.  0 turns the reminder
+# off;  the wake itself is untouched either way.
+PEER_BROADCAST_REMINDER_DEFAULT_MINUTES = 10
+PEER_BROADCAST_LIMITS: dict[str, tuple[float, float]] = {
+    "peer_broadcast_reminder_minutes": (0, 1440)
+}
 # Seat tags whose bots are always eligible senders, on top of every tag the seat partition lists
 # (fleet_tags).  Owner 2026-10-09:  "everyone should be able to DM to wake anyone else or tag to wake
 # anyone else", so every fleet bot (Mac and cloud seats, GB personas, BF role bots) is eligible.
@@ -177,6 +184,12 @@ _PREFIX_RE = re.compile(r"^[A-Za-z0-9=:_.-]{0,32}$")
 def env_code(seat: str) -> str:
     """GB-COMPILER -> GB_COMPILER, the CODE in ZULIP_<CODE>_EMAIL."""
     return re.sub(r"[^A-Z0-9]", "_", seat.upper())
+
+
+# Same canonical locator shape the board CLI enforces (scripts/linear-board/board BEARER_LOCATOR_RE).
+BEARER_LOCATOR_RE = re.compile(
+    r"/[A-Za-z0-9_-]{1,64}(?:/[A-Za-z0-9_-]{1,64}){0,7}:[A-Z][A-Z0-9_]{0,63}"
+)
 
 
 class RoutineConfig:
@@ -244,6 +257,7 @@ class SeatConfig:
         fallback_uncontained_ok: bool = False,
         muse_bridge: bool = False,
         typing_indicator: bool = False,
+        bearer_locator: str | None = None,
         config_problems: list[str] | None = None,
     ) -> None:
         self.seat = seat
@@ -272,6 +286,10 @@ class SeatConfig:
         self.instance = instance
         self.enabled = enabled
         self.creds = creds  # "file", "infisical" or "env"
+        # The seat's own simple-board bearer LOCATOR (a Fleet-OPS FOLDER:KEY_NAME, never a secret), from this trusted
+        # daemon config only.  It names where the seat's bearer lives;  the CLI still verifies it and takes the seat
+        # from the verifier, so a wake or request can never choose a credential.  None = this seat files no board item.
+        self.bearer_locator = bearer_locator
         self.email_env = email_env
         self.key_env = key_env
         self.site_env = site_env
@@ -391,6 +409,9 @@ class Config:
         # bot carries the post;  it defaults to the claude seat, then to the first enabled seat.
         self.held_alert_minutes = float(HELD_ALERT_DEFAULT_MINUTES)
         self.held_alert_seat: str | None = None
+        # The peer-broadcast reminder (owner, Oct 27 2026).  How long a fleet bot's `@all` may go
+        # unexplained before the listener DMs the owner about it;  0 turns the reminder off.
+        self.peer_broadcast_reminder_minutes = float(PEER_BROADCAST_REMINDER_DEFAULT_MINUTES)
         self.auto_subscribe = (
             True  # daemon.auto_subscribe:  held seats join every public channel (owner 2026-10-10)
         )
@@ -683,6 +704,21 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
                 errors.append("daemon.held_alert_minutes must be between %g and %g" % (low, high))
             else:
                 cfg.held_alert_minutes = value
+    # The peer-broadcast reminder (owner, Oct 27 2026).  Ten minutes by default;  0 turns it off.
+    if "peer_broadcast_reminder_minutes" in daemon:
+        value = _number(
+            daemon["peer_broadcast_reminder_minutes"],
+            "daemon.peer_broadcast_reminder_minutes",
+            errors,
+        )
+        if value is not None:
+            low, high = PEER_BROADCAST_LIMITS["peer_broadcast_reminder_minutes"]
+            if not low <= value <= high:
+                errors.append(
+                    "daemon.peer_broadcast_reminder_minutes must be between %g and %g" % (low, high)
+                )
+            else:
+                cfg.peer_broadcast_reminder_minutes = value
     # Which seat's bot carries the digest.  Optional:  the daemon falls back to the claude seat, then
     # to the first enabled seat, so an unset value still posts rather than silently going quiet.
     if "held_alert_seat" in daemon:
@@ -905,6 +941,15 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
         if not isinstance(typing_indicator, bool):
             wake_problems.append("seat.%s.typing_indicator must be true or false" % seat_name)
             typing_indicator = False
+        bearer_locator = section.get("bearer_locator")
+        if bearer_locator is not None and (
+            not isinstance(bearer_locator, str) or not BEARER_LOCATOR_RE.fullmatch(bearer_locator)
+        ):
+            wake_problems.append(
+                "seat.%s.bearer_locator must be a FOLDER:KEY_NAME location (no secret value)"
+                % seat_name
+            )
+            bearer_locator = None
         creds = section.get("creds", "file")
         if creds not in ("file", "infisical", "env"):
             problems.append(
@@ -1119,6 +1164,7 @@ def from_dict(raw: Mapping[str, Any]) -> Config:
             fallback_uncontained_ok=uncontained,
             muse_bridge=muse_bridge,
             typing_indicator=typing_indicator,
+            bearer_locator=bearer_locator,
             config_problems=wake_problems,
         )
         (cfg.seats if enabled else cfg.disabled)[seat_name] = seat_cfg

@@ -432,7 +432,7 @@ test("personas table:  a malformed table still loads every module that uses it, 
   assert.equal(control.out.error, undefined, control.out.error);
   assert.deepEqual(control.out.identities, ["GB-FIXER"]);
   assert.equal(control.out.sameList, true, "delegated-identities.js exports the manifest's validated list");
-  assert.ok(control.out.cursorAllowed.includes("GB-FIXER"));
+  assert.deepEqual(control.out.cursorAllowed, ["CURSOR"]);
   assert.equal(control.out.gbDeclared, 4);
   assert.equal(control.out.gbGate, "opened");
   assert.equal(control.out.gbBearer?.identity, "GB-FIXER");

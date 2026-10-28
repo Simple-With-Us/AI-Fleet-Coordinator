@@ -35,9 +35,10 @@ import subprocess
 import sys
 
 # Grounded hold families: the fleet's documented do-not-automerge /
-# needs-human-merge, plus the literal do-not-merge family Jay named.
+# needs-human-merge, plus the literal do-not-merge and do-not-auto-merge (owner, Oct 27
+# 2026) families Jay named.
 # Per-setter variants carry a :<login> suffix (display hint only).
-HOLD_RE = re.compile(r"^(do-not-merge(:.*)?|do-not-automerge(:.*)?|needs-human-merge)$")
+HOLD_RE = re.compile(r"^(do-not-merge(:.*)?|do-not-auto-?merge(:.*)?|needs-human-merge)$")
 
 
 def gh_json(args):

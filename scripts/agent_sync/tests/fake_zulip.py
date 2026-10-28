@@ -1,7 +1,7 @@
 """A small fake Zulip server for the agent_sync tests.
 
 ThreadingHTTPServer on 127.0.0.1 with a random port, run in a thread.  It implements only the
-endpoints agent-sync uses, checks Basic auth, records every request, and can inject faults
+endpoints simple-chat uses, checks Basic auth, records every request, and can inject faults
 (status codes, delays, dropped connections).  Event queues behave like Zulip's: a queue is
 created by POST /register, GET /events long-polls (with a short heartbeat so tests stay fast),
 events up to last_event_id are acknowledged, and an unknown queue answers BAD_EVENT_QUEUE_ID.

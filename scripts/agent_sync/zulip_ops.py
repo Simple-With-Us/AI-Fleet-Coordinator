@@ -11,7 +11,7 @@ Safety rules that hold on every path:
   - Only this bot's own messages are edited or deleted (`own_message`).
   - Outbound text (edits, scheduled messages, drafts, status text, uploaded text) is secret-scanned
     by the caller before any request:  the CLI with `_read_text`, the MCP layer with its own scan.
-  - The generic escape hatch (`agent-sync api`) reaches only `API_ALLOWLIST`, a fixed list of
+  - The generic escape hatch (`simple-chat api`) reaches only `API_ALLOWLIST`, a fixed list of
     non-admin endpoints, and scans every string it sends.
 
 Python 3.11+, standard library only.
@@ -44,7 +44,7 @@ PRESENCE_ACTIVE_S = (
 PRESENCE_IDLE_S = 15 * 60
 _EMOJI_RE = re.compile(r"^[a-z0-9_+-]{1,60}$")
 
-# The generic escape hatch (`agent-sync api`, CLI only).  Non-admin endpoints a member bot may call
+# The generic escape hatch (`simple-chat api`, CLI only).  Non-admin endpoints a member bot may call
 # for itself; anything realm-wide, any other user's settings, bot management, invitations, exports
 # and channel administration are left out on purpose.  The path is matched in full.
 API_ALLOWLIST: dict[str, tuple[str, ...]] = {

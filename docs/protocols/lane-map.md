@@ -1,6 +1,6 @@
 # Lane Map — where every checkout lives (binding — all seats, all apps, all platforms; layout v2, owner 2026-10-09)
 
-> **Owner decision 2026-10-09.**  Jay approved layout v2 ("Go with this layout?", "yes"): every agent copy of a repo, whoever made it, lives in `~/apps/lanes/<Repo>/`, where `<Repo>` is the repo's folder name under `~/Code`.  This replaces the 2026-10-07 `~/apps/lanes/<prefix>/` folders, `_managed` and `_review`.  Everything else from 2026-10-07 stands: whole-name seat tokens, the temp-directory ban, the deny hooks, the doctor and the cleaner contract.  Extends the 2026-09-25 `~/Code` integration-tree rule in `AGENT-SYNC.md` (unchanged).  Full text lives here; `AGENT-SYNC.md` carries a short pointer.  Board `a7dfde0e`.
+> **Owner decision 2026-10-09.**  Jay approved layout v2 ("Go with this layout?", "yes"): every agent copy of a repo, whoever made it, lives in `~/apps/lanes/<Repo>/`, where `<Repo>` is the repo's folder name under `~/Code`.  This replaces the 2026-10-07 `~/apps/lanes/<prefix>/` folders, `_managed` and `_review`.  Everything else from 2026-10-07 stands: whole-name seat tokens, the temp-directory ban, the deny hooks, the doctor and the cleaner contract.  Extends the 2026-09-25 `~/Code` integration-tree rule in `FLEET-PROTOCOL.md` (unchanged).  Full text lives here; `FLEET-PROTOCOL.md` carries a short pointer.  Board `a7dfde0e`.
 
 > **Rollout status (2026-10-09).**  This change ships the lane tool and doctor for v2 (`scripts/fleet_lanes/`), the rule text, this document, the migration plan (`docs/protocols/lanes-v2-migration.md`) and its script (`scripts/lanes-v2-migrate.py`, a dry run unless given `--apply`).  Nothing on the Mac moves until the owner approves the live steps in that plan: refresh the stable tools copy (`install_tools apply tools`), the rules blocks (`install_rules apply`), the tool settings below, then the migration.  Until the stable copy is refreshed, `~/apps/lane` still makes the old `~/apps/lanes/<prefix>/` paths: run `lane` from a checkout of this repo (`cd scripts && python3 -m fleet_lanes.lane new <app> <slug>`).
 
@@ -208,7 +208,7 @@ Owner decision 2026-10-09: the existing lanes move to the v2 tree in one pass, a
 - The old shapes keep working until then: `lane ls` reports them as `legacy (migrate)` with their new path, and `lane new` finds a lane that has not moved yet.
 - A moved lane leaves a symlink at its old path, pointing at the new one.  The symlinks stay for 7 days (the removal date is written to the migration log) so a shell or an editor that still has the old path keeps working, then `lanes-v2-migrate.py --remove-links` deletes only those symlinks.
 - Lanes with a running process, uncommitted changes, a lock or another checkout below them (a gitignored `.claude/worktrees/<name>`) are skipped and listed; run the script again when they are free.
-- `_managed` and `_review` disappear with their last entry.  The agent-sync runtime checkout under `_managed/fleet` is live infrastructure, so the script skips it and it needs its own step (owner decision pending).
+- `_managed` and `_review` disappear with their last entry.  The runtime checkout under `_managed/fleet` is live infrastructure, so the script skips it and it needs its own step (owner decision pending).
 - Bot lanes (BotFleet `kody`, `fixer`, `designer`, `compiler`) have no seat row in the registry; they are reported as `BOT-LANE` until the owner registers a scheme.
 
 ## Enforcement
@@ -245,4 +245,4 @@ The live `disk-janitor` asks the doctor and acts only on `cleaner_candidates`, a
 
 ## Related
 
-`AGENT-SYNC.md` (`~/Code` rule, pointer to this file, seat table) · `docs/protocols/lanes-v2-migration.md` (the migration) · `scripts/fleet_lanes/README.md` (every command and option) · `scripts/fleet_lanes/rules/` (the rule text the installer writes) · `docs/MUSE-ONBOARDING.md` (Muse Code checklist and the Muse Assist card) · `docs/ONBOARDING-NEW-APP.md` · `docs/ONBOARDING-NEW-AGENT.md` · board `a7dfde0e`.
+`FLEET-PROTOCOL.md` (`~/Code` rule, pointer to this file, seat table) · `docs/protocols/lanes-v2-migration.md` (the migration) · `scripts/fleet_lanes/README.md` (every command and option) · `scripts/fleet_lanes/rules/` (the rule text the installer writes) · `docs/MUSE-ONBOARDING.md` (Muse Code checklist and the Muse Assist card) · `docs/ONBOARDING-NEW-APP.md` · `docs/ONBOARDING-NEW-AGENT.md` · board `a7dfde0e`.

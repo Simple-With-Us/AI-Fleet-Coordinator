@@ -263,7 +263,7 @@ class PostTests(Harness):
 
 
 class DmTests(Harness):
-    """`agent-sync dm --owner`:  a private message to the pinned owner from the seat's own bot."""
+    """`simple-chat dm --owner`:  a private message to the pinned owner from the seat's own bot."""
 
     OWNER_ID = 12  # Jay Wedgeworth in the fake realm
 

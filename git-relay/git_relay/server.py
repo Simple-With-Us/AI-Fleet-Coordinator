@@ -36,9 +36,12 @@ from .audit import AuditLog
 from .github_client import GitHubClient, RelayGitHubError
 from .outcomes import OutcomeStore, OutcomeStoreError, key_for
 from .policy import PolicyError, SeatPolicy
-from .secret_scan import find_secret, reject_secrets, scan_args
+from .secret_scan import MAX_SCAN_NODES, find_secret, reject_secrets, scan_args
 
 MAX_REQUEST_BYTES = 64 * 1024
+# Only the binary release-asset upload may exceed MAX_REQUEST_BYTES (base64 of 180 KiB).
+MAX_BINARY_REQUEST_BYTES = 256 * 1024
+BINARY_REQUEST_ACTIONS = frozenset({"wf_release_asset_upload_binary"})
 
 
 def _positive_int(raw: str, default: int) -> int:
@@ -111,6 +114,8 @@ def _validate_args(action: str, args: dict) -> dict:
         raise ValueError(f"unknown action {action!r}")
     if action in SeatPolicy.REGISTERED_ACTIONS:
         raise ValueError(f"action {action!r} is registered but not implemented yet")
+    if action in SeatPolicy.WORKFLOW_ACTIONS:
+        raise ValueError(f"action {action!r} is registered but not wired into the relay yet")
     specs: dict = {"repo": ("text", True)}
     if action == "open_pr":
         specs.update(
@@ -195,6 +200,10 @@ class PolicyDenied(Exception):
     """The seat authenticated but its policy refused the call."""
 
 
+class PreReadUnavailable(Exception):
+    """A failed pre-read proves that no write was attempted."""
+
+
 class ServerUnavailable(Exception):
     """A configured-on-paper backend (app-token minting) is not wired."""
 
@@ -204,7 +213,11 @@ class ServerUnavailable(Exception):
 ACTION_REQUIRED_PERMISSIONS = {
     "merge_pr": {"contents": "write", "pull_requests": "write"},
     "workflow_dispatch": {"actions": "write"},
-    "resolve_thread": {"pull_requests": "write"},
+    # GitHub gates resolveReviewThread at merge level for App tokens: pull_requests
+    # write alone returns FORBIDDEN, contents write with it succeeds (GitHub's PR team
+    # calls this intentional; reported at github/gh-aw#35726 and reproduced downstream).
+    # A seat whose ceiling lacks contents write is denied here, before any mint.
+    "resolve_thread": {"contents": "write", "pull_requests": "write"},
     # Use the PR-specific permission for these PR-only actions, including
     # conversation comments whose GitHub endpoint uses /issues/:number.
     "edit_pr": {"pull_requests": "write"},
@@ -223,14 +236,31 @@ class Relay:
         audit: AuditLog,
         app_minter=None,
         outcomes: OutcomeStore | None = None,
+        workflow_verbs_enabled: bool = False,
+        typed_disarm_enabled: bool = False,
     ):
+        # Off unless the operator turns it on: with it off every wf_ action is refused
+        # as registered-not-wired, exactly as before the wiring existed.
+        self.workflow_verbs_enabled = workflow_verbs_enabled
         self.policy = policy
         self.client = client
         self.audit = audit
         self.app_minter = app_minter
         self.outcomes = outcomes if outcomes is not None else OutcomeStore(None)
+        self.typed_gateway = None
+        if typed_disarm_enabled:
+            from .typed_gateway import TypedGateway
+
+            self.typed_gateway = TypedGateway(policy, client, app_minter, audit, self.outcomes)
 
     def handle(self, token: str, action: str, args: dict) -> tuple[int, dict]:
+        # A separate audited gateway charges policy once and keeps disarm
+        # receipts fresh.  Default-off; no generic write-replay path is used.
+        if self.typed_gateway is not None:
+            from .typed_gateway import ACTIONS
+
+            if action in ACTIONS:
+                return self.typed_gateway.handle(token, action, args)
         seat = self.policy.authenticate(token)
         if seat is None:
             return 401, {"error": "unauthenticated"}
@@ -258,8 +288,24 @@ class Relay:
             try:
                 # Credential-shaped input is refused before any durable state
                 # or side effect (SecretInputError is a ValueError).
-                scan_args(args)
-                canonical = _validate_args(action, args)
+                if action in BINARY_REQUEST_ACTIONS:
+                    # The base64 payload gets a larger text budget; the byte scan of the decoded
+                    # content happens in the verb.
+                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_BINARY_REQUEST_BYTES])
+                else:
+                    scan_args(args)
+                if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
+                    # The verb layer owns per-field shape validation and rejects any field it
+                    # does not accept; here only the envelope (a repo string) is checked.
+                    if not isinstance(args.get("repo"), str) or not args["repo"]:
+                        raise ValueError("repo is required")
+                    canonical = dict(args)
+                    # Shape-check before any policy quota, outcome row or upstream call.
+                    from .workflow_verbs import WorkflowVerbs
+
+                    WorkflowVerbs.check_shape(action, canonical, canonical["repo"])
+                else:
+                    canonical = _validate_args(action, args)
                 denial = self.policy.authorize(seat, action, canonical["repo"])
                 if denial:
                     raise PolicyDenied(denial)
@@ -271,7 +317,7 @@ class Relay:
                 outcome = "bad_request"
                 detail = {"reason": str(exc)}
                 return 400, {"error": str(exc)}
-            if action != "mint_token":
+            if action != "mint_token" and not self._is_workflow_read(action):
                 # Idempotency gate for non-idempotent writes:  mint_token is exempt
                 # because it returns a credential (a replay could only be served
                 # by persisting that credential in the store, which is worse) and
@@ -279,7 +325,7 @@ class Relay:
                 # the hour and the minter's per-key lock dedups concurrent calls.
                 key = key_for(seat, action, canonical)
                 try:
-                    prior = self.outcomes.begin(key)
+                    prior = self.outcomes.begin(key, reapply_ok=action in _REAPPLY_STATE_ACTIONS)
                 except OutcomeStoreError as exc:
                     outcome = "unavailable"
                     detail = {"reason": type(exc).__name__}
@@ -305,6 +351,14 @@ class Relay:
                 outcome = "denied"
                 detail = {"reason": str(exc)}
                 return 403, {"error": str(exc)}
+            except PreReadUnavailable:
+                self._release(key, "refused")
+                outcome = "unavailable"
+                detail = {"reason": "pre_read_unavailable"}
+                return 503, {
+                    "error": "upstream pre-read unavailable; no write attempted",
+                    "retryable": True,
+                }
             except ServerUnavailable as exc:
                 self._release(key, "refused")
                 outcome = "unavailable"
@@ -347,6 +401,27 @@ class Relay:
                     payload["github_diagnostics"] = dict(exc.diagnostics)
                     detail["github_diagnostics"] = dict(exc.diagnostics)
                     return 503, payload
+                if (
+                    key is None
+                    and exc.status in (0, 408, 429)
+                    or (key is None and exc.status >= 500)
+                ):
+                    # A workflow READ changed nothing upstream: a transient failure is a
+                    # plain retryable error, not an unknown outcome.
+                    outcome = "github_retryable"
+                    detail = {"status": exc.status}
+                    payload = {
+                        "error": "github call failed; safe to retry",
+                        "github_status": exc.status,
+                        "retryable": True,
+                    }
+                    if exc.retry_after is not None:
+                        payload["retry_after_seconds"] = detail["retry_after_seconds"] = (
+                            exc.retry_after
+                        )
+                    payload["github_diagnostics"] = dict(exc.diagnostics)
+                    detail["github_diagnostics"] = dict(exc.diagnostics)
+                    return (429 if exc.status == 429 else 502), payload
                 if exc.status in (0, 408) or exc.status >= 500:
                     # Transport failure, timeout, or 5xx:  GitHub may have accepted
                     # the write.  The outcome is unknown;  the key is held and
@@ -402,7 +477,10 @@ class Relay:
                 return 400, payload
             if key is not None:
                 self.outcomes.finish(key, "ok", result)
-            detail = {**canonical, **result}
+            if action in SeatPolicy.WORKFLOW_ACTIONS:
+                detail = _workflow_audit_detail(canonical, result)
+            else:
+                detail = {**canonical, **result}
             return 200, result
         except Exception as exc:
             # An unexpected relay failure:  whether GitHub was reached is
@@ -422,6 +500,8 @@ class Relay:
     def _dispatch(self, seat: str, action: str, args: dict, repo: str) -> dict:
         # handle() has already scanned, shape-validated, and authorized this
         # call (allowlist + hourly quota, once);  dispatch only executes.
+        if action in SeatPolicy.WORKFLOW_ACTIONS:
+            return self._dispatch_workflow(seat, action, args, repo)
         if action in SeatPolicy.APP_ACTIONS:
             return self._dispatch_app(seat, action, args, repo)
         if action == "open_pr":
@@ -434,6 +514,140 @@ class Relay:
             )
         # Every non-open_pr write is an APP_ACTION and never reaches here.
         raise ValueError(f"unknown owner-token action {action!r}")
+
+
+# Idempotent state setters must reach GitHub again after a verified success: A->B->A
+# is a new desired state, not a replay of A. Keep the same key and all pending/unknown
+# holds; only OutcomeStore.begin atomically replaces a known-success row.
+_REAPPLY_STATE_ACTIONS = frozenset(
+    {
+        "wf_issue_update",
+        "wf_review_update",
+        "wf_check_update",
+        "wf_milestone_update",
+        "wf_labels_set",
+        "wf_reviewers_request",
+        "wf_reviewers_remove",
+        "wf_release_update",
+        "wf_issue_comment_update",
+        "wf_review_comment_update",
+        "wf_assignees_add",
+        "wf_assignees_remove",
+        "wf_issue_lock",
+        "wf_issue_unlock",
+        "wf_workflow_enable",
+        "wf_workflow_disable",
+        "wf_pr_draft",
+        "wf_pr_ready",
+        "wf_review_thread_resolve",
+        "wf_review_thread_unresolve",
+        "wf_automerge_enable",
+        "wf_automerge_disable",
+        "wf_release_asset_update",
+    }
+)
+
+_WORKFLOW_AUDIT_SCALARS = (
+    "job_id",
+    "run_id",
+    "number",
+    "commit_id",
+    "event",
+    "side",
+    "line",
+    "ref",
+    "branch",
+    "base",
+    "head",
+    "expected_head_sha",
+    "prior_sha",
+    "tag",
+    "sha",
+    "expected_sha",
+    "comment_id",
+    "thread_id",
+    "review_id",
+    "check_id",
+    "deployment_id",
+    "milestone",
+    "release_id",
+    "asset_id",
+    "workflow_id",
+    "artifact_id",
+    "per_page",
+    "page",
+    "state",
+    "tail_bytes",
+    "asset_id",
+    "artifact_id",
+    "release_id",
+    "offset",
+    "length",
+    "method",
+    "path",
+)
+
+
+def _workflow_audit_detail(canonical: dict, result: dict) -> dict:
+    """What a wf_ call may leave in the audit log: bounded identifiers and counts only.
+
+    Never file bytes, log text, commit messages, search text or any result body: a read
+    verb returns repository content and a write verb is given it.
+    """
+    detail: dict = {
+        k: canonical[k]
+        for k in _WORKFLOW_AUDIT_SCALARS
+        if isinstance(canonical.get(k), (int, str)) and not isinstance(canonical.get(k), bool)
+    }
+    if isinstance(canonical.get("files"), list):
+        detail["files"] = len(canonical["files"])
+    for key in ("commit", "sha", "merged", "files"):
+        value = result.get(key)
+        if isinstance(value, (int, bool)) or (isinstance(value, str) and len(value) <= 64):
+            detail[f"result_{key}"] = value
+    # Review and inline writes nest their new ids one level down; keep the ids
+    # (bounded ints) so the audit row says which review or comment was created.
+    for key, result_key in (("review", "result_review_id"), ("comment", "result_comment_id")):
+        nested = result.get(key)
+        if isinstance(nested, dict):
+            value = nested.get("id")
+            if isinstance(value, int) and not isinstance(value, bool):
+                detail[result_key] = value
+    return detail
+
+
+def _is_workflow_read(self, action: str) -> bool:
+    """A wf_ verb that changes nothing upstream needs no idempotency key and holds no outcome."""
+    if action not in SeatPolicy.WORKFLOW_ACTIONS:
+        return False
+    from .workflow_verbs import SPECS
+
+    spec = SPECS.get(action)
+    return spec is not None and not spec[1]
+
+
+def _dispatch_workflow(self, seat: str, action: str, args: dict, repo: str) -> dict:
+    # Imported here: workflow_verbs imports this module.
+    from .workflow_verbs import CeilingDenied, Unknown, WorkflowVerbs
+
+    if self.app_minter is None:
+        raise ServerUnavailable("app-token minting is not configured on this relay")
+    try:
+        # handle() has already run policy.authorize for this exact seat, action and repo
+        # (and counted its quota once); for_action then only checks the App ceiling and
+        # mints the least permission in SPECS.
+        handle = WorkflowVerbs.for_action(
+            self.client, self.policy, self.app_minter, seat, action, repo, preauthorized=True
+        )
+        return handle.run(action, args)
+    except Unknown:
+        raise ServerUnavailable("the seat's own App credential is unavailable") from None
+    except CeilingDenied as exc:
+        raise PolicyDenied(str(exc)) from None
+
+
+Relay._is_workflow_read = _is_workflow_read
+Relay._dispatch_workflow = _dispatch_workflow
 
 
 def _perm_within_ceiling(requested: dict, ceiling: dict) -> str | None:
@@ -590,7 +804,10 @@ def make_handler(relay: Relay):
             except ValueError:
                 self._send(400, {"error": "bad Content-Length"})
                 return
-            if length < 1 or length > MAX_REQUEST_BYTES:
+            cap = (
+                MAX_BINARY_REQUEST_BYTES if action in BINARY_REQUEST_ACTIONS else MAX_REQUEST_BYTES
+            )
+            if length < 1 or length > cap:
                 self._send(400, {"error": "request body missing or over the 64 KiB bound"})
                 return
             raw = self.rfile.read(length)
@@ -868,7 +1085,15 @@ def from_env() -> Relay:
             )
         except AppTokenError as exc:
             raise SystemExit(f"git-relay config: {exc}") from exc
-    return Relay(policy, client, audit, app_minter=app_minter, outcomes=outcomes)
+    return Relay(
+        policy,
+        client,
+        audit,
+        app_minter=app_minter,
+        outcomes=outcomes,
+        workflow_verbs_enabled=os.environ.get("GIT_RELAY_ENABLE_WORKFLOW_VERBS") == "1",
+        typed_disarm_enabled=os.environ.get("GIT_RELAY_ENABLE_TYPED_DISARM") == "1",
+    )
 
 
 def _credential_file_for(scope: str, env_var: str, default_name: str) -> str | None:

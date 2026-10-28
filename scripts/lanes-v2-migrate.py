@@ -54,6 +54,7 @@ Exit codes: 0 ok (skips are not failures), 2 a step failed with --apply or the p
 Python 3.9 safe, standard library only, plus the fleet_lanes package beside this file.
 Tests: scripts/fleet_lanes/tests/test_migrate_v2.py.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -64,16 +65,15 @@ import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
 
 SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, SCRIPTS_DIR)
 
-from fleet_lanes import doctor as D  # noqa: E402
-from fleet_lanes import layout as L  # noqa: E402
+from fleet_lanes import doctor as D
+from fleet_lanes import layout as L
 
 EXIT_OK = 0
 EXIT_FAILED = 2
@@ -84,23 +84,29 @@ GRACE_DAYS = 7
 RUNTIME_NAME = "agent-sync-runtime"
 
 # Actions in a plan.
-MOVE = "move"                  # a lane to its new folder, with a symlink left behind
-CODEX = "move-codex"           # ~/.codex/worktrees/<slug>/<Repo> to lanes/_codex/<slug>/<Repo>
-BUCKET = "rename-folder"       # a case-only folder rename (one path on APFS), no symlink
-RMDIR = "remove-empty"         # an empty leftover folder
+MOVE = "move"  # a lane to its new folder, with a symlink left behind
+CODEX = "move-codex"  # ~/.codex/worktrees/<slug>/<Repo> to lanes/_codex/<slug>/<Repo>
+BUCKET = "rename-folder"  # a case-only folder rename (one path on APFS), no symlink
+RMDIR = "remove-empty"  # an empty leftover folder
 OK = "already-correct"
-SKIP = "skip"                  # refused: the reason says why, and a rerun may allow it
-DEFER = "defer"                # a folder rename that waits for its lanes to be safe
-NOTE = "note"                  # nothing to do, said so
+SKIP = "skip"  # refused: the reason says why, and a rerun may allow it
+DEFER = "defer"  # a folder rename that waits for its lanes to be safe
+NOTE = "note"  # nothing to do, said so
 
-CODEX_WHY = ("Codex worktrees move only with --include-codex, with the Codex app closed and its "
-             "git-worktree-root already changed (docs/protocols/lanes-v2-migration.md)")
+CODEX_WHY = (
+    "Codex worktrees move only with --include-codex, with the Codex app closed and its "
+    "git-worktree-root already changed (docs/protocols/lanes-v2-migration.md)"
+)
 CODEX_MARKER = ".codex-worktree-name"
 _KEBAB = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _OLD_REVIEW = re.compile(r"^pr-([0-9]{1,9})(?:-([a-z0-9]+(?:-[a-z0-9]+)*))?$")
 _SAFE_GIT = {
-    ("rev-parse", "--absolute-git-dir"), ("rev-parse", "--git-common-dir"), ("rev-parse", "--show-toplevel"),
-    ("status", "--porcelain"), ("worktree", "list", "--porcelain"), ("config", "--get", "remote.origin.url"),
+    ("rev-parse", "--absolute-git-dir"),
+    ("rev-parse", "--git-common-dir"),
+    ("rev-parse", "--show-toplevel"),
+    ("status", "--porcelain"),
+    ("worktree", "list", "--porcelain"),
+    ("config", "--get", "remote.origin.url"),
     ("rev-parse", "--abbrev-ref", "HEAD"),
 }
 
@@ -111,47 +117,71 @@ class MigrateError(Exception):
 
 # --------------------------------------------------------------------------- git, restricted
 
+
 def check_git(argv: Sequence[str]) -> None:
     """Raise MigrateError unless `argv` (without the leading `git`) is a read-only command we use, or one
     of the two writes: `worktree move OLD NEW` and `worktree repair PATH...`.  No force flag is accepted."""
     a = tuple(argv)
     if a in _SAFE_GIT:
         return
-    if len(a) == 4 and a[:2] == ("worktree", "move") and not a[2].startswith("-") and not a[3].startswith("-"):
+    if (
+        len(a) == 4
+        and a[:2] == ("worktree", "move")
+        and not a[2].startswith("-")
+        and not a[3].startswith("-")
+    ):
         return
-    if len(a) >= 3 and a[:2] == ("worktree", "repair") and all(not p.startswith("-") for p in a[2:]):
+    if (
+        len(a) >= 3
+        and a[:2] == ("worktree", "repair")
+        and all(not p.startswith("-") for p in a[2:])
+    ):
         return
     raise MigrateError("git command not allowed: " + " ".join(a[:4]))
 
 
-def run_git(cwd: str, argv: Sequence[str]) -> "tuple[int, str, str]":
+def run_git(cwd: str, argv: Sequence[str]) -> tuple[int, str, str]:
     check_git(argv)
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k in ("GIT_SSH_COMMAND",)}
-    env.update({"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0", "GIT_PAGER": "cat"})
+    env = {
+        k: v for k, v in os.environ.items() if not k.startswith("GIT_") or k in ("GIT_SSH_COMMAND",)
+    }
+    env.update(
+        {"GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C", "GIT_OPTIONAL_LOCKS": "0", "GIT_PAGER": "cat"}
+    )
     try:
-        proc = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", cwd, *argv],
-                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              env=env, timeout=120)
+        proc = subprocess.run(
+            ["git", "--no-optional-locks", "-c", "core.fsmonitor=false", "-C", cwd, *argv],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            timeout=120,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 255, "", f"{type(exc).__name__}: {exc}"
-    return proc.returncode, proc.stdout.decode("utf-8", "replace"), D.redact_text(proc.stderr.decode("utf-8", "replace"))
+    return (
+        proc.returncode,
+        proc.stdout.decode("utf-8", "replace"),
+        D.redact_text(proc.stderr.decode("utf-8", "replace")),
+    )
 
 
 # --------------------------------------------------------------------------- context and plan
+
 
 @dataclass
 class Ctx:
     home: str
     roots: L.Roots
     registry: L.Registry
-    lsof: "Callable[[], list[tuple[int, str, str]] | None]"
+    lsof: Callable[[], list[tuple[int, str, str]] | None]
     today: _dt.date
     grace_days: int = GRACE_DAYS
     include_codex: bool = False
     log_path: str = ""
-    git: "Callable[[str, Sequence[str]], tuple[int, str, str]]" = run_git
-    self_paths: "tuple[str, ...]" = ()
-    _cwds: "list[tuple[int, str, str]] | None" = field(default=None, repr=False)
+    git: Callable[[str, Sequence[str]], tuple[int, str, str]] = run_git
+    self_paths: tuple[str, ...] = ()
+    _cwds: list[tuple[int, str, str]] | None = field(default=None, repr=False)
     _cwds_read: bool = field(default=False, repr=False)
 
     @property
@@ -164,7 +194,7 @@ class Ctx:
     def real(self, path: str) -> str:
         return os.path.realpath(path)
 
-    def cwds(self) -> "list[tuple[int, str, str]] | None":
+    def cwds(self) -> list[tuple[int, str, str]] | None:
         if not self._cwds_read:
             self._cwds_read = True
             self._cwds = self.lsof()
@@ -180,19 +210,21 @@ class Ctx:
 class Item:
     action: str
     old: str
-    new: "str | None" = None
+    new: str | None = None
     kind: str = ""
-    reasons: "list[str]" = field(default_factory=list)
-    notes: "list[str]" = field(default_factory=list)
-    members: "list[str]" = field(default_factory=list)      # BUCKET: the checkouts inside
-    main: "str | None" = None                                # the repo a linked worktree belongs to
+    reasons: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    members: list[str] = field(default_factory=list)  # BUCKET: the checkouts inside
+    main: str | None = None  # the repo a linked worktree belongs to
     clone: bool = False
-    extra: dict = field(default_factory=dict)                # BUCKET: renames inside the folder, and their repos
-    result: str = ""                                         # filled by apply: done | failed | skipped
+    extra: dict = field(default_factory=dict)  # BUCKET: renames inside the folder, and their repos
+    result: str = ""  # filled by apply: done | failed | skipped
     detail: str = ""
 
     def as_dict(self) -> dict:
-        return {k: v for k, v in self.__dict__.items() if v not in (None, [], "", False)} | {"action": self.action}
+        return {k: v for k, v in self.__dict__.items() if v not in (None, [], "", False)} | {
+            "action": self.action
+        }
 
 
 @dataclass
@@ -200,30 +232,35 @@ class Facts:
     path: str
     is_checkout: bool = False
     is_clone: bool = False
-    main: "str | None" = None
-    branch: "str | None" = None
+    main: str | None = None
+    branch: str | None = None
     dirty: int = 0
     locked: bool = False
     prunable: bool = False
     detached: bool = False
-    origin: "str | None" = None
-    problems: "list[str]" = field(default_factory=list)
+    origin: str | None = None
+    problems: list[str] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- reading the disk
+
 
 def _under(child: str, parent: str, fold: Callable[[str], str]) -> bool:
     c, p = fold(child), fold(parent).rstrip(os.sep)
     return c == p or c.startswith(p + os.sep)
 
 
-def processes_in(ctx: Ctx, path: str) -> "list[str] | None":
+def processes_in(ctx: Ctx, path: str) -> list[str] | None:
     """Commands (pid) whose working directory is inside `path`; None when lsof could not be read."""
     rows = ctx.cwds()
     if rows is None:
         return None
     targets = {path, ctx.real(path)}
-    hits = [f"{comm}({pid})" for pid, comm, cwd in rows if any(_under(cwd, t, ctx.fold) for t in targets)]
+    hits = [
+        f"{comm}({pid})"
+        for pid, comm, cwd in rows
+        if any(_under(cwd, t, ctx.fold) for t in targets)
+    ]
     for mine in ctx.self_paths:
         if any(_under(mine, t, ctx.fold) for t in targets):
             hits.append("this script or its shell")
@@ -262,13 +299,18 @@ def inspect(ctx: Ctx, path: str) -> Facts:
         rc, out, err = ctx.git(f.main, ["worktree", "list", "--porcelain"])
         if rc == 0:
             mine = ctx.fold(ctx.real(path))
-            rec = next((r for r in D.parse_worktree_porcelain(out) if ctx.fold(ctx.real(r.path)) == mine), None)
+            rec = next(
+                (r for r in D.parse_worktree_porcelain(out) if ctx.fold(ctx.real(r.path)) == mine),
+                None,
+            )
             if rec is None:
                 f.problems.append("its repository does not list it as a worktree")
             else:
                 f.locked, f.prunable = rec.locked, rec.prunable is not None
         else:
-            f.problems.append("git worktree list failed: " + (err.strip().splitlines() or ["?"])[-1][:160])
+            f.problems.append(
+                "git worktree list failed: " + (err.strip().splitlines() or ["?"])[-1][:160]
+            )
     elif f.is_clone:
         rc, out, _ = ctx.git(path, ["worktree", "list", "--porcelain"])
         if rc == 0 and len(D.parse_worktree_porcelain(out)) > 1:
@@ -276,16 +318,22 @@ def inspect(ctx: Ctx, path: str) -> Facts:
     return f
 
 
-def repo_dir_for(ctx: Ctx, f: Facts) -> "tuple[str | None, str]":
+def repo_dir_for(ctx: Ctx, f: Facts) -> tuple[str | None, str]:
     """(folder under the lanes root, why or the reason there is none).  Git decides, not the old folder."""
     reg, roots = ctx.registry, ctx.roots
     if not f.is_clone:
         main = ctx.real(f.main or "")
         for app in reg.apps:
-            if app.integration_dir_name and ctx.fold(ctx.real(os.path.join(os.fspath(roots.code_root), app.integration_dir_name))) == ctx.fold(main):
+            if app.integration_dir_name and ctx.fold(
+                ctx.real(os.path.join(os.fspath(roots.code_root), app.integration_dir_name))
+            ) == ctx.fold(main):
                 return app.lane_dir, f"worktree of {app.integration_dir_name}"
-        if ctx.fold(os.path.dirname(main)) == ctx.fold(ctx.real(os.fspath(roots.code_root))) and L.is_valid_repo_dir(os.path.basename(main)):
-            return os.path.basename(main), "worktree of a repo under ~/Code that has no registry row"
+        if ctx.fold(os.path.dirname(main)) == ctx.fold(
+            ctx.real(os.fspath(roots.code_root))
+        ) and L.is_valid_repo_dir(os.path.basename(main)):
+            return os.path.basename(
+                main
+            ), "worktree of a repo under ~/Code that has no registry row"
         return None, f"its repository ({main}) is not under ~/Code"
     owner_repo = D.parse_owner_repo(f.origin)
     if not owner_repo:
@@ -299,10 +347,10 @@ def repo_dir_for(ctx: Ctx, f: Facts) -> "tuple[str | None, str]":
     return None, f"cannot make a folder name from {owner_repo}"
 
 
-def new_name(old_name: str, repo_dir: str, *, review: bool = False) -> "tuple[str, list[str]]":
+def new_name(old_name: str, repo_dir: str, *, review: bool = False) -> tuple[str, list[str]]:
     """The folder name inside <Repo>, and notes.  The old name is kept unless it is not lowercase kebab
     and a trailing -<Repo> makes it valid (minimax-zulip-stanza-FleetLink -> minimax-zulip-stanza)."""
-    notes: "list[str]" = []
+    notes: list[str] = []
     name = old_name
     if review:
         m = _OLD_REVIEW.match(old_name)
@@ -311,13 +359,15 @@ def new_name(old_name: str, repo_dir: str, *, review: bool = False) -> "tuple[st
     if not _KEBAB.match(name):
         tail = "-" + repo_dir.casefold()
         if name.casefold().endswith(tail) and _KEBAB.match(name[: -len(tail)].lower()):
-            notes.append(f"renamed from {old_name}: a name is lowercase kebab, so the trailing -{repo_dir} is dropped")
+            notes.append(
+                f"renamed from {old_name}: a name is lowercase kebab, so the trailing -{repo_dir} is dropped"
+            )
             return name[: -len(tail)].lower(), notes
         notes.append(f"the name {old_name!r} is not lowercase kebab; kept as it is")
     return name, notes
 
 
-def name_note(ctx: Ctx, repo_dir: str, name: str) -> "str | None":
+def name_note(ctx: Ctx, repo_dir: str, name: str) -> str | None:
     """A note when the finished name would not read as <seat>-<slug> (the doctor would call it NAME-DRIFT)."""
     if L.is_review_dir_name(name) or L.is_desktop_dir_name(name, ctx.roots.seat_tokens):
         return None
@@ -329,9 +379,10 @@ def name_note(ctx: Ctx, repo_dir: str, name: str) -> "str | None":
 
 # --------------------------------------------------------------------------- planning
 
-def _checkouts_below(root: str, depth: int) -> "list[str]":
+
+def _checkouts_below(root: str, depth: int) -> list[str]:
     """Directories at or below `root` (not following symlinks) that hold a .git entry, `depth` levels down."""
-    found: "list[str]" = []
+    found: list[str] = []
     stack = [(root, 0)]
     while stack:
         d, level = stack.pop()
@@ -358,7 +409,7 @@ _INNER_SKIP = (".git", "node_modules")
 _INNER_DEPTH = 4
 
 
-def _links_back(d: str, git_entry: "os.DirEntry[str]") -> bool:
+def _links_back(d: str, git_entry: os.DirEntry[str]) -> bool:
     """Does the `.git` entry in `d` tie that folder to a path git has written down elsewhere?
 
     A `.git` FILE is a linked worktree (or a submodule): the repository it belongs to records this folder's
@@ -376,7 +427,7 @@ def _links_back(d: str, git_entry: "os.DirEntry[str]") -> bool:
     return False
 
 
-def inner_checkouts(root: str, depth: int = _INNER_DEPTH) -> "list[str]":
+def inner_checkouts(root: str, depth: int = _INNER_DEPTH) -> list[str]:
     """Folders below `root` (never `root` itself) that git is tied to by a path: a nested linked worktree, a
     submodule, or a clone with worktrees hanging off it.
 
@@ -386,7 +437,7 @@ def inner_checkouts(root: str, depth: int = _INNER_DEPTH) -> "list[str]":
     that inner worktree's admin entry pointing at the old path, where the symlink hides it until the symlink
     goes and `git worktree prune` strands the checkout.  Symlinks are not followed; `.git` and `node_modules`
     are not entered; `depth` is how many folders down the walk goes."""
-    found: "list[str]" = []
+    found: list[str] = []
     stack = [(root, 0)]
     while stack:
         d, level = stack.pop()
@@ -413,10 +464,10 @@ def inner_checkouts(root: str, depth: int = _INNER_DEPTH) -> "list[str]":
     return sorted(found)
 
 
-def _empty_tree(path: str) -> "list[str] | None":
+def _empty_tree(path: str) -> list[str] | None:
     """Directories under `path` (deepest first, `path` last) when the whole tree holds nothing but empty
     folders and .DS_Store files; None when anything else is in it (a file, a symlink, a checkout)."""
-    order: "list[str]" = []
+    order: list[str] = []
 
     def walk(d: str) -> bool:
         try:
@@ -437,7 +488,7 @@ def _empty_tree(path: str) -> "list[str] | None":
     return order if walk(path) else None
 
 
-def _blockers(ctx: Ctx, f: Facts) -> "list[str]":
+def _blockers(ctx: Ctx, f: Facts) -> list[str]:
     """Reasons a checkout must not be touched now (empty when it is safe)."""
     why = list(f.problems)
     procs = processes_in(ctx, f.path)
@@ -454,15 +505,19 @@ def _blockers(ctx: Ctx, f: Facts) -> "list[str]":
     inner = inner_checkouts(f.path)
     if inner:
         rel = [os.path.relpath(p, f.path) for p in inner[:3]]
-        why.append("it holds an inner checkout (" + ", ".join(rel) + (" ..." if len(inner) > 3 else "")
-                   + "; a gitignored one such as .claude/worktrees/<name> reads clean in git status): "
-                   "close or remove it first, because moving this lane would break the inner worktree's link")
+        why.append(
+            "it holds an inner checkout ("
+            + ", ".join(rel)
+            + (" ..." if len(inner) > 3 else "")
+            + "; a gitignored one such as .claude/worktrees/<name> reads clean in git status): "
+            "close or remove it first, because moving this lane would break the inner worktree's link"
+        )
     return why
 
 
-def plan_lanes(ctx: Ctx) -> "list[Item]":
+def plan_lanes(ctx: Ctx) -> list[Item]:
     lanes = ctx.lanes
-    items: "list[Item]" = []
+    items: list[Item] = []
     try:
         top = sorted(os.scandir(lanes), key=lambda e: e.name)
     except OSError as exc:
@@ -474,8 +529,10 @@ def plan_lanes(ctx: Ctx) -> "list[Item]":
         link = links.get(name)
         if entry.is_symlink() and not (link is not None and link.status in ("ok", "renamed")):
             if link is not None and link.status == "dangling":
-                why = (f"a symlink to {link.target}, which does not exist (is the external disk mounted?); "
-                       "its lanes are not read")
+                why = (
+                    f"a symlink to {link.target}, which does not exist (is the external disk mounted?); "
+                    "its lanes are not read"
+                )
             elif link is not None:
                 why = f"a symlink to {link.real}, which is not on the external lanes disk; not touched"
             else:
@@ -491,39 +548,81 @@ def plan_lanes(ctx: Ctx) -> "list[Item]":
             items.extend(plan_legacy_folder(ctx, path, name))
             continue
         if name.startswith("_"):
-            items.append(Item(NOTE, path, kind="folder", reasons=["a reserved folder v2 does not know; not touched"]))
+            items.append(
+                Item(
+                    NOTE,
+                    path,
+                    kind="folder",
+                    reasons=["a reserved folder v2 does not know; not touched"],
+                )
+            )
             continue
         try:
             items.extend(plan_bucket(ctx, path, name))
         except OSError as exc:
-            items.append(Item(SKIP, path, kind="folder", reasons=[f"cannot be read right now ({exc}); run again"]))
+            items.append(
+                Item(
+                    SKIP,
+                    path,
+                    kind="folder",
+                    reasons=[f"cannot be read right now ({exc}); run again"],
+                )
+            )
     return items
 
 
-def plan_bucket(ctx: Ctx, bucket: str, name: str) -> "list[Item]":
-    out: "list[Item]" = []
-    children: "list[tuple[str, str]]" = []
+def plan_bucket(ctx: Ctx, bucket: str, name: str) -> list[Item]:
+    out: list[Item] = []
+    children: list[tuple[str, str]] = []
     with os.scandir(bucket) as it:
         entries = sorted(it, key=lambda e: e.name)
     for e in entries:
         if e.is_symlink():
-            out.append(Item(NOTE, e.path, kind="link", reasons=["a symlink (already migrated, or not ours); not touched"]))
+            out.append(
+                Item(
+                    NOTE,
+                    e.path,
+                    kind="link",
+                    reasons=["a symlink (already migrated, or not ours); not touched"],
+                )
+            )
         elif e.is_dir(follow_symlinks=False):
             if os.path.lexists(os.path.join(e.path, ".git")):
                 children.append((e.name, e.path))
             else:
                 inner = _checkouts_below(e.path, 2)
                 if inner:
-                    out.append(Item(SKIP, e.path, kind="folder", reasons=[f"not a checkout but holds {len(inner)}; move them by hand"]))
+                    out.append(
+                        Item(
+                            SKIP,
+                            e.path,
+                            kind="folder",
+                            reasons=[f"not a checkout but holds {len(inner)}; move them by hand"],
+                        )
+                    )
                 elif _empty_tree(e.path) is None:
-                    out.append(Item(NOTE, e.path, kind="folder", reasons=["not a checkout and not empty; not touched"]))
-    case_only: "list[Item]" = []
+                    out.append(
+                        Item(
+                            NOTE,
+                            e.path,
+                            kind="folder",
+                            reasons=["not a checkout and not empty; not touched"],
+                        )
+                    )
+    case_only: list[Item] = []
     for cname, cpath in children:
         try:
             facts = inspect(ctx, cpath)
             it = plan_one_lane(ctx, cname, cpath, facts, bucket_name=name)
         except OSError as exc:
-            out.append(Item(SKIP, cpath, kind="folder", reasons=[f"cannot be read right now ({exc}); run again"]))
+            out.append(
+                Item(
+                    SKIP,
+                    cpath,
+                    kind="folder",
+                    reasons=[f"cannot be read right now ({exc}); run again"],
+                )
+            )
             continue
         if it.action == BUCKET:
             case_only.append(it)
@@ -549,8 +648,10 @@ def plan_one_lane(ctx: Ctx, cname: str, cpath: str, f: Facts, *, bucket_name: st
         return Item(SKIP, cpath, kind="folder", reasons=["not a checkout"])
     if cname == RUNTIME_NAME:
         it.action = SKIP
-        it.reasons.append("live infrastructure: the agent-sync listener, ~/.local/bin/agent-sync and the runtime-sync "
-                          "LaunchAgent use this path, so it needs its own coordinated step and the owner's choice of a new path")
+        it.reasons.append(
+            "live infrastructure: the Operator, ~/.local/bin/agent-sync and the runtime-sync "
+            "LaunchAgent use this path, so it needs its own coordinated step and the owner's choice of a new path"
+        )
         return it
     if f.problems and f.main is None:
         it.action = SKIP
@@ -561,10 +662,13 @@ def plan_one_lane(ctx: Ctx, cname: str, cpath: str, f: Facts, *, bucket_name: st
         it.action = SKIP
         it.reasons.append(why)
         return it
-    old_bucket_app = ctx.registry.app_by_lane_dir(bucket_name, case_insensitive=ctx.roots.case_insensitive) \
-        or ctx.registry.app_by_prefix(bucket_name)
+    old_bucket_app = ctx.registry.app_by_lane_dir(
+        bucket_name, case_insensitive=ctx.roots.case_insensitive
+    ) or ctx.registry.app_by_prefix(bucket_name)
     if old_bucket_app is not None and old_bucket_app.lane_dir.casefold() != repo_dir.casefold():
-        it.notes.append(f"the old folder {bucket_name} is {old_bucket_app.name}'s, but git says {why}; git wins")
+        it.notes.append(
+            f"the old folder {bucket_name} is {old_bucket_app.name}'s, but git says {why}; git wins"
+        )
     name, notes = new_name(cname, repo_dir)
     it.notes.extend(notes)
     target = os.path.join(ctx.lanes, repo_dir, name)
@@ -583,7 +687,9 @@ def plan_one_lane(ctx: Ctx, cname: str, cpath: str, f: Facts, *, bucket_name: st
             it.reasons.append("already in its folder")
             return it
         it.action = BUCKET
-        it.reasons.append(f"the folder is {repo_dir} spelled {os.path.basename(old_parent)}; one path on this volume")
+        it.reasons.append(
+            f"the folder is {repo_dir} spelled {os.path.basename(old_parent)}; one path on this volume"
+        )
         it.reasons.extend(blockers)
         return it
     if same_folder and not exact_folder:
@@ -593,8 +699,10 @@ def plan_one_lane(ctx: Ctx, cname: str, cpath: str, f: Facts, *, bucket_name: st
             it.reasons.append(f"the target {target} already exists")
             return it
         it.action = BUCKET
-        it.reasons.append(f"the folder is {repo_dir} spelled {os.path.basename(old_parent)}; one path on this volume, "
-                          f"and the lane is renamed to {name} after the folder")
+        it.reasons.append(
+            f"the folder is {repo_dir} spelled {os.path.basename(old_parent)}; one path on this volume, "
+            f"and the lane is renamed to {name} after the folder"
+        )
         it.reasons.extend(blockers)
         return it
     if os.path.lexists(target):
@@ -607,24 +715,42 @@ def plan_one_lane(ctx: Ctx, cname: str, cpath: str, f: Facts, *, bucket_name: st
     return it
 
 
-def plan_case_bucket(ctx: Ctx, bucket: str, name: str, members: "list[Item]", others: "list[Item]") -> "list[Item]":
+def plan_case_bucket(
+    ctx: Ctx, bucket: str, name: str, members: list[Item], others: list[Item]
+) -> list[Item]:
     """One whole-folder rename for the lanes that only differ by case, or a defer naming why."""
     repo_dir = os.path.basename(os.path.dirname(members[0].new or ""))
     target = os.path.join(ctx.lanes, repo_dir)
-    stuck = [i for i in others if i.action in (SKIP, DEFER) and i.kind in ("worktree", "clone") and _under(i.old, bucket, ctx.fold)]
-    blocked = [m for m in members if len(m.reasons) > 1]       # the first reason is the case note; the rest are blockers
+    stuck = [
+        i
+        for i in others
+        if i.action in (SKIP, DEFER)
+        and i.kind in ("worktree", "clone")
+        and _under(i.old, bucket, ctx.fold)
+    ]
+    blocked = [
+        m for m in members if len(m.reasons) > 1
+    ]  # the first reason is the case note; the rest are blockers
     plan = Item(BUCKET, bucket, target, kind="folder", members=[m.old for m in members])
-    renames = {os.path.basename(m.old): os.path.basename(m.new or "") for m in members
-               if os.path.basename(m.new or "") != os.path.basename(m.old)}
+    renames = {
+        os.path.basename(m.old): os.path.basename(m.new or "")
+        for m in members
+        if os.path.basename(m.new or "") != os.path.basename(m.old)
+    }
     if renames:
-        plan.extra = {"renames": renames, "mains": {os.path.basename(m.old): m.main for m in members if m.main},
-                      "clones": [os.path.basename(m.old) for m in members if m.clone]}
+        plan.extra = {
+            "renames": renames,
+            "mains": {os.path.basename(m.old): m.main for m in members if m.main},
+            "clones": [os.path.basename(m.old) for m in members if m.clone],
+        }
     for m in members:
         plan.notes.extend(m.notes)
     if stuck:
         plan.action = DEFER
-        plan.reasons.append("the folder also holds lanes that cannot move yet, and a rename would carry them to the wrong folder: "
-                            + ", ".join(os.path.basename(i.old) for i in stuck[:6]))
+        plan.reasons.append(
+            "the folder also holds lanes that cannot move yet, and a rename would carry them to the wrong folder: "
+            + ", ".join(os.path.basename(i.old) for i in stuck[:6])
+        )
     if blocked:
         plan.action = DEFER
         for m in blocked[:12]:
@@ -641,20 +767,28 @@ def plan_case_bucket(ctx: Ctx, bucket: str, name: str, members: "list[Item]", ot
             plan.reasons.append("in use: " + ", ".join(procs[:4]))
     if plan.action == BUCKET:
         n, r = len(members), len(renames)
-        plan.reasons.append(f"folder {os.path.basename(bucket)} becomes {repo_dir} with {n} lane{'s' if n != 1 else ''} in it"
-                            + (f" ({r} also renamed after the folder)" if r else ""))
-    return [plan]                      # the member lanes are folded into the one folder action
+        plan.reasons.append(
+            f"folder {os.path.basename(bucket)} becomes {repo_dir} with {n} lane{'s' if n != 1 else ''} in it"
+            + (f" ({r} also renamed after the folder)" if r else "")
+        )
+    return [plan]  # the member lanes are folded into the one folder action
 
 
-def plan_legacy_folder(ctx: Ctx, folder: str, name: str) -> "list[Item]":
+def plan_legacy_folder(ctx: Ctx, folder: str, name: str) -> list[Item]:
     """lanes/_managed, lanes/_review, lanes/_notes: move the checkouts that are safe, remove what is empty."""
-    out: "list[Item]" = []
+    out: list[Item] = []
     for path in _checkouts_below(folder, 4):
         rel = os.path.relpath(path, folder).split(os.sep)
         f = inspect(ctx, path)
         if name == L.LEGACY_MANAGED_DIR and rel[0] == "codex" and len(rel) == 3:
             blockers = _blockers(ctx, f)
-            it = Item(CODEX, path, os.path.join(ctx.lanes, L.CODEX_DIR, rel[1], rel[2]), kind="worktree", main=f.main)
+            it = Item(
+                CODEX,
+                path,
+                os.path.join(ctx.lanes, L.CODEX_DIR, rel[1], rel[2]),
+                kind="worktree",
+                main=f.main,
+            )
             if not ctx.include_codex:
                 it.action = SKIP
                 it.reasons.append(CODEX_WHY + "; this one is Codex's current git-worktree-root")
@@ -682,19 +816,35 @@ def plan_legacy_folder(ctx: Ctx, folder: str, name: str) -> "list[Item]":
         out.append(it)
     gone = _empty_tree(folder)
     if gone is not None:
-        out.append(Item(RMDIR, folder, kind="folder", members=gone, reasons=["empty (only empty folders and .DS_Store inside)"]))
+        out.append(
+            Item(
+                RMDIR,
+                folder,
+                kind="folder",
+                members=gone,
+                reasons=["empty (only empty folders and .DS_Store inside)"],
+            )
+        )
     else:
         # remove the empty sub-folders that exist now; the folder itself waits for its checkouts
         for sub in sorted(os.scandir(folder), key=lambda e: e.name):
             if sub.is_dir(follow_symlinks=False) and not sub.is_symlink():
                 tree = _empty_tree(sub.path)
                 if tree is not None:
-                    out.append(Item(RMDIR, sub.path, kind="folder", members=tree, reasons=["empty (only empty folders and .DS_Store inside)"]))
+                    out.append(
+                        Item(
+                            RMDIR,
+                            sub.path,
+                            kind="folder",
+                            members=tree,
+                            reasons=["empty (only empty folders and .DS_Store inside)"],
+                        )
+                    )
     return out
 
 
-def plan_codex(ctx: Ctx) -> "list[Item]":
-    out: "list[Item]" = []
+def plan_codex(ctx: Ctx) -> list[Item]:
+    out: list[Item] = []
     base = os.path.join(ctx.home, ".codex", "worktrees")
     if not os.path.isdir(base):
         return out
@@ -705,7 +855,13 @@ def plan_codex(ctx: Ctx) -> "list[Item]":
             continue
         holders.add(rel[0])
         f = inspect(ctx, path)
-        it = Item(CODEX, path, os.path.join(ctx.lanes, L.CODEX_DIR, rel[0], rel[1]), kind="worktree", main=f.main)
+        it = Item(
+            CODEX,
+            path,
+            os.path.join(ctx.lanes, L.CODEX_DIR, rel[0], rel[1]),
+            kind="worktree",
+            main=f.main,
+        )
         if not ctx.include_codex:
             it.action = SKIP
             it.reasons.append(CODEX_WHY)
@@ -724,12 +880,18 @@ def plan_codex(ctx: Ctx) -> "list[Item]":
         slugs = []
     for slug in slugs:
         if slug not in holders and os.path.lexists(os.path.join(base, slug, CODEX_MARKER)):
-            out.append(Item(NOTE, os.path.join(base, slug), kind="folder",
-                            reasons=[f"only a {CODEX_MARKER} marker, no checkout; not touched"]))
+            out.append(
+                Item(
+                    NOTE,
+                    os.path.join(base, slug),
+                    kind="folder",
+                    reasons=[f"only a {CODEX_MARKER} marker, no checkout; not touched"],
+                )
+            )
     return out
 
 
-def cross_disk_reason(ctx: Ctx, old: str, new: str) -> "str | None":
+def cross_disk_reason(ctx: Ctx, old: str, new: str) -> str | None:
     """Why `old` cannot be moved to `new` with a rename, or None.  `git worktree move` and a clone's rename are
     rename(2), which cannot cross disks (EXDEV), and a lanes/<Repo> symlink onto the external disk puts `new`
     on another disk than a lane in an old internal folder.  A link in the way that leads nowhere is the other
@@ -737,21 +899,25 @@ def cross_disk_reason(ctx: Ctx, old: str, new: str) -> "str | None":
     probe = os.path.dirname(new)
     while probe and probe != os.path.dirname(probe):
         if os.path.islink(probe) and not os.path.exists(probe):
-            return (f"{probe} is a symlink to {os.readlink(probe)}, which does not exist (is the external disk "
-                    "mounted?), so the lane cannot be moved there")
+            return (
+                f"{probe} is a symlink to {os.readlink(probe)}, which does not exist (is the external disk "
+                "mounted?), so the lane cannot be moved there"
+            )
         if os.path.exists(probe):
             break
         probe = os.path.dirname(probe)
     try:
         if os.stat(old).st_dev != os.stat(probe).st_dev:
-            return (f"{new} is on another disk (the external lanes disk) than {old}, and git cannot move a worktree "
-                    "across disks, so it stays where it is until it retires (a new lane there is made with `lane new`)")
+            return (
+                f"{new} is on another disk (the external lanes disk) than {old}, and git cannot move a worktree "
+                "across disks, so it stays where it is until it retires (a new lane there is made with `lane new`)"
+            )
     except OSError:
         return None
     return None
 
 
-def build_plan(ctx: Ctx) -> "list[Item]":
+def build_plan(ctx: Ctx) -> list[Item]:
     items = plan_lanes(ctx)
     items.extend(plan_codex(ctx))
     for it in items:
@@ -766,6 +932,7 @@ def build_plan(ctx: Ctx) -> "list[Item]":
 
 
 # --------------------------------------------------------------------------- the log
+
 
 def load_log(path: str) -> dict:
     try:
@@ -789,24 +956,31 @@ def save_log(path: str, data: dict) -> None:
 
 
 def _stamp(ctx: Ctx) -> str:
-    return _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0).isoformat()
+    return _dt.datetime.now(_dt.UTC).replace(microsecond=0).isoformat()
 
 
 # --------------------------------------------------------------------------- applying
 
+
 def _inside(ctx: Ctx, path: str, root: str) -> bool:
-    return _under(os.path.abspath(path), os.path.abspath(root), ctx.fold) and ctx.fold(os.path.abspath(path)) != ctx.fold(os.path.abspath(root))
+    return _under(os.path.abspath(path), os.path.abspath(root), ctx.fold) and ctx.fold(
+        os.path.abspath(path)
+    ) != ctx.fold(os.path.abspath(root))
 
 
 def _link_ok(ctx: Ctx, path: str) -> bool:
     """A symlink this script may remove sits in the lanes root, or in ~/.codex/worktrees (Codex moves)."""
-    return _inside(ctx, path, ctx.lanes) or _inside(ctx, path, os.path.join(ctx.home, ".codex", "worktrees"))
+    return _inside(ctx, path, ctx.lanes) or _inside(
+        ctx, path, os.path.join(ctx.home, ".codex", "worktrees")
+    )
 
 
 def apply_move(ctx: Ctx, item: Item, log: dict) -> None:
     old, new = item.old, item.new or ""
     codex_root = os.path.join(ctx.home, ".codex", "worktrees")
-    if not (_inside(ctx, old, ctx.lanes) or _inside(ctx, old, codex_root)) or not _inside(ctx, new, ctx.lanes):
+    if not (_inside(ctx, old, ctx.lanes) or _inside(ctx, old, codex_root)) or not _inside(
+        ctx, new, ctx.lanes
+    ):
         raise MigrateError("refusing: a path is outside the lanes root")
     if os.path.islink(old) or not os.path.isdir(old):
         raise MigrateError("the old path is no longer a folder")
@@ -829,10 +1003,21 @@ def apply_move(ctx: Ctx, item: Item, log: dict) -> None:
             raise Skipped("git refused: " + (err.strip().splitlines() or ["?"])[-1][:200])
     after = inspect(ctx, new)
     if not after.is_checkout or after.problems:
-        raise MigrateError("the move finished but the new place does not check out: " + "; ".join(after.problems or ["not a checkout"]))
+        raise MigrateError(
+            "the move finished but the new place does not check out: "
+            + "; ".join(after.problems or ["not a checkout"])
+        )
     os.symlink(new, old)
     remove_after = (ctx.today + _dt.timedelta(days=ctx.grace_days)).isoformat()
-    log["links"].append({"link": old, "target": new, "made": _stamp(ctx), "remove_after": remove_after, "removed": None})
+    log["links"].append(
+        {
+            "link": old,
+            "target": new,
+            "made": _stamp(ctx),
+            "remove_after": remove_after,
+            "removed": None,
+        }
+    )
     log["events"].append({"at": _stamp(ctx), "action": item.action, "old": old, "new": new})
     item.detail = f"symlink left at the old path until {remove_after}"
     if item.action == CODEX:
@@ -863,7 +1048,7 @@ def fix_gitdir_case(member_path: str, main: str) -> bool:
             line = fh.read().strip()
         if not line.startswith("gitdir:"):
             return False
-        admin = os.path.realpath(line[len("gitdir:"):].strip())
+        admin = os.path.realpath(line[len("gitdir:") :].strip())
         admin_root = os.path.realpath(os.path.join(main, ".git", "worktrees"))
         if os.path.dirname(admin) != admin_root:
             return False
@@ -923,7 +1108,7 @@ def apply_bucket(ctx: Ctx, item: Item, log: dict) -> None:
     procs = processes_in(ctx, bucket)
     if procs is None or procs:
         raise Skipped("in use or lsof unreadable; folder rename deferred")
-    mains: "dict[str, list[str]]" = {}
+    mains: dict[str, list[str]] = {}
     for member in item.members:
         f = inspect(ctx, member)
         blockers = _blockers(ctx, f)
@@ -936,21 +1121,28 @@ def apply_bucket(ctx: Ctx, item: Item, log: dict) -> None:
         for e in it:
             if e.is_symlink() or not e.is_dir(follow_symlinks=False):
                 continue
-            if os.path.lexists(os.path.join(e.path, ".git")) and ctx.fold(os.path.abspath(e.path)) not in member_keys:
-                raise Skipped(f"{e.name} is also in the folder and has not moved out yet; "
-                              "a rename would carry it to the wrong folder")
-    renames: "dict[str, str]" = dict(item.extra.get("renames", {}))
-    mains_by_name: "dict[str, str]" = dict(item.extra.get("mains", {}))
+            if (
+                os.path.lexists(os.path.join(e.path, ".git"))
+                and ctx.fold(os.path.abspath(e.path)) not in member_keys
+            ):
+                raise Skipped(
+                    f"{e.name} is also in the folder and has not moved out yet; "
+                    "a rename would carry it to the wrong folder"
+                )
+    renames: dict[str, str] = dict(item.extra.get("renames", {}))
+    mains_by_name: dict[str, str] = dict(item.extra.get("mains", {}))
     clones = set(item.extra.get("clones", []))
     for old_base, new_base in renames.items():
         if os.path.lexists(os.path.join(target, new_base)):
             raise Skipped(f"{new_base} already exists in the folder")
     case_rename(ctx, bucket, target)
-    problems: "list[str]" = []
+    problems: list[str] = []
     for main, paths in mains.items():
         rc, _out, err = ctx.git(main, ["worktree", "repair", *paths])
         if rc != 0:
-            problems.append(f"git worktree repair in {main}: " + (err.strip().splitlines() or ["?"])[-1][:160])
+            problems.append(
+                f"git worktree repair in {main}: " + (err.strip().splitlines() or ["?"])[-1][:160]
+            )
         for path in paths:
             fix_gitdir_case(path, main)
     log["events"].append({"at": _stamp(ctx), "action": item.action, "old": bucket, "new": target})
@@ -966,14 +1158,29 @@ def apply_bucket(ctx: Ctx, item: Item, log: dict) -> None:
         else:
             rc, _out, err = ctx.git(mains_by_name.get(old_base, ""), ["worktree", "move", src, dst])
             if rc != 0:
-                problems.append(f"git worktree move {old_base} -> {new_base}: " + (err.strip().splitlines() or ["?"])[-1][:160])
+                problems.append(
+                    f"git worktree move {old_base} -> {new_base}: "
+                    + (err.strip().splitlines() or ["?"])[-1][:160]
+                )
                 continue
         os.symlink(dst, src)
         remove_after = (ctx.today + _dt.timedelta(days=ctx.grace_days)).isoformat()
-        log["links"].append({"link": src, "target": dst, "made": _stamp(ctx), "remove_after": remove_after, "removed": None})
+        log["links"].append(
+            {
+                "link": src,
+                "target": dst,
+                "made": _stamp(ctx),
+                "remove_after": remove_after,
+                "removed": None,
+            }
+        )
         log["events"].append({"at": _stamp(ctx), "action": MOVE, "old": src, "new": dst})
     if problems:
-        raise MigrateError("renamed, but " + "; ".join(problems) + ".  Run `git -C <repo> worktree repair <lane>...` by hand")
+        raise MigrateError(
+            "renamed, but "
+            + "; ".join(problems)
+            + ".  Run `git -C <repo> worktree repair <lane>...` by hand"
+        )
 
 
 def apply_rmdir(ctx: Ctx, item: Item, log: dict) -> None:
@@ -990,17 +1197,26 @@ def apply_rmdir(ctx: Ctx, item: Item, log: dict) -> None:
     log["events"].append({"at": _stamp(ctx), "action": item.action, "old": item.old})
 
 
-def apply_plan(ctx: Ctx, items: "list[Item]", out: Callable[[str], None]) -> int:
+def apply_plan(ctx: Ctx, items: list[Item], out: Callable[[str], None]) -> int:
     log = load_log(ctx.log_path)
     failures = 0
     for item in items:
-        runner = {MOVE: apply_move, CODEX: apply_move, BUCKET: apply_bucket, RMDIR: apply_rmdir}.get(item.action)
+        runner = {
+            MOVE: apply_move,
+            CODEX: apply_move,
+            BUCKET: apply_bucket,
+            RMDIR: apply_rmdir,
+        }.get(item.action)
         if runner is None:
             continue
         try:
             runner(ctx, item, log)
             item.result = "done"
-            out(f"done     {item.old}" + (f" -> {item.new}" if item.new else "") + (f"  ({item.detail})" if item.detail else ""))
+            out(
+                f"done     {item.old}"
+                + (f" -> {item.new}" if item.new else "")
+                + (f"  ({item.detail})" if item.detail else "")
+            )
         except Skipped as exc:
             item.result, item.detail = "skipped", str(exc)
             out(f"skipped  {item.old}  ({exc})")
@@ -1014,9 +1230,10 @@ def apply_plan(ctx: Ctx, items: "list[Item]", out: Callable[[str], None]) -> int
 
 # --------------------------------------------------------------------------- removing the links
 
-def plan_links(ctx: Ctx) -> "list[dict]":
+
+def plan_links(ctx: Ctx) -> list[dict]:
     log = load_log(ctx.log_path)
-    rows: "list[dict]" = []
+    rows: list[dict] = []
     for ln in log["links"]:
         if ln.get("removed"):
             continue
@@ -1040,11 +1257,14 @@ def plan_links(ctx: Ctx) -> "list[dict]":
     return rows
 
 
-def remove_links(ctx: Ctx, rows: "list[dict]", apply: bool, out: Callable[[str], None]) -> int:
+def remove_links(ctx: Ctx, rows: list[dict], apply: bool, out: Callable[[str], None]) -> int:
     log = load_log(ctx.log_path)
     failures = 0
     for row in rows:
-        out(f"{row['state']:<28} {row['link']} -> {row['target']}" + ("  (its target is gone)" if row.get("target_gone") else ""))
+        out(
+            f"{row['state']:<28} {row['link']} -> {row['target']}"
+            + ("  (its target is gone)" if row.get("target_gone") else "")
+        )
         if not apply or row["state"] != "due":
             continue
         try:
@@ -1053,7 +1273,7 @@ def remove_links(ctx: Ctx, rows: "list[dict]", apply: bool, out: Callable[[str],
             keep = {a.lane_dir for a in ctx.registry.apps} | {L.CODEX_DIR}
             if os.path.basename(parent) not in keep:
                 try:
-                    os.rmdir(parent)            # an old prefix folder, once its last link is gone
+                    os.rmdir(parent)  # an old prefix folder, once its last link is gone
                 except OSError:
                     pass
             for ln in log["links"]:
@@ -1070,57 +1290,109 @@ def remove_links(ctx: Ctx, rows: "list[dict]", apply: bool, out: Callable[[str],
 
 # --------------------------------------------------------------------------- output and command line
 
-def render(items: "list[Item]", ctx: Ctx, out: Callable[[str], None]) -> None:
-    def tilde(p: "str | None") -> str:
+
+def render(items: list[Item], ctx: Ctx, out: Callable[[str], None]) -> None:
+    def tilde(p: str | None) -> str:
         if not p:
             return ""
-        return "~" + p[len(ctx.home):] if p == ctx.home or p.startswith(ctx.home + os.sep) else p
+        return "~" + p[len(ctx.home) :] if p == ctx.home or p.startswith(ctx.home + os.sep) else p
 
-    counts: "dict[str, int]" = {}
+    counts: dict[str, int] = {}
     for it in items:
         counts[it.action] = counts.get(it.action, 0) + 1
         if it.action == OK or (it.action == NOTE and not it.reasons):
-            continue                       # already where it belongs: counted in the summary, not listed
-        head = f"{it.action:<14} {tilde(it.old)}" + (f"  ->  {tilde(it.new)}" if it.new and it.action not in (SKIP, OK) else "")
+            continue  # already where it belongs: counted in the summary, not listed
+        head = f"{it.action:<14} {tilde(it.old)}" + (
+            f"  ->  {tilde(it.new)}" if it.new and it.action not in (SKIP, OK) else ""
+        )
         out(head)
         for r in it.reasons:
             out(f"                 - {r}")
         for n in it.notes:
             out(f"                 note: {n}")
     out("")
-    out("Summary: " + ", ".join(f"{n} {a}" for a, n in sorted(counts.items())) if counts else "Summary: nothing to do")
+    out(
+        "Summary: " + ", ".join(f"{n} {a}" for a, n in sorted(counts.items()))
+        if counts
+        else "Summary: nothing to do"
+    )
 
 
-def make_ctx(home: str, env: "Mapping[str, str] | None" = None, *, lsof: "Callable | None" = None,
-             today: "_dt.date | None" = None, include_codex: bool = False, log_path: str = "",
-             grace_days: int = GRACE_DAYS, case_insensitive: "bool | None" = None) -> Ctx:
+def make_ctx(
+    home: str,
+    env: Mapping[str, str] | None = None,
+    *,
+    lsof: Callable | None = None,
+    today: _dt.date | None = None,
+    include_codex: bool = False,
+    log_path: str = "",
+    grace_days: int = GRACE_DAYS,
+    case_insensitive: bool | None = None,
+) -> Ctx:
     env = os.environ if env is None else env
     registry = L.load_registry(env=env)
     roots = L.make_roots(home, env, registry=registry, case_insensitive=case_insensitive)
     log = log_path or os.path.join(os.fspath(roots.lanes_root), LOG_NAME)
     here = os.path.dirname(SCRIPTS_DIR)
     return Ctx(
-        home=os.fspath(roots.home), roots=roots, registry=registry,
-        lsof=lsof or D.make_lsof_reader(), today=today or _dt.date.today(), grace_days=grace_days,
-        include_codex=include_codex, log_path=log,
+        home=os.fspath(roots.home),
+        roots=roots,
+        registry=registry,
+        lsof=lsof or D.make_lsof_reader(),
+        today=today or _dt.date.today(),
+        grace_days=grace_days,
+        include_codex=include_codex,
+        log_path=log,
         self_paths=tuple(dict.fromkeys(os.path.realpath(p) for p in (os.getcwd(), here))),
     )
 
 
-def main(argv: "Sequence[str] | None" = None, *, home: "str | None" = None, env: "Mapping[str, str] | None" = None,
-         lsof: "Callable | None" = None, today: "_dt.date | None" = None, stdout=None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    home: str | None = None,
+    env: Mapping[str, str] | None = None,
+    lsof: Callable | None = None,
+    today: _dt.date | None = None,
+    stdout=None,
+) -> int:
     out_stream = sys.stdout if stdout is None else stdout
 
     def out(line: str) -> None:
         out_stream.write(line + "\n")
 
-    p = argparse.ArgumentParser(description="Move the existing lanes to the layout v2 tree.  A dry run unless --apply.")
-    p.add_argument("--apply", action="store_true", help="do it (the default prints the plan and changes nothing)")
+    p = argparse.ArgumentParser(
+        description="Move the existing lanes to the layout v2 tree.  A dry run unless --apply."
+    )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="do it (the default prints the plan and changes nothing)",
+    )
     p.add_argument("--json", action="store_true", help="print the plan as JSON")
-    p.add_argument("--include-codex", action="store_true", help="also move ~/.codex/worktrees/<slug>/<Repo> to lanes/_codex")
-    p.add_argument("--remove-links", action="store_true", help="list (and with --apply, delete) the due symlinks the migration left")
-    p.add_argument("--grace-days", type=int, default=GRACE_DAYS, metavar="N", help="days the old-path symlinks stay (default 7)")
-    p.add_argument("--log", default="", metavar="PATH", help=f"the migration log (default <lanes root>/{LOG_NAME})")
+    p.add_argument(
+        "--include-codex",
+        action="store_true",
+        help="also move ~/.codex/worktrees/<slug>/<Repo> to lanes/_codex",
+    )
+    p.add_argument(
+        "--remove-links",
+        action="store_true",
+        help="list (and with --apply, delete) the due symlinks the migration left",
+    )
+    p.add_argument(
+        "--grace-days",
+        type=int,
+        default=GRACE_DAYS,
+        metavar="N",
+        help="days the old-path symlinks stay (default 7)",
+    )
+    p.add_argument(
+        "--log",
+        default="",
+        metavar="PATH",
+        help=f"the migration log (default <lanes root>/{LOG_NAME})",
+    )
     p.add_argument("--home", default="", metavar="PATH", help="a different home (tests)")
     try:
         args = p.parse_args(argv)
@@ -1134,8 +1406,15 @@ def main(argv: "Sequence[str] | None" = None, *, home: "str | None" = None, env:
         sys.stderr.write(f"lanes-v2-migrate: {real_home} is not a directory\n")
         return EXIT_USAGE
     try:
-        ctx = make_ctx(real_home, env, lsof=lsof, today=today, include_codex=args.include_codex,
-                       log_path=args.log, grace_days=args.grace_days)
+        ctx = make_ctx(
+            real_home,
+            env,
+            lsof=lsof,
+            today=today,
+            include_codex=args.include_codex,
+            log_path=args.log,
+            grace_days=args.grace_days,
+        )
     except (OSError, ValueError) as exc:
         sys.stderr.write(f"lanes-v2-migrate: cannot read the registry: {exc}\n")
         return EXIT_USAGE
@@ -1156,7 +1435,13 @@ def main(argv: "Sequence[str] | None" = None, *, home: "str | None" = None, env:
         sys.stderr.write(f"lanes-v2-migrate: {exc}\n")
         return EXIT_FAILED
     if args.json and not args.apply:
-        out_stream.write(json.dumps({"apply": False, "lanes_root": ctx.lanes, "items": [i.as_dict() for i in items]}, indent=2) + "\n")
+        out_stream.write(
+            json.dumps(
+                {"apply": False, "lanes_root": ctx.lanes, "items": [i.as_dict() for i in items]},
+                indent=2,
+            )
+            + "\n"
+        )
         return EXIT_OK
     if not args.apply:
         out(f"Dry run: nothing is changed.  Lanes root {ctx.lanes}.  Add --apply to do it.")
@@ -1168,12 +1453,24 @@ def main(argv: "Sequence[str] | None" = None, *, home: "str | None" = None, env:
     progress(f"Applying.  Lanes root {ctx.lanes}.  Log {ctx.log_path}.")
     failures = apply_plan(ctx, items, progress)
     if args.json:
-        out_stream.write(json.dumps({"apply": True, "lanes_root": ctx.lanes, "failures": failures,
-                                     "items": [i.as_dict() for i in items]}, indent=2) + "\n")
+        out_stream.write(
+            json.dumps(
+                {
+                    "apply": True,
+                    "lanes_root": ctx.lanes,
+                    "failures": failures,
+                    "items": [i.as_dict() for i in items],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
     skipped = sum(1 for i in items if i.action in (SKIP, DEFER) or i.result == "skipped")
     progress("")
-    progress(f"Finished: {sum(1 for i in items if i.result == 'done')} done, {skipped} skipped or deferred, {failures} failed.  "
-             "Run it again once the skipped lanes are free.")
+    progress(
+        f"Finished: {sum(1 for i in items if i.result == 'done')} done, {skipped} skipped or deferred, {failures} failed.  "
+        "Run it again once the skipped lanes are free."
+    )
     return EXIT_FAILED if failures else EXIT_OK
 
 

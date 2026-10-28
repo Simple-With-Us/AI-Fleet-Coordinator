@@ -9,7 +9,7 @@ Sources (payload `source` value):
   effort-log     ~/apps/*-EFFORT-LOG.md + EFFORT-LOG-PROTOCOL.md
   doc            markdown in fleet app repos (README/AGENTS/STATUS/CLAUDE + docs/**/*.md),
                  AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only when an
-                 AGENT-SYNC.md is ingested:  the public ones are the text of that file),
+                 FLEET-PROTOCOL.md is ingested:  the public ones are the text of that file),
                  top-level ~/apps/*.md (not effort logs),
                  ~/.claude/CLAUDE.md, ~/.grok/docs/**/*.md, ~/.grok/skills/**/SKILL.md
   skill          ~/.claude/skills/*/SKILL.md and ~/.cursor/skills/*/SKILL.md
@@ -61,12 +61,11 @@ GROK_SESSIONS = GROK_HOME / "sessions"
 CURSOR_PROJECTS = HOME / ".cursor" / "projects"
 CODEX_SESSIONS = HOME / ".codex" / "sessions"
 GEMINI_HOME = HOME / ".gemini"
-# The protocol document is being renamed:  during the move the live copy exists under both names (equal bytes) and the
-# mirror under exactly one.  Remove the old name when the rename is complete.
-PROTOCOL_DOC_NAMES = ("FLEET-PROTOCOL.md", "AGENT-SYNC.md")
+# The protocol document was renamed:  the live copy and the mirror each hold exactly one name now, and the old one
+# is gone.  The fleet points at FLEET-PROTOCOL.md by its current name only.
+PROTOCOL_DOC_NAMES = ("FLEET-PROTOCOL.md",)
 EXTRA_DOCS = (
     APPS_DIR / "FLEET-PROTOCOL.md",
-    APPS_DIR / "AGENT-SYNC.md",
     APPS_DIR / "MAC-LOCAL-PROCESSES.md",
     APPS_DIR / "FLEET-UI-COPY.md",
     HOME / ".claude" / "CLAUDE.md",
@@ -115,13 +114,13 @@ DOC_APP_REPOS = (
 # the live ~/apps copy AND the AI-Fleet-Coordinator mirror of a protocol file, every by-seat /
 # universal / dot-dir copy of a skill on top of the skill source, and each repo's
 # docs/EFFORT-LOG.md mirror on top of the effort-log source, and (2026-10-11) the Fleet-OPS handbook/ pages that
-# build the live AGENT-SYNC.md.  mirror_skip_reason() names the
+# build the live FLEET-PROTOCOL.md.  mirror_skip_reason() names the
 # rule that drops a file; iter_docs logs a per-rule summary through warn().
 SKILL_TREE_DIRS = frozenset({".claude", ".cursor", ".grok"})
 SKIP_APPS_MIRROR = "apps-mirror"  # (a) live ~/apps copy is canonical
 SKIP_SKILL_COPY = "skill-copy"  # (b) covered by the skill source
 SKIP_EFFORT_LOG = "effort-log-mirror"  # (c) covered by the effort-log source
-SKIP_HANDBOOK_MIRROR = "handbook-mirror"  # (d) Fleet-OPS generated/ and public handbook pages: any ingested AGENT-SYNC.md
+SKIP_HANDBOOK_MIRROR = "handbook-mirror"  # (d) Fleet-OPS generated/ and public handbook pages: any ingested FLEET-PROTOCOL.md
 DOC_SKIPS: list[tuple[str, str]] = []
 
 
@@ -675,7 +674,7 @@ _HANDBOOK_ALWAYS_PRIVATE = frozenset({"private", "rulings"})
 
 
 def handbook_page_is_public(p: pathlib.Path, rel: pathlib.PurePath) -> bool:
-    """True for a Fleet-OPS handbook page whose text is in the generated AGENT-SYNC.md.
+    """True for a Fleet-OPS handbook page whose text is in the generated FLEET-PROTOCOL.md.
 
     The generator's own predicate (scripts/handbook/build.mjs):  the front matter says exactly
     `visibility: public`, and the page is not under handbook/private/ or handbook/rulings/, whatever its front
@@ -710,7 +709,7 @@ def mirror_skip_reason(
     """Why the doc walk drops this file, or None to keep it.
 
     (a) SKIP_APPS_MIRROR: a file inside the fleet coordinator checkout whose basename is also a
-        top-level ~/apps/*.md (AGENT-SYNC.md, MAC-LOCAL-PROCESSES.md, FLEET-UI-COPY.md, ...).
+        top-level ~/apps/*.md (FLEET-PROTOCOL.md, MAC-LOCAL-PROCESSES.md, FLEET-UI-COPY.md, ...).
         The live copy is canonical.  Generic root names (README.md, AGENTS.md, ...) are exempt.
     (b) SKIP_SKILL_COPY: any file under .claude/skills, .cursor/skills or .grok/skills, anything
         under docs/fleet-skills/by-seat, and any SKILL.md under a skills/ or fleet-skills/ dir.
@@ -718,7 +717,7 @@ def mirror_skip_reason(
     (c) SKIP_EFFORT_LOG: EFFORT-LOG.md, *-EFFORT-LOG.md and EFFORT-LOG-PROTOCOL.md anywhere.
         The effort-log source ingests the live boards.
     (d) SKIP_HANDBOOK_MIRROR: in a fleet-ops checkout, anything under generated/ and every public page under
-        handbook/ (handbook_page_is_public), but only when a copy of AGENT-SYNC.md is really ingested
+        handbook/ (handbook_page_is_public), but only when a copy of FLEET-PROTOCOL.md is really ingested
         (`agent_sync_ingested`;  left as None it means the live file is among `live_basenames`).  The public pages are
         the text of that file, so a recall query for a handbook rule would otherwise return each rule twice:  once
         from the file (the live copy, or the AI-Fleet-Coordinator mirror when there is no live copy) and once from
@@ -893,7 +892,7 @@ def _doc_files(
         p.name for p in live if p.is_file() and not _is_effort_log_name(p.name) and not _skip_doc(p)
     }
 
-    # The handbook's public pages stand down for an AGENT-SYNC.md that the walk will really ingest:  the live file, or
+    # The handbook's public pages stand down for an FLEET-PROTOCOL.md that the walk will really ingest:  the live file, or
     # (on a host without one) the coordinator's mirror, which rule (a) keeps when there is no live copy.
     def _ingestable_mirror(f: pathlib.Path) -> bool:
         try:

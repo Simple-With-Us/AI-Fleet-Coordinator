@@ -27,7 +27,7 @@ What this build does NOT claim (Echo's reviewer addendum, 2026-10-23):
 Run (server instance, stdlib only, Python 3.11+):
 
     python3 -m agent_sync.linear_relay run        # long-running loop
-    python3 -m agent_sync.linear_relay check      # credentials + Linear auth, no writes
+    python3 -m agent_sync.linear_relay check      # credentials, public streams, Linear auth; no writes
 
 Credentials (environment, loaded by the container from Infisical, never logged):
 
@@ -123,6 +123,7 @@ SCAN_BUDGET = 90.0  # one marker scan, every page and every retry included
 MAX_COMMENT_PAGES = 40  # 100 comments a page, so 4000 comments an issue
 MISSING_TTL = 3600.0  # an issue id Linear does not have is looked up again after an hour
 TICK_BUDGET = 120.0  # one tick's writes; the rest wait for the next cycle so Zulip keeps polling
+STREAM_RELOAD_OPS = ("create", "update", "delete")  # stream-event ops that reload the public set
 # What a field that looked like it carried a credential shows instead.  It names no secret
 # keyword, so it never matches the patterns below itself.
 WITHHELD = "(withheld: it looked like it carried a credential)"
@@ -608,6 +609,8 @@ class LinearClient:
         if deadline is None:
             deadline = self.monotonic() + CALL_BUDGET
         body = json.dumps({"query": query, "variables": variables}).encode()
+        # Invariant: commentCreate is the only mutation a replay could duplicate, so it is the only
+        # call sent with idempotent=False; commentUpdate sets the whole body, so a replay converges.
         attempts = MAX_ATTEMPTS if idempotent else 1
         last: LinearError = LinearError("linear call ran out of its time budget")
         for attempt in range(attempts):
@@ -896,9 +899,10 @@ class RelayWorker:
             self._handle_message(event.get("message") or {})
         elif kind == "update_message":
             self._handle_move(event)
-        elif kind == "stream":
+        elif kind == "stream" and event.get("op") in STREAM_RELOAD_OPS:
             # The worker holds no Zulip client, so it cannot reload the set itself.  run() never
-            # routes a stream event here; a daemon that does has missed set_public_streams.
+            # routes a stream event here; a daemon that does has missed set_public_streams.  Only
+            # the ops run() reloads on are named, so the advice matches what run() does.
             self.log("a stream event reached handle_event: reload the set with set_public_streams")
 
     def _handle_message(self, msg: Mapping[str, Any]) -> None:
@@ -1467,8 +1471,24 @@ def subscribe_public(client: ZulipClient, log: Callable[[str], None]) -> None:
 
 
 def run_check(client: ZulipClient, linear: LinearClient, env: Mapping[str, str], realm: str) -> int:
-    """Credentials and Linear auth, with no writes.  A missing issue is not an auth failure."""
+    """Credentials, the public-stream set and Linear auth, with no writes.  A missing issue is not
+    an auth failure."""
     print("zulip bot ok (member, not admin); realm %s" % realm)
+    try:
+        streams = load_public_streams(client)
+    except (ApiError, NetworkError, ValueError) as exc:
+        # run() relays nothing until this set loads, so a set that cannot load fails the check.
+        # The name and the message together say which of the three it is: the client scrubs
+        # the key and the auth token out of its own messages (zulip.py:1231 and zulip.py:1415),
+        # and a ValueError is one of this module's own fixed strings, so nothing credential-
+        # shaped reaches the operator's terminal here.
+        detail = " ".join(str(exc).split())[:200] or "no detail"
+        print(
+            "zulip public-stream set failed to load (%s: %s); the relay would relay nothing"
+            % (type(exc).__name__, detail)
+        )
+        return 1
+    print("zulip public-stream set ok: %d public stream(s)" % len(streams))
     try:
         print("linear auth ok: %s" % linear.viewer())
     except LinearError as exc:
@@ -1564,7 +1584,7 @@ def run(env: Mapping[str, str], *, check_only: bool = False) -> int:
                 worker.start_cycle()  # this batch's creates and the tick share one budget
                 for event in events:
                     if event.get("type") == "stream":
-                        if event.get("op") in ("create", "update", "delete"):
+                        if event.get("op") in STREAM_RELOAD_OPS:
                             # A failed reload keeps the queue: the set is unknown, so nothing
                             # is written, and the reload is tried again after this batch.
                             subscribe_public(client, worker.log)

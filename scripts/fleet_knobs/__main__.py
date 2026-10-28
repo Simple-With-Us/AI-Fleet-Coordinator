@@ -7,6 +7,9 @@ get NAME                   print one NON-secret knob's value (lists and caps as 
                            "stale" goes to stderr when Infisical was unreachable
 inventory [--check F|--write F]
                            print the INFISICAL.md table, or check or rewrite it in file F
+set NAME VALUE (--plan|--yes) [--json]
+                           change one NON-secret knob in Infisical (setter.py).  --plan shows the
+                           write, --yes makes it with the write token.  Exit 0, 1 failed, 2 refused
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ import argparse
 import json
 import sys
 
-from . import inventory, knobs, values
+from . import inventory, knobs, setter, values
 from .registry import BY_NAME, REGISTRY
 
 
@@ -133,6 +136,20 @@ def _inventory(args, out) -> int:
     return 0
 
 
+def _set(args, out) -> int:
+    mode = "plan" if args.plan else "yes" if args.yes else None
+    answer, code = setter.set_knob(args.name, args.value, mode)
+    if args.json:
+        json.dump(answer, out, sort_keys=True)
+        out.write("\n")
+    else:
+        out.write(f"{answer['result']}: {args.name}")
+        if answer.get("new") is not None:
+            out.write(f" {answer.get('old')} -> {answer['new']}")
+        out.write(f" ({answer['detail']})\n" if answer["detail"] else "\n")
+    return code
+
+
 def main(argv: list[str] | None = None, out=None) -> int:
     out = out or sys.stdout
     parser = argparse.ArgumentParser(prog="fleet_knobs", description=__doc__.split("\n\n")[0])
@@ -151,9 +168,18 @@ def main(argv: list[str] | None = None, out=None) -> int:
     group = p.add_mutually_exclusive_group()
     group.add_argument("--check", metavar="FILE")
     group.add_argument("--write", metavar="FILE")
+    p = sub.add_parser("set", help="change one non-secret knob (--plan first, then --yes)")
+    p.add_argument("name")
+    p.add_argument("value")
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--plan", action="store_true", help="show the write and change nothing")
+    group.add_argument("--yes", action="store_true", help="make the write")
+    p.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
-        return {"status": _status, "get": _get, "inventory": _inventory}[args.cmd](args, out)
+        return {"status": _status, "get": _get, "inventory": _inventory, "set": _set}[args.cmd](
+            args, out
+        )
     except knobs.KnobError as exc:
         sys.stderr.write(f"fleet_knobs: {exc}\n")
         return 2

@@ -25,7 +25,7 @@ SEAT_PIN_TOKEN = "@@SEAT_PIN_BLOCK@@"
 # The canonical pack's identity block is the retired MONET seat's own block,
 # exactly what seat_pin_block() renders for MONET (#405 made the canonical
 # carry the renderer's own output).  Every render swaps the whole block for the
-# destination seat's seat-precedence block (AGENT-SYNC § Identity Rules, owner
+# destination seat's seat-precedence block (FLEET-PROTOCOL.md § Identity Rules, owner
 # 2026-10-09):  a launcher's AGENT_LAUNCH_SEAT, no seat at all when a launcher
 # set none, then AGENT_SEAT, then the platform default.  The pattern also takes
 # the two older canonical shapes (a bare `export AGENT_SEAT=MONET`, and the
@@ -50,9 +50,11 @@ _SEAT_PIN_SOURCE = re.compile(
     + r")"
 )
 
-# What a rendered command writes where the seat goes (`board ... --by`).  The
-# identity block exports AGENT_SEAT from the verified seat when it is unset.
-BY_SEAT = '"$AGENT_SEAT"'
+# What a rendered command writes where the seat goes (`board ... --by`).  `simple-board` never reads
+# AGENT_SEAT:  its seat is proven by the reader's own bearer (`simple-board whoami`), so `--by` is only a
+# check and the pack writes a placeholder for the seat `whoami` reports.  (simple-chat and lane keep their
+# own seat contracts and still use the identity block above.)
+BY_SEAT = "<YOUR_TAG>"
 # The placeholder for the reader's branch prefix in example claim posts.  A
 # launched bot's prefix is its launcher's to name, so no render hard-codes one.
 BRANCH_PREFIX = "<branch-prefix>"
@@ -79,7 +81,7 @@ def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
         'export AGENT_SEAT="${AGENT_SEAT:-$SEAT}"\n'
         'simple-chat whoami --as "$SEAT"\n'
         "```\n\n"
-        "Your seat is the first of these that applies (AGENT-SYNC § Identity Rules):  "
+        "Your seat is the first of these that applies (FLEET-PROTOCOL.md § Identity Rules):  "
         "a seat Jay names to you in this conversation; a seat your launcher assigned "
         "(`AGENT_LAUNCH_SEAT` with `AGENT_LAUNCHER`, matching your launch prompt), "
         f"which beats this file whatever model you are; otherwise {ordinary}  "
@@ -89,8 +91,10 @@ def _seat_block(default_arm: str, ordinary: str, extra: str = "") -> str:
         "Stop if `whoami` shows another seat's bot or the credential is missing "
         "(the CLI also refuses on its own).  Never use another seat's credential or "
         "Jay's account.  Your shell may not keep exports between commands, so pass "
-        '`--as <SEAT>` on every simple-chat call, and read `"$AGENT_SEAT"` in the '
-        f"commands below as the seat you verified.{extra}  {LAUNCHER_CLAUSE}"
+        "`--as <SEAT>` on every simple-chat call.  `simple-board` does not read these variables:  "
+        "the fleet verifier names your seat from your own bearer (`simple-board whoami` prints it as "
+        "`bearer-verified`), no variable can pick it, and `--by <YOUR_TAG>` in the commands below is only a "
+        f"check that must equal that seat.{extra}  {LAUNCHER_CLAUSE}"
     )
 
 
@@ -103,17 +107,18 @@ def _bot_address(seat: Seat) -> str:
 
 def seat_pin_block(seat: Seat) -> str:
     """Identity block for one seat:  its platform default arm, never an overwrite."""
+    if seat.retired:
+        # A retired seat is never anyone's default:  the arm fails instead.
+        # No branch-prefix guidance — a retired pack takes no lane/branch work.
+        return _seat_block(
+            f'"${{AGENT_SEAT:?{seat.tag} is retired; take no work as {seat.tag}}}"',
+            "you have no seat here — a retired catalog pack is never a platform default.",
+            "  A retired pack takes no work:  do not resolve a branch prefix, open a lane, or claim.",
+        )
     prefix_line = (
         f"  `{BRANCH_PREFIX}` below is your seat's branch prefix:  `{seat.prefix}` "
         f"for {seat.tag}, or the one your launcher names."
     )
-    if seat.retired:
-        # A retired seat is never anyone's default:  the arm fails instead.
-        return _seat_block(
-            f'"${{AGENT_SEAT:?{seat.tag} is retired; take no work as {seat.tag}}}"',
-            f"you have no seat here:  {seat.tag} is retired and is no platform's default.",
-            prefix_line,
-        )
     bot = _bot_address(seat)
     return _seat_block(
         f'"${{AGENT_SEAT:-{seat.tag}}}"',
@@ -126,8 +131,8 @@ def seat_pin_block(seat: Seat) -> str:
 def universal_pin_block() -> str:
     """Identity block for the neutral skills/ tree (no seat is known)."""
     return _seat_block(
-        '"${AGENT_SEAT:?set AGENT_SEAT to your platform default from AGENT-SYNC Identity Rules}"',
-        "take your platform's default from AGENT-SYNC § Identity Rules › Platform "
+        '"${AGENT_SEAT:?set AGENT_SEAT to your platform default from FLEET-PROTOCOL.md Identity Rules}"',
+        "take your platform's default from FLEET-PROTOCOL.md § Identity Rules › Platform "
         "Defaults (a platform with no default asks Jay).",
         f"  `{BRANCH_PREFIX}` below is your seat's branch prefix.",
     )
@@ -292,8 +297,8 @@ GROK_BOT_IDENTITY = (
     "Not `[GROK-BOT]`, not `[CURSOR]`, not `[GROK]`, not `[MONET]`.  "
     "Notes name is the role in Title Case.  Cloud branches are often "
     "`cursor/<slug>`.  Pin `AGENT_TAG` to your GB role before posting or "
-    "`simple-board --by`, and a `simple-board` write also needs "
-    "`LINEAR_BOARD_WRITES=1`, which the `board` wrapper sets for you.  "
+    "`simple-board --by`, and a `simple-board` write needs your "
+    "bearer-verified seat and nothing else.  "
     "Local Cursor IDE on the Mac is `[CURSOR]`.  Mac Grok TUI "
     "is `[GROK]`."
 )
@@ -1106,6 +1111,14 @@ def _insert_after_first_heading(text: str, block: str) -> str:
     for i, line in enumerate(lines):
         if line.startswith("# "):
             return "".join(lines[: i + 1] + ["\n", block] + lines[i + 1 :])
+    # No top-level heading (secret-safety starts at `## `):  keep YAML front
+    # matter at line 1 by inserting after its closing delimiter instead of
+    # prepending ahead of it, which no front-matter parser would read.
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end >= 0:
+            cut = end + len("\n---\n")
+            return text[:cut] + "\n" + block + text[cut:]
     return block + text
 
 

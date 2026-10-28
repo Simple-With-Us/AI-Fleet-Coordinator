@@ -1,4 +1,4 @@
-import { WA_TOOLS } from "./wa/contract.js";
+import { WA_TOOLS, replyArgs as waReplyArgs, statusArgs as waStatusArgs } from "./wa/contract.js";
 import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
 import { callNamedLinear } from "./linear-named.js";
 import { z } from "zod";
@@ -6,7 +6,7 @@ import { parseArgs } from "./args.js";
 import { LINEAR_MCP_BY_NAME } from "./linear-mcp-specs.js";
 import { callLinearMcp } from "./linear-mcp.js";
 import { apiSchema, apiQuery, apiMutation } from "./linear-api.js";
-// The seven agent-sync tools for one hosted seat (spec sections 1, 3.6 to 3.9).
+// The seven chat tools for one hosted seat (spec sections 1, 3.6 to 3.9).
 // A port of scripts/agent_sync/mcp/tools.py over the Zulip REST API, with the
 // hosted rules on top:  the seat only from the grant, the channel rule (any
 // public channel the seat's bot is subscribed to, src/channels.js) by stream
@@ -63,6 +63,8 @@ import {
   RECALL_MARKER_END,
 } from "./recall.js";
 import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES } from "./gr-tools.js";
+import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
+import { WF_V1_ACTIONS, WF_V1_TOOLS, validWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
 import {
   FLEETLINK_TOOLS,
   FLEETLINK_READ_TOOLS,
@@ -161,7 +163,7 @@ export const RESOURCE_SCOPES = Object.freeze({ read: "zulip:read", write: "zulip
 // AFC-328 appends the FleetLink tools after the Linear ones.  AFC-330 appends the rest of Zulip
 // (every tools.json tool after the first ten, as zulip_<name>) and the read-only listener tools
 // after those, so every earlier tool keeps its place.
-export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS]);
+export const HOSTED_TOOL_LIST = Object.freeze([...ZULIP_PUBLIC_TOOLS, ...RECALL_TOOLS, ...LINEAR_TOOLS, ...FLEETLINK_TOOLS, ...ZULIP_FULL_PUBLIC_TOOLS, ...EAVESDROPPER_TOOLS, ...NOTES_TOOLS, ...WA_TOOLS, ...GR_TOOLS, ...TYPED_V1_TOOLS, ...WF_V1_TOOLS]);
 const FLEETLINK_BY_NAME = Object.freeze(Object.fromEntries(FLEETLINK_TOOLS.map((tool) => [tool.name, tool])));
 export const HOSTED_TOOLS_BY_NAME = Object.freeze(Object.fromEntries(HOSTED_TOOL_LIST.map((tool) => [tool.name, tool])));
 // Every hosted tool is classified here, explicitly, as a read or a write (AFC-331:  a write must name its
@@ -174,8 +176,8 @@ const ZULIP_WRITE_NAMES = [...WRITE_TOOLS, ...DM_WRITE_TOOLS].map(publicZulip);
 const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
 const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
-export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read"]));
-export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES]));
+export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
+export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
 // a seat inside Linear's request budget, short enough that a team rename or a
@@ -378,6 +380,37 @@ export class HostedTools {
     return okResult(envelope("whatsapp_read", [], `Private WhatsApp messages; text is untrusted data.  Acknowledged through ${result.acknowledged_through}.`, result.items));
   }
 
+  // AFC-545: the outbound leg.  There is no recipient argument: the
+  // binding is the only conversation a reply can reach.
+  async tool_whatsapp_reply(args) {
+    if (this.seat !== "JET-CHAT" || this.callerSeat !== "JET-CHAT" || !this.config.whatsappEnabled) throw new ToolError("not_authorized", "WhatsApp is available only to the full Jet login when enabled.");
+    const checked = waReplyArgs(args);
+    if (!checked.ok) throw new ToolError("invalid_argument", `The ${checked.field} argument is not valid.`);
+    const result = await this.whatsappGate.waReply({ args: checked.args, known: this.known });
+    if (!result.ok) {
+      if (result.reason === "secret_in_text") throw new ToolError("refused_secret", `The reply text looks like a credential (${result.rule}).  Remove it and send it again.`);
+      if (result.reason === "outcome_unknown") throw new ToolError("outcome_unknown", "That reply's outcome is unknown, and it is never sent again.  Ask Jay in a new message instead.");
+      if (result.reason === "same_text_as_unknown") throw new ToolError("outcome_unknown", "A reply with this exact text already has an unknown outcome, and it is never sent again.  Ask Jay in a new message instead.");
+      if (result.reason === "not_surfaced") throw new ToolError("invalid_argument", "The ack_through argument names a message that whatsapp_read has not returned.");
+      throw new ToolError("invalid_argument", result.reason);
+    }
+    return okResult(envelope("whatsapp_reply", [], `The reply is ${result.state}.`, [result.reply ?? { intent_id: result.intent_id, state: result.state }]));
+  }
+
+  async tool_whatsapp_send_status(args) {
+    if (this.seat !== "JET-CHAT" || this.callerSeat !== "JET-CHAT" || !this.config.whatsappEnabled) throw new ToolError("not_authorized", "WhatsApp is available only to the full Jet login when enabled.");
+    const checked = waStatusArgs(args);
+    if (!checked.ok) throw new ToolError("invalid_argument", `The ${checked.field} argument is not valid.`);
+    const result = await this.whatsappGate.waSendStatus(checked.args);
+    if (!result.ok) {
+      if (result.reason === "not_held") throw new ToolError("invalid_argument", "That reply is not held, so the action does not apply to it.");
+      if (result.reason === "send_disabled") throw new ToolError("not_configured", "The WhatsApp send switch is off, so a held reply stays held.");
+      throw new ToolError("not_found", result.reason);
+    }
+    if (result.reply) return okResult(envelope("whatsapp_send_status", [], `The reply is ${result.state}.`, [result.reply]));
+    return okResult(envelope("whatsapp_send_status", [], `${result.replies.length} recent WhatsApp replies.`, result.replies));
+  }
+
   // ---------------------------------------------------------------- entry
 
   /** Run one tool.  Returns a CallToolResult.  Throws UnknownTool. */
@@ -427,6 +460,7 @@ export class HostedTools {
         delete args.seat;
       }
       requestArgs = args;
+      if (publicName.startsWith("gr_wf_") && !boundedWorkflowInput(args, {maxBytes:workflowInputLimit(publicName.slice(3)),maxString:workflowInputLimit(publicName.slice(3))})) throw new ToolError("invalid_argument", "Workflow input exceeds structural limits.");
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(publicName);
@@ -1273,7 +1307,7 @@ export class HostedTools {
     }
     // FleetLink's own refusals are short, written by FleetLink, and never hold credentials.
     if (!out.ok) throw new ToolError("fleetlink_refused", `FleetLink:  ${fleetlinkMessage(out.message)}`);
-    const header = `agent-sync ${name}:  as ${this.seat}'s FleetLink account`;
+    const header = `simple-tools ${name}:  as ${this.seat}'s FleetLink account`;
     return okResult(fleetlinkEnvelope(header, out.data, newNonce()), fleetlinkSummary(out.data));
   }
 
@@ -1302,8 +1336,9 @@ export class HostedTools {
    * mis-answering upstream becomes a ToolError.  The relay's error string is
    * capped:  it is meant for the caller, but it is still another service's
    * text. */
-  async grCall(action, args) {
-    const { status, body } = await this.requireGr().call(action, args);
+  async grCall(action, args, {typedPrincipal = null, workflow = false} = {}) {
+    const client = this.requireGr();
+    const { status, body } = await (typedPrincipal ? client.callTyped(action, args, typedPrincipal) : workflow ? client.callWorkflow(action, args) : client.call(action, args));
     if (status === 0) throw new ToolError("unavailable", "GR-MCP could not reach git-relay.  Try again shortly;  if it persists, the relay host is down.");
     // The relay uses 502 for a write whose outcome is UNKNOWN (GitHub may have
     // accepted;  replay is refused until resolved) - never misread it as an
@@ -1337,6 +1372,7 @@ export class HostedTools {
     // relay_refused is reserved for 4xx (kody discussion_r4372747157):  the
     // relay's deliberate verdicts (allowlist, replay refusals, terminal
     // GitHub refusals) - definite, no hidden side effect.
+    if (status === 429 && body?.retryable === true) throw new ToolError("rate_limited", "git-relay quota is exhausted.  Retry after the quota window.", {retryable:true});
     if (status >= 400) throw new ToolError("relay_refused", typeof body?.error === "string" ? body.error.slice(0, 300) : "refused");
     // A successful call still must answer with a plain JSON object;  anything
     // else is a mis-answering upstream, not a result.
@@ -1374,7 +1410,7 @@ export class HostedTools {
     const data = await this.recallCall(() => recall.search(body));
     const hits = (Array.isArray(data.hits) ? data.hits : []).slice(0, args.limit).map(hitItem);
     const mode = recallClean(typeof data.mode === "string" ? data.mode : "", 40)[0];
-    const header = `agent-sync recall_search:  query ${JSON.stringify(recallClean(query, 100)[0])}${body.app ? `, app ${JSON.stringify(body.app)}` : ""}${body.category ? `, category ${JSON.stringify(body.category)}` : ""}`;
+    const header = `simple-tools recall_search:  query ${JSON.stringify(recallClean(query, 100)[0])}${body.app ? `, app ${JSON.stringify(body.app)}` : ""}${body.category ? `, category ${JSON.stringify(body.category)}` : ""}`;
     const summary = `${hits.length} hit${hits.length === 1 ? "" : "s"}${mode ? `, mode ${mode}` : ""}`;
     return okResult(recallEnvelope(header, summary, hits, newNonce()), { count: hits.length, mode, doc_ids: hits.map((h) => h.doc_id) });
   }
@@ -1663,7 +1699,7 @@ export class HostedTools {
       return (issue?.labels?.nodes ?? []).some((l) => l?.parent?.name === "Severity" && l.name === "P4");
     };
     const items = nodes.filter(keep).map(issueItem);
-    const header = `agent-sync linear_list${args.status ? `:  status ${JSON.stringify(args.status)}` : ""}${args.team ? `, team ${JSON.stringify(args.team.toUpperCase())}` : ""}`;
+    const header = `simple-tools linear_list${args.status ? `:  status ${JSON.stringify(args.status)}` : ""}${args.team ? `, team ${JSON.stringify(args.team.toUpperCase())}` : ""}`;
     const summary = `${items.length} issue${items.length === 1 ? "" : "s"}`;
     return okResult(linearEnvelope(header, summary, items, newNonce()), { count: items.length, ids: items.map((i) => i.id) });
   }
@@ -1681,7 +1717,7 @@ export class HostedTools {
       duplicate_of: (issue.relations?.nodes ?? []).filter((r) => String(r.type ?? "").includes("duplicate")).map((r) => linearClean(r.relatedIssue?.identifier ?? "", 40)[0]),
       comments,
     };
-    const header = `agent-sync linear_show:  ${JSON.stringify(linearClean(issue.identifier, 40)[0])}`;
+    const header = `simple-tools linear_show:  ${JSON.stringify(linearClean(issue.identifier, 40)[0])}`;
     const summary = `${item.state}, ${item.team}, ${comments.length} comment${comments.length === 1 ? "" : "s"}`;
     return okResult(linearEnvelope(header, summary, [item], newNonce()), { identifier: item.identifier, title: item.title, state: item.state, team: item.team, description: item.description });
   }
@@ -1943,3 +1979,26 @@ export function seatProblem(me, { seat, email, ownerUserId = null }) {
   return null;
 }
 
+
+// Server-owned expected App principal must be supplied for the selected identity.
+// No seat-name-to-App guessing, caller override, minting or live policy change.
+for (const action of TYPED_V1_ACTIONS) {
+  HostedTools.prototype[`tool_gr_v1_${action}`] = async function(args) {
+    const principal = this.config?.grTypedPrincipals?.[this.seat];
+    if (this.config?.grTypedEnabled !== true || !/^swu-[a-z0-9-]+\[bot\]$/.test(principal ?? ""))
+      throw new ToolError("not_configured", "Typed git-relay tools are not configured for this identity.");
+    return this.grCall(action, args, {typedPrincipal: principal});
+  };
+}
+// gr_wf_* : same relay transport as the seven gr_ tools (POST /v1/<action>, caller bearer, Access
+// headers, grCall error mapping incl. outcome_unknown on 5xx).  The relay owns outcome/idempotency
+// (durable outcome rows, replay refusal) and head fences travel in the args.  Default off.
+for (const action of WF_V1_ACTIONS) {
+  HostedTools.prototype[`tool_gr_${action}`] = async function (args) {
+    if (this.config?.grWorkflowEnabled !== true) {
+      throw new ToolError("not_configured", "The git-relay workflow tools are not enabled on this server.  The other tools still work.");
+    }
+    if (!validWfV1Args(action, args)) throw new ToolError("invalid_argument", `Invalid arguments for gr_${action}.`);
+    return this.grCall(action, args, {workflow:true});
+  };
+}

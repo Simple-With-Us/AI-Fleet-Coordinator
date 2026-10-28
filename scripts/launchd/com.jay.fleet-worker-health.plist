@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.jay.fleet-worker-health (Muster ops control, AFC-478 follow-up):  every 15 minutes, write
+  the hosted Worker's Linear token health that Muster reads, ~/.local/state/fleet-tools/worker-health.json
+  (0600, atomic).  It runs the managed runtime's copy of fleet-worker-health.py, so it moves with main,
+  under /usr/bin/python3 -I (Python 3.9 on macOS).  The signing key HEALTH_HMAC_KEY comes from
+  `fleet-secrets get` (hence ~/.local/bin on PATH), is held in memory and is never printed or written.
+  A failed call still writes the file, with state "unknown" and a fixed error code, and exits 1.
+  It changes nothing else.
+  Install:  cp this file to ~/Library/LaunchAgents/ and
+            launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jay.fleet-worker-health.plist
+  Stop:     launchctl bootout gui/$(id -u)/com.jay.fleet-worker-health
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.jay.fleet-worker-health</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-I</string>
+    <string>/Users/jay/apps/lanes/_managed/fleet/agent-sync-runtime/scripts/fleet-worker-health.py</string>
+    <string>--write</string>
+    <string>/Users/jay/.local/state/fleet-tools/worker-health.json</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/jay/apps/logs/fleet-worker-health.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/jay/apps/logs/fleet-worker-health.launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/Users/jay/.local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key>
+    <string>/Users/jay</string>
+  </dict>
+</dict>
+</plist>

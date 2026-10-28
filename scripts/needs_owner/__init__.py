@@ -12,7 +12,7 @@ Modules:
   records   the comment formats that record a notice, a pending notice and an owner reply
   safety    the secret and personal-data refusals that run before anything is sent
   seat      the verified seat (launcher first) and the child environment
-  proc      running `board` and `agent-sync` as argv lists with private temp files
+  proc      running `simple-board` and `simple-chat` as argv lists with private temp files
   items     reading items back from the board and deriving their state
   notify    the post (or the mirror reply), the maybe-sent check and the notice record
   notifier  `notify`:  the fallback notifier (replies, notices, notes, nudges, the Grok Bot mirror)
@@ -24,4 +24,5 @@ Modules:
 
 Python 3.11 or newer, standard library only.  docs/protocols/needs-owner.md is the contract.
 """
+
 __version__ = "1.0.0"

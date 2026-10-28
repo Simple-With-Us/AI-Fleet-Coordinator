@@ -21,7 +21,7 @@ Updated **2026-10-08**: the installer **specializes identity per seat** (Zulip b
 
 These skills govern fleet operations across all apps (Socratic.Trade, Congress.Trade, Usage-Monitor, congress-trading-shared, DealDex, Personal-Site, Autorotate, ContactLogo, and AI-Fleet-Coordinator).
 
-Having explicit fleet skills installed significantly improves agent compliance with procedures across all chats and tools, reinforcing the protocols defined in `AGENT-SYNC.md` and `AGENTS.md`.
+Having explicit fleet skills installed significantly improves agent compliance with procedures across all chats and tools, reinforcing the protocols defined in `FLEET-PROTOCOL.md` and `AGENTS.md`.
 
 ---
 
@@ -30,9 +30,11 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | Skill | Purpose & Trigger |
 | :--- | :--- |
 | **`fleet-coordination`** | **Master Flagship Skill:** End-to-end multi-agent fleet operations (startup, the Linear claim, secrets, sentence gap, Apple Notes, PR landing, closeout). |
+| **`fleet-mode`** | The fleet's standing working style:  delegate by default to the cheapest sufficiently competent model, brief workers thoroughly, give them only the tools they need, spawn in the background, stay reachable, and never end a turn with a promise.  The default on every platform, not an opt-in. |
 | **`session-start`** | Systematic startup: read the Zulip inbox (`simple-chat inbox`), read Linear (the `simple-board` CLI), lanes under `~/apps/lanes/<Repo>/` (made with `lane new`), claim before editing. |
 | **`board-ops`** | Operating the `simple-board` CLI on Linear (`simple-board stats`, `simple-board list`, `simple-board claim`, `simple-board file`), ids like `BF-123`. |
 | **`secret-handoff`** | Strict secret safety: `fleet-secrets` reads (the flat `global-api-keys` file is retired), Infisical runtime source of truth, grep-trap ban, safe helpers. |
+| **`secret-safety`** | Mandatory safeguards for handling secrets, API keys, tokens and credentials:  redact inline, as part of the command that touches the secret, never as a judgment call about what to display after it ran.  Load before any command whose arguments or environment touch a credential. |
 | **`sentence-gap`** | Visible gap between sentences:  a real U+00A0 plus a normal space on every surface (owner ruling 2026-10-23), never two plain ASCII spaces, and never the `&nbsp;` entity except in the one exception:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the entity plus a normal space.  Product-copy source uses the per-language escapes. |
 | **`owner-copy`** | Human-facing copy standards:  a real U+00A0 plus a normal space between sentences (the `sentence-gap` rule above), system theme default (owner ruling 2026-09-19), Title Case headings, no agent names in ASC release notes. |
 | **`apple-notes`** | Owner-facing review docs, plans, rollouts, and completion notes in the `Coding` folder (local on this Mac). |
@@ -49,7 +51,7 @@ Having explicit fleet skills installed significantly improves agent compliance w
 | **`drive-grok-tui`** | Any seat: list live Mac Grok TUI chats and inject a follow-up via `grok-drive.py` or seat-mcp.  Cloud seats use `https://agents.jays.services/mcp`.  Installed on `[GROK]` too (self-inject is refused unless `--self`). |
 | **`closeout`** | End-of-task closeout: Linear issue Deployed/Completed, the PR linked with `Fixes` or `Refs`, a closeout post in the Zulip work topic under `#Work-In-Progress`, Apple Notes stamp. |
 | **`fleet-recall`** | Search the shared `fleet-agents` corpus before re-deriving a lesson; contribute one after you learn it.  CLI `recall`, MCP `fleet-recall`, cloud via `agents.jays.services/mcp`. |
-| **`simple-tools-guide`** | Any question about the Agent-Sync MCP tools or CLI:  family names (`zulip_*`, `linear_*`, `notes_*`), the `identity` argument and its errors, old tool names, stdio versus hosted, Apple Notes from any host.  Points at `docs/protocols/simple-tools-guide.md`, the `guide` tool and https://fleetlink.online/simple-tools-guide/. |
+| **`simple-tools-guide`** | Any question about the ST-MCP tools or CLI:  family names (`zulip_*`, `linear_*`, `notes_*`), the `identity` argument and its errors, old tool names, stdio versus hosted, Apple Notes from any host.  Points at `docs/protocols/simple-tools-guide.md`, the `guide` tool and https://fleetlink.online/simple-tools-guide/. |
 
 **Per-seat install rule:** every listed skill is rewritten to that seat's chat tag, Zulip bot, Notes name, branch prefix, and worktree, then written to that seat's home / by-seat pack.  Retired seats (Monet, Renoir, DSH, Kimi) have no skill home: they get an inert by-seat catalog copy only, and the installer never writes their homes.  A skill that cannot be made appropriate for a harness is omitted (prefer omit over a wrong-voiced copy).  `ios-ship` is omitted from every seat.  DealDex's hosted Actions ship stays — do not disable it.  `mac-cleanup` is omitted from Grok Bot (cloud).  `housekeeper` is on every seat including Grok Bot.  `drive-grok-tui` is on every seat.  `codex-triage` stays on every seat that lands PRs — the name is historical; the body is GitHub review-thread triage.
 

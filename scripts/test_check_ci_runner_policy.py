@@ -32,15 +32,8 @@ def _load():
 
 
 mod = _load()
-# The protocol document is being renamed:  read whichever name the mirror holds.  Remove the old name when the rename is complete.
-AGENT_SYNC = next(
-    (
-        SCRIPTS.parent / n
-        for n in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md")
-        if (SCRIPTS.parent / n).is_file()
-    ),
-    SCRIPTS.parent / "FLEET-PROTOCOL.md",
-).read_text()
+# The document was renamed:  the mirror carries one name now, and the old one is gone.
+AGENT_SYNC = (SCRIPTS.parent / "FLEET-PROTOCOL.md").read_text()
 
 
 class PolicyBan(unittest.TestCase):
@@ -73,8 +66,8 @@ class ScanInventory(unittest.TestCase):
 
 
 class DefaultPolicyRename(unittest.TestCase):
-    def test_default_policy_resolves_to_whichever_name_the_checkout_holds(self) -> None:
-        self.assertIn(mod.DEFAULT_POLICY.name, ("FLEET-PROTOCOL.md", "AGENT-SYNC.md"))
+    def test_default_policy_resolves_to_the_current_document(self) -> None:
+        self.assertEqual(mod.DEFAULT_POLICY.name, "FLEET-PROTOCOL.md")
         self.assertTrue(mod.DEFAULT_POLICY.is_file())
 
 

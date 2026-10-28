@@ -10,19 +10,17 @@
 # System session, like the real jobs), and its log must say `ok: true` and `auth_mode: system-keychain`.
 # The log holds booleans and counts only.  If the proof fails, nothing is changed.
 #
-# Step 2, per job (mac-collab-litestream, vision-worker, mac-collab):  back the live file up to
-# <file>.bak-ops818-pm2, install the fleet-secrets version, `pm2 restart <name>`, wait ~20 s, and
-# check `pm2 jlist` for that name only.  If it is not online and steady, the backup is put back and
-# the job restarted.  No environment is ever printed.
+# Step 2, per job (vision-worker):  back the live file up to <file>.bak-ops818-pm2, install the
+# fleet-secrets version, `pm2 restart <name>`, wait ~20 s, and check `pm2 jlist` for that name only.
+# If it is not online and steady, the backup is put back and the job restarted.  No environment is
+# ever printed.
+#
+# The mac-collab jobs (mac-collab, mac-collab-litestream) were retired on 2026-10-19 (owner Jay,
+# AFC-363) and are no longer switched:  they were deleted from pm2 and saved, so there is nothing
+# to restart and nothing to roll back.
 #
 # Sources of the fleet-secrets versions (first that exists):
-#   mac-collab-litestream  ~/apps/mac-collab/start_litestream.sh.new-ops818, then
-#                          scripts/mac-collab/start_litestream.sh in this checkout
 #   vision-worker          ~/vision-worker/run-vision-worker.sh.new-ops818
-#   mac-collab             ~/apps/mac-collab/mac-collab-server.py.new-ops818;  if none exists and the live
-#                          file already calls `fleet-secrets names`, only a restart is done.  The checkout's
-#                          scripts/mac-collab/mac-collab-server.py is NOT installed:  the live server has
-#                          moved on from it.
 # Environment:  SWITCH_WAIT (seconds, default 20), FLEET_SECRETS_BIN, PM2_BIN.
 set -uo pipefail
 
@@ -138,20 +136,7 @@ switch_job() {
   fi
 }
 
-lite_src=""
-for c in "$HOME/apps/mac-collab/start_litestream.sh.new-ops818" "$here/../mac-collab/start_litestream.sh"; do
-  [ -f "$c" ] && { lite_src="$c"; break; }
-done
-collab_src=""; collab_note=""
-if [ -f "$HOME/apps/mac-collab/mac-collab-server.py.new-ops818" ]; then
-  collab_src="$HOME/apps/mac-collab/mac-collab-server.py.new-ops818"
-elif grep -q 'fleet-secrets' "$HOME/apps/mac-collab/mac-collab-server.py" 2>/dev/null; then
-  collab_note="the live file already calls fleet-secrets;  restart only so it is proven under the System-session identity"
-fi
-
-switch_job mac-collab-litestream "$HOME/apps/mac-collab/start_litestream.sh" "$lite_src"
 switch_job vision-worker "$HOME/vision-worker/run-vision-worker.sh" "$HOME/vision-worker/run-vision-worker.sh.new-ops818"
-switch_job mac-collab "$HOME/apps/mac-collab/mac-collab-server.py" "$collab_src" "$collab_note"
 
 echo "---"
 bad=0

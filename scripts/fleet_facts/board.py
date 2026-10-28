@@ -4,8 +4,7 @@
   board list --label needs-owner --json --limit 2000      the decisions waiting for the owner
   board show <identifier> --json                          one call per In Progress issue, in order
 
-Read-only is enforced here, not by the environment:  the installed `~/.local/bin/board` wrapper exports
-LINEAR_BOARD_WRITES=1 itself, so `_board` refuses any verb but `list` and `show`.  Calls are made one at a
+Read-only is enforced here, not by the environment:  `_board` refuses any verb but `list` and `show`.  Calls are made one at a
 time (the Fleet app's request budget is shared) with a timeout each and a time budget for the whole detail
 pass;  an issue whose `show` fails or runs out of budget is marked `linear_comments.ok = false`, which makes
 its activity "unknown", never idle.
@@ -77,7 +76,7 @@ class BoardWriteRefused(RuntimeError):
 def _board(run: Runner, board: str, verb: str, args: list[str], timeout: float):
     if verb not in READ_VERBS:
         raise BoardWriteRefused("board.py only runs %s, not %r" % ("/".join(READ_VERBS), verb))
-    return run([board, verb, *args], timeout=timeout, env={"LINEAR_BOARD_WRITES": "0"})
+    return run([board, verb, *args], timeout=timeout)
 
 
 def _json(result) -> Any:

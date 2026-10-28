@@ -40,7 +40,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# AGENT-SYNC.md is excluded because it is a Fleet-OPS mirror:  it is generated from
+# FLEET-PROTOCOL.md is excluded because it is a Fleet-OPS mirror:  it is generated from
 # the Fleet-OPS handbook, which carries the same fix, so this repo does not edit it.
 # FLEET-UI-COPY.md is excluded because it is owned by open PR #904, which carries the
 # same fix there; editing it here would collide with that pull request.
@@ -64,6 +64,13 @@ STALE_RULE_FILES = (
     "docs/INSTINCT-ONBOARDING-PROMPT.md",
     "docs/OPENCODE-ONBOARDING-PROMPT.md",
     "docs/fleet-skills/README-add-in-app.md",
+    # The converter and its own test describe the entity mode, and each one names the
+    # two chat panes as the surfaces that take it.  They are scanned here so the
+    # withdrawn 2026-10-22 GitHub-entity split can never come back into them.  The
+    # mode itself is still the right form for the two chat panes, which is why these
+    # two files are scanned rather than forbidden.
+    "scripts/sentence_gap_convert.pl",
+    "scripts/test_sentence_gap_program.py",
 )
 
 # The packs whose own text states the rule.  The installer writes a copy of each

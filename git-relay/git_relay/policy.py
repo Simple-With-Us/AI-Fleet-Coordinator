@@ -60,6 +60,9 @@ class SeatPolicy:
     # Known but not implemented:  accepted in seat config, refused at dispatch
     # until their implementation and per-action policy land.
     REGISTERED_ACTIONS = (
+        "pr_state",
+        "pr_hold_state",
+        "pr_automerge_disable",
         "create_release",
         "rerun_workflow",
         "cancel_workflow",
@@ -69,7 +72,114 @@ class SeatPolicy:
         "set_branch_protection",
         "create_repo",
     )
-    ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS
+    # Workflow verbs (workflow_verbs.SPECS): policy names a seat config may list, each
+    # authorized once per call by WorkflowVerbs.for_action and minted at the least
+    # permission in SPECS.  They need the seat's own App, like APP_ACTIONS, but are not
+    # wired into the HTTP dispatch: the server refuses them as registered-not-wired.
+    WORKFLOW_ACTIONS = (
+        "wf_review_thread_resolve",
+        "wf_review_thread_unresolve",
+        "wf_review_update",
+        "wf_review_dismiss",
+        "wf_review_pending_delete",
+        "wf_review_comment_reply",
+        "wf_check_create",
+        "wf_check_update",
+        "wf_deployments",
+        "wf_deployment_get",
+        "wf_deployment_statuses",
+        "wf_deployment_create",
+        "wf_deployment_status_create",
+        "wf_deployment_delete",
+        "wf_milestones",
+        "wf_milestone_get",
+        "wf_milestone_create",
+        "wf_milestone_update",
+        "wf_milestone_delete",
+        "wf_labels_set",
+        "wf_reviewers_request",
+        "wf_reviewers_remove",
+        "wf_release_create",
+        "wf_release_update",
+        "wf_environments",
+        "wf_environment_get",
+        "wf_file_delete",
+        "wf_issue_list",
+        "wf_issue_get",
+        "wf_issue_create",
+        "wf_issue_update",
+        "wf_issue_comment",
+        "wf_issue_comment_update",
+        "wf_issue_comment_delete",
+        "wf_review_comment_update",
+        "wf_review_comment_delete",
+        "wf_release_list",
+        "wf_release_get",
+        "wf_release_delete",
+        "wf_branch_update",
+        "wf_branch_delete",
+        "wf_tag_create",
+        "wf_tag_get",
+        "wf_tag_delete",
+        "wf_pr_draft",
+        "wf_pr_ready",
+        "wf_automerge_enable",
+        "wf_automerge_disable",
+        "wf_review_threads",
+        "wf_assignees_add",
+        "wf_assignees_remove",
+        "wf_issue_lock",
+        "wf_issue_unlock",
+        "wf_label_create",
+        "wf_label_delete",
+        "wf_pr_get",
+        "wf_pr_reviews",
+        "wf_pr_comments",
+        "wf_issue_comments",
+        "wf_commit_get",
+        "wf_compare",
+        "wf_branch_get",
+        "wf_repo_get",
+        "wf_labels",
+        "wf_workflows",
+        "wf_run_get",
+        "wf_run_artifacts",
+        "wf_workflow_enable",
+        "wf_workflow_disable",
+        "wf_run_delete",
+        "wf_artifact_delete",
+        "wf_release_assets",
+        "wf_release_asset_get",
+        "wf_release_asset_upload",
+        "wf_release_asset_download",
+        "wf_release_asset_upload_binary",
+        "wf_release_asset_update",
+        "wf_release_asset_delete",
+        "wf_job_log",
+        "wf_run_logs",
+        "wf_artifact_download",
+        "wf_review_submit",
+        "wf_review_inline",
+        "wf_branch_create",
+        "wf_pr_list",
+        "wf_pr_files",
+        "wf_file_get",
+        "wf_tree",
+        "wf_branches",
+        "wf_commits",
+        "wf_code_search",
+        "wf_runs",
+        "wf_run_jobs",
+        "wf_checks",
+        "wf_update_branch",
+        "wf_run_rerun",
+        "wf_run_cancel",
+        "wf_run_approve",
+        "wf_file_put",
+        "wf_files_put",
+        "wf_merge_guarded",
+    )
+    ALL_ACTIONS = VALID_ACTIONS + APP_ACTIONS + REGISTERED_ACTIONS + WORKFLOW_ACTIONS
 
     def __init__(self, seats_json: str, rate_per_hour: int = 120, verifier=None):
         if not seats_json:
@@ -108,7 +218,13 @@ class SeatPolicy:
             mint_perms = cfg.get("mint_permissions") or {}
             if not isinstance(mint_perms, dict):
                 raise PolicyError(f"seat {seat!r}: mint_permissions must be an object")
-            wants_app = any(a in self.APP_ACTIONS for a in actions)
+            # Inactive typed actions require the same own-App startup
+            # contract, without adding them to live APP dispatch.
+            typed_app_actions = ("pr_state", "pr_hold_state", "pr_automerge_disable")
+            wants_app = any(
+                a in self.APP_ACTIONS or a in self.WORKFLOW_ACTIONS or a in typed_app_actions
+                for a in actions
+            )
             if wants_app and not app_slug:
                 raise PolicyError(f"seat {seat!r}: app actions need an app_slug")
             if app_slug is not None:

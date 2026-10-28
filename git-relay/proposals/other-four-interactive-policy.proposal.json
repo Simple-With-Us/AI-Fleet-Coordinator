@@ -1,0 +1,166 @@
+{
+  "swu-jet": {
+    "auth": "shared",
+    "identity": "JET",
+    "actions": [
+      "open_pr",
+      "edit_pr",
+      "reply_thread",
+      "comment_pr",
+      "merge_pr",
+      "workflow_dispatch",
+      "resolve_thread"
+    ],
+    "repos": [
+      "Simple-With-Us/AI-Fleet-Coordinator",
+      "Simple-With-Us/Autorotate",
+      "Simple-With-Us/BotFleet",
+      "Simple-With-Us/Clutch",
+      "Simple-With-Us/CodeCaps",
+      "Simple-With-Us/Congress.Trade",
+      "Simple-With-Us/ContactLogo",
+      "Simple-With-Us/DealDex",
+      "Simple-With-Us/FleetLink",
+      "Simple-With-Us/HogHunter",
+      "Simple-With-Us/Kodus-Config",
+      "Simple-With-Us/Personal-Site",
+      "Simple-With-Us/Simple-With-Us",
+      "Simple-With-Us/Socratic-Trade",
+      "Simple-With-Us/Usage-Monitor",
+      "Simple-With-Us/congress-trading-shared",
+      "Simple-With-Us/homebrew-tap",
+      "jaywedgeworth22/Fleet-OPS"
+    ],
+    "app_slug": "swu-jet",
+    "mint_permissions": {
+      "contents": "write",
+      "pull_requests": "write",
+      "issues": "write",
+      "actions": "write",
+      "metadata": "read"
+    }
+  },
+  "swu-grok-web": {
+    "auth": "shared",
+    "identity": "GROK-WEB",
+    "actions": [
+      "open_pr",
+      "edit_pr",
+      "reply_thread",
+      "comment_pr",
+      "merge_pr",
+      "workflow_dispatch",
+      "resolve_thread"
+    ],
+    "repos": [
+      "Simple-With-Us/AI-Fleet-Coordinator",
+      "Simple-With-Us/Autorotate",
+      "Simple-With-Us/BotFleet",
+      "Simple-With-Us/Clutch",
+      "Simple-With-Us/CodeCaps",
+      "Simple-With-Us/Congress.Trade",
+      "Simple-With-Us/ContactLogo",
+      "Simple-With-Us/DealDex",
+      "Simple-With-Us/FleetLink",
+      "Simple-With-Us/HogHunter",
+      "Simple-With-Us/Kodus-Config",
+      "Simple-With-Us/Personal-Site",
+      "Simple-With-Us/Simple-With-Us",
+      "Simple-With-Us/Socratic-Trade",
+      "Simple-With-Us/Usage-Monitor",
+      "Simple-With-Us/congress-trading-shared",
+      "Simple-With-Us/homebrew-tap",
+      "jaywedgeworth22/Fleet-OPS"
+    ],
+    "app_slug": "swu-grok-web",
+    "mint_permissions": {
+      "contents": "write",
+      "pull_requests": "write",
+      "issues": "write",
+      "actions": "write",
+      "metadata": "read"
+    }
+  },
+  "swu-cursor": {
+    "auth": "shared",
+    "identity": "CURSOR",
+    "actions": [
+      "open_pr",
+      "edit_pr",
+      "reply_thread",
+      "comment_pr",
+      "merge_pr",
+      "workflow_dispatch",
+      "resolve_thread"
+    ],
+    "repos": [
+      "Simple-With-Us/AI-Fleet-Coordinator",
+      "Simple-With-Us/Autorotate",
+      "Simple-With-Us/BotFleet",
+      "Simple-With-Us/Clutch",
+      "Simple-With-Us/CodeCaps",
+      "Simple-With-Us/Congress.Trade",
+      "Simple-With-Us/ContactLogo",
+      "Simple-With-Us/DealDex",
+      "Simple-With-Us/FleetLink",
+      "Simple-With-Us/HogHunter",
+      "Simple-With-Us/Kodus-Config",
+      "Simple-With-Us/Personal-Site",
+      "Simple-With-Us/Simple-With-Us",
+      "Simple-With-Us/Socratic-Trade",
+      "Simple-With-Us/Usage-Monitor",
+      "Simple-With-Us/congress-trading-shared",
+      "Simple-With-Us/homebrew-tap",
+      "jaywedgeworth22/Fleet-OPS"
+    ],
+    "app_slug": "swu-cursor",
+    "mint_permissions": {
+      "contents": "write",
+      "pull_requests": "write",
+      "issues": "write",
+      "actions": "write",
+      "metadata": "read"
+    }
+  },
+  "swu-claude": {
+    "auth": "shared",
+    "identity": "CLAUDE",
+    "actions": [
+      "open_pr",
+      "edit_pr",
+      "reply_thread",
+      "comment_pr",
+      "merge_pr",
+      "workflow_dispatch",
+      "resolve_thread"
+    ],
+    "repos": [
+      "Simple-With-Us/AI-Fleet-Coordinator",
+      "Simple-With-Us/Autorotate",
+      "Simple-With-Us/BotFleet",
+      "Simple-With-Us/Clutch",
+      "Simple-With-Us/CodeCaps",
+      "Simple-With-Us/Congress.Trade",
+      "Simple-With-Us/ContactLogo",
+      "Simple-With-Us/DealDex",
+      "Simple-With-Us/FleetLink",
+      "Simple-With-Us/HogHunter",
+      "Simple-With-Us/Kodus-Config",
+      "Simple-With-Us/Personal-Site",
+      "Simple-With-Us/Simple-With-Us",
+      "Simple-With-Us/Socratic-Trade",
+      "Simple-With-Us/Usage-Monitor",
+      "Simple-With-Us/congress-trading-shared",
+      "Simple-With-Us/homebrew-tap",
+      "jaywedgeworth22/Fleet-OPS"
+    ],
+    "app_slug": "swu-claude",
+    "mint_permissions": {
+      "contents": "write",
+      "pull_requests": "write",
+      "issues": "write",
+      "actions": "write",
+      "metadata": "read"
+    }
+  }
+}

@@ -1,4 +1,4 @@
-"""The OWNER-topic rule end to end:  what the real `agent-sync post` writes for the needs-owner notifier's note is what
+"""The OWNER-topic rule end to end:  what the real `simple-chat post` writes for the needs-owner notifier's note is what
 `router.route` recognises, from the message the fake realm stores (with the sender's email, as an event carries it)."""
 from __future__ import annotations
 

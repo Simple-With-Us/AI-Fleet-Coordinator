@@ -153,8 +153,8 @@ class NoMac(Sandbox):
         board = [c for c in calls if c[0] == "simple-board"]
         self.assertEqual({c[2] for c in board}, {"list", "show"})
         self.assertEqual(
-            {c[1] for c in board}, {"0"}
-        )  # LINEAR_BOARD_WRITES was switched off for every call
+            {c[1] for c in board}, {"unset"}
+        )  # no write switch is set for any call:  the bearer is the gate
 
     def test_linear_updated_at_is_nowhere_in_the_output(self):
         self.github_and_linear()

@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "mac":    { "agents": [ { "label": "com.jay.fleet-tools-doctor", "actions": ["start", "stop", "restart"] } ] },
+  "server": { "units":  [ { "unit": "fleet-server-status.timer", "scope": "user", "actions": ["restart"] } ],
+              "updates": [ { "name": "fleet-cli", "unit": "fleet-cli-git-update.service", "scope": "system" } ],
+              "coolify": { "redeploy": true } }
+}

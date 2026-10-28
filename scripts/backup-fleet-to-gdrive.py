@@ -419,7 +419,10 @@ def main() -> int:
         print(f"  saved {zip_out.name} ({count} files, {size_mb:.2f} MB)")
         backed_up.append(repo)
 
-    findings_db = Path.home() / "apps" / "mac-collab" / "findings.db"
+    # mac-collab was retired on 2026-10-19 (AFC-363):  the live tree moved to
+    # ~/apps/_retired/mac-collab-20261019/.  The old path no longer exists, so the
+    # snapshot below was silently skipped until this was pointed at the archive.
+    findings_db = Path.home() / "apps" / "_retired" / "mac-collab-20261019" / "findings.db"
     if findings_db.is_file():
         if args.dry_run:
             print(f"would save findings-{DATE_STR}.db (findings.db SQLite snapshot)")
@@ -428,7 +431,9 @@ def main() -> int:
                 import sqlite3
 
                 db_dest = dest_dir / f"findings-{DATE_STR}.db"
-                src_conn = sqlite3.connect(findings_db)
+                # The archive is frozen and read-only;  open it read-only, like every
+                # other reader of that file does, so it is never checkpointed or rewritten.
+                src_conn = sqlite3.connect(f"file:{findings_db}?mode=ro", uri=True)
                 dst_conn = sqlite3.connect(db_dest)
                 src_conn.backup(dst_conn)
                 dst_conn.close()

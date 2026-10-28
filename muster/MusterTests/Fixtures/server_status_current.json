@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "tool": "fleet-server-status",
+  "generatedAt": "2026-10-28T15:00:00Z",
+  "host": "example-server",
+  "coolify": [
+    {"uuid": "example-uuid-1", "name": "example-app", "type": "application", "status": "running", "cpuPercent": 1.5, "memoryBytes": 104857600, "image": "example/app:latest"}
+  ],
+  "processes": [
+    {"pid": 101, "owner": "root", "name": "dockerd", "cpuPercent": 2.0, "memoryBytes": 52428800}
+  ],
+  "files": [
+    {"path": "/srv/example/AGENTS.md", "bytes": 100, "sha256": "aa", "drift": "unchanged"},
+    {"path": "/srv/example/README.md", "bytes": 200, "sha256": "bb", "drift": "info"}
+  ],
+  "filesSummary": {"found": 812, "limit": 500, "truncated": true},
+  "hostMetrics": {
+    "loadAverage": [1.5, 1.25, 1.0],
+    "cpuCount": 4,
+    "memory": {"totalBytes": 8589934592, "availableBytes": 4294967296},
+    "swap": {"totalBytes": 2147483648, "freeBytes": 1610612736},
+    "uptimeSeconds": 172800,
+    "disks": [
+      {"mount": "/", "totalBytes": 100000000000, "usedBytes": 90000000000, "freeBytes": 10000000000},
+      {"mount": "/mnt/example", "totalBytes": 100000000000, "usedBytes": 10000000000, "freeBytes": 90000000000}
+    ]
+  },
+  "services": [
+    {"unit": "fleet-server-status.timer", "scope": "user", "description": "Fleet server status", "activeState": "active", "subState": "waiting", "since": "2026-10-28T14:00:00Z", "enabled": "enabled", "controllable": true},
+    {"unit": "fleet-example.service", "scope": "system", "activeState": "failed", "subState": "failed", "enabled": "disabled", "controllable": false}
+  ]
+}

@@ -1,4 +1,4 @@
-"""`agent-sync attach` and `detach`:  the Claude Code hooks, the rewake watcher, drain, replay,
+"""`simple-chat attach` and `detach`:  the Claude Code hooks, the rewake watcher, drain, replay,
 wait, and the lease updates `post` makes.  All in-process with explicit environments."""
 from __future__ import annotations
 

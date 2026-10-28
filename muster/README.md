@@ -4,14 +4,20 @@ Muster is a native SwiftUI macOS 14+ scaffold.  Its initial window explicitly r
 
 ## Scope
 
-- `Muster/` contains the app entry point, the Fleet Overview grid (with seat/problem filtering and compliance rules from `fleet-seats.json`), the Fleet View (AFC-394 & AFC-536:  Production/Library/Infra/Marketing apps and Coding Apps from `fleet-apps.json`, plus lanes, open PRs, and Linear claims per seat from `scripts/fleet_view/` and `simple-board`), the Fleet Hosts panel (what the fleet tools doctor's own report says about each host from `~/.local/state/fleet-tools/report.json`, filterable across Coding App CLIs, Fleet Tools, Dev Tools, Services & Harnesses, and Checkouts & Presence), the Seat Activity panel (AFC-395:  open sessions, listener state, Zulip presence and the last Zulip post, per seat), the Wake Settings panel (live Operator status, held-back wake queues, chat nudges, CodeCaps quota, and wake ledger reasons via `scripts/simple-chat`), the Controls panel (Infisical fleet knobs with search and category filters), and the Drift History panel (AFC-390:  every cell that turned red, kept in `~/Library/Application Support/Muster/drift-history.json`).
+- `Muster/` contains the app entry point, the Fleet Overview grid (with seat/problem filtering and compliance rules from `fleet-seats.json`), the Fleet View (AFC-394 & AFC-536:  Production/Library/Infra/Marketing apps and Coding Apps from `fleet-apps.json`, plus lanes, open PRs, and Linear claims per seat from `scripts/fleet_view/` and `simple-board`), the Fleet Hosts panel (what the fleet tools doctor's own report says about each host from `~/.local/state/fleet-tools/report.json`, filterable across Coding App CLIs, Fleet Tools, Dev Tools, Services & Harnesses, and Checkouts & Presence), the Server Status panel (AFC-548:  what the server's own collector says about Coolify, its busiest processes, and the drift of the fleet's config files, from `~/.local/state/fleet-tools/server-status.json`), the Seat Activity panel (AFC-395:  open sessions, listener state, Zulip presence and the last Zulip post, per seat), the Wake Settings panel (live Operator status, held-back wake queues, chat nudges, CodeCaps quota, and wake ledger reasons via `scripts/simple-chat`), the Controls panel (Infisical fleet knobs with search and category filters), and the Drift History panel (AFC-390:  every cell that turned red, kept in `~/Library/Application Support/Muster/drift-history.json`).
 - `project.yml` is the XcodeGen source of truth.  The generated Xcode project is ignored.
 - `script/build_and_run.sh` owns local project generation, signing, installation, and launch.
 - The repository's `.codex/environments/environment.toml` exposes the same script through the Codex **Run** action.
 
 The app reads no credentials of its own.  It has no sample fleet records or inferred health state.  The CLIs it runs are `fleet-config` (see Apply Preview below), only when asked, and `simple-chat`, from the Seat Activity panel and Wake Settings panel.  Collector and grid integration remain separate work.
 
-The Fleet Hosts panel reads one local file and runs nothing:  the doctor's own report, which `com.jay.fleet-tools-doctor` writes every fifteen minutes and which covers the Mac and the server together.  A report that is missing, malformed, of another version, or older than 45 minutes reads as unknown, and a host the doctor could not reach reads as unknown rather than as a failure.
+The Fleet Hosts panel reads one local file and runs nothing:  the doctor's own report, which `com.jay.fleet-tools-doctor` writes every fifteen minutes and which covers the Mac and the server together.  A report that is missing, malformed, of another version, or older than 45 minutes reads as unknown, and a host the doctor could not reach reads as unknown rather than as a failure.
+
+## Server Status
+
+The Server Status panel (AFC-548) reads one local file and runs nothing:  the server's own collector report, `~/.local/state/fleet-tools/server-status.json`, which `scripts/fleet-server-status.py` writes on the server.  It shows the Coolify resources and their state, the busiest processes on the host, and the watched config files whose drift is not `unchanged`.
+
+The collector is read only apart from that one report file, and it reads no credential:  Coolify comes from Docker's own labels and container stats, a process is identified by its executable and never by its argv or its environment, and a path that looks like a credential is never hashed and never listed.  A measurement that cannot be taken is left out of the report rather than reported as a zero, and a file that is gone reads as `missing` rather than as a zero byte file.  A report that is missing, malformed, of another version, or older than 45 minutes reads as unknown, and an empty half of the report reads as unproven rather than as a pass.
 
 ## Seat Activity
 
@@ -109,7 +115,7 @@ The Touch ID gate for persistence-class writes lives inside the engine, behind a
 
 The repository root is a setting:  the `fleetConfigRepoRoot` user default (`defaults write services.jays.Muster fleetConfigRepoRoot /path/to/repo`), then the `MUSTER_REPO_ROOT` environment variable, then `~/Code/AI-Fleet-Coordinator`.
 
-Apply unit tests are an XcodeGen target that compiles the non-view sources directly, so they run unsigned:
+Apply unit tests are an XcodeGen target that compiles the non-view sources directly, so they run unsigned.  The same target decodes the server, Worker Health and LaunchAgent fixtures in `MusterTests/Fixtures/` (current, old shape, malformed and stale) and drives the operations flow with an injected runner, so no test starts a process or asks Touch ID:
 
 ```sh
 cd muster && xcodegen generate --spec project.yml

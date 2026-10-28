@@ -794,7 +794,7 @@ class DmLookupCredentialTests(unittest.TestCase):
         self.assertEqual(forbidden.extra["zulip_code"], "UNAUTHORIZED")
 
     def test_the_cli_lookup_lets_a_rejected_key_through_too(self) -> None:
-        # `agent-sync dm` reads the conversation with the same discrimination as `_dm_exists`:  a
+        # `simple-chat dm` reads the conversation with the same discrimination as `_dm_exists`:  a
         # rejected key propagates as the ApiError it is, never as the policy's DmRefused.
         from agent_sync import cli
 
@@ -882,7 +882,7 @@ class DmLookupCredentialTests(unittest.TestCase):
 
 
 class ClarifyingFlagOnTheCliTests(unittest.TestCase):
-    """`agent-sync dm` must be able to say "this is the one clarifying question".
+    """`simple-chat dm` must be able to say "this is the one clarifying question".
 
     The DM check read `args.clarifying_question`, but the `dm` parser never registered
     `--clarifying-question`, so the attribute was always absent and Operator's clarifying DM was

@@ -35,7 +35,7 @@ KEEP_LINE=$(grep -n '^KEEP_RE=' "$JANITOR" | head -1 | cut -d: -f1)
 KEEP_TOKENS=$(sed -n "${KEEP_LINE}p" "$JANITOR" \
   | tr '()"|' '\n\n\n\n' | sed 's/^KEEP_RE=//; s/\^$//' | grep -v '^$')
 
-for keep in agent-sync agent-sync-push clutch-runtime botfleet-server mac-collab; do
+for keep in agent-sync agent-sync-push clutch-runtime botfleet-server _retired/mac-collab-20261019; do
   printf '%s\n' "$KEEP_TOKENS" | grep -qx "$keep" \
     || fail "KEEP_RE must protect $keep (line $KEEP_LINE)"
 done

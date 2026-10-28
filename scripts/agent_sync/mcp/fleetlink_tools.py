@@ -407,7 +407,7 @@ def run(
         raise FleetLinkFailure(
             "upstream_error", "FleetLink answered something this server could not read"
         )
-    header = "agent-sync %s:  as %s's FleetLink account" % (name, seat)
+    header = "simple-tools %s:  as %s's FleetLink account" % (name, seat)
     return envelope(header, data, uuid.uuid4().hex[:16]), summary(data)
 
 

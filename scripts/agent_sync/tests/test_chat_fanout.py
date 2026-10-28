@@ -314,7 +314,9 @@ class DaemonFanoutTests(DaemonHarness):
                 return row
         return None
 
-    def test_a_peers_all_queues_nothing(self):
+    def test_a_peers_all_reaches_the_working_chats(self):
+        """Jay's Oct 27 2026:  a fleet bot's `@all` wakes like the owner's, so it reaches the
+        working chats the same way."""
         daemon = self.started()
         daemon._chat_catalog = FakeCatalog(
             [dict(cloud(1, 0, ST_URL), seat="CLAUDE", updated_at=self.clock.time())]
@@ -322,8 +324,8 @@ class DaemonFanoutTests(DaemonHarness):
         message_id = self.fake.add_message("Codex", "agent-sync", "misc", "@**all** for ST: hi")
         self.pump_until(daemon, lambda: message_id in daemon._fanout_seen or bool(self.inbox()))
         time.sleep(0.3)
-        self.assertNotIn(message_id, daemon._fanout_seen)
-        self.assertEqual(daemon.chat_queue("CLAUDE").snapshot()["items"], [])
+        self.assertIn(message_id, daemon._fanout_seen, "a peer's @all fans out like the owner's")
+        self.assertTrue(daemon.chat_queue("CLAUDE").snapshot()["items"])
 
 
 if __name__ == "__main__":

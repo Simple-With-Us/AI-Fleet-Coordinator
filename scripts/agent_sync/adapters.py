@@ -130,7 +130,7 @@ def claude_env(
     ZULIP_* and ANTHROPIC_API_KEY are dropped, so the run uses the claude.ai login.
 
     With `seat` (a wake, or test-wake), the listener acts as the reference launcher
-    (AGENT-SYNC § Identity Rules › Launcher Contract):  it sets AGENT_LAUNCHER=agent-sync-wake,
+    (FLEET-PROTOCOL § Identity Rules › Launcher Contract):  it sets AGENT_LAUNCHER=agent-sync-wake,
     AGENT_LAUNCH_SEAT and AGENT_SEAT to the seat it is waking, and AGENT_SYNC_ATTACH=0, fresh, after
     every inherited identity variable was dropped.  The wake has no tools and posts nothing itself
     (the daemon posts its validated reply as the seat's bot), so this only keeps the seat explicit."""
@@ -735,7 +735,7 @@ def muse_env(
 
     Every ANTHROPIC_*, CLAUDE_*, AGENT_*, ZULIP_* and MUSE_* variable is dropped, so the run uses
     the muse subscription login the daemon's user already has and never a second seat's identity.
-    With `seat` (a wake, or test-wake) the listener is the reference launcher (AGENT-SYNC
+    With `seat` (a wake, or test-wake) the listener is the reference launcher (FLEET-PROTOCOL
     Identity Rules):  it names the seat it is waking and clears every inherited identity variable
     first.  The wake has no tools and posts nothing itself (the daemon posts its validated reply as
     the seat's bot), so this only keeps the seat explicit."""

@@ -1,4 +1,4 @@
-"""Zulip access for agent-sync: seat and credential loading, a urllib-only HTTP client, event queues.
+"""Zulip access for simple-chat: seat and credential loading, a urllib-only HTTP client, event queues.
 
 Credential order (first hit wins, nothing is merged):
   1. --rc PATH

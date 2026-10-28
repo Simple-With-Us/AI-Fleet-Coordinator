@@ -48,9 +48,27 @@ class ReleaseTests(unittest.TestCase):
         self.home.mkdir()
         self.base = self.home / ".local/share/fleet-cli"
         self.bundle = make_bundle()
+        # The wrapper carries the roots the host names, so the suite must not read
+        # the roots of the machine it runs on:  every one of them is empty here and
+        # the tests that need a root name it themselves.
+        self.patches = [
+            mock.patch.dict(
+                os.environ,
+                {
+                    "FLEET_CODE_ROOT": "",
+                    "FLEET_APPS_ROOT": "",
+                    "FLEET_LANES_ROOT": "",
+                    "FLEET_SERVER_VOLUME": "",
+                },
+            ),
+        ]
+        for patch in self.patches:
+            patch.start()
+        self.addCleanup(self._stop)
 
-    def tearDown(self):
-        self.temp.cleanup()
+    def _stop(self):
+        for patch in reversed(self.patches):
+            patch.stop()
 
     def receive(self, bundle=None, install=True):
         return release.receive(json.dumps(bundle or self.bundle).encode(), self.home, install)
@@ -348,6 +366,76 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(out.stdout.strip(), "/from/the/caller")
 
+    def test_the_lane_wrapper_carries_the_lanes_root_the_host_names(self):
+        # A host names its lanes root when the lanes do not sit beside the apps
+        # folder:  the wrapper carries that one and not a derived path.
+        lanes = self.home / "elsewhere" / "lanes"
+        lanes.mkdir(parents=True)
+        with mock.patch.dict(os.environ, {"FLEET_LANES_ROOT": str(lanes)}):
+            self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertIn(f"os.environ.setdefault('FLEET_LANES_ROOT', {str(lanes)!r})", text)
+        self.assertNotIn(
+            f"os.environ.setdefault('FLEET_LANES_ROOT', {str(self.home / 'apps' / 'lanes')!r})",
+            text,
+        )
+
+    def test_the_lane_wrapper_carries_no_lanes_root_the_host_does_not_name(self):
+        self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertNotIn("FLEET_LANES_ROOT", text)
+
+    def test_the_wrapper_never_overrides_the_lanes_root_the_caller_set(self):
+        # setdefault, never an assignment:  an agent that exports the lanes root
+        # itself keeps it.
+        body = b'#!/bin/bash\necho "${FLEET_LANES_ROOT:-unset}"\n'
+        bundle = make_bundle()
+        bundle["files"]["scripts/fleet_lanes/bin/lane"] = {
+            "mode": 0o755,
+            "sha256": hashlib.sha256(body).hexdigest(),
+            "data": base64.b64encode(body).decode(),
+        }
+        bundle["bundle_sha256"] = release.manifest_digest(bundle["files"])
+        self.receive(bundle)
+        wrapper = self.home / ".local/bin/lane"
+        out = subprocess.run(
+            [str(wrapper)],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "FLEET_LANES_ROOT": "/from/the/caller"},
+        )
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out.stdout.strip(), "/from/the/caller")
+
+    def test_every_path_the_wrapper_carries_comes_from_the_fake_home(self):
+        (self.home / "Code").mkdir()
+        (self.home / "apps").mkdir()
+        self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        roots = [line for line in text.splitlines() if "setdefault('FLEET_" in line]
+        self.assertTrue(roots)
+        for line in roots:
+            self.assertIn(str(self.home), line)
+
+    def test_a_whitespace_only_root_is_not_a_relative_path(self) -> None:
+        # A value of spaces must not become "." and point the lane tools at the
+        # caller's working directory.
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "   "}):
+            self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertNotIn("os.environ.setdefault('FLEET_CODE_ROOT', '.')", text)
+        self.assertIn(
+            f"os.environ.setdefault('FLEET_CODE_ROOT', {str(self.home / 'Code')!r})", text
+        )
+
+    def test_a_tilde_user_root_is_left_alone(self) -> None:
+        # A ~user spelling names another account's home:  the wrapper carries it as it
+        # was named, and the tool that reads it resolves it.
+        with mock.patch.dict(os.environ, {"FLEET_CODE_ROOT": "~otheruser/Code"}):
+            self.receive()
+        text = (self.home / ".local/bin/lane").read_text()
+        self.assertIn("os.environ.setdefault('FLEET_CODE_ROOT', '~otheruser/Code')", text)
+
     def old_bundle(self):
         """A release as installed before AFC-331:  only the base files."""
         bundle = make_bundle("old")
@@ -444,9 +532,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(parsed["model"], "existing-worker")
         self.assertEqual(parsed["features"], {"foo": True})
         self.assertTrue(
-            parsed["mcp_servers"]["agent-sync"]["command"].endswith("simple-chat-codex-mcp")
+            parsed["mcp_servers"]["simple-chat"]["command"].endswith("simple-chat-codex-mcp")
         )
-        self.assertNotIn("env", parsed["mcp_servers"]["agent-sync"])
+        self.assertNotIn("env", parsed["mcp_servers"]["simple-chat"])
         wrapper = (self.home / ".local/bin/simple-chat-codex-mcp").read_text()
         self.assertIn("--codex-thread-meta", wrapper)
         self.assertNotIn("--codex-thread-meta", (self.home / ".local/bin/simple-chat").read_text())
@@ -477,10 +565,11 @@ class ReleaseTests(unittest.TestCase):
         parsed = tomllib.loads(config.read_text())
         self.assertEqual(parsed["model"], "existing-worker")
         self.assertEqual(
-            parsed["mcp_servers"]["agent-sync"]["command"],
+            parsed["mcp_servers"]["simple-chat"]["command"],
             str(self.home / ".local/bin/simple-chat-codex-mcp"),
         )
-        self.assertNotIn("agent-sync-codex-mcp", config.read_text())
+        self.assertNotIn("agent-sync", config.read_text())
+        self.assertNotIn("agent-sync", parsed["mcp_servers"])
 
     def test_update_path_migrates_the_prerenamed_codex_registration_too(self):
         self.receive()
@@ -495,9 +584,25 @@ class ReleaseTests(unittest.TestCase):
         )
         self.receive(make_bundle("two"), install=False)
         self.assertEqual(
-            tomllib.loads(config.read_text())["mcp_servers"]["agent-sync"]["command"],
+            tomllib.loads(config.read_text())["mcp_servers"]["simple-chat"]["command"],
             str(self.home / ".local/bin/simple-chat-codex-mcp"),
         )
+
+    def test_a_renamed_wrapper_under_the_old_key_is_migrated_to_the_new_key(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        command = str(self.home / ".local/bin/simple-chat-codex-mcp")
+        config.write_bytes(
+            (
+                '[mcp_servers.agent-sync]\ncommand = "%s"\n'
+                'env_vars = ["AGENT_LAUNCHER", "AGENT_LAUNCH_SEAT", "AGENT_SEAT", "AGENT_TAG",'
+                ' "AGENT_SESSION"]\n' % command
+            ).encode()
+        )
+        self.receive()
+        parsed = tomllib.loads(config.read_text())
+        self.assertEqual(list(parsed["mcp_servers"]), ["simple-chat"])
+        self.assertEqual(parsed["mcp_servers"]["simple-chat"]["command"], command)
 
     def test_a_hand_edited_codex_registration_is_still_refused(self):
         config = self.home / ".codex/config.toml"
@@ -505,6 +610,57 @@ class ReleaseTests(unittest.TestCase):
         config.write_bytes(b'[mcp_servers.agent-sync]\ncommand = "/owner/custom"\n')
         with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
             self.receive()
+
+    def test_non_table_codex_shapes_are_refused_not_an_internal_error(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        for text, code in (
+            ('mcp_servers = "x"\n', "invalid_codex_config"),
+            ('[mcp_servers]\nagent-sync = "x"\n', "existing_agent_sync_mcp_conflict"),
+            ('[mcp_servers]\nsimple-chat = "x"\n', "existing_simple_chat_mcp_conflict"),
+        ):
+            with self.subTest(text=text):
+                config.write_bytes(text.encode())
+                with self.assertRaisesRegex(release.Refused, code):
+                    self.receive()
+
+    def test_migrate_refuses_non_table_mcp_servers_directly(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        config.write_bytes(b'mcp_servers = "x"\n')
+        with self.assertRaisesRegex(release.Refused, "invalid_codex_config"):
+            release.migrate_codex_mcp(self.home, {})
+
+    def test_update_path_refuses_non_table_shapes(self):
+        self.receive()
+        config = self.home / ".codex/config.toml"
+        for text, code in (
+            ('mcp_servers = "x"\n', "invalid_codex_config"),
+            ('[mcp_servers]\nagent-sync = "x"\n', "existing_agent_sync_mcp_conflict"),
+        ):
+            with self.subTest(text=text):
+                config.write_bytes(text.encode())
+                with self.assertRaisesRegex(release.Refused, code):
+                    self.receive(make_bundle("two"), install=False)
+
+    def test_legacy_table_with_extra_key_is_a_conflict_not_a_migration(self):
+        config = self.home / ".codex/config.toml"
+        config.parent.mkdir()
+        expected = release.codex_mcp_expected(self.home / ".local/bin")
+        text = (
+            "[mcp_servers.agent-sync]\ncommand = " + json.dumps(expected["command"]) + "\n"
+            "env_vars = " + json.dumps(expected["env_vars"]) + "\ntimeout = 30\n"
+        ).encode()
+        config.write_bytes(text)
+        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
+            self.receive()
+        self.assertEqual(config.read_bytes(), text)
+        config.unlink()
+        self.receive()
+        config.write_bytes(text)
+        with self.assertRaisesRegex(release.Refused, "existing_agent_sync_mcp_conflict"):
+            self.receive(make_bundle("two"), install=False)
+        self.assertEqual(config.read_bytes(), text)
 
     def test_update_keeps_configuration_and_wrappers_untouched(self):
         self.receive()
@@ -671,7 +827,7 @@ class ReleaseTests(unittest.TestCase):
 class ShippedDataFilesTests(unittest.TestCase):
     """Every data file the agent_sync package reads at run time ships in a release.  The .py
     modules are allowed by pattern;  JSON and similar files must be named in EXACT one by one, and
-    a new one that is not breaks the server's `agent-sync mcp` at startup (eavesdropper-tools.json,
+    a new one that is not breaks the server's `simple-chat mcp` at startup (eavesdropper-tools.json,
     2026-10-16)."""
 
     def test_every_tracked_agent_sync_data_file_is_allowed(self):
@@ -695,13 +851,13 @@ class ShippedDataFilesTests(unittest.TestCase):
         self.assertEqual(missing, [], "add these to EXACT in scripts/fleet-cli-release.py")
 
     def test_listener_tools_is_required_of_new_bundles_only(self):
-        # A new bundle must carry it (agent-sync mcp reads it at startup), but retained releases
+        # A new bundle must carry it (simple-chat mcp reads it at startup), but retained releases
         # are judged by BASE_REQUIRED, so the ones built before it stay valid rollback targets.
         self.assertIn("scripts/agent_sync/mcp/eavesdropper-tools.json", release.TOOL_REQUIRED)
         self.assertNotIn("scripts/agent_sync/mcp/eavesdropper-tools.json", release.BASE_REQUIRED)
 
     def test_fleetlink_tools_is_shipped_and_required_of_new_bundles_only(self):
-        # The fleetlink_* contract:  agent-sync mcp reads it at startup, so a new bundle must carry it,
+        # The fleetlink_* contract:  simple-chat mcp reads it at startup, so a new bundle must carry it,
         # and an older retained release (built before the stdio FleetLink tools) stays a valid rollback target.
         path = "scripts/agent_sync/mcp/fleetlink-tools.json"
         self.assertIn(path, release.EXACT)

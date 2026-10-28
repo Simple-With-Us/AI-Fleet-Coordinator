@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cloudflare setup and checks for the agent-sync MCP Worker, Phase 0.
+"""Cloudflare setup and checks for the ST-MCP Worker, Phase 0.
 
 Every step is a dry run unless --apply is given.  The Cloudflare Global key is
 read inside this process from the environment or `fleet-secrets get` and never printed, logged or

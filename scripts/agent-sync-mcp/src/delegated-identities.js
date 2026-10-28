@@ -1,18 +1,10 @@
 // Per-call identity for every hosted grant (AFC-331, docs/protocols/per-call-identity.md sections 2-4).
 //
-// The grant says who may act (its allowed set) and each call says who is acting, in its `identity`
-// argument.  One table decides the sets:
-//
-//   a CURSOR or GROK-WEB grant   CURSOR, GROK-WEB and every enabled Grok Bot persona (GB_IDENTITIES)
-//   every other grant            its own seat
-//
-// A write with no identity is refused with identity_required;  a read with none acts as the grant's
-// own seat.  An identity outside the set is refused with identity_not_allowed.  A removed tool name
-// (renamed-tools.json, shared with the stdio server) is refused with unknown_tool naming its
-// replacement.  The identity's own credentials do the work:  a peer seat's own SEAT_SECRETS key and
-// Linear app, a persona's row of the encrypted GB_IDENTITY_CREDENTIALS bundle;  each is checked
-// against Zulip users/me (and, for Linear writes, the viewer) before its first call.  The grant's
-// scope, pause and budget still govern every call.
+// The verified credential assigns exactly one acting seat. A caller's identity
+// argument is an assertion of that assignment, never permission to select another
+// seat, including legacy CURSOR/GROK-WEB shared identities or GB personas.
+// Every tool family passes through the same server-side allow-set check. Existing
+// admin provisioning endpoints remain separate from acting as another agent.
 //
 // GB_IDENTITIES is read from scripts/agent_sync/mcp/gb-identities.json, the one list the stdio
 // server reads too.  No other list of personas exists, here or anywhere.  It comes through
@@ -43,9 +35,6 @@ export { SHARED_IDENTITY_SEATS };
 
 /** The identities a grant for `seat` may act as:  its own seat first. */
 export function allowedIdentities(seat) {
-  if (SHARED_IDENTITY_SEATS.includes(seat)) {
-    return Object.freeze([seat, ...SHARED_IDENTITY_SEATS.filter((other) => other !== seat), ...GB_IDENTITIES]);
-  }
   return Object.freeze([seat]);
 }
 
@@ -154,6 +143,15 @@ export async function resolveDelegatedCredentials(env) {
   return { source: "infisical", valid: true, roles };
 }
 
+// Admin diagnostics only: credential lookup failures are unknown, never absence.
+export async function adminDelegatedReadiness(env, resolve = resolveDelegatedCredentials) {
+  try {
+    return { roles: (await resolve(env)).roles, credentialsUnavailable: false };
+  } catch {
+    return { roles: new Map(), credentialsUnavailable: true };
+  }
+}
+
 export function delegatedStatus(credentials, identity) {
   if (!GB_SET.has(identity)) return null;
   const configured = Boolean(credentials?.valid && credentials.roles.has(identity));
@@ -191,11 +189,11 @@ export function toolListFor(seat, config = {}) {
   // `eventsOnlySeats` overrides the production set in tests only.
   const eventsOnlySeats = config.eventsOnlySeats ?? EVENTS_ONLY_SEATS;
   if (eventsOnlySeats.includes(seat)) return EMPTY_TOOL_SET;
-  const cacheKey = `${seat}:${config.whatsappEnabled === true}:${config.eventsOnlySeats ? config.eventsOnlySeats.join(",") : ""}`;
+  const cacheKey = `${seat}:${config.whatsappEnabled === true}:${config.grTypedEnabled === true}:${config.grWorkflowEnabled === true}:${config.eventsOnlySeats ? config.eventsOnlySeats.join(",") : ""}`;
   const cached = LIST_CACHE.get(cacheKey);
   if (cached) return cached;
   const allowed = allowedIdentities(seat);
-  const decorated = HOSTED_TOOL_LIST.filter(spec => !spec.name.startsWith("whatsapp_") || (seat === "JET-CHAT" && config.whatsappEnabled === true)).map((spec) => decorate(spec, allowed, seat));
+  const decorated = HOSTED_TOOL_LIST.filter(spec => (!spec.name.startsWith("whatsapp_") || (seat === "JET-CHAT" && config.whatsappEnabled === true)) && (!spec.name.startsWith("gr_v1_pr_") || config.grTypedEnabled === true) && (!spec.name.startsWith("gr_wf_") || config.grWorkflowEnabled === true)).map((spec) => decorate(spec, allowed, seat));
   const at = decorated.findIndex((spec) => spec.name === "whoami") + 1;
   const list = Object.freeze([...decorated.slice(0, at), IDENTITIES_SPEC, decorate(GUIDE_SPEC, allowed, seat), ...decorated.slice(at)]);
   const byName = Object.freeze(Object.fromEntries(list.map((spec) => [spec.name, spec])));

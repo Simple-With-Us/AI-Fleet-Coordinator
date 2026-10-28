@@ -1,0 +1,20 @@
+# A user unit for the user the read-only doctor key's forced command runs as (root, per
+# docs/protocols/fleet-tool-parity.md), because that doctor reads the report from its own HOME.
+# As that user:  copy it and fleet-server-status.timer to ~/.config/systemd/user/, run
+# `loginctl enable-linger <that user>`, then
+# `systemctl --user daemon-reload && systemctl --user enable --now fleet-server-status.timer`.
+# Linger is required:  without it the user manager, and this timer, stop when the user's last
+# session closes, and the report ages past Muster's 45-minute window.  The doctor's
+# updater:fleet-server-status.timer row FAILs on a stale report and WARNs while linger is off.
+# The report lands in ~/.local/state/fleet-tools/server-status.json (0600), where the
+# doctor's --json carries it to the Mac.  Extra arguments, such as `--code-root` for where
+# the checkouts live, go in FLEET_SERVER_STATUS_ARGS in the optional environment file.
+[Unit]
+Description=Write the fleet server status report that Muster reads (fleet-server-status.py)
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.config/fleet-tools/server-status.env
+ExecStart=/usr/bin/python3 -I %h/.local/share/fleet-cli/repo/scripts/fleet-server-status.py $FLEET_SERVER_STATUS_ARGS
+TimeoutStartSec=300
+Nice=10

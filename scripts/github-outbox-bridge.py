@@ -127,7 +127,7 @@ def is_own_post(text: str, seat: str) -> bool:
 
 
 def skim_match(text: str, seat: str) -> bool:
-    """Skim rule (AGENT-SYNC.md § Skim, Then Full-Read Only on a Match): the seat, a FLEET wake, or an alarm word."""
+    """Skim rule (FLEET-PROTOCOL.md § Skim, Then Full-Read Only on a Match): the seat, a FLEET wake, or an alarm word."""
     head = text[:240]
     if "->FLEET" in head:
         return True
@@ -138,7 +138,7 @@ def skim_match(text: str, seat: str) -> bool:
 
 
 def central_stamp(ts: float) -> str:
-    """`Thu, Sep 17, 2026 at 4:10 PM CT` (AGENT-SYNC.md § Timestamps)."""
+    """`Thu, Sep 17, 2026 at 4:10 PM CT` (FLEET-PROTOCOL.md § Timestamps)."""
     dt = datetime.fromtimestamp(ts, tz=UTC)
     label = "UTC"
     if ZoneInfo is not None:

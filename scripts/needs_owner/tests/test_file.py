@@ -309,12 +309,13 @@ class FileTests(unittest.TestCase):
 
     # ---- identity ----------------------------------------------------------------------------
     def test_a_launched_seat_reaches_every_child(self) -> None:
-        env = self.w.env(AGENT_SEAT=None, AGENT_LAUNCHER="botfleet", AGENT_LAUNCH_SEAT="BF-PLUMBER")
+        env = self.w.env(AGENT_SEAT="BF-PLUMBER", AGENT_LAUNCHER="botfleet")
         r = self.w.run("file", "--by", "BF-PLUMBER", "--app", "AFC", "--question", Q, "--option", "Yes", "--option", "No", "--json", env=env)
         self.assertEqual(r.code, 0, r.err)
         for call in self.w.calls():
             self.assertEqual(call["seat"], "BF-PLUMBER", call["argv"])
-            self.assertEqual(call["launch_seat"], "BF-PLUMBER")
+            self.assertIsNone(call["env_seat"], "no child gets an identity variable")
+            self.assertIsNone(call["launch_seat"])
             self.assertEqual(call["launcher"], "botfleet")
         filed = [c for c in self.w.calls("simple-board") if c["argv"][0] == "file"][0]
         self.assertEqual(filed["argv"][filed["argv"].index("--by") + 1], "BF-PLUMBER")
@@ -378,15 +379,15 @@ class FileTests(unittest.TestCase):
         self.assertEqual(len(self.w.board_state()["issues"]), 1)
 
     # ---- failures ----------------------------------------------------------------------------
-    def test_board_writes_off_passes_the_exit_code_through(self) -> None:
+    def test_a_write_with_no_bearer_passes_the_exit_code_through(self) -> None:
         r = self.w.file(Q, "Yes", "No", env=self.w.env(FAKE_BOARD_WRITES_OFF="1"))
-        self.assertEqual(r.code, 7, r.err)
+        self.assertEqual(r.code, 6, r.err)
         self.assertEqual(self.w.calls("simple-chat"), [])
 
     def test_no_board_is_an_error(self) -> None:
         self.w.remove_tool("simple-board")
         r = self.w.file(Q, "Yes", "No")
-        self.assertEqual(r.code, 1)
+        self.assertEqual(r.code, 2, "with no board there is no bearer to prove a seat:  it refuses")
         self.assertIn("board", r.err)
 
     def test_mirror_link_shapes(self) -> None:

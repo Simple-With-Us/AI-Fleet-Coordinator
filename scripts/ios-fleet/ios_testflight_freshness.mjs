@@ -43,7 +43,7 @@
  * or any gate override, and never runs an App Store GM workflow.
  *
  * ALERTS (--alert) go to Zulip #Work-In-Progress, topic "AFC testflight-freshness",
- * through the agent-sync CLI:  an app still behind six hours after the check
+ * through the simple-chat CLI:  an app still behind six hours after the check
  * first saw it behind (so the catch-up ship has had its chance, or could not
  * run), or the check itself failing.  One digest post per run, at most one
  * post per app per six hours, and never twice for the same commit and reason.
@@ -51,7 +51,7 @@
  * Credentials:  this file never reads one.  App Store Connect calls go through
  * the fleet's asc-api.mjs (which reads the ASC_* env or Infisical /asc through fleet-secrets), and
  * its stderr is never echoed, because a crash there can name the key path.
- * GitHub calls go through the gh CLI;  Zulip through agent-sync.
+ * GitHub calls go through the gh CLI;  Zulip through simple-chat.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";

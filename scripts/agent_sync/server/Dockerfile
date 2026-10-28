@@ -1,4 +1,4 @@
-# agent-sync listener, server instance:  the Grok Bot (GB) personas, woken through their Grok Bot
+# Operator listener, server instance:  the Grok Bot (GB) personas, woken through their Grok Bot
 # routine webhooks.  The Mac instance (the CLAUDE seat) is the LaunchAgent; a seat is never held by
 # both (docs/protocols/agent-sync-partition.toml).  Design and Coolify setup:
 # docs/protocols/agent-sync-server.md.

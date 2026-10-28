@@ -103,6 +103,10 @@ grok_leader_lock_held() {
 # Slack retired in the hard cut to Zulip on 2026-10-07: agent-sync-push
 # (the Slack relay, :8787), cursor-slack-sync and the slack-agent-inbox
 # launchd job are gone and must not be watched or resurrected.
+# The BotFleet MCP server is not in this list:  the owner parked it on purpose
+# (BotFleet stopped.marker, Oct 25 2026), and the BotFleet Control app's Fleet
+# Services section manages it through pm2 instead.  The Mac's installed copy of
+# this script already omits it;  this tracked copy had not caught up.
 expect_pm2=(
   shellular
   code-main-keeper
@@ -113,7 +117,6 @@ expect_pm2=(
   grok-acp
   clutch-web
   seat-mcp
-  botfleet-mcp
 )
 
 # "label plist-basename [alias-label...]"  (plists live in ~/Library/LaunchAgents)

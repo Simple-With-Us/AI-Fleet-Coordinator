@@ -216,7 +216,7 @@ class InfisicalEnvTests(unittest.TestCase):
         self.assertEqual(got, {"ZULIP_ALERT_GB_FIXER_KEY": self.values["ZULIP_ALERT_GB_FIXER_KEY"],
                                "INFISICAL_CLIENT_SECRET": None, "INFISICAL_CLIENT_ID": None,
                                "ZULIP_ALERT_GB_FIXER_HEADER": None})
-        self.assertIn("agent-sync: loaded 5 variables from Infisical", run.stderr)
+        self.assertIn("simple-chat: loaded 5 variables from Infisical", run.stderr)
         self.assertNotIn(self.csecret, run.stderr)
 
     def entrypoint(self, env: dict[str, str]) -> subprocess.CompletedProcess:
@@ -229,7 +229,7 @@ class InfisicalEnvTests(unittest.TestCase):
             run = self.entrypoint(self.env(fake))
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertFalse(json.loads(run.stdout)["running"], "agent-sync status --json ran with the given arguments")
-        self.assertIn("agent-sync: loaded 5 variables from Infisical", run.stderr)
+        self.assertIn("simple-chat: loaded 5 variables from Infisical", run.stderr)
         self.assertEqual([p.split("?")[0] for _, p in fake.requests],
                          ["/api/v1/auth/universal-auth/login", "/api/v3/secrets/raw", "/api/v3/secrets/raw"])
         # one login, then /zulip and the notes-queue keys' /operator folder (AFC-486)

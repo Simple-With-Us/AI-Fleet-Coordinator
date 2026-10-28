@@ -15,7 +15,7 @@ fleet-facts gather [--part NAME]... [--no-mac] [--json]
 | `lanes` | the lane doctor report, `lane ls --json` (`lanes.py`) | yes |
 | `autopush` | C1 `fleet-autopush status --json` (`interfaces.py`) | yes |
 | `backup` | P1 `fleet_work_backup.py health --json` (`backup.py`) | yes |
-| `asks` | C3 `agent-sync asks status --json` | yes |
+| `asks` | C3 `simple-chat asks status --json` | yes |
 | `report` | C4 `~/apps/claim-expiry/state/report-latest.json` | yes |
 | `needs_owner` | C6 `needs-owner list --all --json` (every labelled issue, answered and closed ones too) | yes |
 | `consult` | C7 `consult status --all --json` | yes |

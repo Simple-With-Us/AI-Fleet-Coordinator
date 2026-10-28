@@ -268,7 +268,7 @@ class ClientGuardTests(Harness):
 
 
 class CliGuardTests(Harness):
-    """`agent-sync dm`:  the guard on the recipient set the CLI resolves."""
+    """`simple-chat dm`:  the guard on the recipient set the CLI resolves."""
 
     def test_cmd_dm_refuses_a_bot_only_recipient_set(self) -> None:
         self.pin_owner()

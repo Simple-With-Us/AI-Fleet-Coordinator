@@ -59,9 +59,13 @@ class InstallTests(ListenerHarness):
         )  # Background starves at startup under a heavy load
         self.assertEqual(data["StandardOutPath"], str(self.home / ".agent-sync/logs/launchd.out"))
         self.assertEqual(data["StandardErrorPath"], str(self.home / ".agent-sync/logs/launchd.err"))
-        self.assertNotIn(
-            "KEY", json.dumps(data["EnvironmentVariables"]).upper().replace("KEEPALIVE", "")
-        )
+        # Check the environment's own names and values, not the serialized text: the
+        # random temp-dir name in HOME and PATH can contain "KEY" by chance.
+        env = data["EnvironmentVariables"]
+        for env_name, env_value in env.items():
+            for secretish in ("KEY", "SECRET", "TOKEN", "PASSWORD"):
+                self.assertNotIn(secretish, env_name.upper())
+            self.assertNotIn("k" * 8, str(env_value))
         for name in ("launchd.out", "launchd.err"):
             self.assertEqual(mode_of(self.home / ".agent-sync/logs" / name), 0o600)
         self.assertEqual(mode_of(self.home / ".agent-sync/logs"), 0o700)
@@ -465,10 +469,10 @@ class LocalReadTests(ListenerHarness):
 
 class PluginTests(unittest.TestCase):
     def test_plugin_manifest_hooks_and_marketplace(self) -> None:
-        manifest = json.loads((REPO / "plugins/agent-sync/.claude-plugin/plugin.json").read_text())
-        self.assertEqual(manifest["name"], "agent-sync")
+        manifest = json.loads((REPO / "plugins/simple-chat/.claude-plugin/plugin.json").read_text())
+        self.assertEqual(manifest["name"], "simple-chat")
         self.assertRegex(manifest["version"], r"^\d+\.\d+\.\d+$")
-        hooks = json.loads((REPO / "plugins/agent-sync/hooks/hooks.json").read_text())["hooks"]
+        hooks = json.loads((REPO / "plugins/simple-chat/hooks/hooks.json").read_text())["hooks"]
         self.assertEqual(sorted(hooks), ["SessionEnd", "SessionStart", "Stop", "UserPromptSubmit"])
         self.assertNotIn("PreToolUse", hooks, "no taint guard (owner decision 2026-10-07)")
         commands = [h for group in hooks.values() for entry in group for h in entry["hooks"]]
@@ -483,7 +487,7 @@ class PluginTests(unittest.TestCase):
         entry = market["plugins"][0]
         self.assertEqual(
             (entry["name"], entry["source"], entry["version"]),
-            ("agent-sync", "./plugins/agent-sync", manifest["version"]),
+            ("simple-chat", "./plugins/simple-chat", manifest["version"]),
         )
 
     def test_help_for_the_new_commands_through_the_entry_script(self) -> None:

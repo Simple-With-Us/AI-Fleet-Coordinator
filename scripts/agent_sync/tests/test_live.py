@@ -125,7 +125,7 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(ids, sorted(ids))
         self.assertEqual(ids[-1], 10)
         self.assertLess(len(ids), 10)
-        self.assertIn("older omitted, use agent-sync read --since 1", text)
+        self.assertIn("older omitted, use simple-chat read --since 1", text)
         self.assertEqual(L.pending_items(self.paths, "lease"), [], "omitted items count as delivered")
 
     def test_stale_items_are_counted_not_printed(self) -> None:

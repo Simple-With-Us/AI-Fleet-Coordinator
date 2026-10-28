@@ -61,8 +61,10 @@ const CLAUDE_KEY = zulipShapedKey(29);
 const CLAUDE_REDIRECT = "https://claude.ai/api/mcp/auth_callback";
 const bearerBots = Object.entries(ADDITIONAL_BEARER_SEATS).map(([seat, row], i) => ({ seat, ...row, key: zulipShapedKey(60 + i) }));
 let infisicalFixture = null;
+let infisicalUnavailable = false;
 const zulip = new FakeZulip({ bots: [
   ...bearerBots.map((b) => ({ email: b.email, key: b.key, full_name: b.seat })),
+  { email: "codex-bot@simplewithus.zulipchat.com", key: zulipShapedKey(90), full_name: "Codex" },
   // The borrowed-bot grant (JET-CHAT) needs the pinned owner (kody 4365848649):
   // the fake users/me carries the same owner id the committed var pins.
   { email: JET_EMAIL, full_name: "Jet", key: JET_KEY, bot_owner_id: Number(wranglerConfig().vars.OWNER_USER_ID) },
@@ -214,6 +216,7 @@ let failChatgptCimd = 0;
 async function outboundFetch(request) {
   outbound.push(request.url);
   if (request.url.startsWith("https://offline-infisical.example/api/v3/secrets/raw")) {
+    if (infisicalUnavailable) return new Response("unavailable", { status: 503 });
     const url = new URL(request.url);
     const secrets = infisicalFixture?.[url.searchParams.get("secretPath")] ?? [];
     if (url.pathname.endsWith("/raw")) return Response.json({ secrets, totalCount: secrets.length });
@@ -1122,51 +1125,25 @@ try {
     const off = await call(t.body.access_token, "zulip_post", { channel: "general", topic: "t", text: "x", identity: "GROK-WEB" });
     assert.equal(off.json.result._meta["agent-sync/error"].code, "channel_not_allowed");
 
-    await step("per-call identity on the GROK-WEB grant (AFC-331):  CURSOR posts with CURSOR's own key, a write without identity and a name outside the set are refused", async () => {
+    await step("GROK-WEB OAuth credential is server-bound: CURSOR and every persona are refused before backend writes", async () => {
       const listed = (await mcp(t.body.access_token, "tools/list")).json.result.tools;
       const enumOf = listed.find((tool) => tool.name === "zulip_post").inputSchema.properties.identity.enum;
-      assert.deepEqual(enumOf.slice(0, 2), ["GROK-WEB", "CURSOR"]);
-      assert.ok(enumOf.every((name) => ["GROK-WEB", "CURSOR"].includes(name) || name.startsWith("GB-")));
-      assert.ok(enumOf.includes("GB-ENGINEER"));
-      assert.ok(!enumOf.includes("GB-RETIRED"));
+      assert.deepEqual(enumOf, ["GROK-WEB"]);
       const ids = (await call(t.body.access_token, "identities")).json.result.structuredContent;
-      assert.equal(ids.default_identity, "GROK-WEB");
-      assert.deepEqual(ids.identities.map((row) => row.identity), enumOf);
-      assert.equal(ids.identities[1].zulip, "configured");
-      const asCursor = await call(t.body.access_token, "zulip_post", { channel: "sandbox", topic: "hosted smoke", text: "From the shared group.", identity: "CURSOR" });
-      assert.equal(asCursor.json.result.isError, undefined, JSON.stringify(asCursor.json));
-      const sent = zulip.messages.at(-1);
-      assert.equal(sent.sender_email, "cursor-bot@simplewithus.zulipchat.com", "posted with CURSOR's own key");
-      assert.equal(sent.content, "[CURSOR] From the shared group.");
-      const who = (await call(t.body.access_token, "whoami", { identity: "CURSOR" })).json.result.structuredContent;
-      assert.equal(who.seat, "CURSOR");
-      assert.equal(who.authenticated_seat, "GROK-WEB");
+      assert.equal(ids.authenticated_seat, "GROK-WEB");
+      assert.deepEqual(ids.identities.map((row) => row.identity), ["GROK-WEB"]);
       const before = zulip.requestsTo("POST", "messages").length;
+      for (const identity of ["CURSOR", "WISE", "ECHO", ...GB_IDENTITIES]) {
+        for (const name of ["whoami", "zulip_post", "linear_whoami", "notes_list", "recall_stats", "fleetlink_whoami", "gr_merge_pr"]) {
+          const result = await call(t.body.access_token, name, { identity });
+          assert.equal(result.json.result._meta["agent-sync/error"].code, "identity_not_allowed", `${name} as ${identity}`);
+        }
+      }
       const bare = await call(t.body.access_token, "zulip_post", { channel: "sandbox", topic: "hosted smoke", text: "x" });
       assert.equal(bare.json.result._meta["agent-sync/error"].code, "identity_required");
-      const sentry = await call(t.body.access_token, "zulip_post", { channel: "sandbox", topic: "hosted smoke", text: "x", identity: "SENTRY" });
-      assert.equal(sentry.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
-      const old = await call(t.body.access_token, "post", { channel: "sandbox", topic: "hosted smoke", text: "x" });
+      const old = await call(t.body.access_token, "post", {});
       assert.equal(old.json.result._meta["agent-sync/error"].code, "unknown_tool");
-      assert.equal(old.json.result._meta["agent-sync/error"].replacement, "zulip_post");
-      assert.equal(zulip.requestsTo("POST", "messages").length, before, "nothing was posted");
-    });
-
-    await step(`a GROK-WEB grant acts as the ${PERSONA} persona with that persona's own bot, through its per-identity gate (AFC-331)`, async () => {
-      const who = (await call(t.body.access_token, "whoami", { identity: PERSONA })).json.result;
-      assert.equal(who.isError, undefined, JSON.stringify(who));
-      assert.equal(who.structuredContent.seat, PERSONA);
-      assert.equal(who.structuredContent.authenticated_seat, "GROK-WEB");
-      assert.equal(who.structuredContent.email, PERSONA_EMAIL);
-      const posted = await call(t.body.access_token, "zulip_post", { channel: "sandbox", topic: "hosted persona", text: "From a persona.", identity: PERSONA });
-      assert.equal(posted.json.result.isError, undefined, JSON.stringify(posted.json));
-      const sent = zulip.messages.at(-1);
-      assert.equal(sent.sender_email, PERSONA_EMAIL, "posted with the persona's own key, not the grant's");
-      assert.equal(sent.content, `[${PERSONA}] From a persona.`);
-      // A persona with no credentials in the bindings is configured nowhere:  not_configured, never a crash.
-      const other = GB_IDENTITIES.find((name) => name !== PERSONA);
-      const missing = await call(t.body.access_token, "whoami", { identity: other });
-      assert.equal(missing.json.result._meta["agent-sync/error"].code, "not_configured");
+      assert.equal(zulip.requestsTo("POST", "messages").length, before, "no cross-seat post occurred");
     });
 
     await step("hosted Linear query and mutation use GROK-WEB credentials, with a durable idempotent replay", async () => {
@@ -1239,7 +1216,7 @@ try {
     // The admin page shows the call rows and the role check, never a body.
     const admin = await (await browser("/admin")).text();
     assert.match(admin, /role 400, checked/);
-    assert.ok(admin.includes("hosted smoke") && !admin.includes("Two sentences") && !admin.includes("Direct note"));
+    assert.ok(admin.includes("GROK-WEB") && !admin.includes("Two sentences") && !admin.includes("Direct note"));
     const refreshed = await token({ grant_type: "refresh_token", refresh_token: t.body.refresh_token, client_id: GROK_CLIENT });
     assert.equal(refreshed.status, 200, JSON.stringify(refreshed.body));
     grokCimdTokens = refreshed.body;
@@ -1749,6 +1726,13 @@ try {
     const page = await (await browser("/admin")).text();
     assert.ok(!page.includes(bearer));
     assert.match(page, /Per-Identity Bearers/);
+    // A matched persona hash is not enough: explicit false refuses /mcp.
+    const ns = await mf.getDurableObjectNamespace("SEAT_GATE", "agent-sync-mcp");
+    const personaGate = ns.get(ns.idFromName(PERSONA));
+    const bearerHash = createHash("sha256").update(bearer).digest("hex");
+    await personaGate.gbBearerMint({hash:bearerHash, by:"test", expiresAt:Date.now()+600000, mcpAccept:false});
+    assert.equal((await mcp(bearer,"tools/list")).status,401,"GR-only persona must refuse hosted MCP");
+    await personaGate.gbBearerMint({hash:bearerHash, by:"test", expiresAt:Date.now()+600000, mcpAccept:true});
     const who = (await call(bearer, "whoami")).json.result;
     assert.equal(who.isError, undefined, JSON.stringify(who));
     assert.equal(who.structuredContent.seat, PERSONA);
@@ -1903,7 +1887,7 @@ try {
     const grOnlyHtml = await grOnly.text();
     const grToken = grOnlyHtml.match(/sbt_jet-chat_[A-Za-z0-9_-]{43}/)?.[0];
     assert.ok(grToken, "the mint response shows the seat token once");
-    assert.ok(grOnlyHtml.includes("ST-MCP&#39;s /mcp refuses this bearer"), "the unticked mint's reveal says /mcp refuses it");
+    assert.ok(grOnlyHtml.includes("Fleet MCP&#39;s /mcp refuses this bearer"), "the unticked mint's reveal says /mcp refuses it");
     assert.ok(!grOnlyHtml.includes("ST-MCP&#39;s /mcp URL and to GR-MCP"), "and never implies it works on /mcp");
     assert.equal((await mcp(grToken, "tools/list")).status, 401, "no recorded acceptance, no /mcp");
     // Re-minted with the acceptance ticked.
@@ -2118,6 +2102,39 @@ try {
       assert.equal((await mcp(bearer, "tools/list")).status, 401);
     }
     assert.equal((await adminAction("mint_gb_bearer", { identity: "BF-TYPO" })).status, 400);
+  });
+
+  await step("unhosted CODEX mints and authenticates its own bearer in fallback deployment without enabling OAuth hosting", async () => {
+    await mf.dispose();
+    infisicalFixture = { "/zulip": [
+      { secretKey: "CODEX_ZULIP_KEY", secretValue: zulipShapedKey(90) },
+      { secretKey: "CODEX_ZULIP_EMAIL", secretValue: "codex-bot@simplewithus.zulipchat.com" },
+    ] };
+    mf = startWorker(HOST, { INFISICAL_MODE: "fallback", INFISICAL_SERVICE_TOKEN: "offline-fixture", INFISICAL_WORKSPACE_ID: "offline-workspace", INFISICAL_BASE_URL: "https://offline-infisical.example", INFISICAL_EXPECT: "/unused:UNUSED" });
+    assert.equal((await adminAction("arm", { seat: "CODEX" })).status, 400, "no new OAuth admin seat");
+    assert.equal((await adminAction("create_manual_client", { seat: "CODEX" })).status, 400, "no new OAuth client");
+    const minted = await adminAction("mint_gb_bearer", { identity: "CODEX", mcp_accept: "1" });
+    assert.equal(minted.status, 200);
+    const bearer = (await minted.text()).match(/sbt_codex_[A-Za-z0-9_-]{43}/)?.[0];
+    assert.ok(bearer);
+    const who = await call(bearer, "whoami");
+    assert.equal(who.json.result.isError, undefined, summarize(who.json));
+    assert.equal(who.json.result.structuredContent.seat, "CODEX");
+    const other = await call(bearer, "whoami", { identity: "ECHO" });
+    assert.equal(other.json.result._meta["agent-sync/error"].code, "identity_not_allowed");
+    assert.equal((await adminAction("revoke_gb_bearer", { identity: "CODEX" })).status, 303);
+    assert.equal((await mcp(bearer, "tools/list")).status, 401);
+    // Expire the one-minute native cache before the diagnostic outage check.
+    await mf.dispose();
+    infisicalUnavailable = true;
+    mf = startWorker(HOST, { INFISICAL_MODE: "fallback", INFISICAL_SERVICE_TOKEN: "offline-fixture", INFISICAL_WORKSPACE_ID: "offline-workspace", INFISICAL_BASE_URL: "https://offline-infisical.example", INFISICAL_EXPECT: "/unused:UNUSED" });
+    const unavailablePage = await browser("/admin");
+    assert.equal(unavailablePage.status, 200, "one unavailable native credential must not blank admin");
+    const unavailableHtml = await unavailablePage.text();
+    assert.ok(unavailableHtml.includes("Credential readiness unknown (diagnostic read failed)"));
+    assert.ok(unavailableHtml.includes("Per-Identity Bearers"));
+    assert.equal((await adminAction("mint_gb_bearer", { identity: "CODEX", mcp_accept: "1" })).status, 500, "mint still fails closed, no fallback credential");
+    infisicalUnavailable = false;
   });
 
   console.log(`\n${passed} passed`);

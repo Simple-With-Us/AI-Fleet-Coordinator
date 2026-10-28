@@ -1,4 +1,4 @@
-# Deploy the agent-sync MCP Worker
+# Deploy the ST-MCP Worker
 
 The runbook for `https://agents.simplewithus.com` from Phase 2 on:  the seven tools, with GROK-WEB and JET both served (JET enabled Fri, Oct 9, after Jay demoted `openai-dot-bot` to member;  deployed with its key installed at about 8:10am, version `068c2953`).  [DEPLOY-PHASE0.md](DEPLOY-PHASE0.md) is the record of the first deploy and the hostname move.
 

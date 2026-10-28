@@ -57,11 +57,64 @@ DOCS_SKILLS = os.path.join(REPO_ROOT, "docs", "fleet-skills")
 ROOT_SKILLS = os.path.join(REPO_ROOT, "skills")
 BY_SEAT = os.path.join(DOCS_SKILLS, "by-seat")
 
+# Repo-tracked always-on rule files, grouped by the tool home that reads them.  These
+# are not skills: a platform reads them directly out of its rules directory, so nothing
+# else carries them from the repo to the machine.  Without this step they drift
+# silently (the sentence-gap rule sat stale on disk for a month while the repo
+# copy was already correct), and a seat reads the stale copy.
+#
+# The tool home is the gate, not a detail.  tool_home_exists() reads that home to
+# decide whether the tool is installed at all, so creating an empty one here would
+# flip the next run's answer and hand a host a tool it never had.
+ALWAYS_ON_RULE_FILES = {
+    "~/.cursor": {
+        ".cursor/rules/sentence-gap.mdc": "~/.cursor/rules/sentence-gap.mdc",
+        ".cursor/rules/fleet-recall.mdc": "~/.cursor/rules/fleet-recall.mdc",
+    },
+}
+
 
 def _write_skill(path: str, body: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(body)
+
+
+def _install_always_on_rules() -> list[str]:
+    """Copy the repo-tracked always-on rule files into the tool homes that read them.
+
+    Copied verbatim: a rule file is platform-specific by construction, so it is
+    never seat-specialized the way a skill pack is.
+
+    A tool home that does not exist yet is left alone.  tool_home_exists() reads
+    that home to decide whether the tool is installed on this host, so creating
+    one here would make the next run install into a tool this host never had.
+    """
+    written: list[str] = []
+    for home, rules in ALWAYS_ON_RULE_FILES.items():
+        # tool_home_exists() reads the platform home, which is the parent of the
+        # skills directory the seat packs install into.
+        if not tool_home_exists(os.path.join(os.path.expanduser(home), "skills")):
+            continue
+        for src_rel, dest_rel in rules.items():
+            src = os.path.join(REPO_ROOT, src_rel)
+            if not os.path.isfile(src):
+                continue
+            dest = os.path.expanduser(dest_rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(src, "rb") as f:
+                payload = f.read()
+            if os.path.isfile(dest):
+                with open(dest, "rb") as f:
+                    if f.read() == payload:
+                        written.append(dest_rel)
+                        continue
+            tmp = dest + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(payload)
+            os.replace(tmp, dest)
+            written.append(dest_rel)
+    return written
 
 
 def _zip_matches(zip_path: str, arcname: str, md_path: str) -> bool:
@@ -181,6 +234,9 @@ def main(argv: list[str] | None = None) -> None:
                 continue
             written = _install_skill_set(dest, sources, seat)
             print(f"  {seat.tag:12}  {dest}  ({len(written)} skills)")
+
+        rules = _install_always_on_rules()
+        print(f"  {'':12}  always-on rule files  ({len(rules)} rules)")
 
     print("\nRepo-tracked platform copies:")
     for dest, seat in repo_platform_copies(REPO_ROOT):

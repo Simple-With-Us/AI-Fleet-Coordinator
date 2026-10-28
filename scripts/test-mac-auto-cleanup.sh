@@ -937,21 +937,41 @@ os.utime(owner, (now + float(owner_offset), now + float(owner_offset)))' \
 
 make_owner_lock() {
   # $1 = HOME, $2 = pid to record, $3 = host to record, $4 = owner mtime
-  # offset in seconds from the lock's, defaulting to newer than the lock.
+  # offset in seconds from the lock's, defaulting to newer than the lock,
+  # $5 = the process start token to record, defaulting to the one that pid
+  # actually has.
   #
   # The record carries the schema this protocol publishes EXACTLY, because
   # both implementations check the shape strictly and a partial record would
   # be refused as malformed rather than consulted.
   make_lock "$1"
-  python3 -c 'import json, os, sys
+  python3 -c 'import json, os, subprocess, sys
 home, pid, host = sys.argv[1:4]
+start = sys.argv[4] if len(sys.argv) > 4 else ""
+if not start:
+    # The start time of the process the record names, read the way the
+    # implementations read it.  A pid that has already exited has no start
+    # time any more, and the record keeps a synthetic one:  a dead holder is
+    # recognised by its pid, not by its start time.
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", pid],
+            capture_output=True, text=True, timeout=10, check=False, env=env,
+        )
+        start = result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        start = ""
+if not start:
+    start = "Mon Jan  1 00:00:00 2024"
 with open(os.path.join(home, ".claude-disk-janitor", ".housekeeper.lock.owner"), "w") as fh:
     json.dump({
         "pid": int(pid),
         "host": host,
         "acquired_at": 1700000000.0,
         "lock": os.path.join(home, ".claude-disk-janitor", ".housekeeper.lock"),
-    }, fh)' "$1" "$2" "$3"
+        "start": start,
+    }, fh)' "$1" "$2" "$3" "${5:-}"
   stamp_owner_lock "$1" "${4:-5}"
 }
 
@@ -1020,6 +1040,214 @@ H23E="$LOCK_TEST_ROOT/case23-other-host"
 mkdir -p "$H23E"
 make_owner_lock "$H23E" "$DEAD_PID" "some-other-host"
 check_owner_gone "$H23E" no
+
+# A LIVE pid whose start time does not match the record:  the kernel has
+# handed that number to somebody else since the record was written, so the
+# holder is gone even though the pid is alive.  Without the start time this
+# case looks exactly like a live holder, and the lock waits out the whole
+# stale window for a holder that is not there.
+H23F="$LOCK_TEST_ROOT/case23-reused-pid"
+mkdir -p "$H23F"
+make_owner_lock "$H23F" "$$" "$(hostname)" 5 "Mon Jan  1 00:00:00 2024"
+check_owner_gone "$H23F" yes
+OUT="$(run_lock_block "$H23F" 2>&1 || true)"
+if ! printf '%s' "$OUT" | grep -q 'LOCK_HELD=yes'; then
+  fail "a reused pid must not keep a dead holder's lock until the stale window expires"
+fi
+
+# 24. The two implementations of the owner record AGREE.
+#
+# The owner file is shared state and TWO implementations read it:  the Python
+# watcher (scripts/mac-resource-watch.py) and the embedded reader above.  They
+# reached opposite conclusions about the same file -- the shell took a lock
+# over that the watcher called malformed -- so this runs one table of records
+# through both and fails when they disagree.
+#
+# The table is the whole shape of the protocol:  a good record, a record with
+# a missing key, a record with an unknown key, records with values of the
+# wrong type, a record for another host, a record older than the lock beside
+# it, a record naming a dead pid, a record naming a live pid, and a record
+# naming a live pid whose start time does not match -- the reused pid.  It
+# also carries the two ways the readers used to disagree on a record that is
+# well formed in every field but one:  a start token longer than the bound
+# the watcher enforces, and a pid that belongs to another user, so signalling
+# it fails with EPERM.
+OWNER_GONE_FILE="$LOCK_TEST_ROOT/owner-gone.sh"
+printf '%s\n' "$OWNER_GONE_BLOCK" > "$OWNER_GONE_FILE"
+python3 - "$LOCK_TEST_ROOT/agreement" "$OWNER_GONE_FILE" "$ROOT/mac-resource-watch.py" <<'PY' || fail "the two owner readers disagreed"
+import importlib.util, json, os, pathlib, shutil, socket, subprocess, sys, time
+
+root = pathlib.Path(sys.argv[1])
+block = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+spec = importlib.util.spec_from_file_location("watch", sys.argv[3])
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+shell_command = block + '\nhousekeeper_owner_is_gone "$HOME/.claude-disk-janitor/.housekeeper.lock"'
+env = {"HOME": "", "PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+
+def start_token(pid):
+    """The start time of a pid, read the way the protocol reads it.
+
+    The table reads it ITSELF rather than asking the implementation, so the
+    records it builds pin the format the protocol publishes:  a change to
+    the implementation's own reading would show up here as a mismatch
+    instead of quietly changing both sides at once.
+    """
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"}
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=10, check=False, env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+# A pid that belongs to another user cannot be signalled, so os.kill raises
+# EPERM for it.  The readers have to agree on what that means:  the process
+# exists, so the check carries on to the start time, exactly as the watcher
+# does.  The stub reaches the embedded reader through sitecustomize, which
+# Python imports at startup, so the reader under test knows nothing about
+# it.  The watcher runs in THIS process, so the same stub is installed here.
+STUB_DIR = root / "eperm-stub"
+STUB_DIR.mkdir(parents=True, exist_ok=True)
+(STUB_DIR / "sitecustomize.py").write_text(
+    'import os\n'
+    'target = os.environ.get("MM_FAKE_EPERM_PID")\n'
+    'if target:\n'
+    '    real = os.kill\n'
+    '    def kill(pid, sig):\n'
+    '        if int(pid) == int(target):\n'
+    '            raise PermissionError(13, "Permission denied")\n'
+    '        return real(pid, sig)\n'
+    '    os.kill = kill\n',
+    encoding="utf-8",
+)
+_real_kill = os.kill
+_eperm_pid = None
+
+
+def _kill(pid, sig):
+    if _eperm_pid is not None and int(pid) == _eperm_pid:
+        raise PermissionError(13, "Permission denied")
+    return _real_kill(pid, sig)
+
+
+os.kill = _kill
+
+host = socket.gethostname()
+live_pid = os.getpid()
+dead = subprocess.Popen([sys.executable, "-c", "pass"])
+dead.wait()
+assert start_token(live_pid), "the live pid must have a readable start token"
+
+
+def record(rec_pid, lock_path, **overrides):
+    base = {
+        "pid": rec_pid,
+        "host": host,
+        "acquired_at": 1700000000.0,
+        "lock": lock_path,
+        "start": start_token(rec_pid) or "Mon Jan  1 00:00:00 2024",
+    }
+    base.update(overrides)
+    return base
+
+
+def shell_verdict(home, eperm_pid=None):
+    run_env = {**env, "HOME": str(home)}
+    if eperm_pid is not None:
+        run_env["PYTHONPATH"] = str(STUB_DIR)
+        run_env["MM_FAKE_EPERM_PID"] = str(eperm_pid)
+    result = subprocess.run(
+        ["bash", "-c", shell_command],
+        env=run_env,
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def watcher_verdict(home):
+    lock = pathlib.Path(home) / ".claude-disk-janitor" / ".housekeeper.lock"
+    mod.STATE_DIR = lock.parent
+    mod.HOUSEKEEPER_LOCK = lock
+    try:
+        mtime = lock.stat().st_mtime
+    except OSError:
+        return False
+    return mod._housekeeper_owner_is_gone(mtime)
+
+
+def write_case(home, payload, owner_newer=True):
+    state = home / ".claude-disk-janitor"
+    state.mkdir(parents=True, exist_ok=True)
+    lock = state / ".housekeeper.lock"
+    lock.mkdir(exist_ok=True)
+    now = time.time()
+    os.utime(lock, (now - 5, now - 5))
+    owner = state / ".housekeeper.lock.owner"
+    owner.write_text(
+        payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8"
+    )
+    offset = 5 if owner_newer else -10
+    os.utime(owner, (now + offset, now + offset))
+
+
+# The last element of a case is the pid the EPERM stub applies to, or None
+# for a case that signs normally.
+CASES = [
+    ("a dead pid", True, lambda lock: record(dead.pid, lock), True, None),
+    ("a live pid", False, lambda lock: record(live_pid, lock), True, None),
+    ("a reused pid", True,
+     lambda lock: record(live_pid, lock, start="Mon Jan  1 00:00:00 2024"), True, None),
+    ("a missing key", False,
+     lambda lock: {k: v for k, v in record(dead.pid, lock).items() if k != "start"}, True, None),
+    ("an unknown key", False,
+     lambda lock: dict(record(dead.pid, lock), unexpected="x"), True, None),
+    ("a pid that is a string", False,
+     lambda lock: record(dead.pid, lock, pid="1"), True, None),
+    ("a pid that is a bool", False,
+     lambda lock: record(dead.pid, lock, pid=True), True, None),
+    ("an empty start", False,
+     lambda lock: record(dead.pid, lock, start=""), True, None),
+    ("an overlong start", False,
+     lambda lock: record(dead.pid, lock, start="x" * 200), True, None),
+    ("another host", False,
+     lambda lock: record(dead.pid, lock, host="some-other-host"), True, None),
+    ("an owner older than the lock", False,
+     lambda lock: record(dead.pid, lock), False, None),
+    ("a file that is not json", False, lambda lock: "{ this is not json", True, None),
+    # A live pid that belongs to another user cannot be signalled, so the
+    # check has to treat EPERM as "the process exists" and go on to the
+    # start time.  The start time here does not match, so the holder is gone
+    # and both readers have to say so.
+    ("a pid that is not ours to signal", True,
+     lambda lock: record(live_pid, lock, start="Mon Jan  1 00:00:00 2024"), True,
+     live_pid),
+]
+
+problems = []
+for name, expected, build, owner_newer, eperm_pid in CASES:
+    home = root / name.replace(" ", "-")
+    shutil.rmtree(home, ignore_errors=True)
+    home.mkdir(parents=True)
+    lock = home / ".claude-disk-janitor" / ".housekeeper.lock"
+    write_case(home, build(str(lock)), owner_newer)
+    _eperm_pid = eperm_pid
+    shell = shell_verdict(home, eperm_pid)
+    watcher = watcher_verdict(home)
+    _eperm_pid = None
+    if shell != watcher:
+        problems.append("%s: the shell said %s and the watcher said %s" % (name, shell, watcher))
+    elif shell != expected:
+        problems.append("%s: both said %s where %s was expected" % (name, shell, expected))
+if problems:
+    raise SystemExit("; ".join(problems))
+print("both owner readers agree on every case")
+PY
 
 # AFC-504: the remote hop fails closed.  Every way it can go wrong -- a missing
 # target, a failed connectivity check, a failed maintenance command -- ends the

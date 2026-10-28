@@ -20,7 +20,7 @@ One targeted `recall_search` before you act costs seconds; re-deriving a lesson 
 At the start of every turn or task kickoff, evaluate these 4 triggers.  If ANY trigger matches, running `recall_search` is **mandatory** before inspecting code or executing trial-and-error diagnostic commands:
 1. **Error / Blocker Encounter**: Any 4xx/5xx HTTP error, test/build failure, timeout, crash trace, or Sentry issue.
 2. **Infrastructure & Platform**: Touching Coolify, LaunchAgents, pm2, Cloudflare Access/tunnels, Tailscale, Sentry, Qdrant, TEI, Redis, or secrets/auth.
-3. **Cross-Repo & Architectural Patterns**: Modifying shared protocols (AGENT-SYNC, the Linear and `simple-board` integration) or touching unfamiliar sibling repositories.
+3. **Cross-Repo & Architectural Patterns**: Modifying shared protocols (FLEET-PROTOCOL.md, the Linear and `simple-board` integration) or touching unfamiliar sibling repositories.
 4. **Pre-Owner Query**: Before asking the owner a question regarding preferred conventions, architectural decisions, or environment history.
 
 ### Permitted Bypass:

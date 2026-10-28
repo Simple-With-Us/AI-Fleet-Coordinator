@@ -20,12 +20,13 @@
 #  survived, which no grep over the body can see.
 #
 #  The mode.  `--entity` makes the gap with the HTML entity `&nbsp;` plus a normal
-#  space, in place of a real U+00A0 plus a space:  that is the form a GitHub pull
-#  request or issue body, comment or review comment takes (owner ruling
-#  2026-10-22).  No flag keeps the real U+00A0, which is the form a GitHub title and
-#  a Zulip post take, so every caller that passes no flag is unaffected.  The flag is
-#  taken out of @ARGV before the input is read, so the loop over the input files
-#  still sees only the files.
+#  space, in place of a real U+00A0 plus a space:  that is the form the chat panes of
+#  Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take, because
+#  those two normalize a raw U+00A0 away (owner ruling 2026-10-23, final).  No flag
+#  keeps the real U+00A0, which is the form every other surface takes, GitHub titles,
+#  bodies and comments included, so every caller that passes no flag is unaffected.
+#  The flag is taken out of @ARGV before the input is read, so the loop over the input
+#  files still sees only the files.
 #
 #  In the entity mode the inline code spans are held BEFORE the gap is made, because
 #  the entity is six literal characters and must never land inside a code span.  The

@@ -2,7 +2,7 @@
 
 `notify` runs right after an item is filed (or adopted), as the filing seat:
 
-    agent-sync post --as SEAT --session needsown --json --topic "OWNER <ID> <subject>" --to-owner -- -
+    simple-chat post --as SEAT --session needsown --json --topic "OWNER <ID> <subject>" --to-owner -- -
 
 with the message on standard input.  The mention comes from the owner id pinned in listener.toml
 (`--to-owner`), never from a name.  On success a comment `[needs-owner] notified msg <id>` records the
@@ -11,7 +11,7 @@ notify_pending` and CLAUDE's fallback notifier (C6-2) sends it.  A mirrored item
 post of its own:  the Grok Bot persona's topic is the notice, so its message id is recorded and the
 Linear link is replied in that topic.
 
-A post that may or may not have gone through (agent-sync exit 5 or 6, or a timeout) is never retried
+A post that may or may not have gone through (simple-chat exit 5 or 6, or a timeout) is never retried
 blind:  the message carries a reference line (the item's uid), and the topic is read for it first.  Only
 `find_notice` reads it, and the C6-2 notifier imports that one function:  it takes a message only from the
 bot of the filing seat (or CLAUDE, whose fallback notifier posts for any seat), only when the reference is
@@ -21,8 +21,9 @@ a peer who copies the (public) uid can never become the notice.
 A board write is classified before anything is done with it.  `ok` is the comment on the issue.  `retryable`
 means the board decided before it wrote anything and a later run may write the record again (exit 3, the
 claim is held by another seat, and exit 5, the rate limit).  `terminal` means it decided before it wrote
-anything and no retry will help until an operator acts (exit 2 usage, 4 no credentials, 6 auth refused and
-7 writes off), and it raises BoardFailed, so the CLI exits with the board's own code.  `unknown` means the
+anything and no retry will help until an operator acts (exit 2 usage, 4 no credentials, and 6 no
+bearer-verified seat or a refused authentication), and it raises BoardFailed, so the CLI exits with
+the board's own code.  `unknown` means the
 write may have landed (a timeout, an exit-1 GraphQL
 refusal, a transport failure, or anything we cannot prove was never sent):  the row is kept as unknown,
 so the record is never written twice.
@@ -48,7 +49,7 @@ from .errors import BoardFailed, Refusal
 from .items import Item
 from .proc import Result, Runner
 
-SESSION = "needsown"  # agent-sync cuts a session label to 8 characters
+SESSION = "needsown"  # simple-chat cuts a session label to 8 characters
 # The realm renamed #agent-sync, and the env var overrides it.  The name is read
 # through the links module, which casefolds it, so a mixed-case override still
 # compares with the casefolded channel names everywhere else.
@@ -59,14 +60,17 @@ FALLBACK_SEAT = "CLAUDE"  # CLAUDE's fallback notifier (C6-2) posts a pending no
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 # The board CLI's exit codes, and what each one means for a write.  2 usage,
-# 4 no credentials, 6 auth refused and 7 writes off are all decided before
-# anything is written, and a retry will not help until an operator acts:  they
-# are terminal.  3 claim held and 5 rate limit are decided before anything is
-# written too, but a later run may write the record, so they are retryable.
+# 4 no credentials, and 6 no bearer-verified seat or a refused authentication
+# are all decided before anything is written, and a retry will not help until
+# an operator acts:  they are terminal.  3 claim held and 5 rate limit are
+# decided before anything is written too, but a later run may write the
+# record, so they are retryable.
 # Exit 1 is the generic failure:  it carries both a GraphQL refusal and a
 # transport failure, and the mutation may have landed, so it is unknown.
+# Exit 7 is retired:  it was the writes-off switch, and the bearer-verified
+# seat is the only write gate now.
 BOARD_RETRYABLE_CODES = (3, 5)
-BOARD_TERMINAL_CODES = (2, 4, 6, 7)
+BOARD_TERMINAL_CODES = (2, 4, 6)
 UNKNOWN_MARKERS = ("no usable response", "not confirmed", "timed out", "timeout")
 
 # The four outcomes of a board write.
@@ -276,12 +280,12 @@ def find_notice(
     filed the item when the caller is not that seat (the fallback notifier runs as CLAUDE, so the filer's own bot
     must be allowed too, or a post the filer's bot landed but did not record would be posted a second time).
 
-    It reads the newest `READ_BACK` messages of `topic` (`agent-sync read --json`, whose fields are the real
+    It reads the newest `READ_BACK` messages of `topic` (`simple-chat read --json`, whose fields are the real
     `message_json`) and keeps a message only when all of this holds:  `is_bot` is true (never a person,
     whatever name they sign), its `seat` is the filer's or CLAUDE (a bot of another seat can copy the public
     uid), and `carries_ref` finds the reference as an unquoted line of its own (a quote-and-reply, from
     anyone, does not count).  The result is the lowest matching id, because the first post is the notice.
-    A sender whose kind agent-sync could not look up has `is_bot` null and is left out:  the worst result
+    A sender whose kind simple-chat could not look up has `is_bot` null and is left out:  the worst result
     is a repeated post, never an answer or a quote taken for the notice.
 
     The channel comes from the caller's own `environ`, and from the runner's own

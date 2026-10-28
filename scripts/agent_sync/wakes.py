@@ -41,7 +41,7 @@ RISKS = (
     "low",
     "uncertain",
     "high",
-)  # a peer request screened by the responder (AGENT-SYNC Precedence rule 3); null = no request
+)  # a peer request screened by the responder (FLEET-PROTOCOL Precedence rule 3); null = no request
 SCREEN_NOTE = "peer request screened %s; see the trigger"
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake", "wake-schema.json")
 CONTRACT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake", "wake-contract.md")
@@ -476,7 +476,7 @@ class LoopGuard:
         return self.enabled and self.count(key, now) >= self.LIMIT
 
     def holding(self, now: float | None = None) -> list[dict[str, Any]]:
-        """The topics at their limit, for `agent-sync status` (AFC-255):  the channel, the topic, the
+        """The topics at their limit, for `simple-chat status` (AFC-255):  the channel, the topic, the
         count that holds each and whether that count rolls (a bot DM, where it ages out) or waits for
         the owner however long that takes.  A guard that blocks silently looked like a working one, so
         status names every topic it is holding and why it is still holding it."""

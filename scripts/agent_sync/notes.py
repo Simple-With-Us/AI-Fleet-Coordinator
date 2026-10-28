@@ -1351,12 +1351,23 @@ def clean_log_entry(raw: Any) -> dict[str, Any] | None:
         value = raw[key]
         if key in ("reformatted", "flags"):
             if isinstance(value, Mapping):
-                out[key] = {
-                    text_safe(str(k))[:40]: v
-                    if isinstance(v, (bool, int)) or v is None
-                    else text_safe(str(v))[:80]
-                    for k, v in list(value.items())[:12]
-                }
+                cleaned: dict[str, Any] = {}
+                for k, v in list(value.items())[:12]:
+                    ck = text_safe(str(k))[:40]
+                    if isinstance(v, (bool, int)) or v is None:
+                        cleaned[ck] = v
+                    elif isinstance(v, Mapping):
+                        #  One level of nesting, for the per-kind counts.  A flat dict of small ints
+                        #  stays a dict, so nothing is cut off.  Anything deeper is still text.
+                        cleaned[ck] = {
+                            text_safe(str(k2))[:40]: v2
+                            if isinstance(v2, (bool, int)) or v2 is None
+                            else text_safe(str(v2))[:80]
+                            for k2, v2 in list(v.items())[:12]
+                        }
+                    else:
+                        cleaned[ck] = text_safe(str(v))[:80]
+                out[key] = cleaned
             continue
         if key in LOG_COUNTS:
             # A count:  a whole number, else null (a bool, text, or JSON's NaN and Infinity are no count).

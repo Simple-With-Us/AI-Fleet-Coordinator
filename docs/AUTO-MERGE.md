@@ -20,6 +20,7 @@ jobs:
   auto-merge:
     uses: Simple-With-Us/AI-Fleet-Coordinator/.github/workflows/auto-merge-reusable.yml@<PINNED_SHA>
     with:
+      expected_merge_actor: "<APP-SLUG>[bot]" # exact independently verified bot login
       require_codeowners_gate: false   # ST: true (money paths need a human merge)
       # gate_script: scripts/pr-touches-codeowners-paths.sh
       # self_guard_paths: .github/CODEOWNERS,.github/workflows/auto-merge-prs.yml,scripts/pr-touches-codeowners-paths.sh
@@ -27,7 +28,7 @@ jobs:
       # hold_labels: "do-not-automerge,needs-human-merge"
       # kody_check_name: "Kody Code Review"   # fleet reviewer check-run name
     secrets:
-      merge_token: ${{ secrets.GH_PAT || secrets.SHEPHERD_TOKEN }}
+      merge_token: ${{ needs.bot-token.outputs.token }} # existing approved App-token route
 ```
 
 ## Rules that do not move
@@ -35,6 +36,12 @@ jobs:
 - Arming never uses `GITHUB_TOKEN`: a bot-attributed merge dispatches no
   workflow events, so main would get no CI and no ship run.
 - No `merge_token` means a loud no-op, never a silent fallback.
+- The token must match the explicit `expected_merge_actor` bot login via
+  authenticated GraphQL `viewer.login`. Missing configuration, a personal
+  account, another bot, or an unverifiable response prevents arming.
+- Disarming uses only `GITHUB_TOKEN`, verifies `github-actions[bot]`, and reads
+  back the final armed state. It never retries with `merge_token`. A refused
+  or unreadable disarm is an error, not a reported success.
 - The token is probed with an authenticated API call before arming; a dead
   token fails the run with "token present but rejected" instead of a bare
   401 mid-step (ST-4393).
@@ -56,6 +63,15 @@ jobs:
   `GITHUB_TOKEN`.  The called workflow's `GITHUB_TOKEN` is capped by the
   caller's permissions, so a caller that wants the fallback to work also
   grants its workflow `checks: read`, `actions: read` and `issues: read`.
+
+- Current-head approval: by default (`require_current_approval: true`) a PR is
+  armed only while `approval_reviewer` (default `kody-ai[bot]`) has an APPROVED
+  review on the PR's current head commit.  A skipped review check, a COMMENTED
+  review, an approval on an older commit, a later CHANGES_REQUESTED, or a failed
+  lookup all disarm.  A new push makes the old approval stale.  There is no implicit lane
+  exemption (the lane pattern matches a title the author controls); a dependency
+  caller opts out with `require_current_approval: false`.  Callers pin the reusable by SHA,
+  so the gate reaches a repo when its pin is bumped.
 
 ## Merge queues
 
@@ -79,6 +95,22 @@ described.
 
 ## Credentials
 
-Long-term identity is a single GitHub App installed org-wide (owner action,
-not yet created); callers will mint installation tokens per run. Interim is
-the org `GH_PAT` secret, whose rotation is owned by Infisical automation.
+Before adopting this workflow revision, qualify the caller's existing approved
+App-token route and pass its exact bot login as `expected_merge_actor`. The
+illustrative `bot-token` job above is not provided by this workflow. Do not
+replace it with a personal PAT, create secrets, grant permissions, or copy a
+short-lived token into a repository secret to make adoption pass.
+
+Migration order: establish the approved bot mint route and its repository scope,
+verify the token's GraphQL principal and write capabilities without an unintended
+merge, pair caller input/token wiring with the pinned reusable revision, then
+observe normal classification, review/check gates and queue operation. Validate
+repository Actions-token disarm capability separately. Do not roll out a new pin
+before caller readiness is established; missing inputs fail closed and would
+interrupt unattended merging. Old pinned revisions do not acquire this guard.
+
+This is enforcement for this reusable armer and disarmer only. Other workflows,
+local clients, owner credentials and account settings remain separate surfaces.
+`python3 scripts/test_merge_principal_guard.py` executes both actual shell paths
+against controlled identity and state responses; it does not prove live caller
+credentials or permissions.

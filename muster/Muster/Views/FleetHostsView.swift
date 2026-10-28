@@ -8,8 +8,13 @@ import SwiftUI
 /// second host and not as a gap in the fleet.
 ///
 /// The panel is read only.  It never runs the doctor and never writes the report.
+///
+/// Under the hosts sits the Worker Health card:  the Worker's Linear token health,  from
+/// `~/.local/state/fleet-tools/worker-health.json`,  under the same forty-five minute rule.
 struct FleetHostsView: View {
     @State private var reading: FleetToolsReading?
+    /// The Worker's own health file,  read beside the doctor's report.
+    @State private var workerHealth: WorkerHealthReading?
     @State private var loading = false
     /// The host whose rows are open.
     @State private var expandedHost: String?
@@ -37,6 +42,9 @@ struct FleetHostsView: View {
                         problemBox(problem)
                     } else {
                         hostsSection(reading)
+                    }
+                    if let workerHealth {
+                        workerHealthCard(workerHealth)
                     }
                 } else {
                     Text("No report yet.  Refresh to read it.")
@@ -307,6 +315,87 @@ struct FleetHostsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // MARK: The Worker
+
+    /// The Worker's Linear token health,  one row per seat.
+    ///
+    /// A file out of its window,  or a Worker the collector could not reach,  shows its
+    /// reason and no seat rows:  rows from an old file are not current health evidence.
+    private func workerHealthCard(_ health: WorkerHealthReading) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Text("Worker Health")
+                    .font(.headline)
+                if health.problem == nil && health.isCurrent {
+                    FleetToolsStateBadge(state: health.state, width: 92)
+                }
+                if let age = health.age {
+                    Text("read \(age) ago")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(health.isCurrent ? Color.secondary : Color.orange)
+                }
+                Spacer()
+                if let bundle = health.bundle, health.reachable {
+                    Text("bundle \(bundle)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(bundle == "ok" ? Color.secondary : Color.red)
+                }
+            }
+            Text("The Worker's Linear token for each hosted seat, from its signed health route.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let problem = health.problem {
+                problemBox(problem)
+            } else if !health.isCurrent {
+                problemBox("This file is stale.\u{00A0} The collector writes it every fifteen minutes; old rows are not current health evidence.")
+            } else if !health.reachable {
+                problemBox("The collector could not reach the Worker: \(health.unreachableReason ?? "it did not say why").")
+            } else if health.seats.isEmpty {
+                Text("The Worker named no seats.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(health.seats) { seat in
+                    workerSeatRow(seat)
+                }
+            }
+            Text(health.path)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .padding(.top, 8)
+    }
+
+    private func workerSeatRow(_ seat: WorkerHealthSeat) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 8) {
+                Text(seat.seat.isEmpty ? "unnamed" : seat.seat)
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .frame(width: hostWidth, alignment: .leading)
+                Text(seat.tokenText)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                if let kind = seat.lastMintFailKind, !kind.isEmpty {
+                    Text("last mint failed: \(kind)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.orange)
+                }
+                Spacer(minLength: 0)
+                FleetToolsStateBadge(state: seat.cellState, width: stateWidth)
+            }
+            if let note = seat.note, !note.isEmpty {
+                Text(note)
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
     /// The colour a row's state carries,  from the app's own palette.
     private func tint(for outcome: FleetToolsRowOutcome) -> Color {
         switch outcome {
@@ -325,10 +414,12 @@ struct FleetHostsView: View {
         loading = true
         defer { loading = false }
         let url = FleetToolsReportReader.reportURL()
-        let result = await Task.detached(priority: .userInitiated) {
-            FleetToolsReportReader.read(at: url)
+        let healthURL = WorkerHealthReportReader.reportURL()
+        let (result, health) = await Task.detached(priority: .userInitiated) {
+            (FleetToolsReportReader.read(at: url), WorkerHealthReportReader.read(at: healthURL))
         }.value
         reading = result
+        workerHealth = health
         if expandedHost == nil {
             expandedHost = result.hosts.first?.host
         }

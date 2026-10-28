@@ -1,6 +1,6 @@
 name: agent-sync MCP Worker
 
-# The hosted agent-sync MCP Worker's workerd flow:  the bundled Worker run in
+# The hosted ST-MCP Worker's workerd flow:  the bundled Worker run in
 # Miniflare against fake Access certificates, mocked client metadata documents
 # and a fake Zulip.  Path-filtered, so it costs nothing on unrelated PRs.  It never
 # deploys and holds no secrets:  a merge is not a deploy (DEPLOY.md).
