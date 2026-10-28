@@ -35,7 +35,6 @@ import {
   GATE_LOG_NAME,
   PROPS_PHASE,
   SEAT_SECRETS,
-  SHARED_IDENTITY_SEATS,
   SEAT_LABELS,
   WAKE_SECRETS,
   KNOWN_SEATS,
@@ -303,84 +302,9 @@ async function serveMcp(request, env, ctx) {
     // and every other tool works as before (AFC-486).  The seat a request names is always this HostedTools' seat.
     notes: operatorNotesClientFromEnv(env),
   });
-  // AFC-331:  every grant is routed by identity.  A CURSOR or GROK-WEB grant may act as either seat and as
-  // every enabled Grok Bot persona;  any other grant only as its own seat (src/delegated-identities.js).
-  const sharedGroup = SHARED_IDENTITY_SEATS.includes(seat);
-  const delegatedCredentials = sharedGroup ? await resolveDelegatedCredentials(env) : null;
-  // Seat keys resolve through Infisical when INFISICAL_MODE allows (src/infisical.js);
-  // prefetched so the router's synchronous identityStatus keeps its contract.
-  // Optional reads, so one seat's absent key degrades only that seat, never every seat's request.
-  const seatKeys = new Map(await Promise.all(Object.entries(SEAT_SECRETS).map(async ([identity, names]) =>
-    [identity, await seatKeyRead(names)])));
-  const seatKeyOf = (identity) => seatKeys.get(identity) ?? "";
-  const routedTools = new IdentityRouter({
-    callerTools: tools,
-    credentials: delegatedCredentials,
-    identityStatus: (identity) => ({
-      zulip: seatKeyOf(identity) && config.botEmails[identity] ? "configured" : "missing",
-      linear: ((pair) => (pair && pair.clientId && pair.clientSecret ? "configured" : "missing"))(linearPairs.get(seatTagForSeat(identity))),
-    }),
-    createIdentity: !sharedGroup ? null : async (identity) => {
-      // Each identity has its own SeatGate:  its spacing, idempotency rows, role cache and budget.  The
-      // grant's gate is charged too (HostedTools.reserve), so another identity never multiplies it.
-      const identityGate = gate(env, identity);
-      const identityState = await identityGate.getState();
-      if (identityState.paused) throw new ToolError("paused", `The ${identity} identity is paused.`);
-      const common = {
-        callerSeat: seat,
-        callerGate: seatGate,
-        scopes,
-        clientId: typeof auth.clientId === "string" ? auth.clientId : "",
-        grantRef: tools.grantRef,
-        paused: tools.paused,
-        gate: identityGate,
-        cf: tools.cf,
-        recall: tools.recall,
-        fleetlink: tools.fleetlink,
-        notes: tools.notes,
-        linearWrites: tools.linearWrites,
-      };
-      const roleCredentials = delegatedCredentials.roles.get(identity);
-      if (roleCredentials) {
-        // A Grok Bot persona:  its row of the encrypted GB_IDENTITY_CREDENTIALS bundle.
-        const roleKey = roleCredentials.zulipKey;
-        const roleEmail = roleCredentials.email;
-        return new HostedTools({
-          ...common,
-          seat: identity,
-          delegatedLinear: true,
-          config: { ...config, botEmails: { ...config.botEmails, [identity]: roleEmail } },
-          zulip: new ZulipClient({ email: roleEmail, key: roleKey, ownerUserId: config.ownerUserId }),
-          key: roleKey,
-          linear: new LinearClient({
-            seat: identity,
-            clientId: roleCredentials.linearClientId,
-            clientSecret: roleCredentials.linearClientSecret,
-            gate: identityGate,
-            fetch: globalThis.fetch.bind(globalThis),
-          }),
-        });
-      }
-      if (!SHARED_IDENTITY_SEATS.includes(identity)) throw new ToolError("not_configured", `Credentials are missing for ${identity}.`);
-      // A peer seat of the shared group:  its own SEAT_SECRETS key and its own Linear app, never the grant's.
-      const peerKey = seatKeyOf(identity);
-      const peerEmail = config.botEmails[identity];
-      if (!peerKey || !peerEmail) throw new ToolError("not_configured", `Credentials are missing for ${identity}.`);
-      return new HostedTools({
-        ...common,
-        seat: identity,
-        config,
-        zulip: new ZulipClient({ email: peerEmail, key: peerKey, ownerUserId: config.ownerUserId }),
-        key: peerKey,
-        linear: linearClientFromPair(linearPairs.get(seatTagForSeat(identity)) ?? null, identity, { gate: identityGate }),
-        listener: listenerClientFromEnv(env, identity, {
-          wakeKey: Object.hasOwn(WAKE_SECRETS, identity)
-            ? await resolveSecret(env, { name: WAKE_SECRETS[identity], path: "/wake", envName: WAKE_SECRETS[identity], optional: true })
-            : "",
-        }),
-      });
-    },
-  });
+  // The authenticated grant assigns the acting principal. No per-call peer or
+  // persona credential loader is installed, even for legacy shared OAuth seats.
+  const routedTools = new IdentityRouter({ callerTools: tools, credentials: null, createIdentity: null });
   const authInfo = {
     token: auth.token,
     clientId: auth.clientId,
