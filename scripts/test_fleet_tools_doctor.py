@@ -128,6 +128,19 @@ class SeatAndMcpTests(unittest.TestCase):
     def test_mcp_registrations(self):
         self.touch(
             ".codex/config.toml",
+            "[mcp_servers.agent-sync]\ncommand = 'x'\n[mcp_servers.fleetlink]\nurl = 'y'\n",
+        )
+        self.touch(".claude.json", json.dumps({"mcpServers": {"agent-sync": {}}}))
+        report = doctor.Report()
+        doctor.check_mcp(report)
+        rows = {r["check"]: r for r in report.rows}
+        self.assertEqual(rows["mcp:codex"]["status"], "OK")
+        self.assertEqual(rows["mcp:claude"]["status"], "WARN")
+        self.assertIn("missing fleetlink", rows["mcp:claude"]["detail"])
+
+    def test_mcp_registrations_accept_the_older_stdio_name(self):
+        self.touch(
+            ".codex/config.toml",
             "[mcp_servers.simple-chat]\ncommand = 'x'\n[mcp_servers.fleetlink]\nurl = 'y'\n",
         )
         self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
@@ -137,6 +150,18 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertEqual(rows["mcp:codex"]["status"], "OK")
         self.assertEqual(rows["mcp:claude"]["status"], "WARN")
         self.assertIn("missing fleetlink", rows["mcp:claude"]["detail"])
+
+    def test_mcp_registrations_name_the_stdio_server_the_way_the_fleet_does(self):
+        self.touch(".codex/config.toml", "[mcp_servers.coolify]\ncommand = 'x'\n")
+        self.touch(".claude.json", json.dumps({"mcpServers": {}}))
+        report = doctor.Report()
+        doctor.check_mcp(report)
+        rows = {r["check"]: r for r in report.rows}
+        self.assertEqual(rows["mcp:codex"]["status"], "WARN")
+        missing = rows["mcp:codex"]["detail"].split("missing ", 1)[1]
+        self.assertEqual(
+            {name.strip() for name in missing.split(",")}, {"agent-sync", "fleetlink"}
+        )
 
     def test_post_only_when_the_failing_set_changes(self):
         calls = []

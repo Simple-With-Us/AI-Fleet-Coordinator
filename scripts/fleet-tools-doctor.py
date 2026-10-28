@@ -40,8 +40,9 @@ Checks:
   fleet-mode-doc  the Mac's ~/apps/FLEET-MODE.md equals the repo's docs/FLEET-MODE.md (WARN if not)
   seat:<S>    per seat:  Zulip bot, Linear app and FleetLink token key NAMES in Infisical
               (Fleet-OPS /zulip and /linear, AI Fleet Coordinator /fleetlink;  AFC-359:  no credential file is read)
-  mcp:codex   Codex registers simple-chat (and FleetLink when a token exists)
-  mcp:claude  Claude Code registers simple-chat (and FleetLink likewise)
+  mcp:codex   Codex registers the fleet's stdio server (agent-sync, or simple-chat by its
+              older name) and FleetLink when a token exists
+  mcp:claude  Claude Code registers the same two (agent-sync or simple-chat, FleetLink)
   tool:<T>    each fleet tool's currency (simple-chat, simple-notes, simple-board, recall, lane, fleet-mode,
               fleet-secrets, fleetlink), then each registry tool's install and version
   updater:<U> the job that keeps the runtime on main (the Mac's runtime-sync LaunchAgent,
@@ -1514,6 +1515,12 @@ def codex_mcp_names(text: str) -> list[str]:
         return []
 
 
+# The stdio server the seats register is the fleet's own Agent-Sync MCP server.  The
+# fleet registers it under the name "agent-sync"; "simple-chat" is the older name for
+# the same stdio server, and a seat that still uses it counts.
+MCP_STDIO_NAMES = ("agent-sync", "simple-chat")
+
+
 def check_mcp(report: Report) -> None:
     for seat in ("CODEX", "CLAUDE"):
         label = "mcp:" + seat.lower()
@@ -1522,7 +1529,11 @@ def check_mcp(report: Report) -> None:
         except ClientConfigError as exc:
             report.add(label, "FAIL", str(exc))
             continue
-        lacking = [name for name in ("simple-chat", "fleetlink") if name not in names]
+        lacking = []
+        if not any(name in names for name in MCP_STDIO_NAMES):
+            lacking.append("agent-sync")
+        if "fleetlink" not in names:
+            lacking.append("fleetlink")
         report.add(
             label,
             "WARN" if lacking else "OK",
