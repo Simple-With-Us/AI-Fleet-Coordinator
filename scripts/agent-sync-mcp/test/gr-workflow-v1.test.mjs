@@ -63,7 +63,7 @@ test('default-off discovery, cache separation and direct-call denial',async()=>{
 test('all workflow tools have dispatch and correct read/write scope',()=>{
   for(const action of WF_V1_ACTIONS) {
     assert.equal(typeof HostedTools.prototype['tool_gr_'+action],'function');
-    const read=['wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks'].includes(action);
+    const read=WF_V1_READ_ACTIONS.includes(action);
     assert.equal(HOSTED_READ_TOOLS.has('gr_'+action),read);
     assert.equal(HOSTED_WRITE_TOOLS.has('gr_'+action),!read);
   }
