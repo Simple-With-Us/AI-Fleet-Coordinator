@@ -54,6 +54,12 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_deployments": ({"deployments": "read"}, False),
+    "wf_deployment_get": ({"deployments": "read"}, False),
+    "wf_deployment_statuses": ({"deployments": "read"}, False),
+    "wf_deployment_create": ({"deployments": "write"}, True),
+    "wf_deployment_status_create": ({"deployments": "write"}, True),
+    "wf_deployment_delete": ({"deployments": "write"}, True),
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
@@ -423,6 +429,140 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "inline write outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "commit_id", "html_url")}}
+
+    @staticmethod
+    def _deployment_summary(value, status=False):
+        if (
+            not isinstance(value, dict)
+            or isinstance(value.get("id"), bool)
+            or not isinstance(value.get("id"), int)
+            or value["id"] < 1
+        ):
+            raise RelayGitHubError(502, "deployment receipt unverifiable")
+        keys = (
+            ("id", "state", "description", "created_at")
+            if status
+            else (
+                "id",
+                "sha",
+                "ref",
+                "environment",
+                "task",
+                "created_at",
+                "transient_environment",
+                "production_environment",
+            )
+        )
+        if status:
+            if value.get("state") not in (
+                "error",
+                "failure",
+                "inactive",
+                "in_progress",
+                "queued",
+                "pending",
+                "success",
+            ):
+                raise RelayGitHubError(502, "deployment state unverifiable")
+        elif not isinstance(value.get("sha"), str) or not _SHA.fullmatch(value["sha"]):
+            raise RelayGitHubError(502, "deployment SHA unverifiable")
+        out = {k: value.get(k) for k in keys}
+        for v in out.values():
+            if isinstance(v, str) and len(v.encode("utf-8")) > 1024:
+                raise RelayGitHubError(502, "deployment field unbounded")
+        return out
+
+    def wf_deployments(self, repo, args):
+        _only(args, ("repo", "per_page"))
+        count = _page(args)
+        rows = self._get(f"/repos/{repo}/deployments?per_page={count}")
+        if not isinstance(rows, list) or len(rows) > count:
+            raise RelayGitHubError(502, "deployment list unverifiable")
+        return {
+            "deployments": [self._deployment_summary(x) for x in rows],
+            "complete": len(rows) < count,
+        }
+
+    def wf_deployment_get(self, repo, args):
+        _only(args, ("repo", "deployment_id"))
+        ident = _int(args, "deployment_id")
+        row = self._deployment_summary(self._get(f"/repos/{repo}/deployments/{ident}"))
+        if row["id"] != ident:
+            raise RelayGitHubError(502, "deployment identity unverifiable")
+        return {"deployment": row}
+
+    def wf_deployment_statuses(self, repo, args):
+        _only(args, ("repo", "deployment_id", "per_page"))
+        ident, count = _int(args, "deployment_id"), _page(args)
+        rows = self._get(f"/repos/{repo}/deployments/{ident}/statuses?per_page={count}")
+        if not isinstance(rows, list) or len(rows) > count:
+            raise RelayGitHubError(502, "deployment status list unverifiable")
+        return {
+            "statuses": [self._deployment_summary(x, True) for x in rows],
+            "complete": len(rows) < count,
+        }
+
+    def wf_deployment_create(self, repo, args):
+        _only(args, ("repo", "sha", "environment", "description", "transient", "production"))
+        sha = _sha(args, "sha")
+        environment = self._text(args, "environment", 100)
+        description = self._text(args, "description", 140)
+        transient, production = args.get("transient"), args.get("production")
+        if not isinstance(transient, bool) or not isinstance(production, bool):
+            raise Refused("invalid deployment flags")
+        # Never auto-merge a branch or bypass required status contexts.
+        payload = {
+            "ref": sha,
+            "environment": environment,
+            "description": description,
+            "auto_merge": False,
+            "transient_environment": transient,
+            "production_environment": production,
+        }
+        row = self._deployment_summary(
+            self.client._call("POST", f"/repos/{repo}/deployments", payload, bearer=self.bearer)
+        )
+        if (
+            row["sha"] != sha
+            or row["environment"] != environment
+            or row["transient_environment"] != transient
+            or row["production_environment"] != production
+        ):
+            raise RelayGitHubError(502, "deployment creation unverifiable")
+        return {"deployment": row}
+
+    def wf_deployment_status_create(self, repo, args):
+        _only(args, ("repo", "deployment_id", "state", "description"))
+        ident = _int(args, "deployment_id")
+        state = _enum(
+            args,
+            "state",
+            ("error", "failure", "inactive", "in_progress", "queued", "pending", "success"),
+        )
+        description = self._text(args, "description", 140)
+        # auto_inactive=False avoids changing other deployments as a side effect.
+        row = self._deployment_summary(
+            self.client._call(
+                "POST",
+                f"/repos/{repo}/deployments/{ident}/statuses",
+                {"state": state, "description": description, "auto_inactive": False},
+                bearer=self.bearer,
+            ),
+            True,
+        )
+        if row["state"] != state or row["description"] != description:
+            raise RelayGitHubError(502, "deployment status write unverifiable")
+        return {"status": row}
+
+    def wf_deployment_delete(self, repo, args):
+        _only(args, ("repo", "deployment_id"))
+        ident = _int(args, "deployment_id")
+        result = self.client._call(
+            "DELETE", f"/repos/{repo}/deployments/{ident}", None, bearer=self.bearer
+        )
+        if result != {}:
+            raise RelayGitHubError(502, "deployment deletion unverifiable")
+        return {"deleted": True, "deployment_id": ident}
 
     def wf_branch_create(self, repo, args):
         _only(args, ("repo", "branch", "sha"))

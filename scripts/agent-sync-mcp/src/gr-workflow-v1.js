@@ -17,6 +17,12 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+  wf_deployments: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo'],{repo:REPO,per_page:PER_PAGE})],
+  wf_deployment_get: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo', 'deployment_id'],{repo:REPO,deployment_id:INT})],
+  wf_deployment_statuses: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo', 'deployment_id'],{repo:REPO,deployment_id:INT,per_page:PER_PAGE})],
+  wf_deployment_create: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo', 'sha', 'environment', 'description', 'transient', 'production'],{repo:REPO,sha:SHA,environment:{type:'string',minLength:1,maxLength:100},description:{type:'string',minLength:1,maxLength:140},transient:{type:'boolean'},production:{type:'boolean'}})],
+  wf_deployment_status_create: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo', 'deployment_id', 'state', 'description'],{repo:REPO,deployment_id:INT,state:{type:'string',enum:['error','failure','inactive','in_progress','queued','pending','success']},description:{type:'string',minLength:1,maxLength:140}})],
+  wf_deployment_delete: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo', 'deployment_id'],{repo:REPO,deployment_id:INT})],
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
   wf_release_asset_upload: ['Upload up to 32 KiB secret-scanned UTF-8 text as a new asset; no overwrite/delete.',obj(['repo','release_id','name','content_b64'],{repo:REPO,release_id:INT,name:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?$'},content_b64:{type:'string',minLength:1,maxLength:43692}})],
@@ -44,7 +50,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -87,10 +93,17 @@ export function boundedWorkflowInput(args) {
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
 export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
-  (action !== 'wf_review_submit' && action !== 'wf_review_inline' || reviewBodyOk(args));
+  (action !== 'wf_review_submit' && action !== 'wf_review_inline' || reviewBodyOk(args)) && (!action.startsWith('wf_deployment') || ['environment','description'].every(k => !(k in args) || typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k==='environment' ? 100 : 140)));
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+  wf_deployments:['deployments', 'complete'],
+  wf_deployment_get:['deployment'],
+  wf_deployment_statuses:['statuses', 'complete'],
+  wf_deployment_create:['deployment'],
+  wf_deployment_status_create:['status'],
+  wf_deployment_delete:['deleted', 'deployment_id'],
+
   wf_release_assets:['assets','complete'],wf_release_asset_get:['asset'],wf_release_asset_upload:['asset'],
   wf_review_submit:['review'],wf_review_inline:['comment'],wf_branch_create:['ref','sha'],
   wf_pr_list: ['pulls','complete'], wf_pr_files: ['files','complete'],
@@ -104,6 +117,13 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 export function validWfV1Response(action, body) {
+  if (action.startsWith('wf_deployment')) {
+    const id = x => x && Number.isInteger(x.id) && x.id > 0;
+    const dep = x => id(x) && /^[0-9a-f]{40}$/.test(x.sha);
+    const status = x => id(x) && ['error','failure','inactive','in_progress','queued','pending','success'].includes(x.state);
+    if (action === 'wf_deployment_delete' ? body?.deleted !== true || !Number.isInteger(body?.deployment_id) || body.deployment_id < 1 : action === 'wf_deployments' ? !Array.isArray(body?.deployments) || body.deployments.length > 50 || !body.deployments.every(dep) : action === 'wf_deployment_statuses' ? !Array.isArray(body?.statuses) || body.statuses.length > 50 || !body.statuses.every(status) : action === 'wf_deployment_status_create' ? !status(body?.status) : !dep(body?.deployment)) return false;
+  }
+
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;
