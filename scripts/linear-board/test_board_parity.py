@@ -483,9 +483,7 @@ class CommandsCliTests(ParityCliTest):
 
 class RunCliTests(ParityCliTest):
     def test_run_read_sends_the_named_document(self):
-        p = self.board(
-            "run", "get_issue", "--arg", "id=123", drop=("AGENT_SEAT",)
-        )
+        p = self.board("run", "get_issue", "--arg", "id=123", drop=("AGENT_SEAT",))
         ((op, q, v),) = self.mock.api_requests
         self.assertEqual(op, "AgentSyncNamed")
         doc, variables = CLI.build_named_operation(CLI.named_command("get_issue"), {"id": "123"})

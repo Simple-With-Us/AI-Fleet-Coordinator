@@ -1763,9 +1763,7 @@ class SafetyTests(BoardTest):
         old = self.tmp / "old-board"
         old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
         extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
-        p = self.board(
-            "list", "--app", "AFC", drop=("AGENT_SEAT",), extra=extra
-        )
+        p = self.board("list", "--app", "AFC", drop=("AGENT_SEAT",), extra=extra)
         self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])
         # a write never rides the rollback backend:  it would skip the bearer-verified seat
@@ -2893,11 +2891,17 @@ class RelabelTests(BoardTest):
         # to a minted bearer and its verify route.  A test that wants no seat drops the locator.
         if "SIMPLE_BOARD_BEARER_LOCATOR" not in drop and "SIMPLE_BOARD_BEARER_LOCATOR" not in e:
             e["SIMPLE_BOARD_BEARER_LOCATOR"] = self.bearer_locator_for("CLAUDE")
-        if "SIMPLE_BOARD_BEARER_VERIFY_URL" not in drop and "SIMPLE_BOARD_BEARER_VERIFY_URL" not in e:
+        if (
+            "SIMPLE_BOARD_BEARER_VERIFY_URL" not in drop
+            and "SIMPLE_BOARD_BEARER_VERIFY_URL" not in e
+        ):
             e["SIMPLE_BOARD_BEARER_VERIFY_URL"] = self.verify_url
         p = subprocess.run(
             [PY, "-c", RELABEL_BOOTSTRAP, str(RELABEL), *args],
-            env=e, capture_output=True, text=True, timeout=60
+            env=e,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         self.assertEqual(
             p.returncode, code, f"exit {p.returncode}\nstdout:\n{p.stdout}\nstderr:\n{p.stderr}"
@@ -3982,9 +3986,7 @@ class FlatLabelTests(BoardTest):
             self.assertNotIn("OLD BOARD", p.stdout, args)
         # A write verb with no Linear-only flag still does not reach the archived CLI:
         # the frozen findings.db is read-only, so the backend refuses it first.
-        p = self.board(
-            "list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT",)
-        )
+        p = self.board("list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT",))
         self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])
 

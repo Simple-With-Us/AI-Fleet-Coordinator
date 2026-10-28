@@ -21,12 +21,12 @@ not run it before the owner says so.
   python3 scripts/linear-board/relabel_claims.py            # print the plan
   python3 scripts/linear-board/relabel_claims.py --apply
 """
+
 from __future__ import annotations
 
 import argparse
 import importlib.machinery
 import importlib.util
-import os
 import sys
 from pathlib import Path
 
@@ -54,9 +54,15 @@ def load_board():
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Add claimed:<SEAT> labels to imported live claims.")
-    ap.add_argument("--apply", action="store_true", help="write the labels (default: print the plan only)")
-    ap.add_argument("--states", default=",".join(LIVE_STATES), help="comma-separated workflow states to cover")
-    ap.add_argument("--limit", type=int, default=0, help="stop after this many writes (0 = no limit)")
+    ap.add_argument(
+        "--apply", action="store_true", help="write the labels (default: print the plan only)"
+    )
+    ap.add_argument(
+        "--states", default=",".join(LIVE_STATES), help="comma-separated workflow states to cover"
+    )
+    ap.add_argument(
+        "--limit", type=int, default=0, help="stop after this many writes (0 = no limit)"
+    )
     a = ap.parse_args(argv)
     B = load_board()
     # A write needs a bearer-verified seat, as every write does:  the script never takes an identity from
@@ -67,15 +73,20 @@ def main(argv: list[str] | None = None) -> int:
     L = B.Linear(auth, B.endpoint("LINEAR_BOARD_API_URL", B.GRAPHQL_URL))
     if a.apply:
         B.check_write_identity(L, auth)
-    query = """query BoardRelabel($filter: IssueFilter, $first: Int!, $after: String) {
+    query = (
+        """query BoardRelabel($filter: IssueFilter, $first: Int!, $after: String) {
       issues(filter: $filter, first: $first, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes { ...BoardIssue description }
       }
-    }""" + B.F_ISSUE
+    }"""
+        + B.F_ISSUE
+    )
     todo, marked, unknown = [], 0, []
     try:
-        for n in L.paginate(query, {"filter": {"state": {"name": {"in": states}}}}, ("issues",), 50):
+        for n in L.paginate(
+            query, {"filter": {"state": {"name": {"in": states}}}}, ("issues",), 50
+        ):
             if B.claim_markers(n):
                 marked += 1
                 continue
@@ -84,14 +95,20 @@ def main(argv: list[str] | None = None) -> int:
                 todo.append((n, seats))
             else:
                 unknown.append(n)
-        print(f"{len(todo)} issue(s) to mark, {marked} already marked, {len(unknown)} with no claimant "
-              f"in their footer (states: {', '.join(states)})")
+        print(
+            f"{len(todo)} issue(s) to mark, {marked} already marked, {len(unknown)} with no claimant "
+            f"in their footer (states: {', '.join(states)})"
+        )
         for n, seats in todo:
-            print(f"  {n['identifier']:<9} {(n.get('state') or {}).get('name', ''):<12} -> "
-                  f"{', '.join(B.CLAIM_PREFIX + s for s in seats)}")
+            print(
+                f"  {n['identifier']:<9} {(n.get('state') or {}).get('name', ''):<12} -> "
+                f"{', '.join(B.CLAIM_PREFIX + s for s in seats)}"
+            )
         for n in unknown:
-            print(f"  {n['identifier']:<9} {(n.get('state') or {}).get('name', ''):<12} no claimant "
-                  "(left as it is)")
+            print(
+                f"  {n['identifier']:<9} {(n.get('state') or {}).get('name', ''):<12} no claimant "
+                "(left as it is)"
+            )
         if not a.apply:
             print("dry run: nothing written.  Rerun with --apply to add the labels.")
             return 0
@@ -99,7 +116,9 @@ def main(argv: list[str] | None = None) -> int:
         done = 0
         for n, seats in todo:
             if a.limit and done >= a.limit:
-                print(f"stopped at --limit {a.limit}; rerun to continue (marked issues are skipped).")
+                print(
+                    f"stopped at --limit {a.limit}; rerun to continue (marked issues are skipped)."
+                )
                 break
             ids = [ws.label_id(f"{B.CLAIM_PREFIX}{s}", create=True) for s in seats]
             current = {x["id"] for x in (n.get("labels") or {}).get("nodes") or []}
