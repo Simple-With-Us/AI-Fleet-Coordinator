@@ -162,6 +162,7 @@ class SeatPolicy:
         "wf_review_inline",
         "wf_branch_create",
         "wf_pr_list",
+        "wf_pr_files_page",
         "wf_pr_files",
         "wf_file_get",
         "wf_tree",

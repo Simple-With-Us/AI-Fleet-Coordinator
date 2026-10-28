@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_pr_files_page": ({"pull_requests": "read"}, False),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -2730,6 +2731,82 @@ class WorkflowVerbs:
                 for p in data[:MAX_PROJECT]
             ],
             "complete": False,
+        }
+
+    def wf_pr_files_page(self, repo, args):
+        """One metadata-only PR file page, fenced by before/after head observations."""
+        _only(args, ("repo", "number", "expected_head_sha", "page", "per_page"))
+        number, head = _int(args, "number"), _sha(args, "expected_head_sha")
+        page = _int(args, "page", 1, 100) if "page" in args else 1
+        limit = _page(args)
+
+        def verify_head():
+            pr = self._get(f"/repos/{repo}/pulls/{number}")
+            if (
+                not isinstance(pr, dict)
+                or type(pr.get("number")) is not int
+                or pr["number"] != number
+                or not isinstance(pr.get("head"), dict)
+                or pr["head"].get("sha") != head
+            ):
+                raise Refused("PR head not matched")
+
+        verify_head()
+        data = self._get(f"/repos/{repo}/pulls/{number}/files?per_page={limit}&page={page}")
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "PR files page unverifiable")
+        files = []
+        for row in data:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("sha"), str)
+                or not _SHA.fullmatch(row["sha"])
+                or row.get("status")
+                not in ("added", "removed", "modified", "renamed", "copied", "changed", "unchanged")
+            ):
+                raise RelayGitHubError(502, "PR file metadata unverifiable")
+
+            def file_path(key):
+                value = row.get(key)
+                if not isinstance(value, str) or not value or len(value) > 1024 or "\x00" in value:
+                    raise RelayGitHubError(502, "PR file path unverifiable")
+                try:
+                    size = len(value.encode("utf-8"))
+                except UnicodeEncodeError:
+                    raise RelayGitHubError(502, "PR file path unverifiable") from None
+                if (
+                    size > 4096
+                    or find_secret(value)
+                    or re.search(
+                        r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}",
+                        value,
+                    )
+                ):
+                    raise Refused("PR file path withheld")
+                return value
+
+            filename = file_path("filename")
+            previous = file_path("previous_filename") if row["status"] == "renamed" else None
+            counts = {k: row.get(k) for k in ("additions", "deletions", "changes")}
+            if any(type(v) is not int or not 0 <= v <= 1000000000 for v in counts.values()):
+                raise RelayGitHubError(502, "PR file counts unverifiable")
+            files.append(
+                {
+                    "sha": row["sha"],
+                    "filename": filename,
+                    "previous_filename": previous,
+                    "status": row["status"],
+                    **counts,
+                }
+            )
+        verify_head()
+        return {
+            "files": files,
+            "number": number,
+            "head_sha": head,
+            "page": page,
+            "has_more": len(files) == limit,
+            "history_complete": False,
         }
 
     def wf_pr_files(self, repo, args):
