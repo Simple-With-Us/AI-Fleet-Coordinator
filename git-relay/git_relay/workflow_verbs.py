@@ -870,7 +870,12 @@ class WorkflowVerbs:
     def wf_git_blob_binary_get(self, repo, args):
         _only(args, ("repo", "sha"))
         sha = _sha(args, "sha")
-        value = self._get(f"/repos/{repo}/git/blobs/{sha}")
+        try:
+            value = self._get(f"/repos/{repo}/git/blobs/{sha}")
+        except RelayGitHubError as exc:
+            if exc.code == "response_too_large":
+                raise Refused("binary blob exceeds supported response size") from None
+            raise
         if isinstance(value, dict) and type(value.get("size")) is int and value["size"] > 32000:
             raise Refused("binary blob exceeds supported size")
         if (

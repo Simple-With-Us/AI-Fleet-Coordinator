@@ -49,3 +49,24 @@ class BinaryRead(unittest.TestCase):
         m = Minter()
         WorkflowVerbs.for_action(Client(), Policy(), m, "swu-wise", a, REPO)
         self.assertEqual(m.calls[0][2], {"contents": "read", "metadata": "read"})
+
+    def test_definite_response_size_vs_real_transport_failure(self):
+        class BigClient(Client):
+            def _call(self, *args, **kw):
+                raise RelayGitHubError(0, "size", code="response_too_large")
+
+        a = "wf_git_blob_binary_get"
+        args = {"repo": REPO, "sha": "a" * 40}
+        with self.assertRaises(Refused):
+            WorkflowVerbs(BigClient(), Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
+                a, args
+            )
+
+        class NetworkClient(Client):
+            def _call(self, *args, **kw):
+                raise RelayGitHubError(0, "network")
+
+        with self.assertRaises(RelayGitHubError):
+            WorkflowVerbs(NetworkClient(), Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
+                a, args
+            )
