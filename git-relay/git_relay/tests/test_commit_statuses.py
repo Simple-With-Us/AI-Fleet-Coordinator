@@ -1,4 +1,5 @@
 import unittest
+import json
 
 try:
     from .test_workflow_verbs import REPO, SHA, Client, Policy, Minter
@@ -16,15 +17,17 @@ class Statuses(unittest.TestCase):
         from git_relay.policy import SeatPolicy
 
         policy = SeatPolicy(
-            {
-                "swu-wise": {
-                    "token": "x" * 32,
-                    "app_slug": "swu-wise",
-                    "mint_permissions": {"statuses": "write"},
-                    "actions": ["wf_commit_status_create"],
-                    "repos": ["example/repo"],
+            json.dumps(
+                {
+                    "swu-wise": {
+                        "token": "x" * 32,
+                        "app_slug": "swu-wise",
+                        "mint_permissions": {"statuses": "write"},
+                        "actions": ["wf_commit_status_create"],
+                        "repos": ["example/repo"],
+                    }
                 }
-            }
+            )
         )
         self.assertIsNone(policy.authorize("swu-wise", "wf_commit_status_create", "example/repo"))
         m = Minter()
