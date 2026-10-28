@@ -135,14 +135,14 @@ class IssueTests(unittest.TestCase):
 
     def test_pre_read_failure_does_not_hold_a_never_sent_write(self):
         from git_relay.github_client import RelayGitHubError
-        from git_relay.workflow_verbs import Unknown
+        from git_relay.server import PreReadUnavailable
 
         for action, args in [
             ("wf_issue_update", {"number": 2, "state": "closed"}),
             ("wf_issue_comment", {"number": 2, "body": "x"}),
         ]:
             # Every transient Relay.handle treats as unknown-worthy (transport
-            # failure, 408, 5xx) must surface as Unknown here instead, so the
+            # failure, 408, 5xx) must surface as PreReadUnavailable here instead, so the
             # key is released and the seat can retry.
             for status in (0, 408, 503):
                 client = Client()
@@ -152,7 +152,7 @@ class IssueTests(unittest.TestCase):
 
                 client._call = fail
                 h = WorkflowVerbs(client, Policy(), "swu-wise", "opaque", "swu-wise", action, REPO)
-                with self.assertRaises(Unknown):
+                with self.assertRaises(PreReadUnavailable):
                     h.run(action, {"repo": REPO, **args})
             # A terminal pre-read failure is still the upstream error, not Unknown.
             client = Client()
@@ -210,8 +210,11 @@ class IssueTests(unittest.TestCase):
                 outcomes=OutcomeStore(os.path.join(tmp, "outcomes")),
                 workflow_verbs_enabled=True,
             )
-            status, _body = r.handle(token, "wf_issue_update", args)
+            status, body = r.handle(token, "wf_issue_update", args)
             self.assertEqual(status, 503)
+            self.assertTrue(body["retryable"])
+            self.assertNotIn("outcome", body)
+            self.assertNotIn("credential", body["error"])
             # The key was released, not held unknown: the retry runs the write.
             status2, body2 = r.handle(token, "wf_issue_update", args)
             self.assertEqual(status2, 200)

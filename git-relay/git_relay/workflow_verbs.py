@@ -27,7 +27,7 @@ from urllib.parse import quote
 
 from .github_client import RelayGitHubError
 from .secret_scan import find_secret
-from .server import _perm_within_ceiling
+from .server import PreReadUnavailable, _perm_within_ceiling
 
 
 class Refused(ValueError):
@@ -328,7 +328,7 @@ class WorkflowVerbs:
             data = self._get(f"/repos/{repo}/issues/{number}")
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
-                raise Unknown("issue pre-read unavailable; no write attempted") from None
+                raise PreReadUnavailable("issue pre-read unavailable; no write attempted") from None
             raise
         return self._issue_summary(data)
 
