@@ -375,7 +375,7 @@ jobs:
     - name: Set up Node
       uses: actions/setup-node@v7
       with:
-        node-version: '24'
+        node-version: '26'
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
     # Shared alert ingress: state transitions, vendor normalization, and the
