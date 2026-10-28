@@ -642,7 +642,9 @@ class SeatControlMCP:
             status = receipt.get("status") if isinstance(receipt, dict) else prior["state"]
             return self._result(
                 status,
-                receipt.get("reason") if isinstance(receipt, dict) else "previous request was not dispatched",
+                receipt.get("reason")
+                if isinstance(receipt, dict)
+                else "previous request was not dispatched",
                 data=receipt,
             )
         if prior.get("state") == "sent":
@@ -694,7 +696,9 @@ class SeatControlMCP:
                 status = receipt.get("status") if isinstance(receipt, dict) else prior["state"]
                 return self._result(
                     status,
-                    receipt.get("reason") if isinstance(receipt, dict) else "previous request was not dispatched",
+                    receipt.get("reason")
+                    if isinstance(receipt, dict)
+                    else "previous request was not dispatched",
                     data=receipt,
                 )
             if prior.get("state") == "sent":
@@ -901,13 +905,16 @@ class SeatControlMCP:
                 "request_conflict", "request_id was already used for different content"
             )
         receipt = prior.get("result") if prior else None
-        if prior and (prior.get("state") in {"held", "failed"} or (
-            isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}
-        )):
+        if prior and (
+            prior.get("state") in {"held", "failed"}
+            or (isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"})
+        ):
             status = receipt.get("status") if isinstance(receipt, dict) else prior["state"]
             return self._result(
                 status,
-                receipt.get("reason") if isinstance(receipt, dict) else "previous request was not dispatched",
+                receipt.get("reason")
+                if isinstance(receipt, dict)
+                else "previous request was not dispatched",
                 data=receipt,
             )
         if prior and prior.get("state") == "sent":
