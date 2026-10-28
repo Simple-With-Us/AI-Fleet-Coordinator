@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-28T23:05:00Z",
+  "updatedAt": "2026-10-28T23:10:00Z",
   "apps": {
     "app.botfleet": {
       "marketingVersion": "1.0.29",
@@ -87,7 +87,7 @@
     },
     "com.simplewithus.codecaps.ios": {
       "marketingVersion": "0.1.0",
-      "build": "202610281623",
+      "build": "001",
       "appleId": 6814623846,
       "displayName": "CodeCaps Companion"
     }
