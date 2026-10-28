@@ -113,16 +113,15 @@ def _active_by_seat_copies() -> tuple[str, ...]:
 def _retired_by_seat_copies() -> tuple[str, ...]:
     """The by-seat upload packs of the retired seats.
 
-    A retired seat's catalog pack is frozen at its retirement text:  the review
-    rule for this repo (Rule 12) holds that a retired artifact is not maintained,
-    so a change to the one home must not write new text into a seat nobody runs.
-    The installer honours that too -- it renders every live catalog seat and
-    leaves a retired seat's pack as it was.
+    A retired seat's catalog pack is rendered from the canonical pack like every
+    other seat's (owner, Oct 22 2026):  the rename guard's skip of the retired
+    seats' catalog copies went away, because a pack that names a channel the
+    realm no longer has is a stale consumer and the skip let it through
+    unnoticed.  The retirement notice comes from the renderer and not from a hand
+    edit, so a retired pack carries it and names the live channel too.
 
-    That makes these packs frozen history rather than copies of the one home, so
-    the gates below must not compare them with it:  a gate that demands a
-    retired pack carry today's converter would push every future change to the
-    one home back into the retired seats, which is the drift Rule 12 forbids.
+    So a retired pack is a generated output like any other:  the gates below read
+    it and hold it to the one home, the same as every other copy.
     """
     return tuple(
         "docs/fleet-skills/by-seat/%s/sentence-gap/SKILL.md" % (seat.seat_key or seat.tag.lower())
@@ -148,6 +147,7 @@ RENDERED_COPIES = (
         ".cursor/rules/sentence-gap.mdc",
     )
     + _active_by_seat_copies()
+    + _retired_by_seat_copies()
     + _platform_copies()
 )
 
@@ -482,12 +482,7 @@ class OneSourceOfTruthTests(unittest.TestCase):
         cannot be edited here, so it is asserted on its own."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if (
-                rel in DATED_RECORDS
-                or rel in GENERATED_MIRRORS
-                or rel in CHECKER_FILES
-                or rel in _retired_by_seat_copies()
-            ):
+            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
@@ -502,17 +497,20 @@ class OneSourceOfTruthTests(unittest.TestCase):
                 )
 
 
-class RetiredCatalogPackTests(unittest.TestCase):
-    """A retired seat's catalog pack is frozen:  the renderer must not write into it.
+class RetiredCatalogPackRenderTests(unittest.TestCase):
+    """A retired seat's catalog pack is a current render of the canonical pack.
 
-    Rule 12 holds that a retired artifact is not maintained.  The renderer is the one
-    program that writes those packs, so the rule is pinned here against the renderer
-    itself:  a run over the checkout must leave every retired pack byte for byte as
-    it was.  Without this, the next change to the one home would drag the retired
-    seats along with it, which is the drift the rule forbids.
+    The owner ruled on Oct 22 2026 that the retired seats' catalog copies are
+    rendered from the canonical pack like every other seat's are, so the rename
+    guard's skip of them went away.
+
+    So the pin here is a staleness check and not a freeze.  A render over the
+    checkout must leave every retired pack byte for byte as it was, because the
+    committed pack is already a fresh render of the one home.  A pack left behind
+    by an older one home fails this, and so does a hand edit to one.
     """
 
-    def test_the_renderer_leaves_the_retired_packs_alone(self) -> None:
+    def test_the_renderer_leaves_the_retired_packs_current(self) -> None:
         packs = _retired_by_seat_copies()
         self.assertTrue(packs, "the registry names no retired seat")
 
@@ -537,7 +535,7 @@ class RetiredCatalogPackTests(unittest.TestCase):
         self.assertEqual(
             before,
             digests(),
-            "the renderer wrote into a retired seat's pack",
+            "a retired seat's pack is not a current render of the canonical pack",
         )
 
 
