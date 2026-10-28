@@ -1,6 +1,9 @@
 import unittest
 
-from test_workflow_verbs import REPO, SHA, Client, Policy
+try:
+    from .test_workflow_verbs import REPO, SHA, Client, Policy
+except ImportError:
+    from test_workflow_verbs import REPO, SHA, Client, Policy
 
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
