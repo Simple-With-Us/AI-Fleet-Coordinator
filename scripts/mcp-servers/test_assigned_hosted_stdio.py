@@ -239,6 +239,47 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(error["code"], "outcome_unknown")
         self.assertNotIn("private-partial-response", json.dumps(result))
 
+    def test_explicit_reinitialize_adopts_rotated_session_and_safe_protocol(self):
+        replies = iter(
+            [
+                Response(
+                    json.dumps(self.reply({"protocolVersion": "future-v2"})).encode(),
+                    session="first",
+                ),
+                Response(
+                    json.dumps(self.reply({"protocolVersion": "future-v2"})).encode(),
+                    session="second",
+                ),
+            ]
+        )
+        adapter = mod.Adapter(TOKEN, lambda *a, **kw: next(replies))
+        adapter.call(self.message("initialize"))
+        adapter.call(self.message("initialize"))
+        self.assertEqual(adapter.session, "second")
+        self.assertEqual(adapter.protocol, "future-v2")
+
+    def test_invalid_and_oversized_frames_are_replied_and_next_frame_survives(self):
+        import sys
+        from unittest import mock
+
+        payload = (
+            b"invalid\n"
+            + b"x" * (mod.MAX_BYTES + 10)
+            + b"\n"
+            + b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n'
+        )
+        fake_stdin = type("Input", (), {"buffer": io.BytesIO(payload)})()
+        out = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"ASSIGNED_MCP_BEARER": TOKEN}),
+            mock.patch.object(sys, "stdin", fake_stdin),
+            mock.patch.object(sys, "stdout", out),
+            mock.patch.object(mod.Adapter, "call", return_value=None) as call,
+        ):
+            self.assertEqual(mod.main(), 0)
+        self.assertEqual(call.call_count, 1)
+        self.assertEqual(len(out.getvalue().splitlines()), 2)
+
     def test_no_redirect_handler(self):
         self.assertIsNone(
             mod.NoRedirect().redirect_request(

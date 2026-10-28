@@ -96,6 +96,7 @@ class Adapter:
             "Authorization": "Bearer " + self.token,
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
+            "User-Agent": "assigned-hosted-stdio/1.0",
         }
         if self.session:
             headers["Mcp-Session-Id"] = self.session
@@ -115,7 +116,11 @@ class Adapter:
                 if session:
                     if len(session) > 256 or not re.fullmatch(r"[!-~]+", session):
                         return failure(message)
-                    if self.session and session != self.session:
+                    if (
+                        self.session
+                        and session != self.session
+                        and message.get("method") != "initialize"
+                    ):
                         return failure(message)
                 raw = response.read(MAX_BYTES + 1)
                 if len(raw) > MAX_BYTES or self.token.encode() in raw:
@@ -151,9 +156,7 @@ class Adapter:
                 result = matching[0]
                 if message.get("method") == "initialize" and isinstance(result.get("result"), dict):
                     protocol = result["result"].get("protocolVersion")
-                    if not isinstance(protocol, str) or not re.fullmatch(
-                        r"\d{4}-\d{2}-\d{2}", protocol
-                    ):
+                    if not isinstance(protocol, str) or not re.fullmatch(r"[!-~]{1,128}", protocol):
                         return failure(message)
                     self.protocol = protocol
                     self.session = session
@@ -176,16 +179,35 @@ def main():
         if not raw:
             return 0
         if len(raw) > MAX_BYTES:
+            # Drain the rejected frame; its tail must not become another request.
+            while raw and not raw.endswith(b"\n"):
+                raw = sys.stdin.buffer.readline(MAX_BYTES + 1)
             print(
-                "assigned-hosted-stdio: oversized input; stopped without sending", file=sys.stderr
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32600, "message": "Input frame too large."},
+                    }
+                ),
+                flush=True,
             )
-            return 2
+            continue
         try:
             message = json.loads(raw)
             result = adapter.call(message)
         except (ValueError, TransportFailure):
-            print("assigned-hosted-stdio: invalid input; stopped without sending", file=sys.stderr)
-            return 2
+            print(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32700, "message": "Invalid JSON-RPC input."},
+                    }
+                ),
+                flush=True,
+            )
+            continue
         if result is not None:
             print(json.dumps(result), flush=True)
 
