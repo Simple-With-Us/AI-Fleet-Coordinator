@@ -69,6 +69,8 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_pr_reviews_page": ({"pull_requests": "read"}, False),
+    "wf_pr_comments_page": ({"pull_requests": "read"}, False),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -2569,6 +2571,103 @@ class WorkflowVerbs:
         number = _int(args, "number")
         data = self._get(f"/repos/{repo}/pulls/{number}")
         return {"pull": _obj(data)}
+
+    def _pr_review_page(self, repo, args, review):
+        number, head = _int(args, "number"), _sha(args, "expected_head_sha")
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        limit = _page(args)
+
+        def verify_head():
+            value = self._get(f"/repos/{repo}/pulls/{number}")
+            if (
+                not isinstance(value, dict)
+                or type(value.get("number")) is not int
+                or value["number"] != number
+                or not isinstance(value.get("head"), dict)
+                or value["head"].get("sha") != head
+            ):
+                raise Refused("PR head not matched")
+
+        verify_head()
+        endpoint = (
+            f"/repos/{repo}/pulls/{number}/reviews"
+            if review
+            else f"/repos/{repo}/issues/{number}/comments"
+        )
+        rows = self._get(f"{endpoint}?per_page={limit}&page={page}")
+        if not isinstance(rows, list) or len(rows) > limit:
+            raise RelayGitHubError(502, "PR discussion page unverifiable")
+        results = []
+        ids = set()
+        total = 0
+        for row in rows:
+            if (
+                not isinstance(row, dict)
+                or type(row.get("id")) is not int
+                or row["id"] <= 0
+                or row["id"] in ids
+                or not isinstance(row.get("user"), dict)
+            ):
+                raise RelayGitHubError(502, "PR discussion identity unverifiable")
+            ids.add(row["id"])
+            user = row["user"]
+            if (
+                type(user.get("id")) is not int
+                or user["id"] <= 0
+                or not isinstance(user.get("login"), str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", user["login"])
+                or user.get("type") not in ("User", "Bot", "Organization")
+            ):
+                raise RelayGitHubError(502, "PR discussion author unverifiable")
+            body = row.get("body")
+            if not isinstance(body, str) or "\x00" in body:
+                raise RelayGitHubError(502, "PR discussion body unverifiable")
+            try:
+                size = len(body.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise RelayGitHubError(502, "PR discussion body unverifiable") from None
+            total += size
+            if size > 32768 or total > 262144:
+                raise Refused("PR discussion page exceeds supported text size")
+            withheld = bool(
+                find_secret(body)
+                or re.search(
+                    r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                    body,
+                )
+            )
+            item = {
+                "id": row["id"],
+                "author": {"id": user["id"], "login": user["login"], "type": user["type"]},
+                "body": "<withheld: credential-shaped text>" if withheld else body,
+                "body_withheld": withheld,
+            }
+            if review:
+                if (
+                    row.get("state")
+                    not in ("APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED", "PENDING")
+                    or not isinstance(row.get("commit_id"), str)
+                    or not _SHA.fullmatch(row["commit_id"])
+                ):
+                    raise RelayGitHubError(502, "PR review commit/state unverifiable")
+                item.update(state=row["state"], commit_id=row["commit_id"])
+            results.append(item)
+        verify_head()
+        return {
+            "reviews" if review else "comments": results,
+            "number": number,
+            "head_sha": head,
+            "page": page,
+            "has_more": len(results) == limit,
+        }
+
+    def wf_pr_reviews_page(self, repo, args):
+        _only(args, ("repo", "number", "expected_head_sha", "page", "per_page"))
+        return self._pr_review_page(repo, args, True)
+
+    def wf_pr_comments_page(self, repo, args):
+        _only(args, ("repo", "number", "expected_head_sha", "page", "per_page"))
+        return self._pr_review_page(repo, args, False)
 
     def wf_pr_reviews(self, repo, args):
         _only(

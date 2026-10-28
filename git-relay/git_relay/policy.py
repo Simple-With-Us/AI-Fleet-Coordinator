@@ -133,6 +133,8 @@ class SeatPolicy:
         "wf_label_create",
         "wf_label_delete",
         "wf_pr_get",
+        "wf_pr_reviews_page",
+        "wf_pr_comments_page",
         "wf_pr_reviews",
         "wf_pr_comments",
         "wf_issue_comments",
