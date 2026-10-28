@@ -54,6 +54,8 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_repo_tags": ({"contents": "read"}, False),
+    "wf_repo_languages": ({"metadata": "read"}, False),
     "wf_issue_parent": ({"issues": "read"}, False),
     "wf_issue_subissues": ({"issues": "read"}, False),
     "wf_issue_blocked_by": ({"issues": "read"}, False),
@@ -339,6 +341,48 @@ class WorkflowVerbs:
     def wf_issue_blocking(self, repo, args):
         _only(args, ("repo", "number", "per_page", "page"))
         return self._relation_read(repo, args, "dependencies/blocking")
+
+    def wf_repo_tags(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/tags?per_page={limit}&page={page}")
+        if not isinstance(data, list):
+            raise RelayGitHubError(502, "tag page unverifiable")
+        tags = []
+        for item in data[:limit]:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("name"), str)
+                or not 1 <= len(item["name"].encode("utf-8")) <= 1024
+                or not isinstance(item.get("commit"), dict)
+                or not isinstance(item["commit"].get("sha"), str)
+                or not _SHA.fullmatch(item["commit"]["sha"])
+            ):
+                raise RelayGitHubError(502, "tag metadata unverifiable")
+            if find_secret(item["name"]):
+                raise Refused("credential-shaped tag refused")
+            tags.append({"name": item["name"], "sha": item["commit"]["sha"]})
+        return {"tags": tags, "page": page, "has_more": len(data) >= limit}
+
+    def wf_repo_languages(self, repo, args):
+        _only(args, ("repo",))
+        data = self._get(f"/repos/{repo}/languages")
+        if not isinstance(data, dict) or len(data) > 100:
+            raise RelayGitHubError(502, "language metadata unverifiable")
+        values = []
+        for name, count in data.items():
+            if (
+                not isinstance(name, str)
+                or not 1 <= len(name.encode("utf-8")) <= 100
+                or type(count) is not int
+                or not 0 <= count <= 9007199254740991
+            ):
+                raise RelayGitHubError(502, "language count unverifiable")
+            if find_secret(name):
+                raise Refused("credential-shaped language refused")
+            values.append({"name": name, "bytes": count})
+        return {"languages": sorted(values, key=lambda x: x["name"])}
 
     def _asset_summary(self, data):
         if (
