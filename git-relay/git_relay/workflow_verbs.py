@@ -471,7 +471,17 @@ class WorkflowVerbs:
         data = self.client._call(
             "PUT", f"/repos/{repo}/issues/{number}/labels", {"labels": labels}, bearer=self.bearer
         )
-        return {"labels": _arr(data)}
+        result = _arr(data)
+        if any(
+            not isinstance(x, dict)
+            or isinstance(x.get("id"), bool)
+            or not isinstance(x.get("id"), int)
+            or x["id"] <= 0
+            or not isinstance(x.get("name"), str)
+            for x in result
+        ):
+            raise RelayGitHubError(502, "label receipt unverifiable")
+        return {"labels": [{k: x.get(k) for k in ("id", "name", "color")} for x in result]}
 
     def wf_reviewers_request(self, repo, args):
         _only(

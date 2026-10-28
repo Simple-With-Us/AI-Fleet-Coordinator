@@ -93,7 +93,7 @@ export function boundedWorkflowInput(args) {
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
 export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
-  (!['wf_review_submit','wf_review_inline','wf_release_create','wf_release_update'].includes(action) || reviewBodyOk(args));
+  (!['wf_review_submit','wf_review_inline','wf_release_create','wf_release_update'].includes(action) || reviewBodyOk(args)) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768);
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {

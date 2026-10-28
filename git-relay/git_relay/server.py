@@ -530,7 +530,7 @@ _REAPPLY_STATE_ACTIONS = frozenset(
         "wf_pr_ready",
         "wf_automerge_enable",
         "wf_automerge_disable",
-        "wf_asset_update",
+        "wf_release_asset_update",
     }
 )
 
