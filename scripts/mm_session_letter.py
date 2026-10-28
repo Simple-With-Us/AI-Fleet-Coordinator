@@ -329,7 +329,12 @@ def is_english(text: str) -> bool:
 def wanted_title(letter: str, topic: str) -> str:
     """The title form:  the letter, then the topic, in Title Case English."""
     topic = (topic or "").strip()
-    topic = re.sub(r"^\s*[A-Z]:\s*", "", topic)  # never double the prefix
+    if letter:
+        prefix = letter + ":"
+        if topic.startswith(prefix):
+            topic = topic[len(prefix) :].lstrip()
+    else:
+        topic = re.sub(r"^\s*[A-Z]{1,2}:\s*", "", topic, count=1)
     topic = " ".join(topic.split())
     if not topic or not is_english(topic):
         topic = "Session " + (letter or "?")
@@ -460,7 +465,7 @@ def hook_session_start() -> int:
     space = space_for(session_id)
     try:
         letter = letter_for(session_id, str(row.get("title") or ""), space)
-    except RegistryError:
+    except (RegistryError, ValueError):
         print(
             "Session letter: none yet (the Operator could not be reached).  Name this thread "
             "in English; if a letter arrives later, prefix the title with it."
@@ -642,8 +647,11 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
     if topics_file:
         try:
             with open(topics_file, encoding="utf-8") as fh:
-                topics = json.load(fh)
-        except (OSError, ValueError) as exc:
+                loaded = json.load(fh)
+            if not isinstance(loaded, dict):
+                raise ValueError("the topic file must be a JSON object")
+            topics = {str(k): str(v) for k, v in loaded.items()}
+        except (OSError, ValueError, TypeError) as exc:
             print("cannot read the topic file: %s" % exc, file=sys.stderr)
             return 2
     out = []
@@ -665,6 +673,12 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             out.append({"session_id": session_id, "error": "no letter"})
             continue
         topic = topics.get(session_id) or (title if is_english(title) else "")
+        if session_id in topics:
+            try:
+                _scan_title(str(topics[session_id]))
+            except ValueError as exc:
+                out.append({"session_id": session_id, "error": str(exc)})
+                continue
         if not topic:
             out.append(
                 {"session_id": session_id, "letter": letter, "error": "needs an English topic"}
@@ -700,13 +714,23 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                     entry["registry_synced"] = True
                 except (RegistryError, ValueError) as exc:
                     entry["registry_error"] = str(exc)
-            if not entry["live"]:
-                try:
-                    closed = close_letter(session_id, "stale and replaced by a newer session")
-                    entry["letter_ended"] = closed.get("outcome")
-                except RegistryError as exc:
-                    entry["letter_end_error"] = str(exc)
         out.append(entry)
+    if apply:
+        answer = registry_call(
+            [
+                "sweep",
+                "--platform",
+                PLATFORM,
+                "--seat",
+                SEAT,
+                "--stale-after-minutes",
+                str(max(60, int(live_hours) * 60)),
+            ]
+        )
+        if answer.get("error"):
+            print(json.dumps({"sweep_error": answer["error"]}), file=sys.stderr)
+        else:
+            print(json.dumps({"registry_sweep": answer.get("count", 0)}), file=sys.stderr)
     print(json.dumps(out, indent=2))
     return 0
 

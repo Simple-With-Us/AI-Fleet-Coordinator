@@ -544,19 +544,6 @@ class SessionRegistry:
             )
             self._enqueue_session_upsert(conn, record_id, now)
 
-    def mark_seen(self, record_id: str) -> None:
-        """Stamp a session as alive right now.
-
-        The sweep that ends a stale letter's use reads this column, so a session that
-        is working has to keep it fresh.  It is a write of its own:  the caller's
-        transaction has already committed by the time it runs.
-        """
-        with self._write_txn() as conn:
-            conn.execute(
-                "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
-                (_utcnow(), record_id),
-            )
-
     def close(
         self,
         record_id: str,
@@ -774,6 +761,11 @@ def update_session(
             native_session_id=native_session_id,
         )
         record_id = row["record_id"]
+        if row["closed_at"]:
+            raise ValueError(
+                "session %s is closed on %s; open a new registration instead"
+                % (native_session_id, normalize_platform(platform))
+            )
         letter, generation = registry._active_alias(registry._conn, record_id)
         if title is not None:
             wanted["title"] = registry_title(letter, title)
@@ -934,25 +926,22 @@ def sweep_stale(
                 (namespace, seat),
             ).fetchall()
             open_rows = list(rows)
+            seen_at = {
+                r["record_id"]: _parse_instant(r["last_seen_at"]) for r in open_rows
+            }
+            registered_at = {
+                r["record_id"]: _parse_instant(r["registered_at"]) for r in open_rows
+            }
             for row in open_rows:
-                fresh = conn.execute(
-                    "SELECT last_seen_at, registered_at FROM sessions WHERE record_id = ?",
-                    (row["record_id"],),
-                ).fetchone()
-                last_seen = _parse_instant(fresh["last_seen_at"] if fresh else None)
+                last_seen = seen_at.get(row["record_id"])
                 if last_seen is None or last_seen >= cutoff:
                     continue
                 replaced = False
                 for other in open_rows:
                     if other["record_id"] == row["record_id"]:
                         continue
-                    other_seen = _parse_instant(
-                        conn.execute(
-                            "SELECT last_seen_at FROM sessions WHERE record_id = ?",
-                            (other["record_id"],),
-                        ).fetchone()["last_seen_at"]
-                    )
-                    other_registered = _parse_instant(other["registered_at"])
+                    other_seen = seen_at.get(other["record_id"])
+                    other_registered = registered_at.get(other["record_id"])
                     if (other_seen is None or other_seen > last_seen) and (
                         other_registered is None or other_registered > last_seen
                     ):
@@ -992,7 +981,7 @@ def sweep_stale(
                         "generation": generation,
                         "native_session_id": row["native_session_id"],
                         "title": row["title"],
-                        "last_seen_at": fresh["last_seen_at"] if fresh else row["last_seen_at"],
+                        "last_seen_at": row["last_seen_at"],
                         "reason": "stale and replaced by a newer session",
                     }
                 )
