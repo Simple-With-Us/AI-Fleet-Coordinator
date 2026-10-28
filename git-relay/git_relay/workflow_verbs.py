@@ -564,6 +564,7 @@ class WorkflowVerbs:
         if not isinstance(threads.get("nodes"), list):
             raise RelayGitHubError(502, "thread result unverifiable")
         return {"threads": threads}
+
     def wf_assignees_add(self, repo, args):
         _only(
             args,
