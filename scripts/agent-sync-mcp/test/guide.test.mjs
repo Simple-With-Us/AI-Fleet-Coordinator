@@ -95,3 +95,12 @@ test("guide arguments are a strict zod object:  an unknown key or a non-string s
     assert.equal(JSON.parse(result.content[0].text).code, "invalid_argument", JSON.stringify(args));
   }
 });
+
+// Public help must not teach retired product branding.
+test("guide opening uses current component names without a compatibility launcher", () => {
+  const opening = GUIDE_TEXT.split("## How to Pass Identity")[0];
+  assert.ok(opening.includes("**simple-tools**"));
+  assert.ok(opening.includes("**ST-MCP**"));
+  assert.ok(!opening.includes("agent-sync"));
+  assert.ok(!opening.includes("compatibility launcher"));
+});
