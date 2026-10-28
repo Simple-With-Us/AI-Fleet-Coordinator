@@ -236,7 +236,8 @@ class RegisterPathTests(unittest.TestCase):
     def test_malformed_lookup_input_is_refused_rather_than_read_as_a_miss(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db = OR.registry_db_path(tmp)
-            for bad in ("", "  ", "AA", "1", "A1"):
+            # "AA" is not malformed:  a subthread takes a double letter.
+            for bad in ("", "  ", "1", "A1", "AAA", "A A", "A-B"):
                 with self.assertRaises(ValueError):
                     OR.resolve_label(db, "minimax", bad)
             with self.assertRaises(ValueError):
@@ -245,6 +246,26 @@ class RegisterPathTests(unittest.TestCase):
                 OR.resolve_label(db, "minimax", "A", 0)
             with self.assertRaises(ValueError):
                 OR.resolve_label(db, "minimax", "A", True)
+
+    def test_a_subthread_letter_resolves_like_any_other(self) -> None:
+        """A double letter names its session the same way a single letter does."""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = OR.registry_db_path(tmp)
+            OR.register_session(
+                db,
+                platform="minimax",
+                verified_host="mac",
+                profile_scope="default",
+                native_session_id="mvs_sub",
+                seat="MM",
+                source="test",
+                title="Sub",
+                letter_space="double",
+                issuer=OR.ISSUER_OPERATOR,
+            )
+            found = OR.resolve_label(db, "minimax", "AA")
+            self.assertIsNotNone(found)
+            self.assertEqual(found["native_session_id"], "mvs_sub")
 
     def test_a_missing_registry_is_not_reported_as_a_missing_letter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
