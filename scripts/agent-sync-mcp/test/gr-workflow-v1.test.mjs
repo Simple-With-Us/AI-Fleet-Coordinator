@@ -207,7 +207,7 @@ test('branch and tag operations preserve fixed receipts and write UNKNOWN',async
 
 test('actual review regression',()=>{assert.ok(!validWfV1Response('wf_branch_update',{ref:'refs/tags/v1',sha:'a'.repeat(40)})); assert.ok(!validWfV1Response('wf_tag_delete',{deleted:true,ref:'refs/heads/main'}));});
 test('new read envelopes reject malformed objects and fixed routes use own bearer',async()=>{
-  const cases=[['wf_pr_get',{number:1},{pull:{number:1}}],['wf_compare',{base:'main',head:'feature/x'},{comparison:{}}],['wf_repo_get',{},{repository:{}}],['wf_commit_get',{sha:'a'.repeat(40)},{commit:{}}],['wf_run_get',{run_id:1},{run:{}}],['wf_run_artifacts',{run_id:1},{artifacts:{}}]];
+  const cases=[['wf_pr_get',{number:1},{pull:{id:1,number:1,state:'open',head:{sha:'a'.repeat(40)},base:{sha:'b'.repeat(40)}}}],['wf_compare',{base:'main',head:'feature/x'},{comparison:{status:'identical',ahead_by:0,behind_by:0,total_commits:0,commits:[]}}],['wf_repo_get',{},{repository:{id:1,name:'Repo',full_name:repo,default_branch:'main',private:true}}],['wf_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),commit:{message:'x'},parents:[]}}],['wf_run_get',{run_id:1},{run:{id:1,head_sha:'a'.repeat(40),status:'completed',conclusion:'success'}}],['wf_run_artifacts',{run_id:1},{artifacts:{total_count:0,artifacts:[]}}]];
   for(const [action,args,result] of cases){
     let calls=0;
     const t=harness(async(url,init)=>{
@@ -249,4 +249,11 @@ test('destructive Actions descriptions expose unfenced irreversible behavior and
  }
  for(const value of [true,'1',0,-1,null]) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:value}));
  assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:1,extra:true}));
+});
+
+test('response bounds precede Zod recursion and reject cycles getters and oversize',()=>{
+ const cycle={};cycle.self=cycle;assert.equal(validWfV1Response('wf_pr_get',cycle),false);
+ const getter={};Object.defineProperty(getter,'completed',{enumerable:true,get(){throw Error('must not read');}});assert.equal(validWfV1Response('wf_workflow_enable',getter),false);
+ assert.equal(validWfV1Response('wf_pr_get',{pull:{x:'x'.repeat(65537)}}),false);
+ assert.equal(validWfV1Response('wf_repo_get',{repository:{}}),false);
 });
