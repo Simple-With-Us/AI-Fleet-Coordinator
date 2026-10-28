@@ -909,7 +909,7 @@ class Daemon:
                 continue
             self.notifier.notify(
                 seat,
-                "agent-sync %s" % seat,
+                "simple-chat %s" % seat,
                 "%s wake config problem, so %s wakes are inbox-only (messages still queue): %s"
                 % (seat, seat, self.scrub(seat_cfg.config_problems[0])),
                 kind="config-wake",
@@ -923,7 +923,7 @@ class Daemon:
         for seat, problems in sorted(cfg.skipped_seats.items()):
             self.notifier.notify(
                 seat,
-                "agent-sync %s" % seat,
+                "simple-chat %s" % seat,
                 "%s is NOT loaded, so nothing is captured for it: %s"
                 % (seat, self.scrub(problems[0] if problems else "config problem")),
                 kind="config-seat",
