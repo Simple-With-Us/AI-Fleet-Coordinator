@@ -66,10 +66,21 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     B = load_board()
     # A write needs a bearer-verified seat, as every write does:  the script never takes an identity from
-    # the environment and never guesses one.  A dry run needs no seat, because it writes nothing.
-    B.current_seat(required=a.apply)
+    # the environment and never guesses one.  A dry run needs no seat, because it writes nothing, so it
+    # must not verify the bearer at all:  that call is a network round trip and can refuse, and a plan
+    # that dies before it prints is not a plan.
+    seat = B.current_seat(required=True) if a.apply else ""
     states = B.split_csv(a.states)
-    auth = B.Auth(B.endpoint("LINEAR_BOARD_TOKEN_URL", B.TOKEN_URL))
+    # The seat is the gate, not the identity:  the script acts as the shared Fleet app, or as the cloud
+    # pair the host operator chose, and never as a seat's own app.  So the identity resolves the way a
+    # read resolves it.
+    ident = B.resolve_identity("") if seat else None
+    if ident is not None and ident.kind == "env":
+        # The cloud pair may hold the seat's app, which is that host's deliberate configuration:  accept
+        # that name as well as Fleet, so the check below reads as the swap check it is and the pair the
+        # README promises still works.  A pair holding another seat's app is still refused.
+        ident.accept = tuple(dict.fromkeys((*ident.accept, *B.seat_app_names(seat))))
+    auth = B.Auth(B.endpoint("LINEAR_BOARD_TOKEN_URL", B.TOKEN_URL), ident)
     L = B.Linear(auth, B.endpoint("LINEAR_BOARD_API_URL", B.GRAPHQL_URL))
     if a.apply:
         B.check_write_identity(L, auth)
