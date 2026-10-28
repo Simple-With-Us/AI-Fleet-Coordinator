@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {WF_V1_ACTIONS,WF_V1_TOOLS,validWfV1Args} from '../src/gr-workflow-v1.js';
+import {WF_V1_ACTIONS,WF_V1_TOOLS,validWfV1Response,validWfV1Args} from '../src/gr-workflow-v1.js';
 const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',import.meta.url),'utf8');
 const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
 const onlyOf=name=>{
@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,23);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,27);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,23);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,27);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -194,4 +194,12 @@ test('review/inline/branch additions keep bounded shapes and uncertain write fai
  assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'   '}));
  assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'é'.repeat(20000)}));
  assert.ok(validWfV1Args('wf_review_submit',{...requests[0][1],body:'héllo'}));
+});
+
+test('review lifecycle closed args and receipt validation',()=>{
+ for (const [action,args] of [['wf_review_update',{number:1,review_id:2,body:'edit'}],['wf_review_dismiss',{number:1,review_id:2,message:'obsolete'}],['wf_review_pending_delete',{number:1,review_id:2}],['wf_review_comment_reply',{number:1,comment_id:2,body:'reply'}]]) {
+  assert.ok(validWfV1Args(action,{repo,...args}),action);
+  assert.ok(!validWfV1Args(action,{repo,...args,force:true}),action);
+  assert.ok(!validWfV1Response(action,{}),action);
+ }
 });
