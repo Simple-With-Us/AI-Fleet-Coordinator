@@ -53,5 +53,5 @@ class History(unittest.TestCase):
         self.assertEqual(m.calls[0][2], {"issues": "read", "metadata": "read"})
 
     def test_documented_hyphenated_timeline_names(self):
-        for name in ("cross-referenced","line-commented","commit-commented"):
-            self.assertEqual(WorkflowVerbs._issue_event({"event":name})["event"],name)
+        for name in ("cross-referenced", "line-commented", "commit-commented"):
+            self.assertEqual(WorkflowVerbs._issue_event({"event": name})["event"], name)
