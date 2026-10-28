@@ -1496,7 +1496,8 @@ TEAM_TO_REPO = {
 #  under the workspace.  A reference that is not in this table is left as plain text.  It is never
 #  guessed at, because a project reference that links to the wrong thing is worse than one that does
 #  not link, and it is never treated as an issue, because the number in it is a project number and
-#  not an issue number.
+#  not an issue number.  A new project is added here and in scripts/zulip_linkifiers.py TARGET
+#  together:  the parity test fails until both sides name it.
 PROJECT_PATHS = {
     #  The Muster fleet admin Mac app, which the fleet calls P-AFC-7.
     "P-AFC-7": "muster-fleet-admin-mac-app-9c28cf61dcc8",
