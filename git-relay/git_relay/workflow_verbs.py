@@ -25,6 +25,7 @@ import binascii
 import bz2
 import gzip
 import io
+import json
 import lzma
 import re
 import zipfile
@@ -2653,13 +2654,18 @@ class WorkflowVerbs:
                 item.update(state=row["state"], commit_id=row["commit_id"])
             results.append(item)
         verify_head()
-        return {
+        receipt = {
             "reviews" if review else "comments": results,
             "number": number,
             "head_sha": head,
             "page": page,
             "has_more": len(results) == limit,
         }
+        # Match server JSON escaping, not only raw UTF-8 text. Refuse whole page,
+        # never silently clip or drop author/review records.
+        if len(json.dumps(receipt).encode("utf-8")) > 262144:
+            raise Refused("PR discussion serialized page exceeds supported size")
+        return receipt
 
     def wf_pr_reviews_page(self, repo, args):
         _only(args, ("repo", "number", "expected_head_sha", "page", "per_page"))

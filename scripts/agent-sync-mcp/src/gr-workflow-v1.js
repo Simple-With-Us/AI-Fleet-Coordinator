@@ -299,7 +299,7 @@ const discussionPageShape={number:z.number().int().positive(),head_sha:shaValue,
 const discussionPages={wf_pr_reviews_page:z.object({...discussionPageShape,reviews:z.array(discussionReview).max(50)}).strict(),wf_pr_comments_page:z.object({...discussionPageShape,comments:z.array(discussionComment).max(50)}).strict()};
 export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
- if(discussionPages[action]){if(!discussionPages[action].safeParse(body).success)return false;const rows=body.reviews??body.comments;return new Set(rows.map(x=>x.id)).size===rows.length&&rows.reduce((n,x)=>n+new TextEncoder().encode(x.body).length,0)<=262144&&(!args||body.number===args.number&&body.head_sha===args.expected_head_sha&&body.page===(args.page??1)&&rows.length<=(args.per_page??30)&&body.has_more===(rows.length===(args.per_page??30)));}
+ if(discussionPages[action]){if(!discussionPages[action].safeParse(body).success||new TextEncoder().encode(JSON.stringify(body)).length>262144)return false;const rows=body.reviews??body.comments;return new Set(rows.map(x=>x.id)).size===rows.length&&rows.reduce((n,x)=>n+new TextEncoder().encode(x.body).length,0)<=262144&&(!args||body.number===args.number&&body.head_sha===args.expected_head_sha&&body.page===(args.page??1)&&rows.length<=(args.per_page??30)&&body.has_more===(rows.length===(args.per_page??30)));}
  if(threadStateResponses[action])return threadStateResponses[action].safeParse(body).success;
  if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;

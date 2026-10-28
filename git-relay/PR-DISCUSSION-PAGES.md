@@ -23,3 +23,6 @@ comment posted, live page fetched, permissions widened or deployment performed.
 
 Official endpoint schemas verified:
 https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
+
+Additionally serialized relay JSON (including escaping/metadata) is capped256KiB.
+A raw-text page under the cumulative limit can still be refused as a whole.

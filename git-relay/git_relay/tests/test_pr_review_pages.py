@@ -78,3 +78,11 @@ class ReviewPages(unittest.TestCase):
         for bad in [{"page": 1001}, {"per_page": 51}, {"raw": True}]:
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape("wf_pr_reviews_page", self.args(**bad), REPO)
+
+    def test_escaped_json_aggregate_bound_refuses_not_truncates(self):
+        # Raw UTF-8 total under256KiB; JSON escapes push serialized result over it.
+        rows = [self.row(id=i + 1, body="\x01" * 30000) for i in range(2)]
+        c = Client(self.pr(), rows, self.pr())
+        with self.assertRaises(Refused):
+            self.handle(c, "wf_pr_reviews_page").run("wf_pr_reviews_page", self.args())
+        self.assertEqual(len(c.calls), 3)
