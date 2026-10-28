@@ -79,7 +79,6 @@ class SeatPolicy:
     WORKFLOW_ACTIONS = (
         "wf_issue_dependency_add",
         "wf_issue_dependency_remove",
-
         "wf_issue_parent",
         "wf_issue_subissues",
         "wf_issue_blocked_by",

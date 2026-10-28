@@ -1,8 +1,10 @@
 import unittest
-from git_relay.workflow_verbs import WorkflowVerbs, Refused, SPECS
+
 from git_relay.github_client import RelayGitHubError
 from git_relay.server import _REAPPLY_STATE_ACTIONS
-from .test_workflow_verbs import REPO, Client, Policy, Minter
+from git_relay.workflow_verbs import SPECS, Refused, WorkflowVerbs
+
+from .test_workflow_verbs import REPO, Client, Minter, Policy
 
 
 def item(n):
