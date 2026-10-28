@@ -4,7 +4,7 @@
 One JSON report for Muster to read:
 `/root/.local/state/fleet-tools/server-status.json`  (mode 0600, written atomically).
 
-  python3 scripts/fleet-server-status.py [--home PATH] [--code-root PATH]
+  python3 scripts/fleet-server-status.py [--home PATH] [--code-root PATH] [--control PATH]
                                          [--snapshot PATH] [--output PATH] [--dry-run]
 
 What it reads,  and what it refuses to read:
@@ -18,6 +18,12 @@ What it reads,  and what it refuses to read:
   * The file list is the fleet's config surface:  the instruction and settings files
     under the fleet's checkouts.  A path that looks like a credential is never hashed
     and never listed.
+  * The host's load,  memory,  swap,  uptime and disks come from `/proc` and
+    `os.statvfs`.  The disks are `/` and every real file system mounted under `/mnt`.
+  * The fleet's systemd units are the ones `scripts/fleet-ops-control.json` names
+    (`server.units`),  read with `systemctl show` and an explicit property list,  one
+    call per scope.  A unit is `controllable` only when its entry lists actions.  A
+    missing or malformed allowlist means no units,  never a crash.
 
 A measurement that cannot be taken is omitted,  never reported as a zero:  a container
 with no stats row carries no cpu and no memory,  and a file that is not there is
@@ -26,7 +32,11 @@ with no stats row carries no cpu and no memory,  and a file that is not there is
 Drift is measured against the previous report:  `new` when the path was not in it,
 `changed` when the digest differs,  `missing` when it was there and is gone now,  and
 `unchanged` otherwise.  A Coolify resource that was in the previous report and is
-gone now reads as `absent`.
+gone now reads as `absent`.  Each Coolify row says where its `uuid` came from:
+`uuidSource` is `label` for a Coolify uuid label and `name` for a stand-in name.  A change to a `README.md` or a `package.json` is
+`info` rather than `changed`:  those files move with ordinary work,  not with config.
+`filesSummary` says how many files were found against the bound,  so a reader can tell
+a partial list from a whole one.
 
 The script writes one file and changes nothing else.
 """
@@ -123,17 +133,60 @@ MEMORY_UNITS = {
 
 COOLIFY_TYPES = ("application", "service", "database", "standalone")
 
+# A change to one of these is reported as `info`:  they move with ordinary work.
+INFO_FILES = ("README.md", "package.json")
+
+# The allowlist that names the fleet's units,  next to this script.
+DEFAULT_CONTROL = Path(__file__).resolve().parent / "fleet-ops-control.json"
+CONTROL_LIMIT = 256 * 1024
+SCOPES = ("system", "user")
+ACTIONS = ("start", "stop", "restart")
+# A unit name is passed to systemctl as an argument,  so it must look like one and never
+# like an option.
+UNIT_RE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9@._:\-]{0,200}\.(?:service|timer|socket|path|target|mount)"
+)
+# The properties read for each unit,  and nothing else.
+UNIT_PROPERTIES = (
+    "Id",
+    "Description",
+    "LoadState",
+    "ActiveState",
+    "SubState",
+    "UnitFileState",
+    "StateChangeTimestamp",
+)
+
+# The file systems that hold data.  Everything else under `/mnt` (a tmpfs,  a fuse
+# mount,  a bind of a pseudo file system) is not a disk.
+REAL_FILE_SYSTEMS = (
+    "ext2",
+    "ext3",
+    "ext4",
+    "xfs",
+    "btrfs",
+    "zfs",
+    "f2fs",
+    "jfs",
+    "reiserfs",
+    "vfat",
+    "exfat",
+    "ntfs",
+    "ntfs3",
+)
+
 
 # MARK: - Helpers
 
 
 def utc_now() -> str:
     """The time this report was made,  in the spelling the doctor uses."""
-    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def iso_from_timestamp(value: float) -> str:
-    return datetime.datetime.fromtimestamp(value, datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    moment = datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def run(command, timeout=30):
@@ -255,6 +308,12 @@ def container_status(state, health):
     return "unknown"
 
 
+# Where a Coolify row's `uuid` came from:  the Coolify uuid label,  or a stand-in name.
+UUID_SOURCE_LABEL = "label"
+UUID_SOURCE_NAME = "name"
+UUID_SOURCES = (UUID_SOURCE_LABEL, UUID_SOURCE_NAME)
+
+
 def coolify_type(label):
     """The Coolify type of a container,  and `standalone` when it carries no label."""
     value = (label or "").strip().lower()
@@ -262,20 +321,25 @@ def coolify_type(label):
 
 
 def resource_identity(fields):
-    """The identity of one container,  from its Coolify labels.
+    """The identity of one container,  from its Coolify labels:  (uuid, name, source).
 
     A container with no Coolify label is standalone,  and is named by its own name.
     A Coolify application keeps its uuid across a redeploy,  so the uuid is the
-    identity and the name only says which resource it is.
+    identity and the name only says which resource it is.  `source` is `label` when
+    the uuid came from the Coolify uuid label,  and `name` when no such label was
+    there and the resource name (or the container name) stands in for it:  a reader
+    must never send a stand-in to Coolify as a uuid.
     """
     uuid = fields["application_uuid"].strip()
     resource = fields["resource_name"].strip()
     label_name = fields["label_name"].strip()
     container = fields["container"].strip()
+    source = UUID_SOURCE_LABEL
     if not uuid:
         uuid = resource or container
+        source = UUID_SOURCE_NAME
     name = resource or label_name or container
-    return uuid, name
+    return uuid, name, source
 
 
 class ResourceRows(list):
@@ -351,9 +415,10 @@ def collect_coolify(run_command=run):
             "service_name": label_value(parts[11]),
             "compose_service": label_value(parts[12]),
         }
-        uuid, name = resource_identity(fields)
+        uuid, name, source = resource_identity(fields)
         row = {
             "uuid": uuid,
+            "uuidSource": source,
             "name": name,
             "type": coolify_type(fields["label_type"]),
             "status": container_status(fields["state"], fields["health"]),
@@ -515,6 +580,270 @@ def collect_processes(limit=15, interval=0.4, proc=Path("/proc")):
     return rows[:limit]
 
 
+# MARK: - The host
+
+
+def read_small(path, limit=1024 * 1024):
+    """The text of a small file under `/proc`,  or None when it cannot be read."""
+    try:
+        with open(path, "r", errors="replace") as handle:
+            return handle.read(limit)
+    except OSError:
+        return None
+
+
+def load_average(proc=Path("/proc")):
+    """The 1,  5 and 15 minute load,  or None when `/proc/loadavg` cannot be read."""
+    text = read_small(proc / "loadavg")
+    if not text:
+        return None
+    fields = text.split()
+    if len(fields) < 3:
+        return None
+    try:
+        return [round(float(field), 2) for field in fields[:3]]
+    except ValueError:
+        return None
+
+
+def meminfo(proc=Path("/proc")):
+    """`/proc/meminfo` in bytes,  by field name.  A line that does not parse is skipped."""
+    text = read_small(proc / "meminfo")
+    values = {}
+    for line in (text or "").splitlines():
+        name, _, rest = line.partition(":")
+        parts = rest.split()
+        if not name or not parts:
+            continue
+        try:
+            number = int(parts[0])
+        except ValueError:
+            continue
+        if number < 0:
+            continue
+        unit = parts[1].lower() if len(parts) > 1 else ""
+        values[name.strip()] = number * 1024 if unit == "kb" else number
+    return values
+
+
+def uptime_seconds(proc=Path("/proc")):
+    """How long the host has been up,  in whole seconds."""
+    text = read_small(proc / "uptime")
+    if not text or not text.split():
+        return None
+    try:
+        value = float(text.split()[0])
+    except ValueError:
+        return None
+    return int(value) if value >= 0 else None
+
+
+def unescape_mount(text):
+    """A mount point as `/proc/mounts` writes it,  with `\\040` for a space,  decoded."""
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), text)
+
+
+def disk_mounts(proc=Path("/proc")):
+    """`/` and every real file system mounted under `/mnt`,  each once,  in mount order."""
+    text = read_small(proc / "mounts")
+    mounts = []
+    for line in (text or "").splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        point = unescape_mount(fields[1])
+        if fields[2] not in REAL_FILE_SYSTEMS:
+            continue
+        if point != "/" and not point.startswith("/mnt/"):
+            continue
+        if point not in mounts:
+            mounts.append(point)
+    return mounts
+
+
+def disk_usage(mount, statvfs=os.statvfs):
+    """The size of one mount,  or None when it cannot be measured.
+
+    `freeBytes` is what an ordinary user can still write,  which is what fills up.
+    """
+    try:
+        info = statvfs(mount)
+    except OSError:
+        return None
+    size = info.f_frsize or info.f_bsize
+    if not size or info.f_blocks <= 0:
+        return None
+    total = info.f_blocks * size
+    return {
+        "mount": mount,
+        "totalBytes": total,
+        "usedBytes": max(0, (info.f_blocks - info.f_bfree) * size),
+        "freeBytes": max(0, info.f_bavail * size),
+    }
+
+
+def collect_host_metrics(proc=Path("/proc"), statvfs=os.statvfs, cpu_count=os.cpu_count):
+    """The host's load,  memory,  swap,  uptime and disks.
+
+    Each measurement that cannot be taken is left out,  never reported as a zero.
+    """
+    metrics = {}
+    load = load_average(proc)
+    if load is not None:
+        metrics["loadAverage"] = load
+    cpus = cpu_count()
+    if isinstance(cpus, int) and cpus > 0:
+        metrics["cpuCount"] = cpus
+    memory = meminfo(proc)
+    if "MemTotal" in memory and "MemAvailable" in memory:
+        metrics["memory"] = {
+            "totalBytes": memory["MemTotal"],
+            "availableBytes": memory["MemAvailable"],
+        }
+    if "SwapTotal" in memory and "SwapFree" in memory:
+        metrics["swap"] = {"totalBytes": memory["SwapTotal"], "freeBytes": memory["SwapFree"]}
+    uptime = uptime_seconds(proc)
+    if uptime is not None:
+        metrics["uptimeSeconds"] = uptime
+    disks = []
+    for mount in disk_mounts(proc):
+        usage = disk_usage(mount, statvfs)
+        if usage is not None:
+            disks.append(usage)
+    metrics["disks"] = disks
+    return metrics
+
+
+# MARK: - The fleet's units
+
+
+def control_units(path=DEFAULT_CONTROL):
+    """The units the allowlist names,  as (unit, scope, controllable).
+
+    A missing,  unreadable or malformed allowlist names no units.  An entry with a bad
+    unit name or scope is skipped,  and a unit named twice in one scope is kept once.
+    """
+    try:
+        if path.stat().st_size > CONTROL_LIMIT:
+            return []
+        document = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(document, dict):
+        return []
+    server = document.get("server")
+    if not isinstance(server, dict):
+        return []
+    entries = server.get("units")
+    if not isinstance(entries, list):
+        return []
+    units = []
+    seen = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        unit = entry.get("unit")
+        scope = entry.get("scope")
+        if not isinstance(unit, str) or not UNIT_RE.fullmatch(unit):
+            continue
+        if scope not in SCOPES or (unit, scope) in seen:
+            continue
+        seen.add((unit, scope))
+        actions = entry.get("actions")
+        controllable = isinstance(actions, list) and any(action in ACTIONS for action in actions)
+        units.append((unit, scope, controllable))
+    return units
+
+
+def iso_from_systemd(value):
+    """A `--timestamp=unix` value (`@1730000000`) as the report spells a time,  or None."""
+    match = re.fullmatch(r"@(\d+)", (value or "").strip())
+    if not match:
+        return None
+    seconds = int(match.group(1))
+    if seconds <= 0:
+        return None
+    try:
+        return iso_from_timestamp(seconds)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def show_units(units, scope, run_command=run):
+    """What systemd says about some units in one scope,  by unit,  or None when it could
+    not answer.
+
+    `systemctl show` writes one block per unit,  in the order asked,  with a blank line
+    between them.
+    """
+    command = ["systemctl"]
+    if scope == "user":
+        command.append("--user")
+    command += [
+        "show",
+        "--timestamp=unix",
+        "--property=" + ",".join(UNIT_PROPERTIES),
+    ]
+    command += units
+    text = run_command(command)
+    if text is None:
+        return None
+    blocks = []
+    current = {}
+    for line in text.splitlines():
+        if not line.strip():
+            if current:
+                blocks.append(current)
+                current = {}
+            continue
+        key, separator, value = line.partition("=")
+        if separator:
+            current[key] = value
+    if current:
+        blocks.append(current)
+    if len(blocks) != len(units):
+        return None
+    return dict(zip(units, blocks))
+
+
+def collect_services(control=DEFAULT_CONTROL, run_command=run):
+    """The units the allowlist names,  with their state.
+
+    A scope systemctl could not answer for leaves its units `unknown`,  with nothing
+    else measured.
+    """
+    rows = []
+    entries = control_units(control)
+    for scope in SCOPES:
+        named = [
+            (unit, controllable)
+            for unit, entry_scope, controllable in entries
+            if entry_scope == scope
+        ]
+        if not named:
+            continue
+        shown = show_units([unit for unit, _ in named], scope, run_command)
+        for unit, controllable in named:
+            row = {"unit": unit, "scope": scope}
+            props = (shown or {}).get(unit)
+            if props is None:
+                row["activeState"] = "unknown"
+            else:
+                if props.get("Description"):
+                    row["description"] = props["Description"]
+                row["activeState"] = props.get("ActiveState") or "unknown"
+                if props.get("SubState"):
+                    row["subState"] = props["SubState"]
+                since = iso_from_systemd(props.get("StateChangeTimestamp"))
+                if since:
+                    row["since"] = since
+                if props.get("UnitFileState"):
+                    row["enabled"] = props["UnitFileState"]
+            row["controllable"] = controllable
+            rows.append(row)
+    return rows
+
+
 # MARK: - The config files
 
 
@@ -634,7 +963,10 @@ def drift_of(path, digest, previous):
     if not earlier:
         # It was missing before,  so there is nothing to compare against.
         return "new"
-    return "changed" if earlier != digest else "unchanged"
+    if earlier == digest:
+        return "unchanged"
+    # A README or a package manifest moves with ordinary work,  not with config.
+    return "info" if Path(path).name in INFO_FILES else "changed"
 
 
 # MARK: - The report
@@ -697,8 +1029,16 @@ def build_report(
     files,
     previous_resources_map,
     host=None,
+    host_metrics=None,
+    services=None,
+    files_summary=None,
 ):
-    """The report,  as Muster reads it."""
+    """The report,  as Muster reads it.
+
+    `hostMetrics`,  `services` and `filesSummary` are optional:  a key that was not
+    collected is left out,  so a reader built before they existed reads the report as
+    it always has.
+    """
     resources = []
     seen = set()
     for row in coolify or []:
@@ -709,15 +1049,18 @@ def build_report(
         if key in seen:
             continue
         # Failed inspection is unknown, not evidence that resources vanished.
-        resources.append(
-            {
-                "uuid": key[0],
-                "name": key[1],
-                "type": before.get("type", "standalone"),
-                "status": "unknown" if not getattr(coolify, "complete", True) else "absent",
-            }
-        )
-    return {
+        gone = {
+            "uuid": key[0],
+            "name": key[1],
+            "type": before.get("type", "standalone"),
+            "status": "unknown" if not getattr(coolify, "complete", True) else "absent",
+        }
+        # The source is carried over only when the previous report said it;  a row
+        # from a report written before `uuidSource` existed is left without one.
+        if before.get("uuidSource") in UUID_SOURCES:
+            gone["uuidSource"] = before["uuidSource"]
+        resources.append(gone)
+    document = {
         "schemaVersion": SCHEMA_VERSION,
         "tool": TOOL,
         "generatedAt": utc_now(),
@@ -726,6 +1069,18 @@ def build_report(
         "processes": processes,
         "files": files,
     }
+    if host_metrics is not None:
+        document["hostMetrics"] = host_metrics
+    if services is not None:
+        document["services"] = services
+    if files_summary is not None:
+        document["filesSummary"] = files_summary
+    return document
+
+
+def summarize_files(found, limit):
+    """How many config files were found against the bound."""
+    return {"found": found, "limit": limit, "truncated": found > limit}
 
 
 def write_report(path, document):
@@ -768,6 +1123,13 @@ def parse_args(argv=None):
         help="the folder the fleet's checkouts live in (default: %s)" % DEFAULT_CODE_ROOT,
     )
     parser.add_argument(
+        "--control",
+        type=Path,
+        default=DEFAULT_CONTROL,
+        help="the allowlist that names the fleet's units (default: fleet-ops-control.json "
+        "next to this script)",
+    )
+    parser.add_argument(
         "--snapshot",
         type=Path,
         default=None,
@@ -805,21 +1167,26 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def main(argv=None):
+def main(argv=None, run_command=run, proc=Path("/proc")):
     args = parse_args(argv)
     output = args.output or (
         Path(args.home) / ".local" / "state" / "fleet-tools" / "server-status.json"
     )
     snapshot = args.snapshot or output
 
-    coolify = collect_coolify()
-    processes = collect_processes(limit=args.process_limit, interval=args.cpu_interval)
+    coolify = collect_coolify(run_command=run_command)
+    processes = collect_processes(
+        limit=args.process_limit, interval=args.cpu_interval, proc=proc
+    )
     files, found = collect_files(args.code_root, previous_files(snapshot), limit=args.file_limit)
     document = build_report(
         coolify,
         processes,
         files,
         previous_resources(snapshot),
+        host_metrics=collect_host_metrics(proc=proc),
+        services=collect_services(args.control, run_command=run_command),
+        files_summary=summarize_files(found, args.file_limit),
     )
 
     if args.dry_run:

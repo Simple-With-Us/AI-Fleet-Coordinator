@@ -428,6 +428,109 @@ class CoolifyTests(unittest.TestCase):
         names = sorted(row["name"] for row in rows)
         self.assertEqual(names, ["Example (one)", "Example (two)"])
 
+    def test_a_uuid_from_the_coolify_label_says_so(self):
+        docker = FakeDocker(
+            containers=[
+                inspect_line(
+                    container="example-abc",
+                    label_type="application",
+                    application_uuid="uuid1",
+                    resource_name="Example",
+                )
+            ]
+        )
+        rows = collector.collect_coolify(run_command=docker)
+        self.assertEqual(rows[0]["uuid"], "uuid1")
+        self.assertEqual(rows[0]["uuidSource"], "label")
+
+    def test_a_uuid_that_stands_in_for_a_missing_label_is_a_name(self):
+        docker = FakeDocker(
+            containers=[
+                # A Coolify resource name but no uuid label:  the name stands in.
+                inspect_line(
+                    container="example-abc",
+                    label_type="service",
+                    resource_name="Example",
+                ),
+                # No Coolify label at all:  the container name stands in.
+                inspect_line(identifier="def456", container="botfleet-vps-shared"),
+            ]
+        )
+        rows = collector.collect_coolify(run_command=docker)
+        by_uuid = {row["uuid"]: row for row in rows}
+        self.assertEqual(by_uuid["Example"]["uuidSource"], "name")
+        self.assertEqual(by_uuid["botfleet-vps-shared"]["uuidSource"], "name")
+
+    def test_resource_identity_names_the_source_of_the_uuid(self):
+        fields = {
+            "application_uuid": " uuid1 ",
+            "resource_name": "Example",
+            "label_name": "example",
+            "container": "example-abc",
+        }
+        self.assertEqual(collector.resource_identity(fields), ("uuid1", "Example", "label"))
+        fields["application_uuid"] = "   "
+        self.assertEqual(collector.resource_identity(fields), ("Example", "Example", "name"))
+        fields["resource_name"] = ""
+        fields["label_name"] = ""
+        self.assertEqual(
+            collector.resource_identity(fields), ("example-abc", "example-abc", "name")
+        )
+
+    def test_an_absent_resource_keeps_the_source_the_previous_report_gave(self):
+        before = {
+            ("uuid1", "Example"): {
+                "uuid": "uuid1",
+                "uuidSource": "label",
+                "name": "Example",
+                "type": "application",
+                "status": "running",
+            },
+            ("Other", "Other"): {
+                "uuid": "Other",
+                "uuidSource": "name",
+                "name": "Other",
+                "type": "service",
+                "status": "running",
+            },
+            # A report written before `uuidSource` existed,  or one that says
+            # something this collector does not write,  gives no source.
+            ("old", "Old"): {"uuid": "old", "name": "Old", "type": "application"},
+            ("odd", "Odd"): {"uuid": "odd", "name": "Odd", "uuidSource": "guess"},
+        }
+        document = collector.build_report([], [], [], before)
+        by_uuid = {row["uuid"]: row for row in document["coolify"]}
+        self.assertEqual(by_uuid["uuid1"]["uuidSource"], "label")
+        self.assertEqual(by_uuid["Other"]["uuidSource"], "name")
+        self.assertNotIn("uuidSource", by_uuid["old"])
+        self.assertNotIn("uuidSource", by_uuid["odd"])
+
+    def test_the_ops_control_reader_believes_only_a_label_source(self):
+        spec = importlib.util.spec_from_file_location(
+            "fleet_ops_control", HERE / "fleet-ops-control.py"
+        )
+        ops = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ops)
+        docker = FakeDocker(
+            containers=[
+                inspect_line(
+                    container="labelled",
+                    label_type="application",
+                    application_uuid="uuid1",
+                    resource_name="Example",
+                ),
+                inspect_line(
+                    identifier="def456",
+                    container="unlabelled",
+                    label_type="application",
+                    resource_name="Other",
+                ),
+            ]
+        )
+        rows = {row["uuid"]: row for row in collector.collect_coolify(run_command=docker)}
+        self.assertTrue(ops.uuid_from_label(rows["uuid1"]))
+        self.assertFalse(ops.uuid_from_label(rows["Other"]))
+
     def test_a_resource_that_is_gone_reads_as_absent(self):
         before = {
             ("uuid1", "Example"): {
@@ -595,6 +698,430 @@ class RepairRegressionTests(unittest.TestCase):
             [(r["name"], r["status"]) for r in report],
             [("Example (web)", "running"), ("Example (worker)", "absent")],
         )
+
+
+class FakeStatvfs:
+    """`os.statvfs` with the sizes a test says each mount has."""
+
+    def __init__(self, sizes):
+        self.sizes = sizes
+
+    def __call__(self, mount):
+        if mount not in self.sizes:
+            raise OSError("not mounted")
+        blocks, free, available = self.sizes[mount]
+        return os.statvfs_result((4096, 4096, blocks, free, available, 0, 0, 0, 0, 255))
+
+
+def make_proc_files(root, loadavg=None, meminfo=None, uptime=None, mounts=None):
+    """A fake `/proc` with the files a test gives it,  and none of the others."""
+    root.mkdir(parents=True, exist_ok=True)
+    for name, text in (
+        ("loadavg", loadavg),
+        ("meminfo", meminfo),
+        ("uptime", uptime),
+        ("mounts", mounts),
+    ):
+        if text is not None:
+            (root / name).write_text(text)
+    return root
+
+
+MEMINFO = (
+    "MemTotal:       16000000 kB\n"
+    "MemFree:         2000000 kB\n"
+    "MemAvailable:    8000000 kB\n"
+    "SwapTotal:       4000000 kB\n"
+    "SwapFree:        3000000 kB\n"
+)
+MOUNTS = (
+    "/dev/sda1 / ext4 rw,relatime 0 0\n"
+    "proc /proc proc rw 0 0\n"
+    "tmpfs /mnt/ram tmpfs rw 0 0\n"
+    "/dev/sdb /mnt/data\\040one xfs rw 0 0\n"
+    "/dev/sdc /srv/other ext4 rw 0 0\n"
+    "/dev/sda1 / ext4 rw,relatime 0 0\n"
+)
+
+
+class HostMetricsTests(unittest.TestCase):
+    """The host's load,  memory,  swap,  uptime and disks."""
+
+    def test_every_measurement_is_read_from_proc_and_statvfs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = make_proc_files(
+                Path(tmp) / "proc",
+                loadavg="0.52 0.75 1.10 2/345 6789\n",
+                meminfo=MEMINFO,
+                uptime="12345.67 99999.00\n",
+                mounts=MOUNTS,
+            )
+            statvfs = FakeStatvfs({"/": (1000, 400, 300), "/mnt/data one": (2000, 2000, 1900)})
+            metrics = collector.collect_host_metrics(
+                proc=proc, statvfs=statvfs, cpu_count=lambda: 8
+            )
+        self.assertEqual(metrics["loadAverage"], [0.52, 0.75, 1.1])
+        self.assertEqual(metrics["cpuCount"], 8)
+        self.assertEqual(
+            metrics["memory"], {"totalBytes": 16000000 * 1024, "availableBytes": 8000000 * 1024}
+        )
+        self.assertEqual(
+            metrics["swap"], {"totalBytes": 4000000 * 1024, "freeBytes": 3000000 * 1024}
+        )
+        self.assertEqual(metrics["uptimeSeconds"], 12345)
+        # `/` once,  the real file system under /mnt with its escaped space decoded,  and
+        # neither the tmpfs under /mnt nor a disk mounted outside it.
+        self.assertEqual(
+            metrics["disks"],
+            [
+                {
+                    "mount": "/",
+                    "totalBytes": 1000 * 4096,
+                    "usedBytes": 600 * 4096,
+                    "freeBytes": 300 * 4096,
+                },
+                {
+                    "mount": "/mnt/data one",
+                    "totalBytes": 2000 * 4096,
+                    "usedBytes": 0,
+                    "freeBytes": 1900 * 4096,
+                },
+            ],
+        )
+
+    def test_a_measurement_that_cannot_be_taken_is_left_out(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = make_proc_files(Path(tmp) / "proc")
+            metrics = collector.collect_host_metrics(
+                proc=proc, statvfs=FakeStatvfs({}), cpu_count=lambda: None
+            )
+        self.assertEqual(metrics, {"disks": []})
+
+    def test_malformed_proc_files_are_left_out_and_never_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            proc = make_proc_files(
+                Path(tmp) / "proc",
+                loadavg="high\n",
+                meminfo="MemTotal: lots\nGarbage\nMemAvailable:\nSwapTotal: -5 kB\n",
+                uptime="soon\n",
+                mounts="nonsense\n/dev/sda1 / ext4 rw 0 0\n",
+            )
+            # A mount that statvfs cannot read,  and one that reports no blocks.
+            metrics = collector.collect_host_metrics(
+                proc=proc, statvfs=FakeStatvfs({}), cpu_count=lambda: 0
+            )
+            self.assertEqual(metrics, {"disks": []})
+            empty = collector.disk_usage("/", FakeStatvfs({"/": (0, 0, 0)}))
+            self.assertIsNone(empty)
+
+    def test_the_real_host_is_readable(self):
+        metrics = collector.collect_host_metrics()
+        self.assertIsInstance(metrics["disks"], list)
+
+
+class FakeSystemctl:
+    """A systemctl that answers `show` with the blocks a test gives it,  per scope."""
+
+    def __init__(self, system=None, user=None):
+        self.answers = {"system": system, "user": user}
+        self.calls = []
+
+    def __call__(self, command, timeout=30):
+        self.calls.append(command)
+        if command[0] != "systemctl":
+            return None
+        scope = "user" if "--user" in command else "system"
+        return self.answers[scope]
+
+
+def show_block(unit, active="active", sub="running", file_state="enabled", since="@1761660000"):
+    return "\n".join(
+        [
+            "Id=" + unit,
+            "Description=The %s unit" % unit,
+            "LoadState=loaded",
+            "ActiveState=" + active,
+            "SubState=" + sub,
+            "UnitFileState=" + file_state,
+            "StateChangeTimestamp=" + since,
+        ]
+    )
+
+
+class ServiceTests(unittest.TestCase):
+    """The fleet's units come from the allowlist,  and from `systemctl show`."""
+
+    def control(self, tmp, document):
+        path = Path(tmp) / "fleet-ops-control.json"
+        path.write_text(document if isinstance(document, str) else json.dumps(document))
+        return path
+
+    def allowlist(self):
+        return {
+            "schemaVersion": 1,
+            "server": {
+                "units": [
+                    {
+                        "unit": "fleet-server-status.timer",
+                        "scope": "user",
+                        "actions": ["start", "stop", "restart"],
+                    },
+                    {"unit": "cron.service", "scope": "system"},
+                    {"unit": "docker.service", "scope": "system", "actions": []},
+                ]
+            },
+        }
+
+    def test_each_unit_carries_its_state_and_whether_it_can_be_controlled(self):
+        systemctl = FakeSystemctl(
+            system=show_block("cron.service")
+            + "\n\n"
+            + show_block("docker.service", file_state="", since="")
+            + "\n",
+            user=show_block("fleet-server-status.timer", sub="waiting") + "\n",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = collector.collect_services(
+                self.control(tmp, self.allowlist()), run_command=systemctl
+            )
+        by_unit = {row["unit"]: row for row in rows}
+        self.assertEqual(
+            by_unit["cron.service"],
+            {
+                "unit": "cron.service",
+                "scope": "system",
+                "description": "The cron.service unit",
+                "activeState": "active",
+                "subState": "running",
+                "since": collector.iso_from_timestamp(1761660000),
+                "enabled": "enabled",
+                "controllable": False,
+            },
+        )
+        # An empty action list controls nothing,  and an empty field is left out.
+        self.assertFalse(by_unit["docker.service"]["controllable"])
+        self.assertNotIn("since", by_unit["docker.service"])
+        self.assertNotIn("enabled", by_unit["docker.service"])
+        timer = by_unit["fleet-server-status.timer"]
+        self.assertEqual((timer["scope"], timer["subState"]), ("user", "waiting"))
+        self.assertTrue(timer["controllable"])
+
+    def test_one_show_call_per_scope_with_an_explicit_property_list(self):
+        systemctl = FakeSystemctl(
+            system=show_block("cron.service") + "\n\n" + show_block("docker.service"),
+            user=show_block("fleet-server-status.timer"),
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            collector.collect_services(self.control(tmp, self.allowlist()), run_command=systemctl)
+        self.assertEqual(len(systemctl.calls), 2)
+        for command in systemctl.calls:
+            self.assertEqual(command[0], "systemctl")
+            self.assertIn("show", command)
+            self.assertNotIn("status", command)
+            properties = [part for part in command if part.startswith("--property=")]
+            self.assertEqual(len(properties), 1)
+        self.assertEqual(
+            systemctl.calls[0][-2:], ["cron.service", "docker.service"]
+        )
+        self.assertIn("--user", systemctl.calls[1])
+        self.assertEqual(systemctl.calls[1][-1], "fleet-server-status.timer")
+
+    def test_a_missing_or_malformed_allowlist_means_no_units(self):
+        systemctl = FakeSystemctl(system="", user="")
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "absent.json"
+            self.assertEqual(collector.collect_services(missing, run_command=systemctl), [])
+            for document in (
+                "not json",
+                "[]",
+                json.dumps({"server": []}),
+                json.dumps({"server": {"units": "cron.service"}}),
+                json.dumps({"server": {"units": [None, 3, "cron.service"]}}),
+            ):
+                path = self.control(tmp, document)
+                self.assertEqual(
+                    collector.collect_services(path, run_command=systemctl), [], document
+                )
+        self.assertEqual(systemctl.calls, [])
+
+    def test_an_entry_with_a_bad_name_or_scope_is_skipped(self):
+        document = {
+            "server": {
+                "units": [
+                    {"unit": "--now", "scope": "system", "actions": ["start"]},
+                    {"unit": "-H.service", "scope": "system"},
+                    {"unit": "cron.service", "scope": "root"},
+                    {"unit": "cron.service", "scope": "system", "actions": "start"},
+                    {"unit": "cron.service", "scope": "system", "actions": ["start"]},
+                    {"unit": "space here.service", "scope": "system"},
+                    {"unit": 7, "scope": "system"},
+                ]
+            }
+        }
+        systemctl = FakeSystemctl(system=show_block("cron.service"))
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = collector.collect_services(self.control(tmp, document), run_command=systemctl)
+        self.assertEqual([row["unit"] for row in rows], ["cron.service"])
+        # The first entry for a unit wins,  and an action list that is not a list
+        # controls nothing.
+        self.assertFalse(rows[0]["controllable"])
+        self.assertEqual(systemctl.calls[0][-1], "cron.service")
+
+    def test_a_scope_systemctl_cannot_answer_leaves_its_units_unknown(self):
+        systemctl = FakeSystemctl(system=None, user=show_block("fleet-server-status.timer"))
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = collector.collect_services(
+                self.control(tmp, self.allowlist()), run_command=systemctl
+            )
+        by_unit = {row["unit"]: row for row in rows}
+        self.assertEqual(
+            by_unit["cron.service"],
+            {"unit": "cron.service", "scope": "system", "activeState": "unknown",
+             "controllable": False},
+        )
+        self.assertEqual(by_unit["fleet-server-status.timer"]["activeState"], "active")
+
+    def test_an_answer_with_the_wrong_number_of_blocks_is_not_trusted(self):
+        # One block for two units cannot be matched to either of them.
+        systemctl = FakeSystemctl(system=show_block("cron.service"), user="")
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = collector.collect_services(
+                self.control(tmp, self.allowlist()), run_command=systemctl
+            )
+        states = {row["unit"]: row["activeState"] for row in rows}
+        self.assertEqual(states["cron.service"], "unknown")
+        self.assertEqual(states["docker.service"], "unknown")
+        self.assertEqual(states["fleet-server-status.timer"], "unknown")
+
+    def test_a_timestamp_that_is_not_a_unix_one_is_left_out(self):
+        self.assertIsNone(collector.iso_from_systemd(""))
+        self.assertIsNone(collector.iso_from_systemd("n/a"))
+        self.assertIsNone(collector.iso_from_systemd("@0"))
+        self.assertIsNone(collector.iso_from_systemd("Tue 2026-10-28 10:00:00 UTC"))
+        self.assertEqual(collector.iso_from_systemd("@1761660000"), "2025-10-28T14:00:00Z")
+
+
+class SummaryAndInfoDriftTests(unittest.TestCase):
+    """`filesSummary` tells a partial list from a whole one,  and a README is `info`."""
+
+    def test_the_summary_says_when_the_list_was_cut(self):
+        self.assertEqual(
+            collector.summarize_files(30, 6), {"found": 30, "limit": 6, "truncated": True}
+        )
+        self.assertEqual(
+            collector.summarize_files(6, 6), {"found": 6, "limit": 6, "truncated": False}
+        )
+
+    def test_a_changed_readme_or_package_manifest_is_info(self):
+        for name in ("README.md", "package.json"):
+            before = {"/a/" + name: {"sha256": "aaa"}}
+            self.assertEqual(collector.drift_of("/a/" + name, "bbb", before), "info", name)
+            self.assertEqual(collector.drift_of("/a/" + name, "aaa", before), "unchanged", name)
+            self.assertEqual(collector.drift_of("/a/" + name, "aaa", {}), "new", name)
+        before = {"/a/AGENTS.md": {"sha256": "aaa"}}
+        self.assertEqual(collector.drift_of("/a/AGENTS.md", "bbb", before), "changed")
+
+    def test_the_new_keys_are_optional(self):
+        document = collector.build_report(
+            [],
+            [],
+            [],
+            {},
+            host_metrics={"disks": []},
+            services=[],
+            files_summary=collector.summarize_files(0, 200),
+        )
+        self.assertEqual(document["schemaVersion"], 1)
+        self.assertEqual(document["hostMetrics"], {"disks": []})
+        self.assertEqual(document["services"], [])
+        self.assertEqual(document["filesSummary"], {"found": 0, "limit": 200, "truncated": False})
+
+    def test_a_run_carries_every_new_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "Code" / "Example"
+            repo.mkdir(parents=True)
+            for name in ("AGENTS.md", "README.md", "CLAUDE.md"):
+                (repo / name).write_text(name)
+            control = root / "control.json"
+            control.write_text(
+                json.dumps(
+                    {
+                        "server": {
+                            "units": [
+                                {"unit": "cron.service", "scope": "system", "actions": ["restart"]}
+                            ]
+                        }
+                    }
+                )
+            )
+            target = root / "state" / "server-status.json"
+
+            def fake(command, timeout=30):
+                if command[0] == "systemctl":
+                    return show_block("cron.service")
+                if command[:3] == ["docker", "ps", "-a"]:
+                    return ""
+                return None
+
+            argv = [
+                "--output",
+                str(target),
+                "--code-root",
+                str(root / "Code"),
+                "--control",
+                str(control),
+                "--file-limit",
+                "2",
+                "--process-limit",
+                "1",
+                "--cpu-interval",
+                "0",
+            ]
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(collector.main(argv, run_command=fake), 0)
+            document = json.loads(target.read_text())
+            self.assertEqual(document["schemaVersion"], 1)
+            self.assertEqual(document["filesSummary"], {"found": 3, "limit": 2, "truncated": True})
+            self.assertEqual(len(document["files"]), 2)
+            self.assertEqual(document["services"][0]["unit"], "cron.service")
+            self.assertTrue(document["services"][0]["controllable"])
+            self.assertIn("disks", document["hostMetrics"])
+            # A whole run,  then a change:  a changed README is `info`.
+            whole = argv[:6] + ["--file-limit", "5"] + argv[8:]
+            with contextlib.redirect_stdout(io.StringIO()):
+                collector.main(whole, run_command=fake)
+            (repo / "README.md").write_text("changed")
+            (repo / "AGENTS.md").write_text("changed")
+            with contextlib.redirect_stdout(io.StringIO()):
+                collector.main(whole, run_command=fake)
+            drift = {
+                Path(row["path"]).name: row["drift"]
+                for row in json.loads(target.read_text())["files"]
+            }
+            self.assertEqual(drift["README.md"], "info")
+            self.assertEqual(drift["AGENTS.md"], "changed")
+            self.assertEqual(drift["CLAUDE.md"], "unchanged")
+
+    def test_a_missing_allowlist_never_crashes_a_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                code = collector.main(
+                    [
+                        "--dry-run",
+                        "--code-root",
+                        tmp,
+                        "--control",
+                        str(Path(tmp) / "absent.json"),
+                        "--process-limit",
+                        "1",
+                        "--cpu-interval",
+                        "0",
+                    ],
+                    run_command=lambda command, timeout=30: None,
+                )
+            self.assertEqual(code, 0)
+            self.assertEqual(json.loads(out.getvalue())["services"], [])
 
 
 if __name__ == "__main__":

@@ -102,6 +102,10 @@ struct KnobRegistry {
         /// The panel puts the note on a line of its own,  because the notes are far
         /// longer than a column of a table can hold.
         let note: String
+        /// The editor the knob gets,  or nil for a secret,  which is never edited here.
+        var editor: KnobEditorKind? = nil
+        /// The value an editor starts from.
+        var editValue: String = ""
 
         var id: String { name }
     }
@@ -129,7 +133,9 @@ struct KnobRegistry {
                 now: knob.nowText,
                 nowIsSecret: knob.isSecret,
                 localMay: knob.localMay,
-                note: knob.note
+                note: knob.note,
+                editor: knob.editor,
+                editValue: knob.isSecret ? "" : knob.editValue
             )
         }
     }
@@ -527,5 +533,106 @@ enum KnobReader {
             .attributesOfItem(atPath: directory.path) else { return false }
         let directoryMode = (directoryAttributes[.posixPermissions] as? NSNumber)?.int16Value ?? 0
         return directoryMode & 0o077 == 0
+    }
+}
+
+// MARK: - Editing a knob
+
+/// The editor a knob gets,  read from the registry's kind column.
+///
+/// The kind column is the generator's own words:  `bool`,  `enum: a < b < c`,
+/// `int 1 to 168`,  `str`,  `list` and `caps`.  A kind this app does not know gets a text
+/// field,  because the knob engine checks every value against the knob's own spec before it
+/// writes,  and a refusal there is the real gate.
+enum KnobEditorKind: Equatable {
+    /// A yes or a no.
+    case toggle
+    /// One of a fixed list,  in the registry's order.
+    case choice([String])
+    /// A whole number,  inside the bounds when the registry gives them.
+    case integer(min: Int?, max: Int?)
+    /// Free text,  with a hint about its shape.
+    case text(hint: String)
+
+    /// The editor for a kind column.
+    init(kind: String) {
+        let trimmed = kind.trimmingCharacters(in: .whitespaces)
+        let lower = trimmed.lowercased()
+        if lower == "bool" {
+            self = .toggle
+            return
+        }
+        if lower.hasPrefix("enum:") {
+            let choices = trimmed.dropFirst("enum:".count)
+                .split(separator: "<")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            self = choices.isEmpty ? .text(hint: "one of the knob's values") : .choice(choices)
+            return
+        }
+        if lower == "int" || lower.hasPrefix("int ") {
+            let words = lower.split(separator: " ").map(String.init)
+            // `int A to B`:  the bounds are the second and the fourth words.
+            if words.count == 4, words[2] == "to", let low = Int(words[1]), let high = Int(words[3]) {
+                self = .integer(min: low, max: high)
+            } else {
+                self = .integer(min: nil, max: nil)
+            }
+            return
+        }
+        switch lower {
+        case "list": self = .text(hint: "comma-separated entries, empty for none")
+        case "caps": self = .text(hint: "name=number pairs, comma-separated")
+        default: self = .text(hint: "text")
+        }
+    }
+
+    /// Why a value is not one this editor takes,  or nil when it is.
+    ///
+    /// The check is a convenience for the sheet:  the knob engine checks the value again
+    /// against the knob's own spec,  and its answer is the one that counts.
+    func problem(with value: String) -> String? {
+        switch self {
+        case .toggle:
+            return value == "true" || value == "false" ? nil : "The value must be true or false."
+        case .choice(let choices):
+            return choices.contains(value) ? nil : "The value must be one of \(choices.joined(separator: ", "))."
+        case .integer(let low, let high):
+            guard let number = Int(value) else { return "The value must be a whole number." }
+            if let low = low, number < low { return "The value must be at least \(low)." }
+            if let high = high, number > high { return "The value must be at most \(high)." }
+            return nil
+        case .text:
+            if value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
+                return "The value must be one line."
+            }
+            return nil
+        }
+    }
+}
+
+extension KnobRegistry.Knob {
+    /// The editor this knob gets,  or nil for a secret:  a secret is never edited here,
+    /// and the knob engine refuses one anyway.
+    var editor: KnobEditorKind? {
+        isSecret ? nil : KnobEditorKind(kind: kind)
+    }
+
+    /// The value an editor starts from:  the value the knob holds now,  or its default.
+    ///
+    /// The registry writes an empty default as a word (`empty`,  `unset`,  `none`),  and
+    /// the editor starts from no text at all for those.
+    var editValue: String {
+        if case .current(let value) = current { return value }
+        return KnobRegistry.Knob.plainDefault(defaultValue)
+    }
+
+    /// A registry default,  with the words that mean "nothing" turned into no text.
+    static func plainDefault(_ value: String) -> String {
+        let lower = value.lowercased()
+        if lower == "empty" || lower == "unset" || lower.hasPrefix("none") {
+            return ""
+        }
+        return value
     }
 }
