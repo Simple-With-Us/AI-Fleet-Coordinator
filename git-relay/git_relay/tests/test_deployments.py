@@ -1,10 +1,10 @@
 import unittest
 
 try:
-    from .test_workflow_verbs import REPO, SHA, Client, Policy, Minter
+    from .test_workflow_verbs import REPO, SHA, Client, Minter, Policy
 except ImportError:
-    from test_workflow_verbs import REPO, SHA, Client, Policy, Minter
-from git_relay.workflow_verbs import WorkflowVerbs, Refused
+    from test_workflow_verbs import REPO, SHA, Client, Minter, Policy
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
 
 class Deployments(unittest.TestCase):
