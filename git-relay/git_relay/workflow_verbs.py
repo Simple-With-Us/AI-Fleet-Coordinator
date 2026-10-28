@@ -54,6 +54,12 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_labels_set": ({"issues": "write"}, True),
+    "wf_reviewers_request": ({"pull_requests": "write"}, True),
+    "wf_reviewers_remove": ({"pull_requests": "write"}, True),
+    "wf_release_create": ({"contents": "write"}, True),
+    "wf_release_update": ({"contents": "write"}, True),
+
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
@@ -442,6 +448,74 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def wf_labels_set(self, repo, args):
+        _only(args, ("repo", "number", "labels",))
+        number = _int(args, "number")
+        labels = args.get("labels")
+        if not isinstance(labels, list) or not 1 <= len(labels) <= 50 or any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", v) for v in labels):
+            raise Refused("invalid labels")
+        data = self.client._call("PUT", f"/repos/{repo}/issues/{number}/labels", {"labels": labels}, bearer=self.bearer)
+        return {"labels": _arr(data)}
+
+    def wf_reviewers_request(self, repo, args):
+        _only(args, ("repo", "number", "reviewers",))
+        number = _int(args, "number")
+        reviewers = args.get("reviewers")
+        if not isinstance(reviewers, list) or not 1 <= len(reviewers) <= 50 or any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", v) for v in reviewers):
+            raise Refused("invalid reviewers")
+        data = self.client._call("POST", f"/repos/{repo}/pulls/{number}/requested_reviewers", {"reviewers": reviewers}, bearer=self.bearer)
+        result = _obj(data)
+        if not isinstance(result.get("id"), (int, type(None))):
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        return {"result": result}
+
+    def wf_reviewers_remove(self, repo, args):
+        _only(args, ("repo", "number", "reviewers",))
+        number = _int(args, "number")
+        reviewers = args.get("reviewers")
+        if not isinstance(reviewers, list) or not 1 <= len(reviewers) <= 50 or any(not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", v) for v in reviewers):
+            raise Refused("invalid reviewers")
+        data = self.client._call("DELETE", f"/repos/{repo}/pulls/{number}/requested_reviewers", {"reviewers": reviewers}, bearer=self.bearer)
+        result = _obj(data)
+        if not isinstance(result.get("id"), (int, type(None))):
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        return {"result": result}
+
+    def wf_release_create(self, repo, args):
+        _only(args, ("repo", "tag", "name", "body", "draft", "prerelease",))
+        tag = self._text(args, "tag")
+        name = self._text(args, "name")
+        body = self._text(args, "body")
+        draft = args.get("draft")
+        if not isinstance(draft, bool):
+            raise Refused("invalid draft")
+        prerelease = args.get("prerelease")
+        if not isinstance(prerelease, bool):
+            raise Refused("invalid prerelease")
+        tag = _ref(args, "tag")
+        data = self.client._call("POST", f"/repos/{repo}/releases", {"tag_name": tag, "name": name, "body": body, "draft": draft, "prerelease": prerelease}, bearer=self.bearer)
+        result = _obj(data)
+        if not isinstance(result.get("id"), int) or isinstance(result.get("id"), bool) or result["id"] <= 0:
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        return {"result": result}
+
+    def wf_release_update(self, repo, args):
+        _only(args, ("repo", "release_id", "name", "body", "draft", "prerelease",))
+        release_id = _int(args, "release_id")
+        name = self._text(args, "name")
+        body = self._text(args, "body")
+        draft = args.get("draft")
+        if not isinstance(draft, bool):
+            raise Refused("invalid draft")
+        prerelease = args.get("prerelease")
+        if not isinstance(prerelease, bool):
+            raise Refused("invalid prerelease")
+        data = self.client._call("PATCH", f"/repos/{repo}/releases/{release_id}", {"name": name, "body": body, "draft": draft, "prerelease": prerelease}, bearer=self.bearer)
+        result = _obj(data)
+        if not isinstance(result.get("id"), int) or isinstance(result.get("id"), bool) or result["id"] <= 0:
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        return {"result": result}
 
     # ---- reads ----
     def wf_pr_list(self, repo, args):
