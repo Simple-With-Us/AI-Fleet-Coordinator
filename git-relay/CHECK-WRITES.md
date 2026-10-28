@@ -11,3 +11,8 @@ title255, summary32768 UTF-8 bytes, nonblank and secret-scanned. Projected recei
 verify ID, head SHA, name, status and conclusion; uncertain writes stay UNKNOWN.
 Capability is never approval to fabricate CI results or bypass a gate. No live check
 run was created or changed to test this source.
+
+Check names are fixed to the authenticated App namespace `<seat>/report`, not arbitrary
+CI contexts or another App. This namespace must not be configured as independent CI
+evidence. The command cannot prove caller report truth; execution still requires owner
+authority and actual result evidence.

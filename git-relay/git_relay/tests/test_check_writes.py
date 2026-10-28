@@ -16,7 +16,12 @@ class Checks(unittest.TestCase):
             )
         m = Minter()
         WorkflowVerbs.for_action(
-            Client(), Policy({"checks": "write", "metadata": "read"}), m, "swu-wise", "wf_check_create", REPO
+            Client(),
+            Policy({"checks": "write", "metadata": "read"}),
+            m,
+            "swu-wise",
+            "wf_check_create",
+            REPO,
         )
         self.assertEqual(m.calls[0][2], {"checks": "write", "metadata": "read"})
 
@@ -24,7 +29,7 @@ class Checks(unittest.TestCase):
         for action in ("wf_check_create", "wf_check_update"):
             args = {
                 "repo": REPO,
-                "name": "build",
+                "name": "swu-wise/report",
                 "status": "in_progress",
                 "conclusion": "none",
                 "title": "Build",
@@ -36,7 +41,7 @@ class Checks(unittest.TestCase):
             row = {
                 "id": 1,
                 "head_sha": SHA,
-                "name": "build",
+                "name": "swu-wise/report",
                 "status": "in_progress",
                 "conclusion": None,
             }
@@ -51,7 +56,7 @@ class Checks(unittest.TestCase):
         args = {
             "repo": REPO,
             "sha": SHA,
-            "name": "build",
+            "name": "swu-wise/report",
             "status": "completed",
             "conclusion": "success",
             "title": "Build",
@@ -68,3 +73,22 @@ class Checks(unittest.TestCase):
         with self.assertRaises(Refused):
             h.run("wf_check_update", args)
         self.assertEqual(len(c.calls), 1)
+
+    def test_check_name_cannot_impersonate_ci(self):
+        for name in ("test", "gitleaks", "swu-echo/report"):
+            c = Client()
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_check_create", REPO)
+            with self.assertRaises(Refused):
+                h.run(
+                    "wf_check_create",
+                    {
+                        "repo": REPO,
+                        "sha": SHA,
+                        "name": name,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "title": "Build",
+                        "summary": "Done",
+                    },
+                )
+            self.assertEqual(c.calls, [])

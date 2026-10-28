@@ -428,6 +428,10 @@ class WorkflowVerbs:
 
     def _check_payload(self, args):
         name = self._text(args, "name", 100)
+        if not re.fullmatch(r"swu-[a-z0-9-]+/report", name) or (
+            self.seat != "probe" and name != self.seat + "/report"
+        ):
+            raise Refused("check name must be own App report namespace")
         title = self._text(args, "title", 255)
         summary = self._text(args, "summary", 32768)
         status = _enum(args, "status", ("queued", "in_progress", "completed"))
