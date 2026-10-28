@@ -112,6 +112,43 @@ class Dependencies(unittest.TestCase):
 
         self.assertIn("blocker_number", _WORKFLOW_AUDIT_SCALARS)
 
+    def test_write_transport_failure_is_outcome_unverifiable(self):
+        a = "wf_issue_dependency_add"
+        args = {"repo": REPO, "number": 1, "blocker_number": 2}
+
+        class WriteTransportDown(Client):
+            def __init__(self, status):
+                super().__init__(item(1), item(2))
+                self.write_status = status
+
+            def _call(self, method, path, payload=None, bearer=None):
+                if method in ("POST", "DELETE") and "dependencies" in path:
+                    raise RelayGitHubError(self.write_status, "upstream")
+                return super()._call(method, path, payload, bearer)
+
+        for status in (0, 408, 429, 502):
+            with self.subTest(status=status):
+                with self.assertRaises(RelayGitHubError) as ctx:
+                    self.runverb(WriteTransportDown(status), a, args)
+                self.assertEqual(ctx.exception.status, 502)
+                self.assertIn("dependency write outcome unverifiable", str(ctx.exception))
+
+    def test_preread_auth_preserves_masked_credential_preview(self):
+        a = "wf_issue_dependency_add"
+        args = {"repo": REPO, "number": 1, "blocker_number": 2}
+
+        class AuthClient(Client):
+            def _call(self, method, path, payload=None, bearer=None):
+                raise RelayGitHubError(
+                    401,
+                    "bad credentials",
+                    credential_preview="ghs_abcd\u2026wxyz",
+                )
+
+        with self.assertRaises(RelayGitHubError) as ctx:
+            self.runverb(AuthClient(), a, args)
+        self.assertEqual(ctx.exception.credential_preview, "ghs_abcd\u2026wxyz")
+
     def test_real_relay_mutation_unknown_holds_without_secret_diagnostics(self):
         import json
         import tempfile

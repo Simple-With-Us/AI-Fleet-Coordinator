@@ -978,12 +978,17 @@ class WorkflowVerbs:
         if issue["id"] == blocker["id"]:
             raise Refused("duplicate dependency identity")
         path = f"/repos/{repo}/issues/{number}/dependencies/blocked_by"
-        result = self.client._call(
-            "DELETE" if remove else "POST",
-            path + f"/{blocker['id']}" if remove else path,
-            None if remove else {"issue_id": blocker["id"]},
-            bearer=self.bearer,
-        )
+        try:
+            result = self.client._call(
+                "DELETE" if remove else "POST",
+                path + f"/{blocker['id']}" if remove else path,
+                None if remove else {"issue_id": blocker["id"]},
+                bearer=self.bearer,
+            )
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408, 429) or exc.status >= 500:
+                raise RelayGitHubError(502, "dependency write outcome unverifiable") from None
+            raise
         # GitHub documents an issue body for BOTH201 add and200 delete.
         # It may identify either participant, never an arbitrary third issue.
         try:
