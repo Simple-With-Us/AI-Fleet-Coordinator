@@ -2,11 +2,13 @@ name = "pr-conflict-watch"
 main = "index.js"
 compatibility_date = "2026-08-01"
 
-# The Worker's secrets (GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN, ZULIP_SITE,
-# ZULIP_BOT_EMAIL, ZULIP_BOT_API_KEY) are set with `wrangler secret put` at
-# deploy time from Infisical, the only source of secrets for the fleet.  They
-# are deliberately not declared here: a secret in this file would be a secret
-# in the repository.
+# The Worker's only secret binding is INFISICAL_SERVICE_TOKEN: a read-only
+# Infisical service token, scoped to prod + /pr-conflict-watch.  Every other
+# secret (GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN, ZULIP_SITE, ZULIP_BOT_EMAIL,
+# ZULIP_BOT_API_KEY) is read at runtime from that Infisical folder in the
+# Fleet-OPS project, so nothing else is bound here.  It is deliberately not
+# declared: a secret in this file would be a secret in the repository.
+# See README.md ("Secrets: Infisical at runtime").
 
 [[kv_namespaces]]
 binding = "PR_STATE"

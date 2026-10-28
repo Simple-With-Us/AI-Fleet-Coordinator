@@ -10,13 +10,20 @@ import worker, {
   topicForRepo,
   zulipMessagesUrl,
 } from "./index.js";
+import { _resetConfigCacheForTests } from "./infisical.js";
 
-const ENV = {
+// The config Infisical resolves for this Worker: the five secrets, no more.
+const CONFIG = {
   GITHUB_WEBHOOK_SECRET: "webhook-secret",
   GITHUB_TOKEN: "github-token",
   ZULIP_SITE: "https://zulip.example.com",
   ZULIP_BOT_EMAIL: "alerts-bot@example.com",
   ZULIP_BOT_API_KEY: "zulip-api-key",
+};
+
+// The Worker's bindings: one secret token and the KV namespace.
+const ENV = {
+  INFISICAL_SERVICE_TOKEN: "st.test-service-token",
 };
 
 const PR = {
@@ -36,6 +43,7 @@ const realConsoleError = console.error;
 afterEach(() => {
   globalThis.fetch = realFetch;
   console.error = realConsoleError;
+  _resetConfigCacheForTests();
 });
 
 /** Capture one fetch call and answer it with the given Response. */
@@ -91,7 +99,7 @@ describe("postZulip", () => {
   it("posts a form-encoded message to the Alerts stream", async () => {
     const calls = stubFetch(jsonResponse({ result: "success", id: 7 }));
 
-    const ok = await postZulip(ENV, "pr-conflicts BotFleet", "hello");
+    const ok = await postZulip(CONFIG, "pr-conflicts BotFleet", "hello");
 
     assert.equal(ok, true);
     assert.equal(calls.length, 1);
@@ -113,7 +121,7 @@ describe("postZulip", () => {
     const errors = [];
     console.error = (...args) => errors.push(args.join(" "));
 
-    const ok = await postZulip(ENV, "pr-conflicts BotFleet", "hello");
+    const ok = await postZulip(CONFIG, "pr-conflicts BotFleet", "hello");
 
     assert.equal(ok, false);
     assert.equal(errors.length, 1);
@@ -128,7 +136,7 @@ describe("postZulip", () => {
     const errors = [];
     console.error = (...args) => errors.push(args.join(" "));
 
-    const ok = await postZulip(ENV, "pr-conflicts BotFleet", "hello");
+    const ok = await postZulip(CONFIG, "pr-conflicts BotFleet", "hello");
 
     assert.equal(ok, false);
     assert.match(errors[0], /Topic not found/);
@@ -139,7 +147,7 @@ describe("postZulip", () => {
     const errors = [];
     console.error = (...args) => errors.push(args.join(" "));
 
-    const ok = await postZulip(ENV, "pr-conflicts BotFleet", "hello");
+    const ok = await postZulip(CONFIG, "pr-conflicts BotFleet", "hello");
 
     assert.equal(ok, false);
     assert.match(errors[0], /504/);
@@ -190,7 +198,7 @@ describe("parseZulipResult", () => {
     const errors = [];
     console.error = (...args) => errors.push(args.join(" "));
 
-    const ok = await postZulip(ENV, "pr-conflicts BotFleet", "hello");
+    const ok = await postZulip(CONFIG, "pr-conflicts BotFleet", "hello");
 
     assert.equal(ok, false);
     assert.match(errors[0], /unparseable Zulip response/);
@@ -331,7 +339,7 @@ describe("handlePr", () => {
       zulip: () => jsonResponse({ result: "success", id: 7 }),
     });
 
-    await handlePr("Simple-With-Us", "BotFleet", 123, { ...ENV, PR_STATE: kv });
+    await handlePr("Simple-With-Us", "BotFleet", 123, CONFIG, { PR_STATE: kv });
 
     assert.equal(kv.store.get(KEY), "dirty");
   });
@@ -344,7 +352,7 @@ describe("handlePr", () => {
       zulip: () => jsonResponse({ result: "error", msg: "Invalid API key" }, 401),
     });
 
-    await handlePr("Simple-With-Us", "BotFleet", 123, { ...ENV, PR_STATE: kv });
+    await handlePr("Simple-With-Us", "BotFleet", 123, CONFIG, { PR_STATE: kv });
 
     assert.equal(kv.store.size, 0, "a failed alert must not claim the dedupe key");
   });
@@ -356,7 +364,7 @@ describe("handlePr", () => {
       zulip: () => jsonResponse({ result: "success", id: 8 }),
     });
 
-    await handlePr("Simple-With-Us", "BotFleet", 123, { ...ENV, PR_STATE: kv });
+    await handlePr("Simple-With-Us", "BotFleet", 123, CONFIG, { PR_STATE: kv });
 
     assert.equal(kv.store.size, 0);
   });
@@ -369,36 +377,34 @@ describe("handlePr", () => {
       zulip: () => jsonResponse({ result: "error", msg: "Invalid API key" }, 401),
     });
 
-    await handlePr("Simple-With-Us", "BotFleet", 123, { ...ENV, PR_STATE: kv });
+    await handlePr("Simple-With-Us", "BotFleet", 123, CONFIG, { PR_STATE: kv });
 
     assert.equal(kv.store.get(KEY), "dirty", "a failed recovery must stay retryable");
   });
 });
 
 describe("missingSecretNames", () => {
-  it("names every secret that was not provided", () => {
+  it("names the service token when the binding is missing", () => {
     assert.deepEqual(missingSecretNames(ENV), []);
-    assert.deepEqual(missingSecretNames({ ...ENV, ZULIP_BOT_API_KEY: "" }), ["ZULIP_BOT_API_KEY"]);
-    assert.deepEqual(missingSecretNames({ ...ENV, GITHUB_TOKEN: undefined }), ["GITHUB_TOKEN"]);
-    assert.deepEqual(missingSecretNames({}), [
-      "GITHUB_WEBHOOK_SECRET",
-      "GITHUB_TOKEN",
-      "ZULIP_SITE",
-      "ZULIP_BOT_EMAIL",
-      "ZULIP_BOT_API_KEY",
+    assert.deepEqual(missingSecretNames({ ...ENV, INFISICAL_SERVICE_TOKEN: "" }), [
+      "INFISICAL_SERVICE_TOKEN",
     ]);
+    assert.deepEqual(missingSecretNames({ ...ENV, INFISICAL_SERVICE_TOKEN: undefined }), [
+      "INFISICAL_SERVICE_TOKEN",
+    ]);
+    assert.deepEqual(missingSecretNames({}), ["INFISICAL_SERVICE_TOKEN"]);
   });
 
   it("fails the request with the missing name, never a value", async () => {
-    const env = { ...ENV, ZULIP_BOT_EMAIL: undefined };
+    const env = { ...ENV, INFISICAL_SERVICE_TOKEN: undefined };
     const res = await worker.fetch(new Request("https://pr-conflict-watch.example.com/", { method: "POST" }), env, {
       waitUntil() {},
     });
 
     assert.equal(res.status, 500);
     const body = await res.text();
-    assert.equal(body, "pr-conflict-watch misconfigured: missing ZULIP_BOT_EMAIL");
-    assert.ok(!body.includes("zulip-api-key"));
+    assert.equal(body, "pr-conflict-watch misconfigured: missing INFISICAL_SERVICE_TOKEN");
+    assert.ok(!body.includes("st.test-service-token"));
   });
 
   it("answers a health probe before the config check", async () => {
@@ -417,5 +423,173 @@ describe("missingSecretNames", () => {
 
     assert.equal(res.status, 200);
     assert.equal(await res.text(), "ok");
+  });
+});
+
+describe("the request flow", () => {
+  const PAYLOAD = {
+    repository: { full_name: "Simple-With-Us/BotFleet" },
+    pull_request: { number: 123 },
+  };
+
+  const GITHUB_PR = {
+    state: "open",
+    mergeable_state: "dirty",
+    number: 123,
+    title: "Fix the thing",
+    html_url: "https://github.com/Simple-With-Us/BotFleet/pull/123",
+    base: { ref: "main" },
+    head: { ref: "gb-deployer/afc-123-fix-thing" },
+    user: { login: "jaywedgeworth22" },
+  };
+
+  /** A POST request signed the way GitHub signs one. */
+  async function signedRequest(payload, secret = CONFIG.GITHUB_WEBHOOK_SECRET) {
+    const body = JSON.stringify(payload);
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+    const digest =
+      "sha256=" +
+      [...new Uint8Array(mac)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    return new Request("https://pr-conflict-watch.example.com/", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-hub-signature-256": digest,
+        "x-github-event": "pull_request",
+      },
+      body,
+    });
+  }
+
+  /** Route every host the Worker talks to: Infisical, GitHub and Zulip. */
+  function routeAllFetch({ infisical = "up", github, zulip } = {}) {
+    const calls = { infisical: [], github: [], zulip: [] };
+    globalThis.fetch = async (url, init) => {
+      const target = String(url);
+      if (target.includes("infisical.com")) {
+        calls.infisical.push({ url: target, init });
+        if (infisical === "down") throw new Error("connection reset");
+        if (target.includes("/api/v2/service-token")) {
+          return jsonResponse({
+            workspace: "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5",
+            scopes: [{ environment: "prod", secretPath: "/pr-conflict-watch" }],
+            permissions: ["read"],
+          });
+        }
+        return jsonResponse({
+          secrets: Object.entries(CONFIG).map(([secretKey, secretValue]) => ({ secretKey, secretValue })),
+        });
+      }
+      if (target.includes("api.github.com")) {
+        calls.github.push({ url: target, init });
+        return typeof github === "function" ? github() : github ?? jsonResponse(GITHUB_PR);
+      }
+      calls.zulip.push({ url: target, init });
+      return typeof zulip === "function" ? zulip() : zulip ?? jsonResponse({ result: "success", id: 7 });
+    };
+    return calls;
+  }
+
+  /** A context that hands the background work back to the test. */
+  function capturingContext() {
+    const pending = [];
+    return {
+      pending,
+      ctx: {
+        waitUntil(promise) {
+          pending.push(promise);
+        },
+      },
+    };
+  }
+
+  it("makes no Infisical call for a health probe", async () => {
+    const calls = routeAllFetch();
+
+    const res = await worker.fetch(new Request("https://pr-conflict-watch.example.com/"), ENV, {
+      waitUntil() {},
+    });
+
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), "ok");
+    assert.equal(calls.infisical.length, 0, "a health probe must not reach Infisical");
+  });
+
+  it("answers 503 and posts nothing when Infisical is down", async () => {
+    const calls = routeAllFetch({ infisical: "down" });
+    console.error = () => {};
+
+    const res = await worker.fetch(await signedRequest(PAYLOAD), ENV, capturingContext().ctx);
+
+    assert.equal(res.status, 503);
+    const body = await res.text();
+    assert.equal(body, "pr-conflict-watch: Infisical unavailable (infisical_unreachable)");
+    assert.equal(calls.zulip.length, 0, "no Zulip post");
+    assert.equal(calls.github.length, 0, "no GitHub call");
+  });
+
+  it("answers 503 and names the missing secrets when the folder is short", async () => {
+    const calls = routeAllFetch();
+    console.error = () => {};
+    globalThis.fetch = async (url, init) => {
+      const target = String(url);
+      if (target.includes("/api/v2/service-token")) {
+        calls.infisical.push({ url: target, init });
+        return jsonResponse({ workspace: "8dae6d03-8f12-48b2-adf3-e5c1b881c8c5" });
+      }
+      if (target.includes("/api/v3/secrets/raw")) {
+        calls.infisical.push({ url: target, init });
+        return jsonResponse({
+          secrets: [{ secretKey: "GITHUB_WEBHOOK_SECRET", secretValue: "webhook-secret" }],
+        });
+      }
+      calls.zulip.push({ url: target, init });
+      return jsonResponse({ result: "success", id: 7 });
+    };
+
+    const res = await worker.fetch(await signedRequest(PAYLOAD), ENV, capturingContext().ctx);
+
+    assert.equal(res.status, 503);
+    const body = await res.text();
+    assert.match(body, /^pr-conflict-watch: Infisical unavailable \(missing_secret: /);
+    assert.match(body, /GITHUB_TOKEN/);
+    assert.ok(!body.includes("zulip-api-key"), "a secret value was answered");
+    assert.equal(calls.zulip.length, 0, "no Zulip post");
+  });
+
+  it("verifies the signature with the Infisical secret and posts the alert", async () => {
+    const calls = routeAllFetch();
+    const kv = kvStub();
+    const { pending, ctx } = capturingContext();
+
+    const res = await worker.fetch(await signedRequest(PAYLOAD), { ...ENV, PR_STATE: kv }, ctx);
+    await Promise.all(pending);
+
+    assert.equal(res.status, 200);
+    assert.equal(await res.text(), "ok");
+    assert.equal(calls.infisical.length, 2, "the token info and the listing");
+    assert.equal(calls.github.length, 1, "the PR lookup");
+    assert.equal(calls.zulip.length, 1, "the alert");
+    assert.match(calls.zulip[0].url, /zulip\.example\.com/);
+    assert.equal(kv.store.get("state:Simple-With-Us/BotFleet#123"), "dirty");
+  });
+
+  it("refuses a request whose signature does not match the Infisical secret", async () => {
+    const calls = routeAllFetch();
+
+    const res = await worker.fetch(await signedRequest(PAYLOAD, "the-wrong-secret"), ENV, {
+      waitUntil() {},
+    });
+
+    assert.equal(res.status, 401);
+    assert.equal(await res.text(), "bad signature");
+    assert.equal(calls.zulip.length, 0, "no Zulip post");
   });
 });

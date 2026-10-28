@@ -2,28 +2,24 @@
 // #Alerts stream the moment a PR's mergeable_state turns dirty (merge
 // conflict), and again when that conflict clears.  The alert mentions the seat
 // that owns the PR branch, so the seat hears about its own conflict.
-// Env bindings (Worker secrets): GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN,
-// ZULIP_SITE, ZULIP_BOT_EMAIL, ZULIP_BOT_API_KEY
-// KV binding: PR_STATE
+//
+// Bindings:
+//   INFISICAL_SERVICE_TOKEN  Worker secret: a read-only Infisical service
+//                            token.  It is the Worker's only secret binding.
+//   PR_STATE                KV namespace: the dedupe records.
+//
+// Every other secret (GITHUB_WEBHOOK_SECRET, GITHUB_TOKEN, ZULIP_SITE,
+// ZULIP_BOT_EMAIL, ZULIP_BOT_API_KEY) is read at runtime from Infisical,
+// folder /pr-conflict-watch in the Fleet-OPS project, prod environment.  See
+// infisical.js and README.md ("Secrets: Infisical at runtime").
 
 import { decideStateTransition } from "./state.js";
 import { seatMentionFor } from "./seats.js";
+import { InfisicalError, resolveInfisicalConfig } from "./infisical.js";
 
 // The stream every conflict alert goes to.  Alerts are never posted to a
 // private DM and never mention @all or @everyone.
 const ZULIP_STREAM = "Alerts";
-
-// Every secret the Worker needs.  A missing one is a deployment mistake, and
-// the Worker names it instead of failing later with a confusing 401 from
-// GitHub or Zulip.  The values live in Infisical and are pushed into the
-// Worker as secrets at deploy time; they are never in this repo.
-const REQUIRED_SECRETS = [
-  "GITHUB_WEBHOOK_SECRET",
-  "GITHUB_TOKEN",
-  "ZULIP_SITE",
-  "ZULIP_BOT_EMAIL",
-  "ZULIP_BOT_API_KEY",
-];
 
 // The fleet's sentence gap: a no-break space followed by a normal space, so
 // the gap survives Markdown rendering.
@@ -74,17 +70,21 @@ async function getMergeState(owner, repo, number, token) {
   return null;
 }
 
-/** The names of the required secrets this Worker was not given. */
+/**
+ * The names of the required secrets this Worker was not given.
+ *
+ * The only secret binding left is the Infisical service token: every other
+ * secret comes from Infisical itself, so a missing one is a missing secret
+ * in the folder, not a missing binding.
+ */
 export function missingSecretNames(env) {
-  return REQUIRED_SECRETS.filter((name) => {
-    const value = env?.[name];
-    return typeof value !== "string" || value.trim() === "";
-  });
+  const token = env?.INFISICAL_SERVICE_TOKEN;
+  return typeof token === "string" && token.trim() !== "" ? [] : ["INFISICAL_SERVICE_TOKEN"];
 }
 
 /** The Zulip messages endpoint for this deployment. */
-export function zulipMessagesUrl(env) {
-  const site = String(env?.ZULIP_SITE ?? "").trim().replace(/\/+$/, "");
+export function zulipMessagesUrl(config) {
+  const site = String(config?.ZULIP_SITE ?? "").trim().replace(/\/+$/, "");
   return `${site}/api/v1/messages`;
 }
 
@@ -139,9 +139,10 @@ function failureMessage(parsed) {
  * auth header, and a failure logs the HTTP status and Zulip's own error
  * message, which never contain the credential.
  *
+ * @param {object} config the config resolved from Infisical.
  * @returns {Promise<boolean>} true when Zulip accepted the message.
  */
-export async function postZulip(env, topic, content) {
+export async function postZulip(config, topic, content) {
   const body = new URLSearchParams({
     type: "stream",
     to: ZULIP_STREAM,
@@ -149,8 +150,8 @@ export async function postZulip(env, topic, content) {
     content,
   }).toString();
 
-  const auth = btoa(`${env.ZULIP_BOT_EMAIL}:${env.ZULIP_BOT_API_KEY}`);
-  const res = await fetch(zulipMessagesUrl(env), {
+  const auth = btoa(`${config.ZULIP_BOT_EMAIL}:${config.ZULIP_BOT_API_KEY}`);
+  const res = await fetch(zulipMessagesUrl(config), {
     method: "POST",
     headers: {
       Authorization: `Basic ${auth}`,
@@ -262,11 +263,12 @@ export function topicForRepo(repo) {
  * @param {string} owner repository owner.
  * @param {string} repo repository name.
  * @param {number} number pull request number.
- * @param {object} env Worker bindings.
+ * @param {object} config the config resolved from Infisical.
+ * @param {object} env Worker bindings (PR_STATE).
  */
-export async function handlePr(owner, repo, number, env) {
+export async function handlePr(owner, repo, number, config, env) {
   const kvKey = `state:${owner}/${repo}#${number}`;
-  const result = await getMergeState(owner, repo, number, env.GITHUB_TOKEN);
+  const result = await getMergeState(owner, repo, number, config.GITHUB_TOKEN);
   if (!result) return;
   const prev = await env.PR_STATE.get(kvKey);
 
@@ -280,7 +282,7 @@ export async function handlePr(owner, repo, number, env) {
 
   if (action === "alert") {
     const posted = await postZulip(
-      env,
+      config,
       topicForRepo(repo),
       buildMessage({ kind: "conflict", repo, pr: result.pr })
     );
@@ -293,7 +295,7 @@ export async function handlePr(owner, repo, number, env) {
 
   // recover: left dirty (only state we store)
   const posted = await postZulip(
-    env,
+    config,
     topicForRepo(repo),
     buildMessage({ kind: "recovered", repo, pr: result.pr, state: result.state })
   );
@@ -306,7 +308,7 @@ export async function handlePr(owner, repo, number, env) {
 export default {
   async fetch(request, env, ctx) {
     // A health probe answers before anything else, so a probe never reports
-    // the Worker as broken just because it has no webhook secret.
+    // the Worker as broken just because it has no Infisical token.
     if (request.method !== "POST") return new Response("ok", { status: 200 });
 
     // A misconfigured Worker says so by name, before it touches anything.
@@ -317,7 +319,23 @@ export default {
       });
     }
 
-    const valid = await verifySignature(request, env.GITHUB_WEBHOOK_SECRET);
+    // Every secret comes from Infisical at runtime.  When Infisical cannot
+    // answer, the Worker says so plainly and posts nothing.
+    let config;
+    try {
+      config = await resolveInfisicalConfig({ token: env.INFISICAL_SERVICE_TOKEN });
+    } catch (error) {
+      const code = error instanceof InfisicalError ? error.code : "infisical_unreachable";
+      const detail =
+        code === "missing_secret" && Array.isArray(error.missing) && error.missing.length > 0
+          ? `${code}: ${error.missing.join(", ")}`
+          : code;
+      return new Response(`pr-conflict-watch: Infisical unavailable (${detail})`, {
+        status: 503,
+      });
+    }
+
+    const valid = await verifySignature(request, config.GITHUB_WEBHOOK_SECRET);
     if (!valid) return new Response("bad signature", { status: 401 });
 
     const event = request.headers.get("x-github-event") || "";
@@ -336,7 +354,9 @@ export default {
     }
 
     ctx.waitUntil(
-      Promise.all(candidates.map(([owner, repo, number]) => handlePr(owner, repo, number, env)))
+      Promise.all(
+        candidates.map(([owner, repo, number]) => handlePr(owner, repo, number, config, env))
+      )
     );
     return new Response("ok", { status: 200 });
   },

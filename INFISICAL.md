@@ -104,6 +104,22 @@ Jay owns these incoming-webhook bots.  Each key builds a vendor's webhook URL (`
 | `ZULIP_BETTERSTACK_EMAIL` / `ZULIP_BETTERSTACK_API_KEY` | env config / secret | BetterStack outgoing webhook to #alerts (`slack_incoming`) |
 | `ZULIP_DATADOG_EMAIL` / `ZULIP_DATADOG_API_KEY` | env config / secret | Datadog `zulip-alerts` webhook to #alerts (`slack_incoming`) |
 
+## pr-conflict-watch (Cloudflare Worker)
+
+`workers/pr-conflict-watch` reads every secret from Infisical at runtime.  The Worker's only secret binding is one read-only Infisical service token; the other five secrets live in the Fleet-OPS project, `prod`, folder `/pr-conflict-watch`.  Names only, no values:
+
+| Name | Kind | Who reads it |
+|---|---|---|
+| `GITHUB_WEBHOOK_SECRET` | secret | the Worker, to verify `X-Hub-Signature-256` |
+| `GITHUB_TOKEN` | secret | the Worker, for read-only GitHub PR lookups |
+| `ZULIP_SITE` | config (URL) | the Worker, the Zulip site base URL |
+| `ZULIP_BOT_EMAIL` | config | the Worker, the fleet alerts bot (the MA bot) email |
+| `ZULIP_BOT_API_KEY` | secret | the Worker, that bot's API key |
+
+The Zulip pair is the fleet alerts bot, the MA bot: the same credential lives at Fleet-OPS prod `/zulip` as `MA_ZULIP_SITE` / `MA_ZULIP_EMAIL` / `MA_ZULIP_KEY`.  The folder holds plain values, not Infisical references, because expanding a reference would need the service token to read `/zulip` too.
+
+One read-only service token, `pr-conflict-watch-read`, is scoped to exactly `prod` + `/pr-conflict-watch` and is bound to the Worker as the secret `INFISICAL_SERVICE_TOKEN`.  The Worker discovers the project id from the token itself (the repo is public, so the id is not committed) and refuses a token that may write or that is not scoped to that folder (`token_not_read_only`, `token_scope_mismatch`).  See [workers/pr-conflict-watch/README.md](workers/pr-conflict-watch/README.md).
+
 ## Runtime contract
 
 1. **Load at startup.**  `main()` calls `infisical_settings.configure()` + `init_settings()` before binding: universal-auth login → access token → `GET /api/v3/secrets/raw`.  A missing required key fails fast with a `SettingsError` naming the key and pointing here.  Backend keys (`QDRANT_*`, `TEI_*`) are then mirrored into `os.environ` so the `fleet_rag` library (which reads env) keeps working unchanged.  Migration bridge: any managed key missing from Infisical is backfilled from the process environment, and the backfilled key names are logged, so the service keeps its old behavior while the admin fills Infisical in.
@@ -126,7 +142,6 @@ This service has no per-user settings: seat identity is passed per-request by th
 - Every Linear app's client credentials live in this project under `/linear`:  `LINEAR_<SEAT>_CLIENT_ID` / `_SECRET` (hyphens as underscores) and the shared app's `LINEAR_FLEET_CLIENT_ID` / `_SECRET`.  The `simple-board` CLI reads them from there through the `INFISICAL_AUTOMATION` identity, after the `LINEAR_CLIENT_ID` / `LINEAR_CLIENT_SECRET` environment pair, and it reads no credential file at all (AFC-348, AFC-359).  The same folder holds one shared minted token per app, `LINEAR_<SEAT>_CACHE_TOKEN` and `LINEAR_FLEET_CACHE_TOKEN`:  a JSON row (token, mint and expiry times, credential fingerprint, minting host) that `simple-board` writes after every mint and reads instead of minting again.  Never print one.
 - `fleet-sentry-monitor/monitor.py`: operator cron script; env-configured on the box that runs it.
 - `fleet_rag` CLI tools and MCP scripts: per-invocation env; no long-lived process to host a cache.
-- `workers/pr-conflict-watch`: Cloudflare Worker.
 - `RECALL_FAKE=1`: local test/smoke switch only; stays an env var.  Bootstrap plumbing (`RECALL_REF`, `GITLEAKS_*`) likewise stays env-only.
 
 ## Fleet knobs
