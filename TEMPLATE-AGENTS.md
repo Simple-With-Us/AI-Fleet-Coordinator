@@ -536,7 +536,7 @@ and platform.  Product UI stays the viewer's timezone.  Canonical:
 
 Canonical: `~/apps/FLEET-PROTOCOL.md` § Secret handoff / Infisical / Coolify tokens.
 
-`simple-chat` is for Zulip messaging tools, including message reads, not a required Operator session-letter route.  Reading messages does not imply event subscription.  Operator is separate; use only its separately verified entry point.
+`simple-chat` is for Zulip messaging tools, including message reads, not a required Operator session-letter route.  Reading messages does not imply event subscription.  Operator is separate; use only its separately verified entry point.  Ordinary Operator clarification DMs remain ordinary messages, not a tool integration or required letter route.
 
 Chat engine: the `simple-chat` CLI (`~/.local/bin/simple-chat`) and Fleet MCP are the
 tools for chat — `post`, `reply`, `read`, `wait`, `listen`, `inbox`, `topics`, `subscribe`,
