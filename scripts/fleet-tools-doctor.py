@@ -1358,6 +1358,20 @@ def infisical_names(
     return names
 
 
+def seat_has_fleetlink_token(seat: str, env: dict[str, str]) -> bool:
+    """Whether this seat holds a FleetLink token, from the environment or from Infisical.
+
+    A seat without one cannot run the fleetlink server, so the doctor does not ask it to
+    register one.
+    """
+    code = seat_file(seat)
+    if env.get(f"FLEETLINK_TOKEN_{code}"):
+        return True
+    return f"FLEETLINK_TOKEN_{code}" in (
+        infisical_names("/fleetlink", env, "ai-fleet-coordinator") or frozenset()
+    )
+
+
 def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
     code = seat_file(seat)
     zulip_names = infisical_names("/zulip", env)
@@ -1373,9 +1387,7 @@ def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
     linear = (
         linear_env or {f"{code}_LINEAR_CLIENT_ID", f"{code}_LINEAR_CLIENT_SECRET"} <= linear_names
     )
-    fleetlink = bool(env.get(f"FLEETLINK_TOKEN_{code}")) or f"FLEETLINK_TOKEN_{code}" in (
-        infisical_names("/fleetlink", env, "ai-fleet-coordinator") or frozenset()
-    )
+    fleetlink = seat_has_fleetlink_token(seat, env)
     missing = [
         label
         for label, ok in (
@@ -1526,7 +1538,13 @@ def codex_mcp_names(text: str) -> list[str]:
         return []
 
 
-def check_mcp(report: Report) -> None:
+def check_mcp(report: Report, env: dict[str, str] | None = None) -> None:
+    """The registrations each seat holds:  the fleet's stdio server and FleetLink.
+
+    A seat without a FleetLink token cannot run the fleetlink server, so it is not asked to
+    register one.
+    """
+    env = env or {}
     for seat in ("CODEX", "CLAUDE"):
         label = "mcp:" + seat.lower()
         try:
@@ -1538,7 +1556,7 @@ def check_mcp(report: Report) -> None:
         lacking = []
         if not registered:
             lacking.append(MCP_CANONICAL_NAME)
-        if "fleetlink" not in names:
+        if "fleetlink" not in names and seat_has_fleetlink_token(seat, env):
             lacking.append("fleetlink")
         status = "OK"
         detail = "registered: " + (", ".join(names) or "none")
@@ -3069,7 +3087,7 @@ def run(
     for seat in [s.strip().upper() for s in args.seats.split(",") if s.strip()]:
         check_seat(report, seat, env)
         check_mcp_startup(report, seat)
-    check_mcp(report)
+    check_mcp(report, env)
     check_notes(report, host, env, runner, network=network)
     finalize_rows(report, host)
     doc = host_document(report, host, expected, network, updater)

@@ -125,15 +125,25 @@ class SeatAndMcpTests(unittest.TestCase):
             doctor.check_seat(report, "GROK", {})
             self.assertEqual(report.rows[0]["status"], "WARN")
 
+    def mcp_rows(self, fleetlink_tokens=frozenset()):
+        """Run check_mcp with a fixed Infisical answer for the FleetLink token folder."""
+        def fake_names(folder, env, project="fleet-ops"):
+            if folder == "/fleetlink" and project == "ai-fleet-coordinator":
+                return frozenset(fleetlink_tokens)
+            return frozenset()
+
+        with mock.patch.object(doctor, "infisical_names", fake_names):
+            report = doctor.Report()
+            doctor.check_mcp(report, {})
+        return {r["check"]: r for r in report.rows}
+
     def test_mcp_registrations(self):
         self.touch(
             ".codex/config.toml",
             "[mcp_servers.simple-chat]\ncommand = 'x'\n[mcp_servers.fleetlink]\nurl = 'y'\n",
         )
         self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
-        report = doctor.Report()
-        doctor.check_mcp(report)
-        rows = {r["check"]: r for r in report.rows}
+        rows = self.mcp_rows({"FLEETLINK_TOKEN_CLAUDE"})
         self.assertEqual(rows["mcp:codex"]["status"], "OK")
         self.assertEqual(rows["mcp:claude"]["status"], "WARN")
         self.assertIn("missing fleetlink", rows["mcp:claude"]["detail"])
@@ -141,9 +151,7 @@ class SeatAndMcpTests(unittest.TestCase):
     def test_mcp_registrations_report_the_canonical_name_as_the_missing_one(self):
         self.touch(".codex/config.toml", "[mcp_servers.coolify]\ncommand = 'x'\n")
         self.touch(".claude.json", json.dumps({"mcpServers": {}}))
-        report = doctor.Report()
-        doctor.check_mcp(report)
-        rows = {r["check"]: r for r in report.rows}
+        rows = self.mcp_rows({"FLEETLINK_TOKEN_CLAUDE", "FLEETLINK_TOKEN_CODEX"})
         self.assertEqual(rows["mcp:codex"]["status"], "WARN")
         missing = rows["mcp:codex"]["detail"].split("missing ", 1)[1]
         self.assertEqual(
@@ -156,9 +164,7 @@ class SeatAndMcpTests(unittest.TestCase):
             "[mcp_servers.agent-sync]\ncommand = 'x'\n[mcp_servers.fleetlink]\nurl = 'y'\n",
         )
         self.touch(".claude.json", json.dumps({"mcpServers": {"agent-sync": {}}}))
-        report = doctor.Report()
-        doctor.check_mcp(report)
-        rows = {r["check"]: r for r in report.rows}
+        rows = self.mcp_rows()
         self.assertEqual(rows["mcp:codex"]["status"], "WARN")
         self.assertIn(
             "pre-rename name agent-sync, canonical simple-chat", rows["mcp:codex"]["detail"]
@@ -167,6 +173,21 @@ class SeatAndMcpTests(unittest.TestCase):
         self.assertIn(
             "pre-rename name agent-sync, canonical simple-chat", rows["mcp:claude"]["detail"]
         )
+
+    def test_a_seat_without_a_fleetlink_token_is_not_asked_to_register_it(self):
+        self.touch(".codex/config.toml", "[mcp_servers.simple-chat]\ncommand = 'x'\n")
+        self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
+        rows = self.mcp_rows()
+        self.assertEqual(rows["mcp:codex"]["status"], "OK")
+        self.assertEqual(rows["mcp:claude"]["status"], "OK")
+
+    def test_a_seat_with_a_fleetlink_token_is_asked_to_register_it(self):
+        self.touch(".codex/config.toml", "[mcp_servers.simple-chat]\ncommand = 'x'\n")
+        self.touch(".claude.json", json.dumps({"mcpServers": {"simple-chat": {}}}))
+        rows = self.mcp_rows({"FLEETLINK_TOKEN_CLAUDE"})
+        self.assertEqual(rows["mcp:codex"]["status"], "OK")
+        self.assertEqual(rows["mcp:claude"]["status"], "WARN")
+        self.assertIn("missing fleetlink", rows["mcp:claude"]["detail"])
 
     def test_registered_env_reads_the_server_under_either_accepted_name(self):
         self.touch(
