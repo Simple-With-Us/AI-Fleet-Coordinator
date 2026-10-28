@@ -430,7 +430,8 @@ class WorkflowVerbs:
 
     @staticmethod
     def _review_summary(value, review_id=None):
-        value = _obj(value)
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "review receipt unverifiable")
         ident = value.get("id")
         if (
             isinstance(ident, bool)
