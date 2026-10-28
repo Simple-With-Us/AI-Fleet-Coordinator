@@ -359,6 +359,8 @@ def _scan_asset_bytes(content, depth=0, budget=None):
         (b"\x28\xb5\x2f\xfd", b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x5d\x00\x00")
     ) or head[:2] in (b"\x1f\x9d", b"\x1f\xa0"):
         raise Refused("unscannable compressed asset format")
+
+
 _NEW_READS = frozenset(
     {
         "wf_pr_get",
@@ -1000,7 +1002,11 @@ class WorkflowVerbs:
         asset_id, expected = _int(args, "asset_id"), self._expected_name(args)
         self._asset_preread(repo, asset_id, expected)
         result = self.client._call(
-            "DELETE", f"/repos/{repo}/releases/assets/{asset_id}", None, bearer=self.bearer, expected_status=204
+            "DELETE",
+            f"/repos/{repo}/releases/assets/{asset_id}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
         if result != {}:
             raise RelayGitHubError(502, "release asset delete outcome unverifiable")
