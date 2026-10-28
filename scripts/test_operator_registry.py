@@ -261,6 +261,18 @@ class RegistryTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["n"], 1)
 
+    def test_update_session_on_a_closed_session_raises(self):
+        a = self.reg.resolve_or_register(ident(platform="minimax"))
+        self.reg.close(a["record_id"], actor="MM", source="test")
+        with self.assertRaises(ValueError):
+            R.update_session(
+                self.db,
+                platform="minimax",
+                native_session_id="native-1",
+                title="T",
+                **self._loc(platform="minimax"),
+            )
+
     def test_update_session_refreshes_last_seen(self):
         """A long-lived session is alive:  it must not look stale to the sweep."""
         a = self.reg.resolve_or_register(ident(platform="minimax"))
