@@ -23,6 +23,12 @@ const SPECS = {
   wf_tag_create: ['tag create; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag', 'sha'],{repo:REPO,tag:REF,sha:SHA})],
   wf_tag_get: ['tag get; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag'],{repo:REPO,tag:REF})],
   wf_tag_delete: ['tag delete; expected SHA pre-read is not an atomic ref lock.',obj(['repo', 'tag', 'expected_sha'],{repo:REPO,tag:REF,expected_sha:SHA})],
+  wf_assignees_add: ['assignees add.',obj(['repo', 'number', 'assignees'],{repo:REPO,number:INT,assignees:{type:'array',minItems:1,maxItems:10,items:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'}}})],
+  wf_assignees_remove: ['assignees remove.',obj(['repo', 'number', 'assignees'],{repo:REPO,number:INT,assignees:{type:'array',minItems:1,maxItems:10,items:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'}}})],
+  wf_issue_lock: ['issue lock.',obj(['repo', 'number', 'reason'],{repo:REPO,number:INT,reason:{type:'string',enum:['off-topic','too heated','resolved','spam']}})],
+  wf_issue_unlock: ['issue unlock.',obj(['repo', 'number'],{repo:REPO,number:INT})],
+  wf_label_create: ['label create.',obj(['repo', 'name', 'color', 'description'],{repo:REPO,name:STR,color:{type:'string',pattern:'^[0-9a-fA-F]{6}$'},description:STR})],
+  wf_label_delete: ['label delete.',obj(['repo', 'name'],{repo:REPO,name:STR})],
   wf_pr_get: ['Read pr get.', obj(['repo', 'number'], {repo:REPO,number:INT})],
   wf_pr_reviews: ['Read pr reviews.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
   wf_pr_comments: ['Read pr comments.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
@@ -39,6 +45,9 @@ const SPECS = {
   wf_workflow_disable: ['Disable a workflow; no expected-state fence.  Requires explicit per-seat action/repo authorization and owner execution authority, never a CI bypass.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_run_delete: ['Irreversibly delete an Actions run and logs; no concurrency fence.  Requires explicit per-seat action/repo authorization and separate owner execution authority.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
   wf_artifact_delete: ['Irreversibly delete an artifact; no concurrency fence.  Requires explicit per-seat action/repo authorization and separate owner execution authority.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
+  wf_workflow_disable: ['Disable a workflow, stopping future CI triggers; can break required checks. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
+  wf_run_delete: ['Irreversibly delete run and logs. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
+  wf_artifact_delete: ['Irreversibly remove artifact data. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
 
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
@@ -74,7 +83,7 @@ export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.free
 })));
 const typeOk = (schema, v) => schema.type === 'integer' ? Number.isInteger(v) && v >= schema.minimum && v <= schema.maximum
   : schema.type === 'boolean' ? typeof v === 'boolean'
-  : schema.type === 'array' ? Array.isArray(v) && v.length >= schema.minItems && v.length <= schema.maxItems && v.every(x => validWfV1Args2(schema.items, x))
+  : schema.type === 'array' ? Array.isArray(v) && v.length >= schema.minItems && v.length <= schema.maxItems && v.every(x => schema.items.type === "object" ? validWfV1Args2(schema.items, x) : typeOk(schema.items, x))
   : typeof v === 'string' && (!schema.pattern || new RegExp(schema.pattern).test(v)) && (!schema.enum || schema.enum.includes(v)) &&
     (!schema.minLength || v.length >= schema.minLength) && (!schema.maxLength || v.length <= schema.maxLength);
 function validWfV1Args2(schema, args) {
@@ -119,6 +128,12 @@ const RESPONSE_KEYS = {
   wf_tag_create:['ref', 'sha'],
   wf_tag_get:['ref', 'sha'],
   wf_tag_delete:['deleted', 'ref'],
+  wf_assignees_add:['result'],
+  wf_assignees_remove:['result'],
+  wf_issue_lock:['completed'],
+  wf_issue_unlock:['completed'],
+  wf_label_create:['result'],
+  wf_label_delete:['completed'],
   wf_pr_get:['pull'],
   wf_pr_reviews:['reviews','complete'],
   wf_pr_comments:['comments','complete'],
@@ -185,6 +200,8 @@ export function validWfV1Response(action, body) {
     if(!parsed.success)return false;
     body=parsed.data;
   }
+ const key={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
+ if(key){const parsed=z.object({completed:z.literal(true),[key]:z.number().int().positive()}).strict().safeParse(body);if(!parsed.success)return false;body=parsed.data;}
 
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
@@ -198,11 +215,15 @@ export function validWfV1Response(action, body) {
   }
   if (['wf_branch_update','wf_tag_create','wf_tag_get'].includes(action) && (typeof body.ref !== 'string' || !body.ref.startsWith(action.startsWith('wf_branch_') ? 'refs/heads/' : 'refs/tags/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;
   if (['wf_branch_delete','wf_tag_delete'].includes(action) && (body.deleted !== true || typeof body.ref !== 'string' || !body.ref.startsWith(action.startsWith('wf_branch_') ? 'refs/heads/' : 'refs/tags/'))) return false;
+  if ('result' in body && (!Number.isInteger(body.result?.id) || body.result.id < 1)) return false;
+  if (action.startsWith('wf_assignees_') && (!Number.isInteger(body.result?.number) || !Array.isArray(body.result?.assignees) || !body.result.assignees.every(x => typeof x?.login === 'string'))) return false;
+  if (action === 'wf_label_create' && (typeof body.result?.name !== 'string' || !/^[0-9a-fA-F]{6}$/.test(body.result?.color))) return false;
   for (const k of ['pull','commit','comparison','branch','repository','workflows','run','artifacts']) {
     if ((action === 'wf_file_put' || action === 'wf_files_put') && (k === 'branch' || k === 'commit')) { if (typeof body[k] !== 'string' || body[k].length === 0) return false; continue; }
     if (k in body && (!body[k] || typeof body[k] !== 'object' || Array.isArray(body[k]))) return false;
   }
   if ('completed' in body && body.completed !== true) return false;
+  if ('result' in body && (!body.result || typeof body.result !== 'object' || Array.isArray(body.result))) return false;
   const completedId = {wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
   if (completedId && (!Number.isInteger(body[completedId]) || body[completedId] < 1)) return false;
   if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
