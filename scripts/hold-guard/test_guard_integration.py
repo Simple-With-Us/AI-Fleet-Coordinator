@@ -513,6 +513,64 @@ class GuardIntegration(unittest.TestCase):
         self.assertIn("disarm", body["output"]["title"])
         self.assertIn("disarm", body["output"]["summary"])
 
+    def test_disarm_not_armed_control_publishes_a_green_gate(self):
+        # Control for the test above (AFC-553):  the SAME scenario with
+        # auto-merge off publishes a green gate and a clean job.  Without
+        # this control the red-gate test could pass for the wrong reason -
+        # a broken fixture rather than the disarm.
+        self._clear_scenario()
+        self.scenario({**json.load(open(self.scenario_path)), "armed": False})
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 0, p.stderr + p.stdout)
+        published = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        self.assertEqual(len(published), 1, published)
+        body = json.loads(published[0]["stdin"])
+        self.assertEqual(body["conclusion"], "success")
+        self.assertIn("no active merge holds", body["output"]["title"])
+
+    def test_disarm_unconfirmed_keeps_the_hold_list_in_the_summary(self):
+        # An active hold AND an unconfirmed disarm in one payload (AFC-553):
+        # the conclusion is failure, the title names the disarm, and the
+        # hold itself is still listed, so neither reason is lost.
+        self.scenario(
+            {
+                "labels": {"3": []},
+                "events": {
+                    "3": [
+                        [
+                            ev(
+                                "labeled",
+                                "do-not-automerge",
+                                *ECHO,
+                                "2026-10-25T01:00:00Z",
+                            ),
+                            ev(
+                                "unlabeled",
+                                "do-not-automerge",
+                                *WISE,
+                                "2026-10-25T02:00:00Z",
+                            ),
+                        ]
+                    ]
+                },
+                "armed": True,
+                "fail": {
+                    "pr_merge": {
+                        "rc": 1,
+                        "stderr": "Resource not accessible by integration",
+                    }
+                },
+            }
+        )
+        p = self.run_guard(PR="3", PR_URL="u", EVENT_NAME="pull_request_target")
+        self.assertEqual(p.returncode, 3)
+        published = [c for c in self.calls() if any(a.endswith("/check-runs") for a in c["argv"])]
+        self.assertEqual(len(published), 1, published)
+        body = json.loads(published[0]["stdin"])
+        self.assertEqual(body["conclusion"], "failure")
+        self.assertIn("disarm", body["output"]["title"])
+        self.assertIn("do-not-automerge", body["output"]["summary"])
+
     def test_disarm_state_unreadable_red_job(self):
         self._clear_scenario()
         self.scenario(

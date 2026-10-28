@@ -118,6 +118,14 @@ per-setter holds; the suffix is a display hint, never the ownership source.
     green over a known-unresolved condition.  The seat that armed auto-merge
     can always disarm it with its own token, and the git relay is meant to
     give the workflow a token allowed to make the mutation.
+    - The check DID arrive on those runs;  it arrived green, and that was
+      the real defect.  The first description of AFC-553 said the merge-gate
+      check never lands when the disarm is refused, and the run log proves
+      otherwise:  the script reaches its last line and the check is
+      published.  The disarm mutation is refused for the workflow's own token
+      in this repository ("Resource not accessible by integration"), so the
+      guard reads red on every armed pull request here until the git relay
+      carries the disarm.
   - Check publication: the check-run listing (GET) is the last read and
     happens before the payload is built, so its failure recomputes the
     payload to failure; the POST is still attempted best-effort.  A
