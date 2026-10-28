@@ -132,6 +132,12 @@ class InfisicalSettings:
         ).rstrip("/")
         self.identity_prefixes = identity_prefixes
         self._lock = threading.Lock()
+        # The login lock is separate from the cache lock on purpose:  a slow
+        # universal-auth login must not block a reader that only wants the
+        # cache, and the two locks are always taken in the same order (login
+        # lock, then cache lock) so they cannot deadlock.
+        self._login_lock = threading.Lock()
+        self._identity_lock = threading.Lock()
         self._cache: dict[str, str] = {}
         self._access_token: str | None = None
         self._credential_source: str | None = None
@@ -186,13 +192,18 @@ class InfisicalSettings:
         return None, None
 
     def identity(self) -> tuple[str | None, str | None]:
-        """(client_id, client_secret); resolved once and cached.  Values never logged."""
-        if self._identity is None:
-            cid, csec = self._identity_from_env()
-            if not cid:
-                cid, csec = self._identity_from_file()
-            self._identity = (cid, csec)
-        return self._identity
+        """(client_id, client_secret); resolved once and cached.  Values never logged.
+
+        The resolution runs under its own lock so two cold-start callers cannot
+        both read the identity file, and so the cached tuple is published once.
+        """
+        with self._identity_lock:
+            if self._identity is None:
+                cid, csec = self._identity_from_env()
+                if not cid:
+                    cid, csec = self._identity_from_file()
+                self._identity = (cid, csec)
+            return self._identity
 
     # -- credential ---------------------------------------------------------
 
@@ -222,21 +233,47 @@ class InfisicalSettings:
 
         The INFISICAL_TOKEN service token is the bearer directly:  no universal-auth
         login happens on that path.  The machine identity is logged in and its session
-        token is the bearer;  a session token already held is reused.  With neither, the
-        caller gets (None, "") and the module's own fail-closed behaviour applies.
-        Neither value is ever logged."""
+        token is the bearer;  a session token already held is reused, and concurrent
+        cold-start callers share one login.  With neither, the caller gets (None, "")
+        and the module's own fail-closed behaviour applies.  Neither value is ever
+        logged."""
         token = self._service_token()
         if token:
             return token, SOURCE_SERVICE_TOKEN
-        with self._lock:
-            cached = self._access_token
-            cached_source = self._credential_source
-        if cached and cached_source == SOURCE_MACHINE_IDENTITY:
-            return cached, SOURCE_MACHINE_IDENTITY
         cid, _csec = self.identity()
-        if cid:
-            return self._login(), SOURCE_MACHINE_IDENTITY
-        return None, ""
+        if not cid:
+            return None, ""
+        return self._machine_session_token(), SOURCE_MACHINE_IDENTITY
+
+    def _machine_session_token(self, *, stale_token: str | None = None) -> str:
+        """The machine-identity session token, with at most one login per cache miss.
+
+        Concurrent cold-start callers share one universal-auth login:  the first
+        one to arrive logs in and caches the token, and the others wait on the
+        login lock and then read the cached token instead of logging in again.
+        The login runs under its own lock rather than the cache lock, so a slow
+        login never blocks a reader that only wants the cache, and the two locks
+        are always taken in the same order (login lock, then cache lock) so they
+        cannot deadlock.
+
+        ``stale_token`` is a token the server has already rejected with a 401.
+        It is dropped from the cache so the login below produces a different
+        one;  a token cached in the meantime that is not the stale one is reused,
+        so a burst of concurrent 401s still costs exactly one login.  The
+        comparison happens in memory and the value is never logged.
+        """
+        with self._login_lock:
+            with self._lock:
+                cached = self._access_token
+                cached_source = self._credential_source
+                if stale_token is not None and cached == stale_token:
+                    self._access_token = None
+                    self._credential_source = None
+                    cached = None
+                    cached_source = None
+            if cached and cached_source == SOURCE_MACHINE_IDENTITY:
+                return cached
+            return self._login()
 
     # -- HTTP ---------------------------------------------------------------
 
@@ -310,7 +347,7 @@ class InfisicalSettings:
                 # nothing to retry with.
                 raise SettingsError(_service_token_401_message())
             # Token expired or rotated: one re-login, then retry once.
-            token = self._login()
+            token = self._machine_session_token(stale_token=token)
             status, payload = self._request("GET", path, token=token)
         if status != 200:
             raise SettingsError(
@@ -481,7 +518,7 @@ class InfisicalSettings:
                     # nothing to retry with.
                     raise SettingsError(_service_token_401_message())
                 # Token may have expired mid-flight: re-login once and retry.
-                token = self._login()
+                token = self._machine_session_token(stale_token=token)
                 status = _write("PATCH", token)
             if status == 404:
                 status = _write("POST", token)
@@ -491,7 +528,7 @@ class InfisicalSettings:
                         # there is nothing to retry with.
                         raise SettingsError(_service_token_401_message())
                     # Token may have expired mid-flight: re-login once and retry.
-                    token = self._login()
+                    token = self._machine_session_token(stale_token=token)
                     status = _write("POST", token)
         except SettingsError:
             raise
