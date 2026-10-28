@@ -168,7 +168,7 @@ function providerFor(env) {
       authorization_servers: [ISSUER],
       scopes_supported: [...SCOPES],
       bearer_methods_supported: ["header"],
-      resource_name: "Agent-Sync",
+      resource_name: "ST-MCP",
     },
     tokenExchangeCallback: (options) => checkTokenExchange(env, options),
     onError: ({ code, status, internal }) => {

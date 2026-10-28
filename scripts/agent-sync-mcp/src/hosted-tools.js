@@ -1276,7 +1276,7 @@ export class HostedTools {
     }
     // FleetLink's own refusals are short, written by FleetLink, and never hold credentials.
     if (!out.ok) throw new ToolError("fleetlink_refused", `FleetLink:  ${fleetlinkMessage(out.message)}`);
-    const header = `agent-sync ${name}:  as ${this.seat}'s FleetLink account`;
+    const header = `simple-tools ${name}:  as ${this.seat}'s FleetLink account`;
     return okResult(fleetlinkEnvelope(header, out.data, newNonce()), fleetlinkSummary(out.data));
   }
 
@@ -1379,7 +1379,7 @@ export class HostedTools {
     const data = await this.recallCall(() => recall.search(body));
     const hits = (Array.isArray(data.hits) ? data.hits : []).slice(0, args.limit).map(hitItem);
     const mode = recallClean(typeof data.mode === "string" ? data.mode : "", 40)[0];
-    const header = `agent-sync recall_search:  query ${JSON.stringify(recallClean(query, 100)[0])}${body.app ? `, app ${JSON.stringify(body.app)}` : ""}${body.category ? `, category ${JSON.stringify(body.category)}` : ""}`;
+    const header = `simple-tools recall_search:  query ${JSON.stringify(recallClean(query, 100)[0])}${body.app ? `, app ${JSON.stringify(body.app)}` : ""}${body.category ? `, category ${JSON.stringify(body.category)}` : ""}`;
     const summary = `${hits.length} hit${hits.length === 1 ? "" : "s"}${mode ? `, mode ${mode}` : ""}`;
     return okResult(recallEnvelope(header, summary, hits, newNonce()), { count: hits.length, mode, doc_ids: hits.map((h) => h.doc_id) });
   }
@@ -1668,7 +1668,7 @@ export class HostedTools {
       return (issue?.labels?.nodes ?? []).some((l) => l?.parent?.name === "Severity" && l.name === "P4");
     };
     const items = nodes.filter(keep).map(issueItem);
-    const header = `agent-sync linear_list${args.status ? `:  status ${JSON.stringify(args.status)}` : ""}${args.team ? `, team ${JSON.stringify(args.team.toUpperCase())}` : ""}`;
+    const header = `simple-tools linear_list${args.status ? `:  status ${JSON.stringify(args.status)}` : ""}${args.team ? `, team ${JSON.stringify(args.team.toUpperCase())}` : ""}`;
     const summary = `${items.length} issue${items.length === 1 ? "" : "s"}`;
     return okResult(linearEnvelope(header, summary, items, newNonce()), { count: items.length, ids: items.map((i) => i.id) });
   }
@@ -1686,7 +1686,7 @@ export class HostedTools {
       duplicate_of: (issue.relations?.nodes ?? []).filter((r) => String(r.type ?? "").includes("duplicate")).map((r) => linearClean(r.relatedIssue?.identifier ?? "", 40)[0]),
       comments,
     };
-    const header = `agent-sync linear_show:  ${JSON.stringify(linearClean(issue.identifier, 40)[0])}`;
+    const header = `simple-tools linear_show:  ${JSON.stringify(linearClean(issue.identifier, 40)[0])}`;
     const summary = `${item.state}, ${item.team}, ${comments.length} comment${comments.length === 1 ? "" : "s"}`;
     return okResult(linearEnvelope(header, summary, [item], newNonce()), { identifier: item.identifier, title: item.title, state: item.state, team: item.team, description: item.description });
   }

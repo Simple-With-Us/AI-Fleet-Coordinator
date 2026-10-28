@@ -493,7 +493,7 @@ def envelope(
         for name, value in args
     )
     lines = [
-        _one_line("agent-sync %s%s" % (tool, (":  " + shown) if shown else "")),
+        _one_line("simple-tools %s%s" % (tool, (":  " + shown) if shown else "")),
         summary,
         UNTRUSTED_NOTE,
         "%s nonce=%s" % (LIVE.MARKER_BEGIN, nonce),

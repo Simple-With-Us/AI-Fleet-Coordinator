@@ -106,7 +106,7 @@ export function notesLine(data) {
 export function notesEnvelope(tool, args, data, nonce = newNonce()) {
   const shown = args.map(([name, value]) => `${name} ${JSON.stringify(clean(value, NAME_LIMIT)[0])}`).join(", ");
   return [
-    `agent-sync ${tool}${shown ? `:  ${shown}` : ""}`.replace(LINE_BREAKS_RE, hex4),
+    `simple-tools ${tool}${shown ? `:  ${shown}` : ""}`.replace(LINE_BREAKS_RE, hex4),
     NOTES_UNTRUSTED_NOTE,
     `${NOTES_MARKER_BEGIN} nonce=${nonce}`,
     notesLine(data),
