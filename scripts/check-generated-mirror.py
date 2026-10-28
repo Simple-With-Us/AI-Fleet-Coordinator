@@ -2,7 +2,7 @@
 """check-generated-mirror.py -- keep a generated mirror honest.
 
 Fleet policy is written in the private Fleet-OPS repository, in `handbook/`.  The sync job builds
-`generated/AGENT-SYNC.md` there and mirrors it into this repository as `AGENT-SYNC.md`, by a pull
+`generated/FLEET-PROTOCOL.md` there and mirrors it into this repository as `FLEET-PROTOCOL.md`, by a pull
 request from the branch `handbook-sync/mirror`.  Line 1 of the mirror is the header the generator
 (`scripts/handbook/build.mjs`, `headerLine()`) writes:
 
@@ -86,18 +86,14 @@ class GeneratedPath:
     alternate: str | None = None
 
 
-# Fleet-OPS handbook/README.md records this hash as the verbatim import of AGENT-SYNC.md at AFC #476 (fa7daadb).
+# The document was renamed:  Fleet-OPS renamed the generated handbook to FLEET-PROTOCOL.md in c5adf8d, the mirror
+# carries that name now, and the old name is gone.  The first header-bearing copy arrives by the mirror pull
+# request, never by hand.
 GENERATED_PATHS: tuple[GeneratedPath, ...] = (
-    GeneratedPath(
-        "AGENT-SYNC.md",
-        "9d8fe9a88d34535dac761e1c7ae860d2a5c48169f12d00ef771650f2e1b097ef",
-        alternate="FLEET-PROTOCOL.md",
-    ),
-    # The new name, mid-rename:  the first header-bearing copy arrives by the mirror pull request, never by hand.
-    GeneratedPath("FLEET-PROTOCOL.md", None, alternate="AGENT-SYNC.md"),
+    GeneratedPath("FLEET-PROTOCOL.md", None),
     # Phase B (U9) adds the Zulip guide here, in an ordinary PR, with the pin set to the guide's sha256 at that
-    # commit;  the first header then arrives by the mirror PR, as it does for AGENT-SYNC.md.  Listed now it would
-    # fail, because the guide is hand-written.
+    # commit;  the first header then arrives by the mirror PR.  Listed now it would fail, because the guide is
+    # hand-written.
     # GeneratedPath("docs/protocols/zulip-fleet-guide.md", "<sha256 of the guide when U9 lands>"),
 )
 
