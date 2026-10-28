@@ -1111,6 +1111,14 @@ def _insert_after_first_heading(text: str, block: str) -> str:
     for i, line in enumerate(lines):
         if line.startswith("# "):
             return "".join(lines[: i + 1] + ["\n", block] + lines[i + 1 :])
+    # No top-level heading (secret-safety starts at `## `):  keep YAML front
+    # matter at line 1 by inserting after its closing delimiter instead of
+    # prepending ahead of it, which no front-matter parser would read.
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end >= 0:
+            cut = end + len("\n---\n")
+            return text[:cut] + "\n" + block + text[cut:]
     return block + text
 
 
