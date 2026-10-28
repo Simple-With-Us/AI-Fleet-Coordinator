@@ -578,7 +578,11 @@ class WorkflowVerbs:
         _only(args, ("repo", "workflow_id"))
         value = _int(args, "workflow_id")
         self.client._call(
-            "PUT", f"/repos/{repo}/actions/workflows/{value}/enable", None, bearer=self.bearer
+            "PUT",
+            f"/repos/{repo}/actions/workflows/{value}/enable",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
         return {"completed": True, "workflow_id": value}
 
@@ -586,21 +590,35 @@ class WorkflowVerbs:
         _only(args, ("repo", "workflow_id"))
         value = _int(args, "workflow_id")
         self.client._call(
-            "PUT", f"/repos/{repo}/actions/workflows/{value}/disable", None, bearer=self.bearer
+            "PUT",
+            f"/repos/{repo}/actions/workflows/{value}/disable",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
         return {"completed": True, "workflow_id": value}
 
     def wf_run_delete(self, repo, args):
         _only(args, ("repo", "run_id"))
         value = _int(args, "run_id")
-        self.client._call("DELETE", f"/repos/{repo}/actions/runs/{value}", None, bearer=self.bearer)
+        self.client._call(
+            "DELETE",
+            f"/repos/{repo}/actions/runs/{value}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
         return {"completed": True, "run_id": value}
 
     def wf_artifact_delete(self, repo, args):
         _only(args, ("repo", "artifact_id"))
         value = _int(args, "artifact_id")
         self.client._call(
-            "DELETE", f"/repos/{repo}/actions/artifacts/{value}", None, bearer=self.bearer
+            "DELETE",
+            f"/repos/{repo}/actions/artifacts/{value}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
         return {"completed": True, "artifact_id": value}
 
