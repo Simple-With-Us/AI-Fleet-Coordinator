@@ -64,13 +64,16 @@ class BotCompatibility(unittest.TestCase):
             }
 
             class Verifier:
+                def __init__(self, assigned):
+                    self.assigned = assigned
+
                 def parse_identity(self, token):
-                    return identity
+                    return self.assigned
 
                 def resolve(self, token):
-                    return identity
+                    return self.assigned
 
-            policy = SeatPolicy(json.dumps(cfg), verifier=Verifier())
+            policy = SeatPolicy(json.dumps(cfg), verifier=Verifier(identity))
             self.assertEqual(policy.authenticate("synthetic-bearer"), principal)
             self.assertEqual(
                 policy.app_identity(principal),
