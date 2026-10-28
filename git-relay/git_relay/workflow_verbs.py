@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_compare_commits_page": ({"contents": "read"}, False),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -2623,6 +2624,64 @@ class WorkflowVerbs:
         sha = _sha(args, "sha")
         data = self._get(f"/repos/{repo}/commits/{sha}")
         return {"commit": _obj(data)}
+
+    def wf_compare_commits_page(self, repo, args):
+        """Exact SHA compare graph page only; GitHub cannot page all changed files."""
+        _only(args, ("repo", "base_sha", "head_sha", "page", "per_page"))
+        base, head = _sha(args, "base_sha"), _sha(args, "head_sha")
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        limit = _page(args)
+        value = self._get(f"/repos/{repo}/compare/{base}...{head}?per_page={limit}&page={page}")
+        if (
+            not isinstance(value, dict)
+            or value.get("status") not in ("ahead", "behind", "diverged", "identical")
+            or not isinstance(value.get("base_commit"), dict)
+            or value["base_commit"].get("sha") != base
+            or not isinstance(value.get("merge_base_commit"), dict)
+            or not isinstance(value["merge_base_commit"].get("sha"), str)
+            or not _SHA.fullmatch(value["merge_base_commit"]["sha"])
+            or not isinstance(value.get("commits"), list)
+            or len(value["commits"]) > limit
+        ):
+            raise RelayGitHubError(502, "compare page unverifiable")
+        counts = {k: value.get(k) for k in ("ahead_by", "behind_by", "total_commits")}
+        if any(type(v) is not int or not 0 <= v <= 1000000000 for v in counts.values()) or counts[
+            "total_commits"
+        ] < len(value["commits"]):
+            raise RelayGitHubError(502, "compare counts unverifiable")
+        commits = []
+        seen = set()
+        for row in value["commits"]:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("sha"), str)
+                or not _SHA.fullmatch(row["sha"])
+                or row["sha"] in seen
+                or not isinstance(row.get("parents"), list)
+                or len(row["parents"]) > 16
+            ):
+                raise RelayGitHubError(502, "compare commit unverifiable")
+            seen.add(row["sha"])
+            parents = []
+            for parent in row["parents"]:
+                if (
+                    not isinstance(parent, dict)
+                    or not isinstance(parent.get("sha"), str)
+                    or not _SHA.fullmatch(parent["sha"])
+                ):
+                    raise RelayGitHubError(502, "compare parent unverifiable")
+                parents.append(parent["sha"])
+            commits.append({"sha": row["sha"], "parents": parents})
+        return {
+            "base_sha": base,
+            "head_sha": head,
+            "merge_base_sha": value["merge_base_commit"]["sha"],
+            "status": value["status"],
+            **counts,
+            "commits": commits,
+            "page": page,
+            "has_more": len(commits) == limit,
+        }
 
     def wf_compare(self, repo, args):
         _only(

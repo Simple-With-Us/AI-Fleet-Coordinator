@@ -137,6 +137,7 @@ class SeatPolicy:
         "wf_pr_comments",
         "wf_issue_comments",
         "wf_commit_get",
+        "wf_compare_commits_page",
         "wf_compare",
         "wf_branch_get",
         "wf_repo_get",
