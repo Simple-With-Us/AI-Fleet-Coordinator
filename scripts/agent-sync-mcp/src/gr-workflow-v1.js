@@ -25,6 +25,9 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+  wf_review_thread_resolve: ['Resolve a review thread only after addressing its finding; never a review-gate bypass. Membership is checked against the repository PR first 100 threads.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
+  wf_review_thread_unresolve: ['Unresolve a repository PR review thread after bounded membership validation.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
+
   wf_review_update: ['Edit review body, not its state.',obj(['repo', 'number', 'review_id', 'body'],{repo:REPO,number:INT,review_id:INT,body:{type:'string',minLength:1,maxLength:32768}})],
   wf_review_dismiss: ['Dismiss a review only when separately authorized by its owner; never a merge-gate bypass.',obj(['repo', 'number', 'review_id', 'message'],{repo:REPO,number:INT,review_id:INT,message:{type:'string',minLength:1,maxLength:32768}})],
   wf_review_pending_delete: ['Delete only a pending review after a pre-read; not atomic.',obj(['repo', 'number', 'review_id'],{repo:REPO,number:INT,review_id:INT})],
@@ -177,6 +180,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args,{maxByt
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+  wf_review_thread_resolve:['thread'],wf_review_thread_unresolve:['thread'],
   wf_issue_list:['issues','complete'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
   wf_issue_comment_update:['result'],
   wf_issue_comment_delete:['deleted'],
@@ -274,6 +278,8 @@ const milestoneItem=z.object({number:positive,title:z.string().min(1).refine(v=>
 const milestoneResponses={wf_milestones:z.object({milestones:z.array(milestoneItem).max(50),complete:z.boolean()}).strict(),wf_milestone_get:z.object({milestone:milestoneItem}).strict(),wf_milestone_create:z.object({milestone:milestoneItem}).strict(),wf_milestone_update:z.object({milestone:milestoneItem}).strict(),wf_milestone_delete:z.object({deleted:z.literal(true),number:positive}).strict()};
 const checkWriteItem=z.object({id:positive,head_sha:shaValue,name:z.string().min(1),status:z.enum(['queued','in_progress','completed']),conclusion:z.enum(['action_required','cancelled','failure','neutral','success','skipped','stale','timed_out']).nullable(),html_url:z.string().nullable()}).strict().refine(v=>v.status==='completed'?v.conclusion!==null:v.conclusion===null);
 const checkWriteResponses={wf_check_create:z.object({check:checkWriteItem}).strict(),wf_check_update:z.object({check:checkWriteItem}).strict()};
+const threadState=z.object({id:z.string().regex(/^[A-Za-z0-9_/=+-]{1,200}$/),isResolved:z.boolean()}).strict();
+const threadStateResponses={wf_review_thread_resolve:z.object({thread:threadState.refine(v=>v.isResolved===true)}).strict(),wf_review_thread_unresolve:z.object({thread:threadState.refine(v=>v.isResolved===false)}).strict()};
 const chunkShape={offset:z.number().int().nonnegative(),next_offset:z.number().int().nonnegative(),total:z.number().int().nonnegative().nullable(),complete:z.boolean()};
 const chunkSchema=(id,text=false)=>z.object({...chunkShape,[id]:positive,[text?'content':'content_b64']:text?z.string().max(1048064):z.string().max(349528).regex(/^[A-Za-z0-9+/]*={0,2}$/)}).strict().refine(v=>v.next_offset>=v.offset&&(v.complete||v.next_offset>v.offset));
 const binaryAsset=z.object({id:positive,name:z.string().min(1).max(255),state:z.enum(['uploaded','open','starter']),size:z.number().int().nonnegative()}).strict();
@@ -282,6 +288,7 @@ const lifecycleReview=z.object({id:positive,state:z.enum(['PENDING','COMMENTED',
 const lifecycleResponses={wf_review_update:z.object({review:lifecycleReview}).strict(),wf_review_dismiss:z.object({review:lifecycleReview.refine(v=>v.state==='DISMISSED')}).strict(),wf_review_pending_delete:z.object({review:lifecycleReview.refine(v=>v.state==='PENDING')}).strict(),wf_review_comment_reply:z.object({comment:z.object({id:positive,in_reply_to_id:positive,html_url:z.string().nullable()}).strict()}).strict()};
 export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
+ if(threadStateResponses[action])return threadStateResponses[action].safeParse(body).success;
  if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
@@ -325,6 +332,7 @@ export function validWfV1Response(action, body, args) {
     const assetOk = x => x && !Array.isArray(x) && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string' && x.name.length > 0 && x.name.length <= 255 && ['uploaded','open','starter'].includes(x.state) && Number.isInteger(x.size) && x.size >= 0;
     if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;
   }
+  for (const key of ['pull','threads']) if (key in body && (!body[key] || typeof body[key] !== 'object' || Array.isArray(body[key]))) return false;
 
   if (action === 'wf_review_comment_reply') return body.comment && Number.isInteger(body.comment.id) && body.comment.id > 0 && Number.isInteger(body.comment.in_reply_to_id) && body.comment.in_reply_to_id > 0;
   if (['wf_labels_set'].includes(action) && (!Array.isArray(body.labels) || !body.labels.every(x => x && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string'))) return false;

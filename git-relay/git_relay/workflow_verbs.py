@@ -69,6 +69,8 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
     "wf_review_dismiss": ({"pull_requests": "write"}, True),
     "wf_review_pending_delete": ({"pull_requests": "write"}, True),
@@ -2265,6 +2267,55 @@ class WorkflowVerbs:
         if pull.get("id") != node or not isinstance(pull.get("autoMergeRequest"), dict):
             raise RelayGitHubError(502, "auto-merge outcome unverifiable")
         return {"pull": pull}
+
+    def _review_thread_state(self, repo, args, resolved):
+        _only(args, ("repo", "number", "thread_id"))
+        number = _int(args, "number")
+        thread = args.get("thread_id")
+        if not isinstance(thread, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", thread):
+            raise Refused("invalid thread_id")
+        # A caller node ID is never trusted as a global selector: first bind it to
+        # the chosen repository and PR. Refuse outside the bounded visible page.
+        owner, name = repo.split("/")
+        query = "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:100) { nodes { id } pageInfo { hasNextPage } } } } }"
+        try:
+            result = self._fixed_graph(
+                query, {"owner": owner, "name": name, "number": number}, "repository", write=False
+            )
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "thread membership pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        threads = _sub(_sub(result, "pullRequest"), "reviewThreads").get("nodes")
+        if not isinstance(threads, list) or not any(
+            isinstance(x, dict) and x.get("id") == thread for x in threads
+        ):
+            raise Refused("thread not in bounded repository PR membership page")
+        field = "resolveReviewThread" if resolved else "unresolveReviewThread"
+        mutation = (
+            "mutation($id:ID!) { resolveReviewThread(input:{threadId:$id}) { thread { id isResolved } } }"
+            if resolved
+            else "mutation($id:ID!) { unresolveReviewThread(input:{threadId:$id}) { thread { id isResolved } } }"
+        )
+        result = self._fixed_graph(mutation, {"id": thread}, field)
+        receipt = _sub(result, "thread")
+        if (
+            receipt.get("id") != thread
+            or not isinstance(receipt.get("isResolved"), bool)
+            or receipt["isResolved"] != resolved
+        ):
+            raise RelayGitHubError(502, "thread state outcome unverifiable")
+        return {"thread": {"id": thread, "isResolved": resolved}}
+
+    def wf_review_thread_resolve(self, repo, args):
+        _only(args, ("repo", "number", "thread_id"))
+        return self._review_thread_state(repo, args, True)
+
+    def wf_review_thread_unresolve(self, repo, args):
+        _only(args, ("repo", "number", "thread_id"))
+        return self._review_thread_state(repo, args, False)
 
     def wf_review_threads(self, repo, args):
         _only(args, ("repo", "number"))
