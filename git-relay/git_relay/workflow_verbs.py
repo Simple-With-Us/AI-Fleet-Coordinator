@@ -53,6 +53,11 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_issue_list": ({"issues": "read"}, False),
+    "wf_issue_get": ({"issues": "read"}, False),
+    "wf_issue_create": ({"issues": "write"}, True),
+    "wf_issue_update": ({"issues": "write"}, True),
+    "wf_issue_comment": ({"issues": "write"}, True),
     "wf_pr_list": ({"pull_requests": "read"}, False),
     "wf_pr_files": ({"pull_requests": "read"}, False),
     "wf_file_get": ({"contents": "read"}, False),
@@ -247,6 +252,106 @@ class WorkflowVerbs:
         if action != self.action or args.get("repo") != self.repo:
             raise Refused("action or repository not authorized for this handle")
         return getattr(self, action)(self.repo, args)
+
+    # Fixed issue endpoints only.  No assignee, label, milestone or admin expansion.
+    @staticmethod
+    def _issue_summary(data):
+        data = _obj(data)
+        if "pull_request" in data:
+            raise Refused("pull requests are not issue lifecycle targets")
+        return {k: data.get(k) for k in ("number", "state", "title", "updated_at", "html_url")}
+
+    @staticmethod
+    def _issue_text(args, key, required=True):
+        value = args.get(key)
+        if value is None and not required:
+            return None
+        if not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 32768:
+            raise Refused(f"invalid {key}")
+        if find_secret(value):
+            raise Refused("credential-shaped outbound text")
+        return value
+
+    def wf_issue_list(self, repo, args):
+        _only(args, ("repo", "state", "per_page"))
+        state = _enum(args, "state", ("open", "closed", "all"), "open")
+        data = _arr(self._get(f"/repos/{repo}/issues?state={state}&per_page={_page(args)}"))
+        return {
+            "issues": [
+                self._issue_summary(x)
+                for x in data[:MAX_PROJECT]
+                if isinstance(x, dict) and "pull_request" not in x
+            ],
+            "complete": False,
+        }
+
+    def wf_issue_get(self, repo, args):
+        _only(args, ("repo", "number"))
+        number = _int(args, "number")
+        return {"issue": self._issue_summary(self._get(f"/repos/{repo}/issues/{number}"))}
+
+    def wf_issue_create(self, repo, args):
+        _only(args, ("repo", "title", "body"))
+        title = self._issue_text(args, "title")
+        body = self._issue_text(args, "body")
+        result = self.client._call(
+            "POST", f"/repos/{repo}/issues", {"title": title, "body": body}, bearer=self.bearer
+        )
+        try:
+            summary = self._issue_summary(result)
+            if (
+                not isinstance(summary["number"], int)
+                or isinstance(summary["number"], bool)
+                or summary["state"] not in ("open", "closed")
+            ):
+                raise Refused("unexpected issue response")
+        except (Refused, KeyError, TypeError) as exc:
+            raise RuntimeError("issue write outcome unverifiable") from exc
+        return {"issue": summary}
+
+    def wf_issue_update(self, repo, args):
+        _only(args, ("repo", "number", "title", "body", "state"))
+        number = _int(args, "number")
+        payload = {}
+        for key in ("title", "body"):
+            if key in args:
+                payload[key] = self._issue_text(args, key)
+        if "state" in args:
+            payload["state"] = _enum(args, "state", ("open", "closed"))
+        if not payload:
+            raise Refused("issue update requires a change")
+        # Read rejects PR targets.  This is not an atomic compare-and-swap claim.
+        self._issue_summary(self._get(f"/repos/{repo}/issues/{number}"))
+        result = self.client._call(
+            "PATCH", f"/repos/{repo}/issues/{number}", payload, bearer=self.bearer
+        )
+        try:
+            summary = self._issue_summary(result)
+            if (
+                not isinstance(summary["number"], int)
+                or isinstance(summary["number"], bool)
+                or summary["state"] not in ("open", "closed")
+            ):
+                raise Refused("unexpected issue response")
+        except (Refused, KeyError, TypeError) as exc:
+            raise RuntimeError("issue write outcome unverifiable") from exc
+        return {"issue": summary}
+
+    def wf_issue_comment(self, repo, args):
+        _only(args, ("repo", "number", "body"))
+        number = _int(args, "number")
+        body = self._issue_text(args, "body")
+        self._issue_summary(self._get(f"/repos/{repo}/issues/{number}"))
+        result = self.client._call(
+            "POST", f"/repos/{repo}/issues/{number}/comments", {"body": body}, bearer=self.bearer
+        )
+        if (
+            not isinstance(result, dict)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
+            raise RuntimeError("issue comment outcome unverifiable")
+        return {"comment": {k: result.get(k) for k in ("id", "html_url")}}
 
     # ---- reads ----
     def wf_pr_list(self, repo, args):
