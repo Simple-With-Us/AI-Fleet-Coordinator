@@ -240,7 +240,9 @@ class Tests(unittest.TestCase):
 
     def test_spec_permissions_stay_inside_shared_ceiling(self):
         for action, (perms, _) in SPECS.items():
-            if action in ("wf_checks", "wf_check_create", "wf_check_update") or action.startswith("wf_deployment"):
+            if action in ("wf_checks", "wf_check_create", "wf_check_update") or action.startswith(
+                "wf_deployment"
+            ):
                 continue  # deliberately outside the ceiling; see the next test
             self.assertEqual(set(perms) - set(CEILING), set(), action)
 
