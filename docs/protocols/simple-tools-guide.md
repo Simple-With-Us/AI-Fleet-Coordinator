@@ -347,4 +347,4 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
 | `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above:  a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
 
-Exit codes of the `simple-chat` CLI:  0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, 6 auth, 7 writes off.
+Exit codes of the `simple-chat` CLI:  0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, and 6 when no seat is verified or an authentication check failed.  Exit 7 is retired:  it was the writes-off switch, and the bearer-verified seat is the only write gate now.
