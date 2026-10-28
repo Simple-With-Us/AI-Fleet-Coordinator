@@ -133,12 +133,15 @@ export function validWfV1Response(action, body) {
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;
-  for (const k of ['pulls','files','entries','branches','commits','items','runs','jobs','checks']) {
+  for (const k of ['pulls','files','entries','branches','commits','items','runs','jobs','checks','reviews','comments','labels']) {
     if (k in body && !(action === 'wf_files_put' && k === 'files') && !Array.isArray(body[k])) return false;
   }
   if (action.startsWith('wf_release_asset')) {
     const assetOk = x => x && !Array.isArray(x) && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string' && x.name.length > 0 && x.name.length <= 255 && ['uploaded','open','starter'].includes(x.state) && Number.isInteger(x.size) && x.size >= 0;
     if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;
+  }
+  for (const k of ['pull','commit','comparison','branch','repository','workflows','run','artifacts']) {
+    if (k in body && (!body[k] || typeof body[k] !== 'object' || Array.isArray(body[k]))) return false;
   }
   if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
   if (action === 'wf_review_inline' && (!body.comment || !Number.isInteger(body.comment.id) || body.comment.id < 1 || !/^[0-9a-f]{40}$/.test(body.comment.commit_id))) return false;
