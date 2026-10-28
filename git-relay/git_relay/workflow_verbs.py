@@ -143,32 +143,32 @@ def _page(args):
 
 def _obj(data):
     if not isinstance(data, dict):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return data
 
 
 def _sub(data, key):
-    """A nested upstream object; any other shape is a refusal, not an exception."""
+    """A nested upstream object; any other shape is an upstream error, never a definitely-unsent refusal."""
     value = data.get(key)
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return value
 
 
 def _arr(data):
     if not isinstance(data, list):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return data
 
 
 def _dicts(value):
-    """Entries of an upstream list; a non-list or a non-object entry is a refusal."""
+    """Entries of an upstream list; a non-list or a non-object entry is an upstream error."""
     if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return value
 
 
@@ -504,7 +504,7 @@ class WorkflowVerbs:
         data = _obj(self._get(f"/repos/{repo}/git/trees/{quote(ref, safe='')}?recursive=1"))
         tree = data.get("tree")
         if tree is not None and not isinstance(tree, list):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         return {
             "sha": (data or {}).get("sha"),
             "truncated": bool((data or {}).get("truncated")) or len(tree or []) > 2000,
@@ -695,11 +695,16 @@ class WorkflowVerbs:
         data = self.client._call(
             "PUT", f"/repos/{repo}/contents/{quote(path, safe='/')}", payload, bearer=self.bearer
         )
-        return {
-            "path": path,
-            "branch": branch,
-            "commit": ((data or {}).get("commit") or {}).get("sha"),
-        }
+        result = _obj(data)
+        commit = _sub(result, "commit").get("sha")
+        content_receipt = _sub(result, "content")
+        if (
+            not isinstance(commit, str)
+            or not _SHA.fullmatch(commit)
+            or content_receipt.get("path") != path
+        ):
+            raise RelayGitHubError(502, "file write receipt unverifiable")
+        return {"path": path, "branch": branch, "commit": commit}
 
     def _entry_mode(self, repo, tree_sha, path, cache):
         """Mode of an existing blob at path, so an update never resets an executable bit."""
@@ -766,7 +771,7 @@ class WorkflowVerbs:
             raise Refused("branch head moved")
         base_tree = _sub(_obj(self._get(f"/repos/{repo}/git/commits/{head}")), "tree").get("sha")
         if not isinstance(base_tree, str) or not _SHA.fullmatch(base_tree):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         cache, entries = {}, []
         for path, content in plan:
             if content is None:
@@ -782,7 +787,7 @@ class WorkflowVerbs:
             )
             blob_sha = blob.get("sha")
             if not isinstance(blob_sha, str) or not _SHA.fullmatch(blob_sha):
-                raise Refused("unexpected upstream shape")
+                raise RelayGitHubError(502, "unexpected upstream shape")
             existing = self._entry_mode(repo, base_tree, path, cache)
             if existing not in (None, "100644", "100755"):
                 # A symlink or submodule is never silently replaced by file content.
@@ -799,7 +804,7 @@ class WorkflowVerbs:
         )
         tree_sha = tree.get("sha")
         if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         commit = _obj(
             self.client._call(
                 "POST",
@@ -810,7 +815,7 @@ class WorkflowVerbs:
         )
         new_sha = commit.get("sha")
         if not isinstance(new_sha, str) or not _SHA.fullmatch(new_sha):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         # Fast-forward only: a branch that moved since the read is refused upstream.
         self.client._call(
             "PATCH",
