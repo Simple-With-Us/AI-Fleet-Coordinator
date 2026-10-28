@@ -1,6 +1,6 @@
 """Inactive read, search and workflow verbs for a PR-backlog seat.
 
-Not registered in server startup, policy action lists or the Worker. A broker that has
+Registered only behind the existing default-off workflow gates. A broker that has
 already authenticated a seat constructs it through ``for_action``. It never accepts a
 caller token, URL, raw query string or arbitrary path: every argument is validated into
 a fixed REST path. Each verb asks the existing minter for only the permissions it needs
@@ -25,8 +25,9 @@ import binascii
 import re
 from urllib.parse import quote
 
+from .github_client import RelayGitHubError
 from .secret_scan import find_secret
-from .server import _perm_within_ceiling
+from .server import PreReadUnavailable, _perm_within_ceiling
 
 
 class Refused(ValueError):
@@ -53,6 +54,12 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_release_assets": ({"contents": "read"}, False),
+    "wf_release_asset_get": ({"contents": "read"}, False),
+    "wf_release_asset_upload": ({"contents": "write"}, True),
+    "wf_review_submit": ({"pull_requests": "write"}, True),
+    "wf_review_inline": ({"pull_requests": "write"}, True),
+    "wf_branch_create": ({"contents": "write"}, True),
     "wf_pr_list": ({"pull_requests": "read"}, False),
     "wf_pr_files": ({"pull_requests": "read"}, False),
     "wf_file_get": ({"contents": "read"}, False),
@@ -247,6 +254,194 @@ class WorkflowVerbs:
         if action != self.action or args.get("repo") != self.repo:
             raise Refused("action or repository not authorized for this handle")
         return getattr(self, action)(self.repo, args)
+
+    def _asset_summary(self, data):
+        if (
+            not isinstance(data, dict)
+            or isinstance(data.get("id"), bool)
+            or not isinstance(data.get("id"), int)
+            or data["id"] < 1
+        ):
+            raise RelayGitHubError(502, "invalid release asset summary")
+        if (
+            not isinstance(data.get("name"), str)
+            or not 1 <= len(data["name"]) <= 255
+            or data.get("state") not in ("uploaded", "open", "starter")
+        ):
+            raise RelayGitHubError(502, "invalid release asset summary")
+        if (
+            isinstance(data.get("size"), bool)
+            or not isinstance(data.get("size"), int)
+            or data["size"] < 0
+        ):
+            raise RelayGitHubError(502, "invalid release asset size")
+        return {
+            k: data.get(k)
+            for k in (
+                "id",
+                "name",
+                "state",
+                "size",
+                "content_type",
+                "digest",
+                "browser_download_url",
+            )
+        }
+
+    def wf_release_assets(self, repo, args):
+        _only(args, ("repo", "release_id", "per_page"))
+        release_id, page = _int(args, "release_id"), _page(args)
+        data = self._get(f"/repos/{repo}/releases/{release_id}/assets?per_page={page}")
+        if not isinstance(data, list) or len(data) > page:
+            raise RelayGitHubError(502, "invalid release asset list")
+        return {"assets": [self._asset_summary(x) for x in data], "complete": len(data) < page}
+
+    def wf_release_asset_get(self, repo, args):
+        _only(args, ("repo", "asset_id"))
+        asset_id = _int(args, "asset_id")
+        data = self._asset_summary(self._get(f"/repos/{repo}/releases/assets/{asset_id}"))
+        if data["id"] != asset_id:
+            raise RelayGitHubError(502, "release asset identity mismatch")
+        return {"asset": data}
+
+    def wf_release_asset_upload(self, repo, args):
+        _only(args, ("repo", "release_id", "name", "content_b64"))
+        release_id = _int(args, "release_id")
+        name = args.get("name")
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", name)
+            or name.endswith(".")
+        ):
+            raise Refused("invalid asset name")
+        encoded = args.get("content_b64")
+        if not isinstance(encoded, str) or not 1 <= len(encoded) <= 43692:
+            raise Refused("invalid asset content")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+            text = content.decode("utf-8")
+        except (ValueError, UnicodeError, binascii.Error):
+            raise Refused("asset must be bounded UTF-8 text") from None
+        if not 1 <= len(content) <= 32768 or "\x00" in text or find_secret(text):
+            raise Refused("invalid asset content")
+        # Text-only slice avoids disguising credentials inside opaque binary archives.
+        try:
+            release = _obj(self._get(f"/repos/{repo}/releases/{release_id}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "release pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if (
+            release.get("id") != release_id
+            or isinstance(release.get("id"), bool)
+            or release.get("upload_url")
+            != f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets{{?name,label}}"
+        ):
+            raise Refused("release upload destination unverifiable")
+        data = self._asset_summary(
+            self.client.upload_release_asset(repo, release_id, name, content, self.bearer)
+        )
+        if data["name"] != name or data["state"] != "uploaded" or data["size"] != len(content):
+            raise RelayGitHubError(502, "release asset upload outcome unverifiable")
+        return {"asset": data}
+
+    def _text(self, args, key, limit=32768):
+        value = args.get(key)
+        if (
+            not isinstance(value, str)
+            or not value.strip()
+            or len(value.encode("utf-8")) > limit
+            or find_secret(value)
+        ):
+            raise Refused(f"invalid {key}")
+        return value
+
+    def _pull_at_commit(self, repo, number, commit):
+        # Pre-read is not an atomic head lock; GitHub binds the review to commit_id.
+        try:
+            data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "review pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if _sub(data, "head").get("sha") != commit:
+            raise Refused("pull request head changed")
+
+    def wf_review_submit(self, repo, args):
+        _only(args, ("repo", "number", "commit_id", "event", "body"))
+        number, commit = _int(args, "number"), _sha(args, "commit_id")
+        event = _enum(args, "event", ("APPROVE", "REQUEST_CHANGES", "COMMENT"))
+        body = self._text(args, "body")
+        self._pull_at_commit(repo, number, commit)
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/pulls/{number}/reviews",
+            {"commit_id": commit, "event": event, "body": body},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+            or result["id"] <= 0
+            or result.get("commit_id") != commit
+        ):
+            raise RelayGitHubError(502, "review write outcome unverifiable")
+        if (
+            result.get("state")
+            != {
+                "APPROVE": "APPROVED",
+                "REQUEST_CHANGES": "CHANGES_REQUESTED",
+                "COMMENT": "COMMENTED",
+            }[event]
+        ):
+            raise RelayGitHubError(502, "review state unverifiable")
+        return {"review": {k: result.get(k) for k in ("id", "state", "commit_id", "html_url")}}
+
+    def wf_review_inline(self, repo, args):
+        _only(args, ("repo", "number", "commit_id", "path", "line", "side", "body"))
+        number, commit = _int(args, "number"), _sha(args, "commit_id")
+        path, line = _path(args), _int(args, "line", 1, 10000000)
+        side, body = _enum(args, "side", ("LEFT", "RIGHT")), self._text(args, "body")
+        self._pull_at_commit(repo, number, commit)
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/pulls/{number}/comments",
+            {"commit_id": commit, "path": path, "line": line, "side": side, "body": body},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+            or result["id"] <= 0
+            or result.get("commit_id") != commit
+        ):
+            raise RelayGitHubError(502, "inline write outcome unverifiable")
+        return {"comment": {k: result.get(k) for k in ("id", "commit_id", "html_url")}}
+
+    def wf_branch_create(self, repo, args):
+        _only(args, ("repo", "branch", "sha"))
+        branch, sha = _ref(args, "branch"), _sha(args, "sha")
+        # Creation only: GitHub refuses an existing ref; never force/update/delete.
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/git/refs",
+            {"ref": "refs/heads/" + branch, "sha": sha},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or result.get("ref") != "refs/heads/" + branch
+            or not isinstance(result.get("object"), dict)
+            or result["object"].get("sha") != sha
+        ):
+            raise RelayGitHubError(502, "branch write outcome unverifiable")
+        return {"ref": result["ref"], "sha": sha}
 
     # ---- reads ----
     def wf_pr_list(self, repo, args):

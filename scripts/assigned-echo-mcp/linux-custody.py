@@ -4,6 +4,7 @@
 import os
 import re
 import stat
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -87,18 +88,68 @@ def ingress(stream):
         os.close(parent_fd)
 
 
+def check_service_acl(fd, uid, directory=False):
+    """Exact systemd POSIX ACL: root and this service user, no group/other access."""
+    raw = os.getxattr(fd, "system.posix_acl_access")
+    permission = 5 if directory else 4
+    # Linux posix_acl_xattr header v2 followed by little-endian tag/perm/id entries.
+    if len(raw) != 44 or struct.unpack_from("<I", raw)[0] != 2:
+        raise ValueError("unexpected service credential ACL")
+    entries = [struct.unpack_from("<HHI", raw, offset) for offset in range(4, len(raw), 8)]
+    expected = [
+        (1, permission, 0xFFFFFFFF),
+        (2, permission, uid),
+        (4, 0, 0xFFFFFFFF),
+        (16, permission, 0xFFFFFFFF),
+        (32, 0, 0xFFFFFFFF),
+    ]
+    if entries != expected:
+        raise ValueError("unsafe service credential ACL")
+
+
 def child():
     check_code()
-    # systemd materializes this credential only inside the fixed service context.
-    fd = os.open(CREDENTIAL, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(fd, "rb") as source:
-        info = os.fstat(source.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-            raise ValueError("unsafe service credential")
-        raw = source.read(257)
-        if len(raw) > 256:
-            raise ValueError("oversized service credential")
-        raw = raw.strip()
+    uid = os.geteuid()
+    if uid == 0:
+        raise ValueError("service user required")
+    # Ancestors cannot be substituted by this non-root service user.
+    for ancestor in (Path("/run"), Path("/run/credentials")):
+        info = ancestor.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError("unsafe credential ancestor")
+    # Hold the fixed credential directory and open its fixed child without re-resolution.
+    parent_fd = os.open(CREDENTIAL.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent = os.fstat(parent_fd)
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid != 0
+            or parent.st_gid != 0
+            or stat.S_IMODE(parent.st_mode) != 0o550
+            or not os.fstatvfs(parent_fd).f_flag & os.ST_RDONLY
+        ):
+            raise ValueError("unsafe service credential directory")
+        check_service_acl(parent_fd, uid, directory=True)
+        fd = os.open(CREDENTIAL.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        with os.fdopen(fd, "rb") as source:
+            info = os.fstat(source.fileno())
+            if (
+                not stat.S_ISREG(info.st_mode)
+                or info.st_uid != 0
+                or info.st_gid != 0
+                or stat.S_IMODE(info.st_mode) != 0o440
+                or info.st_nlink != 1
+                or info.st_dev != parent.st_dev
+                or not os.fstatvfs(source.fileno()).f_flag & os.ST_RDONLY
+            ):
+                raise ValueError("unsafe service credential")
+            check_service_acl(source.fileno(), uid)
+            raw = source.read(257)
+            if len(raw) > 256:
+                raise ValueError("oversized service credential")
+            raw = raw.strip()
+    finally:
+        os.close(parent_fd)
     if not TOKEN.fullmatch(raw):
         raise ValueError("expected assigned ECHO bearer")
     # Only the token and a fixed PATH reach the reviewed adapter. No reader auth.
