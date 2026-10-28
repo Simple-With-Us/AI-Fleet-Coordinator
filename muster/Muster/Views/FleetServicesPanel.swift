@@ -81,6 +81,12 @@ struct FleetServicesPanel: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Divider()
+            Toggle("Launch Muster At Login", isOn: Binding(
+                get: { admin.launchesAtLogin },
+                set: { admin.setLaunchesAtLogin($0) }
+            ))
+            .toggleStyle(.switch)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)

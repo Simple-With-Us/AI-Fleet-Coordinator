@@ -66,5 +66,9 @@ struct FleetAdminMenu: View {
                 }
             }
         }
+        Toggle("Launch Muster At Login", isOn: Binding(
+            get: { admin.launchesAtLogin },
+            set: { admin.setLaunchesAtLogin($0) }
+        ))
     }
 }

@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import ServiceManagement
 
 /// The fleet admin:  what the fleet's own services are doing on this Mac,  and what the
 /// owner can do about them.
@@ -31,6 +32,11 @@ final class FleetAdmin: ObservableObject {
     @Published private(set) var startsAtLogin = false
     /// Whether the BotFleet Server is running now.
     @Published private(set) var serverRunning = false
+    /// Whether Muster comes back at login.
+    ///
+    /// The menu bar item has to be there when the owner logs in,  so the app carries the
+    /// login item the way the BotFleet Control app did.
+    @Published private(set) var launchesAtLogin = false
 
     /// The fleet services the admin watches and changes.
     private let control: FleetServiceControl
@@ -66,6 +72,7 @@ final class FleetAdmin: ObservableObject {
             mcpServer: mcp,
             stopServer: { [api] in try await api.stopServer() }
         )
+        self.launchesAtLogin = SMAppService.mainApp.status == .enabled
     }
 
     // MARK: Reading
@@ -182,5 +189,28 @@ final class FleetAdmin: ObservableObject {
     /// The entries,  as the menu and the panel show them.
     var entries: [FleetServiceEntry] {
         services?.entries ?? []
+    }
+
+    /// Records whether Muster comes back at login.
+    ///
+    /// The menu bar item has to be there when the owner logs in,  so the app carries the
+    /// login item the way the BotFleet Control app did:  the owner may quit Muster,  and
+    /// the login item brings it back.
+    func setLaunchesAtLogin(_ enabled: Bool) {
+        problem = nil
+        do {
+            if enabled {
+                if SMAppService.mainApp.status != .enabled {
+                    try SMAppService.mainApp.register()
+                }
+            } else {
+                if SMAppService.mainApp.status == .enabled {
+                    try SMAppService.mainApp.unregister()
+                }
+            }
+        } catch {
+            problem = "The login item did not change:  \(error.localizedDescription)"
+        }
+        launchesAtLogin = SMAppService.mainApp.status == .enabled
     }
 }
