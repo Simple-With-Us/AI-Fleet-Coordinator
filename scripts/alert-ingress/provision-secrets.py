@@ -280,10 +280,7 @@ def main():
         print(f"  wrote {name} to Infisical {AFC_SLUG}{SECRET_PATH}  (len {len(fresh)})")
 
     if dry:
-        print(
-            f"Dry run: {len(values)} bindings would be set on {WORKER}.  "
-            "Re-run with --apply."
-        )
+        print(f"Dry run: {len(values)} bindings would be set on {WORKER}.  Re-run with --apply.")
         return 0
 
     # 3. The Worker bindings.
@@ -302,8 +299,7 @@ def main():
         bound += 1
         print(f"  bound {name}  (len {len(value)})")
     print(
-        f"Done: {len(values)} bindings on {WORKER}, "
-        f"{len(created)} secret(s) created in Infisical."
+        f"Done: {len(values)} bindings on {WORKER}, {len(created)} secret(s) created in Infisical."
     )
     return 0
 

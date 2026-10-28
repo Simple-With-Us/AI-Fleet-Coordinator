@@ -27,7 +27,6 @@ only.  --cleanup deletes the messages this test created.
 
 import argparse
 import json
-import os
 import pathlib
 import shutil
 import subprocess
@@ -170,9 +169,7 @@ def betterstack_payload(name, status):
                 "check_name": name,
                 "url": "https://uptime.betterstack.com/monitors/bs-selftest-1",
             },
-            "relationships": {
-                "monitor": {"data": {"id": "bs-selftest-1", "type": "monitor"}}
-            },
+            "relationships": {"monitor": {"data": {"id": "bs-selftest-1", "type": "monitor"}}},
         }
     }
 
@@ -220,9 +217,7 @@ def main():
         deleted = 0
         for email, key in ((dd_email, dd_key), (bs_email, bs_key)):
             for message in topic_messages(email, key, TEST_SERVICE):
-                status, _ = zulip(
-                    f"/messages/{message['id']}", email, key, method="DELETE"
-                )
+                status, _ = zulip(f"/messages/{message['id']}", email, key, method="DELETE")
                 if status == 200:
                     deleted += 1
         print(f"Cleanup: {deleted} message(s) deleted from #{CHANNEL} > {TEST_SERVICE}.")
@@ -274,9 +269,7 @@ def main():
         f"{len(dd_messages)} message(s) from the datadog bot",
     )
     if dd_standing:
-        content = next(
-            (m.get("content", "") for m in messages if m["id"] == dd_standing[0]), ""
-        )
+        content = next((m.get("content", "") for m in messages if m["id"] == dd_standing[0]), "")
         print("    standing block:")
         for line in content.splitlines():
             print(f"      | {line}")
@@ -337,10 +330,10 @@ def main():
         f"ids={dd_standing}",
     )
     if dd_standing:
-        content = next(
-            (m.get("content", "") for m in messages if m["id"] == dd_standing[0]), ""
-        )
-        rows = [line for line in content.splitlines() if line.startswith("●") or line.startswith("○")]
+        content = next((m.get("content", "") for m in messages if m["id"] == dd_standing[0]), "")
+        rows = [
+            line for line in content.splitlines() if line.startswith("●") or line.startswith("○")
+        ]
         ok &= check("the standing block lists both alerts", len(rows) == 2, f"rows={len(rows)}")
         print("    standing block:")
         for line in content.splitlines():
