@@ -533,6 +533,19 @@ class SessionRegistry:
             )
             self._enqueue_session_upsert(conn, record_id, now)
 
+    def mark_seen(self, record_id: str) -> None:
+        """Stamp a session as alive right now.
+
+        The sweep that ends a stale letter's use reads this column, so a session that
+        is working has to keep it fresh.  It is a write of its own:  the caller's
+        transaction has already committed by the time it runs.
+        """
+        with self._write_txn() as conn:
+            conn.execute(
+                "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
+                (_utcnow(), record_id),
+            )
+
     def close(
         self,
         record_id: str,
@@ -740,10 +753,7 @@ def update_session(
             outcome = "unchanged"
         # The session is alive:  say so, or the sweep reads a long-lived session as
         # stale and ends a letter it is still holding.
-        registry._conn.execute(
-            "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
-            (_utcnow(), record_id),
-        )
+        registry.mark_seen(record_id)
         current = registry._get(record_id)
     finally:
         registry.close_db()
