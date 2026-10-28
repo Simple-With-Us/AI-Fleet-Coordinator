@@ -1882,7 +1882,7 @@ FL_PATH_RE = r"[A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*"
 FL_RE = re.compile(r"(?<![A-Za-z0-9_/-])(?:fl|fleetlink)/(?P<path>" + FL_PATH_RE + r")")
 SWU_RE = re.compile(r"(?<![A-Za-z0-9_/-])SWU/(?P<slug>[A-Za-z0-9_-]+)")
 GH_RE = re.compile(
-    r"(?<![A-Za-z0-9_/-])GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]+)"
+    r"(?<![A-Za-z0-9_/-])GH@(?P<user>[A-Za-z0-9_.-]+)/(?P<repo>[A-Za-z0-9_.-]*[A-Za-z0-9_-])"
 )
 PAGERDUTY_RE = re.compile(r"(?<![A-Za-z0-9_/-])PagerDuty#(?P<id>[A-Z0-9]+)")
 CURSOR_RE = re.compile(r"(?<![A-Za-z0-9_/-])bc-(?P<id>[0-9a-f]{8}[A-Za-z0-9_-]*)")
