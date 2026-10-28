@@ -79,7 +79,6 @@ class SeatPolicy:
     WORKFLOW_ACTIONS = (
         "wf_environments",
         "wf_environment_get",
-
         "wf_pr_get",
         "wf_pr_reviews",
         "wf_pr_comments",
