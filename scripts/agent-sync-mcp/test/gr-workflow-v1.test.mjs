@@ -54,13 +54,13 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,20);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,23);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
   assert.ok(r.isError);assert.equal(calls,0);
 });
-test('all 17 tools have dispatch and correct read/write scope',()=>{
+test('all workflow tools have dispatch and correct read/write scope',()=>{
   for(const action of WF_V1_ACTIONS) {
     assert.equal(typeof HostedTools.prototype['tool_gr_'+action],'function');
     const read=['wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks'].includes(action);
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,20);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,23);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -173,4 +173,25 @@ test('release assets are metadata reads and bounded upload with fail-closed rece
 test('asset filename trailing dot is refused locally',()=>{
  assert.ok(!validWfV1Args('wf_release_asset_upload',{repo,release_id:3,name:'proof.',content_b64:'aGk='}));
  assert.ok(validWfV1Args('wf_release_asset_upload',{repo,release_id:3,name:'x',content_b64:'aGk='}));
+});
+
+test('review/inline/branch additions keep bounded shapes and uncertain write failures',async()=>{
+ const commit_id='a'.repeat(40);
+ const requests=[
+  ['wf_review_submit',{repo,number:1,commit_id,event:'COMMENT',body:'hello'}],
+  ['wf_review_inline',{repo,number:1,commit_id,path:'src/a.js',line:1,side:'RIGHT',body:'hello'}],
+  ['wf_branch_create',{repo,branch:'wise/new',sha:commit_id}],
+ ];
+ for(const [action,args] of requests){
+  assert.ok(validWfV1Args(action,args));
+  assert.ok(!validWfV1Args(action,{...args,force:true}));
+  const t=harness(async()=>new Response(JSON.stringify({unexpected:'malformed write'})));
+  const result=await t.call('gr_'+action,args);
+  assert.ok(result.isError);assert.match(result.content[0].text,/unknown/i);
+ }
+ assert.ok(!validWfV1Args('wf_review_inline',{...requests[1][1],line:true}));
+ assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'x'.repeat(32769)}));
+ assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'   '}));
+ assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'é'.repeat(20000)}));
+ assert.ok(validWfV1Args('wf_review_submit',{...requests[0][1],body:'héllo'}));
 });
