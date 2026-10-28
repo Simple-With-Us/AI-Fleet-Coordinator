@@ -69,6 +69,8 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_check_runs_page": ({"checks": "read"}, False),
+    "wf_check_run_get": ({"checks": "read"}, False),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -2878,6 +2880,115 @@ class WorkflowVerbs:
             ],
             "complete": False,
         }
+
+    @staticmethod
+    def _check_run_metadata(value):
+        if (
+            not isinstance(value, dict)
+            or type(value.get("id")) is not int
+            or value["id"] <= 0
+            or not isinstance(value.get("head_sha"), str)
+            or not _SHA.fullmatch(value["head_sha"])
+            or not isinstance(value.get("name"), str)
+            or not isinstance(value.get("app"), dict)
+            or type(value["app"].get("id")) is not int
+            or value["app"]["id"] <= 0
+        ):
+            raise RelayGitHubError(502, "check-run metadata unverifiable")
+        name = value["name"]
+        try:
+            raw = name.encode("utf-8")
+        except UnicodeEncodeError:
+            raise RelayGitHubError(502, "check-run name unverifiable") from None
+        if (
+            not name
+            or len(raw) > 255
+            or "\x00" in name
+            or find_secret(name)
+            or re.search(
+                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", name
+            )
+        ):
+            raise Refused("check-run name withheld")
+        status = value.get("status")
+        conclusion = value.get("conclusion")
+        if (
+            status not in ("queued", "in_progress", "completed", "waiting", "requested", "pending")
+            or conclusion
+            not in (
+                None,
+                "action_required",
+                "cancelled",
+                "failure",
+                "neutral",
+                "success",
+                "skipped",
+                "stale",
+                "timed_out",
+                "startup_failure",
+            )
+            or (status == "completed") != (conclusion is not None)
+        ):
+            raise RelayGitHubError(502, "check-run state unverifiable")
+        return {
+            "id": value["id"],
+            "head_sha": value["head_sha"],
+            "name": name,
+            "status": status,
+            "conclusion": conclusion,
+            "app_id": value["app"]["id"],
+        }
+
+    def wf_check_runs_page(self, repo, args):
+        _only(args, ("repo", "head_sha", "check_name", "page", "per_page"))
+        head = _sha(args, "head_sha")
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        limit = _page(args)
+        name = args.get("check_name")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name) > 255
+            or "\x00" in name
+            or find_secret(name)
+        ):
+            raise Refused("invalid check name")
+        try:
+            size = len(name.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise Refused("invalid check name") from None
+        if size > 255:
+            raise Refused("invalid check name")
+        value = self._get(
+            f"/repos/{repo}/commits/{head}/check-runs?check_name={quote(name, safe='')}&filter=all&per_page={limit}&page={page}"
+        )
+        if (
+            not isinstance(value, dict)
+            or type(value.get("total_count")) is not int
+            or value["total_count"] < 0
+            or not isinstance(value.get("check_runs"), list)
+            or len(value["check_runs"]) > limit
+            or value["total_count"] < len(value["check_runs"])
+        ):
+            raise RelayGitHubError(502, "check-run page unverifiable")
+        rows = [self._check_run_metadata(x) for x in value["check_runs"]]
+        if any(x["head_sha"] != head or x["name"] != name for x in rows):
+            raise RelayGitHubError(502, "check-run page scope mismatch")
+        return {
+            "checks": rows,
+            "head_sha": head,
+            "check_name": name,
+            "page": page,
+            "has_more": len(rows) == limit,
+        }
+
+    def wf_check_run_get(self, repo, args):
+        _only(args, ("repo", "check_run_id", "head_sha"))
+        ident, head = _int(args, "check_run_id"), _sha(args, "head_sha")
+        row = self._check_run_metadata(self._get(f"/repos/{repo}/check-runs/{ident}"))
+        if row["id"] != ident or row["head_sha"] != head:
+            raise RelayGitHubError(502, "check-run identity mismatch")
+        return {"check": row}
 
     def wf_checks(self, repo, args):
         """Check runs for one commit (Kody, Seer, merge-gate and Actions jobs alike)."""

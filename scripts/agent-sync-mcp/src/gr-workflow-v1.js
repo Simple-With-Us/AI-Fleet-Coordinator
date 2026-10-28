@@ -25,6 +25,8 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_check_runs_page:['Read one exact-name check-run metadata page at a commit; all attempts, not a verdict. No output text; full page has_more is conservative.',obj(['repo','head_sha','check_name'],{repo:REPO,head_sha:SHA,check_name:{type:'string',minLength:1,maxLength:255},page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_check_run_get:['Read exact check-run metadata bound to requested commit SHA. App ID is provenance, not independent CI proof.',obj(['repo','check_run_id','head_sha'],{repo:REPO,check_run_id:INT,head_sha:SHA})],
   wf_review_thread_resolve: ['Resolve a review thread only after addressing its finding; never a review-gate bypass. Membership is checked against the repository PR first 100 threads.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
   wf_review_thread_unresolve: ['Unresolve a repository PR review thread after bounded membership validation.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
 
@@ -133,7 +135,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_check_runs_page','wf_check_run_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -180,6 +182,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args,{maxByt
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_check_runs_page:['checks','head_sha','check_name','page','has_more'],wf_check_run_get:['check'],
   wf_review_thread_resolve:['thread'],wf_review_thread_unresolve:['thread'],
   wf_issue_list:['issues','complete'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
   wf_issue_comment_update:['result'],
@@ -286,8 +289,13 @@ const binaryAsset=z.object({id:positive,name:z.string().min(1).max(255),state:z.
 const binaryResponses={wf_release_asset_download:chunkSchema('asset_id'),wf_artifact_download:chunkSchema('artifact_id'),wf_run_logs:chunkSchema('run_id'),wf_job_log:chunkSchema('job_id',true),wf_release_asset_upload_binary:z.object({asset:binaryAsset}).strict(),wf_release_asset_update:z.object({asset:binaryAsset}).strict(),wf_release_asset_delete:z.object({deleted:z.literal(true),asset_id:positive}).strict()};
 const lifecycleReview=z.object({id:positive,state:z.enum(['PENDING','COMMENTED','APPROVED','CHANGES_REQUESTED','DISMISSED']),commit_id:shaValue.nullable(),html_url:z.string().nullable()}).strict();
 const lifecycleResponses={wf_review_update:z.object({review:lifecycleReview}).strict(),wf_review_dismiss:z.object({review:lifecycleReview.refine(v=>v.state==='DISMISSED')}).strict(),wf_review_pending_delete:z.object({review:lifecycleReview.refine(v=>v.state==='PENDING')}).strict(),wf_review_comment_reply:z.object({comment:z.object({id:positive,in_reply_to_id:positive,html_url:z.string().nullable()}).strict()}).strict()};
+const checkRunMetadata=z.object({id:z.number().int().positive(),head_sha:shaValue,name:z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=255&&!v.includes('\0')&&!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),status:z.enum(['queued','in_progress','completed','waiting','requested','pending']),conclusion:z.enum(['action_required','cancelled','failure','neutral','success','skipped','stale','timed_out','startup_failure']).nullable(),app_id:z.number().int().positive()}).strict().refine(v=>(v.status==='completed')===(v.conclusion!==null));
+const checkRunsPage=z.object({checks:z.array(checkRunMetadata).max(50),head_sha:shaValue,check_name:z.string().min(1).max(255),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
+const checkRunGet=z.object({check:checkRunMetadata}).strict();
 export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
+ if(action==='wf_check_runs_page')return checkRunsPage.safeParse(body).success && body.checks.every(x=>x.head_sha===body.head_sha&&x.name===body.check_name) && (!args || body.head_sha===args.head_sha && body.check_name===args.check_name && body.page===(args.page??1) && body.checks.length<=(args.per_page??30) && body.has_more===(body.checks.length===(args.per_page??30)));
+ if(action==='wf_check_run_get')return checkRunGet.safeParse(body).success && (!args || body.check.id===args.check_run_id&&body.check.head_sha===args.head_sha);
  if(threadStateResponses[action])return threadStateResponses[action].safeParse(body).success;
  if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;
