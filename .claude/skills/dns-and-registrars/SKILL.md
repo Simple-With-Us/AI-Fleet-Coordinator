@@ -49,7 +49,7 @@ Each account's login, and the zones each account holds, are private inventory in
 
 | Registrar | Use for |
 |-----------|---------|
-| Namecheap | Default for most domains.  `NAMECHEAP_API_KEY` is in Infisical Fleet-OPS: read the process environment first when it already holds the value, and use `fleet-secrets get NAMECHEAP_API_KEY` only as the approved fallback (never print or commit it). |
+| Namecheap | Default for most domains.  `NAMECHEAP_API_KEY` lives in Infisical Fleet-OPS; read it only with `fleet-secrets get NAMECHEAP_API_KEY` (do not read process environment variables for it, and never print or commit the value).  If Infisical is unreachable or the key is missing, stop with a clear error — do not substitute another source. |
 | UnstoppableDomains | `jays.services` only |
 | Cloudflare registrar | SocraticTrade.com and Socratic.Trade only (the ST Cloudflare account) |
 
