@@ -30,7 +30,7 @@ class ResolveChannelTests(unittest.TestCase):
         self.assertEqual(Z.resolve_channel("agent-sync"), Z.DEFAULT_CHANNEL)
 
     def test_the_retired_name_is_matched_without_case_or_hash(self) -> None:
-        for name in ("agent-sync", "Agent-Sync", "FLEET-PROTOCOL", " agent-sync ", "#agent-sync"):
+        for name in ("agent-sync", "Agent-Sync", "AGENT-SYNC", " agent-sync ", "#agent-sync"):
             self.assertEqual(Z.resolve_channel(name), Z.DEFAULT_CHANNEL, name)
 
     def test_another_channel_is_left_alone(self) -> None:
