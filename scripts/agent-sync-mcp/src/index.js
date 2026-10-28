@@ -168,7 +168,7 @@ function providerFor(env) {
       authorization_servers: [ISSUER],
       scopes_supported: [...SCOPES],
       bearer_methods_supported: ["header"],
-      resource_name: "Agent-Sync",
+      resource_name: "ST-MCP",
     },
     tokenExchangeCallback: (options) => checkTokenExchange(env, options),
     onError: ({ code, status, internal }) => {
@@ -359,11 +359,6 @@ async function serveGbBearerMcp(request, env, token) {
   const parsed = parseGbBearer(token);
   if (!parsed) return refuse();
   const { identity } = parsed;
-  // One listing per folder instead of a cold per-name burst (kody 4365622780):
-  // the persona rows read /zulip and /linear;  /fleetlink and /tools are
-  // listed only once the bearer has matched.
-  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
-  const roles = (await resolveDelegatedCredentials(env)).roles;
   const identityGate = gate(env, identity);
   const checked = await identityGate.gbBearerCheck(await sha256Hex(parsed.token));
   if (!checked.ok) {
@@ -380,6 +375,11 @@ async function serveGbBearerMcp(request, env, token) {
     }
     return refuse();
   }
+  // A valid hash is not consent for hosted tool access.  Legacy missing rows
+  // and explicit GR-only rows both refuse before loading any persona bundle.
+  if (checked.mcp_accept !== true) return refuse();
+  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
+  const roles = (await resolveDelegatedCredentials(env)).roles;
   const credentials = roles.get(identity);
   if (!credentials) return refuse();
   const state = await identityGate.getState();

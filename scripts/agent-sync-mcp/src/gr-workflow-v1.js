@@ -22,6 +22,9 @@ const SPECS = {
   wf_issue_create: ['Create an issue as your own GitHub App.', obj(['repo','title','body'], {repo:REPO,title:CONTENT,body:CONTENT})],
   wf_issue_update: ['Update issue text or open/closed state.', obj(['repo','number'], {repo:REPO,number:INT,title:CONTENT,body:CONTENT,state:{type:'string',enum:['open','closed']}})],
   wf_issue_comment: ['Comment on an issue as your own GitHub App.', obj(['repo','number','body'], {repo:REPO,number:INT,body:CONTENT})],
+  wf_review_submit: ['Submit a commit-bound PR review (pre-read is not an atomic head lock).', obj(['repo','number','commit_id','event','body'], {repo:REPO,number:INT,commit_id:SHA,event:{type:'string',enum:['APPROVE','REQUEST_CHANGES','COMMENT']},body:{type:"string",minLength:1,maxLength:32768}})],
+  wf_review_inline: ['Create a commit-bound inline PR comment.', obj(['repo','number','commit_id','path','line','side','body'], {repo:REPO,number:INT,commit_id:SHA,path:PATH,line:{type:'integer',minimum:1,maximum:10000000},side:{type:'string',enum:['LEFT','RIGHT']},body:{type:"string",minLength:1,maxLength:32768}})],
+  wf_branch_create: ['Create a new branch without overwrite.', obj(['repo','branch','sha'],{repo:REPO,branch:REF,sha:SHA})],
   wf_pr_list: ['List pull requests.', obj(['repo'], { repo: REPO, state: STR, head: REF, base: REF, per_page: PER_PAGE })],
   wf_pr_files: ['List files of a pull request.', obj(['repo', 'number'], { repo: REPO, number: INT, per_page: PER_PAGE })],
   wf_file_get: ['Read one file.', obj(['repo', 'path', 'ref'], { repo: REPO, path: PATH, ref: REF })],
@@ -81,11 +84,17 @@ export function boundedWorkflowInput(args) {
   }
   return true;
 }
-export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args);
+// The relay measures review bodies in UTF-8 bytes and refuses blank ones;
+// mirror that here so bad input fails before network instead of as a relay 400.
+const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
+  new TextEncoder().encode(args.body).length <= 32768;
+export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
+  (action !== 'wf_review_submit' && action !== 'wf_review_inline' || reviewBodyOk(args));
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
   wf_issue_list:['issues','complete'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
+  wf_review_submit:['review'],wf_review_inline:['comment'],wf_branch_create:['ref','sha'],
   wf_pr_list: ['pulls','complete'], wf_pr_files: ['files','complete'],
   wf_file_get: ['path','sha','size','encoding','content'], wf_tree: ['sha','truncated','entries'],
   wf_branches: ['branches','complete'], wf_commits: ['commits','complete'],
@@ -106,6 +115,9 @@ export function validWfV1Response(action, body) {
   if ('issues' in body && body.issues.some(issue => !issue || typeof issue !== 'object' || !Number.isInteger(issue.number) || issue.number < 1 || !['open','closed'].includes(issue.state))) return false;
   if ('issue' in body && (!body.issue || typeof body.issue !== 'object' || Array.isArray(body.issue) || !Number.isInteger(body.issue.number) || !['open','closed'].includes(body.issue.state))) return false;
   if ('comment' in body && (!body.comment || typeof body.comment !== 'object' || !Number.isInteger(body.comment.id))) return false;
+  if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
+  if (action === 'wf_review_inline' && (!body.comment || !Number.isInteger(body.comment.id) || body.comment.id < 1 || !/^[0-9a-f]{40}$/.test(body.comment.commit_id))) return false;
+  if (action === 'wf_branch_create' && (typeof body.ref !== 'string' || !body.ref.startsWith('refs/heads/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;
   if ('complete' in body && typeof body.complete !== 'boolean') return false;
   if (action === 'wf_files_put' && (!Number.isInteger(body.files) || body.files < 1 || body.files > 20 || typeof body.branch !== 'string')) return false;
   if ('truncated' in body && typeof body.truncated !== 'boolean') return false;
