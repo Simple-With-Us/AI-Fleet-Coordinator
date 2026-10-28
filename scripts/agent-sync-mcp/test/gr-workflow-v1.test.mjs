@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,39);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,43);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,39);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,43);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -232,3 +232,10 @@ test('workflow state and run/artifact deletion preserve own-bearer writes and UN
 });
 
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
+
+test('issue relation pages closed boundary and own bearer',async()=>{
+ const a={repo,number:1,page:2,per_page:2},reply={issues:[{id:7,number:8,title:'Child',state:'open'}],page:2,has_more:false};
+ assert.ok(validWfV1Args('wf_issue_subissues',a));assert.ok(!validWfV1Args('wf_issue_subissues',{...a,page:1001}));
+ assert.ok(validWfV1Response('wf_issue_subissues',reply));assert.ok(!validWfV1Response('wf_issue_subissues',{...reply,issues:[{id:true,number:8,title:'x',state:'open'}]}));
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_issue_subissues'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_wf_issue_subissues',a)).isError);
+});

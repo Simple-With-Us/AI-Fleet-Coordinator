@@ -54,6 +54,10 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_issue_parent": ({"issues": "read"}, False),
+    "wf_issue_subissues": ({"issues": "read"}, False),
+    "wf_issue_blocked_by": ({"issues": "read"}, False),
+    "wf_issue_blocking": ({"issues": "read"}, False),
     "wf_pr_get": ({"pull_requests": "read"}, False),
     "wf_pr_reviews": ({"pull_requests": "read"}, False),
     "wf_pr_comments": ({"pull_requests": "read"}, False),
@@ -270,6 +274,55 @@ class WorkflowVerbs:
         if action != self.action or args.get("repo") != self.repo:
             raise Refused("action or repository not authorized for this handle")
         return getattr(self, action)(self.repo, args)
+
+    @staticmethod
+    def _relation_issue(data):
+        if (
+            not isinstance(data, dict)
+            or "pull_request" in data
+            or type(data.get("id")) is not int
+            or data["id"] < 1
+            or type(data.get("number")) is not int
+            or data["number"] < 1
+            or not isinstance(data.get("title"), str)
+            or len(data["title"].encode("utf-8")) > 4096
+            or data.get("state") not in ("open", "closed")
+        ):
+            raise RelayGitHubError(502, "issue relation receipt unverifiable")
+        return {k: data[k] for k in ("id", "number", "title", "state")}
+
+    def _relation_read(self, repo, args, suffix, single=False):
+        _only(args, ("repo", "number") if single else ("repo", "number", "per_page", "page"))
+        number = _int(args, "number")
+        page = 1 if single else (_int(args, "page", 1, 1000) if "page" in args else 1)
+        limit = 1 if single else _page(args)
+        query = "" if single else f"?per_page={limit}&page={page}"
+        data = self._get(f"/repos/{repo}/issues/{number}/{suffix}{query}")
+        if single:
+            return {"issue": self._relation_issue(data)}
+        if not isinstance(data, list) or len(data) > limit:
+            raise RelayGitHubError(502, "issue relations page unverifiable")
+        return {
+            "issues": [self._relation_issue(x) for x in data],
+            "page": page,
+            "has_more": len(data) == limit,
+        }
+
+    def wf_issue_parent(self, repo, args):
+        _only(args, ("repo", "number"))
+        return self._relation_read(repo, args, "parent", True)
+
+    def wf_issue_subissues(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._relation_read(repo, args, "sub_issues")
+
+    def wf_issue_blocked_by(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._relation_read(repo, args, "dependencies/blocked_by")
+
+    def wf_issue_blocking(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._relation_read(repo, args, "dependencies/blocking")
 
     def _asset_summary(self, data):
         if (

@@ -1,3 +1,4 @@
+import {z} from 'zod';
 // Default-off caller contract. hosted-tools registers these tools, but they are neither listed nor
 // callable unless the owner sets GR_WORKFLOW_TOOLS=on (config.grWorkflowEnabled).
 // Contract for the git-relay wf_ workflow verbs (git-relay/git_relay/workflow_verbs.py).
@@ -17,6 +18,11 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_issue_parent:['Read issue parent in exact repo.404 means unavailable, not a fabricated empty parent.',obj(['repo','number'],{repo:REPO,number:INT})],
+ wf_issue_subissues:['Read bounded issue relation page, no writes or cross-repo lookup. has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_issue_blocked_by:['Read bounded issue relation page, no writes or cross-repo lookup. has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_issue_blocking:['Read bounded issue relation page, no writes or cross-repo lookup. has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+
   wf_pr_get: ['Read pr get.', obj(['repo', 'number'], {repo:REPO,number:INT})],
   wf_pr_reviews: ['Read pr reviews.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
   wf_pr_comments: ['Read pr comments.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
@@ -61,7 +67,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -108,6 +114,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_issue_parent:['issue'],wf_issue_subissues:['issues','page','has_more'],wf_issue_blocked_by:['issues','page','has_more'],wf_issue_blocking:['issues','page','has_more'],
   wf_pr_get:['pull'],
   wf_pr_reviews:['reviews','complete'],
   wf_pr_comments:['comments','complete'],
@@ -138,6 +145,11 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 export function validWfV1Response(action, body) {
+ if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action)){
+  const issue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>Buffer.byteLength(v,'utf8')<=4096),state:z.enum(['open','closed'])}).strict();
+  return (action==='wf_issue_parent'?z.object({issue}).strict():z.object({issues:z.array(issue).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()).safeParse(body).success;
+ }
+
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;
