@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,70);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,75);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,70);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,75);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -275,6 +275,23 @@ test('comment and release lifecycle envelopes and write UNKNOWN',async()=>{
 });
 
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
+test('management writes use fixed routes, own bearer and UNKNOWN on transport failure',async()=>{
+  const cases=[['wf_labels_set',{number:3,labels:['bug']},{labels:[]}],['wf_reviewers_request',{number:3,reviewers:['swu-wise']},{result:{id:1,requested_reviewers:[]}}],['wf_reviewers_remove',{number:3,reviewers:['swu-wise']},{result:{id:1,requested_reviewers:[]}}],['wf_release_create',{tag:'v1',name:'n',body:'b',draft:true,prerelease:false},{result:{id:1}}],['wf_release_update',{release_id:2,name:'n',body:'b',draft:false,prerelease:true},{result:{id:2}}]];
+  for(const [action,args,reply] of cases){
+    let calls=0;const t=harness(async(url,init)=>{calls++;assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});
+    assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError,action);assert.equal(calls,1);
+    const fail=harness(async()=>{throw Error('private failure');});
+    const r=await fail.call('gr_'+action,{repo,...args});assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);
+  }
+});
+
+test('actual review regression',()=>{assert.ok(!validWfV1Args('wf_labels_set',{repo,number:1,labels:['\nattack']})); assert.ok(!validWfV1Args('wf_reviewers_request',{repo,number:1,reviewers:['\nattack']}));});
+
+test('management receipts and UTF8 input fail closed',()=>{
+ assert.equal(validWfV1Response('wf_labels_set',{labels:[{}]}),false);
+ assert.equal(validWfV1Response('wf_release_create',{result:{}}),false);
+ assert.equal(validWfV1Args('wf_release_create',{repo,tag:'v1',name:'n',body:'é'.repeat(20000),draft:true,prerelease:false}),false);
+});
 
 test('environment reads exact own bearer and nullable unknown protection summary',async()=>{
  const args={repo,name:'staging'},environment={id:7,name:'staging',created_at:'x',updated_at:'x',protection_rule_types:null,deployment_branch_policy:null};

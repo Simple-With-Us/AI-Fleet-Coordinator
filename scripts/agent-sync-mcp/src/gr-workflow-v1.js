@@ -18,6 +18,11 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+  wf_labels_set: ['labels set.',obj(['repo', 'number', 'labels'],{repo:REPO,number:INT,labels:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
+  wf_reviewers_request: ['reviewers request.',obj(['repo', 'number', 'reviewers'],{repo:REPO,number:INT,reviewers:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
+  wf_reviewers_remove: ['reviewers remove.',obj(['repo', 'number', 'reviewers'],{repo:REPO,number:INT,reviewers:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
+  wf_release_create: ['release create.',obj(['repo', 'tag', 'name', 'body', 'draft', 'prerelease'],{repo:REPO,tag:REF,name:{type:'string',minLength:1,maxLength:32768},body:{type:'string',minLength:1,maxLength:32768},draft:{type:'boolean'},prerelease:{type:'boolean'}})],
+  wf_release_update: ['release update.',obj(['repo', 'release_id', 'name', 'body', 'draft', 'prerelease'],{repo:REPO,release_id:INT,name:{type:'string',minLength:1,maxLength:32768},body:{type:'string',minLength:1,maxLength:32768},draft:{type:'boolean'},prerelease:{type:'boolean'}})],
  wf_environments:['Read bounded environment metadata, not full protection rules or reviewers; null means unknown/notreturned, not unprotected.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_environment_get:['Read exact environment metadata and protection-type summary; no environment creation, deletion, approval or policy changes.',obj(['repo','name'],{repo:REPO,name:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,99}$'}})],
  wf_file_delete:['Delete exact blob on non-default branch; workflow paths refused. Requires separate execution authority.',obj(['repo','path','branch','message','prior_sha'],{repo:REPO,path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},prior_sha:SHA})],
@@ -137,7 +142,7 @@ export function boundedWorkflowInput(args, {maxDepth=6,maxNodes=500,maxBytes=655
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
 export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
-  (action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' || reviewBodyOk(args)) && (action !== 'wf_file_delete' || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500);
+  (action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' && action !== 'wf_release_create' && action !== 'wf_release_update' || reviewBodyOk(args)) && (action !== 'wf_file_delete' || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768);
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
@@ -168,6 +173,7 @@ const RESPONSE_KEYS = {
   wf_label_create:['result'],
   wf_label_delete:['completed'],
  wf_file_delete:['deleted','path','branch','commit'],
+ wf_labels_set:['labels'],wf_reviewers_request:['result'],wf_reviewers_remove:['result'],wf_release_create:['result'],wf_release_update:['result'],
   wf_pr_get:['pull'],
   wf_pr_reviews:['reviews','complete'],
   wf_pr_comments:['comments','complete'],
@@ -255,6 +261,9 @@ export function validWfV1Response(action, body, args) {
     const assetOk = x => x && !Array.isArray(x) && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string' && x.name.length > 0 && x.name.length <= 255 && ['uploaded','open','starter'].includes(x.state) && Number.isInteger(x.size) && x.size >= 0;
     if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;
   }
+  if (['wf_labels_set'].includes(action) && (!Array.isArray(body.labels) || !body.labels.every(x => x && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string'))) return false;
+  if (['wf_reviewers_request','wf_reviewers_remove','wf_release_create','wf_release_update'].includes(action) &&
+      (!body.result || typeof body.result !== 'object' || Array.isArray(body.result) || !Number.isInteger(body.result.id) || body.result.id < 1)) return false;
   if (['wf_issue_comment_delete','wf_review_comment_delete','wf_release_delete'].includes(action) && body.deleted !== true) return false;
   if (action === 'wf_release_list' && !Array.isArray(body.releases)) return false;
   if ('result' in body && (!body.result || typeof body.result !== 'object' || Array.isArray(body.result))) return false;
