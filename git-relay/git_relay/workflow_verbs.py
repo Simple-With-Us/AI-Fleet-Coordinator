@@ -541,7 +541,6 @@ class WorkflowVerbs:
         tag = _ref(args, "tag")
         sha = _sha(args, "sha")
         name = tag
-        path = f"/repos/{repo}/git/refs/tags/{quote(name, safe='/')}"
         path = f"/repos/{repo}/git/refs"
         data = self.client._call(
             "POST", path, {"ref": "refs/tags/" + name, "sha": sha}, bearer=self.bearer
