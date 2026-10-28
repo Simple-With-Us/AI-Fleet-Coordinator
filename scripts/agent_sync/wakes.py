@@ -41,7 +41,7 @@ RISKS = (
     "low",
     "uncertain",
     "high",
-)  # a peer request screened by the responder (AGENT-SYNC Precedence rule 3); null = no request
+)  # a peer request screened by the responder (FLEET-PROTOCOL Precedence rule 3); null = no request
 SCREEN_NOTE = "peer request screened %s; see the trigger"
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake", "wake-schema.json")
 CONTRACT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wake", "wake-contract.md")

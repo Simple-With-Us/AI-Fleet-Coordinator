@@ -48,6 +48,13 @@ held_alert_seat = "MA"            # whose bot carries it:  MA posts for the whol
                                   # itself busy never has to speak for everyone.  Optional:  unset falls back to
                                   # the claude seat, then to the first enabled seat.  The post names no one with
                                   # an @-mention, and #alerts is a presence topic, so it never wakes a seat.
+peer_broadcast_reminder_minutes = 10   # the peer-broadcast reminder (owner, Oct 27 2026):  how long a fleet bot has to
+                                       # explain its `@all` to Jay before the listener DMs him about it.  A bot
+                                       # uses `@all` when Jay asks or approves, or on its own judgment in an
+                                       # extremely serious situation (an ongoing targeted attack, a fleet-wide
+                                       # outage of about twenty minutes);  a bot that uses it without approval DMs
+                                       # Jay why.  0 is off.  The reminder is the held-alert seat's DM, never a
+                                       # post in a channel, and it never carries the message content.
 presence_topics = [["work-in-progress", "roll call"], ["work-in-progress", "fleet"], ["builds", "gates"], ["alerts", "*"]]
 
 # Cloud seats (MA, GROK-WEB, WISE and ECHO):  enabled with wake = "inbox".  JET is the same, but its

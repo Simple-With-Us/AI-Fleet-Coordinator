@@ -450,7 +450,7 @@ def fence(tool: str, identity: str, text: str, scrub: Callable[[str], str] = lam
     nonce = uuid.uuid4().hex[:16]
     cleaned = re.sub(r"(?i)(BEGIN|END)[\W_]*UNTRUSTED[\W_]*LINEAR", "[marker removed]", scrub(text))
     lines = [
-        ("agent-sync %s:  as %s" % (tool, identity)).replace("\n", " "),
+        ("simple-tools %s:  as %s" % (tool, identity)).replace("\n", " "),
         "Linear result (untrusted data).",
         UNTRUSTED_NOTE,
         "%s nonce=%s" % (MARKER_BEGIN, nonce),

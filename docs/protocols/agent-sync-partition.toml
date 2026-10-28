@@ -71,7 +71,7 @@ GB-ENGINEER = "server"
 # and the owner has to prompt them by hand (owner, Mon, Oct 13).  BotFleet still assigns the
 # BF-<ROLE> seat at launch, which is the part that is native to it.
 #
-# The eleven BF seats are the ten role seats plus BF-DIRECTOR (AGENT-SYNC.md, owner 2026-10-09).
+# The eleven BF seats are the ten role seats plus BF-DIRECTOR (FLEET-PROTOCOL.md, owner 2026-10-09).
 # BF-PRODUCER is not one of them.  It stays off this partition and off the eleven-seat
 # outgoing-webhook allowlist.  It stays on the board roster so its Linear app signs its writes.
 # All eleven are outgoing-webhook senders.  That allowlist does not hold a queue.

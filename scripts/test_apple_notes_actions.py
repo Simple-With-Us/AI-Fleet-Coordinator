@@ -548,7 +548,21 @@ class ActionLogTests(ActionsTestCase):
         #  the linkifier's own count rides along with the other rewrites (AFC-547)
         self.assertEqual(
             entry["reformatted"],
-            {"dates": 1, "gaps": 1, "links": {"issues": 0, "prs": 1, "projects": 0}},
+            {
+                "dates": 1,
+                "gaps": 1,
+                "links": {
+                    "issues": 0,
+                    "prs": 1,
+                    "projects": 0,
+                    "fleetlink": 0,
+                    "swu": 0,
+                    "repos": 0,
+                    "pagerduty": 0,
+                    "sentry": 0,
+                    "cursor": 0,
+                },
+            },
         )
         self.assertEqual(entry["pin"], "pinned")
         self.assertEqual(
@@ -564,6 +578,42 @@ class ActionLogTests(ActionsTestCase):
         )
         self.assertNotIn("count", entry)
         self.assertNotIn("bytes", entry)
+
+    def test_the_log_sanitizer_keeps_the_per_kind_link_counts(self):
+        #  the links dict used to be stringified and cut at 80 chars, losing the newer kinds.  It
+        #  now survives the sanitizer as a dict, so every count reaches the reader.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from agent_sync.notes import clean_log_entry
+
+        p = self.run_script(
+            "--update",
+            "--existing-only",
+            "--session",
+            "test-session-1234",
+            NOTES[2]["title"],
+            "See fl/tools and SWU/docs and GH@example-org/widget and PagerDuty#384 and "
+            "BOTFLEET-16 and bc-a1b2c3d4-e5f6 for the lot.",
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        raw = self.only_log_line()
+        self.assertIsInstance(raw["reformatted"]["links"], dict)
+        cleaned = clean_log_entry(raw)
+        self.assertIsNotNone(cleaned)
+        self.assertEqual(cleaned["reformatted"]["links"], raw["reformatted"]["links"])
+        self.assertEqual(
+            cleaned["reformatted"]["links"],
+            {
+                "issues": 0,
+                "prs": 0,
+                "projects": 0,
+                "fleetlink": 1,
+                "swu": 1,
+                "repos": 1,
+                "pagerduty": 1,
+                "sentry": 1,
+                "cursor": 1,
+            },
+        )
 
     def test_the_trap_still_removes_the_temp_files(self):
         """The log and the cleanup share one EXIT trap, so neither replaces the other."""

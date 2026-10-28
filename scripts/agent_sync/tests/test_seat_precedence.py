@@ -1,4 +1,4 @@
-"""Seat precedence (AGENT-SYNC § Identity Rules, owner 2026-10-09) and the bot check, end to end.
+"""Seat precedence (FLEET-PROTOCOL § Identity Rules, owner 2026-10-09) and the bot check, end to end.
 
 The lead case (T1) is the one a plain bot-matches-seat check passes:  a BotFleet bot on the Codex
 engine whose Codex rules exported AGENT_SEAT=CODEX and whose credential is codex-bot's own file.

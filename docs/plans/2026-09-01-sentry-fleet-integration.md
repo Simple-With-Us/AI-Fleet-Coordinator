@@ -5,7 +5,7 @@ Plan.  Grok.  2026-09-01.  Board `6ac85c0e`.  Org `jays-services` (https://jays-
 This is analysis and a recommended operating model.  It is not a runtime change.  Competing in-flight Sentry PRs already exist; unstick those before starting a new expansion lane.
 
 **Standing split landed 2026-09-01** (adoption report, not a second plan):
-`docs/rollouts/2026-09-01-sentry-fleet-adoption.md` and AGENT-SYNC
+`docs/rollouts/2026-09-01-sentry-fleet-adoption.md` and FLEET-PROTOCOL
 Observability.  Binding: Personal-Site stays Datadog-only (no Sentry project);
 CTS and fleet-ops have no project; Android SDK waits until those tracks ship;
 do not run Datadog Session Replay and Sentry Session Replay on the
@@ -235,6 +235,6 @@ ST live-trading path is the wrong first lane (P0 product risk, dirty sibling PRs
 ## Evidence
 
 - Sentry MCP: org `jays-services`, 8 projects, 0 alert rules, monitors listed above, unresolved issues listed above, ST releases without deploys.
-- Code: ST/UM `withSentryConfig`, ST/UM/DD/BF init files, CT `app/src/deno/sentry.ts`, CL homemade `web/src/observability/sentry.ts`, `fleet-sentry-monitor/monitor.py` `PROD_HEALTH_ENDPOINTS`, AGENT-SYNC.md Observability section.
+- Code: ST/UM `withSentryConfig`, ST/UM/DD/BF init files, CT `app/src/deno/sentry.ts`, CL homemade `web/src/observability/sentry.ts`, `fleet-sentry-monitor/monitor.py` `PROD_HEALTH_ENDPOINTS`, FLEET-PROTOCOL.md Observability section.
 - CI: `sentry-ci-report.yml` present on ST+CT only.
 - Board: 45 Sentry-matching items; three DIRTY sentry PRs; stale CT dummy finding.

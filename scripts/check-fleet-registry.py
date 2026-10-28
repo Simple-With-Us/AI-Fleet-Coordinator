@@ -255,7 +255,7 @@ def alias_pattern_errors(seats: list[dict]) -> list[str]:
 
 
 def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
-    """No live seat may sit in AGENT-SYNC.md's "Engine-only CLIs" row (Platform Defaults).
+    """No live seat may sit in FLEET-PROTOCOL.md's "Engine-only CLIs" row (Platform Defaults).
 
     That row lists the CLIs that are not seats.  Owner 2026-10-10 made OpenCode a seat, and a merge that
     keeps the old row would put it back (two PRs edit that row).  A retired seat may be listed.
@@ -270,7 +270,7 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
         for name in sorted({seat.get("tag") or "", seat.get("notesName") or ""} - {""}):
             if re.search(rf"(?<![\w-]){re.escape(name)}(?![\w-])", row.group(1), re.IGNORECASE):
                 errors.append(
-                    f"AGENT-SYNC.md lists live seat {seat.get('tag')} ({name}) in its Engine-only CLIs row; "
+                    f"FLEET-PROTOCOL.md lists live seat {seat.get('tag')} ({name}) in its Engine-only CLIs row; "
                     "a seat is not an engine-only CLI"
                 )
                 break
@@ -279,7 +279,7 @@ def engine_only_errors(data: dict, agent_sync: str) -> list[str]:
 
 # A mirror of the Fleet-OPS handbook starts with a GENERATED comment line.  That line names Fleet-OPS, so a
 # substring check over the whole file would find the repo name and the OPS acronym there even after the body lost
-# them.  Every AGENT-SYNC.md check below therefore runs on the text under the header.
+# them.  Every FLEET-PROTOCOL.md check below therefore runs on the text under the header.
 _GENERATED_HEADER = re.compile(r"\A<!--\s*GENERATED[^\n]*\n", re.IGNORECASE)
 
 
@@ -291,7 +291,7 @@ def strip_generated_header(text: str) -> str:
 def agent_sync_errors(
     apps: list[dict], text: str, where: str, *, fold_repo: bool = False
 ) -> list[str]:
-    """Every registry repo and acronym must appear in the body of an AGENT-SYNC.md copy.  `fold_repo` ignores case in
+    """Every registry repo and acronym must appear in the body of an FLEET-PROTOCOL.md copy.  `fold_repo` ignores case in
     the repo name (the live copy has always been matched that way)."""
     body = strip_generated_header(text)
     haystack = body.casefold() if fold_repo else body
@@ -363,19 +363,23 @@ def main() -> int:
 
     digest = (ROOT / "scripts" / "build-fleet-daily-digest.py").read_text()
     public_repos = set(PUBLIC_REPOS)
-    # The document is being renamed:  read whichever name exists (the mirror and the live copy each hold one or, for the
-    # live copy during the move, both with the same text).  Remove the old name when the rename is complete.
-    doc_names = ("FLEET-PROTOCOL.md", "AGENT-SYNC.md")
-    agent_sync = next(
-        (ROOT / n for n in doc_names if (ROOT / n).is_file()), ROOT / doc_names[0]
-    ).read_text()
+    # The document was renamed:  the mirror and the live copy each hold exactly one name now, and the old one is
+    # gone.  The fleet points at FLEET-PROTOCOL.md by its current name only.
+    doc_names = ("FLEET-PROTOCOL.md",)
+    mirror = next((ROOT / n for n in doc_names if (ROOT / n).is_file()), None)
+    if mirror is None:
+        # A missing mirror is a clean lint failure, not a traceback:  the check runs in
+        # CI and in stale lanes, and both need the message, not a stack trace.
+        print(f"missing required mirror: {ROOT / doc_names[0]}")
+        return 1
+    agent_sync = mirror.read_text()
     live_sync = next((APPS / n for n in doc_names if (APPS / n).is_file()), APPS / doc_names[0])
     live_checks = APPS.is_dir() if _board_home_env else live_sync.is_file()
     if _board_home_env and not live_checks:
         errors.append(f"FLEET_BOARD_HOME is not a directory: {APPS}")
     elif not live_checks:
         print(
-            f"note: live copy checks skipped (no FLEET_BOARD_HOME, {APPS} has no AGENT-SYNC.md or FLEET-PROTOCOL.md)"
+            f"note: live copy checks skipped (no FLEET_BOARD_HOME, {APPS} has no FLEET-PROTOCOL.md)"
         )
 
     for app in apps:
@@ -401,7 +405,7 @@ def main() -> int:
             ):
                 errors.append(f"missing app icon {icon}")
 
-    errors.extend(agent_sync_errors(apps, agent_sync, "coordinator AGENT-SYNC.md"))
+    errors.extend(agent_sync_errors(apps, agent_sync, "coordinator FLEET-PROTOCOL.md"))
     if live_sync.is_file():
         errors.extend(
             agent_sync_errors(

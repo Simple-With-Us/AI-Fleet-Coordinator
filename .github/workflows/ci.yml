@@ -58,7 +58,7 @@ jobs:
       run: |
         timeout 60 ruby scripts/check-workflow-duplicate-keys.rb .github/workflows .github/pr-autofix-trusted.yml
         cd scripts && python3 -m unittest test_workflow_duplicate_keys -v
-    # AGENT-SYNC.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
+    # FLEET-PROTOCOL.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
     # handbook-sync/mirror.  The mirror must start with the GENERATED header, its body must hash to the header, and
     # only that branch may change it.  To change policy, open a PR to Fleet-OPS handbook/ (its README has the rules).
     # `test` is a required status check on main (strict:  the branch must be up to date), so this step is a hard gate:
@@ -218,7 +218,7 @@ jobs:
     - name: Muster guard live proof tests
       run: python3 scripts/test_muster_guard_live_proof.py
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
-    # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
+    # tree equal to a fresh render, and the FLEET-PROTOCOL roster the pack mirrors.
     - name: Fleet skill identity tests
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
@@ -258,7 +258,7 @@ jobs:
     - name: Autofix request gate tests
       run: |
         cd scripts && python3 -m unittest test_autofix_request_gate -v
-    # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
+    # Owner seat-precedence rule (FLEET-PROTOCOL Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
     - name: Seat blocks in the rendered skill trees
@@ -301,11 +301,11 @@ jobs:
       run: python3 scripts/test-public-activity.py
     - name: Verify fleet registry
       run: python3 scripts/check-fleet-registry.py
-    # The registry's AGENT-SYNC.md rows are read under the GENERATED header, which itself names Fleet-OPS.
-    - name: Registry checks read AGENT-SYNC.md under its header
+    # The registry's FLEET-PROTOCOL.md rows are read under the GENERATED header, which itself names Fleet-OPS.
+    - name: Registry checks read FLEET-PROTOCOL.md under its header
       run: python3 scripts/test_check_fleet_registry.py
-    # check-ci-runner-policy.py must recognize AGENT-SYNC's local-Mac-runner ban wording.
-    - name: CI runner policy lint tracks AGENT-SYNC ban text
+    # check-ci-runner-policy.py must recognize FLEET-PROTOCOL's local-Mac-runner ban wording.
+    - name: CI runner policy lint tracks FLEET-PROTOCOL ban text
       run: python3 scripts/test_check_ci_runner_policy.py
     # GROK-BUILD in any spelling is an alias for GROK (owner 2026-10-10).  The standalone runtimes (the
     # Linear board, recall) carry a copy of the registry's aliasPattern;  these fail when a copy drifts.
