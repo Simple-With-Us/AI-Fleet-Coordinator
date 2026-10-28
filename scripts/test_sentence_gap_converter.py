@@ -147,6 +147,7 @@ RENDERED_COPIES = (
         ".cursor/rules/sentence-gap.mdc",
     )
     + _active_by_seat_copies()
+    + _retired_by_seat_copies()
     + _platform_copies()
 )
 
