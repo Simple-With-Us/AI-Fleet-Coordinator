@@ -39,7 +39,7 @@ LAUNCHER_CLAUSE = (
     "`AGENT_SEAT` you found already set."
 )
 _OLD_NEVER_OVERWRITE = (
-    "Never overwrite an `AGENT_SEAT` that is already set: a launcher such as "
+    "Never overwrite an `AGENT_SEAT` that is already set:  a launcher such as "
     "BotFleet assigns its bots' seats."
 )
 _SEAT_PIN_SOURCE = re.compile(
@@ -1583,7 +1583,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
         "**FX**, or a Grok Bot `[GB-<NAME>]` role).\u00a0 "
         "Terminal Grok and Grok Build are one seat, **GROK** (GROK-BUILD in any spelling is an alias, not a tag).\u00a0 "
         "Use your own Zulip session "
-        "tag (e.g.\u00a0 `[AG·session8]`, `[CURSOR·session8]`, `[GB-FIXER]`, "
+        "tag (e.g. `[AG·session8]`, `[CURSOR·session8]`, `[GB-FIXER]`, "
         "`[DSH·session8]`, `[MM·session8]`), your seat's own bot and "
         "`<BOT>_ZULIP_*` names in Infisical Fleet-OPS `/zulip`, branch "
         "prefix (`<seat>/<slug>`), lane (`~/apps/lanes/<Repo>/<seat>-<slug>`), and Apple "
@@ -1595,7 +1595,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
     text = text.replace(IDENTITY_TOKEN, universal_identity)
     text = text.replace(
         YOU_ARE_TOKEN,
-        "You are **<YOUR_AGENT_TAG>**\u00a0 Keep `<seat>/` branches.",
+        "You are **<YOUR_AGENT_TAG>**.\u00a0 Keep `<seat>/` branches.",
     )
     text = text.replace(
         SEAT_LINE_TOKEN,
