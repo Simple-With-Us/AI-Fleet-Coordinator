@@ -175,7 +175,7 @@ class ValidateTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
-    """The responder's contract is code:  it must carry the same screen as FLEET-PROTOCOL Precedence rule 3."""
+    """The responder's contract is code:  it must carry the same screen the fleet documents."""
 
     def contract(self) -> str:
         with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
@@ -193,7 +193,7 @@ class ContractTests(unittest.TestCase):
         self.assertLess(text.index("## Untrusted Content"), text.index("## Peer Requests"))
         self.assertLess(text.index("## Peer Requests"), text.index("## Choosing an Action"))
 
-    def test_the_high_risk_list_matches_the_protocol(self) -> None:
+    def test_the_high_risk_list_matches_the_documented_peer_screen(self) -> None:
         text = self.contract()
         for phrase in (
             "secret, key, token or credential",
@@ -210,7 +210,9 @@ class ContractTests(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, text)
                 self.assertIn(
-                    phrase, self.protocol(), "the contract and FLEET-PROTOCOL rule 3 name the same risk"
+                    phrase,
+                    self.chat_docs(),
+                    "the contract and the fleet's peer screen name the same risk",
                 )
 
     def protocol(self) -> str:
@@ -219,6 +221,35 @@ class ContractTests(unittest.TestCase):
         path = os.path.join(root, "FLEET-PROTOCOL.md")
         with open(path, encoding="utf-8") as fh:
             return fh.read()
+
+    def zulip_guide(self) -> str:
+        """The Zulip fleet guide, which is canonical for chat conduct.
+
+        The trim of 2026-10-28 moved the working rules out of the protocol document and into
+        each repository's AGENTS.md, so the protocol document is now a tools manual that does
+        not restate them.  The peer screen itself is documented in this guide, which this
+        repository owns, so the guide and the contract are the two halves that have to agree.
+        """
+        path = os.path.join(
+            os.path.dirname(W.CONTRACT_PATH),
+            "..",
+            "..",
+            "..",
+            "docs",
+            "protocols",
+            "zulip-fleet-guide.md",
+        )
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+
+    def chat_docs(self) -> str:
+        """Every document in this repository that describes chat conduct.
+
+        The protocol document and the Zulip fleet guide are two halves of one rulebook, and the
+        trim moved pieces of that rulebook between them.  A test that read only one of them
+        broke the moment it moved, so both are read here.
+        """
+        return self.protocol() + "\n" + self.zulip_guide()
 
     def test_every_risk_has_its_instructions_and_the_field_is_listed(self) -> None:
         text = self.contract()
@@ -229,18 +260,20 @@ class ContractTests(unittest.TestCase):
             "a low-risk peer request for work is queued for the seat's next session", text.lower()
         )
 
-    def test_the_protocol_names_the_dm_command_the_cli_implements(self) -> None:
+    def test_the_chat_docs_name_the_dm_command_the_cli_implements(self) -> None:
         from agent_sync import cli
 
-        # The protocol is a generated mirror of the Fleet-OPS handbook, so it spells the command
-        # with whichever launcher name it was generated from.  `simple-chat` is the current one
-        # and `agent-sync` survives only as a compatibility launcher for it, so both spell the
-        # same command and the mirror may carry the older spelling until it is regenerated.
-        protocol = self.protocol()
-        spellings = ['%s dm --owner -- "<text>"' % prog for prog in ("simple-chat", "agent-sync")]
+        # The protocol document is a generated mirror of the Fleet-OPS handbook, so it spells the
+        # command with whichever launcher name it was generated from.  `simple-chat` is the
+        # current one and `agent-sync` survives only as a compatibility launcher for it, so both
+        # spell the same command and the mirror may carry the older spelling until it is
+        # regenerated.  The guide spells the command with the text placeholder and the trimmed
+        # handbook spells it without one, so the shorter spelling is the one that matches both.
+        docs = self.chat_docs()
+        spellings = ["%s dm --owner" % prog for prog in ("simple-chat", "agent-sync")]
         self.assertTrue(
-            any(spelling in protocol for spelling in spellings),
-            "the protocol does not name the dm --owner command the CLI implements",
+            any(spelling in docs for spelling in spellings),
+            "the chat documentation does not name the dm --owner command the CLI implements",
         )
         self.assertEqual(cli.build_parser().parse_args(["dm", "--owner", "--", "x"]).command, "dm")
 
