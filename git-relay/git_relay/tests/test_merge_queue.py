@@ -80,3 +80,16 @@ class Queue(unittest.TestCase):
         self.assertEqual(
             m.calls[0][2], {"contents": "write", "pull_requests": "write", "metadata": "read"}
         )
+
+    def test_null_or_malformed_postmutation_receipt_is_unknown(self):
+        for value in (None, [], {}, "bad"):
+            c = Client(
+                {"node_id": "PR1", "head": {"sha": SHA}, "state": "open"},
+                {"data": {"enqueuePullRequest": {"mergeQueueEntry": value}}},
+            )
+            with self.assertRaises(RelayGitHubError) as error:
+                self.handle(c, "wf_merge_queue_enqueue").run(
+                    "wf_merge_queue_enqueue", {"repo": REPO, "number": 1, "expected_sha": SHA}
+                )
+            self.assertEqual(error.exception.status, 502)
+            self.assertEqual(len(c.calls), 2)

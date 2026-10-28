@@ -474,7 +474,8 @@ class WorkflowVerbs:
 
     @staticmethod
     def _queue_receipt(value, node):
-        value = _obj(value)
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "queue outcome unverifiable")
         if (
             not isinstance(value.get("id"), str)
             or not value["id"]
