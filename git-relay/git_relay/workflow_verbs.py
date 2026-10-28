@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_issue_state_set": ({"issues": "write"}, True),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -715,6 +716,53 @@ class WorkflowVerbs:
                 raise PreReadUnavailable("issue pre-read unavailable; no write attempted") from None
             raise
         return self._issue_summary(data)
+
+    def wf_issue_state_set(self, repo, args):
+        """Set issue lifecycle state/reason with a closed, correlated numeric receipt."""
+        _only(args, ("repo", "number", "state", "reason"))
+        number = _int(args, "number")
+        state = _enum(args, "state", ("open", "closed"))
+        reason = _enum(args, "reason", ("completed", "not_planned", "duplicate", "reopened"))
+        if (state == "open") != (reason == "reopened"):
+            raise Refused("issue state/reason mismatch")
+        try:
+            issue = self._get(f"/repos/{repo}/issues/{number}")
+            if (
+                not isinstance(issue, dict)
+                or "pull_request" in issue
+                or type(issue.get("number")) is not int
+                or issue["number"] != number
+                or type(issue.get("id")) is not int
+                or issue["id"] <= 0
+                or issue.get("state") not in ("open", "closed")
+            ):
+                raise Refused("exact issue identity not matched")
+            if issue["state"] == state:
+                if issue.get("state_reason") != reason:
+                    raise Refused("provider ignores state_reason unless state changes")
+                return {"issue_number": number, "state": state, "reason": reason}
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("issue pre-read unavailable; no write attempted") from None
+            raise
+        result = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/issues/{number}",
+            {"state": state, "state_reason": reason},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or "pull_request" in result
+            or type(result.get("number")) is not int
+            or result["number"] != number
+            or type(result.get("id")) is not int
+            or result["id"] != issue["id"]
+            or result.get("state") != state
+            or result.get("state_reason") != reason
+        ):
+            raise RelayGitHubError(502, "issue state receipt unverifiable")
+        return {"issue_number": number, "state": state, "reason": reason}
 
     def wf_issue_update(self, repo, args):
         _only(args, ("repo", "number", "title", "body", "state"))
