@@ -738,6 +738,12 @@ def update_session(
             outcome = "updated"
         else:
             outcome = "unchanged"
+        # The session is alive:  say so, or the sweep reads a long-lived session as
+        # stale and ends a letter it is still holding.
+        registry._conn.execute(
+            "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
+            (_utcnow(), record_id),
+        )
         current = registry._get(record_id)
     finally:
         registry.close_db()

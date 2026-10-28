@@ -353,18 +353,25 @@ def hook_session_start() -> int:
     return 0
 
 
+# The tools whose text lands in front of Jay or another seat.
+POSTING_TOOLS = ("zulip_", "linear_", "notes_")
+
+
 def hook_pre_tool_use() -> int:
     """Block a post that does not state the letter."""
     payload = read_hook_input()
     session_id = str(payload.get("session_id") or "")
     if not session_id:
         return 0
-    letter = cached_letter(session_id) or letter_for(session_id)
-    if not letter:
-        return 0
+    row = session_row(session_id) or {}
+    if row.get("parent_session_id"):
+        return 0  # a subthread posts under its parent's letter
     tool = str(payload.get("tool_name") or "")
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
+        return 0
+    letter = cached_letter(session_id) or letter_for(session_id)
+    if not letter:
         return 0
     text = ""
     if tool in ("bash", "shell"):
@@ -379,7 +386,7 @@ def hook_pre_tool_use() -> int:
                     text = fh.read()
             except OSError:
                 text = command
-    else:
+    elif tool.startswith(POSTING_TOOLS):
         for key in ("body", "text", "markdown", "title", "description", "content"):
             value = tool_input.get(key)
             if isinstance(value, str) and value.strip():
@@ -387,6 +394,8 @@ def hook_pre_tool_use() -> int:
                 break
         if not text:
             return 0
+    else:
+        return 0  # not a posting tool:  the letter does not apply
     head = text.strip()[:400]
     if re.search(r"(^|\n)\s*%s[:.\s]" % re.escape(letter), head) or letter + ":" in head:
         return 0

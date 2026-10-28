@@ -231,6 +231,20 @@ class RegistryTest(unittest.TestCase):
         ).fetchone()
         self.assertEqual(row["n"], 1)
 
+    def test_update_session_refreshes_last_seen(self):
+        """A long-lived session is alive:  it must not look stale to the sweep."""
+        a = self.reg.resolve_or_register(ident(platform="minimax"))
+        self.reg._conn.execute(
+            "UPDATE sessions SET last_seen_at = ? WHERE record_id = ?",
+            ("2020-01-01T00:00:00.000Z", a["record_id"]),
+        )
+        self.reg._conn.commit()
+        R.update_session(self.db, platform="minimax", native_session_id="native-1", title="T")
+        seen = self.reg._get(a["record_id"])["last_seen_at"]
+        self.assertNotEqual(seen, "2020-01-01T00:00:00.000Z")
+        ended = R.sweep_stale(self.db, platform="minimax", seat="MM", stale_after_minutes=120)
+        self.assertEqual(ended, [])
+
     # ---- the letter's life:  it ends, and the history keeps the window ------------
 
     def test_close_session_ends_the_letter_and_keeps_the_history(self):
