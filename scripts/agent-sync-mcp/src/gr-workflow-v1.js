@@ -17,6 +17,14 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+  wf_issue_comment_update: ['issue comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:STR})],
+  wf_issue_comment_delete: ['issue comment delete.',obj(['repo', 'comment_id'],{repo:REPO,comment_id:INT})],
+  wf_review_comment_update: ['review comment update.',obj(['repo', 'comment_id', 'body'],{repo:REPO,comment_id:INT,body:STR})],
+  wf_review_comment_delete: ['review comment delete.',obj(['repo', 'comment_id'],{repo:REPO,comment_id:INT})],
+  wf_release_list: ['release list.',obj(['repo'],{repo:REPO})],
+  wf_release_get: ['release get.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
+  wf_release_delete: ['release delete.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
+
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
   wf_release_asset_upload: ['Upload up to 32 KiB secret-scanned UTF-8 text as a new asset; no overwrite/delete.',obj(['repo','release_id','name','content_b64'],{repo:REPO,release_id:INT,name:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?$'},content_b64:{type:'string',minLength:1,maxLength:43692}})],
@@ -44,7 +52,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_list','wf_release_get','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -91,6 +99,14 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+  wf_issue_comment_update:['result'],
+  wf_issue_comment_delete:['deleted'],
+  wf_review_comment_update:['result'],
+  wf_review_comment_delete:['deleted'],
+  wf_release_list:['releases', 'complete'],
+  wf_release_get:['result'],
+  wf_release_delete:['deleted'],
+
   wf_release_assets:['assets','complete'],wf_release_asset_get:['asset'],wf_release_asset_upload:['asset'],
   wf_review_submit:['review'],wf_review_inline:['comment'],wf_branch_create:['ref','sha'],
   wf_pr_list: ['pulls','complete'], wf_pr_files: ['files','complete'],
@@ -114,6 +130,9 @@ export function validWfV1Response(action, body) {
     const assetOk = x => x && !Array.isArray(x) && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string' && x.name.length > 0 && x.name.length <= 255 && ['uploaded','open','starter'].includes(x.state) && Number.isInteger(x.size) && x.size >= 0;
     if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;
   }
+  if (action.endsWith('_delete') && body.deleted !== true) return false;
+  if (action === 'wf_release_list' && !Array.isArray(body.releases)) return false;
+  if ('result' in body && (!body.result || typeof body.result !== 'object' || Array.isArray(body.result))) return false;
   if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
   if (action === 'wf_review_inline' && (!body.comment || !Number.isInteger(body.comment.id) || body.comment.id < 1 || !/^[0-9a-f]{40}$/.test(body.comment.commit_id))) return false;
   if (action === 'wf_branch_create' && (typeof body.ref !== 'string' || !body.ref.startsWith('refs/heads/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;

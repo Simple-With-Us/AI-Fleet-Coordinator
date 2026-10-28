@@ -54,6 +54,13 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_issue_comment_update": ({"issues": "write"}, True),
+    "wf_issue_comment_delete": ({"issues": "write"}, True),
+    "wf_review_comment_update": ({"pull_requests": "write"}, True),
+    "wf_review_comment_delete": ({"pull_requests": "write"}, True),
+    "wf_release_list": ({"contents": "read"}, False),
+    "wf_release_get": ({"contents": "read"}, False),
+    "wf_release_delete": ({"contents": "write"}, True),
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
@@ -442,6 +449,116 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def wf_issue_comment_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+                "body",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        body = self._text(args, "body")
+        data = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/issues/comments/{comment_id}",
+            {"body": body},
+            bearer=self.bearer,
+        )
+        result = _obj(data)
+        if result.get("id") != comment_id or isinstance(result.get("id"), bool):
+            raise RelayGitHubError(502, "response unverifiable")
+        return {"result": result}
+
+    def wf_issue_comment_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        data = self.client._call(
+            "DELETE", f"/repos/{repo}/issues/comments/{comment_id}", None, bearer=self.bearer
+        )
+        return {"deleted": True}
+
+    def wf_review_comment_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+                "body",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        body = self._text(args, "body")
+        data = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/pulls/comments/{comment_id}",
+            {"body": body},
+            bearer=self.bearer,
+        )
+        result = _obj(data)
+        if result.get("id") != comment_id or isinstance(result.get("id"), bool):
+            raise RelayGitHubError(502, "response unverifiable")
+        return {"result": result}
+
+    def wf_review_comment_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        data = self.client._call(
+            "DELETE", f"/repos/{repo}/pulls/comments/{comment_id}", None, bearer=self.bearer
+        )
+        return {"deleted": True}
+
+    def wf_release_list(self, repo, args):
+        _only(args, ("repo",))
+        data = self.client._call(
+            "GET", f"/repos/{repo}/releases?per_page=50", None, bearer=self.bearer
+        )
+        return {"releases": _arr(data)[:MAX_PAGE], "complete": False}
+
+    def wf_release_get(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "release_id",
+            ),
+        )
+        release_id = _int(args, "release_id")
+        data = self.client._call(
+            "GET", f"/repos/{repo}/releases/{release_id}", None, bearer=self.bearer
+        )
+        result = _obj(data)
+        if result.get("id") != release_id or isinstance(result.get("id"), bool):
+            raise RelayGitHubError(502, "response unverifiable")
+        return {"result": result}
+
+    def wf_release_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "release_id",
+            ),
+        )
+        release_id = _int(args, "release_id")
+        data = self.client._call(
+            "DELETE", f"/repos/{repo}/releases/{release_id}", None, bearer=self.bearer
+        )
+        return {"deleted": True}
 
     # ---- reads ----
     def wf_pr_list(self, repo, args):
