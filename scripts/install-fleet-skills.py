@@ -57,14 +57,20 @@ DOCS_SKILLS = os.path.join(REPO_ROOT, "docs", "fleet-skills")
 ROOT_SKILLS = os.path.join(REPO_ROOT, "skills")
 BY_SEAT = os.path.join(DOCS_SKILLS, "by-seat")
 
-# Repo-tracked always-on rule files, and the tool home each belongs at.  These are
-# not skills: a platform reads them directly out of its rules directory, so nothing
+# Repo-tracked always-on rule files, grouped by the tool home that reads them.  These
+# are not skills: a platform reads them directly out of its rules directory, so nothing
 # else carries them from the repo to the machine.  Without this step they drift
 # silently (the sentence-gap rule sat stale on disk for a month while the repo
 # copy was already correct), and a seat reads the stale copy.
+#
+# The tool home is the gate, not a detail.  tool_home_exists() reads that home to
+# decide whether the tool is installed at all, so creating an empty one here would
+# flip the next run's answer and hand a host a tool it never had.
 ALWAYS_ON_RULE_FILES = {
-    ".cursor/rules/sentence-gap.mdc": "~/.cursor/rules/sentence-gap.mdc",
-    ".cursor/rules/fleet-recall.mdc": "~/.cursor/rules/fleet-recall.mdc",
+    "~/.cursor": {
+        ".cursor/rules/sentence-gap.mdc": "~/.cursor/rules/sentence-gap.mdc",
+        ".cursor/rules/fleet-recall.mdc": "~/.cursor/rules/fleet-recall.mdc",
+    },
 }
 
 
@@ -79,26 +85,35 @@ def _install_always_on_rules() -> list[str]:
 
     Copied verbatim: a rule file is platform-specific by construction, so it is
     never seat-specialized the way a skill pack is.
+
+    A tool home that does not exist yet is left alone.  tool_home_exists() reads
+    that home to decide whether the tool is installed on this host, so creating
+    one here would make the next run install into a tool this host never had.
     """
     written: list[str] = []
-    for src_rel, dest_rel in ALWAYS_ON_RULE_FILES.items():
-        src = os.path.join(REPO_ROOT, src_rel)
-        if not os.path.isfile(src):
+    for home, rules in ALWAYS_ON_RULE_FILES.items():
+        # tool_home_exists() reads the platform home, which is the parent of the
+        # skills directory the seat packs install into.
+        if not tool_home_exists(os.path.join(os.path.expanduser(home), "skills")):
             continue
-        dest = os.path.expanduser(dest_rel)
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(src, "rb") as f:
-            payload = f.read()
-        if os.path.isfile(dest):
-            with open(dest, "rb") as f:
-                if f.read() == payload:
-                    written.append(dest_rel)
-                    continue
-        tmp = dest + ".tmp"
-        with open(tmp, "wb") as f:
-            f.write(payload)
-        os.replace(tmp, dest)
-        written.append(dest_rel)
+        for src_rel, dest_rel in rules.items():
+            src = os.path.join(REPO_ROOT, src_rel)
+            if not os.path.isfile(src):
+                continue
+            dest = os.path.expanduser(dest_rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(src, "rb") as f:
+                payload = f.read()
+            if os.path.isfile(dest):
+                with open(dest, "rb") as f:
+                    if f.read() == payload:
+                        written.append(dest_rel)
+                        continue
+            tmp = dest + ".tmp"
+            with open(tmp, "wb") as f:
+                f.write(payload)
+            os.replace(tmp, dest)
+            written.append(dest_rel)
     return written
 
 

@@ -1295,13 +1295,22 @@ class AlwaysOnRuleFileTests(unittest.TestCase):
             if name.endswith(".mdc")
         )
         self.assertTrue(repo_rules, "no repo cursor rules found to check")
-        mapped = set(self.installer.ALWAYS_ON_RULE_FILES)
+        mapped = {
+            rel
+            for rules in self.installer.ALWAYS_ON_RULE_FILES.values()
+            for rel in rules
+        }
         for rel in repo_rules:
             self.assertIn(rel, mapped, f"{rel} is not installed to a tool home")
 
     def test_the_installed_gap_rule_is_the_current_one(self) -> None:
         rel = ".cursor/rules/sentence-gap.mdc"
-        self.assertIn(rel, self.installer.ALWAYS_ON_RULE_FILES)
+        mapped = {
+            rule
+            for rules in self.installer.ALWAYS_ON_RULE_FILES.values()
+            for rule in rules
+        }
+        self.assertIn(rel, mapped)
         with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
             body = fh.read()
         self.assertIn("Current rule (owner ruling 2026-10-23)", body)
@@ -1311,24 +1320,42 @@ class AlwaysOnRuleFileTests(unittest.TestCase):
         # The entity belongs to the two exception panes and nowhere else.
         self.assertNotIn("Any other agent chat pane that renders Markdown", body)
 
+    def _install_with_home(self, home: str) -> list[str]:
+        env_home = os.environ.get("HOME")
+        os.environ["HOME"] = home
+        try:
+            return self.installer._install_always_on_rules()
+        finally:
+            if env_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = env_home
+
     def test_the_copy_lands_at_the_home_path(self) -> None:
         with tempfile.TemporaryDirectory() as home:
-            env_home = os.environ.get("HOME")
-            os.environ["HOME"] = home
-            try:
-                written = self.installer._install_always_on_rules()
-            finally:
-                if env_home is None:
-                    os.environ.pop("HOME", None)
-                else:
-                    os.environ["HOME"] = env_home
+            # The tool home has to exist already:  the install is gated on it.
+            for tool_home in self.installer.ALWAYS_ON_RULE_FILES:
+                os.makedirs(os.path.join(home, tool_home.replace("~/", "", 1)), exist_ok=True)
+            written = self._install_with_home(home)
             self.assertTrue(written, "nothing was installed")
-            for src_rel, dest_rel in self.installer.ALWAYS_ON_RULE_FILES.items():
-                path = os.path.join(home, dest_rel.replace("~/", "", 1))
-                self.assertTrue(os.path.isfile(path), path)
-                src = os.path.join(ROOT, src_rel)
-                with open(path, "rb") as a, open(src, "rb") as b:
-                    self.assertEqual(a.read(), b.read())
+            for rules in self.installer.ALWAYS_ON_RULE_FILES.values():
+                for src_rel, dest_rel in rules.items():
+                    path = os.path.join(home, dest_rel.replace("~/", "", 1))
+                    self.assertTrue(os.path.isfile(path), path)
+                    src = os.path.join(ROOT, src_rel)
+                    with open(path, "rb") as a, open(src, "rb") as b:
+                        self.assertEqual(a.read(), b.read())
+
+    def test_a_tool_home_that_is_not_there_is_not_created(self) -> None:
+        # tool_home_exists() reads the tool home to decide whether the tool is installed
+        # at all, so creating an empty one here would flip the next run's answer and hand
+        # a host a tool it never had.
+        with tempfile.TemporaryDirectory() as home:
+            written = self._install_with_home(home)
+            self.assertEqual(written, [], "a rule was installed into a home that was not there")
+            for tool_home in self.installer.ALWAYS_ON_RULE_FILES:
+                path = os.path.join(home, tool_home.replace("~/", "", 1))
+                self.assertFalse(os.path.exists(path), f"{tool_home} was created")
 
 
 class InstallerRepoOnlyTests(unittest.TestCase):

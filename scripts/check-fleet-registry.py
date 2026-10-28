@@ -366,9 +366,13 @@ def main() -> int:
     # The document was renamed:  the mirror and the live copy each hold exactly one name now, and the old one is
     # gone.  The fleet points at FLEET-PROTOCOL.md by its current name only.
     doc_names = ("FLEET-PROTOCOL.md",)
-    agent_sync = next(
-        (ROOT / n for n in doc_names if (ROOT / n).is_file()), ROOT / doc_names[0]
-    ).read_text()
+    mirror = next((ROOT / n for n in doc_names if (ROOT / n).is_file()), None)
+    if mirror is None:
+        # A missing mirror is a clean lint failure, not a traceback:  the check runs in
+        # CI and in stale lanes, and both need the message, not a stack trace.
+        print(f"missing required mirror: {ROOT / doc_names[0]}")
+        return 1
+    agent_sync = mirror.read_text()
     live_sync = next((APPS / n for n in doc_names if (APPS / n).is_file()), APPS / doc_names[0])
     live_checks = APPS.is_dir() if _board_home_env else live_sync.is_file()
     if _board_home_env and not live_checks:
