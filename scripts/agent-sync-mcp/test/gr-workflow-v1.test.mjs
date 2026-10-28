@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,90);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,94);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,90);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,94);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -196,6 +196,13 @@ test('review/inline/branch additions keep bounded shapes and uncertain write fai
  assert.ok(validWfV1Args('wf_review_submit',{...requests[0][1],body:'héllo'}));
 });
 
+test('review lifecycle closed args and receipt validation',()=>{
+ for (const [action,args] of [['wf_review_update',{number:1,review_id:2,body:'edit'}],['wf_review_dismiss',{number:1,review_id:2,message:'obsolete'}],['wf_review_pending_delete',{number:1,review_id:2}],['wf_review_comment_reply',{number:1,comment_id:2,body:'reply'}]]) {
+  assert.ok(validWfV1Args(action,{repo,...args}),action);
+  assert.ok(!validWfV1Args(action,{repo,...args,force:true}),action);
+  assert.ok(!validWfV1Response(action,{}),action);
+ }
+});
 test('branch and tag operations preserve fixed receipts and write UNKNOWN',async()=>{
  const cases=[['wf_branch_update',{branch:'feature/x',sha:'b'.repeat(40),expected_sha:'a'.repeat(40)},{ref:'refs/heads/feature/x',sha:'b'.repeat(40)}],['wf_branch_delete',{branch:'feature/x',expected_sha:'a'.repeat(40)},{deleted:true,ref:'refs/heads/feature/x'}],['wf_tag_create',{tag:'v1',sha:'a'.repeat(40)},{ref:'refs/tags/v1',sha:'a'.repeat(40)}],['wf_tag_get',{tag:'v1'},{ref:'refs/tags/v1',sha:'a'.repeat(40)}],['wf_tag_delete',{tag:'v1',expected_sha:'a'.repeat(40)},{deleted:true,ref:'refs/tags/v1'}]];
  for(const [action,args,reply] of cases){
@@ -390,4 +397,11 @@ test('thread resolve receipts are strict and fixed routes preserve own bearer',a
  for(const bad of [{...thread,isResolved:false},{...thread,id:3},{...thread,private:'x'}])assert.equal(validWfV1Response('wf_review_thread_resolve',{thread:bad}),false);
  assert.equal(validWfV1Response('wf_review_thread_unresolve',{thread}),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_thread_resolve'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({thread}));});assert.ok(!(await t.call('gr_wf_review_thread_resolve',args)).isError);
+});
+test('review lifecycle projected receipts use cached strict schemas and own bearer',async()=>{
+ const review={id:2,state:'PENDING',commit_id:'a'.repeat(40),html_url:null};
+ assert.equal(validWfV1Response('wf_review_pending_delete',{review}),true);
+ assert.equal(validWfV1Response('wf_review_dismiss',{review}),false);
+ assert.equal(validWfV1Response('wf_review_pending_delete',{review:{...review,id:true}}),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_pending_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({review}));});assert.ok(!(await t.call('gr_wf_review_pending_delete',{repo,number:1,review_id:2})).isError);
 });

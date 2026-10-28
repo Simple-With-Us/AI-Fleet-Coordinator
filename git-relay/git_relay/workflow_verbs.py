@@ -60,6 +60,10 @@ MAX_FILES_B64 = 512 * 1024
 SPECS = {
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_review_update": ({"pull_requests": "write"}, True),
+    "wf_review_dismiss": ({"pull_requests": "write"}, True),
+    "wf_review_pending_delete": ({"pull_requests": "write"}, True),
+    "wf_review_comment_reply": ({"pull_requests": "write"}, True),
     "wf_check_create": ({"checks": "write"}, True),
     "wf_check_update": ({"checks": "write"}, True),
     "wf_deployments": ({"deployments": "read"}, False),
@@ -905,6 +909,95 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "inline write outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "commit_id", "html_url")}}
+
+    @staticmethod
+    def _review_summary(value, review_id=None):
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "review receipt unverifiable")
+        ident = value.get("id")
+        if (
+            isinstance(ident, bool)
+            or not isinstance(ident, int)
+            or ident <= 0
+            or review_id is not None
+            and ident != review_id
+            or value.get("state")
+            not in ("PENDING", "COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED")
+        ):
+            raise RelayGitHubError(502, "review receipt unverifiable")
+        return {k: value.get(k) for k in ("id", "state", "commit_id", "html_url")}
+
+    def wf_review_update(self, repo, args):
+        _only(args, ("repo", "number", "review_id", "body"))
+        number, review_id = _int(args, "number"), _int(args, "review_id")
+        body = self._text(args, "body")
+        result = self.client._call(
+            "PUT",
+            f"/repos/{repo}/pulls/{number}/reviews/{review_id}",
+            {"body": body},
+            bearer=self.bearer,
+        )
+        if not isinstance(result, dict) or result.get("body") != body:
+            raise RelayGitHubError(502, "review update outcome unverifiable")
+        return {"review": self._review_summary(result, review_id)}
+
+    def wf_review_dismiss(self, repo, args):
+        _only(args, ("repo", "number", "review_id", "message"))
+        number, review_id = _int(args, "number"), _int(args, "review_id")
+        message = self._text(args, "message")
+        result = self.client._call(
+            "PUT",
+            f"/repos/{repo}/pulls/{number}/reviews/{review_id}/dismissals",
+            {"message": message},
+            bearer=self.bearer,
+        )
+        summary = self._review_summary(result, review_id)
+        if summary["state"] != "DISMISSED":
+            raise RelayGitHubError(502, "review dismissal outcome unverifiable")
+        return {"review": summary}
+
+    def wf_review_pending_delete(self, repo, args):
+        _only(args, ("repo", "number", "review_id"))
+        number, review_id = _int(args, "number"), _int(args, "review_id")
+        path = f"/repos/{repo}/pulls/{number}/reviews/{review_id}"
+        try:
+            prior = self._review_summary(self._get(path), review_id)
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "review pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if prior["state"] != "PENDING":
+            raise Refused("only pending reviews may be deleted")
+        result = self.client._call("DELETE", path, None, bearer=self.bearer)
+        summary = self._review_summary(result, review_id)
+        if summary["state"] != "PENDING":
+            raise RelayGitHubError(502, "pending review deletion receipt unverifiable")
+        return {"review": summary}
+
+    def wf_review_comment_reply(self, repo, args):
+        _only(args, ("repo", "number", "comment_id", "body"))
+        number, comment_id = _int(args, "number"), _int(args, "comment_id")
+        body = self._text(args, "body")
+        result = _obj(
+            self.client._call(
+                "POST",
+                f"/repos/{repo}/pulls/{number}/comments/{comment_id}/replies",
+                {"body": body},
+                bearer=self.bearer,
+            )
+        )
+        ident = result.get("id")
+        if (
+            isinstance(ident, bool)
+            or not isinstance(ident, int)
+            or ident <= 0
+            or result.get("in_reply_to_id") != comment_id
+            or result.get("body") != body
+        ):
+            raise RelayGitHubError(502, "review reply outcome unverifiable")
+        return {"comment": {k: result.get(k) for k in ("id", "in_reply_to_id", "html_url")}}
 
     def _check_payload(self, args):
         name = self._text(args, "name", 100)
