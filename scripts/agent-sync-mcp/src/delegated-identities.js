@@ -143,6 +143,15 @@ export async function resolveDelegatedCredentials(env) {
   return { source: "infisical", valid: true, roles };
 }
 
+// Admin diagnostics only: credential lookup failures are unknown, never absence.
+export async function adminDelegatedReadiness(env, resolve = resolveDelegatedCredentials) {
+  try {
+    return { roles: (await resolve(env)).roles, credentialsUnavailable: false };
+  } catch {
+    return { roles: new Map(), credentialsUnavailable: true };
+  }
+}
+
 export function delegatedStatus(credentials, identity) {
   if (!GB_SET.has(identity)) return null;
   const configured = Boolean(credentials?.valid && credentials.roles.has(identity));
