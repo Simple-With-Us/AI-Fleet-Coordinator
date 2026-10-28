@@ -400,3 +400,13 @@ test("the mismatch count line labels its lifetime retention", async () => {
   assert.ok(html.includes("3 wrong-secret attempts"), "count renders");
   assert.ok(html.includes("(approximate; updates at most once a minute)"), "the write-throttled, lower-bound nature is labelled");
 });
+
+test("past successful traffic cannot color a missing-service seat ready", async () => {
+  const html = await adminPage({ ...adminFacts,
+    seats: [{seat: "JET", paused: false, keyInstalled: false, role: {ok: true}, grants: [{client: "Client", scope: [], createdAt: 0}]}],
+    statusCalls: [{ts: Date.parse("2026-10-18T12:00:00Z"), seat: "JET", tool: "zulip_read", error_code: "ok"}],
+    generatedAt: Date.parse("2026-10-18T12:01:00Z"),
+  }).text();
+  assert.match(html, /status-state state-attention">Needs setup: Zulip key/);
+  assert.doesNotMatch(html, /status-state state-ready">Needs setup/);
+});
