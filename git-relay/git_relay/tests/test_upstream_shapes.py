@@ -41,12 +41,25 @@ class Shapes(unittest.TestCase):
     def test_malformed_review_preread_is_definitely_unsent(self):
         from git_relay.server import PreReadUnavailable
 
-        for payload in ({}, {"head": None}, {"head": []}, {"head": {}}, {"head": {"sha": None}}, {"head": {"sha": "bad"}}):
+        for payload in (
+            {},
+            {"head": None},
+            {"head": []},
+            {"head": {}},
+            {"head": {"sha": None}},
+            {"head": {"sha": "bad"}},
+        ):
             c = Client(payload)
             h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_review_submit", REPO)
             with self.assertRaises(PreReadUnavailable):
                 h.run(
                     "wf_review_submit",
-                    {"repo": REPO, "number": 1, "commit_id": SHA, "event": "COMMENT", "body": "Review"},
+                    {
+                        "repo": REPO,
+                        "number": 1,
+                        "commit_id": SHA,
+                        "event": "COMMENT",
+                        "body": "Review",
+                    },
                 )
             self.assertEqual(len(c.calls), 1)
