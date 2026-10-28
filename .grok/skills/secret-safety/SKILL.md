@@ -1,10 +1,11 @@
-> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
-
 ---
 name: secret-safety
 description: >-
   Hardcoded, mandatory safeguards for handling secrets, API keys, tokens, and credentials during any agent session.  Load and follow this BEFORE running any command whose arguments or environment touch a credential, before printing or displaying any config file, JSON dump, env listing, header, URL, or command string that could contain one, before reading from a known secret source (a secrets-handoff file, Infisical or any other secrets manager, a database, a vault), and before debugging an API/auth failure.  Trigger this even when the request doesn't say "secret" or "credential" — command args, headers, URLs, and verbose/debug tool output are the most common accidental leak vectors, not just files literally named .env or secrets.json.
 ---
+
+> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
+
 
 ## Why this exists
 

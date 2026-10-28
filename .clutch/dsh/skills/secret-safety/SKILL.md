@@ -1,10 +1,11 @@
-> **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
-
 ---
 name: secret-safety
 description: >-
   Hardcoded, mandatory safeguards for handling secrets, API keys, tokens, and credentials during any agent session.  Load and follow this BEFORE running any command whose arguments or environment touch a credential, before printing or displaying any config file, JSON dump, env listing, header, URL, or command string that could contain one, before reading from a known secret source (a secrets-handoff file, Infisical or any other secrets manager, a database, a vault), and before debugging an API/auth failure.  Trigger this even when the request doesn't say "secret" or "credential" — command args, headers, URLs, and verbose/debug tool output are the most common accidental leak vectors, not just files literally named .env or secrets.json.
 ---
+
+> **Runtime (Clutch).**  Clutch runs the DSH engine (`clutch`, pm2 `clutch-web`, the Clutch Mac app).  The engine finds skills in `~/.clutch/dsh/skills` before the shared `~/.agents/skills` pack it also reads, so this pack shadows that one.  It loads `~/.clutch/dsh/AGENTS.md` and then the project `AGENTS.md` chain, and reads neither `~/AGENTS.md` nor `~/.claude/CLAUDE.md`.  Start `clutch` inside a lane (`~/apps/lanes/Clutch/clutch-<slug>`).  A seat a launcher assigned (BotFleet, a bridge) beats the CLUTCH default.
+
 
 ## Why this exists
 
