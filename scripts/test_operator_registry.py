@@ -236,16 +236,26 @@ class RegistryTest(unittest.TestCase):
 
     def test_update_session_on_an_unregistered_session_raises(self):
         with self.assertRaises(ValueError):
-            R.update_session(self.db, platform="minimax", native_session_id="nope", title="T", **self._loc())
+            R.update_session(
+                self.db, platform="minimax", native_session_id="nope", title="T", **self._loc()
+            )
 
     def test_update_session_needs_a_field(self):
         self.reg.resolve_or_register(ident(platform="minimax"))
         with self.assertRaises(ValueError):
-            R.update_session(self.db, platform="minimax", native_session_id="native-1", **self._loc())
+            R.update_session(
+                self.db, platform="minimax", native_session_id="native-1", **self._loc()
+            )
 
     def test_update_session_does_not_mint_a_letter(self):
         self.reg.resolve_or_register(ident(platform="minimax"))
-        R.update_session(self.db, platform="minimax", native_session_id="native-1", title="T", **self._loc(platform="minimax"))
+        R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            title="T",
+            **self._loc(platform="minimax"),
+        )
         row = self.reg._conn.execute(
             "SELECT COUNT(*) AS n FROM sessions WHERE platform = 'minimax'"
         ).fetchone()
@@ -259,7 +269,13 @@ class RegistryTest(unittest.TestCase):
             ("2020-01-01T00:00:00.000Z", a["record_id"]),
         )
         self.reg._conn.commit()
-        R.update_session(self.db, platform="minimax", native_session_id="native-1", title="T", **self._loc(platform="minimax"))
+        R.update_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            title="T",
+            **self._loc(platform="minimax"),
+        )
         seen = self.reg._get(a["record_id"])["last_seen_at"]
         self.assertNotEqual(seen, "2020-01-01T00:00:00.000Z")
         ended = R.sweep_stale(self.db, platform="minimax", seat="MM", stale_after_minutes=120)
@@ -290,20 +306,40 @@ class RegistryTest(unittest.TestCase):
 
     def test_close_session_twice_changes_nothing(self):
         self.reg.resolve_or_register(ident(platform="minimax"))
-        first = R.close_session(self.db, platform="minimax", native_session_id="native-1", **self._loc(platform="minimax"))
-        again = R.close_session(self.db, platform="minimax", native_session_id="native-1", **self._loc(platform="minimax"))
+        first = R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            **self._loc(platform="minimax"),
+        )
+        again = R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            **self._loc(platform="minimax"),
+        )
         self.assertTrue(first["closed"])
         self.assertFalse(again["closed"])
         self.assertEqual(again["outcome"], "already_closed")
 
     def test_close_session_on_an_unregistered_session_raises(self):
         with self.assertRaises(ValueError):
-            R.close_session(self.db, platform="minimax", native_session_id="nope", **self._loc(platform="minimax"))
+            R.close_session(
+                self.db,
+                platform="minimax",
+                native_session_id="nope",
+                **self._loc(platform="minimax"),
+            )
 
     def test_history_lists_live_and_retired_letters_with_their_windows(self):
         self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
         self.reg.resolve_or_register(ident(platform="minimax", native="native-2"))
-        R.close_session(self.db, platform="minimax", native_session_id="native-1", **self._loc(platform="minimax"))
+        R.close_session(
+            self.db,
+            platform="minimax",
+            native_session_id="native-1",
+            **self._loc(platform="minimax"),
+        )
         history = R.letter_history(self.db, "minimax")
         by_letter = {row["letter"]: row for row in history}
         self.assertFalse(by_letter["A"]["live"])
