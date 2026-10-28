@@ -18,7 +18,7 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
- wf_repo_tags:['Read bounded tag name/commit SHA metadata, not annotated tag contents or a complete ref history. Pagination required.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_repo_tags:['Read bounded tag name/commit SHA metadata, not annotated tag contents or a complete ref history.  Pagination required.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_repo_languages:['Read bounded repository language-byte counts; not file counts, contributors, or a live code audit.',obj(['repo'],{repo:REPO})],
 
  wf_issue_parent:['Read issue parent in exact repo; missing parent, visibility and other upstream refusals are indistinguishable; never a fabricated empty parent.',obj(['repo','number'],{repo:REPO,number:INT})],

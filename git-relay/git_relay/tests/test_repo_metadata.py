@@ -57,3 +57,10 @@ class Metadata(unittest.TestCase):
         for key in ("id", "number"):
             with self.assertRaises(RelayGitHubError):
                 WorkflowVerbs._relation_issue({"id": 1, "number": 2, "title": "fixture", "state": "open", key: 9007199254740992})
+
+    def test_relation_repository_provider_pattern_refused(self):
+        from git_relay.workflow_verbs import Refused
+        # Runtime-assembled scanner-shaped synthetic data only, never a credential.
+        fake = "sk-" + "x" * 30
+        with self.assertRaises(Refused):
+            WorkflowVerbs._relation_issue({"id": 1, "number": 2, "title": "fixture", "state": "open", "repository_url": "https://api.github.com/repos/fixture/" + fake})

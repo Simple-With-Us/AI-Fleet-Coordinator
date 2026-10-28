@@ -306,6 +306,8 @@ class WorkflowVerbs:
                 and not parsed.fragment
                 and _REPO.fullmatch(candidate)
             ):
+                if find_secret(candidate):
+                    raise Refused("relation repository contains credential pattern")
                 bound = candidate
         return {**{k: data[k] for k in ("id", "number", "title", "state")}, "repo": bound}
 
