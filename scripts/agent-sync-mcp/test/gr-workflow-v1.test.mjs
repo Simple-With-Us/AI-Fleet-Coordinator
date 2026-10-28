@@ -6,7 +6,7 @@ const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',i
 const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
 const onlyOf=name=>{
   const body=py.split(/\n    def /).find(b=>b.startsWith(name+'('));
-  const m=body&&body.match(/_only\(args, \(([^)]*)\)\)/);
+  const m=body&&body.match(/_only\(\s*args,\s*\(([^)]*)\),?\s*\)/);
   return m?[...m[1].matchAll(/"([a-z0-9_]+)"/g)].map(x=>x[1]).sort():null;
 };
 test('names equal the relay SPECS, plus wf_job_log when it lands',()=>{
