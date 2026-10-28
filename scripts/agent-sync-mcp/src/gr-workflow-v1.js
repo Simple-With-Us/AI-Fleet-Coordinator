@@ -149,7 +149,8 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 const shaValue=z.string().regex(/^[0-9a-f]{40}$/),positive=z.number().int().positive();
-const jsonValue=z.lazy(()=>z.union([z.string(),z.number().finite(),z.boolean(),z.null(),z.array(jsonValue),z.record(z.string(),jsonValue)]));
+let jsonValueUnion=null;
+const jsonValue=z.lazy(()=>jsonValueUnion??=z.union([z.string(),z.number().finite(),z.boolean(),z.null(),z.array(jsonValue),z.record(z.string(),jsonValue)]));
 const objectWith=shape=>z.object(shape).catchall(jsonValue);
 const commitObject=objectWith({sha:shaValue,commit:objectWith({message:z.string()}),parents:z.array(objectWith({sha:shaValue}))});
 const branchObject=objectWith({name:z.string().min(1),commit:objectWith({sha:shaValue})});
@@ -168,6 +169,7 @@ const readResponseSchemas={
  wf_run_artifacts:z.object({artifacts:objectWith({total_count:z.number().int().nonnegative(),artifacts:z.array(artifactObject).max(50)})}).strict(),
 };
 export function validWfV1Response(action, body) {
+ if(!boundedWorkflowInput(body))return false;
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
  const keysBeforeParse=RESPONSE_KEYS[action];
  if(!keysBeforeParse)return false;
