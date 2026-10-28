@@ -63,6 +63,11 @@ SPECS = {
     "wf_issue_create": ({"issues": "write"}, True),
     "wf_issue_update": ({"issues": "write"}, True),
     "wf_issue_comment": ({"issues": "write"}, True),
+    "wf_pr_draft": ({"pull_requests": "write"}, True),
+    "wf_pr_ready": ({"pull_requests": "write"}, True),
+    "wf_automerge_enable": ({"pull_requests": "write"}, True),
+    "wf_automerge_disable": ({"pull_requests": "write"}, True),
+    "wf_review_threads": ({"pull_requests": "read"}, False),
     "wf_assignees_add": ({"issues": "write"}, True),
     "wf_assignees_remove": ({"issues": "write"}, True),
     "wf_issue_lock": ({"issues": "write"}, True),
@@ -174,32 +179,34 @@ def _page(args):
 
 def _obj(data):
     if not isinstance(data, dict):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return data
 
 
 def _sub(data, key):
-    """A nested upstream object; any other shape is a refusal, not an exception."""
+    """A nested upstream object; any other shape is an upstream error, never a definitely-unsent refusal."""
+    if not isinstance(data, dict):
+        raise RelayGitHubError(502, "unexpected upstream shape")
     value = data.get(key)
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return value
 
 
 def _arr(data):
     if not isinstance(data, list):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return data
 
 
 def _dicts(value):
-    """Entries of an upstream list; a non-list or a non-object entry is a refusal."""
+    """Entries of an upstream list; a non-list or a non-object entry is an upstream error."""
     if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return value
 
 
@@ -289,7 +296,8 @@ class WorkflowVerbs:
     # Fixed issue endpoints only.  No assignee, label, milestone or admin expansion.
     @staticmethod
     def _issue_summary(data):
-        data = _obj(data)
+        if not isinstance(data, dict):
+            raise Refused("unexpected issue response")
         if "pull_request" in data:
             raise Refused("pull requests are not issue lifecycle targets")
         if (
@@ -318,7 +326,7 @@ class WorkflowVerbs:
         data = _arr(self._get(f"/repos/{repo}/issues?state={state}&per_page={_page(args)}"))
         return {
             "issues": [
-                self._issue_summary(x) for x in data[:MAX_PROJECT] if "pull_request" not in _obj(x)
+                self._issue_summary(x) for x in data[:MAX_PROJECT] if not isinstance(x, dict) or "pull_request" not in x
             ],
             "complete": False,
         }
@@ -511,13 +519,18 @@ class WorkflowVerbs:
         # Pre-read is not an atomic head lock; GitHub binds the review to commit_id.
         try:
             data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
+            observed_head = _sub(data, "head").get("sha")
+            if not isinstance(observed_head, str) or not re.fullmatch(
+                r"[0-9a-f]{40}", observed_head
+            ):
+                raise RelayGitHubError(502, "unexpected upstream shape")
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable(
                     "review pre-read unavailable; no write attempted"
                 ) from None
             raise
-        if _sub(data, "head").get("sha") != commit:
+        if observed_head != commit:
             raise Refused("pull request head changed")
 
     def wf_review_submit(self, repo, args):
@@ -591,6 +604,94 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def _pr_node(self, repo, number):
+        try:
+            data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("PR pre-read unavailable; no write attempted") from None
+            raise
+        node = data.get("node_id")
+        if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", node):
+            raise Refused("PR node unavailable")
+        return node
+
+    def _fixed_graph(self, query, variables, field, write=True):
+        data = self.client._call(
+            "POST", "/graphql", {"query": query, "variables": variables}, bearer=self.bearer
+        )
+        # GraphQL HTTP200 errors may follow partial mutation application; never call them definitely unsent.
+        if (
+            not isinstance(data, dict)
+            or data.get("errors")
+            or not isinstance(data.get("data"), dict)
+        ):
+            raise RelayGitHubError(502, "GraphQL outcome unverifiable")
+        result = data["data"].get(field)
+        if not isinstance(result, dict):
+            raise RelayGitHubError(502, "GraphQL result unverifiable")
+        return result
+
+    def wf_pr_draft(self, repo, args):
+        _only(args, ("repo", "number"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!) { convertPullRequestToDraft(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
+        result = self._fixed_graph(query, {"id": node}, "convertPullRequestToDraft")
+        pull = _sub(result, "pullRequest")
+        if pull.get("id") != node or pull.get("isDraft") is not True:
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_pr_ready(self, repo, args):
+        _only(args, ("repo", "number"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!) { markPullRequestReadyForReview(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
+        result = self._fixed_graph(query, {"id": node}, "markPullRequestReadyForReview")
+        pull = _sub(result, "pullRequest")
+        if pull.get("id") != node or pull.get("isDraft") is not False:
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_automerge_disable(self, repo, args):
+        _only(args, ("repo", "number"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!) { disablePullRequestAutoMerge(input:{pullRequestId:$id}) { pullRequest { id autoMergeRequest { enabledAt } } } }"
+        result = self._fixed_graph(query, {"id": node}, "disablePullRequestAutoMerge")
+        pull = _sub(result, "pullRequest")
+        if (
+            pull.get("id") != node
+            or "autoMergeRequest" not in pull
+            or pull["autoMergeRequest"] is not None
+        ):
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_automerge_enable(self, repo, args):
+        _only(args, ("repo", "number", "method"))
+        method = _enum(args, "method", ("SQUASH", "MERGE", "REBASE"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!, $method: PullRequestMergeMethod!) { enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method}) { pullRequest { id autoMergeRequest { enabledAt } } } }"
+        result = self._fixed_graph(
+            query, {"id": node, "method": method}, "enablePullRequestAutoMerge"
+        )
+        pull = _sub(result, "pullRequest")
+        if pull.get("id") != node or not isinstance(pull.get("autoMergeRequest"), dict):
+            raise RelayGitHubError(502, "auto-merge outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_review_threads(self, repo, args):
+        _only(args, ("repo", "number"))
+        number = _int(args, "number")
+        owner, name = repo.split("/")
+        query = "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:50) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first:20) { nodes { id databaseId body author { login } } pageInfo { hasNextPage endCursor } } } } } } }"
+        result = self._fixed_graph(
+            query, {"owner": owner, "name": name, "number": number}, "repository", write=False
+        )
+        threads = _sub(_sub(result, "pullRequest"), "reviewThreads")
+        if not isinstance(threads.get("nodes"), list):
+            raise RelayGitHubError(502, "thread result unverifiable")
+        return {"threads": threads}
 
     def wf_assignees_add(self, repo, args):
         _only(
@@ -1027,7 +1128,7 @@ class WorkflowVerbs:
         data = _obj(self._get(f"/repos/{repo}/git/trees/{quote(ref, safe='')}?recursive=1"))
         tree = data.get("tree")
         if tree is not None and not isinstance(tree, list):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         return {
             "sha": (data or {}).get("sha"),
             "truncated": bool((data or {}).get("truncated")) or len(tree or []) > 2000,
@@ -1218,11 +1319,16 @@ class WorkflowVerbs:
         data = self.client._call(
             "PUT", f"/repos/{repo}/contents/{quote(path, safe='/')}", payload, bearer=self.bearer
         )
-        return {
-            "path": path,
-            "branch": branch,
-            "commit": ((data or {}).get("commit") or {}).get("sha"),
-        }
+        result = _obj(data)
+        commit = _sub(result, "commit").get("sha")
+        content_receipt = _sub(result, "content")
+        if (
+            not isinstance(commit, str)
+            or not _SHA.fullmatch(commit)
+            or content_receipt.get("path") != path
+        ):
+            raise RelayGitHubError(502, "file write receipt unverifiable")
+        return {"path": path, "branch": branch, "commit": commit}
 
     def _entry_mode(self, repo, tree_sha, path, cache):
         """Mode of an existing blob at path, so an update never resets an executable bit."""
@@ -1289,7 +1395,7 @@ class WorkflowVerbs:
             raise Refused("branch head moved")
         base_tree = _sub(_obj(self._get(f"/repos/{repo}/git/commits/{head}")), "tree").get("sha")
         if not isinstance(base_tree, str) or not _SHA.fullmatch(base_tree):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         cache, entries = {}, []
         for path, content in plan:
             if content is None:
@@ -1305,7 +1411,7 @@ class WorkflowVerbs:
             )
             blob_sha = blob.get("sha")
             if not isinstance(blob_sha, str) or not _SHA.fullmatch(blob_sha):
-                raise Refused("unexpected upstream shape")
+                raise RelayGitHubError(502, "unexpected upstream shape")
             existing = self._entry_mode(repo, base_tree, path, cache)
             if existing not in (None, "100644", "100755"):
                 # A symlink or submodule is never silently replaced by file content.
@@ -1322,7 +1428,7 @@ class WorkflowVerbs:
         )
         tree_sha = tree.get("sha")
         if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         commit = _obj(
             self.client._call(
                 "POST",
@@ -1333,7 +1439,7 @@ class WorkflowVerbs:
         )
         new_sha = commit.get("sha")
         if not isinstance(new_sha, str) or not _SHA.fullmatch(new_sha):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         # Fast-forward only: a branch that moved since the read is refused upstream.
         self.client._call(
             "PATCH",
