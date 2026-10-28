@@ -141,6 +141,7 @@ class SeatPolicy:
         "wf_branch_get",
         "wf_repo_get",
         "wf_labels",
+        "wf_workflows_page",
         "wf_workflows",
         "wf_run_get",
         "wf_run_artifacts",

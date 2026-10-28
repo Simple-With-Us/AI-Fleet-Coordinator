@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_workflows_page": ({"actions": "read"}, False),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -2666,6 +2667,61 @@ class WorkflowVerbs:
         per_page = _page(args)
         data = self._get(f"/repos/{repo}/labels?per_page={per_page}")
         return {"labels": _arr(data)[:MAX_PAGE], "complete": False}
+
+    def wf_workflows_page(self, repo, args):
+        """Numeric workflow identity/path observations; no trust in display names."""
+        _only(args, ("repo", "page", "per_page"))
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        limit = _page(args)
+        value = self._get(f"/repos/{repo}/actions/workflows?per_page={limit}&page={page}")
+        if (
+            not isinstance(value, dict)
+            or type(value.get("total_count")) is not int
+            or not 0 <= value["total_count"] <= 1000000000
+            or not isinstance(value.get("workflows"), list)
+            or len(value["workflows"]) > limit
+            or value["total_count"] < len(value["workflows"])
+        ):
+            raise RelayGitHubError(502, "workflow page unverifiable")
+        workflows = []
+        seen = set()
+        for row in value["workflows"]:
+            if (
+                not isinstance(row, dict)
+                or type(row.get("id")) is not int
+                or row["id"] < 1
+                or row["id"] in seen
+                or row.get("state")
+                not in (
+                    "active",
+                    "deleted",
+                    "disabled_fork",
+                    "disabled_inactivity",
+                    "disabled_manually",
+                )
+            ):
+                raise RelayGitHubError(502, "workflow identity/state unverifiable")
+            path = row.get("path")
+            if (
+                not isinstance(path, str)
+                or not 1 <= len(path) <= 1024
+                or not re.fullmatch(r"[A-Za-z0-9._/+@~-]+", path)
+                or not path.startswith(".github/workflows/")
+                or not path.endswith((".yml", ".yaml"))
+                or any(v in ("", ".", "..") for v in path.split("/"))
+            ):
+                raise RelayGitHubError(502, "workflow path unverifiable")
+            if find_secret(path):
+                raise Refused("workflow path withheld")
+            seen.add(row["id"])
+            workflows.append({"id": row["id"], "path": path, "state": row["state"]})
+        return {
+            "workflows": workflows,
+            "total": value["total_count"],
+            "page": page,
+            "has_more": len(workflows) == limit,
+            "snapshot": False,
+        }
 
     def wf_workflows(self, repo, args):
         _only(
