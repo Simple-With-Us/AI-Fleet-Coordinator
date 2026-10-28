@@ -365,6 +365,25 @@ class NativeEcho(unittest.TestCase):
         self.assertIn("outcome unknown",out.getvalue())
         self.assertNotIn("private-detail",out.getvalue())
 
+    def test_canonical_simple_board_cli_runs_native_whoami_and_write(self):
+        import runpy
+        import subprocess
+        import sys
+        def run(argv, **kwargs):
+            call = json.loads(kwargs["input"].splitlines()[-1])
+            name = call["params"]["name"]
+            result = {"seat":"ECHO", "app":"FleetOPS"} if name == "linear_whoami" else {"ok":True}
+            response = {"jsonrpc":"2.0", "id":1, "result":{"structuredContent":result,"content":[]}}
+            raw = json.dumps({"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18"}}).encode()+b"\n"+json.dumps(response).encode()+b"\n"
+            return type("Reply", (), {"returncode":0,"stdout":raw})()
+        entry = str(HERE.parent / "simple-board")
+        for args in (["whoami"], ["comment","AFC-1","--text","Offline fixture", "--by","ECHO"]):
+            output=io.StringIO()
+            with unittest.mock.patch.dict(os.environ,{"SIMPLE_BOARD_NATIVE_ECHO":"1","SIMPLE_BOARD_REMOTE_WRITES":"1"},clear=True), unittest.mock.patch.object(os,"geteuid",return_value=0), unittest.mock.patch.object(subprocess,"run",run), unittest.mock.patch.object(sys,"argv",[entry,*args]), unittest.mock.patch.object(sys,"version_info",(3,11,0)), contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as exit:
+                runpy.run_path(entry,run_name="__main__")
+            self.assertEqual(exit.exception.code,0)
+            self.assertTrue(output.getvalue())
+
     def test_native_nonroot_refuses_before_spawn(self):
         with unittest.mock.patch.object(board.os,"geteuid",return_value=501), unittest.mock.patch.object(board.subprocess,"run") as run, contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             board._native_echo_post(b'{}',False)
