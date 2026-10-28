@@ -25,6 +25,7 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_issue_milestone_set:['Set or remove one issue milestone after exact issue/milestone pre-reads. Zero removes, no PR targets; receipt checks silent ignored updates.',obj(['repo','number','milestone_number'],{repo:REPO,number:INT,milestone_number:{type:'integer',minimum:0,maximum:1e12}})],
   wf_review_thread_resolve: ['Resolve a review thread only after addressing its finding; never a review-gate bypass. Membership is checked against the repository PR first 100 threads.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
   wf_review_thread_unresolve: ['Unresolve a repository PR review thread after bounded membership validation.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
 
@@ -180,6 +181,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args,{maxByt
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_issue_milestone_set:['issue_number','milestone_number'],
   wf_review_thread_resolve:['thread'],wf_review_thread_unresolve:['thread'],
   wf_issue_list:['issues','complete'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
   wf_issue_comment_update:['result'],
@@ -286,8 +288,10 @@ const binaryAsset=z.object({id:positive,name:z.string().min(1).max(255),state:z.
 const binaryResponses={wf_release_asset_download:chunkSchema('asset_id'),wf_artifact_download:chunkSchema('artifact_id'),wf_run_logs:chunkSchema('run_id'),wf_job_log:chunkSchema('job_id',true),wf_release_asset_upload_binary:z.object({asset:binaryAsset}).strict(),wf_release_asset_update:z.object({asset:binaryAsset}).strict(),wf_release_asset_delete:z.object({deleted:z.literal(true),asset_id:positive}).strict()};
 const lifecycleReview=z.object({id:positive,state:z.enum(['PENDING','COMMENTED','APPROVED','CHANGES_REQUESTED','DISMISSED']),commit_id:shaValue.nullable(),html_url:z.string().nullable()}).strict();
 const lifecycleResponses={wf_review_update:z.object({review:lifecycleReview}).strict(),wf_review_dismiss:z.object({review:lifecycleReview.refine(v=>v.state==='DISMISSED')}).strict(),wf_review_pending_delete:z.object({review:lifecycleReview.refine(v=>v.state==='PENDING')}).strict(),wf_review_comment_reply:z.object({comment:z.object({id:positive,in_reply_to_id:positive,html_url:z.string().nullable()}).strict()}).strict()};
+const issueMilestoneReceipt=z.object({issue_number:z.number().int().positive(),milestone_number:z.number().int().positive().nullable()}).strict();
 export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
+ if(action==='wf_issue_milestone_set')return issueMilestoneReceipt.safeParse(body).success && (!args || body.issue_number===args.number && body.milestone_number===(args.milestone_number===0?null:args.milestone_number));
  if(threadStateResponses[action])return threadStateResponses[action].safeParse(body).success;
  if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;

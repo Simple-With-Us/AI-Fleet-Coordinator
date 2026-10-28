@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_issue_milestone_set": ({"issues": "write"}, True),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -715,6 +716,66 @@ class WorkflowVerbs:
                 raise PreReadUnavailable("issue pre-read unavailable; no write attempted") from None
             raise
         return self._issue_summary(data)
+
+    def wf_issue_milestone_set(self, repo, args):
+        """Set/remove an issue milestone only after exact issue and milestone pre-reads."""
+        _only(args, ("repo", "number", "milestone_number"))
+        number = _int(args, "number")
+        value = _int(args, "milestone_number", 0, 1000000000000)
+        milestone = None if value == 0 else value
+        try:
+            issue = self._get(f"/repos/{repo}/issues/{number}")
+            if (
+                not isinstance(issue, dict)
+                or "pull_request" in issue
+                or type(issue.get("number")) is not int
+                or issue["number"] != number
+                or type(issue.get("id")) is not int
+                or issue["id"] <= 0
+            ):
+                raise Refused("exact issue identity not matched")
+            if milestone is not None:
+                target = self._get(f"/repos/{repo}/milestones/{milestone}")
+                if (
+                    not isinstance(target, dict)
+                    or type(target.get("number")) is not int
+                    or target["number"] != milestone
+                    or type(target.get("id")) is not int
+                    or target["id"] <= 0
+                ):
+                    raise Refused("exact milestone identity not matched")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "milestone pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        result = self.client._call(
+            "PATCH", f"/repos/{repo}/issues/{number}", {"milestone": milestone}, bearer=self.bearer
+        )
+        if (
+            not isinstance(result, dict)
+            or "pull_request" in result
+            or type(result.get("number")) is not int
+            or result["number"] != number
+            or type(result.get("id")) is not int
+            or result["id"] != issue["id"]
+            or "milestone" not in result
+        ):
+            raise RelayGitHubError(502, "issue milestone receipt unverifiable")
+        actual = result["milestone"]
+        if milestone is None:
+            if actual is not None:
+                raise RelayGitHubError(502, "milestone removal receipt unverifiable")
+        elif (
+            not isinstance(actual, dict)
+            or type(actual.get("number")) is not int
+            or actual["number"] != milestone
+            or type(actual.get("id")) is not int
+            or actual["id"] != target["id"]
+        ):
+            raise RelayGitHubError(502, "milestone assignment receipt unverifiable")
+        return {"issue_number": number, "milestone_number": milestone}
 
     def wf_issue_update(self, repo, args):
         _only(args, ("repo", "number", "title", "body", "state"))

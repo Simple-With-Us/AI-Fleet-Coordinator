@@ -521,6 +521,7 @@ class Relay:
 # holds; only OutcomeStore.begin atomically replaces a known-success row.
 _REAPPLY_STATE_ACTIONS = frozenset(
     {
+        "wf_issue_milestone_set",
         "wf_issue_update",
         "wf_review_update",
         "wf_check_update",
