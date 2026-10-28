@@ -12,3 +12,8 @@ other deployments. No caller target URLs or arbitrary payload. Text is secret-sc
 nonblank and bounded (environment100/description140 UTF-8 bytes). Malformed receipts
 hold UNKNOWN; no replay. First-page lists only, at most50 entries. No environment
 protection approvals, custom tasks/payload, or arbitrary deployment URL support here.
+
+Append-only status creation retains strict idempotency: identical verified requests
+return their stored receipt without appending history again.  Different status
+arguments use distinct keys; a later intentional repeated historical status is not
+implemented as reapply.  Pending and UNKNOWN always remain held.
