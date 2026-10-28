@@ -228,8 +228,11 @@ class InfisicalSettings:
         token = self._service_token()
         if token:
             return token, SOURCE_SERVICE_TOKEN
-        if self._access_token and self._credential_source == SOURCE_MACHINE_IDENTITY:
-            return self._access_token, SOURCE_MACHINE_IDENTITY
+        with self._lock:
+            cached = self._access_token
+            cached_source = self._credential_source
+        if cached and cached_source == SOURCE_MACHINE_IDENTITY:
+            return cached, SOURCE_MACHINE_IDENTITY
         cid, _csec = self.identity()
         if cid:
             return self._login(), SOURCE_MACHINE_IDENTITY
@@ -276,9 +279,21 @@ class InfisicalSettings:
                 f"Infisical universal-auth login failed (status {status}); "
                 "check the machine identity in INFISICAL.md"
             )
-        self._access_token = token
-        self._credential_source = SOURCE_MACHINE_IDENTITY
+        self._cache_machine_token(token)
         return token
+
+    def _cache_machine_token(self, token: str) -> None:
+        """Cache a machine-identity session token with the source that owns it.
+
+        The token and the source are one fact, so they are written together
+        under the lock:  a reader that sees the source always sees the token
+        that goes with it.  The service-token path never writes here, so a
+        service token can never end up paired with the machine-identity
+        source and sent down a re-login path that cannot refresh it.
+        """
+        with self._lock:
+            self._access_token = token
+            self._credential_source = SOURCE_MACHINE_IDENTITY
 
     def _fetch_all(self, token: str, source: str) -> dict[str, str]:
         self._require_prod()
@@ -307,8 +322,10 @@ class InfisicalSettings:
             key = secret.get("secretKey")
             if key in self.managed_keys:
                 out[key] = str(secret.get("secretValue") or "")
-        self._access_token = token
-        self._credential_source = source
+        if source == SOURCE_MACHINE_IDENTITY:
+            # Only the machine identity owns the session-token cache.  A
+            # service token is its own credential and never goes in there.
+            self._cache_machine_token(token)
         return out
 
     # -- lifecycle ----------------------------------------------------------
@@ -468,6 +485,14 @@ class InfisicalSettings:
                 status = _write("PATCH", token)
             if status == 404:
                 status = _write("POST", token)
+                if status == 401:
+                    if source == SOURCE_SERVICE_TOKEN:
+                        # A service token cannot be refreshed by a re-login, so
+                        # there is nothing to retry with.
+                        raise SettingsError(_service_token_401_message())
+                    # Token may have expired mid-flight: re-login once and retry.
+                    token = self._login()
+                    status = _write("POST", token)
         except SettingsError:
             raise
         except Exception as e:

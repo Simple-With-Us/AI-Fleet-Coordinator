@@ -59,6 +59,7 @@ class _HttpWorld:
         self.fail_fetch: list = []          # exceptions / statuses to raise/return in order
         self.fail_write = False
         self.patch_statuses: list[int] = []  # statuses to return for PATCH, in order
+        self.post_statuses: list[int] = []   # statuses to return for POST, in order
 
     def __call__(self, req, timeout=None):
         method = req.get_method()
@@ -87,6 +88,8 @@ class _HttpWorld:
             key = path.rsplit("/", 1)[-1]
             if self.patch_statuses and method == "PATCH":
                 return _FakeHTTPResponse(self.patch_statuses.pop(0), {})
+            if self.post_statuses and method == "POST":
+                return _FakeHTTPResponse(self.post_statuses.pop(0), {})
             if method == "PATCH" and key not in self.secrets:
                 return _FakeHTTPResponse(404, {"message": "not found"})
             self.secrets[key] = body["secretValue"]
@@ -515,6 +518,74 @@ class ServiceTokenTests(_SettingsCase):
                 self.assertFalse(s.refresh())
         self.assertEqual(s.get("TIMEOUT_S"), "9")
         self.assertTrue(any("INFISICAL_TOKEN" in line for line in logs.output), logs.output)
+        self.assertEqual(self._logins(), [])
+
+    def test_a_service_token_never_lands_in_the_machine_identity_cache(self):
+        # The session-token cache belongs to the machine identity alone.  A
+        # service token in there can be paired with the machine source, and
+        # then a reader reuses a credential the source does not own and goes
+        # down a re-login path that cannot refresh it.
+        self.world.secrets = {"API_TOKEN": "tok"}
+        s = self.make()
+        with self._with_token(SERVICE_TOKEN):
+            s.init()
+        self.assertIsNone(s._access_token)
+        self.assertIsNone(s._credential_source)
+
+    def test_the_machine_identity_caches_its_own_session_token(self):
+        self.world.secrets = {"API_TOKEN": "tok"}
+        s = self.make()
+        s.init()
+        self.assertEqual(s._access_token, "tok-1")
+        self.assertEqual(s._credential_source, mod.SOURCE_MACHINE_IDENTITY)
+
+    def test_a_reader_never_sees_a_token_paired_with_the_wrong_source(self):
+        # The token and the source are one fact.  A reader that sees the
+        # source must see the token that goes with it, even while a fetch
+        # is running.
+        self.world.secrets = {"API_TOKEN": "tok"}
+        s = self.make()
+        s.init()
+        seen = []
+        stop = threading.Event()
+
+        def reader():
+            while not stop.is_set():
+                seen.append(s._credential())
+
+        t = threading.Thread(target=reader, daemon=True)
+        t.start()
+        try:
+            for _ in range(50):
+                with self._with_token(SERVICE_TOKEN):
+                    s.refresh()
+                s.refresh()
+        finally:
+            stop.set()
+            t.join(timeout=5)
+        self.assertFalse(t.is_alive())
+        self.assertTrue(seen)
+        for token, source in seen:
+            if source == mod.SOURCE_MACHINE_IDENTITY:
+                self.assertEqual(token, "tok-1")
+            else:
+                self.assertEqual(source, mod.SOURCE_SERVICE_TOKEN)
+                self.assertEqual(token, SERVICE_TOKEN)
+
+    def test_a_401_on_the_post_path_raises_the_service_token_message(self):
+        # PATCH answers 404 for a key that is not there yet, so the write
+        # goes on to POST.  A read-scoped token is refused there, and the
+        # message has to name the credential and the fix.
+        self.world.secrets = {"API_TOKEN": "tok"}
+        s = self.make(required_keys=())
+        with self._with_token(SERVICE_TOKEN):
+            s.init()
+            self.world.post_statuses.append(401)
+            with self.assertRaises(mod.SettingsError) as ctx:
+                s.set("TIMEOUT_S", "42")
+        message = str(ctx.exception)
+        self.assertIn("INFISICAL_TOKEN", message)
+        self.assertIn("check that the token is current", message)
         self.assertEqual(self._logins(), [])
 
     def test_the_machine_identity_is_still_the_second_leg(self):
