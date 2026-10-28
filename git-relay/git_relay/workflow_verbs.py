@@ -60,6 +60,7 @@ MAX_FILES_B64 = 512 * 1024
 SPECS = {
     "wf_environments": ({"actions": "read"}, False),
     "wf_environment_get": ({"actions": "read"}, False),
+    "wf_file_delete": ({"contents": "write"}, True),
     "wf_issue_list": ({"issues": "read"}, False),
     "wf_issue_get": ({"issues": "read"}, False),
     "wf_issue_create": ({"issues": "write"}, True),
@@ -1890,6 +1891,71 @@ class WorkflowVerbs:
 
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
+
+    def wf_file_delete(self, repo, args):
+        _only(args, ("repo", "path", "branch", "message", "prior_sha"))
+        path, branch, sha = _path(args), _ref(args, "branch"), _sha(args, "prior_sha")
+        if branch.startswith("refs/"):
+            raise Refused("qualified branch refs are not accepted")
+        if _workflow_path(path):
+            raise Refused("workflow files are not writable here")
+        message = args.get("message")
+        if (
+            not isinstance(message, str)
+            or not message.strip()
+            or len(message.encode("utf-8")) > 500
+            or "\x00" in message
+            or find_secret(message)
+        ):
+            raise Refused("invalid message")
+        try:
+            info = self._get(f"/repos/{repo}")
+            if (
+                not isinstance(info, dict)
+                or not isinstance(info.get("default_branch"), str)
+                or not info["default_branch"]
+            ):
+                raise RelayGitHubError(502, "repository pre-read unverifiable")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "repository pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if branch == info["default_branch"]:
+            raise Refused("default branch is not writable")
+        try:
+            target = self._get(f"/repos/{repo}/branches/{quote(branch, safe='')}")
+            if (
+                not isinstance(target, dict)
+                or target.get("name") != branch
+                or not isinstance(target.get("commit"), dict)
+                or not isinstance(target["commit"].get("sha"), str)
+                or not _SHA.fullmatch(target["commit"]["sha"])
+            ):
+                raise RelayGitHubError(502, "branch pre-read unverifiable")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "branch pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        result = self.client._call(
+            "DELETE",
+            f"/repos/{repo}/contents/{quote(path, safe='/')}",
+            {"message": message, "sha": sha, "branch": branch},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or "content" not in result
+            or result["content"] is not None
+            or not isinstance(result.get("commit"), dict)
+            or not isinstance(result["commit"].get("sha"), str)
+            or not _SHA.fullmatch(result["commit"]["sha"])
+        ):
+            raise RelayGitHubError(502, "file deletion receipt unverifiable")
+        return {"deleted": True, "path": path, "branch": branch, "commit": result["commit"]["sha"]}
 
     def wf_file_put(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "content_b64", "prior_sha"))

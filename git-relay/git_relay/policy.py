@@ -79,6 +79,7 @@ class SeatPolicy:
     WORKFLOW_ACTIONS = (
         "wf_environments",
         "wf_environment_get",
+        "wf_file_delete",
         "wf_issue_list",
         "wf_issue_get",
         "wf_issue_create",

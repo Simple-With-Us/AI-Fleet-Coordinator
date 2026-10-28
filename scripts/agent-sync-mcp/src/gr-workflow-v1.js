@@ -20,6 +20,7 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 const SPECS = {
  wf_environments:['Read bounded environment metadata, not full protection rules or reviewers; null means unknown/notreturned, not unprotected.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_environment_get:['Read exact environment metadata and protection-type summary; no environment creation, deletion, approval or policy changes.',obj(['repo','name'],{repo:REPO,name:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,99}$'}})],
+ wf_file_delete:['Delete exact blob on non-default branch; workflow paths refused. Requires separate execution authority.',obj(['repo','path','branch','message','prior_sha'],{repo:REPO,path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},prior_sha:SHA})],
 
   wf_issue_list: ['List issues (not pull requests).', obj(['repo'], {repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE})],
   wf_issue_get: ['Read issue summary.', obj(['repo','number'], {repo:REPO,number:INT})],
@@ -136,7 +137,7 @@ export function boundedWorkflowInput(args, {maxDepth=6,maxNodes=500,maxBytes=655
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
 export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
-  (action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' || reviewBodyOk(args));
+  (action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' || reviewBodyOk(args)) && (action !== 'wf_file_delete' || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500);
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
@@ -166,6 +167,7 @@ const RESPONSE_KEYS = {
   wf_issue_unlock:['completed'],
   wf_label_create:['result'],
   wf_label_delete:['completed'],
+ wf_file_delete:['deleted','path','branch','commit'],
   wf_pr_get:['pull'],
   wf_pr_reviews:['reviews','complete'],
   wf_pr_comments:['comments','complete'],
@@ -238,6 +240,7 @@ export function validWfV1Response(action, body, args) {
  body=parsed.data;
  const key={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
  if(key){const shape={completed:z.literal(true),[key]:z.number().int().positive()};if(action==='wf_workflow_enable'||action==='wf_workflow_disable')shape.state=z.literal(action==='wf_workflow_enable'?'enabled':'disabled');const parsed=z.object(shape).strict().safeParse(body);if(!parsed.success)return false;body=parsed.data;}
+ if(action === 'wf_file_delete' && (body?.deleted !== true || !['path','branch','commit'].every(k=>typeof body[k] === 'string' && body[k].length>0) || !/^[0-9a-f]{40}$/.test(body.commit))) return false;
 
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
@@ -262,7 +265,7 @@ export function validWfV1Response(action, body, args) {
   if (action.startsWith('wf_assignees_') && (!Number.isInteger(body.result?.number) || !Array.isArray(body.result?.assignees) || !body.result.assignees.every(x => typeof x?.login === 'string'))) return false;
   if (action === 'wf_label_create' && (typeof body.result?.name !== 'string' || !/^[0-9a-fA-F]{6}$/.test(body.result?.color))) return false;
   for (const k of ['pull','commit','comparison','branch','repository','workflows','run','artifacts']) {
-    if ((action === 'wf_file_put' || action === 'wf_files_put') && (k === 'branch' || k === 'commit')) { if (typeof body[k] !== 'string' || body[k].length === 0) return false; continue; }
+    if ((action === 'wf_file_put' || action === 'wf_files_put' || action === 'wf_file_delete') && (k === 'branch' || k === 'commit')) { if (typeof body[k] !== 'string' || body[k].length === 0) return false; continue; }
     if (k in body && (!body[k] || typeof body[k] !== 'object' || Array.isArray(body[k]))) return false;
   }
   if ('completed' in body && body.completed !== true) return false;
