@@ -125,7 +125,9 @@ class Variables(unittest.TestCase):
         c = ErrorClient()
         c.status = 404
         h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", action, REPO)
-        self.assertEqual(h.run(action, {"repo": REPO, "name": "MODE"}), {"completed": True, "name": "MODE"})
+        self.assertEqual(
+            h.run(action, {"repo": REPO, "name": "MODE"}), {"completed": True, "name": "MODE"}
+        )
         for status in (403, 429, 502):
             c.status = status
             with self.assertRaises(RelayGitHubError):
