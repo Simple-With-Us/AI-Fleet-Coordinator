@@ -54,6 +54,11 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_branch_update": ({"contents": "write"}, True),
+    "wf_branch_delete": ({"contents": "write"}, True),
+    "wf_tag_create": ({"contents": "write"}, True),
+    "wf_tag_get": ({"contents": "read"}, False),
+    "wf_tag_delete": ({"contents": "write"}, True),
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
@@ -442,6 +447,161 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def wf_branch_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "branch",
+                "sha",
+                "expected_sha",
+            ),
+        )
+        branch = _ref(args, "branch")
+        sha = _sha(args, "sha")
+        expected_sha = _sha(args, "expected_sha")
+        name = branch
+        try:
+            repository = _obj(self._get(f"/repos/{repo}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "repository pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        default_branch = repository.get("default_branch")
+        if not isinstance(default_branch, str) or not default_branch or name == default_branch:
+            raise Refused("default branch mutation refused")
+        path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='')}"
+        try:
+            prior = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(name, safe='')}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
+            raise
+        if _sub(prior, "object").get("sha") != expected_sha:
+            raise Refused("ref changed")
+        data = self.client._call("PATCH", path, {"sha": sha, "force": False}, bearer=self.bearer)
+        result = _obj(data)
+        got_sha = _sub(result, "object").get("sha")
+        if (
+            result.get("ref") != "refs/heads/" + name
+            or not isinstance(got_sha, str)
+            or not _SHA.fullmatch(got_sha)
+            or got_sha != sha
+        ):
+            raise RelayGitHubError(502, "ref outcome unverifiable")
+        return {"ref": result["ref"], "sha": got_sha}
+
+    def wf_branch_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "branch",
+                "expected_sha",
+            ),
+        )
+        branch = _ref(args, "branch")
+        expected_sha = _sha(args, "expected_sha")
+        name = branch
+        try:
+            repository = _obj(self._get(f"/repos/{repo}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "repository pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        default_branch = repository.get("default_branch")
+        if not isinstance(default_branch, str) or not default_branch or name == default_branch:
+            raise Refused("default branch mutation refused")
+        path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='')}"
+        try:
+            prior = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(name, safe='')}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
+            raise
+        if _sub(prior, "object").get("sha") != expected_sha:
+            raise Refused("ref changed")
+        data = self.client._call("DELETE", path, None, bearer=self.bearer)
+        return {"deleted": True, "ref": "refs/heads/" + name}
+
+    def wf_tag_create(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "tag",
+                "sha",
+            ),
+        )
+        tag = _ref(args, "tag")
+        sha = _sha(args, "sha")
+        name = tag
+        path = f"/repos/{repo}/git/refs/tags/{quote(name, safe='')}"
+        path = f"/repos/{repo}/git/refs"
+        data = self.client._call(
+            "POST", path, {"ref": "refs/tags/" + name, "sha": sha}, bearer=self.bearer
+        )
+        result = _obj(data)
+        got_sha = _sub(result, "object").get("sha")
+        if (
+            result.get("ref") != "refs/tags/" + name
+            or not isinstance(got_sha, str)
+            or not _SHA.fullmatch(got_sha)
+            or got_sha != sha
+        ):
+            raise RelayGitHubError(502, "ref outcome unverifiable")
+        return {"ref": result["ref"], "sha": got_sha}
+
+    def wf_tag_get(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "tag",
+            ),
+        )
+        tag = _ref(args, "tag")
+        name = tag
+        path = f"/repos/{repo}/git/refs/tags/{quote(name, safe='')}"
+        data = self.client._call("GET", path, None, bearer=self.bearer)
+        result = _obj(data)
+        got_sha = _sub(result, "object").get("sha")
+        if (
+            result.get("ref") != "refs/tags/" + name
+            or not isinstance(got_sha, str)
+            or not _SHA.fullmatch(got_sha)
+        ):
+            raise RelayGitHubError(502, "ref outcome unverifiable")
+        return {"ref": result["ref"], "sha": got_sha}
+
+    def wf_tag_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "tag",
+                "expected_sha",
+            ),
+        )
+        tag = _ref(args, "tag")
+        expected_sha = _sha(args, "expected_sha")
+        name = tag
+        path = f"/repos/{repo}/git/refs/tags/{quote(name, safe='')}"
+        try:
+            prior = _obj(self._get(f"/repos/{repo}/git/ref/tags/{quote(name, safe='')}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
+            raise
+        if _sub(prior, "object").get("sha") != expected_sha:
+            raise Refused("ref changed")
+        data = self.client._call("DELETE", path, None, bearer=self.bearer)
+        return {"deleted": True, "ref": "refs/tags/" + name}
 
     # ---- reads ----
     def wf_pr_list(self, repo, args):
