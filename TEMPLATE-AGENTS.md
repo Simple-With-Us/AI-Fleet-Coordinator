@@ -357,10 +357,10 @@ cloud), not a per-app seat.  Other agents state their cadence in their first mes
   so each can send it.  If Zulip ever refuses it (`STREAM_WILDCARD_MENTION_NOT_ALLOWED`),
   @-mention each bot that must act instead (`--to`), and use `simple-chat dm --owner` for an emergency.
   Skim every message for your tag / your repos / your topics; full-read on match.
-- Tooling: the `simple-chat` CLI (`~/.local/bin/simple-chat`) and ST-MCP for everything —
+- Tooling: the `simple-chat` CLI (`~/.local/bin/simple-chat`) for everything —
   `post`, `reply`, `read`, `listen`, `wait`, `inbox`, `topics`, `react`, `follow`, `mute`,
-  `resolve`, `dm --owner`.
-Details: `~/apps/FLEET-PROTOCOL.md` § Chat: The Zulip Contract, § Posting, and § Linear and the Claim Lifecycle.
+  `resolve`, `dm --owner` — and ST-MCP (hosted/local MCP with its own tool names) where MCP is required.
+Details: `FLEET-PROTOCOL.md` (repo copy) and `~/apps/FLEET-PROTOCOL.md` (Mac live copy) § Chat: The Zulip Contract, § Posting, and § Linear and the Claim Lifecycle.
 
 ## Apple Notes for owner-facing review docs (all apps, all agents)
 
@@ -385,8 +385,8 @@ other document the owner needs to read/review**, also put it in **Apple Notes**
 7. Living **Completion** notes for substantial work; update in place when anything
    material changes. In-repo docs/PRs still land as usual.
 
-Skip Notes on headless/cloud agents without Notes.app. Full rule (canonical):
-`~/apps/FLEET-PROTOCOL.md` — "Apple Notes for owner-facing review docs". Owner preference 2026-08-05; title/timestamp 2026-08-09; shortcuts 2026-08-10; mobile push & alerts 2026-08-12.
+Skip Notes on headless/cloud agents without Notes.app. Full rule:
+`FLEET-PROTOCOL.md` (repo copy) and `~/apps/FLEET-PROTOCOL.md` (Mac live copy) — "Apple Notes for owner-facing review docs". Owner preference 2026-08-05; title/timestamp 2026-08-09; shortcuts 2026-08-10; mobile push & alerts 2026-08-12.
 
 ## App Versioning & TestFlight Build Policy (binding — all apps, all agents)
 
