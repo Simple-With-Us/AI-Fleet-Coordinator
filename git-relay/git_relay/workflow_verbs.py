@@ -63,6 +63,12 @@ SPECS = {
     "wf_issue_create": ({"issues": "write"}, True),
     "wf_issue_update": ({"issues": "write"}, True),
     "wf_issue_comment": ({"issues": "write"}, True),
+    "wf_assignees_add": ({"issues": "write"}, True),
+    "wf_assignees_remove": ({"issues": "write"}, True),
+    "wf_issue_lock": ({"issues": "write"}, True),
+    "wf_issue_unlock": ({"issues": "write"}, True),
+    "wf_label_create": ({"issues": "write"}, True),
+    "wf_label_delete": ({"issues": "write"}, True),
     "wf_pr_get": ({"pull_requests": "read"}, False),
     "wf_pr_reviews": ({"pull_requests": "read"}, False),
     "wf_pr_comments": ({"pull_requests": "read"}, False),
@@ -585,6 +591,185 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def wf_assignees_add(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "assignees",
+            ),
+        )
+        number = _int(args, "number")
+        assignees = args.get("assignees")
+        if (
+            not isinstance(assignees, list)
+            or not 1 <= len(assignees) <= 10
+            or any(
+                not isinstance(v, str)
+                or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", v)
+                for v in assignees
+            )
+        ):
+            raise Refused("invalid assignees")
+        path = f"/repos/{repo}/issues/{number}/assignees"
+        data = self.client._call("POST", path, {"assignees": assignees}, bearer=self.bearer)
+        result = _obj(data)
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("number") != number
+            or not isinstance(result.get("assignees"), list)
+        ):
+            raise RelayGitHubError(502, "assignee outcome unverifiable")
+        logins = []
+        for item in result["assignees"]:
+            login = item.get("login") if isinstance(item, dict) else None
+            if not isinstance(login, str) or not re.fullmatch(
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login
+            ):
+                raise RelayGitHubError(502, "assignee outcome unverifiable")
+            logins.append(login)
+        requested = {x.lower() for x in assignees}
+        actual = {x.lower() for x in logins}
+        if not requested <= actual:
+            raise RelayGitHubError(502, "assignee state unverifiable")
+        return {
+            "result": {
+                "id": result["id"],
+                "number": number,
+                "assignees": [{"login": x} for x in logins],
+            }
+        }
+
+    def wf_assignees_remove(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "assignees",
+            ),
+        )
+        number = _int(args, "number")
+        assignees = args.get("assignees")
+        if (
+            not isinstance(assignees, list)
+            or not 1 <= len(assignees) <= 10
+            or any(
+                not isinstance(v, str)
+                or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", v)
+                for v in assignees
+            )
+        ):
+            raise Refused("invalid assignees")
+        path = f"/repos/{repo}/issues/{number}/assignees"
+        data = self.client._call("DELETE", path, {"assignees": assignees}, bearer=self.bearer)
+        result = _obj(data)
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("number") != number
+            or not isinstance(result.get("assignees"), list)
+        ):
+            raise RelayGitHubError(502, "assignee outcome unverifiable")
+        logins = []
+        for item in result["assignees"]:
+            login = item.get("login") if isinstance(item, dict) else None
+            if not isinstance(login, str) or not re.fullmatch(
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login
+            ):
+                raise RelayGitHubError(502, "assignee outcome unverifiable")
+            logins.append(login)
+        requested = {x.lower() for x in assignees}
+        actual = {x.lower() for x in logins}
+        if requested & actual:
+            raise RelayGitHubError(502, "assignee state unverifiable")
+        return {
+            "result": {
+                "id": result["id"],
+                "number": number,
+                "assignees": [{"login": x} for x in logins],
+            }
+        }
+
+    def wf_issue_lock(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "reason",
+            ),
+        )
+        number = _int(args, "number")
+        reason = _enum(args, "reason", ("off-topic", "too heated", "resolved", "spam"))
+        path = f"/repos/{repo}/issues/{number}/lock"
+        data = self.client._call("PUT", path, {"lock_reason": reason}, bearer=self.bearer)
+        return {"completed": True}
+
+    def wf_issue_unlock(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+            ),
+        )
+        number = _int(args, "number")
+        path = f"/repos/{repo}/issues/{number}/lock"
+        data = self.client._call("DELETE", path, None, bearer=self.bearer)
+        return {"completed": True}
+
+    def wf_label_create(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "name",
+                "color",
+                "description",
+            ),
+        )
+        name = self._text(args, "name", 100)
+        color = self._text(args, "color", 1024)
+        if not re.fullmatch(r"[0-9a-fA-F]{6}", color):
+            raise Refused("invalid color")
+        description = self._text(args, "description", 1024)
+        path = f"/repos/{repo}/labels"
+        data = self.client._call(
+            "POST",
+            path,
+            {"name": name, "color": color, "description": description},
+            bearer=self.bearer,
+        )
+        result = _obj(data)
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("name") != name
+            or not isinstance(result.get("color"), str)
+            or result["color"].lower() != color.lower()
+        ):
+            raise RelayGitHubError(502, "label outcome unverifiable")
+        return {"result": {k: result.get(k) for k in ("id", "name", "color", "description")}}
+
+    def wf_label_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "name",
+            ),
+        )
+        name = self._text(args, "name", 100)
+        path = "/repos/" + repo + "/labels/" + quote(name, safe="")
+        data = self.client._call("DELETE", path, None, bearer=self.bearer)
+        return {"completed": True}
 
     def wf_workflow_enable(self, repo, args):
         _only(args, ("repo", "workflow_id"))
