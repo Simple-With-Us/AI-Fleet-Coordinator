@@ -1,3 +1,4 @@
+import {z} from 'zod';
 // Default-off caller contract. hosted-tools registers these tools, but they are neither listed nor
 // callable unless the owner sets GR_WORKFLOW_TOOLS=on (config.grWorkflowEnabled).
 // Contract for the git-relay wf_ workflow verbs (git-relay/git_relay/workflow_verbs.py).
@@ -17,6 +18,9 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_environments:['Read bounded environment metadata, not full protection rules or reviewers; null means unknown/notreturned, not unprotected.',obj(['repo'],{repo:REPO,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_environment_get:['Read exact environment metadata and protection-type summary; no environment creation, deletion, approval or policy changes.',obj(['repo','name'],{repo:REPO,name:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9][A-Za-z0-9 ._/-]{0,99}$'}})],
+
   wf_pr_get: ['Read pr get.', obj(['repo', 'number'], {repo:REPO,number:INT})],
   wf_pr_reviews: ['Read pr reviews.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
   wf_pr_comments: ['Read pr comments.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
@@ -61,7 +65,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_environments','wf_environment_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -138,6 +142,11 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 export function validWfV1Response(action, body) {
+ if(action==='wf_environments'||action==='wf_environment_get'){
+  const item=z.object({id:z.number().int().positive(),name:z.string().min(1).refine(v=>Buffer.byteLength(v,'utf8')<=255),created_at:z.string().max(100),updated_at:z.string().max(100),protection_rule_types:z.array(z.string().min(1).max(100)).max(20).nullable(),deployment_branch_policy:z.object({protected_branches:z.boolean(),custom_branch_policies:z.boolean()}).strict().nullable()}).strict();
+  return (action==='wf_environment_get'?z.object({environment:item}).strict():z.object({environments:z.array(item).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()).safeParse(body).success;
+ }
+
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;

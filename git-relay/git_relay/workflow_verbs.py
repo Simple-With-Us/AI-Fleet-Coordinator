@@ -54,6 +54,8 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_environments": ({"actions": "read"}, False),
+    "wf_environment_get": ({"actions": "read"}, False),
     "wf_pr_get": ({"pull_requests": "read"}, False),
     "wf_pr_reviews": ({"pull_requests": "read"}, False),
     "wf_pr_comments": ({"pull_requests": "read"}, False),
@@ -270,6 +272,94 @@ class WorkflowVerbs:
         if action != self.action or args.get("repo") != self.repo:
             raise Refused("action or repository not authorized for this handle")
         return getattr(self, action)(self.repo, args)
+
+    @staticmethod
+    def _environment_name(args):
+        name = args.get("name")
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._/-]{0,99}", name)
+            or any(x in (".", "..", "") for x in name.split("/"))
+            or find_secret(name)
+        ):
+            raise Refused("invalid environment name")
+        return name
+
+    @staticmethod
+    def _environment_summary(data, expected=None):
+        if (
+            not isinstance(data, dict)
+            or type(data.get("id")) is not int
+            or data["id"] < 1
+            or not isinstance(data.get("name"), str)
+            or len(data["name"].encode("utf-8")) > 255
+            or not data["name"]
+            or (expected is not None and data["name"] != expected)
+            or any(
+                not isinstance(data.get(k), str) or len(data[k]) > 100
+                for k in ("created_at", "updated_at")
+            )
+        ):
+            raise RelayGitHubError(502, "environment receipt unverifiable")
+        if find_secret(data["name"]):
+            raise Refused("environment name contains credential pattern")
+        # Optional protection fields are NOT invented as empty/disabled when absent.
+        rules = data.get("protection_rules")
+        types = None
+        if rules is not None:
+            if (
+                not isinstance(rules, list)
+                or len(rules) > 20
+                or any(
+                    not isinstance(x, dict)
+                    or not isinstance(x.get("type"), str)
+                    or not 1 <= len(x["type"]) <= 100
+                    for x in rules
+                )
+            ):
+                raise RelayGitHubError(502, "environment protection summary unverifiable")
+            types = [x["type"] for x in rules]
+        policy = data.get("deployment_branch_policy")
+        if policy is not None:
+            if not isinstance(policy, dict) or any(
+                type(policy.get(k)) is not bool
+                for k in ("protected_branches", "custom_branch_policies")
+            ):
+                raise RelayGitHubError(502, "environment branch policy unverifiable")
+            policy = {k: policy[k] for k in ("protected_branches", "custom_branch_policies")}
+        return {
+            **{k: data[k] for k in ("id", "name", "created_at", "updated_at")},
+            "protection_rule_types": types,
+            "deployment_branch_policy": policy,
+        }
+
+    def wf_environments(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/environments?per_page={limit}&page={page}")
+        if (
+            not isinstance(data, dict)
+            or type(data.get("total_count")) is not int
+            or data["total_count"] < 0
+            or not isinstance(data.get("environments"), list)
+        ):
+            raise RelayGitHubError(502, "environments page unverifiable")
+        return {
+            "environments": [self._environment_summary(x) for x in data["environments"][:limit]],
+            "total_count": data["total_count"],
+            "page": page,
+            "has_more": len(data["environments"]) >= limit,
+        }
+
+    def wf_environment_get(self, repo, args):
+        _only(args, ("repo", "name"))
+        name = self._environment_name(args)
+        return {
+            "environment": self._environment_summary(
+                self._get(f"/repos/{repo}/environments/{quote(name, safe='')}"), name
+            )
+        }
 
     def _asset_summary(self, data):
         if (

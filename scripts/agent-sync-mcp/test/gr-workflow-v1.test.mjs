@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,39);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,41);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,39);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,41);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -232,3 +232,10 @@ test('workflow state and run/artifact deletion preserve own-bearer writes and UN
 });
 
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
+
+test('environment reads exact own bearer and nullable unknown protection summary',async()=>{
+ const args={repo,name:'staging'},environment={id:7,name:'staging',created_at:'x',updated_at:'x',protection_rule_types:null,deployment_branch_policy:null};
+ assert.ok(validWfV1Args('wf_environment_get',args));assert.ok(!validWfV1Args('wf_environment_get',{...args,approve:true}));
+ assert.ok(validWfV1Response('wf_environment_get',{environment}));assert.ok(!validWfV1Response('wf_environment_get',{environment:{...environment,deployment_branch_policy:{protected_branches:'false',custom_branch_policies:false}}}));
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_environment_get'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({environment}));});assert.ok(!(await t.call('gr_wf_environment_get',args)).isError);
+});
