@@ -25,6 +25,9 @@ ENV = "prod"
 MANAGED = ("API_TOKEN", "BACKEND_URL", "TIMEOUT_S", "SETTINGS_REFRESH_SECONDS")
 REQUIRED = ("API_TOKEN",)
 SECRETS = ("API_TOKEN",)
+# A well-shaped Infisical service token:  the st. prefix, no whitespace, 20 to 2048
+# characters.  It is a fixture, not a credential.
+SERVICE_TOKEN = "st." + "s3rv1c3t0k3nf1gurat10n"
 
 
 class _FakeHTTPResponse:
@@ -106,6 +109,9 @@ class _SettingsCase(unittest.TestCase):
             "INFISICAL_AUTOMATION_CLIENT_SECRET": "csec",
         }, clear=False)
         self._env.start()
+        # The ambient environment must not carry a service token in, or every case
+        # below would run on the token path instead of the one it means to test.
+        os.environ.pop("INFISICAL_TOKEN", None)
 
     def tearDown(self):
         mod.stop_refresh()
@@ -320,6 +326,205 @@ class RefreshTests(_SettingsCase):
             self.world.secrets = {"API_TOKEN": "tok", "SETTINGS_REFRESH_SECONDS": bad}
             s.refresh()
             self.assertEqual(s.refresh_interval(), mod.DEFAULT_REFRESH_SECONDS, bad)
+
+
+class ServiceTokenTests(_SettingsCase):
+    """INFISICAL_TOKEN is the first-match-wins credential.
+
+    The service token is the bearer directly, so no universal-auth login happens on
+    that path, and a 401 there cannot be answered by a re-login."""
+
+    def _with_token(self, token):
+        """The service token in the environment, with the automation pair still set."""
+        return mock.patch.dict(os.environ, {"INFISICAL_TOKEN": token}, clear=False)
+
+    def _logins(self):
+        return [c for c in self.world.calls if c[1].endswith("/login")]
+
+    def test_env_token_wins_over_the_automation_pair(self):
+        self.world.secrets = {"API_TOKEN": "tok"}
+        s = self.make()
+        with self._with_token(SERVICE_TOKEN):
+            s.init()
+        self.assertEqual(s.get("API_TOKEN"), "tok")
+        # One call, and it is the secrets fetch:  the pair was never logged in with.
+        self.assertEqual(self.world.network_calls, 1)
+        self.assertEqual(self.world.calls[0][0], "GET")
+        self.assertEqual(self.world.calls[0][3], "Bearer " + SERVICE_TOKEN)
+
+    def test_no_universal_auth_login_happens_on_the_token_path(self):
+        self.world.secrets = {"API_TOKEN": "tok"}
+        s = self.make()
+        with self._with_token(SERVICE_TOKEN):
+            s.init()
+        self.assertEqual(self._logins(), [])
+        for method, _path, _body, auth in self.world.calls:
+            self.assertEqual(auth, "Bearer " + SERVICE_TOKEN)
+
+    def test_401_on_the_token_path_raises_and_does_not_retry(self):
+        self.world.secrets = {"API_TOKEN": "tok"}
+        self.world.fail_fetch.append(401)
+        s = self.make()
+        with self._with_token(SERVICE_TOKEN):
+            with self.assertRaises(mod.SettingsError) as ctx:
+                s.init()
+        self.assertIn("INFISICAL_TOKEN", str(ctx.exception))
+        # One call:  the 401 was not retried and no login was attempted.
+        self.assertEqual(self.world.network_calls, 1)
+        self.assertEqual(self._logins(), [])
+
+    def test_401_on_the_token_path_names_what_to_check(self):
+        self.world.secrets = {"API_TOKEN": "tok"}
+        self.world.fail_fetch.append(401)
+        s = self.make()
+        with self._with_token(SERVICE_TOKEN):
+            with self.assertRaises(mod.SettingsError) as ctx:
+                s.init()
+        message = str(ctx.exception)
+        self.assertIn("check that the token is current", message)
+        self.assertIn("INFISICAL.md", message)
+
+    def test_401_on_the_write_path_does_not_relogin(self):
+        self.world.secrets = {"API_TOKEN": "tok", "TIMEOUT_S": "9"}
+        s = self.make(required_keys=())
+        with self._with_token(SERVICE_TOKEN):
+            s.init()
+            self.world.patch_statuses.append(401)
+            with self.assertRaises(mod.SettingsError) as ctx:
+                s.set("TIMEOUT_S", "42")
+        self.assertIn("INFISICAL_TOKEN", str(ctx.exception))
+        self.assertEqual(self._logins(), [])
+        # The cache is untouched:  the save was rejected.
+        self.assertEqual(s.get("TIMEOUT_S"), "9")
+
+    def test_the_token_is_the_bearer_on_the_write_path(self):
+        self.world.secrets = {"API_TOKEN": "tok", "TIMEOUT_S": "9"}
+        s = self.make(required_keys=())
+        with self._with_token(SERVICE_TOKEN):
+            s.init()
+            s.set("TIMEOUT_S", "42")
+        self.assertEqual(s.get("TIMEOUT_S"), "42")
+        writes = [c for c in self.world.calls if c[0] in ("PATCH", "POST")]
+        self.assertTrue(writes)
+        for _method, _path, _body, auth in writes:
+            self.assertEqual(auth, "Bearer " + SERVICE_TOKEN)
+
+    def test_the_token_never_appears_in_an_exception_message(self):
+        s = self.make()
+        failures = []
+        # A malformed token.
+        with self._with_token("not-a-service-token"):
+            try:
+                s.init()
+            except mod.SettingsError as e:
+                failures.append(str(e))
+        # A 401 on the token path.
+        self.world.fail_fetch.append(401)
+        with self._with_token(SERVICE_TOKEN):
+            try:
+                s.init()
+            except mod.SettingsError as e:
+                failures.append(str(e))
+        # A fetch that fails with another status.
+        self.world.fail_fetch.append(500)
+        with self._with_token(SERVICE_TOKEN):
+            try:
+                s.init()
+            except mod.SettingsError as e:
+                failures.append(str(e))
+        self.assertEqual(len(failures), 3, failures)
+        for message in failures:
+            self.assertNotIn(SERVICE_TOKEN, message)
+            self.assertNotIn("not-a-service-token", message)
+
+    def test_the_token_never_appears_in_the_admin_listing(self):
+        self.world.secrets = {"API_TOKEN": "tok", "INFISICAL_TOKEN": SERVICE_TOKEN}
+        s = self.make(managed_keys=MANAGED + ("INFISICAL_TOKEN",))
+        with self._with_token(SERVICE_TOKEN):
+            s.init()
+        listing = s.admin_listing()
+        self.assertNotIn(SERVICE_TOKEN, json.dumps(listing))
+        self.assertEqual(listing["INFISICAL_TOKEN"], {"set": True, "value": "set"})
+
+    def test_the_token_is_never_exported_to_the_environment(self):
+        self.world.secrets = {"API_TOKEN": "tok", "INFISICAL_TOKEN": SERVICE_TOKEN}
+        s = self.make(managed_keys=MANAGED + ("INFISICAL_TOKEN",))
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("INFISICAL_TOKEN", None)
+            with self._with_token(SERVICE_TOKEN):
+                s.init()
+            os.environ.pop("INFISICAL_TOKEN", None)
+            exported = s.export_env(("API_TOKEN", "INFISICAL_TOKEN"))
+            self.assertEqual(exported, ["API_TOKEN"])
+            self.assertNotIn("INFISICAL_TOKEN", os.environ)
+
+    def test_no_credential_at_all_fails_closed(self):
+        s = self.make()
+        with mock.patch.object(mod, "IDENTITY_FILE_DEFAULT",
+                               pathlib.Path("/nonexistent-identity-file.json")), \
+             mock.patch.dict(os.environ, {}, clear=False):
+            for var in ("INFISICAL_TOKEN", "INFISICAL_AUTOMATION_CLIENT_ID",
+                        "INFISICAL_AUTOMATION_CLIENT_SECRET", "INFISICAL_SHARED_CLIENT_ID",
+                        "INFISICAL_SHARED_CLIENT_SECRET", "INFISICAL_MACHINE_IDENTITY"):
+                os.environ.pop(var, None)
+            with mock.patch.dict(os.environ, {"API_TOKEN": "env-tok"}):
+                s.init()
+            self.assertEqual(s.get("API_TOKEN"), "env-tok")
+            # No credential:  the write-through refuses instead of guessing.
+            with self.assertRaises(mod.SettingsError):
+                s.set("TIMEOUT_S", "1")
+        self.assertEqual(self.world.network_calls, 0)
+
+    def test_a_malformed_token_is_refused_before_any_api_call(self):
+        bad = (
+            "not-a-service-token",
+            "st.short",
+            "st." + "x" * 16,
+            "st." + "x" * 2049,
+            "st." + "has a space" + "x" * 20,
+        )
+        for token in bad:
+            self.world.calls.clear()
+            s = self.make()
+            with self._with_token(token):
+                with self.assertRaises(mod.SettingsError) as ctx:
+                    s.init()
+            self.assertIn("INFISICAL_TOKEN", str(ctx.exception), token)
+            self.assertNotIn(token, str(ctx.exception), token)
+            self.assertEqual(self.world.network_calls, 0, token)
+
+    def test_refresh_on_the_token_path_uses_the_token_and_never_logs_in(self):
+        self.world.secrets = {"API_TOKEN": "tok", "TIMEOUT_S": "9"}
+        s = self.make()
+        with self._with_token(SERVICE_TOKEN):
+            s.init()
+            self.world.secrets["TIMEOUT_S"] = "11"
+            self.assertTrue(s.refresh())
+            self.assertEqual(s.get("TIMEOUT_S"), "11")
+        self.assertEqual(self._logins(), [])
+        fetch = [c for c in self.world.calls if c[0] == "GET"][-1]
+        self.assertEqual(fetch[3], "Bear" + "er " + SERVICE_TOKEN)
+
+    def test_refresh_keeps_the_last_known_good_cache_when_the_token_is_refused(self):
+        self.world.secrets = {"API_TOKEN": "tok", "TIMEOUT_S": "9"}
+        s = self.make()
+        with self._with_token(SERVICE_TOKEN):
+            s.init()
+            self.world.fail_fetch.append(401)
+            with self.assertLogs("infisical_settings", level="ERROR") as logs:
+                self.assertFalse(s.refresh())
+        self.assertEqual(s.get("TIMEOUT_S"), "9")
+        self.assertTrue(any("INFISICAL_TOKEN" in line for line in logs.output), logs.output)
+        self.assertEqual(self._logins(), [])
+
+    def test_the_machine_identity_is_still_the_second_leg(self):
+        self.world.secrets = {"API_TOKEN": "tok"}
+        s = self.make()
+        s.init()
+        # No service token in the environment:  the pair is logged in with, as before.
+        self.assertEqual(len(self._logins()), 1)
+        fetch = [c for c in self.world.calls if c[0] == "GET"][0]
+        self.assertEqual(fetch[3], "Bear" + "er tok-1")
 
 
 class AdminListingTests(_SettingsCase):
