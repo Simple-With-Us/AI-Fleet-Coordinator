@@ -129,7 +129,11 @@ class WorkflowWiringTests(unittest.TestCase):
             }
             r.client._call = lambda m, p, payload=None, bearer=None: (
                 r.client.calls.append((m, p, payload, bearer))
-                or ({"default_branch": "main"} if m == "GET" else {"commit": {"sha": "a" * 40}})
+                or (
+                    {"default_branch": "main"}
+                    if m == "GET"
+                    else {"commit": {"sha": "a" * 40}, "content": {"path": "docs/a.md"}}
+                )
             )
             first = r.handle(TOKEN, "wf_file_put", args)
             second = r.handle(TOKEN, "wf_file_put", args)
