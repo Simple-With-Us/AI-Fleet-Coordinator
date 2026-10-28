@@ -169,3 +169,8 @@ test('release assets are metadata reads and bounded upload with fail-closed rece
  }
  assert.ok(!validWfV1Args('wf_release_asset_upload',{repo,release_id:3,name:'../x',content_b64:'aGk='}));
 });
+
+test('asset filename trailing dot is refused locally',()=>{
+ assert.ok(!validWfV1Args('wf_release_asset_upload',{repo,release_id:3,name:'proof.',content_b64:'aGk='}));
+ assert.ok(validWfV1Args('wf_release_asset_upload',{repo,release_id:3,name:'x',content_b64:'aGk='}));
+});

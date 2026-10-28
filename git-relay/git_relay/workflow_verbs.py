@@ -27,7 +27,7 @@ from urllib.parse import quote
 
 from .github_client import RelayGitHubError
 from .secret_scan import find_secret
-from .server import _perm_within_ceiling
+from .server import PreReadUnavailable, _perm_within_ceiling
 
 
 class Refused(ValueError):
@@ -326,7 +326,9 @@ class WorkflowVerbs:
             release = _obj(self._get(f"/repos/{repo}/releases/{release_id}"))
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
-                raise Unknown("release pre-read unavailable; no write attempted") from None
+                raise PreReadUnavailable(
+                    "release pre-read unavailable; no write attempted"
+                ) from None
             raise
         if (
             release.get("id") != release_id

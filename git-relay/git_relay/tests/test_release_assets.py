@@ -4,8 +4,12 @@ import os
 import tempfile
 import unittest
 
-from test_workflow_verbs import REPO, Client, Policy
-from test_workflow_wiring import TOKEN, Minter
+try:
+    from test_workflow_verbs import REPO, Client, Policy
+    from test_workflow_wiring import TOKEN, Minter
+except ImportError:
+    from .test_workflow_verbs import REPO, Client, Policy
+    from .test_workflow_wiring import TOKEN, Minter
 
 from git_relay.audit import AuditLog
 from git_relay.github_client import GitHubClient, RelayGitHubError
@@ -96,6 +100,42 @@ class Tests(unittest.TestCase):
 
 
 class WiringTests(unittest.TestCase):
+    def test_pre_read_transient_is_retryable_without_upload(self):
+        for status in (0, 408, 503):
+            with tempfile.TemporaryDirectory() as tmp:
+                action = "wf_release_asset_upload"
+                seats = json.dumps(
+                    {
+                        "swu-wise": {
+                            "token": TOKEN,
+                            "actions": [action],
+                            "repos": [REPO],
+                            "app_slug": "swu-wise",
+                            "mint_permissions": {"contents": "write", "metadata": "read"},
+                        }
+                    }
+                )
+                c = Client()
+
+                def fail(*args, **kwargs):
+                    raise RelayGitHubError(status, "private")
+
+                c._call = fail
+                c.upload_release_asset = lambda *args: self.fail("must not upload")
+                r = Relay(
+                    SeatPolicy(seats),
+                    c,
+                    AuditLog(os.path.join(tmp, "a.jsonl")),
+                    app_minter=Minter(),
+                    workflow_verbs_enabled=True,
+                )
+                args = {"repo": REPO, "release_id": 3, "name": "proof.txt", "content_b64": "aGk="}
+                for _ in range(2):
+                    code, body = r.handle(TOKEN, action, args)
+                    self.assertEqual((code, body["retryable"]), (503, True))
+                    self.assertNotIn("outcome", body)
+                    self.assertNotIn("credential", body["error"])
+
     def test_uncertain_upload_is_held_and_cannot_repeat(self):
         with tempfile.TemporaryDirectory() as tmp:
             action = "wf_release_asset_upload"
