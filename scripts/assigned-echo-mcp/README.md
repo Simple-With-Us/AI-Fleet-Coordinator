@@ -45,3 +45,11 @@ Mac Security.framework ingress and fixed signed-helper ACL are a separate native
 platform leg. A signing identity being available is not signature or ACL proof.
 Do not replace that leg with `security -w` arguments, `-A`, shared JSON or a token
 readable by any generic interpreter. No Mac helper is claimed ready here.
+
+## Native Linux credential representation
+
+systemd259.5 on the qualified ECHO host materializes the fixed credential as root:root0440 and its directory as root:root0550, on the same read-only tmpfs.  The group bits are the POSIX ACL mask, not group-object access.  Actual same-unit metadata confirms a named service-UID read ACL (directory read/search), group-object and other permissions both zero.  The service UID is not the inode owner.  The earlier self-owned0400 check therefore refused valid native credentials before MCP startup.
+
+The child now requires a non-root service UID, root-owned non-writable nonsymlink ancestors, a held fixed directory descriptor, root0550 directory and root0440 single-link regular file on the same read-only filesystem, and exact Linux POSIX ACL xattrs: root plus this service UID only, read/search for the directory and read for the file, group-object/other zero and the corresponding mask.  No missing-ACL, writable-mount, broad-group, arbitrary-owner or alternate-path fallback is accepted.  Unsupported systemd representations fail closed.  Existing ciphertext is preserved; this change requires no re-ingress, remint or rotation.
+
+Upstream implementation: https://raw.githubusercontent.com/systemd/systemd/v259.5/src/core/exec-credential.c uses0400 then named-UID ACL read permission, falling back to ownership only when a read-only remount is safe.  Synthetic regression tests do not replace actual host startup, native custody and MCP qualification.
