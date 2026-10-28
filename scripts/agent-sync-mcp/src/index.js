@@ -82,6 +82,7 @@ import { verifyHealth, healthKey, healthReport, HEALTH_SIGNATURE_HEADER, HEALTH_
 import { serveWa } from "./wa/index.js";
 import { resolveSecret, resolveWakeKeys, infisicalStats, infisicalMode, prefetchFolder } from "./infisical.js";
 import { verifySpike, spikePathSeat, spikeKey, deliverSpike, spikeReply, SPIKE_SIGNATURE_HEADER, SPIKE_MAX_BODY, SPIKE_RATE_LIMIT, SPIKE_RATE_WINDOW_MS } from "./spike.js";
+import { serveLinearWake, LINEAR_WAKE_PATH } from "./linear-wake.js";
 
 export { SeatGate };
 
@@ -359,11 +360,6 @@ async function serveGbBearerMcp(request, env, token) {
   const parsed = parseGbBearer(token);
   if (!parsed) return refuse();
   const { identity } = parsed;
-  // One listing per folder instead of a cold per-name burst (kody 4365622780):
-  // the persona rows read /zulip and /linear;  /fleetlink and /tools are
-  // listed only once the bearer has matched.
-  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
-  const roles = (await resolveDelegatedCredentials(env)).roles;
   const identityGate = gate(env, identity);
   const checked = await identityGate.gbBearerCheck(await sha256Hex(parsed.token));
   if (!checked.ok) {
@@ -380,6 +376,11 @@ async function serveGbBearerMcp(request, env, token) {
     }
     return refuse();
   }
+  // A valid hash is not consent for hosted tool access.  Legacy missing rows
+  // and explicit GR-only rows both refuse before loading any persona bundle.
+  if (checked.mcp_accept !== true) return refuse();
+  await Promise.all(["/zulip", "/linear"].map((path) => prefetchFolder(env, path)));
+  const roles = (await resolveDelegatedCredentials(env)).roles;
   const credentials = roles.get(identity);
   if (!credentials) return refuse();
   const state = await identityGate.getState();
@@ -1322,6 +1323,10 @@ export default {
     // check exactly like any unknown Host, so a request there gets a clean 404
     // rather than a working fallback.  The route is gone from wrangler.jsonc too.
     if (!hostAllowed(request, config.host)) return notFound();
+    // The Linear webhook (src/linear-wake.js):  a Linear post or comment that
+    // mentions or assigns a fleet seat wakes that seat.  Its own HMAC is the
+    // gate, so it is answered before the path allowlist and the OAuth library.
+    if (new URL(request.url).pathname === LINEAR_WAKE_PATH) return serveLinearWake(request, env, ctx);
     const route = classifyPath(new URL(request.url).pathname);
     if (!route) return notFound();
     if (route === "health") {

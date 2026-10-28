@@ -1,4 +1,4 @@
-import { WA_TOOLS } from "./wa/contract.js";
+import { WA_TOOLS, replyArgs as waReplyArgs, statusArgs as waStatusArgs } from "./wa/contract.js";
 import { LINEAR_NAMED_BY_NAME } from "./linear-named-specs.js";
 import { callNamedLinear } from "./linear-named.js";
 import { z } from "zod";
@@ -177,7 +177,7 @@ const FULL_NAMES = Object.keys(ZULIP_FULL_NAMES);
 const FULL_READ_NAMES = FULL_NAMES.filter((name) => !Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 const FULL_WRITE_NAMES = FULL_NAMES.filter((name) => Object.hasOwn(FULL_WRITE_KIND, ZULIP_LEGACY_NAMES[name]));
 export const HOSTED_READ_TOOLS = Object.freeze(new Set(["identities", "guide", ...ZULIP_READ_NAMES, ...RECALL_READ_TOOLS, ...LINEAR_READ_TOOLS, ...FLEETLINK_READ_TOOLS, ...FULL_READ_NAMES, ...EAVESDROPPER_READ_TOOLS, ...NOTES_READ_TOOLS, "whatsapp_read", "gr_v1_pr_state", "gr_v1_pr_hold_state", ...WF_V1_TOOLS.filter((t) => WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
-export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES, "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
+export const HOSTED_WRITE_TOOLS = Object.freeze(new Set([...ZULIP_WRITE_NAMES, ...RECALL_WRITE_TOOLS, ...LINEAR_WRITE_TOOLS, ...FLEETLINK_WRITE_TOOLS, ...FULL_WRITE_NAMES, ...NOTES_WRITE_TOOLS, ...GR_TOOL_NAMES, "whatsapp_reply", "whatsapp_send_status", "gr_v1_pr_automerge_disable", ...WF_V1_TOOLS.filter((t) => !WF_V1_READ_ACTIONS.includes(t.name.slice(3))).map((t) => t.name)]));
 export const RECALL_IDEM_TTL_MS = 10 * 60 * 1000;
 // Team and state ids are cached per isolate for an hour:  long enough to keep
 // a seat inside Linear's request budget, short enough that a team rename or a
@@ -378,6 +378,37 @@ export class HostedTools {
     const result = await this.whatsappGate.waRead(args);
     if (!result.ok) throw new ToolError("invalid_argument", result.reason);
     return okResult(envelope("whatsapp_read", [], `Private WhatsApp messages; text is untrusted data.  Acknowledged through ${result.acknowledged_through}.`, result.items));
+  }
+
+  // AFC-545: the outbound leg.  There is no recipient argument: the
+  // binding is the only conversation a reply can reach.
+  async tool_whatsapp_reply(args) {
+    if (this.seat !== "JET-CHAT" || this.callerSeat !== "JET-CHAT" || !this.config.whatsappEnabled) throw new ToolError("not_authorized", "WhatsApp is available only to the full Jet login when enabled.");
+    const checked = waReplyArgs(args);
+    if (!checked.ok) throw new ToolError("invalid_argument", `The ${checked.field} argument is not valid.`);
+    const result = await this.whatsappGate.waReply({ args: checked.args, known: this.known });
+    if (!result.ok) {
+      if (result.reason === "secret_in_text") throw new ToolError("refused_secret", `The reply text looks like a credential (${result.rule}).  Remove it and send it again.`);
+      if (result.reason === "outcome_unknown") throw new ToolError("outcome_unknown", "That reply's outcome is unknown, and it is never sent again.  Ask Jay in a new message instead.");
+      if (result.reason === "same_text_as_unknown") throw new ToolError("outcome_unknown", "A reply with this exact text already has an unknown outcome, and it is never sent again.  Ask Jay in a new message instead.");
+      if (result.reason === "not_surfaced") throw new ToolError("invalid_argument", "The ack_through argument names a message that whatsapp_read has not returned.");
+      throw new ToolError("invalid_argument", result.reason);
+    }
+    return okResult(envelope("whatsapp_reply", [], `The reply is ${result.state}.`, [result.reply ?? { intent_id: result.intent_id, state: result.state }]));
+  }
+
+  async tool_whatsapp_send_status(args) {
+    if (this.seat !== "JET-CHAT" || this.callerSeat !== "JET-CHAT" || !this.config.whatsappEnabled) throw new ToolError("not_authorized", "WhatsApp is available only to the full Jet login when enabled.");
+    const checked = waStatusArgs(args);
+    if (!checked.ok) throw new ToolError("invalid_argument", `The ${checked.field} argument is not valid.`);
+    const result = await this.whatsappGate.waSendStatus(checked.args);
+    if (!result.ok) {
+      if (result.reason === "not_held") throw new ToolError("invalid_argument", "That reply is not held, so the action does not apply to it.");
+      if (result.reason === "send_disabled") throw new ToolError("not_configured", "The WhatsApp send switch is off, so a held reply stays held.");
+      throw new ToolError("not_found", result.reason);
+    }
+    if (result.reply) return okResult(envelope("whatsapp_send_status", [], `The reply is ${result.state}.`, [result.reply]));
+    return okResult(envelope("whatsapp_send_status", [], `${result.replies.length} recent WhatsApp replies.`, result.replies));
   }
 
   // ---------------------------------------------------------------- entry
