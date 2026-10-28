@@ -17,6 +17,9 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+  wf_review_thread_resolve: ['Resolve a review thread only after addressing its finding; never a review-gate bypass. Membership is checked against the repository PR first 100 threads.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
+  wf_review_thread_unresolve: ['Unresolve a repository PR review thread after bounded membership validation.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
+
   wf_pr_draft: ['pr draft.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_pr_ready: ['pr ready.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_automerge_enable: ['automerge enable.',obj(['repo','number','method'],{repo:REPO,number:INT,method:{type:'string',enum:['SQUASH','MERGE','REBASE']}})],
@@ -97,6 +100,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+  wf_review_thread_resolve:['thread'],wf_review_thread_unresolve:['thread'],
   wf_pr_draft:['pull'],
   wf_pr_ready:['pull'],
   wf_automerge_enable:['pull'],
@@ -116,6 +120,8 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 export function validWfV1Response(action, body) {
+  if (['wf_review_thread_resolve','wf_review_thread_unresolve'].includes(action) && (!body?.thread || typeof body.thread.id !== 'string' || !/^[A-Za-z0-9_/=+-]{1,200}$/.test(body.thread.id) || body.thread.isResolved !== (action === 'wf_review_thread_resolve'))) return false;
+
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;
