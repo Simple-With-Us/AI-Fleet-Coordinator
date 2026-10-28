@@ -82,7 +82,6 @@ class SeatPolicy:
         "wf_reviewers_remove",
         "wf_release_create",
         "wf_release_update",
-
         "wf_release_assets",
         "wf_release_asset_get",
         "wf_release_asset_upload",
