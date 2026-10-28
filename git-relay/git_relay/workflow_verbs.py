@@ -2766,7 +2766,7 @@ class WorkflowVerbs:
             ):
                 raise RelayGitHubError(502, "PR file metadata unverifiable")
 
-            def file_path(key):
+            def file_path(key, row=row):
                 value = row.get(key)
                 if not isinstance(value, str) or not value or len(value) > 1024 or "\x00" in value:
                     raise RelayGitHubError(502, "PR file path unverifiable")
