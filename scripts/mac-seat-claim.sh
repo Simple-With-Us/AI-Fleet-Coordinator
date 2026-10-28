@@ -120,7 +120,7 @@ post_agent_sync() {
   # Post to Zulip with the seat's own bot via the simple-chat CLI.
   # The CLI resolves that seat's own Zulip credential (Infisical /zulip) itself, so
   # there is no shared bearer token to parse, rotate, or leak in this script.
-  # (The old relay POST is retired; see AGENT-SYNC.md.)
+  # (The old relay POST is retired; see FLEET-PROTOCOL.md.)
   local text="$1"
   local topic="${2:-mac seat claims}"
   if [ "$DRY_RUN" -eq 1 ]; then

@@ -93,6 +93,12 @@ TARGET: list[tuple[int | None, str, str]] = [
         "fleetlink/(?P<path>[A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*)",
         "https://fleetlink.online/{+path}",
     ),
+    # The short sibling of 5118 (owner example:  fl/fleet-tools).  Same shape, same host.
+    (
+        5151,
+        "fl/(?P<path>[A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*)",
+        "https://fleetlink.online/{+path}",
+    ),
     (
         5119,
         "(?P<id>(?:" + "|".join(LINEAR_TEAMS) + ")-[0-9]+)",
@@ -119,6 +125,38 @@ TARGET: list[tuple[int | None, str, str]] = [
     (5135, *_gh("CK", "Clutch")),
     (5136, *_gh("CTS", "congress-trading-shared")),
     (5138, *_gh("CLUTCH", "Clutch")),
+    # Linear projects, one literal rule each:  a project has no URL schema that can be derived
+    # from its reference, so each reference is pinned to its full project path (AFC-562).  A new
+    # project is added here and in the Notes linkifier's PROJECT_PATHS together;  the parity test
+    # enforces it.  All rows stay before the generic fallback, which `order` keeps last.
+    (
+        5155,
+        "P-AFC-7",
+        "https://linear.app/simple-with-us/project/muster-fleet-admin-mac-app-9c28cf61dcc8",
+    ),
+    (5156, "P-AFC-8", "https://linear.app/simple-with-us/project/fleet-gitops-272cdd72e951"),
+    (
+        5157,
+        "P-BF-1",
+        "https://linear.app/simple-with-us/project/system-prompt-receipt-port-bf-1411-cc08b4cf163b",
+    ),
+    (
+        5158,
+        "P-BF-6",
+        "https://linear.app/simple-with-us/project/botfleet-native-macos-rewrite-5afcbc055535",
+    ),
+    (
+        5159,
+        "P-CTS-5",
+        "https://linear.app/simple-with-us/project/cts-shared-dependency-a04bf2274b2d",
+    ),
+    (5160, "P-OPS-2", "https://linear.app/simple-with-us/project/mac-resource-mgmt-22f992634f02"),
+    (
+        5161,
+        "P-OPS-4",
+        "https://linear.app/simple-with-us/project/fleet-hygiene-cross-team-32fd751b0b36",
+    ),
+    (5162, "P-SWU-3", "https://linear.app/simple-with-us/project/public-websites-6e26b4c70c72"),
     (5139, "(?P<repo>[A-Za-z0-9_.-]+)#(?P<id>[0-9]+)", f"{GH}/{{repo}}/issues/{{id}}"),
     (
         5141,
@@ -156,6 +194,7 @@ CHECKS: list[tuple[str, str | None]] = [
         "fleetlink/zulip/zulip-fleet-guide.md.",
         "https://fleetlink.online/zulip/zulip-fleet-guide.md",
     ),
+    ("fl/fleet-tools", "https://fleetlink.online/fleet-tools"),
     ("BOTFLEET-16", "https://simple-with-us.sentry.io/issues/?query=BOTFLEET-16"),
     ("CONGRESS-TRADE-4A", "https://simple-with-us.sentry.io/issues/?query=CONGRESS-TRADE-4A"),
     ("bc-a1b2c3d4-e5f6", "https://cursor.com/agents/bc-a1b2c3d4-e5f6"),

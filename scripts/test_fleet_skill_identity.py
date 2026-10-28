@@ -65,7 +65,7 @@ def _notes() -> str:
 def _protocol_doc_path() -> Path:
     """The protocol document is being renamed:  the mirror holds it under exactly one of the two names.
     Remove the old name when the rename is complete."""
-    for name in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md"):
+    for name in ("FLEET-PROTOCOL.md",):
         if Path(ROOT, name).is_file():
             return Path(ROOT, name)
     return Path(ROOT, "FLEET-PROTOCOL.md")
@@ -1277,6 +1277,79 @@ def _load_installer():
     return module
 
 
+class AlwaysOnRuleFileTests(unittest.TestCase):
+    """The always-on rule files a tool home reads are installed from the repo.
+
+    Without this, the live copy of a repo-tracked rule file drifts silently and a
+    seat reads the stale one (the sentence-gap rule sat a month behind the repo).
+    """
+
+    def setUp(self) -> None:
+        self.installer = _load_installer()
+
+    def test_every_repo_rule_file_is_mapped(self) -> None:
+        repo_rules = sorted(
+            os.path.relpath(os.path.join(root, name), ROOT)
+            for root, _dirs, files in os.walk(os.path.join(ROOT, ".cursor", "rules"))
+            for name in files
+            if name.endswith(".mdc")
+        )
+        self.assertTrue(repo_rules, "no repo cursor rules found to check")
+        mapped = {rel for rules in self.installer.ALWAYS_ON_RULE_FILES.values() for rel in rules}
+        for rel in repo_rules:
+            self.assertIn(rel, mapped, f"{rel} is not installed to a tool home")
+
+    def test_the_installed_gap_rule_is_the_current_one(self) -> None:
+        rel = ".cursor/rules/sentence-gap.mdc"
+        mapped = {rule for rules in self.installer.ALWAYS_ON_RULE_FILES.values() for rule in rules}
+        self.assertIn(rel, mapped)
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            body = fh.read()
+        self.assertIn("Current rule (owner ruling 2026-10-23)", body)
+        # The retired per-surface table: two literal ASCII spaces for files,
+        # commits, terminals and untested surfaces.
+        self.assertNotIn("| two literal ASCII spaces |", body)
+        # The entity belongs to the two exception panes and nowhere else.
+        self.assertNotIn("Any other agent chat pane that renders Markdown", body)
+
+    def _install_with_home(self, home: str) -> list[str]:
+        env_home = os.environ.get("HOME")
+        os.environ["HOME"] = home
+        try:
+            return self.installer._install_always_on_rules()
+        finally:
+            if env_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = env_home
+
+    def test_the_copy_lands_at_the_home_path(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            # The tool home has to exist already:  the install is gated on it.
+            for tool_home in self.installer.ALWAYS_ON_RULE_FILES:
+                os.makedirs(os.path.join(home, tool_home.replace("~/", "", 1)), exist_ok=True)
+            written = self._install_with_home(home)
+            self.assertTrue(written, "nothing was installed")
+            for rules in self.installer.ALWAYS_ON_RULE_FILES.values():
+                for src_rel, dest_rel in rules.items():
+                    path = os.path.join(home, dest_rel.replace("~/", "", 1))
+                    self.assertTrue(os.path.isfile(path), path)
+                    src = os.path.join(ROOT, src_rel)
+                    with open(path, "rb") as a, open(src, "rb") as b:
+                        self.assertEqual(a.read(), b.read())
+
+    def test_a_tool_home_that_is_not_there_is_not_created(self) -> None:
+        # tool_home_exists() reads the tool home to decide whether the tool is installed
+        # at all, so creating an empty one here would flip the next run's answer and hand
+        # a host a tool it never had.
+        with tempfile.TemporaryDirectory() as home:
+            written = self._install_with_home(home)
+            self.assertEqual(written, [], "a rule was installed into a home that was not there")
+            for tool_home in self.installer.ALWAYS_ON_RULE_FILES:
+                path = os.path.join(home, tool_home.replace("~/", "", 1))
+                self.assertFalse(os.path.exists(path), f"{tool_home} was created")
+
+
 class InstallerRepoOnlyTests(unittest.TestCase):
     """install-fleet-skills.py --repo-only touches the repo and never HOME."""
 
@@ -1518,7 +1591,7 @@ class LinearTeamListTests(unittest.TestCase):
         return tuple(ast.literal_eval(match.group(1)))
 
     def _sources(self) -> list[Path]:
-        #  Only files this repo owns.  AGENT-SYNC.md is deliberately absent:  it
+        #  Only files this repo owns.  FLEET-PROTOCOL.md is deliberately absent:  it
         #  is a generated mirror of the Fleet-OPS handbook, check-generated-mirror.py
         #  refuses an edit here, and its copy of the team list is fixed where it is
         #  generated rather than in this tree.

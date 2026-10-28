@@ -32,6 +32,8 @@ struct FleetOverviewView: View {
                     .tabItem { Label("Fleet", systemImage: "list.bullet.rectangle") }
                 FleetHostsView()
                     .tabItem { Label("Fleet Hosts", systemImage: "server.rack") }
+                ServerStatusPanel()
+                    .tabItem { Label("Server Status", systemImage: "cpu") }
                 ControlsView()
                     .tabItem { Label("Controls", systemImage: "slider.horizontal.3") }
                 WakeSettingsView()
