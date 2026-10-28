@@ -545,8 +545,8 @@ class RunCliTests(ParityCliTest):
             "--idempotency-key",
             "k1",
         )
-        p = self.board(*args, drop=("AGENT_SEAT",), code=6)
-        self.assertIn("`board run create_comment` is a write", p.stderr)
+        # The switch is retired, so there is no second refusal to check:  a write without a
+        # bearer-verified seat refuses at the seat gate, exit 6, and that is the only refusal.
         p = self.board(*args, drop=("AGENT_SEAT",), code=6)
         self.assertIn("no verified seat", p.stderr)
         p = self.board(*args[:4], code=2)
@@ -857,8 +857,9 @@ class McpCliTests(ParityCliTest):
     def test_write_tool_is_gated_tagged_and_idempotent(self):
         body = json.dumps({"urlOrId": "AFC-1", "decision": "commented", "body": "Looks good."})
         args = ("mcp", "call", "submit_diff_review", "--args-json", body, "--idempotency-key", "r1")
+        # The same gate as a read-free write:  no bearer-verified seat, no write.
         p = self.board(*args, drop=("AGENT_SEAT",), code=6)
-        self.assertIn("`board mcp call submit_diff_review` is a write", p.stderr)
+        self.assertIn("no verified seat", p.stderr)
         self.mock.mcp_result = {"content": [{"type": "text", "text": "Review submitted."}]}
         p = self.board(*args)
         self.assertIn("Review submitted.", p.stdout)
