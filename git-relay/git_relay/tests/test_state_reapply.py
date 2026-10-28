@@ -33,8 +33,18 @@ class StateReapply(unittest.TestCase):
             self.assertNotIn(action, _REAPPLY_STATE_ACTIONS)
 
     def test_audit_ids_not_bodies(self):
-        detail = _workflow_audit_detail({"comment_id": 2, "release_id": 3, "workflow_id": 4,
-            "artifact_id": 5, "tag": "v1", "sha": "a" * 40, "body": "private"}, {})
+        detail = _workflow_audit_detail(
+            {
+                "comment_id": 2,
+                "release_id": 3,
+                "workflow_id": 4,
+                "artifact_id": 5,
+                "tag": "v1",
+                "sha": "a" * 40,
+                "body": "private",
+            },
+            {},
+        )
         self.assertEqual(detail["comment_id"], 2)
         self.assertEqual(detail["artifact_id"], 5)
         self.assertNotIn("body", detail)
