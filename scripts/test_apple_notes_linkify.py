@@ -37,9 +37,9 @@ What is pinned here:
   (BOTFLEET-16) and a Cursor agent id (bc-a1b2c3d4-e5f6) each become a link to what they name, and each is
   counted under its own kind.
 
-The fixture is synthetic end to end.  Every hostname, owner, repository name and workspace slug in this file belongs
-to no one and exists nowhere but here (Kody rule:  use synthetic hostnames and paths in test fixtures).  The world
-the tests describe is:
+The fixture is synthetic end to end, with one honest exception.  Every hostname, owner, repository name and workspace
+slug in this file belongs to no one and exists nowhere but here (Kody rule:  use synthetic hostnames and paths in test
+fixtures).  The world the tests describe is:
 
   the GitHub host         example.test
   the GitHub owner        example-org, and other-org for the one repository that is not under it
@@ -48,6 +48,11 @@ the tests describe is:
   the fleet repository    Fixture-Repo
   the team keys           AFC -> Fixture-Repo, ST -> Title-Repo, OPS -> Other-Repo, CTS -> three repositories
   the named services      widget -> Fixture-Repo2, gadget -> Fixture-Repo3
+
+The five service hosts are the exception, and they are not secrets:  the fleet shortcut, the site, PagerDuty, Sentry and
+Cursor are public addresses, and the helper holds them as constants (owner rule:  no environment overrides), so a test
+cannot point the helper at a synthetic host and has to name the real one.  Those five constants are the only real
+hostnames in this file.
 
 The script runs with `osascript`, `shortcuts`, `open`, `pgrep` and `sleep` stubbed on PATH, as in
 test_apple_notes_actions.py, so nothing reaches Notes.  The link assertions use the preview hook
@@ -141,12 +146,13 @@ LINEAR_URL = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/issue/"
 #  named in full:  the reference a writer types, and the URL of that project.
 PROJECT_URL = "https://" + LINEAR_HOST + "/" + LINEAR_WORKSPACE + "/project/fixture-project-abc123"
 
-#  The other hosts the linkifier writes, all synthetic like the rest of the fixture (AFC-562).
-FLEETLINK_HOST = "fleetlink.example.test"
-SWU_HOST = "site.example.test"
-PAGERDUTY_HOST = "pager.example.test"
-SENTRY_HOST = "sentry.example.test"
-CURSOR_HOST = "agents.example.test"
+#  The other hosts the linkifier writes.  These are the real public addresses, because the helper holds
+#  them as constants and there is no environment knob to point them somewhere else (AFC-562).
+FLEETLINK_HOST = "fleetlink.online"
+SWU_HOST = "simplewithus.com"
+PAGERDUTY_HOST = "jays-services.pagerduty.com"
+SENTRY_HOST = "simple-with-us.sentry.io"
+CURSOR_HOST = "cursor.com"
 
 #  A stand-in for the gh CLI, which the helper asks which repository holds a pull request.  It says
 #  every repository holds every pull request unless GH_STUB_MISSING names one that does not, or is
@@ -176,10 +182,11 @@ esac
 exit 0
 """
 
-#  A stand-in for the gh CLI that never answers, the way a network that hangs does.  The helper has to
-#  give up on it and carry on.
+#  A stand-in for the gh CLI that never answers, the way a network that hangs does.  It waits in
+#  Python and not with sleep, because the fixture puts a stub on PATH that would make sleep return
+#  at once, and the gh would answer instead of hanging.
 GH_STUB_HANG = """#!/bin/sh
-exec sleep 30
+exec {python} -c 'import time; time.sleep(30)'
 """
 
 #  A stand-in for mktemp that cannot make the file the date counts are written to.  The helper then
@@ -241,11 +248,6 @@ class LinkifyTestCase(unittest.TestCase):
             "APPLE_NOTES_ACTION_LOG": str(self.log),
             #  the synthetic world, in force for every test unless a test overrides it
             "NOTES_LINKIFY_GITHUB_HOST": GITHUB_HOST,
-            "NOTES_LINKIFY_FLEETLINK_HOST": FLEETLINK_HOST,
-            "NOTES_LINKIFY_SWU_HOST": SWU_HOST,
-            "NOTES_LINKIFY_PAGERDUTY_HOST": PAGERDUTY_HOST,
-            "NOTES_LINKIFY_SENTRY_HOST": SENTRY_HOST,
-            "NOTES_LINKIFY_CURSOR_HOST": CURSOR_HOST,
             "NOTES_LINKIFY_LINEAR_HOST": LINEAR_HOST,
             "NOTES_GITHUB_OWNER": GITHUB_OWNER,
             "NOTES_LINKIFY_REPO": FLEET_REPO,
@@ -290,14 +292,35 @@ class LinkifyTests(LinkifyTestCase):
             "jaywedgeworth22",
             "github.com",
             "linear.app",
-            "simple-with-us",
-            "fleetlink.online",
-            "simplewithus.com",
-            "cursor.com",
-            "pagerduty.com",
-            "sentry.io",
         ):
             self.assertNotIn(real, out)
+
+    def test_the_service_hosts_are_the_real_public_addresses(self):
+        #  the helper holds these five hosts as constants, so a note links to the real public
+        #  addresses and a caller cannot point them somewhere else
+        self.assertEqual(
+            (
+                FLEETLINK_HOST,
+                SWU_HOST,
+                PAGERDUTY_HOST,
+                SENTRY_HOST,
+                CURSOR_HOST,
+            ),
+            (
+                "fleetlink.online",
+                "simplewithus.com",
+                "jays-services.pagerduty.com",
+                "simple-with-us.sentry.io",
+                "cursor.com",
+            ),
+        )
+        out = self.html(
+            "[AFC, MM] Notes",
+            "See fl/tools and SWU/docs and PagerDuty#384 and BOTFLEET-16 and bc-a1b2c3d4-e5f6.",
+        )
+        for host in (FLEETLINK_HOST, SWU_HOST, PAGERDUTY_HOST, SENTRY_HOST, CURSOR_HOST):
+            with self.subTest(host=host):
+                self.assertIn("https://" + host + "/", out)
 
     def test_a_linear_issue_identifier_becomes_a_link_to_the_issue(self):
         out = self.html("[AFC, MM] Notes", "Filed as OPS-1000 and tracked under AFC-547.")
@@ -647,48 +670,55 @@ class LinkifyTests(LinkifyTestCase):
         self.assertIn("Shipped in", bad)
         self.assertIn(f'<a href="{gh_url(FLEET_REPO, "957")}">PR #957</a>', bad)
 
-    def test_a_spent_lookup_budget_is_the_same_as_gh_never_asked(self):
-        #  the budget is already spent, so gh is never asked at all:  the reference links to the
-        #  repository of the team, even though gh would have said no repository holds it
+    def test_a_hung_lookup_spends_the_budget_of_the_run_once(self):
+        #  the budget of a run is a constant, so the budget caps the call itself, not just the
+        #  decision to call it:  a hung gh with a long timeout returns in roughly the budget, and a
+        #  run that has spent the budget stops asking
+        calls = self.tmp / "gh-calls"
+        stub = self.bindir / "gh"
+        stub.write_text(
+            "#!/bin/sh\n"
+            f"echo called >> {calls}\n"
+            f"exec {sys.executable} -c 'import time; time.sleep(30)'\n"
+        )
+        stub.chmod(0o700)
+        start = time.monotonic()
         out = self.html(
             "[AFC, MM] Notes",
-            "OPS-1000 in PR #957.",
-            GH_STUB_MISSING="*",
-            NOTES_LINKIFY_GH_BUDGET_S="0",
+            "OPS-1000 in PR #957 and PR #958.",
+            NOTES_LINKIFY_GH_TIMEOUT_S="30",
         )
-        self.assertIn(f'<a href="{gh_url(OTHER_REPO, "957", OTHER_OWNER)}">PR #957</a>', out)
+        elapsed = time.monotonic() - start
+        #  the first call hung until the budget was spent, and the second reference was never asked
+        #  of gh:  a question that was not asked is answered from the block, the same as one that
+        #  was never answered
+        self.assertEqual(calls.read_text().split(), ["called"], out)
+        for num in ("957", "958"):
+            self.assertIn(f'<a href="{gh_url(OTHER_REPO, num, OTHER_OWNER)}">PR #{num}</a>', out)
+        #  the budget of eight seconds was waited out, and the timeout of thirty was not
+        self.assertGreaterEqual(
+            elapsed, 7, f"the budget of the run did not bound the call:  {elapsed:.1f}s"
+        )
+        self.assertLess(elapsed, 13, f"a hung gh blocked {elapsed:.1f}s behind a 30s timeout")
 
     def test_a_pull_request_lookup_that_hangs_does_not_hang_the_note_save(self):
-        #  a gh that never answers must not stall the write path
+        #  a gh that never answers must not stall the write path:  the timeout ends it, and the
+        #  reference still resolves to the repository of the team
         stub = self.bindir / "gh"
-        stub.write_text(GH_STUB_HANG)
-        stub.chmod(0o700)
-        out = self.html(
-            "[AFC, MM] Notes",
-            "OPS-1000 in PR #957.",
-            NOTES_LINKIFY_GH_TIMEOUT_S="1",
-        )
-        #  the control:  the note still has its body, and the reference still resolves to the
-        #  repository of the team, because a question that was not answered is not a no
-        self.assertIn("OPS-1000", out)
-        self.assertIn(f'<a href="{gh_url(OTHER_REPO, "957", OTHER_OWNER)}">PR #957</a>', out)
-
-    def test_a_hung_lookup_is_capped_by_the_remaining_budget(self):
-        #  the budget caps the call itself, not just the decision to call it.  A hung gh with a
-        #  small budget returns in roughly the budget, not the full timeout.
-        stub = self.bindir / "gh"
-        stub.write_text(f"#!/bin/sh\nexec {sys.executable} -c 'import time; time.sleep(30)'\n")
+        stub.write_text(GH_STUB_HANG.format(python=sys.executable))
         stub.chmod(0o700)
         start = time.monotonic()
         out = self.html(
             "[AFC, MM] Notes",
             "OPS-1000 in PR #957.",
-            NOTES_LINKIFY_GH_BUDGET_S="2",
-            NOTES_LINKIFY_GH_TIMEOUT_S="15",
+            NOTES_LINKIFY_GH_TIMEOUT_S="1",
         )
         elapsed = time.monotonic() - start
+        #  the control:  the note still has its body, and the reference still resolves to the
+        #  repository of the team, because a question that was not answered is not a no
+        self.assertIn("OPS-1000", out)
         self.assertIn(f'<a href="{gh_url(OTHER_REPO, "957", OTHER_OWNER)}">PR #957</a>', out)
-        self.assertLess(elapsed, 8, f"a hung gh blocked {elapsed:.1f}s with a 2s budget")
+        self.assertLess(elapsed, 8, f"a hung gh blocked {elapsed:.1f}s behind a 1s timeout")
 
     def test_a_team_key_below_the_reference_does_not_veto_the_one_above_it(self):
         #  a team key further down the block says nothing about what came before it

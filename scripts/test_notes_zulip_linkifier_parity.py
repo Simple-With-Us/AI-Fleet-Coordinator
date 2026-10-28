@@ -10,7 +10,8 @@ other way round, so this test fails until both sides agree:
   every P-* project rule in TARGET is in PROJECT_PATHS with the slug its template names, and
   PROJECT_PATHS names nothing TARGET does not;
   the fl/ and fleetlink/ rules share one path shape in TARGET and in Notes, and both sides build
-  the same https URL from the same host.
+  the same https URL from the same host.  The Notes side holds that host as a constant and not as
+  an override (owner rule:  no environment overrides), so the test reads the constant.
 
 Run:  cd scripts && python3 -m unittest test_notes_zulip_linkifier_parity
 """
@@ -58,6 +59,14 @@ def notes_env_default(shell: str, name: str) -> str:
     match = re.search(f'_env\\("{re.escape(name)}", "([^"]+)"\\)', shell)
     if match is None:  # pragma: no cover - the names below always exist
         raise AssertionError(f"{name} has no default in apple-notes-coding.sh")
+    return match.group(1)
+
+
+def notes_constant(shell: str, name: str) -> str:
+    """The value of one module-level constant (NAME = "value") in the Notes script."""
+    match = re.search(rf'^{re.escape(name)} = "([^"]+)"$', shell, re.MULTILINE)
+    if match is None:  # pragma: no cover - the names below always exist
+        raise AssertionError(f"{name} is not a constant in apple-notes-coding.sh")
     return match.group(1)
 
 
@@ -142,9 +151,11 @@ class FleetlinkParityTest(unittest.TestCase):
 
     def test_both_sides_build_the_same_shortcut_url(self):
         shell = shell_text()
-        host = notes_env_default(shell, "NOTES_LINKIFY_FLEETLINK_HOST")
+        #  the host is a constant on the Notes side (owner rule:  no environment overrides), so the
+        #  two sides are compared through the constant and not through a knob default
+        host = notes_constant(shell, "FLEETLINK_HOST")
         self.assertIn(
-            'fleetlink_host + "/" + m.group("path")',
+            'FLEETLINK_HOST + "/" + m.group("path")',
             shell,
             "the Notes script no longer builds a fleet shortcut as https://<host>/<path>",
         )
@@ -153,7 +164,7 @@ class FleetlinkParityTest(unittest.TestCase):
                 self.assertEqual(
                     template,
                     f"https://{host}/{{+path}}",
-                    f"TARGET rule {rule_id} and the Notes default host disagree",
+                    f"TARGET rule {rule_id} and the Notes constant host disagree",
                 )
 
 

@@ -1413,15 +1413,13 @@ sys.stdout.write("".join(out))
 #   NOTES_LINKIFY_LINEAR_HOST=...  the Linear host, linear.app by default
 #   NOTES_LINKIFY_REPO=...     the fallback repository, AI-Fleet-Coordinator by default
 #   NOTES_LINKIFY_FORCE_REPO=...  use this repository for every pull request in this run
-#   NOTES_LINKIFY_FLEETLINK_HOST=...  the fleet shortcut host, fleetlink.online by default
-#   NOTES_LINKIFY_SWU_HOST=...  the site host, simplewithus.com by default
-#   NOTES_LINKIFY_PAGERDUTY_HOST=...  the PagerDuty host, jays-services.pagerduty.com by default
-#   NOTES_LINKIFY_SENTRY_HOST=...  the Sentry host, simple-with-us.sentry.io by default
-#   NOTES_LINKIFY_CURSOR_HOST=...  the Cursor host, cursor.com by default
 #   NOTES_LINEAR_WORKSPACE=... the Linear workspace slug, simple-with-us by default
 #   NOTES_LINEAR_TEAM_KEYS=...  the team keys that count, the sixteen Linear teams by default
 #   NOTES_LINKIFY_CONTEXT_CHARS=...  how near a repository name must be to count, 60 by default
-#   NOTES_LINKIFY_GH_BUDGET_S=...  the total gh lookup budget per run, 8 seconds by default, 0 to ask nothing
+#
+# The fleet shortcut host, the site host, the PagerDuty host, the Sentry host, the Cursor host and the gh lookup
+# budget are constants and not overrides:  the owner rule is no environment overrides, so they are the same on every
+# seat and in every run, and a caller cannot point the helper at another host or lift the cap on the lookups.
 _html_autolink() {
   /usr/bin/python3 -c '
 import html as _html
@@ -1441,11 +1439,6 @@ def _env(name, default):
 
 owner = _env("NOTES_GITHUB_OWNER", "Simple-With-Us")
 github_host = _env("NOTES_LINKIFY_GITHUB_HOST", "github.com")
-fleetlink_host = _env("NOTES_LINKIFY_FLEETLINK_HOST", "fleetlink.online")
-swu_host = _env("NOTES_LINKIFY_SWU_HOST", "simplewithus.com")
-pagerduty_host = _env("NOTES_LINKIFY_PAGERDUTY_HOST", "jays-services.pagerduty.com")
-sentry_host = _env("NOTES_LINKIFY_SENTRY_HOST", "simple-with-us.sentry.io")
-cursor_host = _env("NOTES_LINKIFY_CURSOR_HOST", "cursor.com")
 linear_host = _env("NOTES_LINKIFY_LINEAR_HOST", "linear.app")
 default_repo = _env("NOTES_LINKIFY_REPO", "AI-Fleet-Coordinator")
 forced_repo = _env("NOTES_LINKIFY_FORCE_REPO", "")
@@ -1459,6 +1452,16 @@ except ValueError:
     #  the linkified HTML would come back empty, so the body would be written blank.
     ctx_chars = 60
 debug = _env("NOTES_LINKIFY_DEBUG", "")
+
+#  The hosts of the five services the linkifier links to, and the gh lookup budget of one run.  They
+#  are constants on purpose:  the owner rule is no environment overrides, so these names and this cap
+#  are the same on every seat and in every run.
+FLEETLINK_HOST = "fleetlink.online"
+SWU_HOST = "simplewithus.com"
+PAGERDUTY_HOST = "jays-services.pagerduty.com"
+SENTRY_HOST = "simple-with-us.sentry.io"
+CURSOR_HOST = "cursor.com"
+GH_BUDGET_S = 8.0
 
 #  A repository that is not under the default owner.
 REPO_OWNER = {"Fleet-OPS": "jaywedgeworth22"}
@@ -1717,13 +1720,9 @@ def _gh_has_pr(repo, num):
     key = (repo, num)
     if key in _gh_cache:
         return _gh_cache[key]
-    try:
-        _budget = float(_env("NOTES_LINKIFY_GH_BUDGET_S", "8") or 8)
-    except ValueError:
-        _budget = 8.0
     result = None
     gh = None
-    _remaining = _budget - _gh_spent
+    _remaining = GH_BUDGET_S - _gh_spent
     if _remaining > 0:
         gh = _gh_path()
     if gh:
@@ -2020,8 +2019,8 @@ def _process_unit(unit_html, is_row, title_repo):
             #  issue rule.
             claimed = []
             for rx, kind, url_of in (
-                (FL_RE, "fleetlink", lambda m: "https://" + fleetlink_host + "/" + m.group("path")),
-                (SWU_RE, "swu", lambda m: "https://" + swu_host + "/" + m.group("slug")),
+                (FL_RE, "fleetlink", lambda m: "https://" + FLEETLINK_HOST + "/" + m.group("path")),
+                (SWU_RE, "swu", lambda m: "https://" + SWU_HOST + "/" + m.group("slug")),
                 (
                     GH_RE,
                     "repos",
@@ -2030,17 +2029,17 @@ def _process_unit(unit_html, is_row, title_repo):
                 (
                     PAGERDUTY_RE,
                     "pagerduty",
-                    lambda m: "https://" + pagerduty_host + "/incidents/" + m.group("id"),
+                    lambda m: "https://" + PAGERDUTY_HOST + "/incidents/" + m.group("id"),
                 ),
                 (
                     SENTRY_RE,
                     "sentry",
-                    lambda m: "https://" + sentry_host + "/issues/?query=" + m.group("id"),
+                    lambda m: "https://" + SENTRY_HOST + "/issues/?query=" + m.group("id"),
                 ),
                 (
                     CURSOR_RE,
                     "cursor",
-                    lambda m: "https://" + cursor_host + "/agents/bc-" + m.group("id"),
+                    lambda m: "https://" + CURSOR_HOST + "/agents/bc-" + m.group("id"),
                 ),
             ):
                 for m in rx.finditer(run):
