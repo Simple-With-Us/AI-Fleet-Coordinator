@@ -90,6 +90,9 @@ class SeatPolicy:
         "wf_run_get",
         "wf_run_artifacts",
 
+        "wf_release_assets",
+        "wf_release_asset_get",
+        "wf_release_asset_upload",
         "wf_review_submit",
         "wf_review_inline",
         "wf_branch_create",

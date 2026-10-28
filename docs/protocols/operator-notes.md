@@ -30,6 +30,7 @@ The script is the one place formatting is enforced (the title row, the date row,
 ## Who May Do What
 
 - **create:**  the title is `[TEAM_KEY, Agent] Topic` and the Agent is the caller's own canonical name (notes.title_problem).  A create or an update carries a session id unless the caller is a single-thread identity (session_ids.is_exempt).
+- **Calling from the server:**  `simple-notes` acts as `AGENT_SEAT` (or `--identity`), over signed HTTPS as the SERVER principal.  That seat must be in `[notes_queue] server_seats` and pass the same title and session rules, so `AGENT_SEAT=CLAUDE simple-notes create "[AFC, Claude] Topic"` works from any server shell holding the key.  `AGENT_SEAT=OPERATOR` does not:  OPERATOR is in no seat list, the title check knows it only as `OPERATOR` (never the display form `Operator`), and it is not session-exempt.
 - **update, pin, unpin, read:**  any note in the Coding folder (owner, Oct 22).  An update whose title does not carry the caller's name runs with `--existing-only`, so a missing note answers `not_found` instead of a new untagged note.
 - **list:**  the whole Coding folder.
 - Every title is at most 200 characters, holds no double quote, backslash or control character, and does not start with `-`.
