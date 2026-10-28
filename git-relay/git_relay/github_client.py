@@ -340,7 +340,7 @@ class GitHubClient:
             kind = first.get("type") if isinstance(first, dict) else None
             detail = f" ({kind})" if isinstance(kind, str) and kind else ""
             # Only a structured authorization denial at this sole mutation,
-            # with no mutation result, proves that no write took place. Partial
+            # with no mutation result, proves that no write took place.  Partial
             # results, mixed errors and unscoped errors remain unknown.
             payload = data.get("data")
             no_result = payload is None or (
