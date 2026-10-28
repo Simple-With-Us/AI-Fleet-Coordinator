@@ -69,7 +69,7 @@ final class OpsCommandBuilderTests: XCTestCase {
         )
         XCTAssertEqual(invocation.executable, "/usr/bin/python3")
         XCTAssertEqual(invocation.arguments, [
-            "-s", "-m", "fleet_knobs", "set", "FLEET_AUTOPUSH_MODE", "report", "--plan", "--json",
+            "-s", "-m", "fleet_knobs", "set", "--plan", "--json", "--", "FLEET_AUTOPUSH_MODE", "report",
         ])
         XCTAssertEqual(invocation.workingDirectory, "/tmp/example-repo/scripts")
         XCTAssertEqual(invocation.environment["PYTHONPATH"], "/tmp/example-repo/scripts")
@@ -85,7 +85,7 @@ final class OpsCommandBuilderTests: XCTestCase {
             for: .knobSet(key: "FLEET_AUTOPUSH_REPOS", value: ""), mode: .yes
         )
         XCTAssertEqual(invocation.arguments, [
-            "-s", "-m", "fleet_knobs", "set", "FLEET_AUTOPUSH_REPOS", "", "--yes", "--json",
+            "-s", "-m", "fleet_knobs", "set", "--yes", "--json", "--", "FLEET_AUTOPUSH_REPOS", "",
         ])
     }
 
@@ -112,7 +112,9 @@ final class OpsCommandBuilderTests: XCTestCase {
 
     func test_a_negative_number_is_a_value_and_not_a_flag() throws {
         XCTAssertTrue(OpsCommandBuilder.isSafeKnobValue("-1"))
-        XCTAssertNoThrow(try exampleBuilder().invocation(for: .knobSet(key: "FLEET_X", value: "-1"), mode: .plan))
+        let invocation = try exampleBuilder().invocation(for: .knobSet(key: "FLEET_X", value: "-1"), mode: .plan)
+        // The value comes after `--`,  so the knob engine's parser takes it as the value.
+        XCTAssertEqual(Array(invocation.arguments.suffix(3)), ["--", "FLEET_X", "-1"])
     }
 
     func test_a_templated_unit_name_is_a_token() {
@@ -370,6 +372,17 @@ final class OpsAllowlistAndAuditTests: XCTestCase {
         let reading = OpsAuditLog.read(at: url, limit: 10_000)
         XCTAssertEqual(reading.unreadable, 0)
         XCTAssertEqual(reading.entries.count, OpsAuditLog.maximumTailBytes / 256)
+    }
+
+    func test_a_log_one_byte_over_the_tail_keeps_its_first_row() throws {
+        // 5 rows of 52,429 bytes are 262,145 bytes:  the tail plus one,  so the read
+        // starts at the first byte of the file and every row is whole.
+        let url = try writeLargeLog(rowLength: 52_429, rows: 5)
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        XCTAssertEqual(OpsAuditLog.maximumTailBytes + 1, 52_429 * 5)
+        let reading = OpsAuditLog.read(at: url, limit: 10_000)
+        XCTAssertEqual(reading.unreadable, 0)
+        XCTAssertEqual(reading.entries.count, 5)
     }
 
     func test_a_log_that_is_not_there_is_empty_and_not_a_problem() {
@@ -792,5 +805,8 @@ final class KnobEditorTests: XCTestCase {
         XCTAssertEqual(KnobRegistry.Knob.plainDefault("unset"), "")
         XCTAssertEqual(KnobRegistry.Knob.plainDefault("none, fails closed"), "")
         XCTAssertEqual(KnobRegistry.Knob.plainDefault("off"), "off")
+        XCTAssertEqual(KnobRegistry.Knob.plainDefault("none"), "")
+        XCTAssertEqual(KnobRegistry.Knob.plainDefault("None (uses the built-in list)"), "")
+        XCTAssertEqual(KnobRegistry.Knob.plainDefault("nonempty"), "nonempty")
     }
 }

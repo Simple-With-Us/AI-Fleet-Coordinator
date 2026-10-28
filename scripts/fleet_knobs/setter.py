@@ -198,8 +198,14 @@ def audit_path() -> str:
 
 def audit(path: str, row: dict[str, Any]) -> bool:
     """Append one JSON line, 0600, to a regular file of ours.  False when it cannot."""
+    directory = os.path.dirname(path)
     try:
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        # A symlink in place of the directory would carry the audit row somewhere else:
+        # the directory must be a real one of ours.
+        info = os.lstat(directory)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+            return False
         fd = os.open(
             path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600
         )
@@ -240,7 +246,7 @@ def set_knob(
     runner = runner or run
     reader = reader or current
     find_cli = find_cli or source.find_cli
-    now = now or (lambda: datetime.datetime.now(datetime.UTC))
+    now = now or (lambda: datetime.datetime.now(datetime.timezone.utc))
     answer: dict[str, Any] = {
         "ok": False,
         "verb": "set",

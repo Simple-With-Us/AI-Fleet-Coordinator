@@ -17,7 +17,7 @@ SPEC.loader.exec_module(fms)
 # Shaped like `launchctl print gui/501/<label>` on macOS 14 and 15, trimmed.
 RUNNING = """gui/501/com.jay.fleet-tools-doctor = {
 \tactive count = 1
-\tpath = /Users/jay/Library/LaunchAgents/com.jay.fleet-tools-doctor.plist
+\tpath = /Users/example/Library/LaunchAgents/com.jay.fleet-tools-doctor.plist
 \ttype = LaunchAgent
 \tstate = running
 
@@ -54,7 +54,7 @@ RUNNING = """gui/501/com.jay.fleet-tools-doctor = {
 
 WAITING_FAILED = """gui/501/com.jay.mac-cleanup = {
 \tactive count = 0
-\tpath = /Users/jay/Library/LaunchAgents/com.jay.mac-cleanup.plist
+\tpath = /Users/example/Library/LaunchAgents/com.jay.mac-cleanup.plist
 \ttype = LaunchAgent
 \tstate = not running
 
@@ -422,7 +422,7 @@ class RepoTemplates(unittest.TestCase):
             self.assertTrue(data["RunAtLoad"])
             self.assertIn("--write", args)
             self.assertTrue(
-                args[args.index("--write") + 1].startswith("/Users/jay/.local/state/fleet-tools/")
+                "/.local/state/fleet-tools/" in args[args.index("--write") + 1]
             )
 
 

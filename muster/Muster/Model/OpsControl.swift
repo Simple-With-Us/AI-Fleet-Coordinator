@@ -50,6 +50,8 @@ enum OpsControlRoute {
     static let planTimeout: TimeInterval = 90
     /// An update can take minutes:  `systemctl start` waits for a oneshot unit to finish.
     static let runTimeout: TimeInterval = 900
+    /// How long a timed-out helper has to exit after SIGTERM before it gets SIGKILL.
+    static let killGrace: TimeInterval = 5
 }
 
 // MARK: - The actions
@@ -324,7 +326,12 @@ struct OpsCommandBuilder {
     func invocation(for action: OpsAction, mode: OpsMode) throws -> OpsInvocation {
         try Self.validate(action)
         let timeout = mode == .plan ? OpsControlRoute.planTimeout : OpsControlRoute.runTimeout
-        let tail = action.verbArguments + [mode.flag, "--json"]
+        var tail = action.verbArguments + [mode.flag, "--json"]
+        if case .knobSet(let key, let value) = action {
+            // The flags go first and `--` ends them,  so the value is never read as a flag
+            // even when it starts with `-`.
+            tail = ["set", mode.flag, "--json", "--", key, value]
+        }
         switch action {
         case .macAgent:
             return OpsInvocation(
@@ -454,7 +461,14 @@ struct OpsProcessRunner: OpsRunning {
         timer.schedule(deadline: .now() + invocation.timeout)
         timer.setEventHandler {
             flag.set()
-            if process.isRunning { process.terminate() }
+            guard process.isRunning else { return }
+            process.terminate()
+            // A child that ignores SIGTERM gets SIGKILL a few seconds later,  so the wait
+            // below always ends.
+            let pid = process.processIdentifier
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + OpsControlRoute.killGrace) {
+                if process.isRunning { kill(pid, SIGKILL) }
+            }
         }
         timer.resume()
         process.waitUntilExit()

@@ -181,11 +181,11 @@ REAL_FILE_SYSTEMS = (
 
 def utc_now() -> str:
     """The time this report was made,  in the spelling the doctor uses."""
-    return datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def iso_from_timestamp(value: float) -> str:
-    moment = datetime.datetime.fromtimestamp(value, datetime.UTC)
+    moment = datetime.datetime.fromtimestamp(value, datetime.timezone.utc)
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 

@@ -687,6 +687,23 @@ class SourceTests(unittest.TestCase):
         self.assertNotIn("os.system", text)
         self.assertNotIn("os.popen", text)
 
+    def test_mac_run_scripts_import_on_python_3_9(self):
+        # The Mac runs these under /usr/bin/python3 (3.9):  `datetime.UTC` is 3.11+, and an
+        # automated fix once rewrote `timezone.utc` to it.
+        paths = [
+            Path(HERE, name)
+            for name in (
+                "fleet-ops-control.py",
+                "fleet-mac-services.py",
+                "fleet-worker-health.py",
+                "fleet-tools-doctor.py",
+                "fleet-server-status.py",
+            )
+        ] + sorted(Path(HERE, "fleet_knobs").glob("*.py"))
+        for path in paths:
+            with self.subTest(path=path.name):
+                self.assertNotIn("datetime.UTC", path.read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -410,7 +410,10 @@ private struct KnobEditSheet: View {
                     .font(.system(size: 12, design: .monospaced))
                     .frame(width: 140)
                     .onChange(of: numberText) { _, fresh in
-                        if let parsed = Int(fresh.trimmingCharacters(in: .whitespaces)) {
+                        // The stepper only takes a number in range;  an out-of-range text
+                        // stays on screen and `problem` holds Show Plan back.
+                        if let parsed = Int(fresh.trimmingCharacters(in: .whitespaces)),
+                           (lower...upper).contains(parsed) {
                             number = parsed
                         }
                     }

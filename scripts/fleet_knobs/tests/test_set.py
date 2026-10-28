@@ -204,6 +204,15 @@ class WriteTests(SetTestCase):
         with open(self.audit_file, encoding="utf-8") as fh:
             self.assertNotIn(SIGNING, fh.read())
 
+    def test_a_symlinked_audit_directory_is_not_written_through(self):
+        elsewhere = self.home / "elsewhere"
+        elsewhere.mkdir()
+        listener = os.path.dirname(self.audit_file)
+        os.makedirs(os.path.dirname(listener), exist_ok=True)
+        os.symlink(elsewhere, listener)
+        self.assertFalse(setter.audit(self.audit_file, {"key": "FLEET_AUTOPUSH_MODE"}))
+        self.assertEqual(os.listdir(elsewhere), [])
+
 
 class LastKnownGoodTests(SetTestCase):
     def test_live_reread_refreshes_the_copy(self):

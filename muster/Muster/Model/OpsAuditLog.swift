@@ -120,9 +120,12 @@ enum OpsAuditLog {
             if size > tail {
                 // Start one byte early,  so a tail that begins exactly at a row keeps that
                 // row:  the byte before it is the newline that ends the row before.
-                try handle.seek(toOffset: size - tail - 1)
+                let start = size - tail - 1
+                try handle.seek(toOffset: start)
                 data = try handle.readToEnd() ?? Data()
-                if let newline = data.firstIndex(of: 0x0A) {
+                if start == 0 {
+                    // The read began at the start of the file,  so its first row is whole.
+                } else if let newline = data.firstIndex(of: 0x0A) {
                     data = Data(data[data.index(after: newline)...])
                 } else {
                     // One row longer than the whole tail:  there is no whole row to show.

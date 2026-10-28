@@ -180,7 +180,7 @@ def validate_config(doc):
         "agents": agents,
         "units": units,
         "updates": updates,
-        "redeploy": coolify.get("redeploy", False) is True,
+        "redeploy": bool(coolify.get("redeploy", False)),
     }
 
 
@@ -432,7 +432,7 @@ def _parse_time(text):
         moment = datetime.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
         return None
-    return moment.replace(tzinfo=datetime.UTC).timestamp()
+    return moment.replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
 def coolify_base(ctx):
@@ -618,7 +618,7 @@ def execute(ctx, scope, action, target, commands):
 def audit(ctx, scope, action, target, result):
     """One JSON line, 0600, appended.  Never command output, never a uuid or a hostname."""
     row = {
-        "time": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "time": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "host": "mac" if ctx.platform.startswith("darwin") else "server",
         "verb": f"{scope} {action}",
         "target": target,

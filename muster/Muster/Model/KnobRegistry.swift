@@ -630,7 +630,10 @@ extension KnobRegistry.Knob {
     /// A registry default,  with the words that mean "nothing" turned into no text.
     static func plainDefault(_ value: String) -> String {
         let lower = value.lowercased()
-        if lower == "empty" || lower == "unset" || lower.hasPrefix("none") {
+        // `none` alone or followed by a note (`none (uses the built-in list)`),  never a
+        // word that only starts with it,  such as `nonempty`.
+        let noneWithNote = ["none ", "none,", "none;", "none("].contains { lower.hasPrefix($0) }
+        if lower == "empty" || lower == "unset" || lower == "none" || noneWithNote {
             return ""
         }
         return value
