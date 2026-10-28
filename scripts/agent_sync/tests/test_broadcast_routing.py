@@ -647,6 +647,18 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         daemon.route_message(daemon.seats["CLAUDE"], dict(message))
         self.assertEqual(daemon._broadcast_audits, {})
 
+    def test_an_unmapped_sender_at_all_schedules_no_audit(self) -> None:
+        """A sender id that is in no user map is not known to be a bot:  the router calls an
+        unknown sender a bot, and the audit must not follow one."""
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.fake.add_message(
+            "Codex", "agent-sync", "t", "@all the deploy is broken"
+        )
+        message = next(m for m in self.fake.messages if m["id"] == message_id)
+        daemon.route_message(daemon.seats["CLAUDE"], dict(message, sender_id=987654))
+        self.assertEqual(daemon._broadcast_audits, {})
+
     def test_an_unknown_seat_at_all_still_schedules_one_audit(self) -> None:
         """A bot whose email maps to no seat of the fleet still used `@all`:  the audit is
         scheduled, and the reminder says the check could not run rather than dropping it."""

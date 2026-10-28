@@ -1762,7 +1762,7 @@ class Daemon:
         # asks, ten minutes later, whether Jay asked for it or the bot told him why.  The gate is
         # the message itself, not the routing verdict, and the audit keeps one entry per message
         # id, so every seat that sees the broadcast agrees on one reminder.
-        if self._peer_broadcast_audit(message, c):
+        if self._peer_broadcast_audit(message, c, runner):
             self.schedule_broadcast_audit(message, c)
         # The seats this listener holds that cannot take a routine/headless wake for a
         # channel-wide `@all`.  This is not owner-only bookkeeping:  a fleet bot's `@all` wakes
@@ -3189,7 +3189,9 @@ class Daemon:
             c.peer_broadcast and not c.owner_topic and not c.dm and not c.stale and not c.no_wake
         )
 
-    def _peer_broadcast_audit(self, message: Mapping[str, Any], c: R.Classes) -> bool:
+    def _peer_broadcast_audit(
+        self, message: Mapping[str, Any], c: R.Classes, runner: SeatRunner
+    ) -> bool:
         """Is this message a fleet bot's `@all` that the owner must be asked about?
 
         The audit is about the MESSAGE, not about the seat that routed it, so the gate is not
@@ -3201,14 +3203,31 @@ class Daemon:
         topic, that is not stale and carries no marker.  `schedule_broadcast_audit` keeps one
         audit per message id, so the seats that see the broadcast agree on one reminder.
 
+        The sender has to be KNOWN to be a bot:  the router's `sender_is_bot` says True for a
+        sender id that is missing or is not in the user map, so it cannot tell a fleet bot from
+        a sender nobody knows.  The gate asks the seat runner's user map instead, and an
+        unmapped sender id is not a bot this fleet can report on.
+
         The sender's email is enough too, and the seat it maps to is not required:  a bot whose
         email maps to no seat of the fleet still used `@all`, and the audit has a "could not
         check" reminder for exactly that case, so the audit is scheduled rather than dropped."""
         if c.no_wake or c.dm or c.stale or c.owner or c.owner_topic:
             return False
-        if not c.broadcast_all or not c.sender_is_bot:
+        if not c.broadcast_all or not self._sender_is_known_bot(message, runner):
             return False
         return bool(str(message.get("sender_email") or ""))
+
+    def _sender_is_known_bot(self, message: Mapping[str, Any], runner: SeatRunner) -> bool:
+        """Is the sender known to be a bot?
+
+        The sender id has to be in the seat runner's user map and it has to be a bot there.  A
+        sender id that the map does not know is not a bot this fleet can report on:  the router
+        calls such a sender a bot, and the audit would then ask the owner about a human."""
+        sender_id = message.get("sender_id")
+        if not isinstance(sender_id, int):
+            return False
+        person = runner.users.get(sender_id)
+        return bool(person) and bool(person.get("is_bot"))
 
     def _log_broadcast_wake_unsupported(self, message_id: int) -> None:
         """Seats this listener holds that cannot take a routine/headless wake (for owner `@all`).
