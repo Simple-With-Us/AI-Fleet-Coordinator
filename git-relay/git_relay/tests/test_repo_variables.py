@@ -98,8 +98,9 @@ class Variables(unittest.TestCase):
         self.test_permission_never_assumed_from_shared_ceiling()
 
     def test_read_blocks_external_credential_and_create_201_empty_object(self):
-        from git_relay.github_client import GitHubClient
         import io
+
+        from git_relay.github_client import GitHubClient
 
         class Response(io.BytesIO):
             status = 201
