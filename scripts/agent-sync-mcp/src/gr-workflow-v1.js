@@ -25,6 +25,12 @@ const SPECS = {
   wf_release_list: ['release list.',obj(['repo'],{repo:REPO})],
   wf_release_get: ['release get.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
   wf_release_delete: ['release delete.',obj(['repo', 'release_id'],{repo:REPO,release_id:INT})],
+  wf_assignees_add: ['assignees add.',obj(['repo', 'number', 'assignees'],{repo:REPO,number:INT,assignees:{type:'array',minItems:1,maxItems:10,items:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'}}})],
+  wf_assignees_remove: ['assignees remove.',obj(['repo', 'number', 'assignees'],{repo:REPO,number:INT,assignees:{type:'array',minItems:1,maxItems:10,items:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'}}})],
+  wf_issue_lock: ['issue lock.',obj(['repo', 'number', 'reason'],{repo:REPO,number:INT,reason:{type:'string',enum:['off-topic','too heated','resolved','spam']}})],
+  wf_issue_unlock: ['issue unlock.',obj(['repo', 'number'],{repo:REPO,number:INT})],
+  wf_label_create: ['label create.',obj(['repo', 'name', 'color', 'description'],{repo:REPO,name:STR,color:{type:'string',pattern:'^[0-9a-fA-F]{6}$'},description:STR})],
+  wf_label_delete: ['label delete.',obj(['repo', 'name'],{repo:REPO,name:STR})],
   wf_pr_get: ['Read pr get.', obj(['repo', 'number'], {repo:REPO,number:INT})],
   wf_pr_reviews: ['Read pr reviews.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
   wf_pr_comments: ['Read pr comments.', obj(['repo', 'number'], {repo:REPO,number:INT,per_page:PER_PAGE})],
@@ -38,9 +44,9 @@ const SPECS = {
   wf_run_get: ['Read run get.', obj(['repo', 'run_id'], {repo:REPO,run_id:INT})],
   wf_run_artifacts: ['Read run artifacts.', obj(['repo', 'run_id'], {repo:REPO,run_id:INT,per_page:PER_PAGE})],
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_workflow_disable: ['workflow disable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_run_delete: ['run delete.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
-  wf_artifact_delete: ['artifact delete.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
+  wf_workflow_disable: ['Disable a workflow, stopping future CI triggers; can break required checks. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
+  wf_run_delete: ['Irreversibly delete run and logs. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
+  wf_artifact_delete: ['Irreversibly remove artifact data. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
 
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
@@ -76,7 +82,7 @@ export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.free
 })));
 const typeOk = (schema, v) => schema.type === 'integer' ? Number.isInteger(v) && v >= schema.minimum && v <= schema.maximum
   : schema.type === 'boolean' ? typeof v === 'boolean'
-  : schema.type === 'array' ? Array.isArray(v) && v.length >= schema.minItems && v.length <= schema.maxItems && v.every(x => validWfV1Args2(schema.items, x))
+  : schema.type === 'array' ? Array.isArray(v) && v.length >= schema.minItems && v.length <= schema.maxItems && v.every(x => schema.items.type === "object" ? validWfV1Args2(schema.items, x) : typeOk(schema.items, x))
   : typeof v === 'string' && (!schema.pattern || new RegExp(schema.pattern).test(v)) && (!schema.enum || schema.enum.includes(v)) &&
     (!schema.minLength || v.length >= schema.minLength) && (!schema.maxLength || v.length <= schema.maxLength);
 function validWfV1Args2(schema, args) {
@@ -85,25 +91,25 @@ function validWfV1Args2(schema, args) {
   return Object.keys(args).every(k => Object.hasOwn(schema.properties,k) && typeOk(schema.properties[k], args[k]));
 }
 // Iterative guard runs before recursive schema code or JSON serialization.
-export function boundedWorkflowInput(args) {
+export function boundedWorkflowInput(args, {maxDepth=6,maxNodes=500,maxBytes=65536,maxString=65536,maxKeys=100}={}) {
   const stack=[[args,0]], seen=new Set(); let nodes=0, bytes=0;
   while(stack.length) {
     const [value,depth]=stack.pop();
-    if(++nodes>500 || depth>6) return false;
+    if(++nodes>maxNodes || depth>maxDepth) return false;
     if(typeof value==='string') {
-      if(value.length>65536) return false;
+      if(value.length>maxString) return false;
       bytes+=new TextEncoder().encode(value).length;
     } else if(value && typeof value==='object') {
       if(seen.has(value)) return false; seen.add(value);
       if(Object.getPrototypeOf(value)!==Object.prototype && !Array.isArray(value) && Object.getPrototypeOf(value)!==null) return false;
-      const keys=Object.keys(value); if(keys.length>100) return false;
+      const keys=Object.keys(value); if(keys.length>maxKeys) return false;
       for(const key of keys) {
         const d=Object.getOwnPropertyDescriptor(value,key);
         if(!d || !Object.hasOwn(d,'value')) return false;
         bytes+=key.length; stack.push([d.value,depth+1]);
       }
     } else if(!['number','boolean'].includes(typeof value) && value!==null) return false;
-    if(bytes>65536) return false;
+    if(bytes>maxBytes) return false;
   }
   return true;
 }
@@ -125,6 +131,12 @@ const RESPONSE_KEYS = {
   wf_release_delete:['deleted'],
   wf_workflow_enable:['completed','workflow_id','state'],
   wf_workflow_disable:['completed','workflow_id','state'],
+  wf_assignees_add:['result'],
+  wf_assignees_remove:['result'],
+  wf_issue_lock:['completed'],
+  wf_issue_unlock:['completed'],
+  wf_label_create:['result'],
+  wf_label_delete:['completed'],
   wf_pr_get:['pull'],
   wf_pr_reviews:['reviews','complete'],
   wf_pr_comments:['comments','complete'],
@@ -180,10 +192,13 @@ const readResponseSchemas={
  wf_run_artifacts:z.object({artifacts:objectWith({total_count:z.number().int().nonnegative(),artifacts:z.array(artifactObject).max(50)})}).strict(),
 };
 export function validWfV1Response(action, body, args) {
- if(!boundedWorkflowInput(body))return false;
+ if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
 
   if (action === 'wf_release_list' && (!Array.isArray(body?.releases) || body.releases.length > 50 || !body.releases.every(x => x && Number.isInteger(x.id) && x.id > 0 && typeof x.draft === 'boolean' && typeof x.prerelease === 'boolean' && Object.keys(x).every(k => ['id','tag_name','name','html_url','created_at','published_at','draft','prerelease'].includes(k)) && ['tag_name','name','html_url','created_at','published_at'].every(k => x[k] === null || typeof x[k] === 'string' && new TextEncoder().encode(x[k]).length <= 2048)))) return false;
+ const key={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
+ if(key){const shape={completed:z.literal(true),[key]:z.number().int().positive()};if(action==='wf_workflow_enable'||action==='wf_workflow_disable')shape.state=z.literal(action==='wf_workflow_enable'?'enabled':'disabled');const parsed=z.object(shape).strict().safeParse(body);if(!parsed.success)return false;body=parsed.data;}
+
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;
@@ -197,11 +212,15 @@ export function validWfV1Response(action, body, args) {
   if (['wf_issue_comment_delete','wf_review_comment_delete','wf_release_delete'].includes(action) && body.deleted !== true) return false;
   if (action === 'wf_release_list' && !Array.isArray(body.releases)) return false;
   if ('result' in body && (!body.result || typeof body.result !== 'object' || Array.isArray(body.result))) return false;
+  if ('result' in body && (!Number.isInteger(body.result?.id) || body.result.id < 1)) return false;
+  if (action.startsWith('wf_assignees_') && (!Number.isInteger(body.result?.number) || !Array.isArray(body.result?.assignees) || !body.result.assignees.every(x => typeof x?.login === 'string'))) return false;
+  if (action === 'wf_label_create' && (typeof body.result?.name !== 'string' || !/^[0-9a-fA-F]{6}$/.test(body.result?.color))) return false;
   for (const k of ['pull','commit','comparison','branch','repository','workflows','run','artifacts']) {
     if ((action === 'wf_file_put' || action === 'wf_files_put') && (k === 'branch' || k === 'commit')) { if (typeof body[k] !== 'string' || body[k].length === 0) return false; continue; }
     if (k in body && (!body[k] || typeof body[k] !== 'object' || Array.isArray(body[k]))) return false;
   }
   if ('completed' in body && body.completed !== true) return false;
+  if ('result' in body && (!body.result || typeof body.result !== 'object' || Array.isArray(body.result))) return false;
   const completedId = {wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
   if (completedId && (!Number.isInteger(body[completedId]) || body[completedId] < 1)) return false;
   if (completedId && args && body[completedId] !== args[completedId]) return false;
