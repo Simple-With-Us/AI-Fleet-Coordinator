@@ -58,6 +58,11 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_milestones": ({"issues": "read"}, False),
+    "wf_milestone_get": ({"issues": "read"}, False),
+    "wf_milestone_create": ({"issues": "write"}, True),
+    "wf_milestone_update": ({"issues": "write"}, True),
+    "wf_milestone_delete": ({"issues": "write"}, True),
     "wf_labels_set": ({"issues": "write"}, True),
     "wf_reviewers_request": ({"pull_requests": "write"}, True),
     "wf_reviewers_remove": ({"pull_requests": "write"}, True),
@@ -890,6 +895,99 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "inline write outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "commit_id", "html_url")}}
+
+    @staticmethod
+    def _milestone_summary(value):
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "milestone receipt unverifiable")
+        if (
+            isinstance(value.get("number"), bool)
+            or not isinstance(value.get("number"), int)
+            or value["number"] <= 0
+            or value.get("state") not in ("open", "closed")
+            or not isinstance(value.get("title"), str)
+            or not 1 <= len(value["title"].encode("utf-8")) <= 1024
+        ):
+            raise RelayGitHubError(502, "milestone receipt unverifiable")
+        return {
+            k: value.get(k)
+            for k in (
+                "number",
+                "title",
+                "state",
+                "html_url",
+                "due_on",
+                "open_issues",
+                "closed_issues",
+            )
+        }
+
+    def wf_milestones(self, repo, args):
+        _only(args, ("repo", "state", "per_page"))
+        state, count = _enum(args, "state", ("open", "closed", "all"), "open"), _page(args)
+        result = self._get(f"/repos/{repo}/milestones?state={state}&per_page={count}")
+        rows = _arr(result)
+        if len(rows) > count:
+            raise RelayGitHubError(502, "milestone list unverifiable")
+        return {
+            "milestones": [self._milestone_summary(x) for x in rows],
+            "complete": len(rows) < count,
+        }
+
+    def wf_milestone_get(self, repo, args):
+        _only(args, ("repo", "milestone"))
+        number = _int(args, "milestone")
+        result = self._milestone_summary(self._get(f"/repos/{repo}/milestones/{number}"))
+        if result["number"] != number:
+            raise RelayGitHubError(502, "milestone number unverifiable")
+        return {"milestone": result}
+
+    def wf_milestone_create(self, repo, args):
+        _only(args, ("repo", "title", "description", "state"))
+        title, description = self._text(args, "title", 1024), self._text(args, "description", 32768)
+        state = _enum(args, "state", ("open", "closed"))
+        result = self._milestone_summary(
+            self.client._call(
+                "POST",
+                f"/repos/{repo}/milestones",
+                {"title": title, "description": description, "state": state},
+                bearer=self.bearer,
+            )
+        )
+        if result["title"] != title or result["state"] != state:
+            raise RelayGitHubError(502, "milestone creation unverifiable")
+        return {"milestone": result}
+
+    def wf_milestone_update(self, repo, args):
+        _only(args, ("repo", "milestone", "title", "description", "state"))
+        number = _int(args, "milestone")
+        title, description = self._text(args, "title", 1024), self._text(args, "description", 32768)
+        state = _enum(args, "state", ("open", "closed"))
+        result = self._milestone_summary(
+            self.client._call(
+                "PATCH",
+                f"/repos/{repo}/milestones/{number}",
+                {"title": title, "description": description, "state": state},
+                bearer=self.bearer,
+            )
+        )
+        if result["number"] != number or result["title"] != title or result["state"] != state:
+            raise RelayGitHubError(502, "milestone update unverifiable")
+        return {"milestone": result}
+
+    def wf_milestone_delete(self, repo, args):
+        _only(args, ("repo", "milestone"))
+        number = _int(args, "milestone")
+        result = self.client._call(
+            "DELETE",
+            f"/repos/{repo}/milestones/{number}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
+        if result != {}:
+            raise RelayGitHubError(502, "milestone deletion unverifiable")
+        return {"deleted": True, "number": number}
 
     def wf_branch_create(self, repo, args):
         _only(args, ("repo", "branch", "sha"))
