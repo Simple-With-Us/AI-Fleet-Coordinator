@@ -272,7 +272,7 @@ Covered:  an imported In Progress issue shaped like UM-1447 (reported by CLAUDE,
 ### ECHO native-custody canonical CLI bridge
 
 `SIMPLE_BOARD_NATIVE_ECHO=1 simple-board whoami` uses the existing fixed
-`/usr/local/libexec/assigned-echo-mcp/linux-custody.py` launcher as root. This is
+`/usr/local/libexec/assigned-echo-mcp/linux-custody.py` launcher as root.  This is
 an internal transport for the canonical CLI, not a new user-facing tool. The
 launcher must already be installed, reviewed and host-qualified with the existing
 ECHO encrypted store. This option creates no service, secret, reader or policy.

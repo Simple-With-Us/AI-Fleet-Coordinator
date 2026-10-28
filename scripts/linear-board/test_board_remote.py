@@ -365,6 +365,7 @@ class NativeEcho(unittest.TestCase):
             ["/usr/bin/python3", "-I", "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"],
         )
         self.assertEqual(calls[0][1]["env"], {"PATH": "/usr/bin:/bin"})
+        self.assertEqual(calls[0][1]["stderr"], board.subprocess.DEVNULL)
         messages = [json.loads(x) for x in calls[0][1]["input"].splitlines()]
         self.assertEqual(
             [x["method"] for x in messages],
@@ -443,6 +444,19 @@ class NativeEcho(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("may or may not", error)
         self.assertNotIn("private transport details", error)
+
+    def test_native_deep_json_returns_unknown_not_traceback(self):
+        raw = b"[" * 2000 + b"0" + b"]" * 2000
+        fake = type("Reply", (), {"returncode": 0, "stdout": raw})()
+        out = io.StringIO()
+        with (
+            unittest.mock.patch.object(board.os, "geteuid", return_value=0),
+            unittest.mock.patch.object(board.subprocess, "run", return_value=fake),
+            contextlib.redirect_stderr(out),
+            self.assertRaises(SystemExit),
+        ):
+            board._native_echo_post(b"{}", True)
+        self.assertIn("outcome unknown", out.getvalue())
 
     def test_native_nonroot_refuses_before_spawn(self):
         with (

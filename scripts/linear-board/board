@@ -5052,7 +5052,7 @@ def _native_echo_post(body: bytes, write: bool):
     data = json.dumps(initialize).encode() + b"\n" + json.dumps(notification).encode() + b"\n" + body + b"\n"
     try:
         proc = subprocess.run(["/usr/bin/python3", "-I", "/usr/local/libexec/assigned-echo-mcp/linux-custody.py"],
-            input=data, capture_output=True, timeout=REMOTE_TIMEOUT_S,
+            input=data, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=REMOTE_TIMEOUT_S,
             env={"PATH": "/usr/bin:/bin"}, check=False)
         if proc.returncode or len(proc.stdout) > 3 * REMOTE_MAX_BYTES:
             raise ValueError("native transport failed")
@@ -5068,7 +5068,7 @@ def _native_echo_post(body: bytes, write: bool):
             # content only. Preserve UNKNOWN rather than treating it as a refusal.
             result["structuredContent"] = {"code": "outcome_unknown"}
         return 200, "application/json", json.dumps(answer).encode()
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, RecursionError, subprocess.SubprocessError):
         die("native ECHO transport unavailable; " +
             ("write outcome unknown, do not replay before checking the target" if write else "no direct-credential fallback"), EXIT_ERROR)
 
