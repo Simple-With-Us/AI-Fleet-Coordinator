@@ -241,7 +241,11 @@ class RelayMcp:
                 error = None
             if isinstance(error, dict) and error.get("outcome") in ("unknown", "pending"):
                 return _tool_failure(message, "outcome_unknown", exc.code)
-            if isinstance(error, dict) and error.get("retryable") is True:
+            if (
+                isinstance(error, dict)
+                and type(error.get("retryable")) is bool
+                and error["retryable"]
+            ):
                 return _tool_failure(
                     message,
                     "unavailable",

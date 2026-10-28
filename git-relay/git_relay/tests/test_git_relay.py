@@ -556,6 +556,8 @@ class TestMcpWriteUncertainty(unittest.TestCase):
             (409, {"outcome": "pending"}, "outcome_unknown"),
             (503, {}, "outcome_unknown"),
             (503, {"retryable": True}, "unavailable"),
+            (503, {"retryable": 1}, "outcome_unknown"),
+            (503, {"retryable": "true"}, "outcome_unknown"),
             (429, {"retryable": True, "retry_after_seconds": 30}, "unavailable"),
             (409, {"outcome": "unknown", "retryable": True}, "outcome_unknown"),
             (403, {}, "relay_refused"),
