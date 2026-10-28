@@ -5062,6 +5062,11 @@ def _native_echo_post(body: bytes, write: bool):
         hello, answer = lines
         if hello.get("id") != 0 or not isinstance(hello.get("result"), dict) or answer.get("id") != 1:
             raise ValueError("native response mismatch")
+        result = answer.get("result")
+        if write and isinstance(result, dict) and result.get("isError") and not isinstance(result.get("structuredContent"), dict):
+            # The existing native adapter reports uncertain transport failures in
+            # content only. Preserve UNKNOWN rather than treating it as a refusal.
+            result["structuredContent"] = {"code": "outcome_unknown"}
         return 200, "application/json", json.dumps(answer).encode()
     except (OSError, ValueError, subprocess.SubprocessError):
         die("native ECHO transport unavailable; " +

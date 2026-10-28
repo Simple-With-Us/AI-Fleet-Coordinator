@@ -431,6 +431,16 @@ class NativeEcho(unittest.TestCase):
             self.assertEqual(exit.exception.code, 0)
             self.assertTrue(output.getvalue())
 
+    def test_native_adapter_content_only_failure_preserves_unknown_write(self):
+        raw = b'{"jsonrpc":"2.0","id":0,"result":{}}\n{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"private transport details"}]}}\n'
+        fake = type("Reply", (), {"returncode":0,"stdout":raw})()
+        with unittest.mock.patch.object(board.os,"geteuid",return_value=0), unittest.mock.patch.object(board.subprocess,"run",return_value=fake):
+            status, ctype, data = board._native_echo_post(b"{}",True)
+        result, error = board._remote_answer(ctype,data,"linear_comment",True)
+        self.assertIsNone(result)
+        self.assertIn("may or may not",error)
+        self.assertNotIn("private transport details",error)
+
     def test_native_nonroot_refuses_before_spawn(self):
         with (
             unittest.mock.patch.object(board.os, "geteuid", return_value=501),
