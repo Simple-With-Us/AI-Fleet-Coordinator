@@ -64,6 +64,14 @@ STALE_RULE_FILES = (
     "docs/INSTINCT-ONBOARDING-PROMPT.md",
     "docs/OPENCODE-ONBOARDING-PROMPT.md",
     "docs/fleet-skills/README-add-in-app.md",
+    # The dated rollout record for the 2026-10-08 ruling.  It carries the Oct 8
+    # per-surface table as a record, under a superseded note that names the
+    # current rule and points at the live table, so it states the rule and has
+    # to carry the exception.
+    "docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",
+    # The compliance inventory's AFC-P05 row states the mechanism for every
+    # surface, so it states the exception with it.
+    "docs/compliance/inventory.md",
 )
 
 # The packs whose own text states the rule.  The installer writes a copy of each
@@ -114,6 +122,11 @@ EXCEPTION_FILES = (
     # The status log carries the rule as it stands, next to the dated entries
     # that record how it stood before.
     "STATUS.md",
+    # The dated rollout record for the 2026-10-08 ruling, and the compliance
+    # inventory's AFC-P05 row.  Both state the mechanism for every surface, so
+    # both name the one exception with it.
+    "docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",
+    "docs/compliance/inventory.md",
 ) + tuple(path for pack in RULE_STATING_PACKS for path in _pack_copies(pack))
 
 # The files whose fenced block is what a reader pastes.  A rule inside the
