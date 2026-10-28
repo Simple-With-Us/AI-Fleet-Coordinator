@@ -308,6 +308,31 @@ class SpecializeTests(unittest.TestCase):
         self.assertIn("description: Guides Cloudflare One Zero Trust work.", out)
         self.assertNotIn("description: >-", out)
 
+    def test_seat_banner_stays_after_the_front_matter_when_the_skill_has_no_h1(self) -> None:
+        """A skill that starts at `## ` has no top-level heading to insert after.
+
+        The seat banner was prepended ahead of the YAML front matter in that
+        case, so no front-matter parser could read the name or the description
+        of any seat copy that carried one.  The banner belongs after the
+        closing delimiter.
+        """
+        seat = SEATS["clutch"]
+        src = (
+            "---\n"
+            "name: secret-safety\n"
+            "description: >-\n"
+            "  Hardcoded, mandatory safeguards for handling secrets.\n"
+            "---\n\n"
+            "## Why this exists\n\n"
+            "Because.\n"
+        )
+        out = specialize_from_monet(src, seat, skill_name="secret-safety")
+        self.assertTrue(out.startswith("---\nname: secret-safety\n"))
+        self.assertIn("Runtime (Clutch)", out)
+        closing = out.index("\n---\n", 4) + len("\n---\n")
+        self.assertLess(closing, out.index("Runtime (Clutch)"))
+        self.assertLess(out.index("Runtime (Clutch)"), out.index("## Why this exists"))
+
 
 DOCS = os.path.join(ROOT, "docs", "fleet-skills")
 
@@ -1157,6 +1182,66 @@ class CatalogMatchesFreshRenderTests(unittest.TestCase):
             if not path.is_file() or path.read_text(encoding="utf-8") != want:
                 stale.append(os.path.relpath(str(path), ROOT))
         self.assertEqual(stale, [], f"stale skills/ copies; re-render with: {self.FIX}")
+
+
+class RetiredCatalogPackRenderTests(unittest.TestCase):
+    """A retired seat's catalog pack is rendered from the canonical pack, like every
+    other seat's.
+
+    The owner ruled on Oct 22 2026 that the rename guard's skip of the retired
+    seats' catalog copies goes away:  the copies are rendered from the canonical
+    pack like every other seat's are, so a stale consumer under one of those
+    folders is caught instead of passing unnoticed.  A retired seat's pack still
+    carries its retirement notice, because that notice comes from the renderer and
+    not from a hand edit.
+
+    So the pin here is a positive one.  A retired pack is a fresh render of the
+    canonical pack for that seat, byte for byte, and it carries the retirement
+    notice the renderer writes.  A pack left behind by hand, and a pack that has
+    drifted from the one home, fail both.
+    """
+
+    def _retired_seats(self) -> list:
+        return [seat for seat in catalog_seats() if seat.retired]
+
+    def test_a_retired_pack_is_a_fresh_render_of_the_canonical_pack(self) -> None:
+        seats = self._retired_seats()
+        self.assertTrue(seats, "the registry names no retired seat")
+        for seat in seats:
+            key = seat.seat_key or seat.tag.lower()
+            seat_root = Path(DOCS, "by-seat", key)
+            self.assertTrue(seat_root.is_dir(), "%s is missing" % seat_root)
+            for name in catalog_skill_names(DOCS):
+                if not skill_allowed_for_seat(name, seat):
+                    continue
+                src = Path(DOCS, name, "SKILL.md")
+                if not src.is_file():
+                    continue
+                got_path = seat_root / name / "SKILL.md"
+                self.assertTrue(got_path.is_file(), "%s is missing" % got_path)
+                want = specialize_from_monet(src.read_text(encoding="utf-8"), seat, skill_name=name)
+                self.assertEqual(
+                    got_path.read_text(encoding="utf-8"),
+                    want,
+                    "%s/%s is not a fresh render of the canonical pack" % (key, name),
+                )
+
+    def test_a_retired_pack_carries_its_retirement_notice(self) -> None:
+        for seat in self._retired_seats():
+            key = seat.seat_key or seat.tag.lower()
+            path = Path(DOCS, "by-seat", key, "session-start", "SKILL.md")
+            self.assertTrue(path.is_file(), "%s is missing" % path)
+            text = path.read_text(encoding="utf-8")
+            self.assertIn(
+                seat.tag,
+                text,
+                "%s/session-start does not name the seat it was rendered for" % key,
+            )
+            self.assertIn(
+                "retired",
+                text.lower(),
+                "%s/session-start carries no retirement notice" % key,
+            )
 
 
 class RepoPlatformCopiesTests(unittest.TestCase):

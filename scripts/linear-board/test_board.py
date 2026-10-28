@@ -956,7 +956,6 @@ class BoardTest(unittest.TestCase):
             "LINEAR_BOARD_IDS": str(ids),
             "LINEAR_BOARD_BACKOFF_BASE": "0.01",
             "LINEAR_BOARD_DUP_WAIT": "0",
-            "LINEAR_BOARD_WRITES": "1",
         }
 
     def tearDown(self):
@@ -1120,6 +1119,26 @@ if mock_url:
         with urllib.request.build_opener().open(req, timeout=timeout) as resp:
             return resp.read(mod.BEARER_MAX_RESPONSE + 1)
     mod.BEARER_TRANSPORT = fake_transport
+sys.exit(mod.main())
+"""
+
+# The relabel script loads its own copy of the board module, so it needs the same seam the CLI
+# bootstrap gives the CLI:  the fake bearer transport, pointed at the mock verify route.
+RELABEL_BOOTSTRAP = r"""
+import importlib.machinery, importlib.util, os, sys, urllib.request
+relabel_path = sys.argv[1]
+sys.argv = [relabel_path] + sys.argv[2:]
+loader = importlib.machinery.SourceFileLoader("relabel_under_test", relabel_path)
+spec = importlib.util.spec_from_loader("relabel_under_test", loader)
+mod = importlib.util.module_from_spec(spec)
+loader.exec_module(mod)
+mock_url = os.environ.get("SIMPLE_BOARD_BEARER_VERIFY_URL", "")
+if mock_url:
+    def fake_transport(url, headers, body, timeout):
+        req = urllib.request.Request(mock_url, data=body, headers=headers, method="POST")
+        with urllib.request.build_opener().open(req, timeout=timeout) as resp:
+            return resp.read(mod.load_board().BEARER_MAX_RESPONSE + 1)
+    mod.load_board().BEARER_TRANSPORT = fake_transport
 sys.exit(mod.main())
 """
 
@@ -1649,7 +1668,7 @@ class SafetyTests(BoardTest):
         )
         self.assertIn("credentials: environment", p.stdout)
 
-    def test_writes_disabled_by_default(self):
+    def test_writes_need_a_bearer_verified_seat(self):
         for args in (
             ["file", "--title", "x"],
             ["claim", B_A[:8], "--by", "CLAUDE"],
@@ -1660,11 +1679,11 @@ class SafetyTests(BoardTest):
             ["label", "add", B_A[:8], "needs-owner"],
             ["label", "remove", B_A[:8], "needs-owner"],
         ):
-            p = self.board(*args, drop=("LINEAR_BOARD_WRITES",), code=7)
-            self.assertIn("writes to Linear are off", p.stderr)
+            p = self.board(*args, drop=("AGENT_SEAT",), code=6)
+            self.assertIn("bearer-verified seat", p.stderr)
         self.assertEqual((self.mock.mints, self.mock.ops), (0, []))
-        self.board("list", drop=("LINEAR_BOARD_WRITES",))  # reads still work
-        self.board("whoami", drop=("LINEAR_BOARD_WRITES",))
+        self.board("list", drop=("AGENT_SEAT",))  # reads still work
+        self.board("whoami", drop=("AGENT_SEAT",))
 
     def test_by_must_match_seat(self):
         p = self.board("comment", B_A[:8], "--by", "CODEX", "--text", "hi", code=2)
@@ -1745,7 +1764,7 @@ class SafetyTests(BoardTest):
         old.write_text("import sys\nprint('OLD BOARD', sys.argv[1:])\n")
         extra = {"BOARD_BACKEND": "mac-collab", "BOARD_MAC_COLLAB_CLI": str(old)}
         p = self.board(
-            "list", "--app", "AFC", drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), extra=extra
+            "list", "--app", "AFC", drop=("AGENT_SEAT",), extra=extra
         )
         self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])
@@ -1769,7 +1788,7 @@ class SafetyTests(BoardTest):
             ["status", "OPS-10", "completed"],
             ["comment", "OPS-10", "--by", "X", "--text", "hi"],
         ):
-            p = self.board(*args, extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), code=6)
+            p = self.board(*args, extra=extra, drop=("AGENT_SEAT",), code=6)
             self.assertIn("bearer-verified seat", p.stderr, args)
             self.assertNotIn("OLD BOARD", p.stdout, args)
 
@@ -2870,8 +2889,15 @@ class RelabelTests(BoardTest):
         e = dict(self.env, **(extra or {}))
         for k in drop:
             e.pop(k, None)
+        # The harness plays the trusted launcher:  a write needs a bearer-verified seat,  so a run is bound
+        # to a minted bearer and its verify route.  A test that wants no seat drops the locator.
+        if "SIMPLE_BOARD_BEARER_LOCATOR" not in drop and "SIMPLE_BOARD_BEARER_LOCATOR" not in e:
+            e["SIMPLE_BOARD_BEARER_LOCATOR"] = self.bearer_locator_for("CLAUDE")
+        if "SIMPLE_BOARD_BEARER_VERIFY_URL" not in drop and "SIMPLE_BOARD_BEARER_VERIFY_URL" not in e:
+            e["SIMPLE_BOARD_BEARER_VERIFY_URL"] = self.verify_url
         p = subprocess.run(
-            [PY, str(RELABEL), *args], env=e, capture_output=True, text=True, timeout=60
+            [PY, "-c", RELABEL_BOOTSTRAP, str(RELABEL), *args],
+            env=e, capture_output=True, text=True, timeout=60
         )
         self.assertEqual(
             p.returncode, code, f"exit {p.returncode}\nstdout:\n{p.stdout}\nstderr:\n{p.stderr}"
@@ -2881,7 +2907,7 @@ class RelabelTests(BoardTest):
         return p
 
     def test_dry_run_writes_nothing(self):
-        p = self.relabel(drop=("LINEAR_BOARD_WRITES",))
+        p = self.relabel()
         self.assertIn("2 issue(s) to mark, 1 already marked, 1 with no claimant", p.stdout)
         self.assertIn(f"{self.a['identifier']}", p.stdout)
         self.assertIn("claimed:CODEX", p.stdout)
@@ -2891,9 +2917,9 @@ class RelabelTests(BoardTest):
         )
         self.assertNotIn("BoardUpdate", self.mock.ops)
 
-    def test_apply_needs_writes_on(self):
-        p = self.relabel("--apply", drop=("LINEAR_BOARD_WRITES",), code=7)
-        self.assertIn("writes to Linear are off", p.stderr)
+    def test_apply_needs_a_bearer_verified_seat(self):
+        p = self.relabel("--apply", drop=("SIMPLE_BOARD_BEARER_LOCATOR",), code=6)
+        self.assertIn("bearer-verified seat", p.stderr)
         self.assertEqual(self.mock.ops, [])
 
     def test_apply_is_additive_idempotent_and_resumable(self):
@@ -3652,14 +3678,13 @@ class FileInputTests(BoardTest):
         self.untouched()
 
     def test_a_gated_write_never_reads_its_file(self):
-        """Writes off exits 7 and no seat exits 2, with the file untouched (a missing one would otherwise
-        be an exit 2 of its own)."""
+        """A write with no bearer-verified seat exits 6 and no seat exits 2, with the file untouched (a
+        missing one would otherwise be an exit 2 of its own)."""
         for args in (
             ["file", "--title", "x", "--desc-file", "/nonexistent", "--fix-file", "-"],
             ["comment", B_A[:8], "--by", "CLAUDE", "--text-file", "-"],
             ["label", "add", B_A[:8], "needs-owner"],
         ):
-            self.board(*args, drop=("LINEAR_BOARD_WRITES",), code=7, stdin="")
             self.board(*args, drop=("AGENT_SEAT",), code=6, stdin="")
         self.untouched()
 
@@ -3952,13 +3977,13 @@ class FlatLabelTests(BoardTest):
             ["list", "--label", "needs-owner"],
             ["label", "add", "OPS-10", "needs-owner"],
         ):
-            p = self.board(*args, extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES"), code=2)
+            p = self.board(*args, extra=extra, drop=("AGENT_SEAT",), code=2)
             self.assertIn("Linear only", p.stderr, args)
             self.assertNotIn("OLD BOARD", p.stdout, args)
         # A write verb with no Linear-only flag still does not reach the archived CLI:
         # the frozen findings.db is read-only, so the backend refuses it first.
         p = self.board(
-            "list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT", "LINEAR_BOARD_WRITES")
+            "list", "--app", "AFC", extra=extra, drop=("AGENT_SEAT",)
         )
         self.assertEqual(p.stdout.strip(), "OLD BOARD ['list', '--app', 'AFC']")
         self.assertEqual(self.mock.ops, [])

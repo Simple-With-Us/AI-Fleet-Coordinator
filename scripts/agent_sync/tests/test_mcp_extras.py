@@ -864,7 +864,7 @@ class LinearToolTests(FakePrograms):
             "CURSOR",
             "AGENT_SEAT is the claimed identity, not the connection's default",
         )
-        self.assertEqual(call["writes"], "1")
+        self.assertIsNone(call["writes"])
         self.assertEqual(
             call["argv"][:5], ["claim", "AFC-331", "--by", "CURSOR", "--comment=on it"]
         )

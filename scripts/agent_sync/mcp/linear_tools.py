@@ -351,7 +351,6 @@ def child_env(
         {key: session_env[key] for key in SESSION_ENV if session_env and session_env.get(key)}
     )
     out["AGENT_SEAT"] = identity
-    out["LINEAR_BOARD_WRITES"] = "1"
     out.update(extra)
     return out
 
