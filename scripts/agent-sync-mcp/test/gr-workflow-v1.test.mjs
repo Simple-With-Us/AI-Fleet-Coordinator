@@ -9,8 +9,8 @@ const onlyOf=name=>{
   const m=body&&body.match(/_only\(\s*args,\s*\(([^)]*)\),?\s*\)/);
   return m?[...m[1].matchAll(/"([a-z0-9_]+)"/g)].map(x=>x[1]).sort():null;
 };
-test('names equal the relay SPECS, plus wf_job_log when it lands',()=>{
-  const rel=specs.filter(a=>a!=='wf_job_log').sort();
+test('names equal the relay SPECS',()=>{
+  const rel=specs.slice().sort();
   assert.deepEqual([...WF_V1_ACTIONS].sort(),rel);
   assert.equal(WF_V1_TOOLS.length,rel.length);
 });
@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,92);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,99);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,92);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,99);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -194,6 +194,36 @@ test('review/inline/branch additions keep bounded shapes and uncertain write fai
  assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'   '}));
  assert.ok(!validWfV1Args('wf_review_submit',{...requests[0][1],body:'é'.repeat(20000)}));
  assert.ok(validWfV1Args('wf_review_submit',{...requests[0][1],body:'héllo'}));
+});
+import {workflowInputLimit,boundedWorkflowInput} from '../src/gr-workflow-v1.js';
+test('binary and content tools: schemas, per-action input limit, response envelopes',()=>{
+  const r='example/repo';
+  assert.equal(workflowInputLimit('wf_release_asset_upload'),65536);
+  assert.ok(workflowInputLimit('wf_release_asset_upload_binary')>245760);
+  const big='A'.repeat(245760);
+  assert.ok(validWfV1Args('wf_release_asset_upload_binary',{repo:r,release_id:3,name:'a.bin',content_b64:big}));
+  assert.ok(!validWfV1Args('wf_release_asset_upload_binary',{repo:r,release_id:3,name:'a.bin',content_b64:big+'AAAA'}));
+  assert.ok(!validWfV1Args('wf_release_asset_upload',{repo:r,release_id:3,name:'a.bin',content_b64:big}));
+  assert.ok(!boundedWorkflowInput({a:big}));
+  assert.ok(validWfV1Args('wf_release_asset_delete',{repo:r,asset_id:7,expected_name:'a.bin'}));
+  assert.ok(!validWfV1Args('wf_release_asset_delete',{repo:r,asset_id:7}));
+  assert.ok(!validWfV1Args('wf_release_asset_delete',{repo:r,asset_id:7,expected_name:'a/b'}));
+  assert.ok(!validWfV1Args('wf_release_asset_update',{repo:r,asset_id:7,expected_name:'a',url:'https://x'}));
+  for (const [a,k] of [['wf_release_asset_download',{asset_id:7}],['wf_artifact_download',{artifact_id:5}],['wf_run_logs',{run_id:9}],['wf_job_log',{job_id:4}]]) {
+    assert.ok(validWfV1Args(a,{repo:r,...k,offset:0,length:262144}));
+    assert.ok(!validWfV1Args(a,{repo:r,...k,length:262145}));
+    assert.ok(!validWfV1Args(a,{repo:r,...k,offset:-1}));
+    assert.ok(!validWfV1Args(a,{repo:r,...k,url:'https://x'}));
+  }
+  const meta={offset:0,next_offset:3,total:3,complete:true};
+  assert.ok(validWfV1Response('wf_release_asset_download',{...meta,asset_id:7,content_b64:'YWJj'}));
+  assert.ok(!validWfV1Response('wf_release_asset_download',{...meta,asset_id:7,content_b64:'not base64!'}));
+  assert.ok(!validWfV1Response('wf_release_asset_download',{...meta,asset_id:7,content_b64:'YWJj',extra:1}));
+  assert.ok(validWfV1Response('wf_job_log',{...meta,job_id:4,content:'hi'}));
+  assert.ok(!validWfV1Response('wf_job_log',{...meta,total:'3',job_id:4,content:'hi'}));
+  assert.ok(validWfV1Response('wf_release_asset_delete',{deleted:true,asset_id:7}));
+  assert.ok(!validWfV1Response('wf_release_asset_delete',{deleted:false,asset_id:7}));
+  assert.ok(validWfV1Response('wf_release_asset_update',{asset:{id:7,name:'a',state:'uploaded',size:1}}));
 });
 
 test('review lifecycle closed args and receipt validation',()=>{
@@ -391,6 +421,12 @@ test('milestone delete receipt and writes use strict envelopes and own-bearer ro
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_milestone_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({deleted:true,number:2}));});assert.ok(!(await t.call('gr_wf_milestone_delete',a)).isError);
 });
 
+test('binary chunk strict receipt and own bearer upload path',async()=>{
+ const good={offset:0,next_offset:3,total:3,complete:true,asset_id:7,content_b64:'YWJj'};
+ for(const bad of [{...good,asset_id:true},{...good,next_offset:-1},{...good,complete:false,next_offset:0},{...good,total:'3'}])assert.equal(validWfV1Response('wf_release_asset_download',bad),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_release_asset_upload_binary'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({asset:{id:7,name:'a.bin',state:'uploaded',size:184320}}));});
+ assert.ok(!(await t.call('gr_wf_release_asset_upload_binary',{repo,release_id:3,name:'a.bin',content_b64:'YWFh'.repeat(61440)})).isError);
+});
 test('review lifecycle projected receipts use cached strict schemas and own bearer',async()=>{
  const review={id:2,state:'PENDING',commit_id:'a'.repeat(40),html_url:null};
  assert.equal(validWfV1Response('wf_review_pending_delete',{review}),true);
