@@ -18,10 +18,7 @@ final class FleetAdminTests: XCTestCase {
         let commands = FleetAdminCommands()
         let admin = makeAdmin(commands: commands, server: FleetAdminServer())
 
-        let deadline = Date().addingTimeInterval(5)
-        while admin.services == nil, Date() < deadline {
-            try? await Task.sleep(nanoseconds: 20_000_000)
-        }
+        await waitForTheFleet(admin)
 
         XCTAssertNotNil(admin.services, "The admin never read the fleet services.")
         XCTAssertEqual(admin.entries.count, 12, "The admin did not read every fleet service.")
@@ -51,6 +48,7 @@ final class FleetAdminTests: XCTestCase {
         let admin = makeAdmin(commands: commands, server: server)
 
         await admin.refresh()
+        await waitForTheFleet(admin)
         await admin.perform(.stop, serviceID: FleetServiceRegistry.server.id)
 
         XCTAssertEqual(admin.services?.states[FleetServiceRegistry.server.id], .stopped,
@@ -60,6 +58,18 @@ final class FleetAdminTests: XCTestCase {
     }
 
     // MARK: - The test rig
+
+    /// Waits for the admin to have read the fleet.
+    ///
+    /// The admin reads the fleet as it comes up,  and a read that is still in
+    /// flight when another one starts gives way to it,  so the test waits for
+    /// the fleet to be there rather than for a particular read to have ended.
+    private func waitForTheFleet(_ admin: FleetAdmin) async {
+        let deadline = Date().addingTimeInterval(5)
+        while admin.services == nil, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+    }
 
     /// An admin that talks to fakes rather than to this Mac.
     private func makeAdmin(commands: FleetAdminCommands,
