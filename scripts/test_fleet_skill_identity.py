@@ -904,7 +904,8 @@ class ZulipIdentityAndRetirementTests(unittest.TestCase):
         self.assertNotIn("no skill home", out)
         self.assertNotIn("Catalog copy", out)
         self.assertIn("clutch/<slug>", out)
-        self.assertIn("clutch-bot@simplewithus.zulipchat.com", out)
+        self.assertIn("Zulip bot for seat `CLUTCH`", out)
+        self.assertNotIn("clutch-bot@simplewithus.zulipchat.com", out)
         self.assertIn("`CLUTCH_ZULIP_KEY`", out)
         self.assertIn("[CLUTCH·session8]", out)
         self.assertNotIn("AGENT_SEAT=MONET", out)
@@ -1319,10 +1320,15 @@ class RepoPlatformCopiesTests(unittest.TestCase):
         for wanted in (
             "`[MM·session8]`",
             "minimax/",
-            "mm-bot@simplewithus.zulipchat.com",
+            "Zulip bot for seat `MM`",
             "MM_ZULIP_KEY",
         ):
             self.assertIn(wanted, text, wanted)
+        self.assertNotIn(
+            "mm-bot@simplewithus.zulipchat.com",
+            text,
+            "the bot address is the MM_ZULIP_EMAIL value in Infisical",
+        )
         for foreign in ("CLAUDE", "CURSOR", "CLAUDE_ZULIP_KEY", "`[CLAUDE·session8]`"):
             self.assertNotIn(foreign, text, foreign)
         self.assertIn("minimax/afc-123-zulip-cutover", text)

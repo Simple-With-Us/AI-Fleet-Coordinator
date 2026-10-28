@@ -11,7 +11,7 @@ Seat: **MONET**.  Branch: `monet/<slug>`.  Never `claude/`.  Never land from 
 
 ## Preconditions
 
-1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, which on the server is the lanes root the environment names in `FLEET_LANES_ROOT`, made with `~/apps/lane new` on the Mac and with `lane new` on the server; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves, or a flat `~/apps/<prefix>-<seat>[-<lane>]`, which retires where it is) that already exists is fine).  See `session-start`.
+1. You are in your lane (`~/apps/lanes/<Repo>/<seat>-<slug>`, which on the server is the lanes root the environment names in `FLEET_LANES_ROOT`, made with `~/apps/lane new` on the Mac and with `lane new` on the server; a lane in an old place (`~/apps/lanes/<prefix>/`, which the migration moves) that already exists is fine).  See `session-start`.
 2. `git status` is clean except `.env.local` / `.dev.vars` (never commit those).
 3. `git config user.email` is `12656028+jaywedgeworth22@users.noreply.github.com`.
 
@@ -32,7 +32,7 @@ Prose:  commit bodies, rollout docs, Notes source, PR titles, bodies and commen
 
 ### Socratic.Trade — `scripts/land.sh`
 
-Homebrew default `node` may be v26. ST `better-sqlite3` is Node 24 (MODULE_VERSION 137).  Confirm `node --version` is v24.x:
+Homebrew default `node` may be `v26`.  ST `better-sqlite3` is Node 24 (MODULE_VERSION 137).  Confirm `node --version` is v24.x:
 
 ```bash
 export PATH=/opt/homebrew/opt/node@24/bin:$PATH

@@ -70,7 +70,7 @@ can have it normalized to a plain space:
 printf 'Sentence one.\302\240 Sentence two.\n' > reply.txt
 ```
 
-`\302\240` is the UTF-8 encoding of U+00A0. Send the generated text to a file, then
+`\302\240` is the UTF-8 encoding of `U+00A0`.  Send the generated text to a file, then
 verify that same file, so the check reads the bytes you just produced and never a stale
 copy of the same name:
 
@@ -125,7 +125,7 @@ depends on the surface, so pick by destination:
 |---|---|---|
 | **Every surface** — chat replies in any other pane, Zulip, GitHub PR and issue titles, bodies and comments, review comments, Linear, commit messages, repo docs and Markdown, skills and agent instructions, rendered product copy | a real U+00A0 plus a normal space | Owner ruling 2026-10-23:  one rule everywhere.  Two ASCII spaces collapse on rendered surfaces, and the `&nbsp;` entity shows as literal text in squash commits, plain-text email and many APIs.  This replaces every earlier per-surface row. |
 | **Claude Code Code tab and the MiniMax Code chat pane: chat replies** (owner-verified 2026-10-08 with a screenshot, and 2026-10-18 for the MiniMax Code pane) | the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.` | The one exception.  These panes normalize a raw U+00A0 away (a verified reply held 0 NBSPs) and collapse two ASCII spaces, so the entity is the form that renders a real gap there.  The entity is never the form anywhere else. |
-| **Apple Notes** — the body of a note in the Coding folder, written by `scripts/apple-notes-coding.sh` | the narrow no-break space plus a normal space: the numeric reference `&#8239; ` | AFC-552: the second exception, measured Oct 26, 2026. Apple Notes normalizes a NO-BREAK space away on import, so the reference for one comes back as two ordinary spaces, which the renderer collapses to one, and the gap never reaches the owner.  The narrow no-break space (U+202F) survives the import unchanged, so the note helper writes it. |
+| **Apple Notes** — the body of a note in the Coding folder, written by `scripts/apple-notes-coding.sh` | the narrow no-break space plus a normal space: the numeric reference `&#8239; ` | AFC-552: the second exception, measured `Oct 26, 2026`.  Apple Notes normalizes a NO-BREAK space away on import, so the reference for one comes back as two ordinary spaces, which the renderer collapses to one, and the gap never reaches the owner.  The narrow no-break space (U+202F) survives the import unchanged, so the note helper writes it. |
 | **HTML / JSX / Swift source for product copy** | Swift `"\u{00A0} "`, JS/TS strings `"\u00A0 "`, JSX text `{'\u00A0'}` plus a space or `&#160;`, HTML markup source `&#160;`, or a shared `SENTENCE_GAP` constant | The rendered result is the same U+00A0 plus a space.  Never `&nbsp; `. |
 | **Code, identifiers and machine-readable config** | no gap character | Never put U+00A0 into code, identifiers or config. |
 | **A surface that strips U+00A0** | leave the text as it is | Do not switch to the `&nbsp;` entity.  Report the surface in #Work-In-Progress.  Apple Notes is the one surface measured to have a better answer: the narrow no-break space, above. |

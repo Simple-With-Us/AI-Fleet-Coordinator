@@ -191,15 +191,15 @@ def zulip_identity_sentence(seat: Seat) -> str:
 
     `zulip_bot` holds the local part WITHOUT the `-bot` suffix, because Zulip
     appends it itself (owner-confirmed Wed, Oct 7): entering `mm-bot` would
-    produce mm-bot-bot@.  Build the address once, here.
+    produce mm-bot-bot@.  The address itself is the `<PREFIX>_ZULIP_EMAIL`
+    value in Infisical Fleet-OPS `/zulip`, so the rendered pack names the
+    seat and the credential instead of carrying the address as a literal in
+    public source.
     """
     if not seat.zulip_bot:
         return ""
-    local = seat.zulip_bot
-    if not local.endswith("-bot"):
-        local = f"{local}-bot"
     return (
-        f"Zulip bot `{local}@simplewithus.zulipchat.com`, credential in "
+        f"Zulip bot for seat `{seat.tag}`, credential in "
         f"{zulip_credential_ref(seat)}.\u00a0 Session tag "
         f"`[{seat.tag}·session8]`, and the `simple-chat` CLI writes it for you."
     )
