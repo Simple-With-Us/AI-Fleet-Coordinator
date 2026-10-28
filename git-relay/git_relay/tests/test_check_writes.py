@@ -108,3 +108,21 @@ class Checks(unittest.TestCase):
             )
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape(action, args, REPO)
+
+    def test_malformed_preread_id_never_writes(self):
+        args = {
+            "repo": REPO,
+            "name": "swu-wise/report",
+            "status": "completed",
+            "conclusion": "success",
+            "title": "Report",
+            "summary": "Done",
+            "check_id": 1,
+            "expected_sha": SHA,
+        }
+        for ident in (True, 1.0, "1", None):
+            c = Client({"id": ident, "head_sha": SHA})
+            h = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", "wf_check_update", REPO)
+            with self.assertRaises(Refused):
+                h.run("wf_check_update", args)
+            self.assertEqual(len(c.calls), 1)

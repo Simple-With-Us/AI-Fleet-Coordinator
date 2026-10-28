@@ -182,7 +182,9 @@ class WorkflowWiringTests(unittest.TestCase):
             exc.retry_after = 17
             r = relay(tmp, client=Client(fail=exc))
             status, body = r.handle(TOKEN, "wf_runs", {"repo": "example/x"})
-            self.assertEqual((status, body["retry_after_seconds"], body["retryable"]), (429, 17, True))
+            self.assertEqual(
+                (status, body["retry_after_seconds"], body["retryable"]), (429, 17, True)
+            )
 
     def test_malformed_prior_sha_is_refused_before_any_upstream_call(self):
         with tempfile.TemporaryDirectory() as tmp:

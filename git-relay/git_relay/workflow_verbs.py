@@ -508,7 +508,13 @@ class WorkflowVerbs:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable("check pre-read unavailable; no write attempted") from None
             raise
-        if not isinstance(prior, dict) or prior.get("head_sha") != sha or prior.get("id") != ident:
+        if (
+            not isinstance(prior, dict)
+            or prior.get("head_sha") != sha
+            or isinstance(prior.get("id"), bool)
+            or not isinstance(prior.get("id"), int)
+            or prior.get("id") != ident
+        ):
             raise Refused("check identity or commit changed")
         # GitHub enforces that only this App may update a check it owns. No App/node selector.
         result = self.client._call(
