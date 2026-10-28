@@ -71,7 +71,7 @@ import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
 import { fleetlinkClientFromSecret, resolveFleetlinkSeatTokens } from "./fleetlink.js";
-import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat, LINEAR_SECRETS } from "./linear.js";
+import { LinearClient, linearClientFromPair, resolveLinearPair, LINEAR_SEATS, linearSecretNames, seatTagForSeat } from "./linear.js";
 import { ZulipClient } from "./zulip.js";
 import { listenerClientFromEnv } from "./eavesdropper.js";
 import { operatorNotesClientFromEnv } from "./notes.js";
@@ -255,16 +255,13 @@ async function serveMcp(request, env, ctx) {
   const key = await seatKeyRead(secretNames);
   const email = config.botEmails[seat];
   const grantId = typeof auth.token === "string" ? auth.token.split(":")[1] ?? "" : "";
-  // Linear app pairs resolve through Infisical too (src/linear.js); prefetched
-  // with the seat keys so the router's synchronous identityStatus keeps its
-  // contract.  A pair absent from Infisical reads as Linear-off, never a throw.
-  const linearPairs = new Map(await Promise.all(Object.keys(LINEAR_SECRETS).map(async (canonical) =>
-    [canonical, await resolveLinearPair(env, canonical)])));
+  // Resolve only this verified principal's Linear pair, never unused peers.
+  const linearPair = await resolveLinearPair(env, seatTagForSeat(seat));
   // FleetLink's agent secret resolves through /fleetlink (read-tools scope);
   // the folder awaits the population approval, so fallback mode covers the
   // gap observably and required mode throws visibly until it is populated.
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
-  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
+  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [seat]);
   const recallSecrets = await resolveRecallSecrets(env);
 
   // The listener key resolves through Infisical too (optional:  no wake key
@@ -290,7 +287,7 @@ async function serveMcp(request, env, ctx) {
     // Null when this seat has no Linear app credentials, or when the seat is
     // not on LINEAR_SEATS:  the Linear tools then answer not_configured and
     // every other tool works as before (AFC-289).
-    linear: linearClientFromPair(linearPairs.get(seatTagForSeat(seat)) ?? null, seat, { gate: seatGate }),
+    linear: linearClientFromPair(linearPair, seat, { gate: seatGate }),
     linearWrites: String(env.LINEAR_TOOLS_WRITES ?? "") === "1",
     // Null without FLEETLINK_AGENT_SECRET:  the FleetLink tools then answer
     // not_configured and every other tool works as before (AFC-328).
@@ -391,7 +388,7 @@ async function serveGbBearerMcp(request, env, token) {
   const grantRef = await sha256Ref(`gb-bearer:${identity}`);
   await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
-  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...Object.keys(SEAT_SECRETS), ...GB_IDENTITIES]);
+  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [identity]);
   const recallSecrets = await resolveRecallSecrets(env);
   const grSecrets = await resolveGrSecrets(env);
   const tools = new HostedTools({
@@ -471,7 +468,7 @@ async function serveSbtBearerMcp(request, env, token) {
   const grantRef = await sha256Ref(`sbt-bearer:${seat}`);
   await Promise.all(["/fleetlink", "/tools"].map((path) => prefetchFolder(env, path)));
   const fleetlinkSecret = await resolveSecret(env, { name: "FLEETLINK_AGENT_SECRET", path: "/fleetlink", envName: "FLEETLINK_AGENT_SECRET", optional: true });
-  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [...BEARER_SEATS, ...GB_IDENTITIES]);
+  const fleetlinkTokens = await resolveFleetlinkSeatTokens(env, [seat]);
   const recallSecrets = await resolveRecallSecrets(env);
   // The listener key resolves through Infisical too (optional:  no wake key
   // means no listener tools, never a 500 - src/eavesdropper.js).
