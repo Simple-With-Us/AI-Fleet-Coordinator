@@ -22,7 +22,7 @@ Each step that touches a live file or setting needs the owner's go-ahead (owner 
 ### Part A: Before The Migration
 
 1. **Merge the layout PR** and make a fresh lane at `origin/main` (the old `lane new` still works for this one).
-2. **Copy the live mirrors** (the list is in the PR description): the janitor, `mac-auto-cleanup.sh`, `otel-lane-tag.sh`, `MAC-LOCAL-PROCESSES.md` (merge, do not overwrite: the live file has newer rows) and its pinned Apple Note.  `AGENT-SYNC.md` is not on this list any more:  it is being generated from Fleet-OPS `handbook/`, so propose a change there by pull request and do not copy or edit either copy by hand.
+2. **Copy the live mirrors** (the list is in the PR description): the janitor, `mac-auto-cleanup.sh`, `otel-lane-tag.sh`, `MAC-LOCAL-PROCESSES.md` (merge, do not overwrite: the live file has newer rows) and its pinned Apple Note.  `FLEET-PROTOCOL.md` is not on this list any more:  it is being generated from Fleet-OPS `handbook/`, so propose a change there by pull request and do not copy or edit either copy by hand.
 3. **Refresh the stable tools copy**, which is what `~/apps/lane` and every deny hook run.  It is older than `main` today, so nothing merged reaches it until this is done:
    ```bash
    cd <fresh lane>/scripts

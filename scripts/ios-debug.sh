@@ -21,7 +21,7 @@
 #   --list                           Print simulator + paired devices and exit
 #   --dry-run                        Print plan and exit
 #
-# When to run this (owner 2026-08-21). Canonical: AGENT-SYNC.md § iOS agent build loop.
+# When to run this (owner 2026-08-21). Canonical: FLEET-PROTOCOL.md § iOS agent build loop.
 #   1. Simulator Debug + this script is the default for UI and print()/os_log.
 #   2. Device --logs-only when the bug is phone-only and TestFlight is the truth.
 #   3. Device --install-debug only when we need a DEBUG binary or unreleased code.

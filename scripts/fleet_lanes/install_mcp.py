@@ -12,7 +12,7 @@ through an MCP fan-out overload):  `fleet-recall` only, which is the stdio serve
 `simple-chat mcp --default-seat <SEAT>` for the targets that have a FIXED seat (opencode OPENCODE, muse MC,
 minimax MM, fx FX, clutch CLUTCH).  A tool with no default seat (Kimi, Copilot CLI) never gets it: the
 registration has to name a seat, and these tools have none.  Never a pinned AGENT_SEAT in env (a launcher's seat must still win,
-AGENT-SYNC § Identity Rules), and never a token anywhere.
+FLEET-PROTOCOL § Identity Rules), and never a token anywhere.
 
 TARGET is opencode, kimi, copilot, muse, minimax, fx or clutch.  `install-fleet-rag.sh` already registers
 fleet-recall in Claude, Cursor, Antigravity, Codex and Grok and calls this tool for the rest.
@@ -188,7 +188,7 @@ JSON_TARGETS: Tuple[JsonTarget, ...] = (
                seat="OPENCODE",
                note="the OPENCODE seat since Sat, Oct 10, 2026 (owner, #440), so simple-chat gets --default-seat OPENCODE; "
                     "a launcher's seat still wins.  A session inside Conductor has no default (open question in "
-                    "AGENT-SYNC) and shares this global file, so do not add --with-simple-chat for opencode until the owner "
+                    "FLEET-PROTOCOL) and shares this global file, so do not add --with-simple-chat for opencode until the owner "
                     "has answered it.  OpenCode also reads a project .opencode/opencode.json; "
                     "this is the global file"),
     JsonTarget("kimi", "Kimi Code", ".kimi-code", ".kimi-code/mcp.json", ("mcpServers",),
