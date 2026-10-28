@@ -66,7 +66,7 @@ import { serveGrBearerVerify } from "./gr-verify.js";
 import { resolveGrSecrets, grClientFromResolved } from "./gr-tools.js";
 import { serveMcpRequest } from "./mcp.js";
 import { HostedTools } from "./hosted-tools.js";
-import { IdentityRouter, resolveDelegatedCredentials, GB_IDENTITIES } from "./delegated-identities.js";
+import { IdentityRouter, resolveDelegatedCredentials, adminDelegatedReadiness, GB_IDENTITIES } from "./delegated-identities.js";
 import { gate } from "./gate.js";
 import { ToolError } from "./contract.js";
 import { recallClientFromResolved, resolveRecallSecrets } from "./recall.js";
@@ -1043,7 +1043,8 @@ async function serveAdmin(request, env, config, oauth, email) {
     const globalValue = (i) => globalReads[i].status === "fulfilled" ? globalReads[i].value : [];
     const [refusals, tokenRefusals, runtimeErrors] = [0, 1, 2].map(globalValue);
     const diagnosticsUnavailable = globalReads.some((r) => r.status === "rejected");
-    const delegatedRoles = (await resolveDelegatedCredentials(env)).roles;
+    const delegatedReadiness = await adminDelegatedReadiness(env);
+    const delegatedRoles = delegatedReadiness.roles;
     const gbBearers = await Promise.all([
       ...GB_IDENTITIES.map(async (identity) => {
         let status = null;
@@ -1052,7 +1053,7 @@ async function serveAdmin(request, env, config, oauth, email) {
         const g = gate(env, identity);
         try { status = await g.gbBearerStatus(); } catch { /* Shown as unknown. */ }
         try { mismatches = (await g.gbBearerMismatches())[identity] ?? null; } catch { mismatchesUnavailable = true; }
-        return { identity, kind: "persona", credentials: delegatedRoles.has(identity), status, mismatches, mismatchesUnavailable };
+        return { identity, kind: "persona", credentials: delegatedRoles.has(identity), credentialsUnavailable: delegatedReadiness.credentialsUnavailable, status, mismatches, mismatchesUnavailable };
       }),
       // Every seat may hold a bearer too (owner direction 2026-10-23:  all apps in
       // this panel, one credential per identity, honored by ST-MCP and GR-MCP).

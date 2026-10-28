@@ -735,3 +735,16 @@ test("bearer activity cannot hide missing or unknown service readiness", async (
   assert.match(html, /Missing service credentials \(Zulip or Linear bundle\)/);
   assert.match(html, /Service credentials loaded; connectivity not verified/);
 });
+
+
+test("persona admin lookup failure is unknown without aborting the page", async () => {
+  const {adminDelegatedReadiness} = await import("../src/delegated-identities.js");
+  const failed = await adminDelegatedReadiness({}, async () => {throw new Error("synthetic lookup failure");});
+  assert.equal(failed.credentialsUnavailable, true);
+  assert.equal(failed.roles.size, 0);
+  const absent = await adminDelegatedReadiness({}, async () => ({roles: new Map()}));
+  assert.equal(absent.credentialsUnavailable, false);
+  const html = await adminPage({ email: "preview@example.invalid", seats: [], clients: [], refusals: [], audits: [], csrf: "a".repeat(64), generatedAt: NOW, gbBearers: [{identity: ID, kind: "persona", credentials: false, credentialsUnavailable: failed.credentialsUnavailable, status: {active:true}}]}, new Headers()).text();
+  assert.match(html, /Service readiness unknown/);
+  assert.doesNotMatch(html, /Missing service credentials|No credentials loaded|name="action" value="mint_gb_bearer"/);
+});
