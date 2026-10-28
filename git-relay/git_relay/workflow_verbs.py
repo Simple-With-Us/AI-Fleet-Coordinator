@@ -599,6 +599,7 @@ class WorkflowVerbs:
             "DELETE", f"/repos/{repo}/releases/{release_id}", None, bearer=self.bearer
         )
         return {"deleted": True}
+
     def wf_workflow_enable(self, repo, args):
         _only(args, ("repo", "workflow_id"))
         value = _int(args, "workflow_id")
