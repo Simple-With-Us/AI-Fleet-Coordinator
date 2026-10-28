@@ -8,7 +8,13 @@ from .test_workflow_verbs import REPO, Client, Policy
 
 class Relations(unittest.TestCase):
     def test_fixed_bounded_read_routes(self):
-        issue = {"id": 7, "number": 8, "title": "Child", "state": "open"}
+        issue = {
+            "id": 7,
+            "number": 8,
+            "title": "Child",
+            "state": "open",
+            "repository_url": "https://api.github.com/repos/" + REPO,
+        }
         for action, suffix in [
             ("wf_issue_subissues", "sub_issues"),
             ("wf_issue_blocked_by", "dependencies/blocked_by"),
@@ -20,7 +26,14 @@ class Relations(unittest.TestCase):
             )
             self.assertEqual(
                 c.calls,
-                [("GET", f"/repos/{REPO}/issues/1/{suffix}?per_page=1&page=2", None, "own")],
+                [
+                    (
+                        "GET",
+                        f"/repos/{REPO}/issues/1/{suffix}?per_page=1&page=2",
+                        None,
+                        "own",
+                    )
+                ],
             )
             self.assertTrue(out["has_more"])
             self.assertFalse(SPECS[action][1])
@@ -65,7 +78,7 @@ class Relations(unittest.TestCase):
             )["repo"]
         )
         a = "wf_issue_subissues"
-        c = Client([value, value])
+        c = Client([{**value, "repository_url": "https://api.github.com/repos/" + REPO}] * 2)
         out = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
             a, {"repo": REPO, "number": 1, "per_page": 1}
         )
@@ -87,3 +100,27 @@ class Relations(unittest.TestCase):
             WorkflowVerbs._relation_issue(
                 {"id": 1, "number": 2, "state": "open", "title": "ghp_" + "x" * 36}
             )
+
+    def test_foreign_or_unverifiable_relation_refuses(self):
+        for url in ("https://api.github.com/repos/Other/Repo", None):
+            c = Client(
+                [
+                    {
+                        "id": 1,
+                        "number": 2,
+                        "title": "private",
+                        "state": "open",
+                        "repository_url": url,
+                    }
+                ]
+            )
+            with self.assertRaises(Refused):
+                WorkflowVerbs(
+                    c,
+                    Policy(),
+                    "swu-wise",
+                    "own",
+                    "swu-wise",
+                    "wf_issue_subissues",
+                    REPO,
+                ).run("wf_issue_subissues", {"repo": REPO, "number": 1})

@@ -12,3 +12,5 @@ No configured grants, connections, writes or deployment. Existing broker receipt
 secret scan remains. Raw detailed comment/review/label-history content still absent.
 
 Source: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
+
+Issue events require a positive integer ID. Timeline variants can omit a numeric ID (for example cross-referenced events); those return null rather than an invented identifier. Supplied invalid IDs refuse for either endpoint. Current GitHub OpenAPI schemas distinguish these variants: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json .

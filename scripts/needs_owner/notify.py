@@ -21,8 +21,9 @@ a peer who copies the (public) uid can never become the notice.
 A board write is classified before anything is done with it.  `ok` is the comment on the issue.  `retryable`
 means the board decided before it wrote anything and a later run may write the record again (exit 3, the
 claim is held by another seat, and exit 5, the rate limit).  `terminal` means it decided before it wrote
-anything and no retry will help until an operator acts (exit 2 usage, 4 no credentials, 6 auth refused and
-7 writes off), and it raises BoardFailed, so the CLI exits with the board's own code.  `unknown` means the
+anything and no retry will help until an operator acts (exit 2 usage, 4 no credentials, and 6 no
+bearer-verified seat or a refused authentication), and it raises BoardFailed, so the CLI exits with
+the board's own code.  `unknown` means the
 write may have landed (a timeout, an exit-1 GraphQL
 refusal, a transport failure, or anything we cannot prove was never sent):  the row is kept as unknown,
 so the record is never written twice.
@@ -59,14 +60,17 @@ FALLBACK_SEAT = "CLAUDE"  # CLAUDE's fallback notifier (C6-2) posts a pending no
 _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 # The board CLI's exit codes, and what each one means for a write.  2 usage,
-# 4 no credentials, 6 auth refused and 7 writes off are all decided before
-# anything is written, and a retry will not help until an operator acts:  they
-# are terminal.  3 claim held and 5 rate limit are decided before anything is
-# written too, but a later run may write the record, so they are retryable.
+# 4 no credentials, and 6 no bearer-verified seat or a refused authentication
+# are all decided before anything is written, and a retry will not help until
+# an operator acts:  they are terminal.  3 claim held and 5 rate limit are
+# decided before anything is written too, but a later run may write the
+# record, so they are retryable.
 # Exit 1 is the generic failure:  it carries both a GraphQL refusal and a
 # transport failure, and the mutation may have landed, so it is unknown.
+# Exit 7 is retired:  it was the writes-off switch, and the bearer-verified
+# seat is the only write gate now.
 BOARD_RETRYABLE_CODES = (3, 5)
-BOARD_TERMINAL_CODES = (2, 4, 6, 7)
+BOARD_TERMINAL_CODES = (2, 4, 6)
 UNKNOWN_MARKERS = ("no usable response", "not confirmed", "timed out", "timeout")
 
 # The four outcomes of a board write.

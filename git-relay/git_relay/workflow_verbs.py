@@ -1,6 +1,6 @@
 """Inactive read, search and workflow verbs for a PR-backlog seat.
 
-Registered only behind the existing default-off workflow gates. A broker that has
+Not registered in server startup, policy action lists or the Worker. A broker that has
 already authenticated a seat constructs it through ``for_action``. It never accepts a
 caller token, URL, raw query string or arbitrary path: every argument is validated into
 a fixed REST path. Each verb asks the existing minter for only the permissions it needs
@@ -22,10 +22,16 @@ only job and step conclusions are returned.
 
 import base64
 import binascii
+import bz2
+import gzip
+import io
+import lzma
 import re
+import zipfile
+import zlib
 from urllib.parse import quote, urlsplit
 
-from .github_client import RelayGitHubError
+from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
 from .secret_scan import find_secret
 from .server import PreReadUnavailable, _perm_within_ceiling
 
@@ -36,6 +42,10 @@ class Refused(ValueError):
 
 class CeilingDenied(Refused):
     """The seat's App ceiling does not cover the verb's permissions (a 403, not a bad request)."""
+
+
+class WriteOutcomeUnknown(RuntimeError):
+    """A write was sent but its result cannot be verified."""
 
 
 class Unknown(RuntimeError):
@@ -51,6 +61,11 @@ MAX_PAGE = 50
 MAX_PROJECT = 100
 MAX_FILES = 20
 MAX_FILES_B64 = 512 * 1024
+MAX_BINARY_ASSET = 180 * 1024  # base64 must fit the Worker 256 KiB MCP body
+MAX_BINARY_ASSET_B64 = 4 * ((MAX_BINARY_ASSET + 2) // 3)
+MAX_ARCHIVE_EXPANDED = 8 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 500
+_ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
@@ -60,6 +75,61 @@ SPECS = {
     "wf_issue_subissues": ({"issues": "read"}, False),
     "wf_issue_blocked_by": ({"issues": "read"}, False),
     "wf_issue_blocking": ({"issues": "read"}, False),
+    "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
+    "wf_review_update": ({"pull_requests": "write"}, True),
+    "wf_review_dismiss": ({"pull_requests": "write"}, True),
+    "wf_review_pending_delete": ({"pull_requests": "write"}, True),
+    "wf_review_comment_reply": ({"pull_requests": "write"}, True),
+    "wf_check_create": ({"checks": "write"}, True),
+    "wf_check_update": ({"checks": "write"}, True),
+    "wf_deployments": ({"deployments": "read"}, False),
+    "wf_deployment_get": ({"deployments": "read"}, False),
+    "wf_deployment_statuses": ({"deployments": "read"}, False),
+    "wf_deployment_create": ({"deployments": "write"}, True),
+    "wf_deployment_status_create": ({"deployments": "write"}, True),
+    "wf_deployment_delete": ({"deployments": "write"}, True),
+    "wf_milestones": ({"issues": "read"}, False),
+    "wf_milestone_get": ({"issues": "read"}, False),
+    "wf_milestone_create": ({"issues": "write"}, True),
+    "wf_milestone_update": ({"issues": "write"}, True),
+    "wf_milestone_delete": ({"issues": "write"}, True),
+    "wf_labels_set": ({"issues": "write"}, True),
+    "wf_reviewers_request": ({"pull_requests": "write"}, True),
+    "wf_reviewers_remove": ({"pull_requests": "write"}, True),
+    "wf_release_create": ({"contents": "write"}, True),
+    "wf_release_update": ({"contents": "write"}, True),
+    "wf_environments": ({"actions": "read"}, False),
+    "wf_environment_get": ({"actions": "read"}, False),
+    "wf_file_delete": ({"contents": "write"}, True),
+    "wf_issue_list": ({"issues": "read"}, False),
+    "wf_issue_get": ({"issues": "read"}, False),
+    "wf_issue_create": ({"issues": "write"}, True),
+    "wf_issue_update": ({"issues": "write"}, True),
+    "wf_issue_comment": ({"issues": "write"}, True),
+    "wf_issue_comment_update": ({"issues": "write"}, True),
+    "wf_issue_comment_delete": ({"issues": "write"}, True),
+    "wf_review_comment_update": ({"pull_requests": "write"}, True),
+    "wf_review_comment_delete": ({"pull_requests": "write"}, True),
+    "wf_release_list": ({"contents": "read"}, False),
+    "wf_release_get": ({"contents": "read"}, False),
+    "wf_release_delete": ({"contents": "write"}, True),
+    "wf_branch_update": ({"contents": "write"}, True),
+    "wf_branch_delete": ({"contents": "write"}, True),
+    "wf_tag_create": ({"contents": "write"}, True),
+    "wf_tag_get": ({"contents": "read"}, False),
+    "wf_tag_delete": ({"contents": "write"}, True),
+    "wf_pr_draft": ({"pull_requests": "write"}, True),
+    "wf_pr_ready": ({"pull_requests": "write"}, True),
+    "wf_automerge_enable": ({"pull_requests": "write"}, True),
+    "wf_automerge_disable": ({"pull_requests": "write"}, True),
+    "wf_review_threads": ({"pull_requests": "read"}, False),
+    "wf_assignees_add": ({"issues": "write"}, True),
+    "wf_assignees_remove": ({"issues": "write"}, True),
+    "wf_issue_lock": ({"issues": "write"}, True),
+    "wf_issue_unlock": ({"issues": "write"}, True),
+    "wf_label_create": ({"issues": "write"}, True),
+    "wf_label_delete": ({"issues": "write"}, True),
     "wf_pr_get": ({"pull_requests": "read"}, False),
     "wf_pr_reviews": ({"pull_requests": "read"}, False),
     "wf_pr_comments": ({"pull_requests": "read"}, False),
@@ -79,6 +149,13 @@ SPECS = {
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
+    "wf_release_asset_download": ({"contents": "read"}, False),
+    "wf_release_asset_upload_binary": ({"contents": "write"}, True),
+    "wf_release_asset_update": ({"contents": "write"}, True),
+    "wf_release_asset_delete": ({"contents": "write"}, True),
+    "wf_job_log": ({"actions": "read"}, False),
+    "wf_run_logs": ({"actions": "read"}, False),
+    "wf_artifact_download": ({"actions": "read"}, False),
     "wf_review_submit": ({"pull_requests": "write"}, True),
     "wf_review_inline": ({"pull_requests": "write"}, True),
     "wf_branch_create": ({"contents": "write"}, True),
@@ -165,32 +242,34 @@ def _page(args):
 
 def _obj(data):
     if not isinstance(data, dict):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return data
 
 
 def _sub(data, key):
-    """A nested upstream object; any other shape is a refusal, not an exception."""
+    """A nested upstream object; any other shape is an upstream error, never a definitely-unsent refusal."""
+    if not isinstance(data, dict):
+        raise RelayGitHubError(502, "unexpected upstream shape")
     value = data.get(key)
     if value is None:
         return {}
     if not isinstance(value, dict):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return value
 
 
 def _arr(data):
     if not isinstance(data, list):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return data
 
 
 def _dicts(value):
-    """Entries of an upstream list; a non-list or a non-object entry is a refusal."""
+    """Entries of an upstream list; a non-list or a non-object entry is an upstream error."""
     if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
-        raise Refused("unexpected upstream shape")
+        raise RelayGitHubError(502, "unexpected upstream shape")
     return value
 
 
@@ -198,6 +277,294 @@ def _only(args, allowed):
     extra = set(args) - set(allowed)
     if extra:
         raise Refused("unexpected argument")
+
+
+def _new_budget():
+    """Expansion and member budget shared by one whole scan, every nesting level."""
+    return {"bytes": MAX_ARCHIVE_EXPANDED, "members": MAX_ARCHIVE_MEMBERS}
+
+
+def _bounded_read(stream, budget):
+    chunks = []
+    while True:
+        block = stream.read(65536)
+        if not block:
+            return b"".join(chunks)
+        budget["bytes"] -= len(block)
+        if budget["bytes"] < 0:
+            raise Refused("asset archive expands past the scan bound")
+        chunks.append(block)
+
+
+def _scan_bytes(blob):
+    text = blob.decode("latin-1")
+    if find_secret(text) or find_secret(blob.decode("utf-8", "ignore")):
+        raise Refused("invalid asset content")
+    # UTF-16 text hides ASCII credential shapes from a byte scan.
+    for enc in ("utf-16-le", "utf-16-be"):
+        if find_secret(blob.decode(enc, "ignore")):
+            raise Refused("invalid asset content")
+
+
+def _scan_asset_bytes(content, depth=0, budget=None):
+    """Refuse content that carries a credential shape, including inside common archives.
+
+    Opaque or encrypted containers the scanner cannot open are refused rather than
+    waved through.  Encodings inside an unrecognized binary format (for example a
+    credential base64-encoded within a file) are not detected; this is a shape scan,
+    not a guarantee.
+    """
+    if depth > 1:
+        raise Refused("asset archive nesting is not supported")
+    if budget is None:
+        budget = _new_budget()
+    _scan_bytes(content)
+    head = content[:8]
+    if head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06"):
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(content))
+            infos = archive.infolist()
+            budget["members"] -= len(infos)
+            if budget["members"] < 0 or sum(i.file_size for i in infos) > budget["bytes"]:
+                raise Refused("asset archive expands past the scan bound")
+            for info in infos:
+                if info.flag_bits & 0x1:
+                    raise Refused("encrypted asset archives are not supported")
+                _scan_bytes(info.filename.encode("utf-8", "replace"))
+                if info.is_dir():
+                    continue
+                with archive.open(info) as member:
+                    inner = _bounded_read(member, budget)
+                _scan_asset_bytes(inner, depth + 1, budget)
+        except (
+            zipfile.BadZipFile,
+            NotImplementedError,
+            RuntimeError,
+            EOFError,
+            OSError,
+            zlib.error,
+            lzma.LZMAError,
+            ValueError,
+        ) as exc:
+            if isinstance(exc, Refused):
+                raise
+            raise Refused("asset archive could not be scanned") from None
+    elif head.startswith(b"\x1f\x8b"):
+        try:
+            inner = _bounded_read(gzip.GzipFile(fileobj=io.BytesIO(content)), budget)
+        except (OSError, EOFError, zlib.error, ValueError):
+            raise Refused("asset archive could not be scanned") from None
+        _scan_asset_bytes(inner, depth + 1, budget)
+    elif head.startswith(b"BZh"):
+        try:
+            inner = _bounded_read(bz2.BZ2File(io.BytesIO(content)), budget)
+        except (OSError, EOFError, ValueError, zlib.error):
+            raise Refused("asset archive could not be scanned") from None
+        _scan_asset_bytes(inner, depth + 1, budget)
+    elif head.startswith(b"\xfd7zXZ\x00"):
+        try:
+            inner = _bounded_read(lzma.LZMAFile(io.BytesIO(content)), budget)
+        except (lzma.LZMAError, OSError, EOFError, ValueError, zlib.error):
+            raise Refused("asset archive could not be scanned") from None
+        _scan_asset_bytes(inner, depth + 1, budget)
+    elif head.startswith(
+        (b"\x28\xb5\x2f\xfd", b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x5d\x00\x00")
+    ) or head[:2] in (b"\x1f\x9d", b"\x1f\xa0"):
+        raise Refused("unscannable compressed asset format")
+
+
+_NEW_READS = frozenset(
+    {
+        "wf_pr_get",
+        "wf_pr_reviews",
+        "wf_pr_comments",
+        "wf_issue_comments",
+        "wf_commit_get",
+        "wf_compare",
+        "wf_branch_get",
+        "wf_repo_get",
+        "wf_labels",
+        "wf_workflows",
+        "wf_run_get",
+        "wf_run_artifacts",
+    }
+)
+
+
+def _validate_read(action, result):
+    """Bound untrusted JSON and verify each newly exposed endpoint's core shape."""
+
+    def bad():
+        raise RelayGitHubError(502, "workflow read receipt unverifiable")
+
+    stack = [(result, 0)]
+    nodes = size = 0
+    while stack:
+        value, depth = stack.pop()
+        nodes += 1
+        if nodes > 500 or depth > 6:
+            bad()
+        if isinstance(value, str):
+            size += len(value.encode("utf-8"))
+        elif isinstance(value, dict):
+            if len(value) > 100 or not all(isinstance(k, str) for k in value):
+                bad()
+            size += sum(len(k) for k in value)
+            stack.extend((v, depth + 1) for v in value.values())
+        elif isinstance(value, list):
+            if len(value) > 250:
+                bad()
+            stack.extend((v, depth + 1) for v in value)
+        elif value is not None and type(value) not in (bool, int, float):
+            bad()
+        if size > 65536:
+            bad()
+
+    def fields(value, shape):
+        if not isinstance(value, dict):
+            bad()
+        for k, check in shape.items():
+            if k not in value or not check(value[k]):
+                bad()
+        return True
+
+    positive = lambda v: type(v) is int and v > 0
+    nonnegative = lambda v: type(v) is int and v >= 0
+    text = lambda v: isinstance(v, str)
+    sha = lambda v: isinstance(v, str) and bool(_SHA.fullmatch(v))
+    boolean = lambda v: type(v) is bool
+    seq = lambda v, check, limit=50: (
+        isinstance(v, list) and len(v) <= limit and all(check(x) for x in v)
+    )
+    commit = lambda v: fields(
+        v,
+        {
+            "sha": sha,
+            "commit": lambda x: fields(x, {"message": text}),
+            "parents": lambda x: seq(x, lambda y: fields(y, {"sha": sha}), 100),
+        },
+    )
+    comment = lambda v: fields(v, {"id": positive, "body": lambda x: text(x) and len(x) <= 32768})
+    schemas = {
+        "wf_pr_get": {
+            "pull": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "number": positive,
+                    "state": lambda x: x in ("open", "closed"),
+                    "head": lambda x: fields(x, {"sha": sha}),
+                    "base": lambda x: fields(x, {"sha": sha}),
+                },
+            )
+        },
+        "wf_pr_reviews": {
+            "reviews": lambda v: seq(
+                v, lambda x: fields(x, {"id": positive, "state": text, "commit_id": sha})
+            ),
+            "complete": boolean,
+        },
+        "wf_pr_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_issue_comments": {"comments": lambda v: seq(v, comment), "complete": boolean},
+        "wf_commit_get": {"commit": commit},
+        "wf_compare": {
+            "comparison": lambda v: fields(
+                v,
+                {
+                    "status": text,
+                    "ahead_by": nonnegative,
+                    "behind_by": nonnegative,
+                    "total_commits": nonnegative,
+                    "commits": lambda x: seq(x, commit, 250),
+                },
+            )
+        },
+        "wf_branch_get": {
+            "branch": lambda v: fields(
+                v,
+                {
+                    "name": lambda x: text(x) and bool(x),
+                    "commit": lambda x: fields(x, {"sha": sha}),
+                },
+            )
+        },
+        "wf_repo_get": {
+            "repository": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "name": lambda x: text(x) and bool(x),
+                    "full_name": lambda x: text(x) and len(x) >= 3,
+                    "default_branch": lambda x: text(x) and bool(x),
+                    "private": boolean,
+                },
+            )
+        },
+        "wf_labels": {
+            "labels": lambda v: seq(
+                v,
+                lambda x: fields(
+                    x,
+                    {
+                        "id": positive,
+                        "name": text,
+                        "color": lambda y: text(y) and bool(re.fullmatch(r"[0-9a-fA-F]{6}", y)),
+                    },
+                ),
+            ),
+            "complete": boolean,
+        },
+        "wf_workflows": {
+            "workflows": lambda v: fields(
+                v,
+                {
+                    "total_count": nonnegative,
+                    "workflows": lambda x: seq(
+                        x,
+                        lambda y: fields(
+                            y, {"id": positive, "name": text, "path": text, "state": text}
+                        ),
+                    ),
+                },
+            )
+        },
+        "wf_run_get": {
+            "run": lambda v: fields(
+                v,
+                {
+                    "id": positive,
+                    "head_sha": sha,
+                    "status": text,
+                    "conclusion": lambda x: x is None or text(x),
+                },
+            )
+        },
+        "wf_run_artifacts": {
+            "artifacts": lambda v: fields(
+                v,
+                {
+                    "total_count": nonnegative,
+                    "artifacts": lambda x: seq(
+                        x,
+                        lambda y: fields(
+                            y,
+                            {
+                                "id": positive,
+                                "name": text,
+                                "size_in_bytes": nonnegative,
+                                "expired": boolean,
+                            },
+                        ),
+                    ),
+                },
+            )
+        },
+    }
+    shape = schemas[action]
+    if not isinstance(result, dict) or set(result) != set(shape):
+        bad()
+    fields(result, shape)
+    return result
 
 
 class WorkflowVerbs:
@@ -275,7 +642,217 @@ class WorkflowVerbs:
         # Authorization happened once, in for_action, for exactly this action and repo.
         if action != self.action or args.get("repo") != self.repo:
             raise Refused("action or repository not authorized for this handle")
-        return getattr(self, action)(self.repo, args)
+        result = getattr(self, action)(self.repo, args)
+        return _validate_read(action, result) if action in _NEW_READS else result
+
+    # Fixed issue endpoints only.  No assignee, label, milestone or admin expansion.
+    @staticmethod
+    def _issue_summary(data):
+        if not isinstance(data, dict):
+            raise Refused("unexpected issue response")
+        if "pull_request" in data:
+            raise Refused("pull requests are not issue lifecycle targets")
+        if (
+            isinstance(data.get("number"), bool)
+            or not isinstance(data.get("number"), int)
+            or data["number"] < 1
+            or data.get("state") not in ("open", "closed")
+        ):
+            raise Refused("unexpected issue response")
+        return {k: data.get(k) for k in ("number", "state", "title", "updated_at", "html_url")}
+
+    @staticmethod
+    def _issue_text(args, key, required=True):
+        value = args.get(key)
+        if value is None and not required:
+            return None
+        if not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 32768:
+            raise Refused(f"invalid {key}")
+        if find_secret(value):
+            raise Refused("credential-shaped outbound text")
+        return value
+
+    def wf_issue_list(self, repo, args):
+        _only(args, ("repo", "state", "per_page"))
+        state = _enum(args, "state", ("open", "closed", "all"), "open")
+        data = _arr(self._get(f"/repos/{repo}/issues?state={state}&per_page={_page(args)}"))
+        return {
+            "issues": [
+                self._issue_summary(x)
+                for x in data[:MAX_PROJECT]
+                if not isinstance(x, dict) or "pull_request" not in x
+            ],
+            "complete": False,
+        }
+
+    def wf_issue_get(self, repo, args):
+        _only(args, ("repo", "number"))
+        number = _int(args, "number")
+        return {"issue": self._issue_summary(self._get(f"/repos/{repo}/issues/{number}"))}
+
+    def wf_issue_create(self, repo, args):
+        _only(args, ("repo", "title", "body"))
+        title = self._issue_text(args, "title")
+        body = self._issue_text(args, "body")
+        result = self.client._call(
+            "POST", f"/repos/{repo}/issues", {"title": title, "body": body}, bearer=self.bearer
+        )
+        try:
+            summary = self._issue_summary(result)
+            if (
+                not isinstance(summary["number"], int)
+                or isinstance(summary["number"], bool)
+                or summary["state"] not in ("open", "closed")
+            ):
+                raise Refused("unexpected issue response")
+        except (Refused, KeyError, TypeError) as exc:
+            raise WriteOutcomeUnknown("issue write outcome unverifiable") from exc
+        return {"issue": summary}
+
+    def _issue_before_write(self, repo, number):
+        # Only this GET is caught.  No upstream write has been attempted here.
+        # Existing held UNKNOWN rows are never cleared or reclassified.
+        # Transient matches Relay.handle's classification (transport/timeout,
+        # 408, 5xx):  any of them must release the key, never hold it unknown.
+        try:
+            data = self._get(f"/repos/{repo}/issues/{number}")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("issue pre-read unavailable; no write attempted") from None
+            raise
+        return self._issue_summary(data)
+
+    def wf_issue_update(self, repo, args):
+        _only(args, ("repo", "number", "title", "body", "state"))
+        number = _int(args, "number")
+        payload = {}
+        for key in ("title", "body"):
+            if key in args:
+                payload[key] = self._issue_text(args, key)
+        if "state" in args:
+            payload["state"] = _enum(args, "state", ("open", "closed"))
+        if not payload:
+            raise Refused("issue update requires a change")
+        # Read rejects PR targets.  This is not an atomic compare-and-swap claim.
+        self._issue_before_write(repo, number)
+        result = self.client._call(
+            "PATCH", f"/repos/{repo}/issues/{number}", payload, bearer=self.bearer
+        )
+        try:
+            summary = self._issue_summary(result)
+            if (
+                not isinstance(summary["number"], int)
+                or isinstance(summary["number"], bool)
+                or summary["state"] not in ("open", "closed")
+            ):
+                raise Refused("unexpected issue response")
+        except (Refused, KeyError, TypeError) as exc:
+            raise WriteOutcomeUnknown("issue write outcome unverifiable") from exc
+        return {"issue": summary}
+
+    def wf_issue_comment(self, repo, args):
+        _only(args, ("repo", "number", "body"))
+        number = _int(args, "number")
+        body = self._issue_text(args, "body")
+        self._issue_before_write(repo, number)
+        result = self.client._call(
+            "POST", f"/repos/{repo}/issues/{number}/comments", {"body": body}, bearer=self.bearer
+        )
+        if (
+            not isinstance(result, dict)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
+            raise WriteOutcomeUnknown("issue comment outcome unverifiable")
+        return {"comment": {k: result.get(k) for k in ("id", "html_url")}}
+
+    @staticmethod
+    def _environment_name(args):
+        name = args.get("name")
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._/-]{0,99}", name)
+            or any(x in (".", "..", "") for x in name.split("/"))
+            or find_secret(name)
+        ):
+            raise Refused("invalid environment name")
+        return name
+
+    @staticmethod
+    def _environment_summary(data, expected=None):
+        if (
+            not isinstance(data, dict)
+            or type(data.get("id")) is not int
+            or data["id"] < 1
+            or not isinstance(data.get("name"), str)
+            or len(data["name"].encode("utf-8")) > 255
+            or not data["name"]
+            or (expected is not None and data["name"] != expected)
+            or any(
+                not isinstance(data.get(k), str) or len(data[k]) > 100
+                for k in ("created_at", "updated_at")
+            )
+        ):
+            raise RelayGitHubError(502, "environment receipt unverifiable")
+        if find_secret(data["name"]):
+            raise Refused("environment name contains credential pattern")
+        # Optional protection fields are NOT invented as empty/disabled when absent.
+        rules = data.get("protection_rules")
+        types = None
+        if rules is not None:
+            if (
+                not isinstance(rules, list)
+                or len(rules) > 20
+                or any(
+                    not isinstance(x, dict)
+                    or not isinstance(x.get("type"), str)
+                    or not 1 <= len(x["type"]) <= 100
+                    for x in rules
+                )
+            ):
+                raise RelayGitHubError(502, "environment protection summary unverifiable")
+            types = [x["type"] for x in rules]
+        policy = data.get("deployment_branch_policy")
+        if policy is not None:
+            if not isinstance(policy, dict) or any(
+                type(policy.get(k)) is not bool
+                for k in ("protected_branches", "custom_branch_policies")
+            ):
+                raise RelayGitHubError(502, "environment branch policy unverifiable")
+            policy = {k: policy[k] for k in ("protected_branches", "custom_branch_policies")}
+        return {
+            **{k: data[k] for k in ("id", "name", "created_at", "updated_at")},
+            "protection_rule_types": types,
+            "deployment_branch_policy": policy,
+        }
+
+    def wf_environments(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/environments?per_page={limit}&page={page}")
+        if (
+            not isinstance(data, dict)
+            or type(data.get("total_count")) is not int
+            or data["total_count"] < 0
+            or not isinstance(data.get("environments"), list)
+        ):
+            raise RelayGitHubError(502, "environments page unverifiable")
+        return {
+            "environments": [self._environment_summary(x) for x in data["environments"][:limit]],
+            "total_count": data["total_count"],
+            "page": page,
+            "has_more": page * limit < data["total_count"],
+        }
+
+    def wf_environment_get(self, repo, args):
+        _only(args, ("repo", "name"))
+        name = self._environment_name(args)
+        return {
+            "environment": self._environment_summary(
+                self._get(f"/repos/{repo}/environments/{quote(name, safe='')}"), name
+            )
+        }
 
     @staticmethod
     def _relation_issue(data):
@@ -291,7 +868,10 @@ class WorkflowVerbs:
             or data.get("state") not in ("open", "closed")
         ):
             raise RelayGitHubError(502, "issue relation receipt unverifiable")
-        if find_secret(data["title"]):
+        if find_secret(data["title"]) or re.search(
+            r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}",
+            data["title"],
+        ):
             raise Refused("relation title contains credential pattern")
         url = data.get("repository_url")
         bound = None
@@ -307,21 +887,34 @@ class WorkflowVerbs:
                 and _REPO.fullmatch(candidate)
             ):
                 bound = candidate
-        return {**{k: data[k] for k in ("id", "number", "title", "state")}, "repo": bound}
+        return {
+            **{k: data[k] for k in ("id", "number", "title", "state")},
+            "repo": bound,
+        }
 
     def _relation_read(self, repo, args, suffix, single=False):
-        _only(args, ("repo", "number") if single else ("repo", "number", "per_page", "page"))
+        _only(
+            args,
+            ("repo", "number") if single else ("repo", "number", "per_page", "page"),
+        )
         number = _int(args, "number")
         page = 1 if single else (_int(args, "page", 1, 1000) if "page" in args else 1)
         limit = 1 if single else _page(args)
         query = "" if single else f"?per_page={limit}&page={page}"
         data = self._get(f"/repos/{repo}/issues/{number}/{suffix}{query}")
+
+        def scoped(value):
+            item = self._relation_issue(value)
+            if item["repo"] != repo:
+                raise Refused("relation repository is outside or unverifiable in authorized scope")
+            return item
+
         if single:
-            return {"issue": self._relation_issue(data)}
+            return {"issue": scoped(data)}
         if not isinstance(data, list):
             raise RelayGitHubError(502, "issue relations page unverifiable")
         return {
-            "issues": [self._relation_issue(x) for x in data[:limit]],
+            "issues": [scoped(x) for x in data[:limit]],
             "page": page,
             "has_more": len(data) >= limit,
         }
@@ -343,7 +936,7 @@ class WorkflowVerbs:
         return self._relation_read(repo, args, "dependencies/blocking")
 
     @staticmethod
-    def _issue_event(data):
+    def _issue_event(data, timeline=False):
         if (
             not isinstance(data, dict)
             or not isinstance(data.get("event"), str)
@@ -354,7 +947,7 @@ class WorkflowVerbs:
         created = data.get("created_at")
         commit = data.get("commit_id")
         if (
-            (event_id is not None and (type(event_id) is not int or event_id < 1))
+            ((not timeline or event_id is not None) and (type(event_id) is not int or event_id < 1))
             or (
                 created is not None
                 and (not isinstance(created, str) or len(created) > 100 or find_secret(created))
@@ -374,7 +967,7 @@ class WorkflowVerbs:
         if not isinstance(data, list):
             raise RelayGitHubError(502, "issue history page unverifiable")
         return {
-            "events": [self._issue_event(x) for x in data[:limit]],
+            "events": [self._issue_event(x, timeline=timeline) for x in data[:limit]],
             "page": page,
             "has_more": len(data) >= limit,
         }
@@ -479,6 +1072,228 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "release asset upload outcome unverifiable")
         return {"asset": data}
 
+    def wf_release_asset_upload_binary(self, repo, args):
+        _only(args, ("repo", "release_id", "name", "content_b64"))
+        release_id = _int(args, "release_id")
+        name = args.get("name")
+        if (
+            not isinstance(name, str)
+            or not _ASSET_NAME.fullmatch(name)
+            or name.endswith(".")
+            or find_secret(name)
+        ):
+            raise Refused("invalid asset name")
+        encoded = args.get("content_b64")
+        if not isinstance(encoded, str) or not 1 <= len(encoded) <= MAX_BINARY_ASSET_B64:
+            raise Refused("invalid asset content")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            raise Refused("asset must be valid base64") from None
+        if not 1 <= len(content) <= MAX_BINARY_ASSET:
+            raise Refused("invalid asset content")
+        _scan_asset_bytes(content)
+        try:
+            release = _obj(self._get(f"/repos/{repo}/releases/{release_id}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "release pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if (
+            release.get("id") != release_id
+            or isinstance(release.get("id"), bool)
+            or release.get("upload_url")
+            != f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets{{?name,label}}"
+        ):
+            raise Refused("release upload destination unverifiable")
+        data = self._asset_summary(
+            self.client.upload_release_asset(
+                repo, release_id, name, content, self.bearer, MAX_BINARY_ASSET
+            )
+        )
+        if data["name"] != name or data["state"] != "uploaded" or data["size"] != len(content):
+            raise RelayGitHubError(502, "release asset upload outcome unverifiable")
+        return {"asset": data}
+
+    def _asset_preread(self, repo, asset_id, expected_name):
+        try:
+            data = self._asset_summary(self._get(f"/repos/{repo}/releases/assets/{asset_id}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("asset pre-read unavailable; no write attempted") from None
+            raise
+        if data["id"] != asset_id or data["name"] != expected_name:
+            raise Refused("release asset does not match expected_name")
+        return data
+
+    def _expected_name(self, args):
+        name = args.get("expected_name")
+        if not isinstance(name, str) or not 1 <= len(name) <= 255 or "/" in name:
+            raise Refused("invalid expected_name")
+        return name
+
+    def wf_release_asset_delete(self, repo, args):
+        """Delete one asset by ID, only while its current name matches expected_name."""
+        _only(args, ("repo", "asset_id", "expected_name"))
+        asset_id, expected = _int(args, "asset_id"), self._expected_name(args)
+        self._asset_preread(repo, asset_id, expected)
+        result = self.client._call(
+            "DELETE",
+            f"/repos/{repo}/releases/assets/{asset_id}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
+        if result != {}:
+            raise RelayGitHubError(502, "release asset delete outcome unverifiable")
+        return {"deleted": True, "asset_id": asset_id}
+
+    def wf_release_asset_update(self, repo, args):
+        """Rename or relabel one asset, fenced on its current name; never changes state."""
+        _only(args, ("repo", "asset_id", "expected_name", "name", "label"))
+        asset_id, expected = _int(args, "asset_id"), self._expected_name(args)
+        patch = {}
+        if "name" in args:
+            name = args["name"]
+            if (
+                not isinstance(name, str)
+                or not _ASSET_NAME.fullmatch(name)
+                or name.endswith(".")
+                or find_secret(name)
+            ):
+                raise Refused("invalid asset name")
+            patch["name"] = name
+        if "label" in args:
+            label = args["label"]
+            if (
+                not isinstance(label, str)
+                or len(label) > 255
+                or find_secret(label)
+                or any(ord(c) < 32 or ord(c) == 127 for c in label)
+            ):
+                raise Refused("invalid label")
+            patch["label"] = label
+        if not patch:
+            raise Refused("name or label required")
+        self._asset_preread(repo, asset_id, expected)
+        receipt = self.client._call(
+            "PATCH", f"/repos/{repo}/releases/assets/{asset_id}", patch, bearer=self.bearer
+        )
+        data = self._asset_summary(receipt)
+        if "label" in patch and receipt.get("label") != patch["label"]:
+            raise RelayGitHubError(502, "release asset label update outcome unverifiable")
+        if data["id"] != asset_id or data["name"] != patch.get("name", expected):
+            raise RelayGitHubError(502, "release asset update outcome unverifiable")
+        return {"asset": data}
+
+    def _range(self, args):
+        offset = _int(args, "offset", 0, 512 * 1024 * 1024) if "offset" in args else 0
+        length = (
+            _int(args, "length", 1, MAX_DOWNLOAD_CHUNK) if "length" in args else MAX_DOWNLOAD_CHUNK
+        )
+        return offset, length
+
+    @staticmethod
+    def _chunk_meta(offset, data, total):
+        end = offset + len(data)
+        complete = total is not None and end >= total
+        return {
+            "offset": offset,
+            "next_offset": end,
+            "total": total,
+            "complete": complete if total is not None else len(data) == 0,
+        }
+
+    def _binary_chunk(self, path, args, key, accept="application/vnd.github+json"):
+        offset, length = self._range(args)
+        data, total = self.client.download_chunk(path, self.bearer, offset, length, accept)
+        out = self._chunk_meta(offset, data, total)
+        out[key] = base64.b64encode(data).decode("ascii")
+        return out
+
+    def wf_release_asset_download(self, repo, args):
+        _only(args, ("repo", "asset_id", "offset", "length"))
+        asset_id = _int(args, "asset_id")
+        meta = self._asset_summary(self._get(f"/repos/{repo}/releases/assets/{asset_id}"))
+        if meta["id"] != asset_id or meta["state"] != "uploaded":
+            raise RelayGitHubError(502, "release asset not downloadable")
+        out = self._binary_chunk(
+            f"/repos/{repo}/releases/assets/{asset_id}",
+            args,
+            "content_b64",
+            "application/octet-stream",
+        )
+        out["asset_id"] = asset_id
+        if out["total"] is None:
+            out["total"] = meta["size"]
+            out["complete"] = out["next_offset"] >= meta["size"]
+        return out
+
+    def wf_artifact_download(self, repo, args):
+        _only(args, ("repo", "artifact_id", "offset", "length"))
+        artifact_id = _int(args, "artifact_id")
+        meta = _obj(self._get(f"/repos/{repo}/actions/artifacts/{artifact_id}"))
+        if (
+            meta.get("id") != artifact_id
+            or isinstance(meta.get("id"), bool)
+            or meta.get("expired") is not False
+        ):
+            raise Refused("artifact missing or expired")
+        out = self._binary_chunk(
+            f"/repos/{repo}/actions/artifacts/{artifact_id}/zip", args, "content_b64"
+        )
+        out["artifact_id"] = artifact_id
+        return out
+
+    def wf_run_logs(self, repo, args):
+        """Zip archive of a run's logs, as one bounded base64 byte range."""
+        _only(args, ("repo", "run_id", "offset", "length"))
+        run_id = _int(args, "run_id")
+        out = self._binary_chunk(f"/repos/{repo}/actions/runs/{run_id}/logs", args, "content_b64")
+        out["run_id"] = run_id
+        return out
+
+    def wf_job_log(self, repo, args):
+        """One job's plain-text log as a bounded UTF-8 byte range (untrusted text)."""
+        _only(args, ("repo", "job_id", "offset", "length"))
+        job_id = _int(args, "job_id")
+        offset, length = self._range(args)
+        # Fetch a little past the bound so a character wider than a tiny length still
+        # fits whole and next_offset always advances.
+        data, total = self.client.download_chunk(
+            f"/repos/{repo}/actions/jobs/{job_id}/logs",
+            self.bearer,
+            offset,
+            min(length + 3, MAX_DOWNLOAD_CHUNK),
+        )
+        if len(data) > length:
+            end = length
+            while end > 0 and (data[end] & 0xC0) == 0x80:
+                end -= 1
+            if end == 0:
+                end = 1
+                while end < len(data) and end < 4 and (data[end] & 0xC0) == 0x80:
+                    end += 1
+            data = data[:end]
+        meta = self._chunk_meta(offset, data, total)
+        text = None
+        for cut in range(4 if not meta["complete"] else 1):
+            if cut >= len(data):
+                break
+            try:
+                text = data[: len(data) - cut].decode("utf-8")
+                data = data[: len(data) - cut]
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            text = data.decode("utf-8", "replace")
+        meta = self._chunk_meta(offset, data, total)
+        meta.update({"job_id": job_id, "content": text})
+        return meta
+
     def _text(self, args, key, limit=32768):
         value = args.get(key)
         if (
@@ -494,13 +1309,18 @@ class WorkflowVerbs:
         # Pre-read is not an atomic head lock; GitHub binds the review to commit_id.
         try:
             data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
+            observed_head = _sub(data, "head").get("sha")
+            if not isinstance(observed_head, str) or not re.fullmatch(
+                r"[0-9a-f]{40}", observed_head
+            ):
+                raise RelayGitHubError(502, "unexpected upstream shape")
         except RelayGitHubError as exc:
             if exc.status in (0, 408) or exc.status >= 500:
                 raise PreReadUnavailable(
                     "review pre-read unavailable; no write attempted"
                 ) from None
             raise
-        if _sub(data, "head").get("sha") != commit:
+        if observed_head != commit:
             raise Refused("pull request head changed")
 
     def wf_review_submit(self, repo, args):
@@ -556,6 +1376,422 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "inline write outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "commit_id", "html_url")}}
 
+    @staticmethod
+    def _review_summary(value, review_id=None):
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "review receipt unverifiable")
+        ident = value.get("id")
+        if (
+            isinstance(ident, bool)
+            or not isinstance(ident, int)
+            or ident <= 0
+            or review_id is not None
+            and ident != review_id
+            or value.get("state")
+            not in ("PENDING", "COMMENTED", "APPROVED", "CHANGES_REQUESTED", "DISMISSED")
+        ):
+            raise RelayGitHubError(502, "review receipt unverifiable")
+        return {k: value.get(k) for k in ("id", "state", "commit_id", "html_url")}
+
+    def wf_review_update(self, repo, args):
+        _only(args, ("repo", "number", "review_id", "body"))
+        number, review_id = _int(args, "number"), _int(args, "review_id")
+        body = self._text(args, "body")
+        result = self.client._call(
+            "PUT",
+            f"/repos/{repo}/pulls/{number}/reviews/{review_id}",
+            {"body": body},
+            bearer=self.bearer,
+        )
+        if not isinstance(result, dict) or result.get("body") != body:
+            raise RelayGitHubError(502, "review update outcome unverifiable")
+        return {"review": self._review_summary(result, review_id)}
+
+    def wf_review_dismiss(self, repo, args):
+        _only(args, ("repo", "number", "review_id", "message"))
+        number, review_id = _int(args, "number"), _int(args, "review_id")
+        message = self._text(args, "message")
+        result = self.client._call(
+            "PUT",
+            f"/repos/{repo}/pulls/{number}/reviews/{review_id}/dismissals",
+            {"message": message},
+            bearer=self.bearer,
+        )
+        summary = self._review_summary(result, review_id)
+        if summary["state"] != "DISMISSED":
+            raise RelayGitHubError(502, "review dismissal outcome unverifiable")
+        return {"review": summary}
+
+    def wf_review_pending_delete(self, repo, args):
+        _only(args, ("repo", "number", "review_id"))
+        number, review_id = _int(args, "number"), _int(args, "review_id")
+        path = f"/repos/{repo}/pulls/{number}/reviews/{review_id}"
+        try:
+            prior = self._review_summary(self._get(path), review_id)
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "review pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if prior["state"] != "PENDING":
+            raise Refused("only pending reviews may be deleted")
+        result = self.client._call("DELETE", path, None, bearer=self.bearer)
+        summary = self._review_summary(result, review_id)
+        if summary["state"] != "PENDING":
+            raise RelayGitHubError(502, "pending review deletion receipt unverifiable")
+        return {"review": summary}
+
+    def wf_review_comment_reply(self, repo, args):
+        _only(args, ("repo", "number", "comment_id", "body"))
+        number, comment_id = _int(args, "number"), _int(args, "comment_id")
+        body = self._text(args, "body")
+        result = _obj(
+            self.client._call(
+                "POST",
+                f"/repos/{repo}/pulls/{number}/comments/{comment_id}/replies",
+                {"body": body},
+                bearer=self.bearer,
+            )
+        )
+        ident = result.get("id")
+        if (
+            isinstance(ident, bool)
+            or not isinstance(ident, int)
+            or ident <= 0
+            or result.get("in_reply_to_id") != comment_id
+            or result.get("body") != body
+        ):
+            raise RelayGitHubError(502, "review reply outcome unverifiable")
+        return {"comment": {k: result.get(k) for k in ("id", "in_reply_to_id", "html_url")}}
+
+    def _check_payload(self, args):
+        name = self._text(args, "name", 100)
+        if not re.fullmatch(r"swu-[a-z0-9-]+/report", name) or (
+            self.seat != "probe" and name != self.seat + "/report"
+        ):
+            raise Refused("check name must be own App report namespace")
+        title = self._text(args, "title", 255)
+        summary = self._text(args, "summary", 32768)
+        status = _enum(args, "status", ("queued", "in_progress", "completed"))
+        conclusion = _enum(
+            args,
+            "conclusion",
+            (
+                "none",
+                "action_required",
+                "cancelled",
+                "failure",
+                "neutral",
+                "success",
+                "skipped",
+                "timed_out",
+            ),
+        )
+        if (status == "completed") != (conclusion != "none"):
+            raise Refused("conclusion required only for completed checks")
+        payload = {"name": name, "status": status, "output": {"title": title, "summary": summary}}
+        if status == "completed":
+            payload["conclusion"] = conclusion
+        return payload
+
+    @staticmethod
+    def _check_receipt(value, sha, payload, ident=None):
+        if (
+            not isinstance(value, dict)
+            or isinstance(value.get("id"), bool)
+            or not isinstance(value.get("id"), int)
+            or value["id"] < 1
+            or ident is not None
+            and value["id"] != ident
+            or value.get("head_sha") != sha
+            or value.get("name") != payload["name"]
+            or value.get("status") != payload["status"]
+            or value.get("conclusion") != payload.get("conclusion")
+        ):
+            raise RelayGitHubError(502, "check write receipt unverifiable")
+        return {
+            k: value.get(k) for k in ("id", "head_sha", "name", "status", "conclusion", "html_url")
+        }
+
+    def wf_check_create(self, repo, args):
+        _only(args, ("repo", "sha", "name", "status", "conclusion", "title", "summary"))
+        sha, payload = _sha(args, "sha"), self._check_payload(args)
+        result = self.client._call(
+            "POST", f"/repos/{repo}/check-runs", {**payload, "head_sha": sha}, bearer=self.bearer
+        )
+        return {"check": self._check_receipt(result, sha, payload)}
+
+    def wf_check_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "check_id",
+                "expected_sha",
+                "name",
+                "status",
+                "conclusion",
+                "title",
+                "summary",
+            ),
+        )
+        ident, sha, payload = (
+            _int(args, "check_id"),
+            _sha(args, "expected_sha"),
+            self._check_payload(args),
+        )
+        try:
+            prior = self._get(f"/repos/{repo}/check-runs/{ident}")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("check pre-read unavailable; no write attempted") from None
+            raise
+        if (
+            not isinstance(prior, dict)
+            or prior.get("head_sha") != sha
+            or isinstance(prior.get("id"), bool)
+            or not isinstance(prior.get("id"), int)
+            or prior.get("id") != ident
+        ):
+            raise Refused("check identity or commit changed")
+        # GitHub enforces that only this App may update a check it owns. No App/node selector.
+        result = self.client._call(
+            "PATCH", f"/repos/{repo}/check-runs/{ident}", payload, bearer=self.bearer
+        )
+        return {"check": self._check_receipt(result, sha, payload, ident)}
+
+    @staticmethod
+    def _deployment_summary(value, status=False):
+        if (
+            not isinstance(value, dict)
+            or isinstance(value.get("id"), bool)
+            or not isinstance(value.get("id"), int)
+            or value["id"] < 1
+        ):
+            raise RelayGitHubError(502, "deployment receipt unverifiable")
+        keys = (
+            ("id", "state", "description", "created_at")
+            if status
+            else (
+                "id",
+                "sha",
+                "ref",
+                "environment",
+                "task",
+                "created_at",
+                "transient_environment",
+                "production_environment",
+            )
+        )
+        if status:
+            if value.get("state") not in (
+                "error",
+                "failure",
+                "inactive",
+                "in_progress",
+                "queued",
+                "pending",
+                "success",
+            ):
+                raise RelayGitHubError(502, "deployment state unverifiable")
+        elif not isinstance(value.get("sha"), str) or not _SHA.fullmatch(value["sha"]):
+            raise RelayGitHubError(502, "deployment SHA unverifiable")
+        out = {k: value.get(k) for k in keys}
+        for v in out.values():
+            if isinstance(v, str) and len(v.encode("utf-8")) > 1024:
+                raise RelayGitHubError(502, "deployment field unbounded")
+        return out
+
+    def wf_deployments(self, repo, args):
+        _only(args, ("repo", "per_page"))
+        count = _page(args)
+        rows = self._get(f"/repos/{repo}/deployments?per_page={count}")
+        if not isinstance(rows, list) or len(rows) > count:
+            raise RelayGitHubError(502, "deployment list unverifiable")
+        return {
+            "deployments": [self._deployment_summary(x) for x in rows],
+            "complete": len(rows) < count,
+        }
+
+    def wf_deployment_get(self, repo, args):
+        _only(args, ("repo", "deployment_id"))
+        ident = _int(args, "deployment_id")
+        row = self._deployment_summary(self._get(f"/repos/{repo}/deployments/{ident}"))
+        if row["id"] != ident:
+            raise RelayGitHubError(502, "deployment identity unverifiable")
+        return {"deployment": row}
+
+    def wf_deployment_statuses(self, repo, args):
+        _only(args, ("repo", "deployment_id", "per_page"))
+        ident, count = _int(args, "deployment_id"), _page(args)
+        rows = self._get(f"/repos/{repo}/deployments/{ident}/statuses?per_page={count}")
+        if not isinstance(rows, list) or len(rows) > count:
+            raise RelayGitHubError(502, "deployment status list unverifiable")
+        return {
+            "statuses": [self._deployment_summary(x, True) for x in rows],
+            "complete": len(rows) < count,
+        }
+
+    def wf_deployment_create(self, repo, args):
+        _only(args, ("repo", "sha", "environment", "description", "transient", "production"))
+        sha = _sha(args, "sha")
+        environment = self._text(args, "environment", 100)
+        description = self._text(args, "description", 140)
+        transient, production = args.get("transient"), args.get("production")
+        if not isinstance(transient, bool) or not isinstance(production, bool):
+            raise Refused("invalid deployment flags")
+        # Never auto-merge a branch or bypass required status contexts.
+        payload = {
+            "ref": sha,
+            "environment": environment,
+            "description": description,
+            "auto_merge": False,
+            "transient_environment": transient,
+            "production_environment": production,
+        }
+        row = self._deployment_summary(
+            self.client._call("POST", f"/repos/{repo}/deployments", payload, bearer=self.bearer)
+        )
+        if (
+            row["sha"] != sha
+            or row["environment"] != environment
+            or row["transient_environment"] != transient
+            or row["production_environment"] != production
+        ):
+            raise RelayGitHubError(502, "deployment creation unverifiable")
+        return {"deployment": row}
+
+    def wf_deployment_status_create(self, repo, args):
+        _only(args, ("repo", "deployment_id", "state", "description"))
+        ident = _int(args, "deployment_id")
+        state = _enum(
+            args,
+            "state",
+            ("error", "failure", "inactive", "in_progress", "queued", "pending", "success"),
+        )
+        description = self._text(args, "description", 140)
+        # auto_inactive=False avoids changing other deployments as a side effect.
+        row = self._deployment_summary(
+            self.client._call(
+                "POST",
+                f"/repos/{repo}/deployments/{ident}/statuses",
+                {"state": state, "description": description, "auto_inactive": False},
+                bearer=self.bearer,
+            ),
+            True,
+        )
+        if row["state"] != state or row["description"] != description:
+            raise RelayGitHubError(502, "deployment status write unverifiable")
+        return {"status": row}
+
+    def wf_deployment_delete(self, repo, args):
+        _only(args, ("repo", "deployment_id"))
+        ident = _int(args, "deployment_id")
+        result = self.client._call(
+            "DELETE",
+            f"/repos/{repo}/deployments/{ident}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
+        if result != {}:
+            raise RelayGitHubError(502, "deployment deletion unverifiable")
+        return {"deleted": True, "deployment_id": ident}
+
+    @staticmethod
+    def _milestone_summary(value):
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "milestone receipt unverifiable")
+        if (
+            isinstance(value.get("number"), bool)
+            or not isinstance(value.get("number"), int)
+            or value["number"] <= 0
+            or value.get("state") not in ("open", "closed")
+            or not isinstance(value.get("title"), str)
+            or not 1 <= len(value["title"].encode("utf-8")) <= 1024
+        ):
+            raise RelayGitHubError(502, "milestone receipt unverifiable")
+        return {
+            k: value.get(k)
+            for k in (
+                "number",
+                "title",
+                "state",
+                "html_url",
+                "due_on",
+                "open_issues",
+                "closed_issues",
+            )
+        }
+
+    def wf_milestones(self, repo, args):
+        _only(args, ("repo", "state", "per_page"))
+        state, count = _enum(args, "state", ("open", "closed", "all"), "open"), _page(args)
+        result = self._get(f"/repos/{repo}/milestones?state={state}&per_page={count}")
+        rows = _arr(result)
+        if len(rows) > count:
+            raise RelayGitHubError(502, "milestone list unverifiable")
+        return {
+            "milestones": [self._milestone_summary(x) for x in rows],
+            "complete": len(rows) < count,
+        }
+
+    def wf_milestone_get(self, repo, args):
+        _only(args, ("repo", "milestone"))
+        number = _int(args, "milestone")
+        result = self._milestone_summary(self._get(f"/repos/{repo}/milestones/{number}"))
+        if result["number"] != number:
+            raise RelayGitHubError(502, "milestone number unverifiable")
+        return {"milestone": result}
+
+    def wf_milestone_create(self, repo, args):
+        _only(args, ("repo", "title", "description", "state"))
+        title, description = self._text(args, "title", 1024), self._text(args, "description", 32768)
+        state = _enum(args, "state", ("open", "closed"))
+        result = self._milestone_summary(
+            self.client._call(
+                "POST",
+                f"/repos/{repo}/milestones",
+                {"title": title, "description": description, "state": state},
+                bearer=self.bearer,
+            )
+        )
+        if result["title"] != title or result["state"] != state:
+            raise RelayGitHubError(502, "milestone creation unverifiable")
+        return {"milestone": result}
+
+    def wf_milestone_update(self, repo, args):
+        _only(args, ("repo", "milestone", "title", "description", "state"))
+        number = _int(args, "milestone")
+        title, description = self._text(args, "title", 1024), self._text(args, "description", 32768)
+        state = _enum(args, "state", ("open", "closed"))
+        result = self._milestone_summary(
+            self.client._call(
+                "PATCH",
+                f"/repos/{repo}/milestones/{number}",
+                {"title": title, "description": description, "state": state},
+                bearer=self.bearer,
+            )
+        )
+        if result["number"] != number or result["title"] != title or result["state"] != state:
+            raise RelayGitHubError(502, "milestone update unverifiable")
+        return {"milestone": result}
+
+    def wf_milestone_delete(self, repo, args):
+        _only(args, ("repo", "milestone"))
+        number = _int(args, "milestone")
+        result = self.client._call(
+            "DELETE",
+            f"/repos/{repo}/milestones/{number}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
+        if result != {}:
+            raise RelayGitHubError(502, "milestone deletion unverifiable")
+        return {"deleted": True, "number": number}
+
     def wf_branch_create(self, repo, args):
         _only(args, ("repo", "branch", "sha"))
         branch, sha = _ref(args, "branch"), _sha(args, "sha")
@@ -575,33 +1811,881 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
 
+    def wf_labels_set(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "labels",
+            ),
+        )
+        number = _int(args, "number")
+        labels = args.get("labels")
+        if (
+            not isinstance(labels, list)
+            or not 1 <= len(labels) <= 50
+            or any(
+                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", v)
+                for v in labels
+            )
+        ):
+            raise Refused("invalid labels")
+        data = self.client._call(
+            "PUT", f"/repos/{repo}/issues/{number}/labels", {"labels": labels}, bearer=self.bearer
+        )
+        if not isinstance(data, list):
+            raise RelayGitHubError(502, "label receipt unverifiable")
+        result = data
+        if any(
+            not isinstance(x, dict)
+            or isinstance(x.get("id"), bool)
+            or not isinstance(x.get("id"), int)
+            or x["id"] <= 0
+            or not isinstance(x.get("name"), str)
+            for x in result
+        ):
+            raise RelayGitHubError(502, "label receipt unverifiable")
+        if {x["name"].casefold() for x in result} != {x.casefold() for x in labels}:
+            raise RelayGitHubError(502, "label receipt does not match requested labels")
+        return {"labels": [{k: x.get(k) for k in ("id", "name", "color")} for x in result]}
+
+    def wf_reviewers_request(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "reviewers",
+            ),
+        )
+        number = _int(args, "number")
+        reviewers = args.get("reviewers")
+        if (
+            not isinstance(reviewers, list)
+            or not 1 <= len(reviewers) <= 50
+            or any(
+                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", v)
+                for v in reviewers
+            )
+        ):
+            raise Refused("invalid reviewers")
+        data = self.client._call(
+            "POST",
+            f"/repos/{repo}/pulls/{number}/requested_reviewers",
+            {"reviewers": reviewers},
+            bearer=self.bearer,
+        )
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
+        if (
+            not isinstance(result.get("requested_reviewers"), list)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+            or result["id"] <= 0
+        ):
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        if result.get("number") != number or type(result.get("number")) is not int:
+            raise RelayGitHubError(502, "reviewer receipt PR identity unverifiable")
+        observed = set()
+        for person in result["requested_reviewers"]:
+            if not isinstance(person, dict) or not isinstance(person.get("login"), str):
+                raise RelayGitHubError(502, "reviewer receipt unverifiable")
+            observed.add(person["login"].casefold())
+        requested = {name.casefold() for name in reviewers}
+        if not requested <= observed:
+            raise RelayGitHubError(502, "reviewer receipt membership unverifiable")
+        return {"result": result}
+
+    def wf_reviewers_remove(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "reviewers",
+            ),
+        )
+        number = _int(args, "number")
+        reviewers = args.get("reviewers")
+        if (
+            not isinstance(reviewers, list)
+            or not 1 <= len(reviewers) <= 50
+            or any(
+                not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", v)
+                for v in reviewers
+            )
+        ):
+            raise Refused("invalid reviewers")
+        data = self.client._call(
+            "DELETE",
+            f"/repos/{repo}/pulls/{number}/requested_reviewers",
+            {"reviewers": reviewers},
+            bearer=self.bearer,
+        )
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
+        if (
+            not isinstance(result.get("requested_reviewers"), list)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+            or result["id"] <= 0
+        ):
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        if result.get("number") != number or type(result.get("number")) is not int:
+            raise RelayGitHubError(502, "reviewer receipt PR identity unverifiable")
+        observed = set()
+        for person in result["requested_reviewers"]:
+            if not isinstance(person, dict) or not isinstance(person.get("login"), str):
+                raise RelayGitHubError(502, "reviewer receipt unverifiable")
+            observed.add(person["login"].casefold())
+        requested = {name.casefold() for name in reviewers}
+        if requested & observed:
+            raise RelayGitHubError(502, "reviewer receipt membership unverifiable")
+        return {"result": result}
+
+    def wf_release_create(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "tag",
+                "name",
+                "body",
+                "draft",
+                "prerelease",
+            ),
+        )
+        tag = self._text(args, "tag")
+        name = self._text(args, "name")
+        body = self._text(args, "body")
+        draft = args.get("draft")
+        if not isinstance(draft, bool):
+            raise Refused("invalid draft")
+        prerelease = args.get("prerelease")
+        if not isinstance(prerelease, bool):
+            raise Refused("invalid prerelease")
+        tag = _ref(args, "tag")
+        data = self.client._call(
+            "POST",
+            f"/repos/{repo}/releases",
+            {"tag_name": tag, "name": name, "body": body, "draft": draft, "prerelease": prerelease},
+            bearer=self.bearer,
+        )
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("tag_name") != tag
+        ):
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        return {"result": result}
+
+    def wf_release_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "release_id",
+                "name",
+                "body",
+                "draft",
+                "prerelease",
+            ),
+        )
+        release_id = _int(args, "release_id")
+        name = self._text(args, "name")
+        body = self._text(args, "body")
+        draft = args.get("draft")
+        if not isinstance(draft, bool):
+            raise Refused("invalid draft")
+        prerelease = args.get("prerelease")
+        if not isinstance(prerelease, bool):
+            raise Refused("invalid prerelease")
+        data = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/releases/{release_id}",
+            {"name": name, "body": body, "draft": draft, "prerelease": prerelease},
+            bearer=self.bearer,
+        )
+        if not isinstance(data, dict):
+            raise RelayGitHubError(502, "write receipt unverifiable")
+        result = data
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result["id"] != release_id
+        ):
+            raise RelayGitHubError(502, "write outcome unverifiable")
+        return {"result": result}
+
+    def wf_issue_comment_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+                "body",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        body = self._text(args, "body")
+        data = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/issues/comments/{comment_id}",
+            {"body": body},
+            bearer=self.bearer,
+        )
+        result = _obj(data)
+        if (
+            result.get("id") != comment_id
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
+            raise RelayGitHubError(502, "response unverifiable")
+        return {"result": result}
+
+    def wf_issue_comment_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        data = self.client._call(
+            "DELETE", f"/repos/{repo}/issues/comments/{comment_id}", None, bearer=self.bearer
+        )
+        return {"deleted": True}
+
+    def wf_review_comment_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+                "body",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        body = self._text(args, "body")
+        data = self.client._call(
+            "PATCH",
+            f"/repos/{repo}/pulls/comments/{comment_id}",
+            {"body": body},
+            bearer=self.bearer,
+        )
+        result = _obj(data)
+        if (
+            result.get("id") != comment_id
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
+            raise RelayGitHubError(502, "response unverifiable")
+        return {"result": result}
+
+    def wf_review_comment_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "comment_id",
+            ),
+        )
+        comment_id = _int(args, "comment_id")
+        data = self.client._call(
+            "DELETE", f"/repos/{repo}/pulls/comments/{comment_id}", None, bearer=self.bearer
+        )
+        return {"deleted": True}
+
+    @staticmethod
+    def _release_summary(value):
+        value = _obj(value)
+        if (
+            isinstance(value.get("id"), bool)
+            or not isinstance(value.get("id"), int)
+            or value["id"] <= 0
+        ):
+            raise RelayGitHubError(502, "release receipt unverifiable")
+        result = {"id": value["id"]}
+        for key in ("tag_name", "name", "html_url", "created_at", "published_at"):
+            item = value.get(key)
+            if item is not None and (not isinstance(item, str) or len(item.encode("utf-8")) > 2048):
+                raise RelayGitHubError(502, "release receipt unverifiable")
+            result[key] = item
+        for key in ("draft", "prerelease"):
+            if not isinstance(value.get(key), bool):
+                raise RelayGitHubError(502, "release flags unverifiable")
+            result[key] = value[key]
+        return result
+
+    def wf_release_list(self, repo, args):
+        _only(args, ("repo",))
+        data = self.client._call(
+            "GET", f"/repos/{repo}/releases?per_page=50", None, bearer=self.bearer
+        )
+        return {
+            "releases": [self._release_summary(x) for x in _arr(data)[:MAX_PAGE]],
+            "complete": False,
+        }
+
+    def wf_release_get(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "release_id",
+            ),
+        )
+        release_id = _int(args, "release_id")
+        data = self.client._call(
+            "GET", f"/repos/{repo}/releases/{release_id}", None, bearer=self.bearer
+        )
+        result = _obj(data)
+        if (
+            result.get("id") != release_id
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+        ):
+            raise RelayGitHubError(502, "response unverifiable")
+        return {"result": self._release_summary(result)}
+
+    def wf_release_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "release_id",
+            ),
+        )
+        release_id = _int(args, "release_id")
+        data = self.client._call(
+            "DELETE", f"/repos/{repo}/releases/{release_id}", None, bearer=self.bearer
+        )
+        return {"deleted": True}
+
+    def wf_branch_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "branch",
+                "sha",
+                "expected_sha",
+            ),
+        )
+        branch = _ref(args, "branch")
+        sha = _sha(args, "sha")
+        expected_sha = _sha(args, "expected_sha")
+        name = branch
+        try:
+            repository = _obj(self._get(f"/repos/{repo}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "repository pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        default_branch = repository.get("default_branch")
+        if not isinstance(default_branch, str) or not default_branch or name == default_branch:
+            raise Refused("default branch mutation refused")
+        path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='/')}"
+        try:
+            prior = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(name, safe='/')}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
+            raise
+        if _sub(prior, "object").get("sha") != expected_sha:
+            raise Refused("ref changed")
+        data = self.client._call("PATCH", path, {"sha": sha, "force": False}, bearer=self.bearer)
+        result = _obj(data)
+        got_sha = _sub(result, "object").get("sha")
+        if (
+            result.get("ref") != "refs/heads/" + name
+            or not isinstance(got_sha, str)
+            or not _SHA.fullmatch(got_sha)
+            or got_sha != sha
+        ):
+            raise RelayGitHubError(502, "ref outcome unverifiable")
+        return {"ref": result["ref"], "sha": got_sha}
+
+    def wf_branch_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "branch",
+                "expected_sha",
+            ),
+        )
+        branch = _ref(args, "branch")
+        expected_sha = _sha(args, "expected_sha")
+        name = branch
+        try:
+            repository = _obj(self._get(f"/repos/{repo}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "repository pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        default_branch = repository.get("default_branch")
+        if not isinstance(default_branch, str) or not default_branch or name == default_branch:
+            raise Refused("default branch mutation refused")
+        path = f"/repos/{repo}/git/refs/heads/{quote(name, safe='/')}"
+        try:
+            prior = _obj(self._get(f"/repos/{repo}/git/ref/heads/{quote(name, safe='/')}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
+            raise
+        if _sub(prior, "object").get("sha") != expected_sha:
+            raise Refused("ref changed")
+        data = self.client._call("DELETE", path, None, bearer=self.bearer)
+        return {"deleted": True, "ref": "refs/heads/" + name}
+
+    def wf_tag_create(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "tag",
+                "sha",
+            ),
+        )
+        tag = _ref(args, "tag")
+        sha = _sha(args, "sha")
+        name = tag
+        path = f"/repos/{repo}/git/refs"
+        data = self.client._call(
+            "POST", path, {"ref": "refs/tags/" + name, "sha": sha}, bearer=self.bearer
+        )
+        result = _obj(data)
+        got_sha = _sub(result, "object").get("sha")
+        if (
+            result.get("ref") != "refs/tags/" + name
+            or not isinstance(got_sha, str)
+            or not _SHA.fullmatch(got_sha)
+            or got_sha != sha
+        ):
+            raise RelayGitHubError(502, "ref outcome unverifiable")
+        return {"ref": result["ref"], "sha": got_sha}
+
+    def wf_tag_get(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "tag",
+            ),
+        )
+        tag = _ref(args, "tag")
+        name = tag
+        path = f"/repos/{repo}/git/ref/tags/{quote(name, safe='/')}"
+        data = self.client._call("GET", path, None, bearer=self.bearer)
+        result = _obj(data)
+        got_sha = _sub(result, "object").get("sha")
+        if (
+            result.get("ref") != "refs/tags/" + name
+            or not isinstance(got_sha, str)
+            or not _SHA.fullmatch(got_sha)
+        ):
+            raise RelayGitHubError(502, "ref outcome unverifiable")
+        return {"ref": result["ref"], "sha": got_sha}
+
+    def wf_tag_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "tag",
+                "expected_sha",
+            ),
+        )
+        tag = _ref(args, "tag")
+        expected_sha = _sha(args, "expected_sha")
+        name = tag
+        path = f"/repos/{repo}/git/refs/tags/{quote(name, safe='/')}"
+        try:
+            prior = _obj(self._get(f"/repos/{repo}/git/ref/tags/{quote(name, safe='/')}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("ref pre-read unavailable; no write attempted") from None
+            raise
+        if _sub(prior, "object").get("sha") != expected_sha:
+            raise Refused("ref changed")
+        data = self.client._call("DELETE", path, None, bearer=self.bearer)
+        return {"deleted": True, "ref": "refs/tags/" + name}
+
+    def _pr_node(self, repo, number):
+        try:
+            data = _obj(self._get(f"/repos/{repo}/pulls/{number}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("PR pre-read unavailable; no write attempted") from None
+            raise
+        node = data.get("node_id")
+        if not isinstance(node, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", node):
+            raise Refused("PR node unavailable")
+        return node
+
+    def _fixed_graph(self, query, variables, field, write=True):
+        data = self.client._call(
+            "POST", "/graphql", {"query": query, "variables": variables}, bearer=self.bearer
+        )
+        # GraphQL HTTP200 errors may follow partial mutation application; never call them definitely unsent.
+        if (
+            not isinstance(data, dict)
+            or data.get("errors")
+            or not isinstance(data.get("data"), dict)
+        ):
+            raise RelayGitHubError(502, "GraphQL outcome unverifiable")
+        result = data["data"].get(field)
+        if not isinstance(result, dict):
+            raise RelayGitHubError(502, "GraphQL result unverifiable")
+        return result
+
+    def wf_pr_draft(self, repo, args):
+        _only(args, ("repo", "number"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!) { convertPullRequestToDraft(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
+        result = self._fixed_graph(query, {"id": node}, "convertPullRequestToDraft")
+        pull = _sub(result, "pullRequest")
+        if pull.get("id") != node or pull.get("isDraft") is not True:
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_pr_ready(self, repo, args):
+        _only(args, ("repo", "number"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!) { markPullRequestReadyForReview(input:{pullRequestId:$id}) { pullRequest { id isDraft } } }"
+        result = self._fixed_graph(query, {"id": node}, "markPullRequestReadyForReview")
+        pull = _sub(result, "pullRequest")
+        if pull.get("id") != node or pull.get("isDraft") is not False:
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_automerge_disable(self, repo, args):
+        _only(args, ("repo", "number"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!) { disablePullRequestAutoMerge(input:{pullRequestId:$id}) { pullRequest { id autoMergeRequest { enabledAt } } } }"
+        result = self._fixed_graph(query, {"id": node}, "disablePullRequestAutoMerge")
+        pull = _sub(result, "pullRequest")
+        if (
+            pull.get("id") != node
+            or "autoMergeRequest" not in pull
+            or pull["autoMergeRequest"] is not None
+        ):
+            raise RelayGitHubError(502, "PR mutation outcome unverifiable")
+        return {"pull": pull}
+
+    def wf_automerge_enable(self, repo, args):
+        _only(args, ("repo", "number", "method"))
+        method = _enum(args, "method", ("SQUASH", "MERGE", "REBASE"))
+        node = self._pr_node(repo, _int(args, "number"))
+        query = "mutation($id: ID!, $method: PullRequestMergeMethod!) { enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:$method}) { pullRequest { id autoMergeRequest { enabledAt } } } }"
+        result = self._fixed_graph(
+            query, {"id": node, "method": method}, "enablePullRequestAutoMerge"
+        )
+        pull = _sub(result, "pullRequest")
+        if pull.get("id") != node or not isinstance(pull.get("autoMergeRequest"), dict):
+            raise RelayGitHubError(502, "auto-merge outcome unverifiable")
+        return {"pull": pull}
+
+    def _review_thread_state(self, repo, args, resolved):
+        _only(args, ("repo", "number", "thread_id"))
+        number = _int(args, "number")
+        thread = args.get("thread_id")
+        if not isinstance(thread, str) or not re.fullmatch(r"[A-Za-z0-9_/=+-]{1,200}", thread):
+            raise Refused("invalid thread_id")
+        # A caller node ID is never trusted as a global selector: first bind it to
+        # the chosen repository and PR. Refuse outside the bounded visible page.
+        owner, name = repo.split("/")
+        query = "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:100) { nodes { id } pageInfo { hasNextPage } } } } }"
+        try:
+            result = self._fixed_graph(
+                query, {"owner": owner, "name": name, "number": number}, "repository", write=False
+            )
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "thread membership pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        threads = _sub(_sub(result, "pullRequest"), "reviewThreads").get("nodes")
+        if not isinstance(threads, list) or not any(
+            isinstance(x, dict) and x.get("id") == thread for x in threads
+        ):
+            raise Refused("thread not in bounded repository PR membership page")
+        field = "resolveReviewThread" if resolved else "unresolveReviewThread"
+        mutation = (
+            "mutation($id:ID!) { resolveReviewThread(input:{threadId:$id}) { thread { id isResolved } } }"
+            if resolved
+            else "mutation($id:ID!) { unresolveReviewThread(input:{threadId:$id}) { thread { id isResolved } } }"
+        )
+        result = self._fixed_graph(mutation, {"id": thread}, field)
+        receipt = _sub(result, "thread")
+        if (
+            receipt.get("id") != thread
+            or not isinstance(receipt.get("isResolved"), bool)
+            or receipt["isResolved"] != resolved
+        ):
+            raise RelayGitHubError(502, "thread state outcome unverifiable")
+        return {"thread": {"id": thread, "isResolved": resolved}}
+
+    def wf_review_thread_resolve(self, repo, args):
+        _only(args, ("repo", "number", "thread_id"))
+        return self._review_thread_state(repo, args, True)
+
+    def wf_review_thread_unresolve(self, repo, args):
+        _only(args, ("repo", "number", "thread_id"))
+        return self._review_thread_state(repo, args, False)
+
+    def wf_review_threads(self, repo, args):
+        _only(args, ("repo", "number"))
+        number = _int(args, "number")
+        owner, name = repo.split("/")
+        query = "query($owner:String!, $name:String!, $number:Int!) { repository(owner:$owner,name:$name) { pullRequest(number:$number) { reviewThreads(first:50) { pageInfo { hasNextPage endCursor } nodes { id isResolved isOutdated path line comments(first:20) { nodes { id databaseId body author { login } } pageInfo { hasNextPage endCursor } } } } } } }"
+        result = self._fixed_graph(
+            query, {"owner": owner, "name": name, "number": number}, "repository", write=False
+        )
+        threads = _sub(_sub(result, "pullRequest"), "reviewThreads")
+        if not isinstance(threads.get("nodes"), list):
+            raise RelayGitHubError(502, "thread result unverifiable")
+        return {"threads": threads}
+
+    def wf_assignees_add(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "assignees",
+            ),
+        )
+        number = _int(args, "number")
+        assignees = args.get("assignees")
+        if (
+            not isinstance(assignees, list)
+            or not 1 <= len(assignees) <= 10
+            or any(
+                not isinstance(v, str)
+                or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", v)
+                for v in assignees
+            )
+        ):
+            raise Refused("invalid assignees")
+        path = f"/repos/{repo}/issues/{number}/assignees"
+        data = self.client._call("POST", path, {"assignees": assignees}, bearer=self.bearer)
+        result = _obj(data)
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("number") != number
+            or not isinstance(result.get("assignees"), list)
+        ):
+            raise RelayGitHubError(502, "assignee outcome unverifiable")
+        logins = []
+        for item in result["assignees"]:
+            login = item.get("login") if isinstance(item, dict) else None
+            if not isinstance(login, str) or not re.fullmatch(
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login
+            ):
+                raise RelayGitHubError(502, "assignee outcome unverifiable")
+            logins.append(login)
+        requested = {x.lower() for x in assignees}
+        actual = {x.lower() for x in logins}
+        if not requested <= actual:
+            raise RelayGitHubError(502, "assignee state unverifiable")
+        return {
+            "result": {
+                "id": result["id"],
+                "number": number,
+                "assignees": [{"login": x} for x in logins],
+            }
+        }
+
+    def wf_assignees_remove(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "assignees",
+            ),
+        )
+        number = _int(args, "number")
+        assignees = args.get("assignees")
+        if (
+            not isinstance(assignees, list)
+            or not 1 <= len(assignees) <= 10
+            or any(
+                not isinstance(v, str)
+                or not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", v)
+                for v in assignees
+            )
+        ):
+            raise Refused("invalid assignees")
+        path = f"/repos/{repo}/issues/{number}/assignees"
+        data = self.client._call("DELETE", path, {"assignees": assignees}, bearer=self.bearer)
+        result = _obj(data)
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("number") != number
+            or not isinstance(result.get("assignees"), list)
+        ):
+            raise RelayGitHubError(502, "assignee outcome unverifiable")
+        logins = []
+        for item in result["assignees"]:
+            login = item.get("login") if isinstance(item, dict) else None
+            if not isinstance(login, str) or not re.fullmatch(
+                r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", login
+            ):
+                raise RelayGitHubError(502, "assignee outcome unverifiable")
+            logins.append(login)
+        requested = {x.lower() for x in assignees}
+        actual = {x.lower() for x in logins}
+        if requested & actual:
+            raise RelayGitHubError(502, "assignee state unverifiable")
+        return {
+            "result": {
+                "id": result["id"],
+                "number": number,
+                "assignees": [{"login": x} for x in logins],
+            }
+        }
+
+    def wf_issue_lock(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "reason",
+            ),
+        )
+        number = _int(args, "number")
+        reason = _enum(args, "reason", ("off-topic", "too heated", "resolved", "spam"))
+        path = f"/repos/{repo}/issues/{number}/lock"
+        data = self.client._call("PUT", path, {"lock_reason": reason}, bearer=self.bearer)
+        return {"completed": True}
+
+    def wf_issue_unlock(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+            ),
+        )
+        number = _int(args, "number")
+        path = f"/repos/{repo}/issues/{number}/lock"
+        data = self.client._call("DELETE", path, None, bearer=self.bearer)
+        return {"completed": True}
+
+    def wf_label_create(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "name",
+                "color",
+                "description",
+            ),
+        )
+        name = self._text(args, "name", 100)
+        color = self._text(args, "color", 1024)
+        if not re.fullmatch(r"[0-9a-fA-F]{6}", color):
+            raise Refused("invalid color")
+        description = self._text(args, "description", 1024)
+        path = f"/repos/{repo}/labels"
+        data = self.client._call(
+            "POST",
+            path,
+            {"name": name, "color": color, "description": description},
+            bearer=self.bearer,
+        )
+        result = _obj(data)
+        if (
+            not isinstance(result.get("id"), int)
+            or isinstance(result.get("id"), bool)
+            or result["id"] <= 0
+            or result.get("name") != name
+            or not isinstance(result.get("color"), str)
+            or result["color"].lower() != color.lower()
+        ):
+            raise RelayGitHubError(502, "label outcome unverifiable")
+        return {"result": {k: result.get(k) for k in ("id", "name", "color", "description")}}
+
+    def wf_label_delete(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "name",
+            ),
+        )
+        name = self._text(args, "name", 100)
+        path = "/repos/" + repo + "/labels/" + quote(name, safe="")
+        data = self.client._call("DELETE", path, None, bearer=self.bearer)
+        return {"completed": True}
+
     def wf_workflow_enable(self, repo, args):
         _only(args, ("repo", "workflow_id"))
         value = _int(args, "workflow_id")
         self.client._call(
-            "PUT", f"/repos/{repo}/actions/workflows/{value}/enable", None, bearer=self.bearer
+            "PUT",
+            f"/repos/{repo}/actions/workflows/{value}/enable",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
-        return {"completed": True, "workflow_id": value}
+        return {"completed": True, "workflow_id": value, "state": "enabled"}
 
     def wf_workflow_disable(self, repo, args):
         _only(args, ("repo", "workflow_id"))
         value = _int(args, "workflow_id")
         self.client._call(
-            "PUT", f"/repos/{repo}/actions/workflows/{value}/disable", None, bearer=self.bearer
+            "PUT",
+            f"/repos/{repo}/actions/workflows/{value}/disable",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
-        return {"completed": True, "workflow_id": value}
+        return {"completed": True, "workflow_id": value, "state": "disabled"}
 
     def wf_run_delete(self, repo, args):
         _only(args, ("repo", "run_id"))
         value = _int(args, "run_id")
-        self.client._call("DELETE", f"/repos/{repo}/actions/runs/{value}", None, bearer=self.bearer)
+        self.client._call(
+            "DELETE",
+            f"/repos/{repo}/actions/runs/{value}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
+        )
         return {"completed": True, "run_id": value}
 
     def wf_artifact_delete(self, repo, args):
         _only(args, ("repo", "artifact_id"))
         value = _int(args, "artifact_id")
         self.client._call(
-            "DELETE", f"/repos/{repo}/actions/artifacts/{value}", None, bearer=self.bearer
+            "DELETE",
+            f"/repos/{repo}/actions/artifacts/{value}",
+            None,
+            bearer=self.bearer,
+            expected_status=204,
         )
         return {"completed": True, "artifact_id": value}
 
@@ -813,7 +2897,7 @@ class WorkflowVerbs:
         data = _obj(self._get(f"/repos/{repo}/git/trees/{quote(ref, safe='')}?recursive=1"))
         tree = data.get("tree")
         if tree is not None and not isinstance(tree, list):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         return {
             "sha": (data or {}).get("sha"),
             "truncated": bool((data or {}).get("truncated")) or len(tree or []) > 2000,
@@ -977,6 +3061,71 @@ class WorkflowVerbs:
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
 
+    def wf_file_delete(self, repo, args):
+        _only(args, ("repo", "path", "branch", "message", "prior_sha"))
+        path, branch, sha = _path(args), _ref(args, "branch"), _sha(args, "prior_sha")
+        if branch.startswith("refs/"):
+            raise Refused("qualified branch refs are not accepted")
+        if _workflow_path(path):
+            raise Refused("workflow files are not writable here")
+        message = args.get("message")
+        if (
+            not isinstance(message, str)
+            or not message.strip()
+            or len(message.encode("utf-8")) > 500
+            or "\x00" in message
+            or find_secret(message)
+        ):
+            raise Refused("invalid message")
+        try:
+            info = self._get(f"/repos/{repo}")
+            if (
+                not isinstance(info, dict)
+                or not isinstance(info.get("default_branch"), str)
+                or not info["default_branch"]
+            ):
+                raise RelayGitHubError(502, "repository pre-read unverifiable")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "repository pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if branch == info["default_branch"]:
+            raise Refused("default branch is not writable")
+        try:
+            target = self._get(f"/repos/{repo}/branches/{quote(branch, safe='')}")
+            if (
+                not isinstance(target, dict)
+                or target.get("name") != branch
+                or not isinstance(target.get("commit"), dict)
+                or not isinstance(target["commit"].get("sha"), str)
+                or not _SHA.fullmatch(target["commit"]["sha"])
+            ):
+                raise RelayGitHubError(502, "branch pre-read unverifiable")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "branch pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        result = self.client._call(
+            "DELETE",
+            f"/repos/{repo}/contents/{quote(path, safe='/')}",
+            {"message": message, "sha": sha, "branch": branch},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or "content" not in result
+            or result["content"] is not None
+            or not isinstance(result.get("commit"), dict)
+            or not isinstance(result["commit"].get("sha"), str)
+            or not _SHA.fullmatch(result["commit"]["sha"])
+        ):
+            raise RelayGitHubError(502, "file deletion receipt unverifiable")
+        return {"deleted": True, "path": path, "branch": branch, "commit": result["commit"]["sha"]}
+
     def wf_file_put(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "content_b64", "prior_sha"))
         path, branch = _path(args), _ref(args, "branch")
@@ -1004,11 +3153,16 @@ class WorkflowVerbs:
         data = self.client._call(
             "PUT", f"/repos/{repo}/contents/{quote(path, safe='/')}", payload, bearer=self.bearer
         )
-        return {
-            "path": path,
-            "branch": branch,
-            "commit": ((data or {}).get("commit") or {}).get("sha"),
-        }
+        result = _obj(data)
+        commit = _sub(result, "commit").get("sha")
+        content_receipt = _sub(result, "content")
+        if (
+            not isinstance(commit, str)
+            or not _SHA.fullmatch(commit)
+            or content_receipt.get("path") != path
+        ):
+            raise RelayGitHubError(502, "file write receipt unverifiable")
+        return {"path": path, "branch": branch, "commit": commit}
 
     def _entry_mode(self, repo, tree_sha, path, cache):
         """Mode of an existing blob at path, so an update never resets an executable bit."""
@@ -1075,7 +3229,7 @@ class WorkflowVerbs:
             raise Refused("branch head moved")
         base_tree = _sub(_obj(self._get(f"/repos/{repo}/git/commits/{head}")), "tree").get("sha")
         if not isinstance(base_tree, str) or not _SHA.fullmatch(base_tree):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         cache, entries = {}, []
         for path, content in plan:
             if content is None:
@@ -1091,7 +3245,7 @@ class WorkflowVerbs:
             )
             blob_sha = blob.get("sha")
             if not isinstance(blob_sha, str) or not _SHA.fullmatch(blob_sha):
-                raise Refused("unexpected upstream shape")
+                raise RelayGitHubError(502, "unexpected upstream shape")
             existing = self._entry_mode(repo, base_tree, path, cache)
             if existing not in (None, "100644", "100755"):
                 # A symlink or submodule is never silently replaced by file content.
@@ -1108,7 +3262,7 @@ class WorkflowVerbs:
         )
         tree_sha = tree.get("sha")
         if not isinstance(tree_sha, str) or not _SHA.fullmatch(tree_sha):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         commit = _obj(
             self.client._call(
                 "POST",
@@ -1119,7 +3273,7 @@ class WorkflowVerbs:
         )
         new_sha = commit.get("sha")
         if not isinstance(new_sha, str) or not _SHA.fullmatch(new_sha):
-            raise Refused("unexpected upstream shape")
+            raise RelayGitHubError(502, "unexpected upstream shape")
         # Fast-forward only: a branch that moved since the read is refused upstream.
         self.client._call(
             "PATCH",

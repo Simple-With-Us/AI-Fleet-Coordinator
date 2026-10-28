@@ -10,7 +10,8 @@ class History(unittest.TestCase):
     def test_fixed_routes_summarization_and_shape(self):
         for a, suffix in [("wf_issue_events", "events"), ("wf_issue_timeline", "timeline")]:
             c = Client(
-                [{"event": "commented", "body": "private body", "actor": {"login": "x"}}] * 2
+                [{"id": 1, "event": "commented", "body": "private body", "actor": {"login": "x"}}]
+                * 2
             )
             args = {"repo": REPO, "number": 1, "page": 2, "per_page": 1}
             out = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(a, args)
@@ -18,7 +19,7 @@ class History(unittest.TestCase):
                 out,
                 {
                     "events": [
-                        {"id": None, "event": "commented", "created_at": None, "commit_id": None}
+                        {"id": 1, "event": "commented", "created_at": None, "commit_id": None}
                     ],
                     "page": 2,
                     "has_more": True,
@@ -54,4 +55,19 @@ class History(unittest.TestCase):
 
     def test_documented_hyphenated_timeline_names(self):
         for name in ("cross-referenced", "line-commented", "commit-commented"):
-            self.assertEqual(WorkflowVerbs._issue_event({"event": name})["event"], name)
+            self.assertEqual(
+                WorkflowVerbs._issue_event({"event": name}, timeline=True)["event"], name
+            )
+
+    def test_event_ids_required_but_documented_timeline_missing_id_is_preserved(self):
+        for row in (
+            {"event": "closed"},
+            {"event": "closed", "id": None},
+            {"event": "closed", "id": True},
+            {"event": "closed", "id": 0},
+        ):
+            with self.assertRaises(RelayGitHubError):
+                WorkflowVerbs._issue_event(row)
+        self.assertIsNone(
+            WorkflowVerbs._issue_event({"event": "cross-referenced"}, timeline=True)["id"]
+        )
