@@ -172,8 +172,12 @@ class RegistryTest(unittest.TestCase):
 
     def test_update_session_is_idempotent_on_the_same_session_id(self):
         self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
-        first = R.update_session(self.db, platform="minimax", native_session_id="native-1", title="T")
-        again = R.update_session(self.db, platform="minimax", native_session_id="native-1", title="T")
+        first = R.update_session(
+            self.db, platform="minimax", native_session_id="native-1", title="T"
+        )
+        again = R.update_session(
+            self.db, platform="minimax", native_session_id="native-1", title="T"
+        )
         self.assertEqual(first["outcome"], "updated")
         self.assertEqual(again["outcome"], "unchanged")
         self.assertEqual(again["changed"], [])
@@ -245,8 +249,7 @@ class RegistryTest(unittest.TestCase):
         the seat's business."""
         old = self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
         self.reg._conn.execute(
-            "UPDATE sessions SET last_seen_at = ?, registered_at = ?"
-            " WHERE record_id = ?",
+            "UPDATE sessions SET last_seen_at = ?, registered_at = ? WHERE record_id = ?",
             ("2020-01-01T00:00:00.000Z", "2020-01-01T00:00:00.000Z", old["record_id"]),
         )
         self.reg._conn.commit()
@@ -257,8 +260,7 @@ class RegistryTest(unittest.TestCase):
     def test_sweep_ends_a_stale_replaced_session(self):
         old = self.reg.resolve_or_register(ident(platform="minimax", native="native-1"))
         self.reg._conn.execute(
-            "UPDATE sessions SET last_seen_at = ?, registered_at = ?"
-            " WHERE record_id = ?",
+            "UPDATE sessions SET last_seen_at = ?, registered_at = ? WHERE record_id = ?",
             ("2020-01-01T00:00:00.000Z", "2020-01-01T00:00:00.000Z", old["record_id"]),
         )
         self.reg._conn.commit()

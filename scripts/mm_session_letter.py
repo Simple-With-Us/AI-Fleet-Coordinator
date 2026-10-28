@@ -104,9 +104,7 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
         cmd += ["--db", local_db]
     scripts = repo_scripts_dir()
     if local_db and scripts:
-        proc = subprocess.run(
-            cmd, cwd=scripts, capture_output=True, text=True, timeout=timeout
-        )
+        proc = subprocess.run(cmd, cwd=scripts, capture_output=True, text=True, timeout=timeout)
     else:
         remote = "cd ~/Code/%s && %s -m agent_sync.operator_registry %s" % (
             REPO_REL,
@@ -235,7 +233,7 @@ def wanted_title(letter: str, topic: str) -> str:
     topic = " ".join(topic.split())
     if not topic:
         topic = "Session " + (letter or "?")
-    return "%s: %s" % (letter, topic[: TITLE_MAX])
+    return "%s: %s" % (letter, topic[:TITLE_MAX])
 
 
 def title_ok(title: str, letter: str) -> tuple[bool, str]:
@@ -321,9 +319,9 @@ def hook_session_start() -> int:
         return 0
     print(
         "Session letter: %s.  Two rules for this session:\n"
-        "1. Name this thread in English and start the title with the letter: \"%s: <topic>\".\n"
+        '1. Name this thread in English and start the title with the letter: "%s: <topic>".\n'
         "2. State the letter early in every Zulip post and every board item you file — the "
-        "first line, for example \"%s: what this post is about\" — so a reply knows where it "
+        'first line, for example "%s: what this post is about" — so a reply knows where it '
         "is going.\n"
         "The registry carries the same title under the session id %s."
         % (letter, letter, letter, session_id)
@@ -370,8 +368,7 @@ def hook_pre_tool_use() -> int:
         return 0
     sys.stderr.write(
         "This post does not state the session letter %s.  State it in the first line "
-        "(for example \"%s: <what this post is about>\") and send it again."
-        % (letter, letter)
+        '(for example "%s: <what this post is about>") and send it again.' % (letter, letter)
     )
     return 2
 
@@ -397,8 +394,7 @@ def hook_stop() -> int:
     if not active:
         sys.stderr.write(
             "This thread is not titled in the seat's form: %s.  Rename it to "
-            "\"%s: <topic in English>\" with the session-title tool, then finish."
-            % (why, letter)
+            '"%s: <topic in English>" with the session-title tool, then finish.' % (why, letter)
         )
         return 2
     # Second pass: fix it here rather than leave a thread nobody can file.

@@ -1394,9 +1394,7 @@ def main(argv: list[str] | None = None) -> int:
     u.add_argument("--thread-link", default=None)
     u.add_argument("--apple-note-link", default=None)
     u.add_argument("--wake-capability", default=None)
-    c = sub.add_parser(
-        "close", help="end one session's letter and keep its history"
-    )
+    c = sub.add_parser("close", help="end one session's letter and keep its history")
     c.add_argument("--db", default="", help="the registry file (default: the shared path)")
     c.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
     c.add_argument("--session-id", required=True, help="the native session id")
