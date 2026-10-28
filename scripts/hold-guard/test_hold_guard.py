@@ -304,14 +304,19 @@ class HoldGuardTests(unittest.TestCase):
                 hold_guard.gh_json(["api", "repos/o/r"])
         self.assertIn("unexpected JSON shape", str(cm.exception))
 
+
 class HoldLabelNameTests(unittest.TestCase):
     def test_owner_named_hold_labels_match(self):
         """Jay's two labels (Oct 27 2026) and the fleet's older spelling all hold a PR."""
-        for name in ("do-not-merge", "do-not-auto-merge", "do-not-automerge", "do-not-auto-merge:jay"):
+        for name in (
+            "do-not-merge",
+            "do-not-auto-merge",
+            "do-not-automerge",
+            "do-not-auto-merge:jay",
+        ):
             self.assertTrue(hold_guard.HOLD_RE.match(name), name)
         self.assertFalse(hold_guard.HOLD_RE.match("do-not-auto-merged"))
 
 
 if __name__ == "__main__":
     unittest.main()
-
