@@ -1,10 +1,10 @@
-> **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER, GB-ENGINEER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
-
 ---
 name: secret-safety
 description: >-
   Hardcoded, mandatory safeguards for handling secrets, API keys, tokens, and credentials during any agent session.  Load and follow this BEFORE running any command whose arguments or environment touch a credential, before printing or displaying any config file, JSON dump, env listing, header, URL, or command string that could contain one, before reading from a known secret source (a secrets-handoff file, Infisical or any other secrets manager, a database, a vault), and before debugging an API/auth failure.  Trigger this even when the request doesn't say "secret" or "credential" — command args, headers, URLs, and verbose/debug tool output are the most common accidental leak vectors, not just files literally named .env or secrets.json.
 ---
+
+> **Runtime fork (Cursor).** Local Cursor IDE / Auto on this Mac is `[CURSOR]`.  If this session is a **Cursor cloud agent spawned as Grok Bot**, your chat tag is `[GB-<NAME>]` (GB-DIRECTOR, GB-FIXER, GB-DESIGNER, GB-COMPILER, GB-HOUSEKEEPER, GB-PUBLISHER, GB-DEPLOYER, GB-MONITOR, GB-PLUMBER, GB-ORACLE, GB-TRADER, GB-ENGINEER) — not `[GROK-BOT]`, not `[CURSOR]`, and not `[GROK]`.  A DeepSeek *model* inside Cursor is still `[CURSOR]` unless you are the separate DeepSeek Harness seat (`[DSH]`).  Never `[MONET]`.
 
 ## Why this exists
 

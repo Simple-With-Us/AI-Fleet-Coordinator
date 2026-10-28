@@ -1108,10 +1108,22 @@ def _specialize_grok_bot(text: str, seat: Seat, skill_name: str) -> str:
 
 def _insert_after_first_heading(text: str, block: str) -> str:
     lines = text.splitlines(keepends=True)
-    for i, line in enumerate(lines):
-        if line.startswith("# "):
+    # Skill loaders expect YAML frontmatter at line 1.  When the skill has no
+    # H1 heading (e.g. secret-safety), insert after the frontmatter block
+    # instead of above it, or the banner displaces the frontmatter and
+    # fold_yaml_description can no longer parse it.
+    start = 0
+    if lines and lines[0].strip() == "---":
+        for j in range(1, len(lines)):
+            if lines[j].strip() == "---":
+                start = j + 1
+                break
+    for i in range(start, len(lines)):
+        if lines[i].startswith("# "):
             return "".join(lines[: i + 1] + ["\n", block] + lines[i + 1 :])
-    return block + text
+    if start < len(lines) and not lines[start].strip():
+        start += 1
+    return "".join(lines[:start] + [block] + lines[start:])
 
 
 def _stash_identity_source(text: str) -> str:
