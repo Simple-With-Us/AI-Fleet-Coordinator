@@ -17,6 +17,8 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+ wf_file_delete:['Delete exact blob on non-default branch; workflow paths refused. Requires separate execution authority.',obj(['repo','path','branch','message','prior_sha'],{repo:REPO,path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},prior_sha:SHA})],
+
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_workflow_disable: ['workflow disable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_run_delete: ['run delete.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
@@ -96,6 +98,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_file_delete:['deleted','path','branch','commit'],
   wf_workflow_enable:['completed','workflow_id'],
   wf_workflow_disable:['completed','workflow_id'],
   wf_run_delete:['completed','run_id'],
@@ -114,6 +117,8 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 export function validWfV1Response(action, body) {
+ if(action === 'wf_file_delete' && (body?.deleted !== true || !['path','branch','commit'].every(k=>typeof body[k] === 'string' && body[k].length>0) || !/^[0-9a-f]{40}$/.test(body.commit))) return false;
+
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
       Object.keys(body).sort().join(',') !== [...keys].sort().join(',')) return false;

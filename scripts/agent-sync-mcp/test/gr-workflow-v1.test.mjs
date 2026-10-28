@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,27);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,28);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,27);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,28);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -206,3 +206,11 @@ test('workflow state and run/artifact deletion preserve own-bearer writes and UN
 });
 
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
+
+test('file delete fixed route own bearer and uncertain write',async()=>{
+ const args={repo,path:'x.txt',branch:'feature/x',message:'Remove obsolete file',prior_sha:'a'.repeat(40)};
+ assert.ok(validWfV1Args('wf_file_delete',args));assert.ok(!validWfV1Args('wf_file_delete',{...args,force:true}));
+ const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/wf_file_delete'));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({deleted:true,path:'x.txt',branch:'feature/x',commit:'b'.repeat(40)}));});
+ assert.ok(!(await t.call('gr_wf_file_delete',args)).isError);
+ const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_wf_file_delete',args);assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
+});

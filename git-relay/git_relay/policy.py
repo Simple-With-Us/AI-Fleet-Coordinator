@@ -77,6 +77,7 @@ class SeatPolicy:
     # permission in SPECS.  They need the seat's own App, like APP_ACTIONS, but are not
     # wired into the HTTP dispatch: the server refuses them as registered-not-wired.
     WORKFLOW_ACTIONS = (
+        "wf_file_delete",
         "wf_workflow_enable",
         "wf_workflow_disable",
         "wf_run_delete",
