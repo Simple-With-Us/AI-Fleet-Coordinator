@@ -2,9 +2,9 @@ import base64
 import gzip
 import io
 import unittest
-import zlib
 import urllib.error
 import zipfile
+import zlib
 from email.message import Message
 
 try:
