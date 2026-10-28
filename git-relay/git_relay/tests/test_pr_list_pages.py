@@ -1,7 +1,9 @@
 import unittest
+
 from git_relay.github_client import RelayGitHubError
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
-from .test_workflow_verbs import REPO, SHA, Client, Policy, Minter
+
+from .test_workflow_verbs import REPO, SHA, Client, Minter, Policy
 
 
 class PrListPages(unittest.TestCase):
