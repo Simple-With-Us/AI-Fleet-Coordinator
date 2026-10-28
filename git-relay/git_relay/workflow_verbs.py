@@ -54,6 +54,8 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_issue_events": ({"issues": "read"}, False),
+    "wf_issue_timeline": ({"issues": "read"}, False),
     "wf_issue_parent": ({"issues": "read"}, False),
     "wf_issue_subissues": ({"issues": "read"}, False),
     "wf_issue_blocked_by": ({"issues": "read"}, False),
@@ -339,6 +341,51 @@ class WorkflowVerbs:
     def wf_issue_blocking(self, repo, args):
         _only(args, ("repo", "number", "per_page", "page"))
         return self._relation_read(repo, args, "dependencies/blocking")
+
+    @staticmethod
+    def _issue_event(data):
+        if (
+            not isinstance(data, dict)
+            or not isinstance(data.get("event"), str)
+            or not re.fullmatch(r"[a-z][a-z_]{0,79}", data["event"])
+        ):
+            raise RelayGitHubError(502, "issue event receipt unverifiable")
+        event_id = data.get("id")
+        created = data.get("created_at")
+        commit = data.get("commit_id")
+        if (
+            (event_id is not None and (type(event_id) is not int or event_id < 1))
+            or (
+                created is not None
+                and (not isinstance(created, str) or len(created) > 100 or find_secret(created))
+            )
+            or (commit is not None and (not isinstance(commit, str) or not _SHA.fullmatch(commit)))
+        ):
+            raise RelayGitHubError(502, "issue event metadata unverifiable")
+        return {"id": event_id, "event": data["event"], "created_at": created, "commit_id": commit}
+
+    def _issue_history(self, repo, args, timeline=False):
+        _only(args, ("repo", "number", "per_page", "page"))
+        number = _int(args, "number")
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        suffix = "timeline" if timeline else "events"
+        data = self._get(f"/repos/{repo}/issues/{number}/{suffix}?per_page={limit}&page={page}")
+        if not isinstance(data, list):
+            raise RelayGitHubError(502, "issue history page unverifiable")
+        return {
+            "events": [self._issue_event(x) for x in data[:limit]],
+            "page": page,
+            "has_more": len(data) >= limit,
+        }
+
+    def wf_issue_events(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._issue_history(repo, args)
+
+    def wf_issue_timeline(self, repo, args):
+        _only(args, ("repo", "number", "per_page", "page"))
+        return self._issue_history(repo, args, True)
 
     def _asset_summary(self, data):
         if (

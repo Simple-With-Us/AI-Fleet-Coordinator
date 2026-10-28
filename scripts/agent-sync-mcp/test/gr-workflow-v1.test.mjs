@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,43);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,45);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,43);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,45);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -243,4 +243,13 @@ test('issue relation pages closed boundary and own bearer',async()=>{
 test('relations title credential rejected and closed nongit Zod before dispatch',()=>{
  assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ghp_'+'x'.repeat(36),state:'open',repo:null}}),false);
  assert.equal(validWfV1Args('wf_issue_blocking',{repo,number:1,raw:true}),false);
+});
+
+test('history metadata closed own-bearer reads and nullable absent fields',async()=>{
+ const event={id:null,event:'commented',created_at:null,commit_id:null};
+ for(const action of ['wf_issue_events','wf_issue_timeline']){
+ const args={repo,number:1,page:2,per_page:1};assert.ok(validWfV1Args(action,args));assert.ok(!validWfV1Args(action,{...args,page:1001}));assert.ok(!validWfV1Args(action,{...args,url:'https://evil.invalid'}));
+ const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');assert.deepEqual(JSON.parse(init.body),args);return new Response(JSON.stringify({events:[event],page:2,has_more:true}));});assert.ok(!(await t.call('gr_'+action,args)).isError);
+ assert.equal(validWfV1Response(action,{events:[{...event,body:'not allowed'}],page:1,has_more:false}),false);
+ }
 });
