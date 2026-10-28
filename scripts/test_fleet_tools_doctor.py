@@ -146,7 +146,9 @@ class SeatAndMcpTests(unittest.TestCase):
         rows = {r["check"]: r for r in report.rows}
         self.assertEqual(rows["mcp:codex"]["status"], "WARN")
         missing = rows["mcp:codex"]["detail"].split("missing ", 1)[1]
-        self.assertEqual({name.strip() for name in missing.split(",")}, {"simple-chat", "fleetlink"})
+        self.assertEqual(
+            {name.strip() for name in missing.split(",")}, {"simple-chat", "fleetlink"}
+        )
 
     def test_mcp_registrations_report_the_retired_name_as_drift(self):
         self.touch(
@@ -158,9 +160,13 @@ class SeatAndMcpTests(unittest.TestCase):
         doctor.check_mcp(report)
         rows = {r["check"]: r for r in report.rows}
         self.assertEqual(rows["mcp:codex"]["status"], "WARN")
-        self.assertIn("pre-rename name agent-sync, canonical simple-chat", rows["mcp:codex"]["detail"])
+        self.assertIn(
+            "pre-rename name agent-sync, canonical simple-chat", rows["mcp:codex"]["detail"]
+        )
         self.assertEqual(rows["mcp:claude"]["status"], "WARN")
-        self.assertIn("pre-rename name agent-sync, canonical simple-chat", rows["mcp:claude"]["detail"])
+        self.assertIn(
+            "pre-rename name agent-sync, canonical simple-chat", rows["mcp:claude"]["detail"]
+        )
 
     def test_registered_env_reads_the_server_under_either_accepted_name(self):
         self.touch(
