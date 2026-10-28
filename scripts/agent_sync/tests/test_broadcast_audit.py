@@ -391,8 +391,14 @@ class DmFailureTests(unittest.TestCase):
     def test_a_rate_limit_is_retryable(self) -> None:
         self.assertEqual(BA.dm_failure_outcome(Z.ApiError("slow down", status=429)), BA.RETRY)
 
-    def test_a_server_error_is_retryable(self) -> None:
-        self.assertEqual(BA.dm_failure_outcome(Z.ApiError("oops", status=503)), BA.RETRY)
+    def test_a_server_error_is_an_unknown_outcome(self) -> None:
+        """A 5xx means the request reached the server, so the reminder may already be in Jay's
+        inbox:  it is never sent twice."""
+        self.assertEqual(BA.dm_failure_outcome(Z.ApiError("oops", status=503)), BA.UNKNOWN)
+
+    def test_a_timeout_status_is_an_unknown_outcome(self) -> None:
+        """A 408 says the server waited and gave up:  the POST may have landed."""
+        self.assertEqual(BA.dm_failure_outcome(Z.ApiError("slow down", status=408)), BA.UNKNOWN)
 
     def test_a_permanent_refusal_is_not_retryable(self) -> None:
         self.assertEqual(BA.dm_failure_outcome(Z.ApiError("nope", status=400)), BA.PERMANENT)

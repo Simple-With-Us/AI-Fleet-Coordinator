@@ -9,6 +9,7 @@ import threading
 import unittest
 from unittest import mock
 
+from agent_sync import broadcast_audit as BAUD
 from agent_sync import chat_fanout as F
 from agent_sync import live as L
 from agent_sync import router as R
@@ -635,6 +636,62 @@ class PeerBroadcastDaemonTests(DaemonHarness):
         self.assertEqual(rows[-1].get("outcome"), "reminded")
         self.assertEqual(rows[-1].get("id"), message_id)
         self.assertNotIn("broken", json.dumps(rows[-1]), "the log never holds the content")
+
+    def test_a_human_at_all_schedules_no_audit(self) -> None:
+        """The audit is for fleet bots:  a person who is not the owner is never reported."""
+        self.fake.add_user("guest@zulip.test", "Guest", is_bot=False)
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.fake.add_message("Guest", "agent-sync", "t", "@all the deploy is broken")
+        message = next(m for m in self.fake.messages if m["id"] == message_id)
+        daemon.route_message(daemon.seats["CLAUDE"], dict(message))
+        self.assertEqual(daemon._broadcast_audits, {})
+
+    def test_an_unknown_seat_at_all_still_schedules_one_audit(self) -> None:
+        """A bot whose email maps to no seat of the fleet still used `@all`:  the audit is
+        scheduled, and the reminder says the check could not run rather than dropping it."""
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        self.fake.add_user("mystery-bot@zulip.test", "Mystery", is_bot=True)
+        message_id = self.fake.add_message(
+            "Mystery", "agent-sync", "t", "@all the deploy is broken"
+        )
+        self.pump_until(daemon, lambda: message_id in daemon._broadcast_audits)
+        broadcast = daemon._broadcast_audits[message_id][0]
+        self.assertEqual(broadcast.sender_seat, "", "the sender maps to no seat of the fleet")
+        # The audit is due ten minutes later.
+        self.clock.advance(11 * 60)
+        daemon.tick()
+        self.pump_until(
+            daemon,
+            lambda: any(
+                row.get("event") == "peer-broadcast-all" for row in self.log_rows(daemon)
+            ),
+        )
+        rows = [r for r in self.log_rows(daemon) if r.get("event") == "peer-broadcast-all"]
+        self.assertEqual(rows[-1].get("outcome"), "reminded")
+        posted = self.fake.requests_to("POST", "messages")
+        self.assertTrue(posted, "the owner was reminded")
+        self.assertIn("its seat is not known", posted[-1].form.get("content", ""))
+
+    def test_a_spawn_failure_requeues_the_audit(self) -> None:
+        """A thread that never started owns nothing:  the audit goes back on the queue like a
+        retryable DM failure does, so a transient spawn failure cannot lose the reminder."""
+        daemon = self.started()
+        daemon._chat_catalog = FakeCatalog([])
+        message_id = self.peer_all()
+        self.pump_until(daemon, lambda: message_id in daemon._fanout_seen)
+        self.clock.advance(11 * 60)
+        with mock.patch("agent_sync.daemon.threading") as fake_threading:
+            fake_threading.Thread.side_effect = RuntimeError("no thread today")
+            daemon._start_due_broadcast_audits(self.clock.time())
+        self.assertIn(message_id, daemon._broadcast_audits, "a spawn failure requeues the audit")
+        _broadcast, due, attempt = daemon._broadcast_audits[message_id]
+        self.assertEqual(attempt, 1)
+        self.assertEqual(due, self.clock.time() + BAUD.REMINDER_RETRY_SECONDS)
+        rows = [r for r in self.log_rows(daemon) if r.get("event") == "peer-broadcast-all"]
+        self.assertEqual(rows[-1].get("outcome"), "reminder_failed")
+        self.assertEqual(rows[-1].get("error"), "RuntimeError")
 
 
 

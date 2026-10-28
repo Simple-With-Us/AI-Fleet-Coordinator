@@ -65,12 +65,13 @@ REMINDER_UNKNOWN = "outcome_unknown"
 RATE_LIMITED = "rate_limited"
 
 #: What a failed DM to the owner means.
-#: The write is worth trying again (a 429, a 408, a 5xx, a connection that never opened).
+#: The write is worth trying again (a 429, a connection that never opened):  the server refused
+#: it, so nothing reached Jay's inbox.
 RETRY = "retry"
 #: The write is refused for good (a permanent 4xx):  trying again changes nothing.
 PERMANENT = "permanent"
-#: The write may have reached the server (a timeout on a POST):  the reminder may already be in
-#: Jay's inbox, so it is never sent twice.
+#: The write may have reached the server (a timeout on a POST, a 408, a 5xx):  the reminder may
+#: already be in Jay's inbox, so it is never sent twice.
 UNKNOWN = "unknown"
 
 #: How long a failed DM waits before the audit tries again.
@@ -437,17 +438,20 @@ def evaluate(
 def dm_failure_outcome(exc: BaseException) -> str:
     """What a failed DM to the owner means:  retry it, let it go, or never send it twice.
 
-    A retryable failure (a 429, a 408, a 5xx, a connection that never opened) is worth another
-    try, so the audit stays pending.  A permanent refusal (a 4xx) changes nothing by trying
-    again.  A write that may have reached the server (a timeout on a POST) is neither:  the
-    reminder may already be in Jay's inbox, so it is recorded as an unknown outcome and never
-    sent a second time."""
+    A retryable failure (a 429, a connection that never opened) is worth another try, so the
+    audit stays pending.  A permanent refusal (a 4xx) changes nothing by trying again.  Every
+    failure that may have reached the server (a timeout on a POST, a 408, a 5xx) is an unknown
+    outcome:  the reminder may already be in Jay's inbox, so it is never sent a second time."""
     if isinstance(exc, Z.NetworkError):
         return UNKNOWN if exc.maybe_sent else RETRY
     if isinstance(exc, Z.ApiError):
         status = int(exc.status or 0)
-        if status in (408, 429) or status >= 500:
+        if status == 429:
             return RETRY
+        if status == 408 or status >= 500:
+            # The server answered, so the POST may have landed:  an unknown outcome, never a
+            # blind retry that would post the reminder twice.
+            return UNKNOWN
         return PERMANENT
     if isinstance(exc, OSError):
         return RETRY

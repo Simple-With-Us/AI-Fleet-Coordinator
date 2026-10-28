@@ -3199,16 +3199,16 @@ class Daemon:
 
         The message itself is enough:  a fleet bot's `@all`, outside a DM and outside an OWNER
         topic, that is not stale and carries no marker.  `schedule_broadcast_audit` keeps one
-        audit per message id, so the seats that see the broadcast agree on one reminder."""
+        audit per message id, so the seats that see the broadcast agree on one reminder.
+
+        The sender's email is enough too, and the seat it maps to is not required:  a bot whose
+        email maps to no seat of the fleet still used `@all`, and the audit has a "could not
+        check" reminder for exactly that case, so the audit is scheduled rather than dropped."""
         if c.no_wake or c.dm or c.stale or c.owner or c.owner_topic:
             return False
-        if not c.broadcast_all:
+        if not c.broadcast_all or not c.sender_is_bot:
             return False
-        return bool(
-            BAUD.sender_seat_for(
-                str(message.get("sender_email") or ""), seats=self._fleet_seat_tags()
-            )
-        )
+        return bool(str(message.get("sender_email") or ""))
 
     def _log_broadcast_wake_unsupported(self, message_id: int) -> None:
         """Seats this listener holds that cannot take a routine/headless wake (for owner `@all`).
@@ -3372,7 +3372,8 @@ class Daemon:
 
         The event thread only picks them up:  the check reads Zulip (the sender bot's own
         account) and posts one DM, so it must not run where the coalescer lives.  A thread that
-        never started owns nothing, so the audit is logged as failed."""
+        never started owns nothing, so the audit is put back on the queue (a spawn failure is
+        transient, and the owner reminder must not be lost to it) and logged as failed."""
         due: list[tuple[BAUD.Broadcast, int]] = []
         with self._fanout_lock:
             for message_id, (broadcast, due_at, attempt) in list(self._broadcast_audits.items()):
@@ -3388,6 +3389,15 @@ class Daemon:
                     daemon=True,
                 ).start()
             except Exception as exc:  # noqa: BLE001 - an audit that never started owns nothing
+                # The thread never ran, so nothing was sent:  the audit goes back on the queue
+                # like a retryable DM failure does, bounded by the same attempt cap.
+                if attempt < BAUD.REMINDER_MAX_ATTEMPTS:
+                    with self._fanout_lock:
+                        self._broadcast_audits[broadcast.message_id] = (
+                            broadcast,
+                            now + BAUD.REMINDER_RETRY_SECONDS,
+                            attempt + 1,
+                        )
                 self.log.write(
                     "peer-broadcast-all",
                     id=broadcast.message_id,
