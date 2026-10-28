@@ -42,9 +42,6 @@ const SPECS = {
   wf_run_get: ['Read run get.', obj(['repo', 'run_id'], {repo:REPO,run_id:INT})],
   wf_run_artifacts: ['Read run artifacts.', obj(['repo', 'run_id'], {repo:REPO,run_id:INT,per_page:PER_PAGE})],
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_workflow_disable: ['Disable a workflow; no expected-state fence.  Requires explicit per-seat action/repo authorization and owner execution authority, never a CI bypass.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_run_delete: ['Irreversibly delete an Actions run and logs; no concurrency fence.  Requires explicit per-seat action/repo authorization and separate owner execution authority.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
-  wf_artifact_delete: ['Irreversibly delete an artifact; no concurrency fence.  Requires explicit per-seat action/repo authorization and separate owner execution authority.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
   wf_workflow_disable: ['Disable a workflow, stopping future CI triggers; can break required checks. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
   wf_run_delete: ['Irreversibly delete run and logs. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
   wf_artifact_delete: ['Irreversibly remove artifact data. No concurrency fence, explicit action/repo authorization and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
@@ -92,25 +89,25 @@ function validWfV1Args2(schema, args) {
   return Object.keys(args).every(k => Object.hasOwn(schema.properties,k) && typeOk(schema.properties[k], args[k]));
 }
 // Iterative guard runs before recursive schema code or JSON serialization.
-export function boundedWorkflowInput(args) {
+export function boundedWorkflowInput(args, {maxDepth=6,maxNodes=500,maxBytes=65536,maxString=65536,maxKeys=100}={}) {
   const stack=[[args,0]], seen=new Set(); let nodes=0, bytes=0;
   while(stack.length) {
     const [value,depth]=stack.pop();
-    if(++nodes>500 || depth>6) return false;
+    if(++nodes>maxNodes || depth>maxDepth) return false;
     if(typeof value==='string') {
-      if(value.length>65536) return false;
+      if(value.length>maxString) return false;
       bytes+=new TextEncoder().encode(value).length;
     } else if(value && typeof value==='object') {
       if(seen.has(value)) return false; seen.add(value);
       if(Object.getPrototypeOf(value)!==Object.prototype && !Array.isArray(value) && Object.getPrototypeOf(value)!==null) return false;
-      const keys=Object.keys(value); if(keys.length>100) return false;
+      const keys=Object.keys(value); if(keys.length>maxKeys) return false;
       for(const key of keys) {
         const d=Object.getOwnPropertyDescriptor(value,key);
         if(!d || !Object.hasOwn(d,'value')) return false;
         bytes+=key.length; stack.push([d.value,depth+1]);
       }
     } else if(!['number','boolean'].includes(typeof value) && value!==null) return false;
-    if(bytes>65536) return false;
+    if(bytes>maxBytes) return false;
   }
   return true;
 }
@@ -184,7 +181,7 @@ const readResponseSchemas={
  wf_run_artifacts:z.object({artifacts:objectWith({total_count:z.number().int().nonnegative(),artifacts:z.array(artifactObject).max(50)})}).strict(),
 };
 export function validWfV1Response(action, body) {
- if(!boundedWorkflowInput(body))return false;
+ if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
  const keysBeforeParse=RESPONSE_KEYS[action];
  if(!keysBeforeParse)return false;
@@ -200,8 +197,6 @@ export function validWfV1Response(action, body) {
     if(!parsed.success)return false;
     body=parsed.data;
   }
- const key={wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
- if(key){const parsed=z.object({completed:z.literal(true),[key]:z.number().int().positive()}).strict().safeParse(body);if(!parsed.success)return false;body=parsed.data;}
 
   const keys = RESPONSE_KEYS[action];
   if (!keys || !body || typeof body !== 'object' || Array.isArray(body) ||
