@@ -152,3 +152,37 @@ class LabelUpdate(unittest.TestCase):
                 status, body = r.handle(TOKEN, "wf_label_update", renamed)
                 self.assertEqual(status, 409)
                 self.assertEqual(len(client.calls), count)
+
+    def test_verified_success_allows_a_b_a_without_releasing_unknown(self):
+        a = self.args(repo="example/x", name="stable", new_name="stable", color="111111")
+        b = {**a, "color": "222222"}
+        replies = []
+        for args in [a, b, a]:
+            replies.extend(
+                [
+                    {"id": 7, "name": "stable"},
+                    {
+                        "id": 7,
+                        "name": "stable",
+                        "color": args["color"],
+                        "description": args["description"],
+                    },
+                ]
+            )
+        c = Client(*replies)
+        with tempfile.TemporaryDirectory() as tmp:
+            r = relay(tmp, client=c)
+            r.outcomes = OutcomeStore(tmp + "/outcomes.json")
+            with (
+                patch.object(r.policy, "authorize", return_value=None),
+                patch.object(
+                    r.policy,
+                    "app_identity",
+                    return_value=("swu-wise", {"issues": "write", "metadata": "read"}),
+                ),
+            ):
+                for args in [a, b, a]:
+                    status, body = r.handle(TOKEN, "wf_label_update", args)
+                    self.assertEqual(status, 200)
+                    self.assertEqual(body["label"]["color"], args["color"])
+            self.assertEqual(sum(x[0] == "PATCH" for x in c.calls), 3)
