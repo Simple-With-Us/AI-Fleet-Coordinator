@@ -1556,7 +1556,7 @@ class MuseSeatTests(DaemonHarness):
 
 
 class PeerScreenTests(DaemonHarness):
-    """The tool-less responder screens a peer's request (AGENT-SYNC Precedence rule 3):  low risk is
+    """The tool-less responder screens a peer's request (FLEET-PROTOCOL Precedence rule 3):  low risk is
     answered, uncertain and high risk reach the owner by Zulip DM from the seat's own bot."""
 
     OWNER_ID = 12

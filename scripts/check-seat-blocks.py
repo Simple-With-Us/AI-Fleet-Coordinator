@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Flag seat blocks that break the owner's seat-precedence rule (AGENT-SYNC § Identity Rules, 2026-10-09).
+"""Flag seat blocks that break the owner's seat-precedence rule (FLEET-PROTOCOL § Identity Rules, 2026-10-09).
 
 A skill or rules file must never stamp its platform seat over a seat a launcher assigned:  BotFleet runs
 Claude, Codex and other CLIs as engines for its own bots, and those engines load these files.  Flags:

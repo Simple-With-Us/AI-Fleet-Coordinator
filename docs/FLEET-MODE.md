@@ -86,7 +86,7 @@ because an agent that delegates only when certain delegates almost never.
 - **`~/Code/` is for integration trees only** — no new top-level folder may be
   added to `~/Code/` unless it is the integration tree for a brand-new fleet
   app being onboarded.  Per-seat worktrees, lane checkouts, scratch clones,
-  and `*-wt-*` directories all belong in `~/apps/`.  See `AGENT-SYNC.md` §
+  and `*-wt-*` directories all belong in `~/apps/`.  See `FLEET-PROTOCOL.md` §
   *"Hard rule: `~/Code/` is for integration trees only"* and the
   `code-main-keeper.sh` `STRAY-WORKTREE` enforcement scan.  Owner ruling
   2026-09-25, all agents, all apps, forever.

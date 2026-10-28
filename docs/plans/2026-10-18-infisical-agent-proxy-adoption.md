@@ -61,7 +61,7 @@ Each phase is additive until Phase 5.  Nothing is deleted, booted out or rotated
 
 ### Phase 4:  Instructions
 
-`AGENT-SYNC.md` (Secret handoff, grep trap), the global agent files (`~/.claude/CLAUDE.md`, `~/AGENTS.md`, `~/.codex/AGENTS.md` and the other platforms), the `secret-handoff` and `secret-safety` skills, and `INFISICAL.md` § Mac `global-api-keys` sync:  replace "the handoff file" with "Infisical, through the proxy or `infisical run`".
+`FLEET-PROTOCOL.md` (Secret handoff, grep trap), the global agent files (`~/.claude/CLAUDE.md`, `~/AGENTS.md`, `~/.codex/AGENTS.md` and the other platforms), the `secret-handoff` and `secret-safety` skills, and `INFISICAL.md` § Mac `global-api-keys` sync:  replace "the handoff file" with "Infisical, through the proxy or `infisical run`".
 
 ### Phase 5:  Cutover (owner gate)
 
