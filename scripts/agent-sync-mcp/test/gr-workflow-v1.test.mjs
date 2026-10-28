@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Args} from '../src/gr-workflow-v1.js';
+import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Args,validWfV1Response} from '../src/gr-workflow-v1.js';
 const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',import.meta.url),'utf8');
 const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
 const onlyOf=name=>{
@@ -209,4 +209,11 @@ test('new read envelopes reject malformed objects and fixed routes use own beare
     const answer=await t.call('gr_'+action,{repo,...args});
     assert.ok(!answer.isError,action+JSON.stringify(answer));assert.equal(calls,1);
   }
+});
+
+test('read object checks preserve valid existing file-write string receipts',()=>{
+ assert.ok(validWfV1Response('wf_file_put',{path:'a.txt',branch:'feature/x',commit:'a'.repeat(40)}));
+ assert.ok(validWfV1Response('wf_files_put',{branch:'feature/x',commit:'a'.repeat(40),files:2}));
+ assert.ok(!validWfV1Response('wf_branch_get',{branch:'main'}));
+ assert.ok(!validWfV1Response('wf_commit_get',{commit:'a'.repeat(40)}));
 });
