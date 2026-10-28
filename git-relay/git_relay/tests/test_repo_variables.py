@@ -29,7 +29,10 @@ class Variables(unittest.TestCase):
             self.assertEqual(c.calls[0][3], "own")
             self.assertEqual(c.expected, status)
             self.assertNotIn("value", out)
-            self.assertNotIn(action, _REAPPLY_STATE_ACTIONS)
+            if action.endswith("create"):
+                self.assertNotIn(action, _REAPPLY_STATE_ACTIONS)
+            else:
+                self.assertIn(action, _REAPPLY_STATE_ACTIONS)
             self.assertEqual(SPECS[action][0], {"variables": "write"})
 
     def test_nonsecret_closed_bounded(self):
@@ -71,3 +74,19 @@ class Variables(unittest.TestCase):
         ]:
             with self.assertRaises(Refused):
                 WorkflowVerbs.for_action(Client(), Policy(), Minter(), "swu-wise", a, REPO)
+
+    def test_variable_update_A_B_A_reapplies_only_known_success(self):
+        from git_relay.outcomes import OutcomeStore, key_for
+
+        store = OutcomeStore()
+        for action in ("wf_repo_variable_update", "wf_repo_variable_delete"):
+            keys = [
+                key_for("swu-wise", action, {"repo": REPO, "name": "MODE", "value": v})
+                for v in ("A", "B", "A")
+            ]
+            for key in keys:
+                self.assertIsNone(store.begin(key, reapply_ok=action in _REAPPLY_STATE_ACTIONS))
+                store.finish(key, "ok", {"completed": True, "name": "MODE"})
+            self.assertIsNone(store.begin(keys[0], reapply_ok=True))
+            store.finish(keys[0], "unknown")
+            self.assertEqual(store.begin(keys[0], reapply_ok=True)["state"], "unknown")

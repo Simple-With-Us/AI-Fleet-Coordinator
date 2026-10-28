@@ -12,3 +12,5 @@ No renames, org/environment variables, secrets API, or grants are implemented.
 Source: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
 
 Credential-pattern scanning is best effort, not proof an arbitrary string is non-secret.  Never use these commands to store passwords or API keys.
+
+Known-success update/delete setters reapply after fresh authorization, including A-B-A.  Create remains append-only cached success.  Pending/UNKNOWN never re-arm.
