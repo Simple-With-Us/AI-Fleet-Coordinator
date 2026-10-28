@@ -88,11 +88,48 @@ export function zulipMessagesUrl(env) {
   return `${site}/api/v1/messages`;
 }
 
-/** The Zulip error message of a failed response, or a safe placeholder. */
-function zulipErrorMessage(payload) {
-  const msg = payload?.msg;
-  if (typeof msg !== "string" || msg.trim() === "") return "no message";
-  return msg;
+/** The message used when the response body is not a Zulip result we can read. */
+const UNPARSEABLE_RESPONSE = "unparseable Zulip response";
+
+/** True for a plain object, false for arrays, null and everything else. */
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * Validate a Zulip response body at the boundary.
+ *
+ * This Worker has no npm dependencies, so there is no zod here: the shape
+ * check is by hand.  Only a plain object with a string `result` and a string
+ * `msg` (when present) is trusted.  Anything else is a failure with a fixed
+ * message, so an unexpected body is never echoed into the logs and never
+ * mistaken for a success.
+ *
+ * @param {unknown} json the parsed response body.
+ * @returns {{ok: boolean, msg?: string}} ok is true only for result "success".
+ */
+export function parseZulipResult(json) {
+  if (!isPlainObject(json)) return { ok: false, msg: UNPARSEABLE_RESPONSE };
+
+  const result = json.result;
+  if (typeof result !== "string") return { ok: false, msg: UNPARSEABLE_RESPONSE };
+
+  const msg = json.msg;
+  if (msg !== undefined && typeof msg !== "string") {
+    return { ok: false, msg: UNPARSEABLE_RESPONSE };
+  }
+
+  const parsed = { ok: result === "success" };
+  if (typeof msg === "string") parsed.msg = msg;
+  return parsed;
+}
+
+/** The message to log for a failed post: Zulip's own, or a safe placeholder. */
+function failureMessage(parsed) {
+  if (typeof parsed.msg !== "string" || parsed.msg.trim() === "") return "no message";
+  return parsed.msg;
 }
 
 /**
@@ -122,19 +159,20 @@ export async function postZulip(env, topic, content) {
     body,
   });
 
-  let payload = null;
+  let json = null;
   try {
-    payload = await res.json();
+    json = await res.json();
   } catch {
-    payload = null;
+    json = null;
   }
+  const parsed = parseZulipResult(json);
 
   if (!res.ok) {
-    console.error(`zulip post failed: http ${res.status}: ${zulipErrorMessage(payload)}`);
+    console.error(`zulip post failed: http ${res.status}: ${failureMessage(parsed)}`);
     return false;
   }
-  if (!payload || payload.result !== "success") {
-    console.error(`zulip post failed: http ${res.status}: ${zulipErrorMessage(payload)}`);
+  if (!parsed.ok) {
+    console.error(`zulip post failed: http ${res.status}: ${failureMessage(parsed)}`);
     return false;
   }
   return true;
@@ -143,6 +181,33 @@ export async function postZulip(env, topic, content) {
 /** Escape the Markdown characters that would break the link text of a title. */
 function escapeTitle(title) {
   return String(title ?? "").replace(/([`[\]])/g, "\\$1");
+}
+
+// A zero-width space (U+200B) after the "@" breaks Zulip's mention syntax
+// while leaving the text a human reads exactly as it was.
+const ZERO_WIDTH_SPACE = "\u200B";
+
+// The mention starters Zulip renders: "@**name**", "@_name_" and "@*name*".
+const MENTION_STARTER = /@(?=[*_])/g;
+
+// The bare group mentions Zulip renders.
+const GROUP_MENTION = /@(all|everyone|channel|stream|topic)\b/gi;
+
+/**
+ * Neutralize Zulip mention syntax in a string.
+ *
+ * A PR title, head ref, base ref or author login is chosen by whoever opened
+ * the PR, so any mention it carries is a ping the author asked for.  The "@"
+ * gets a zero-width space after it, which Zulip does not render as a mention
+ * and a human does not see.
+ *
+ * @param {unknown} text
+ * @returns {string}
+ */
+export function neutralizeMentions(text) {
+  return String(text ?? "")
+    .replace(MENTION_STARTER, `@${ZERO_WIDTH_SPACE}`)
+    .replace(GROUP_MENTION, `@${ZERO_WIDTH_SPACE}$1`);
 }
 
 /**
@@ -166,11 +231,16 @@ export function buildMessage({ kind, repo, pr, state }) {
     return `PR [#${number}](${url}) on ${repoText} no longer conflicts (now \`${state}\`).`;
   }
 
-  const title = escapeTitle(pr?.title);
-  const base = pr?.base?.ref ?? "main";
+  // Every field the PR author controls is neutralized before it reaches the
+  // message, so a PR title of "@**all**" cannot ping the stream.  The seat
+  // mention is ours and stays intact.
+  const title = escapeTitle(neutralizeMentions(pr?.title));
+  const base = neutralizeMentions(pr?.base?.ref ?? "main");
   const mention =
     seatMentionFor(pr) ??
-    `the author (\`${pr?.user?.login ?? "unknown"}\`, branch \`${pr?.head?.ref ?? "unknown"}\`)`;
+    `the author (\`${neutralizeMentions(pr?.user?.login ?? "unknown")}\`, branch \`${neutralizeMentions(
+      pr?.head?.ref ?? "unknown"
+    )}\`)`;
 
   return `PR [#${number} ${title}](${url}) on ${repoText} has a merge conflict with \`${base}\`.${SENTENCE_GAP}${mention} please rebase it.`;
 }
@@ -180,7 +250,21 @@ export function topicForRepo(repo) {
   return `pr-conflicts ${repo}`;
 }
 
-async function handlePr(owner, repo, number, env) {
+/**
+ * Watch one PR and post its alert.
+ *
+ * The KV key is the dedupe record, so it is only written once Zulip has
+ * confirmed the message: a key written before a failed post would suppress
+ * that alert forever, and a key deleted before a failed post would lose the
+ * recovery.  Both orders below keep a failed post retryable on the next
+ * delivery.
+ *
+ * @param {string} owner repository owner.
+ * @param {string} repo repository name.
+ * @param {number} number pull request number.
+ * @param {object} env Worker bindings.
+ */
+export async function handlePr(owner, repo, number, env) {
   const kvKey = `state:${owner}/${repo}#${number}`;
   const result = await getMergeState(owner, repo, number, env.GITHUB_TOKEN);
   if (!result) return;
@@ -195,26 +279,36 @@ async function handlePr(owner, repo, number, env) {
   }
 
   if (action === "alert") {
-    await env.PR_STATE.put(kvKey, result.state, { expirationTtl: 60 * 60 * 24 * 14 });
-    await postZulip(
+    const posted = await postZulip(
       env,
       topicForRepo(repo),
       buildMessage({ kind: "conflict", repo, pr: result.pr })
     );
+    // Only a delivered alert may claim the dedupe key.
+    if (posted) {
+      await env.PR_STATE.put(kvKey, result.state, { expirationTtl: 60 * 60 * 24 * 14 });
+    }
     return;
   }
 
   // recover: left dirty (only state we store)
-  await env.PR_STATE.delete(kvKey);
-  await postZulip(
+  const posted = await postZulip(
     env,
     topicForRepo(repo),
     buildMessage({ kind: "recovered", repo, pr: result.pr, state: result.state })
   );
+  // Only a delivered recovery may clear the dedupe key.
+  if (posted) {
+    await env.PR_STATE.delete(kvKey);
+  }
 }
 
 export default {
   async fetch(request, env, ctx) {
+    // A health probe answers before anything else, so a probe never reports
+    // the Worker as broken just because it has no webhook secret.
+    if (request.method !== "POST") return new Response("ok", { status: 200 });
+
     // A misconfigured Worker says so by name, before it touches anything.
     const missing = missingSecretNames(env);
     if (missing.length > 0) {
@@ -222,8 +316,6 @@ export default {
         status: 500,
       });
     }
-
-    if (request.method !== "POST") return new Response("ok", { status: 200 });
 
     const valid = await verifySignature(request, env.GITHUB_WEBHOOK_SECRET);
     if (!valid) return new Response("bad signature", { status: 401 });

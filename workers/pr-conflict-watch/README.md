@@ -2,7 +2,7 @@
 
 Cloudflare Worker that receives GitHub `pull_request` and `check_suite`/`check_run` webhooks across all of jaywedgeworth22's active repos, and posts to the fleet's Zulip `#Alerts` stream the moment a PR's `mergeable_state` turns `dirty` (real merge conflict).  Posts again when a dirty PR clears.  `blocked` and `unstable` are ignored so CI churn does not burn the free-tier KV write budget.  Dedupes via a KV namespace so it only alerts on state *changes*, not every webhook delivery.
 
-The conflict alert names the seat that owns the PR branch, so the seat hears about its own conflict instead of every seat watching `#Alerts` for it.  The seat comes from the branch prefix before the first `/` (`gb-deployer/afc-123-fix` → `@**GB-Deployer**`).  A branch whose prefix is not a known seat gets no mention, and the alert falls back to naming the author's login and branch.  Alerts never mention `@all` or `@everyone`.
+The conflict alert names the seat that owns the PR branch, so the seat hears about its own conflict instead of every seat watching `#Alerts` for it.  The seat comes from the branch prefix before the first `/` (`gb-deployer/afc-123-fix` → `@**GB-Deployer**`).  A branch whose prefix is not a known seat gets no mention, and the alert falls back to naming the author's login and branch.  Alerts never mention `@all` or `@everyone`.  A mention that a PR title, head ref, base ref or login carries is neutralized with a zero-width space before the message is built, so a PR cannot ping the stream; the seat mention the Worker adds itself stays intact.
 
 This replaces the retired Slack `#agent-sync` channel, which no longer receives conflict alerts, and it replaces BF-Deployer's per-PR conflict watching.
 
