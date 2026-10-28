@@ -1,19 +1,19 @@
 ---
 name: pickup-seat
 description: >-
-  Pick up a capped-out or abandoned peer seat's in-flight work (owner-directed only). Inventory Linear, PRs, dirty worktrees, and Zulip; claim; adopt uncommitted work with authorship credit; disposition each item; hand back. Use when the owner says a seat hit a usage cap, died mid-task, or "take over X's lanes."
+  Pick up a capped-out or abandoned peer seat's in-flight work (owner-directed only).  Inventory Linear, PRs, dirty worktrees, and Zulip; claim; adopt uncommitted work with authorship credit; disposition each item; hand back.  Use when the owner says a seat hit a usage cap, died mid-task, or "take over X's lanes."
 ---
 
 # Pick up a seat (MC)
 
-> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MC_ZULIP_EMAIL`, `MC_ZULIP_KEY`, `MC_ZULIP_SITE`).  Session tag `[MC·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `MC`.**  Chat tag `[MC·session8]`.  Notes `Muse Code`.  Branches `muse-code/`.  Lanes `~/apps/lanes/<Repo>/muse-code-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `mc-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`MC_ZULIP_EMAIL`, `MC_ZULIP_KEY`, `MC_ZULIP_SITE`).  Session tag `[MC·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime (Muse Code).** Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
+> **Runtime (Muse Code).**  Muse Code (`muse` CLI) is the interactive terminal coding agent (`[MC]`).  Notes name `Muse Code`.  Branches `muse-code/`.  New lanes are made with `~/apps/lane new <app> <slug>` at `~/apps/lanes/<Repo>/muse-code-<slug>`, and `AGENT_SEAT=MC` comes from the `muse-seat` wrapper, never from a guess.  Start `muse` inside a lane; `muse -w` appears to make a worktree inside `~/Code/<App>/.muse/worktrees`, so do not use it.  Distinct from **Muse Assist** (`[MA]`, former tag `[MUSE]`), which is the cloud VM batch compute / creative assistant dispatched via Mac/iOS apps.  Project `AGENTS.md` and `CLAUDE.md` load automatically when the workspace is trusted in `~/.config/muse/trust.json`, and the user-level `~/.claude/CLAUDE.md` loads as a fallback.  Skills installed here (`~/.config/muse/skills`) shadow foreign personal skills.  Setup checklist: `docs/MUSE-ONBOARDING.md`.
 
 
-Owner-directed only.  Do not initiate a raid on a live peer.
+Owner-directed only.  Do not initiate a raid on a live peer.
 
-You are **MC**.  Keep `muse-code/` branches.  If you continue a peer's `claude/` or `grok/` branch, say so in the work topic and do not rebrand their prefix as yours unless you are opening a new follow-up branch.
+You are **MC**.  Keep `muse-code/` branches.  If you continue a peer's `claude/` or `grok/` branch, say so in the work topic and do not rebrand their prefix as yours unless you are opening a new follow-up branch.
 
 ## INVENTORY
 
@@ -48,9 +48,9 @@ simple-chat post --topic "<ID> <subject>" --to "<Peer Display Name>" $'repo:  <p
 
 `--to` adds the `@**Name**` that wakes the peer; the bracket label alone wakes nobody.
 
-Put the same claim on the Linear issue.  `simple-board claim <id> ... --steal --reason "picking up <SEAT> cap"` takes the claim over (a plain `claim` exits 3 while the peer holds it), or use `simple-board comment` when you only mean to help.  The effort logs are archived, so there is no second board to update.
+Put the same claim on the Linear issue.  `simple-board claim <id> ... --steal --reason "picking up <SEAT> cap"` takes the claim over (a plain `claim` exits 3 while the peer holds it), or use `simple-board comment` when you only mean to help.  The effort logs are archived, so there is no second board to update.
 
-Never take over a stale claim silently.  Post your own `CLAIMED` in the same topic so the history shows the handoff.
+Never take over a stale claim silently.  Post your own `CLAIMED` in the same topic so the history shows the handoff.
 
 ## ADOPT uncommitted work
 
@@ -65,7 +65,7 @@ Landed as continuation during cap handoff; authorship credit retained.
 Co-Authored-By: <peer's existing trailer>"
 ```
 
-Match the trailer already in history **per tool**, not a fabricated seat email.  Monet and Claude Code both use `Claude <noreply@anthropic.com>`.  Codex/Grok/Cursor trailers stay those tools' trailers.
+Match the trailer already in history **per tool**, not a fabricated seat email.  Monet and Claude Code both use `Claude <noreply@anthropic.com>`.  Codex/Grok/Cursor trailers stay those tools' trailers.
 
 Confirm no new commits or work-topic posts from that seat since the cap before you overwrite their narrative.
 
@@ -81,15 +81,15 @@ Confirm no new commits or work-topic posts from that seat since the cap before y
 | Claimed, not started | release (`simple-board status <id> open`); work topic + Linear |
 | Genuinely blocked | `simple-board comment` with the reason; escalate P0 |
 
-Do not kill `com.jay.claude-remote-control` while hunting "stuck Claude."  Monet/Renoir/Claude all look like `claude` in `ps`.
+Do not kill `com.jay.claude-remote-control` while hunting "stuck Claude."  Monet/Renoir/Claude all look like `claude` in `ps`.
 
 ## HAND BACK
 
-Answer disambiguation pings fast.  Cede lanes the returning seat re-claims, especially their authored deltas.  Report SHAs, PR numbers, issue ids, what is ready to merge.
+Answer disambiguation pings fast.  Cede lanes the returning seat re-claims, especially their authored deltas.  Report SHAs, PR numbers, issue ids, what is ready to merge.
 
 ## CLOSE OUT
 
-`closeout` skill: the Linear resolution, `docs/rollouts/YYYY-MM-DD-pickup-<seat>-cap.md`, Apple Note `[TEAM_KEY, Agent] pickup <seat> cap`, and a `DONE` post in the work topic.  Correct premature claims with a new comment or status.  Never delete their comments.
+`closeout` skill: the Linear resolution, `docs/rollouts/YYYY-MM-DD-pickup-<seat>-cap.md`, Apple Note `[TEAM_KEY, Agent] pickup <seat> cap`, and a `DONE` post in the work topic.  Correct premature claims with a new comment or status.  Never delete their comments.
 
 ## Canon
 
@@ -100,7 +100,7 @@ Answer disambiguation pings fast.  Cede lanes the returning seat re-claims, espe
 ## Substitute Agent Directed Closeout `[SUB→ORIGINAL]`
 
 Once you finish taking over a peer agent's work (or reach a clean handoff point):
-1. **Post in the work topic addressed to the original seat.**  A Zulip reply is a post to the same channel and topic, so address it with the envelope plus an @-mention — the bracket label alone wakes nobody.  `simple-chat post --topic "<ID> <subject>" --to "<Original Display Name>"` writes both:
+1. **Post in the work topic addressed to the original seat.**  A Zulip reply is a post to the same channel and topic, so address it with the envelope plus an @-mention — the bracket label alone wakes nobody.  `simple-chat post --topic "<ID> <subject>" --to "<Original Display Name>"` writes both:
    ```text
    [<YOUR_TAG>·session8→<ORIGINAL_TAG>] @**<Original Display Name>** repo:  <repo>  |  DONE
    task:  <Feature / PR #<num>>

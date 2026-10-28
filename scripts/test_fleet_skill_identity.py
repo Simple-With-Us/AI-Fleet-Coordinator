@@ -601,7 +601,7 @@ class CoordinatorSelfIdTests(unittest.TestCase):
         self.assertNotIn("| **DeepSeek (`DEEPSEEK`)** |", text)
         coord = _coord()
         self.assertIn("MiniMax (MM): `MM` (display `MiniMax`, prefix `minimax/`", coord)
-        self.assertIn("Retired:  MONET, RENOIR, HARNESS, DSH, KIMI have no bot", coord)
+        self.assertIn("Retired: MONET, RENOIR, HARNESS, DSH, KIMI have no bot", coord)
         self.assertNotIn("MiniMax: `[MINIMAX]`", coord)
         self.assertNotIn("DeepSeek: `[DEEPSEEK]`", coord)
 
@@ -1006,7 +1006,7 @@ class AgentSeatPinTests(unittest.TestCase):
             self.assertIn(_arm(seat.tag), self._block(out).splitlines(), key)
             self.assertIn(_ordinary(seat.notes, seat.tag), out, key)
             self.assertIn(
-                f"`<branch-prefix>` below is your seat's branch prefix:  `{seat.prefix}`", out, key
+                f"`<branch-prefix>` below is your seat's branch prefix: `{seat.prefix}`", out, key
             )
 
     def test_t15_every_render_carries_the_launcher_clause(self) -> None:
@@ -1015,7 +1015,7 @@ class AgentSeatPinTests(unittest.TestCase):
                 self.assertNotIn(LAUNCHER_CLAUSE, out)
                 continue
             self.assertIn(LAUNCHER_CLAUSE, out, key)
-            self.assertIn("you have no seat:  do no fleet action", out, key)
+            self.assertIn("you have no seat: do no fleet action", out, key)
             if not SEATS.get(key) or not SEATS[key].retired:
                 self.assertNotIn("[MONET·", out, key)
 

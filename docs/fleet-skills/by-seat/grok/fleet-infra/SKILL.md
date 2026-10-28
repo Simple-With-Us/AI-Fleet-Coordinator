@@ -1,16 +1,16 @@
 ---
 name: fleet-infra
-description: Access private fleet infrastructure inventory (host IPs, Tailscale mesh IPs, Coolify container UUIDs, Infisical project IDs, and SSH keys) maintained in Simple-With-Us/fleet-ops:ATTACK-MAP.md. Use when locating production servers, configuring environment variables, verifying edge routing, or handling infrastructure secrets without leaking them into public repos.
+description: Access private fleet infrastructure inventory (host IPs, Tailscale mesh IPs, Coolify container UUIDs, Infisical project IDs, and SSH keys) maintained in Simple-With-Us/fleet-ops:ATTACK-MAP.md.  Use when locating production servers, configuring environment variables, verifying edge routing, or handling infrastructure secrets without leaking them into public repos.
 ---
 
 # Fleet Infrastructure & Private Inventory Access (ALL AGENTS)
 
-> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `GROK`.**  Chat tag `[GROK·session8]`.  Notes `Grok`.  Branches `grok/`.  Lanes `~/apps/lanes/<Repo>/grok-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `grok-build-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`GROK_BUILD_ZULIP_EMAIL`, `GROK_BUILD_ZULIP_KEY`, `GROK_BUILD_ZULIP_SITE`).  Session tag `[GROK·session8]`, and the `simple-chat` CLI writes it for you.
 
-> **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
+> **Runtime fork (Grok).**  Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build: one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10): the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
-All fleet repositories except `fleet-ops` are **public**.  To protect origin infrastructure from direct attacks, scanning, and DDoS, production host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, and secret keys must **never** be committed to public repositories or printed to chat/logs.
+All fleet repositories except `fleet-ops` are **public**.  To protect origin infrastructure from direct attacks, scanning, and DDoS, production host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, and secret keys must **never** be committed to public repositories or printed to chat/logs.
 
 ## Canonical Inventory Location
 
@@ -23,7 +23,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin inf
   ```bash
   gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'
   ```
-  A seat without access asks a Mac seat or the owner.  The old Mac relay (`mac.jays.services/files/ATTACK-MAP.md`) was retired 2026-10-19.
+  A seat without access asks a Mac seat or the owner.  The old Mac relay (`mac.jays.services/files/ATTACK-MAP.md`) was retired 2026-10-19.
 
 ## What Lives in `fleet-ops:ATTACK-MAP.md`
 
@@ -52,7 +52,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin inf
    Always read values from environment variables (`INFISICAL_PROJECT_ID`, `COOLIFY_ST_APP_UUID`, `HETZNER_HOST_IP`, etc.) or query them dynamically via authenticated APIs.
 
 2. **Secrets Handoff Protection:**
-   Read credentials with `fleet-secrets get NAME` (Infisical Fleet-OPS) or from the app's own Infisical project.  Never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
+   Read credentials with `fleet-secrets get NAME` (Infisical Fleet-OPS) or from the app's own Infisical project.  Never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
 
 3. **Mock Data in Tests & Documentation:**
    Use RFC 5737 documentation ranges (`192.0.2.1`, `198.51.100.1`, `203.0.113.1`) and generic mock UUIDs (`mock-app-uuid`, `mock-project-id`) in test fixtures and public rollouts.

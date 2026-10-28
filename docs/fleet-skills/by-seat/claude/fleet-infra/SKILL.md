@@ -1,14 +1,14 @@
 ---
 name: fleet-infra
-description: Access private fleet infrastructure inventory (host IPs, Tailscale mesh IPs, Coolify container UUIDs, Infisical project IDs, and SSH keys) maintained in Simple-With-Us/fleet-ops:ATTACK-MAP.md. Use when locating production servers, configuring environment variables, verifying edge routing, or handling infrastructure secrets without leaking them into public repos.
+description: Access private fleet infrastructure inventory (host IPs, Tailscale mesh IPs, Coolify container UUIDs, Infisical project IDs, and SSH keys) maintained in Simple-With-Us/fleet-ops:ATTACK-MAP.md.  Use when locating production servers, configuring environment variables, verifying edge routing, or handling infrastructure secrets without leaking them into public repos.
 ---
 
 # Fleet Infrastructure & Private Inventory Access (ALL AGENTS)
 
-> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `simple-chat` CLI writes it for you.
+> **This install is for `CLAUDE`.**  Chat tag `[CLAUDE·session8]`.  Notes `Claude`.  Branches `claude/`.  Lanes `~/apps/lanes/<Repo>/claude-<slug>`.  Do not inherit another seat's tag from a shared template.  Zulip bot `claude-bot@simplewithus.zulipchat.com`, credential in Infisical Fleet-OPS `/zulip` (`CLAUDE_ZULIP_EMAIL`, `CLAUDE_ZULIP_KEY`, `CLAUDE_ZULIP_SITE`).  Session tag `[CLAUDE·session8]`, and the `simple-chat` CLI writes it for you.
 
 
-All fleet repositories except `fleet-ops` are **public**.  To protect origin infrastructure from direct attacks, scanning, and DDoS, production host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, and secret keys must **never** be committed to public repositories or printed to chat/logs.
+All fleet repositories except `fleet-ops` are **public**.  To protect origin infrastructure from direct attacks, scanning, and DDoS, production host IPs, Tailscale IPs, Coolify container/server UUIDs, hardware serials, and secret keys must **never** be committed to public repositories or printed to chat/logs.
 
 ## Canonical Inventory Location
 
@@ -21,7 +21,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin inf
   ```bash
   gh api repos/Simple-With-Us/Fleet-OPS/contents/ATTACK-MAP.md -H 'Accept: application/vnd.github.raw'
   ```
-  A seat without access asks a Mac seat or the owner.  The old Mac relay (`mac.jays.services/files/ATTACK-MAP.md`) was retired 2026-10-19.
+  A seat without access asks a Mac seat or the owner.  The old Mac relay (`mac.jays.services/files/ATTACK-MAP.md`) was retired 2026-10-19.
 
 ## What Lives in `fleet-ops:ATTACK-MAP.md`
 
@@ -50,7 +50,7 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin inf
    Always read values from environment variables (`INFISICAL_PROJECT_ID`, `COOLIFY_ST_APP_UUID`, `HETZNER_HOST_IP`, etc.) or query them dynamically via authenticated APIs.
 
 2. **Secrets Handoff Protection:**
-   Read credentials with `fleet-secrets get NAME` (Infisical Fleet-OPS) or from the app's own Infisical project.  Never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
+   Read credentials with `fleet-secrets get NAME` (Infisical Fleet-OPS) or from the app's own Infisical project.  Never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
 
 3. **Mock Data in Tests & Documentation:**
    Use RFC 5737 documentation ranges (`192.0.2.1`, `198.51.100.1`, `203.0.113.1`) and generic mock UUIDs (`mock-app-uuid`, `mock-project-id`) in test fixtures and public rollouts.
