@@ -3,6 +3,8 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach-o/dyld.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <ctype.h>
 #include <unistd.h>
 #include <pwd.h>
 #include <stdio.h>
@@ -23,10 +25,20 @@ static void wipe(void *pointer, size_t size) {
     while (size--) *bytes++ = 0;
 }
 
-static int safe_path(const char *path, int directory) {
-    struct stat s;
-    if (lstat(path, &s) || s.st_uid != 0 || (s.st_mode & 0022)) return 0;
-    return directory ? S_ISDIR(s.st_mode) : S_ISREG(s.st_mode);
+/* Hold every validated inode through use.  No writable or symlink ancestor. */
+static int held_dirs[5] = {-1, -1, -1, -1, -1};
+static int helper_fd = -1, adapter_fd = -1;
+
+static int safe_fd(int fd, int directory) {
+    struct stat info;
+    if (fd < 0 || fstat(fd, &info) || info.st_uid != 0 || (info.st_mode & 0022)) return 0;
+    return directory ? S_ISDIR(info.st_mode) : S_ISREG(info.st_mode);
+}
+
+static void close_code(void) {
+    if (helper_fd >= 0) close(helper_fd);
+    if (adapter_fd >= 0) close(adapter_fd);
+    for (size_t i = 0; i < 5; ++i) if (held_dirs[i] >= 0) close(held_dirs[i]);
 }
 
 static int validate_self(void) {
@@ -34,10 +46,17 @@ static int validate_self(void) {
     uint32_t size = sizeof(executable);
     if (geteuid() != 501 || _NSGetExecutablePath(executable, &size) ||
         !realpath(executable, canonical) || strcmp(canonical, FIXED)) return 0;
-    const char *dirs[] = {"/usr", "/usr/local", "/usr/local/libexec", "/usr/local/libexec/assigned-echo-mcp"};
-    for (size_t i = 0; i < sizeof(dirs)/sizeof(dirs[0]); ++i)
-        if (!safe_path(dirs[i], 1)) return 0;
-    if (!safe_path(FIXED, 0) || !safe_path(ADAPTER, 0)) return 0;
+    held_dirs[0] = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (!safe_fd(held_dirs[0], 1)) return 0;
+    const char *parts[] = {"usr", "local", "libexec", "assigned-echo-mcp"};
+    for (size_t i = 0; i < 4; ++i) {
+        held_dirs[i + 1] = openat(held_dirs[i], parts[i], O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (!safe_fd(held_dirs[i + 1], 1)) return 0;
+    }
+    helper_fd = openat(held_dirs[4], "assigned-echo-mcp", O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    /* Adapter descriptor deliberately survives exec for Python's /dev/fd reader. */
+    adapter_fd = openat(held_dirs[4], "assigned-hosted-stdio.py", O_RDONLY | O_NOFOLLOW);
+    if (!safe_fd(helper_fd, 0) || !safe_fd(adapter_fd, 0)) return 0;
     SecCodeRef self = NULL;
     SecRequirementRef requirement = NULL;
     OSStatus status = SecCodeCopySelf(kSecCSDefaultFlags, &self);
@@ -75,13 +94,18 @@ static int ingress(SecKeychainRef keychain) {
     OSStatus status = lookup(keychain, NULL, NULL, &existing);
     if (existing) CFRelease(existing);
     if (status != errSecItemNotFound) return 3;
-    unsigned char secret[256] = {0};
+    unsigned char secret[257] = {0};
     size_t size = fread(secret, 1, sizeof(secret), stdin);
-    if (size && secret[size - 1] == '\n') --size;
+    if (ferror(stdin) || size > 256) { wipe(secret, sizeof(secret)); return 3; }
+    size_t start = 0;
+    while (start < size && isspace((unsigned char)secret[start])) ++start;
+    while (size > start && isspace((unsigned char)secret[size - 1])) --size;
+    size -= start;
+    if (start) memmove(secret, secret + start, size);
     if (!valid_token(secret, size)) { wipe(secret, sizeof(secret)); return 3; }
     SecTrustedApplicationRef trusted = NULL;
     SecAccessRef access = NULL;
-    status = SecTrustedApplicationCreateFromPath(FIXED, &trusted);
+    status = SecTrustedApplicationCreateFromPath(NULL, &trusted);
     if (!status) {
         const void *values[] = { trusted };
         CFArrayRef apps = CFArrayCreate(NULL, values, 1, &kCFTypeArrayCallBacks);
@@ -108,7 +132,7 @@ static int launch(SecKeychainRef keychain) {
     void *bytes = NULL;
     OSStatus status = lookup(keychain, &size, &bytes, NULL);
     if (status || !valid_token(bytes, size)) {
-        if (bytes) SecKeychainItemFreeContent(NULL, bytes);
+        if (bytes) { wipe(bytes, size); SecKeychainItemFreeContent(NULL, bytes); }
         return 3;
     }
     char environment[sizeof("ASSIGNED_MCP_BEARER=") + 52];
@@ -117,7 +141,11 @@ static int launch(SecKeychainRef keychain) {
     environment[20 + size] = 0;
     wipe(bytes, size);
     SecKeychainItemFreeContent(NULL, bytes);
-    char *argv[] = {"/usr/bin/python3", "-I", ADAPTER, NULL};
+    char adapter_path[64];
+    if (snprintf(adapter_path, sizeof(adapter_path), "/dev/fd/%d", adapter_fd) >= (int)sizeof(adapter_path)) {
+        wipe(environment, sizeof(environment)); return 3;
+    }
+    char *argv[] = {"/usr/bin/python3", "-I", adapter_path, NULL};
     char *env[] = {"PATH=/usr/bin:/bin", environment, NULL};
     execve(argv[0], argv, env);
     wipe(environment, sizeof(environment));
@@ -138,6 +166,7 @@ int main(int argc, char **argv) {
     }
     int result = argc == 2 ? ingress(keychain) : launch(keychain);
     CFRelease(keychain);
+    close_code();
     if (result) fputs("assigned-echo-mcp: native custody refused or unavailable\n", stderr);
     return result;
 }
