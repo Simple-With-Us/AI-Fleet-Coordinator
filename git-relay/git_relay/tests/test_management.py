@@ -24,7 +24,7 @@ class Management(unittest.TestCase):
                 {"number": 3, "reviewers": ["swu-wise"]},
                 "POST",
                 "pulls/3/requested_reviewers",
-                {"requested_reviewers": []},
+                {"id": 1, "requested_reviewers": []},
                 {"reviewers": ["swu-wise"]},
             ),
             (
@@ -32,7 +32,7 @@ class Management(unittest.TestCase):
                 {"number": 3, "reviewers": ["swu-wise"]},
                 "DELETE",
                 "pulls/3/requested_reviewers",
-                {"requested_reviewers": []},
+                {"id": 1, "requested_reviewers": []},
                 {"reviewers": ["swu-wise"]},
             ),
             (

@@ -500,7 +500,12 @@ class WorkflowVerbs:
             bearer=self.bearer,
         )
         result = _obj(data)
-        if not isinstance(result.get("requested_reviewers"), list):
+        if (
+            not isinstance(result.get("requested_reviewers"), list)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+            or result["id"] <= 0
+        ):
             raise RelayGitHubError(502, "write outcome unverifiable")
         return {"result": result}
 
@@ -531,7 +536,12 @@ class WorkflowVerbs:
             bearer=self.bearer,
         )
         result = _obj(data)
-        if not isinstance(result.get("requested_reviewers"), list):
+        if (
+            not isinstance(result.get("requested_reviewers"), list)
+            or isinstance(result.get("id"), bool)
+            or not isinstance(result.get("id"), int)
+            or result["id"] <= 0
+        ):
             raise RelayGitHubError(502, "write outcome unverifiable")
         return {"result": result}
 

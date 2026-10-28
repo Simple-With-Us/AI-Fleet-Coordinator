@@ -197,7 +197,7 @@ test('review/inline/branch additions keep bounded shapes and uncertain write fai
 });
 
 test('management writes use fixed routes, own bearer and UNKNOWN on transport failure',async()=>{
-  const cases=[['wf_labels_set',{number:3,labels:['bug']},{labels:[]}],['wf_reviewers_request',{number:3,reviewers:['swu-wise']},{result:{requested_reviewers:[]}}],['wf_reviewers_remove',{number:3,reviewers:['swu-wise']},{result:{requested_reviewers:[]}}],['wf_release_create',{tag:'v1',name:'n',body:'b',draft:true,prerelease:false},{result:{id:1}}],['wf_release_update',{release_id:2,name:'n',body:'b',draft:false,prerelease:true},{result:{id:2}}]];
+  const cases=[['wf_labels_set',{number:3,labels:['bug']},{labels:[]}],['wf_reviewers_request',{number:3,reviewers:['swu-wise']},{result:{id:1,requested_reviewers:[]}}],['wf_reviewers_remove',{number:3,reviewers:['swu-wise']},{result:{id:1,requested_reviewers:[]}}],['wf_release_create',{tag:'v1',name:'n',body:'b',draft:true,prerelease:false},{result:{id:1}}],['wf_release_update',{release_id:2,name:'n',body:'b',draft:false,prerelease:true},{result:{id:2}}]];
   for(const [action,args,reply] of cases){
     let calls=0;const t=harness(async(url,init)=>{calls++;assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});
     assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError,action);assert.equal(calls,1);
@@ -207,3 +207,9 @@ test('management writes use fixed routes, own bearer and UNKNOWN on transport fa
 });
 
 test('actual review regression',()=>{assert.ok(!validWfV1Args('wf_labels_set',{repo,number:1,labels:['\nattack']})); assert.ok(!validWfV1Args('wf_reviewers_request',{repo,number:1,reviewers:['\nattack']}));});
+
+test('management receipts and UTF8 input fail closed',()=>{
+ assert.equal(validWfV1Response('wf_labels_set',{labels:[{}]}),false);
+ assert.equal(validWfV1Response('wf_release_create',{result:{}}),false);
+ assert.equal(validWfV1Args('wf_release_create',{repo,tag:'v1',name:'n',body:'é'.repeat(20000),draft:true,prerelease:false}),false);
+});
