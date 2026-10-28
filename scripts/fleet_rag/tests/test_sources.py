@@ -1480,12 +1480,13 @@ class ChatLogTests(unittest.TestCase):
 
 
 class ProtocolDocRename(unittest.TestCase):
-    """The protocol document is being renamed;  readers accept either name until the old one is retired."""
+    """The protocol document was renamed;  readers know the current name only."""
 
-    def test_both_names_are_known_and_the_extra_docs_list_both(self) -> None:
-        self.assertEqual(set(sources.PROTOCOL_DOC_NAMES), {"FLEET-PROTOCOL.md", "FLEET-PROTOCOL.md"})
+    def test_only_the_current_name_is_known_and_the_extra_docs_list_it(self) -> None:
+        self.assertEqual(set(sources.PROTOCOL_DOC_NAMES), {"FLEET-PROTOCOL.md"})
         names = {p.name for p in sources.EXTRA_DOCS}
-        self.assertTrue({"FLEET-PROTOCOL.md", "FLEET-PROTOCOL.md"} <= names)
+        self.assertTrue({"FLEET-PROTOCOL.md"} <= names)
+        self.assertNotIn("AGENT-SYNC.md", names)
 
 if __name__ == "__main__":
     unittest.main()

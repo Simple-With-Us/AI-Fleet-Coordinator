@@ -375,7 +375,7 @@ def main() -> int:
         errors.append(f"FLEET_BOARD_HOME is not a directory: {APPS}")
     elif not live_checks:
         print(
-            f"note: live copy checks skipped (no FLEET_BOARD_HOME, {APPS} has no FLEET-PROTOCOL.md or FLEET-PROTOCOL.md)"
+            f"note: live copy checks skipped (no FLEET_BOARD_HOME, {APPS} has no FLEET-PROTOCOL.md)"
         )
 
     for app in apps:
