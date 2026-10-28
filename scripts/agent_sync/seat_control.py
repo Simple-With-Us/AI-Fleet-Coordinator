@@ -16,9 +16,9 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from . import secretscan
 
@@ -1163,7 +1163,10 @@ class SeatControlMCP:
                 # A discoverable session is not necessarily wake-eligible.
                 # Require the catalog's explicit boolean rather than a
                 # truthy/missing/malformed value before offering prompt.
-                if not _catalog_flag(catalog_caps.get("wake")) and result.get("prompt") == "implemented":
+                if (
+                    not _catalog_flag(catalog_caps.get("wake"))
+                    and result.get("prompt") == "implemented"
+                ):
                     result["prompt"] = "unsupported"
             elif result.get("prompt") == "implemented":
                 result["prompt"] = "unsupported"
