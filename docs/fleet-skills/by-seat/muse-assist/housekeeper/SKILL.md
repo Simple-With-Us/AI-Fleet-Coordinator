@@ -33,7 +33,7 @@ Several schedulers reach the same playbook and they all take the **same** lock, 
 
 ```bash
 export HOUSEKEEPER_LOCK_OWNER=1
-: "${HOUSEKEEPER_LOCK:?set HOUSEKEEPER_LOCK to the operator's inventory lock path before taking the lock}"
+: "${HOUSEKEEPER_LOCK:?set HOUSEKEEPER_LOCK to the lock path in the operator inventory before taking the lock}"
 LOCK_DIR="$HOUSEKEEPER_LOCK"
 python3 - "$LOCK_DIR" <<'PY'
 import os
@@ -136,10 +136,30 @@ The host address is private deployment inventory, so it is not in this pack: it 
 Take the lock or exit.  Sample and record before-numbers.
 
 ```bash
-: "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the operator's inventory ssh target before reaching the host}"
-ssh "$HOUSEKEEPER_SSH_ALIAS" 'mkdir /run/fleet-housekeeper.lock 2>/dev/null || { [ -d /run/fleet-housekeeper.lock ] && exit 9; exit 1; }'   # 9 = peer holds it (the directory is there), 1 = the lock could not be created
+: "${HOUSEKEEPER_SSH_ALIAS:?set HOUSEKEEPER_SSH_ALIAS to the ssh target in the operator inventory before reaching the host}"
+ssh "$HOUSEKEEPER_SSH_ALIAS" 'python3 -' <<'PY'
+import os
+import sys
+
+try:
+    os.mkdir("/run/fleet-housekeeper.lock")
+except FileExistsError:
+    raise SystemExit(75)
+except OSError as exc:
+    print("housekeeper lock: cannot create the remote lock directory: %s" % (exc.strerror or exc), file=sys.stderr)
+    raise SystemExit(1)
+PY
+status=$?
+case "$status" in
+  0) ;;
+  75) echo "skipped, a peer holds the remote lock"; exit 0 ;;
+  *) exit "$status" ;;
+esac
+trap 'rmdir "${LOCK_DIR:-}" 2>/dev/null; ssh "$HOUSEKEEPER_SSH_ALIAS" "rmdir /run/fleet-housekeeper.lock" >/dev/null 2>&1' EXIT
 ssh "$HOUSEKEEPER_SSH_ALIAS" 'df -h /; free -h; swapon --show; uptime; docker system df'
 ```
+
+The remote lock is taken the way the Mac lock is taken.  The atomic `mkdir` runs in Python on the host, so only `FileExistsError` is read as contention and every other `OSError` exits nonzero and says what went wrong, because a lock that could not be taken is not a lock another seat holds.  The shell reads the host's exit status before anything else runs, so a peer that holds the lock stops the run before the sampling commands reach the box, and a host that cannot be reached fails closed instead of looking like contention.  The trap removes the remote lock directory when the run ends, and the Mac lock directory as well when the same run took that one too, so both playbooks can share one shell without leaking a lock.  A run killed hard enough that the trap never runs leaves the directory behind, and every later run then reports a held lock; remove it by hand once the box is idle.
 
 Act without asking — regenerable only:
 

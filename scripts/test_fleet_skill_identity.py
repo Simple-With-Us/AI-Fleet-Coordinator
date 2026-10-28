@@ -2405,5 +2405,61 @@ class PrivateInventoryTests(unittest.TestCase):
         )
 
 
+class GuardedBlockSyntaxTests(unittest.TestCase):
+    """A `:?` guard whose word holds a quote cannot be parsed.
+
+    bash reads the word of a `:?` guard inside the surrounding double quotes,
+    so an apostrophe in it opens a single-quoted string that never closes and
+    the whole block fails to parse.  The guard line reads like ordinary
+    English and the snippet cannot run at all, so the check belongs to the
+    pack:  a seat that copies the block gets a syntax error instead of the
+    lock the prose describes.
+    """
+
+    FENCE = re.compile(r"```[a-zA-Z0-9_-]*\n(.*?)```", re.S)
+    GUARD = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}]*\}")
+
+    def _texts(self):
+        for root, dirs, files in os.walk(ROOT):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__")]
+            for name in files:
+                if name.endswith((".md", ".mdc")):
+                    path = os.path.join(root, name)
+                    try:
+                        with open(path, encoding="utf-8") as handle:
+                            yield path, handle.read()
+                    except (OSError, UnicodeDecodeError):
+                        continue
+
+    def test_no_guard_word_holds_a_quote(self) -> None:
+        offenders: list[str] = []
+        for path, text in self._texts():
+            for match in self.GUARD.finditer(text):
+                if "'" in match.group(0) or '"' in match.group(0):
+                    line = text[:match.start()].count("\n") + 1
+                    offenders.append("%s:%d %s" % (os.path.relpath(path, ROOT), line, match.group(0)))
+        self.assertEqual(
+            offenders,
+            [],
+            "a `:?` guard word holds a quote, so the block cannot parse:\n" + "\n".join(offenders),
+        )
+
+    def test_every_guarded_block_parses(self) -> None:
+        broken: list[str] = []
+        for path, text in self._texts():
+            for block in self.FENCE.findall(text):
+                if ":?" not in block:
+                    continue
+                proc = subprocess.run(["bash", "-n"], input=block, capture_output=True, text=True)
+                if proc.returncode != 0:
+                    first = proc.stderr.strip().split("\n")[0][:90]
+                    broken.append("%s: %s" % (os.path.relpath(path, ROOT), first))
+        self.assertEqual(
+            broken,
+            [],
+            "a block with a `:?` guard does not parse:\n" + "\n".join(broken),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
