@@ -13,6 +13,8 @@ class Shapes(unittest.TestCase):
         for fn, args in [
             (_obj, ([],)),
             (_sub, ({"head": []}, "head")),
+            (_sub, ([], "head")),
+            (_sub, (None, "head")),
             (_arr, ({},)),
             (_dicts, ([1],)),
         ]:

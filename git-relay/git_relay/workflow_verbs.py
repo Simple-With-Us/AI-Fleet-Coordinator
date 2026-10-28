@@ -149,6 +149,8 @@ def _obj(data):
 
 def _sub(data, key):
     """A nested upstream object; any other shape is an upstream error, never a definitely-unsent refusal."""
+    if not isinstance(data, dict):
+        raise RelayGitHubError(502, "unexpected upstream shape")
     value = data.get(key)
     if value is None:
         return {}
