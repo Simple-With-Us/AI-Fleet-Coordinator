@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_release_notes_preview": ({"contents": "write"}, False),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -1813,6 +1814,47 @@ class WorkflowVerbs:
         if requested & observed:
             raise RelayGitHubError(502, "reviewer receipt membership unverifiable")
         return {"result": result}
+
+    def wf_release_notes_preview(self, repo, args):
+        """GitHub generates text only: no tag or release is saved by this endpoint."""
+        _only(args, ("repo", "tag", "target_sha", "previous_tag"))
+        tag, previous = _ref(args, "tag"), _ref(args, "previous_tag")
+        target = _sha(args, "target_sha")
+        if (
+            tag == previous
+            or tag.startswith("refs/")
+            or previous.startswith("refs/")
+            or find_secret(tag)
+            or find_secret(previous)
+        ):
+            raise Refused("invalid release notes range")
+        value = self.client._call(
+            "POST",
+            f"/repos/{repo}/releases/generate-notes",
+            {"tag_name": tag, "target_commitish": target, "previous_tag_name": previous},
+            bearer=self.bearer,
+        )
+        if not isinstance(value, dict):
+            raise RelayGitHubError(502, "release notes preview unverifiable")
+
+        def text(key, limit):
+            value_text = value.get(key)
+            if not isinstance(value_text, str) or "\x00" in value_text:
+                raise RelayGitHubError(502, "release notes preview unverifiable")
+            try:
+                raw = value_text.encode("utf-8")
+            except UnicodeEncodeError:
+                raise RelayGitHubError(502, "release notes preview unverifiable") from None
+            if len(raw) > limit:
+                raise Refused("release notes preview exceeds supported size")
+            if find_secret(value_text) or re.search(
+                r"\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                value_text,
+            ):
+                raise Refused("credential-shaped release notes withheld")
+            return value_text
+
+        return {"preview": {"name": text("name", 500), "body": text("body", 32768)}, "saved": False}
 
     def wf_release_create(self, repo, args):
         _only(

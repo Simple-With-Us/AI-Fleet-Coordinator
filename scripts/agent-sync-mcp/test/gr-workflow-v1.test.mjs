@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,101);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,102);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,101);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,102);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -440,4 +440,13 @@ test('review lifecycle projected receipts use cached strict schemas and own bear
  assert.equal(validWfV1Response('wf_review_dismiss',{review}),false);
  assert.equal(validWfV1Response('wf_review_pending_delete',{review:{...review,id:true}}),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_pending_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({review}));});assert.ok(!(await t.call('gr_wf_review_pending_delete',{repo,number:1,review_id:2})).isError);
+});
+test('generated release-note preview is strict scanned nonmutating despite required write permission',async()=>{
+ const args={repo,tag:'v2',target_sha:'a'.repeat(40),previous_tag:'v1'},receipt={preview:{name:'Release2',body:'Untrusted changes'},saved:false};
+ assert.equal(WF_V1_READ_ACTIONS.includes('wf_release_notes_preview'),true);assert.equal(validWfV1Response('wf_release_notes_preview',receipt),true);
+ // Synthetic scanner fixture assembled at runtime, never a credential.
+ for(const bad of [{...receipt,saved:true},{preview:{...receipt.preview,body:'sk-proj-'+'x'.repeat(24)},saved:false},{preview:{...receipt.preview,extra:true},saved:false}])assert.equal(validWfV1Response('wf_release_notes_preview',bad),false);
+ assert.equal(validWfV1Args('wf_release_notes_preview',{...args,tag:'v1'}),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_release_notes_preview'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');assert.deepEqual(JSON.parse(i.body),args);return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_release_notes_preview',args)).isError);
+ const down=harness(async()=>{throw Error('lost preview');});const result=await down.call('gr_wf_release_notes_preview',args);assert.ok(result.isError);assert.doesNotMatch(JSON.stringify(result),/unknown/);
 });
