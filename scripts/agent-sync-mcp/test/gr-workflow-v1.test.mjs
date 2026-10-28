@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,105);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,107);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,105);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,107);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -443,6 +443,13 @@ test('milestone delete receipt and writes use strict envelopes and own-bearer ro
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_milestone_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({deleted:true,number:2}));});assert.ok(!(await t.call('gr_wf_milestone_delete',a)).isError);
 });
 
+test('thread resolve receipts are strict and fixed routes preserve own bearer',async()=>{
+ const args={repo,number:1,thread_id:'PRRT_fixture'},thread={id:'PRRT_fixture',isResolved:true};
+ assert.equal(validWfV1Response('wf_review_thread_resolve',{thread}),true);
+ for(const bad of [{...thread,isResolved:false},{...thread,id:3},{...thread,private:'x'}])assert.equal(validWfV1Response('wf_review_thread_resolve',{thread:bad}),false);
+ assert.equal(validWfV1Response('wf_review_thread_unresolve',{thread}),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_thread_resolve'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({thread}));});assert.ok(!(await t.call('gr_wf_review_thread_resolve',args)).isError);
+});
 test('binary chunk strict receipt and own bearer upload path',async()=>{
  const good={offset:0,next_offset:3,total:3,complete:true,asset_id:7,content_b64:'YWJj'};
  for(const bad of [{...good,asset_id:true},{...good,next_offset:-1},{...good,complete:false,next_offset:0},{...good,total:'3'}])assert.equal(validWfV1Response('wf_release_asset_download',bad),false);

@@ -83,6 +83,8 @@ class SeatPolicy:
         "wf_issue_subissues",
         "wf_issue_blocked_by",
         "wf_issue_blocking",
+        "wf_review_thread_resolve",
+        "wf_review_thread_unresolve",
         "wf_review_update",
         "wf_review_dismiss",
         "wf_review_pending_delete",

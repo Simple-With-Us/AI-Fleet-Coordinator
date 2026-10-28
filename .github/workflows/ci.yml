@@ -130,6 +130,14 @@ jobs:
     # atomic private write.  Fakes only:  no docker, no network, no server.
     - name: fleet-server-status tests
       run: python3 scripts/test_fleet_server_status.py
+    # Muster operations (AFC-563):  the Mac LaunchAgent collector and the allowlisted
+    # control helper (plan then yes, the ssh forced-command gate, the audit row, and
+    # no token in an argv, an answer or the audit).  Fakes only:  no launchctl,
+    # no systemctl, no Coolify, no network.
+    - name: Muster operations tests
+      run: |
+        python3 scripts/test_fleet_mac_services.py
+        python3 scripts/test_fleet_ops_control.py
     # The Lark bridge: the eyes marker, the Operator's signal path and the
     # durable write of a record.  No job ran this file, so every assertion in
     # it was decoration: the write could lose a record on a crash and CI would
