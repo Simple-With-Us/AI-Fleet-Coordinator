@@ -18,6 +18,19 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 
 // action -> [description, schema]. Writes name their head-fence argument.
 const SPECS = {
+  wf_check_create: ['Write own-App check run; requires explicit checks:write. Capability never authorizes fabricated test results or gate bypass.',obj(['repo', 'sha', 'name', 'status', 'conclusion', 'title', 'summary'],{repo:REPO,sha:SHA,name:{type:'string',minLength:1,maxLength:100,pattern:'^swu-[a-z0-9-]+/report$'},status:{type:'string',enum:['queued','in_progress','completed']},conclusion:{type:'string',enum:['none','action_required','cancelled','failure','neutral','success','skipped','timed_out']},title:{type:'string',minLength:1,maxLength:255},summary:{type:'string',minLength:1,maxLength:32768}})],
+  wf_check_update: ['Write own-App check run; requires explicit checks:write. Capability never authorizes fabricated test results or gate bypass.',obj(['repo', 'check_id', 'expected_sha', 'name', 'status', 'conclusion', 'title', 'summary'],{repo:REPO,check_id:INT,expected_sha:SHA,name:{type:'string',minLength:1,maxLength:100,pattern:'^swu-[a-z0-9-]+/report$'},status:{type:'string',enum:['queued','in_progress','completed']},conclusion:{type:'string',enum:['none','action_required','cancelled','failure','neutral','success','skipped','timed_out']},title:{type:'string',minLength:1,maxLength:255},summary:{type:'string',minLength:1,maxLength:32768}})],
+  wf_deployments: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo'],{repo:REPO,per_page:PER_PAGE})],
+  wf_deployment_get: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo', 'deployment_id'],{repo:REPO,deployment_id:INT})],
+  wf_deployment_statuses: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo', 'deployment_id'],{repo:REPO,deployment_id:INT,per_page:PER_PAGE})],
+  wf_deployment_create: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo', 'sha', 'environment', 'description', 'transient', 'production'],{repo:REPO,sha:SHA,environment:{type:'string',minLength:1,maxLength:100},description:{type:'string',minLength:1,maxLength:140},transient:{type:'boolean'},production:{type:'boolean'}})],
+  wf_deployment_status_create: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo', 'deployment_id', 'state', 'description'],{repo:REPO,deployment_id:INT,state:{type:'string',enum:['error','failure','inactive','in_progress','queued','pending','success']},description:{type:'string',minLength:1,maxLength:140}})],
+  wf_deployment_delete: ['Deployment command, requires explicit deployments permission. Create may trigger deployment automation; source capability is not execution approval.',obj(['repo', 'deployment_id'],{repo:REPO,deployment_id:INT})],
+  wf_milestones: ['Milestone s with fixed repository scope.',obj(['repo'],{repo:REPO,state:{type:'string',enum:['open','closed','all']},per_page:PER_PAGE})],
+  wf_milestone_get: ['Milestone get with fixed repository scope.',obj(['repo', 'milestone'],{repo:REPO,milestone:INT})],
+  wf_milestone_create: ['Milestone create with fixed repository scope.',obj(['repo', 'title', 'description', 'state'],{repo:REPO,title:{type:'string',minLength:1,maxLength:1024},description:{type:'string',minLength:1,maxLength:32768},state:{type:'string',enum:['open','closed']}})],
+  wf_milestone_update: ['Milestone update with fixed repository scope.',obj(['repo', 'milestone', 'title', 'description', 'state'],{repo:REPO,milestone:INT,title:{type:'string',minLength:1,maxLength:1024},description:{type:'string',minLength:1,maxLength:32768},state:{type:'string',enum:['open','closed']}})],
+  wf_milestone_delete: ['Milestone delete with fixed repository scope.',obj(['repo', 'milestone'],{repo:REPO,milestone:INT})],
   wf_labels_set: ['labels set.',obj(['repo', 'number', 'labels'],{repo:REPO,number:INT,labels:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
   wf_reviewers_request: ['reviewers request.',obj(['repo', 'number', 'reviewers'],{repo:REPO,number:INT,reviewers:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
   wf_reviewers_remove: ['reviewers remove.',obj(['repo', 'number', 'reviewers'],{repo:REPO,number:INT,reviewers:{type:'array',minItems:1,maxItems:50,items:{type:'string',minLength:1,maxLength:100,pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
@@ -99,7 +112,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -142,7 +155,7 @@ export function boundedWorkflowInput(args, {maxDepth=6,maxNodes=500,maxBytes=655
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
 export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
-  (action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' && action !== 'wf_release_create' && action !== 'wf_release_update' || reviewBodyOk(args)) && (action !== 'wf_file_delete' || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768);
+(action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' && action !== 'wf_release_create' && action !== 'wf_release_update' || reviewBodyOk(args)) && (action !== 'wf_file_delete' || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768)&& (!action.startsWith('wf_deployment') || ['environment','description'].every(k => !(k in args) || typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k==='environment' ? 100 : 140))) && (!['wf_milestone_create','wf_milestone_update'].includes(action) || typeof args.title === 'string' && args.title.trim() !== '' && new TextEncoder().encode(args.title).length <= 1024 && reviewBodyOk({body:args.description}))&& (!['wf_check_create','wf_check_update'].includes(action) || (args.status === 'completed') === (args.conclusion !== 'none') && ['name','title','summary'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= ({name:100,title:255,summary:32768}[k])));
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
@@ -173,7 +186,10 @@ const RESPONSE_KEYS = {
   wf_label_create:['result'],
   wf_label_delete:['completed'],
  wf_file_delete:['deleted','path','branch','commit'],
+ wf_milestones:['milestones','complete'],wf_milestone_get:['milestone'],wf_milestone_create:['milestone'],wf_milestone_update:['milestone'],wf_milestone_delete:['deleted'],
  wf_labels_set:['labels'],wf_reviewers_request:['result'],wf_reviewers_remove:['result'],wf_release_create:['result'],wf_release_update:['result'],
+ wf_deployments:['deployments','complete'],wf_deployment_get:['deployment'],wf_deployment_statuses:['statuses','complete'],wf_deployment_create:['deployment'],wf_deployment_status_create:['status'],wf_deployment_delete:['deleted'],
+ wf_check_create:['check'],wf_check_update:['check'],
   wf_pr_get:['pull'],
   wf_pr_reviews:['reviews','complete'],
   wf_pr_comments:['comments','complete'],
@@ -230,12 +246,23 @@ const readResponseSchemas={
 };
 const environmentItem=z.object({id:z.number().int().positive(),name:z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=255),created_at:z.string().max(100),updated_at:z.string().max(100),protection_rule_types:z.array(z.string().min(1).max(100)).max(20).nullable(),deployment_branch_policy:z.object({protected_branches:z.boolean(),custom_branch_policies:z.boolean()}).strict().nullable()}).strict();
 const environmentResponses={wf_environment_get:z.object({environment:environmentItem}).strict(),wf_environments:z.object({environments:z.array(environmentItem).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict()};
+const deploymentText=z.string().refine(v=>new TextEncoder().encode(v).length<=1024).nullable();
+const deploymentItem=z.object({id:positive,sha:shaValue,ref:deploymentText,environment:deploymentText,task:deploymentText,created_at:deploymentText,transient_environment:z.boolean().nullable(),production_environment:z.boolean().nullable()}).strict();
+const deploymentStatus=z.object({id:positive,state:z.enum(['error','failure','inactive','in_progress','queued','pending','success']),description:deploymentText,created_at:deploymentText}).strict();
+const deploymentResponses={wf_deployments:z.object({deployments:z.array(deploymentItem).max(50),complete:z.boolean()}).strict(),wf_deployment_get:z.object({deployment:deploymentItem}).strict(),wf_deployment_create:z.object({deployment:deploymentItem}).strict(),wf_deployment_statuses:z.object({statuses:z.array(deploymentStatus).max(50),complete:z.boolean()}).strict(),wf_deployment_status_create:z.object({status:deploymentStatus}).strict(),wf_deployment_delete:z.object({deleted:z.literal(true),deployment_id:positive}).strict()};
+const milestoneItem=z.object({number:positive,title:z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=1024),state:z.enum(['open','closed']),html_url:z.string().nullable(),due_on:z.string().nullable(),open_issues:z.number().int().nonnegative().nullable(),closed_issues:z.number().int().nonnegative().nullable()}).strict();
+const milestoneResponses={wf_milestones:z.object({milestones:z.array(milestoneItem).max(50),complete:z.boolean()}).strict(),wf_milestone_get:z.object({milestone:milestoneItem}).strict(),wf_milestone_create:z.object({milestone:milestoneItem}).strict(),wf_milestone_update:z.object({milestone:milestoneItem}).strict(),wf_milestone_delete:z.object({deleted:z.literal(true),number:positive}).strict()};
+const checkWriteItem=z.object({id:positive,head_sha:shaValue,name:z.string().min(1),status:z.enum(['queued','in_progress','completed']),conclusion:z.enum(['action_required','cancelled','failure','neutral','success','skipped','stale','timed_out']).nullable(),html_url:z.string().nullable()}).strict().refine(v=>v.status==='completed'?v.conclusion!==null:v.conclusion===null);
+const checkWriteResponses={wf_check_create:z.object({check:checkWriteItem}).strict(),wf_check_update:z.object({check:checkWriteItem}).strict()};
 export function validWfV1Response(action, body, args) {
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
 
  if(environmentResponses[action])return environmentResponses[action].safeParse(body).success;
 
+ if(deploymentResponses[action])return deploymentResponses[action].safeParse(body).success;
+ if(milestoneResponses[action])return milestoneResponses[action].safeParse(body).success;
+ if(checkWriteResponses[action])return checkWriteResponses[action].safeParse(body).success;
   if (action === 'wf_release_list' && (!Array.isArray(body?.releases) || body.releases.length > 50 || !body.releases.every(x => x && Number.isInteger(x.id) && x.id > 0 && typeof x.draft === 'boolean' && typeof x.prerelease === 'boolean' && Object.keys(x).every(k => ['id','tag_name','name','html_url','created_at','published_at','draft','prerelease'].includes(k)) && ['tag_name','name','html_url','created_at','published_at'].every(k => x[k] === null || typeof x[k] === 'string' && new TextEncoder().encode(x[k]).length <= 2048)))) return false;
  const keysBeforeParse=RESPONSE_KEYS[action];
  if(!keysBeforeParse)return false;
