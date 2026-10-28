@@ -134,7 +134,7 @@ class OutcomeStore:
             ):
                 return existing
             if existing and existing["state"] == "ok" and reapply_ok:
-                # Only a verified success is replaceable. Pending/unknown never re-arm.
+                # Only a verified success is replaceable.  Pending/unknown never re-arm.
                 self._rows[key] = {"state": "pending", "ts": self._clock()}
                 self._save()
                 return None
