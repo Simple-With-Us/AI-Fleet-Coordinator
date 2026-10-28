@@ -83,17 +83,19 @@ remain false until a provider offers a separately verified receipt.
 The idempotency key is scoped to authenticated caller plus request ID. A
 different target or prompt under the same key is a conflict. Accepted requests
 return the recorded result without a second send. Held and failed receipts
-preserve their actual caller-visible status and are pinned as long-lived
-pending claims with that receipt in the result. This uses the existing atomic
-`IdemStore.begin()` behavior: later begins see the pinned claim as busy instead
-of overwriting a held/failed row with a new send. An uncertain result is
-recorded as unknown and is never replayed automatically. Removing tombstones or
-resetting the store can erase no-replay evidence, so integrations must preserve
-them as long as old request IDs can be retried. If terminal persistence fails
-after dispatch, the result is unknown and the adapter makes a best-effort
-unknown-state write. Audit entries contain only event, operation, outcome,
-prompt length, and timestamp; caller, host, platform, native session,
-request ID, prompt content, and hashes of those identifiers are omitted.
+preserve their caller-visible status for the normal request TTL using a
+future-dated pending claim so `IdemStore.begin()` cannot overwrite them with a
+fresh send; when that TTL expires the row is pruned and the caller may retry.
+Definite authorization, validation, and catalog-resolution failures do not
+persist an idempotency row. An uncertain result is recorded as unknown with a
+long-lived tombstone and is never replayed automatically. Removing tombstones or
+resetting the store can erase no-replay evidence for accepted or unknown sends,
+so integrations must preserve those rows as long as old request IDs can be
+retried. If terminal persistence fails after dispatch, the result is unknown and
+the adapter makes a best-effort unknown-state write. Audit entries contain only
+event, operation, outcome, optional mutation gate and delegation markers,
+prompt length, and timestamp; caller, host, platform, native session, request
+ID, prompt content, and hashes of those identifiers are omitted.
 Integrators must provide the existing durable store and audit sink before
 registering the tools.
 

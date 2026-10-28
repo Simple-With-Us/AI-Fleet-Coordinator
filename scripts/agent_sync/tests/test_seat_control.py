@@ -9,6 +9,7 @@ from typing import Any
 from agent_sync.idem import IdemStore
 from agent_sync.seat_control import (
     CAPABILITY_MATRIX,
+    REQUEST_TTL_SECONDS,
     SEAT_CONTROL_TOOL_SCHEMAS,
     SeatControlMCP,
     TOMBSTONE_EXPIRES_AT,
@@ -632,9 +633,68 @@ class SeatControlTests(unittest.TestCase):
         self.assertNotIn("session_fingerprint", audit_text)
         self.assertNotIn("request_fingerprint", audit_text)
         self.assertNotIn("prompt_fingerprint", audit_text)
+        self.assertTrue(
+            any(record.get("delegation") == "approved" for record in self.audit_rows),
+            "mutation delegation context must be audited without raw identifiers",
+        )
         key = hashlib.sha256(b"CODEX\0req-1").hexdigest()
         row = self.service.idempotency.row(key)
         self.assertEqual(row["expires"], TOMBSTONE_EXPIRES_AT)
+
+    def test_definite_auth_failure_does_not_pin_idempotency(self):
+        self.approved = False
+        result = self.prompt()
+        self.assertEqual(result["status"], "permission_refused")
+        key = hashlib.sha256(b"CODEX\0req-1").hexdigest()
+        self.assertIsNone(self.service.idempotency.row(key))
+
+    def test_prompt_secret_shape_is_refused_before_persisting(self):
+        token = "sk-" + "ant-" + ("x" * 40)
+        result = self.prompt(prompt=f"please use {token}")
+        self.assertEqual(result["status"], "invalid_request")
+        key = hashlib.sha256(b"CODEX\0req-1").hexdigest()
+        self.assertIsNone(self.service.idempotency.row(key))
+
+    def test_target_extra_identity_fields_are_rejected(self):
+        target = self.target()
+        target["display_title"] = "must not be accepted"
+        result = self.service.call_tool(
+            "seat_control_read", {"target": target}
+        )
+        self.assertEqual(result["status"], "invalid_request")
+
+    def test_output_refuses_empty_catalog_record_id(self):
+        self.catalog.rows = [row(id="")]
+        result = self.service.call_tool(
+            "seat_control_output", {"target": self.target(), "limit": 2}
+        )
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(self.catalog.excerpt_calls, [])
+
+    def test_held_receipt_expires_within_request_ttl(self):
+        import time
+
+        self.catalog.rows = [row(status="busy")]
+        self.prompt()
+        key = hashlib.sha256(b"CODEX\0req-1").hexdigest()
+        stored = self.service.idempotency.row(key)
+        self.assertIsNotNone(stored)
+        now = time.time()
+        self.assertGreaterEqual(stored["expires"], now)
+        self.assertLessEqual(stored["expires"], now + REQUEST_TTL_SECONDS + 5)
+        self.assertNotEqual(stored["expires"], TOMBSTONE_EXPIRES_AT)
+
+    def test_list_and_resolve_agree_on_agent_id_backed_sessions(self):
+        self.catalog.rows = [
+            row(session_id="", agent_id="native-session-1"),
+        ]
+        listed = self.service.call_tool(
+            "seat_control_list",
+            {"host_scope": "mac", "host": "mac-fixture", "limit": 4},
+        )
+        self.assertEqual(len(listed["data"]["sessions"]), 1)
+        read = self.service.call_tool("seat_control_read", {"target": self.target()})
+        self.assertEqual(read["status"], "ok")
 
 
 if __name__ == "__main__":
