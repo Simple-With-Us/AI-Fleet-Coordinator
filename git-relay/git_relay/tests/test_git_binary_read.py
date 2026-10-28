@@ -1,9 +1,11 @@
 import base64
 import hashlib
 import unittest
-from git_relay.workflow_verbs import WorkflowVerbs, Refused
+
 from git_relay.github_client import RelayGitHubError
-from .test_workflow_verbs import REPO, Client, Policy, Minter
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
+
+from .test_workflow_verbs import REPO, Client, Minter, Policy
 
 
 class BinaryRead(unittest.TestCase):
