@@ -20,9 +20,9 @@ const SPECS = {
   wf_commit_statuses: ['Read commit statuses, not check runs. Requires statuses:read in the seat ceiling.',obj(['repo','sha'],{repo:REPO,sha:SHA,per_page:PER_PAGE})],
   wf_commit_status_create: ['Create a commit status only under separate owner authority; never fabricate a CI result or bypass a gate. Requires statuses:write in the seat ceiling.',obj(['repo','sha','state','context','description'],{repo:REPO,sha:SHA,state:{type:'string',enum:['error','failure','pending','success']},context:{type:'string',minLength:1,maxLength:255,pattern:'^swu-[a-z0-9-]+/report$'},description:{type:'string',minLength:1,maxLength:140}})],
   wf_workflow_enable: ['workflow enable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_workflow_disable: ['workflow disable.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
-  wf_run_delete: ['run delete.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
-  wf_artifact_delete: ['artifact delete.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
+  wf_workflow_disable: ['Disable a workflow, stopping future CI triggers; can break required checks. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','workflow_id'],{repo:REPO,workflow_id:INT})],
+  wf_run_delete: ['Irreversibly delete run and logs. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','run_id'],{repo:REPO,run_id:INT})],
+  wf_artifact_delete: ['Irreversibly remove artifact data. No concurrency fence, explicit action/repo and owner execution authority required.',obj(['repo','artifact_id'],{repo:REPO,artifact_id:INT})],
 
   wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
   wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
