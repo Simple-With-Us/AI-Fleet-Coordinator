@@ -56,6 +56,10 @@ MAX_FILES_B64 = 512 * 1024
 SPECS = {
     "wf_commit_statuses": ({"statuses": "read"}, False),
     "wf_commit_status_create": ({"statuses": "write"}, True),
+    "wf_workflow_enable": ({"actions": "write"}, True),
+    "wf_workflow_disable": ({"actions": "write"}, True),
+    "wf_run_delete": ({"actions": "write"}, True),
+    "wf_artifact_delete": ({"actions": "write"}, True),
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
@@ -503,6 +507,36 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def wf_workflow_enable(self, repo, args):
+        _only(args, ("repo", "workflow_id"))
+        value = _int(args, "workflow_id")
+        self.client._call(
+            "PUT", f"/repos/{repo}/actions/workflows/{value}/enable", None, bearer=self.bearer
+        )
+        return {"completed": True, "workflow_id": value}
+
+    def wf_workflow_disable(self, repo, args):
+        _only(args, ("repo", "workflow_id"))
+        value = _int(args, "workflow_id")
+        self.client._call(
+            "PUT", f"/repos/{repo}/actions/workflows/{value}/disable", None, bearer=self.bearer
+        )
+        return {"completed": True, "workflow_id": value}
+
+    def wf_run_delete(self, repo, args):
+        _only(args, ("repo", "run_id"))
+        value = _int(args, "run_id")
+        self.client._call("DELETE", f"/repos/{repo}/actions/runs/{value}", None, bearer=self.bearer)
+        return {"completed": True, "run_id": value}
+
+    def wf_artifact_delete(self, repo, args):
+        _only(args, ("repo", "artifact_id"))
+        value = _int(args, "artifact_id")
+        self.client._call(
+            "DELETE", f"/repos/{repo}/actions/artifacts/{value}", None, bearer=self.bearer
+        )
+        return {"completed": True, "artifact_id": value}
 
     # ---- reads ----
     def wf_pr_list(self, repo, args):

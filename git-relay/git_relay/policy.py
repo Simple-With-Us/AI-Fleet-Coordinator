@@ -79,6 +79,10 @@ class SeatPolicy:
     WORKFLOW_ACTIONS = (
         "wf_commit_statuses",
         "wf_commit_status_create",
+        "wf_workflow_enable",
+        "wf_workflow_disable",
+        "wf_run_delete",
+        "wf_artifact_delete",
         "wf_release_assets",
         "wf_release_asset_get",
         "wf_release_asset_upload",
