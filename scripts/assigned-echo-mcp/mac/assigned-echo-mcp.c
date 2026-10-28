@@ -16,6 +16,13 @@
 #define ACCOUNT "ECHO"
 #define REQUIREMENT "anchor apple generic and identifier \"assigned-echo-mcp\" and certificate leaf[subject.OU] = \"CC8UTF7ATG\""
 
+/* Volatile byte stores are available on the actual C99 SDK and cannot be
+ * elided like an ordinary memset of a dead secret buffer. */
+static void wipe(void *pointer, size_t size) {
+    volatile unsigned char *bytes = (volatile unsigned char *)pointer;
+    while (size--) *bytes++ = 0;
+}
+
 static int safe_path(const char *path, int directory) {
     struct stat s;
     if (lstat(path, &s) || s.st_uid != 0 || (s.st_mode & 0022)) return 0;
@@ -71,7 +78,7 @@ static int ingress(SecKeychainRef keychain) {
     unsigned char secret[256] = {0};
     size_t size = fread(secret, 1, sizeof(secret), stdin);
     if (size && secret[size - 1] == '\n') --size;
-    if (!valid_token(secret, size)) { explicit_bzero(secret, sizeof(secret)); return 3; }
+    if (!valid_token(secret, size)) { wipe(secret, sizeof(secret)); return 3; }
     SecTrustedApplicationRef trusted = NULL;
     SecAccessRef access = NULL;
     status = SecTrustedApplicationCreateFromPath(FIXED, &trusted);
@@ -90,7 +97,7 @@ static int ingress(SecKeychainRef keychain) {
         status = SecKeychainItemCreateFromContent(kSecGenericPasswordItemClass, &list, (UInt32)size,
                                                  secret, keychain, access, NULL);
     }
-    explicit_bzero(secret, sizeof(secret));
+    wipe(secret, sizeof(secret));
     if (access) CFRelease(access);
     if (trusted) CFRelease(trusted);
     return status == errSecSuccess ? 0 : 3;
@@ -108,12 +115,12 @@ static int launch(SecKeychainRef keychain) {
     memcpy(environment, "ASSIGNED_MCP_BEARER=", 20);
     memcpy(environment + 20, bytes, size);
     environment[20 + size] = 0;
-    explicit_bzero(bytes, size);
+    wipe(bytes, size);
     SecKeychainItemFreeContent(NULL, bytes);
     char *argv[] = {"/usr/bin/python3", "-I", ADAPTER, NULL};
     char *env[] = {"PATH=/usr/bin:/bin", environment, NULL};
     execve(argv[0], argv, env);
-    explicit_bzero(environment, sizeof(environment));
+    wipe(environment, sizeof(environment));
     return 3;
 }
 
