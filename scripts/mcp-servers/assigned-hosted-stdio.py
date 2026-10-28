@@ -1,6 +1,7 @@
 #!/usr/bin/env -S python3 -I
 """Assigned-bearer stdio transport. No secret reader, token minting or retries."""
 
+import http.client
 import json
 import os
 import re
@@ -85,7 +86,7 @@ class Adapter:
                 return failure(message, "identity_not_allowed")
         if message.get("method") == "tools/call" and isinstance(params, dict):
             args = params.get("arguments", {})
-            if isinstance(args, dict):
+            if isinstance(args, dict) and params.get("name") != "identities":
                 # Assigned by the credential, never a configurable seat selector.
                 message = {
                     **message,
@@ -157,7 +158,7 @@ class Adapter:
                     self.protocol = protocol
                     self.session = session
                 return result
-        except (OSError, ValueError, urllib.error.HTTPError):
+        except (OSError, ValueError, http.client.HTTPException):
             # Never reflect provider prose, headers, credentials or redirect locations.
             # An accepted write can lose its response even on a non-JSON 4xx/5xx.
             return failure(message)

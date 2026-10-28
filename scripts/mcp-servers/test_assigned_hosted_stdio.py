@@ -1,5 +1,6 @@
 """Offline synthetic tests. No credentials, network, files or live writes."""
 
+import http.client
 import importlib.util
 import io
 import json
@@ -214,6 +215,29 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(result.returncode, 3)
             self.assertIn(b"missing or malformed", result.stderr)
             self.assertFalse((Path(tmp) / ".config").exists())
+
+    def test_identities_discovery_receives_no_injected_property(self):
+        def opener(request, timeout):
+            self.assertEqual(json.loads(request.data)["params"]["arguments"], {})
+            return Response(json.dumps(self.reply()).encode())
+
+        message = {
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {"name": "identities", "arguments": {}},
+        }
+        self.assertEqual(mod.Adapter(TOKEN, opener).call(message), self.reply())
+
+    def test_incomplete_chunked_response_returns_unknown_without_crashing(self):
+        class Truncated(Response):
+            def read(self, size=-1):
+                raise http.client.IncompleteRead(b"private-partial-response")
+
+        result = mod.Adapter(TOKEN, lambda *a, **kw: Truncated(b"")).call(self.message())
+        error = json.loads(result["result"]["content"][0]["text"])
+        self.assertEqual(error["code"], "outcome_unknown")
+        self.assertNotIn("private-partial-response", json.dumps(result))
 
     def test_no_redirect_handler(self):
         self.assertIsNone(
