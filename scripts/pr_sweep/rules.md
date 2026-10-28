@@ -58,6 +58,21 @@ FORBIDDEN: TestFlight or App Store upload, ios-ship or any iOS release; enabling
 Never print a credential.  Use AGENT_SEAT={{SEAT}} and --as {{SEAT}} for any fleet command.
 Answer with: repo, mechanism, deployed (yes | no | n/a | unhealthy | unknown), evidence, owner_action.
 
+### The entity mode has its own first check
+
+The two checks above count a real U+00A0, and in the entity mode that count is structurally 0 on
+a body that converted perfectly.  The entity is six literal characters where the byte pair is
+one, so the first check has to look for the entity when the body targets the two chat panes.
+
+```sh
+grep -oE $'[.!?](\]\([^[:space:]()]{1,255}\)|[]*_`~)"\'\u2019\u201d])*&nbsp; ' body.ent.txt | wc -l  # must be > 0
+```
+
+The leftover check is the same in both modes, and it is worth saying why:  a converted boundary is
+followed by the gap itself, the byte pair in the real mode and the entity in the entity mode, and
+neither of them begins with a space, so only an unconverted boundary matches the leftover check.
+
+
 ### The program that runs it — one pass, code-aware
 
 The two greps above are the assertions, and something has to produce the file they check.  The
