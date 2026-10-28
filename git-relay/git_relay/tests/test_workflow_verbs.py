@@ -1,7 +1,7 @@
 import base64
 import unittest
-from git_relay.github_client import RelayGitHubError
 
+from git_relay.github_client import RelayGitHubError
 from git_relay.workflow_verbs import ACTIONS, SPECS, Refused, Unknown, WorkflowVerbs
 
 REPO = "Simple-With-Us/AI-Fleet-Coordinator"
@@ -166,7 +166,10 @@ class Tests(unittest.TestCase):
             "message": "m",
             "content_b64": base64.b64encode(b"hello").decode(),
         }
-        s, c = svc({"default_branch": "main"}, {"commit": {"sha": "c" * 40}, "content": {"path": "docs/a.md"}})
+        s, c = svc(
+            {"default_branch": "main"},
+            {"commit": {"sha": "c" * 40}, "content": {"path": "docs/a.md"}},
+        )
         self.assertEqual(s.run("wf_file_put", good)["commit"], "c" * 40)
         self.assertEqual(c.calls[1][2]["branch"], "wise/x")
         s, _ = svc({"default_branch": "main"})
