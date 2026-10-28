@@ -44,6 +44,10 @@ struct FleetAdminMenu: View {
     var body: some View {
         Divider()
         Text("Fleet Admin")
+        Button("Refresh Fleet Services") {
+            Task { await admin.refresh() }
+        }
+        .disabled(admin.reading)
         if admin.reading {
             Text("Reading the fleet services…")
         }
