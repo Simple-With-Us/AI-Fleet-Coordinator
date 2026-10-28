@@ -54,6 +54,22 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_pr_get": ({"pull_requests": "read"}, False),
+    "wf_pr_reviews": ({"pull_requests": "read"}, False),
+    "wf_pr_comments": ({"pull_requests": "read"}, False),
+    "wf_issue_comments": ({"issues": "read"}, False),
+    "wf_commit_get": ({"contents": "read"}, False),
+    "wf_compare": ({"contents": "read"}, False),
+    "wf_branch_get": ({"contents": "read"}, False),
+    "wf_repo_get": ({"metadata": "read"}, False),
+    "wf_labels": ({"issues": "read"}, False),
+    "wf_workflows": ({"actions": "read"}, False),
+    "wf_run_get": ({"actions": "read"}, False),
+    "wf_run_artifacts": ({"actions": "read"}, False),
+    "wf_workflow_enable": ({"actions": "write"}, True),
+    "wf_workflow_disable": ({"actions": "write"}, True),
+    "wf_run_delete": ({"actions": "write"}, True),
+    "wf_artifact_delete": ({"actions": "write"}, True),
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
@@ -443,7 +459,184 @@ class WorkflowVerbs:
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
 
+    def wf_workflow_enable(self, repo, args):
+        _only(args, ("repo", "workflow_id"))
+        value = _int(args, "workflow_id")
+        self.client._call(
+            "PUT", f"/repos/{repo}/actions/workflows/{value}/enable", None, bearer=self.bearer
+        )
+        return {"completed": True, "workflow_id": value}
+
+    def wf_workflow_disable(self, repo, args):
+        _only(args, ("repo", "workflow_id"))
+        value = _int(args, "workflow_id")
+        self.client._call(
+            "PUT", f"/repos/{repo}/actions/workflows/{value}/disable", None, bearer=self.bearer
+        )
+        return {"completed": True, "workflow_id": value}
+
+    def wf_run_delete(self, repo, args):
+        _only(args, ("repo", "run_id"))
+        value = _int(args, "run_id")
+        self.client._call("DELETE", f"/repos/{repo}/actions/runs/{value}", None, bearer=self.bearer)
+        return {"completed": True, "run_id": value}
+
+    def wf_artifact_delete(self, repo, args):
+        _only(args, ("repo", "artifact_id"))
+        value = _int(args, "artifact_id")
+        self.client._call(
+            "DELETE", f"/repos/{repo}/actions/artifacts/{value}", None, bearer=self.bearer
+        )
+        return {"completed": True, "artifact_id": value}
+
     # ---- reads ----
+    def wf_pr_get(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+            ),
+        )
+        number = _int(args, "number")
+        data = self._get(f"/repos/{repo}/pulls/{number}")
+        return {"pull": _obj(data)}
+
+    def wf_pr_reviews(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "per_page",
+            ),
+        )
+        number = _int(args, "number")
+        per_page = _page(args)
+        data = self._get(f"/repos/{repo}/pulls/{number}/reviews?per_page={per_page}")
+        return {"reviews": _arr(data)[:MAX_PAGE], "complete": False}
+
+    def wf_pr_comments(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "per_page",
+            ),
+        )
+        number = _int(args, "number")
+        per_page = _page(args)
+        data = self._get(f"/repos/{repo}/pulls/{number}/comments?per_page={per_page}")
+        return {"comments": _arr(data)[:MAX_PAGE], "complete": False}
+
+    def wf_issue_comments(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "number",
+                "per_page",
+            ),
+        )
+        number = _int(args, "number")
+        per_page = _page(args)
+        data = self._get(f"/repos/{repo}/issues/{number}/comments?per_page={per_page}")
+        return {"comments": _arr(data)[:MAX_PAGE], "complete": False}
+
+    def wf_commit_get(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "sha",
+            ),
+        )
+        sha = _sha(args, "sha")
+        data = self._get(f"/repos/{repo}/commits/{sha}")
+        return {"commit": _obj(data)}
+
+    def wf_compare(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "base",
+                "head",
+            ),
+        )
+        base = quote(_ref(args, "base"), safe="")
+        head = quote(_ref(args, "head"), safe="")
+        data = self._get(f"/repos/{repo}/compare/{base}...{head}")
+        return {"comparison": _obj(data)}
+
+    def wf_branch_get(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "branch",
+            ),
+        )
+        branch = quote(_ref(args, "branch"), safe="")
+        data = self._get(f"/repos/{repo}/branches/{branch}")
+        return {"branch": _obj(data)}
+
+    def wf_repo_get(self, repo, args):
+        _only(args, ("repo",))
+        data = self._get(f"/repos/{repo}")
+        return {"repository": _obj(data)}
+
+    def wf_labels(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "per_page",
+            ),
+        )
+        per_page = _page(args)
+        data = self._get(f"/repos/{repo}/labels?per_page={per_page}")
+        return {"labels": _arr(data)[:MAX_PAGE], "complete": False}
+
+    def wf_workflows(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "per_page",
+            ),
+        )
+        per_page = _page(args)
+        data = self._get(f"/repos/{repo}/actions/workflows?per_page={per_page}")
+        return {"workflows": _obj(data)}
+
+    def wf_run_get(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "run_id",
+            ),
+        )
+        run_id = _int(args, "run_id")
+        data = self._get(f"/repos/{repo}/actions/runs/{run_id}")
+        return {"run": _obj(data)}
+
+    def wf_run_artifacts(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "run_id",
+                "per_page",
+            ),
+        )
+        run_id = _int(args, "run_id")
+        per_page = _page(args)
+        data = self._get(f"/repos/{repo}/actions/runs/{run_id}/artifacts?per_page={per_page}")
+        return {"artifacts": _obj(data)}
+
     def wf_pr_list(self, repo, args):
         _only(args, ("repo", "state", "head", "base", "per_page"))
         state = _enum(args, "state", ("open", "closed", "all"), "open")
