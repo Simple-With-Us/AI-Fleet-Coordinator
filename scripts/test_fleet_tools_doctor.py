@@ -97,13 +97,13 @@ class SeatAndMcpTests(unittest.TestCase):
 
         with mock.patch.object(doctor, "infisical_names", fake_names):
             report = doctor.Report()
-            doctor.check_seat(report, "GROK-WEB", {})
+            doctor.check_seat(report, "GROK-WEB", {}, False)
             self.assertEqual(report.rows[0]["status"], "FAIL")
             self.assertIn("zulip bot, linear app, fleetlink token", report.rows[0]["detail"])
             # AFC-359:  files in the retired credentials folder no longer count.
             self.touch(".secrets/Zulip/Grok-Web-zuliprc")
             report = doctor.Report()
-            doctor.check_seat(report, "GROK-WEB", {})
+            doctor.check_seat(report, "GROK-WEB", {}, False)
             self.assertIn("zulip bot", report.rows[0]["detail"])
             names["/zulip"] = frozenset(
                 {"GROK_WEB_ZULIP_EMAIL", "GROK_WEB_ZULIP_KEY", "GROK_WEB_ZULIP_SITE"}
@@ -112,17 +112,17 @@ class SeatAndMcpTests(unittest.TestCase):
                 {"GROK_WEB_LINEAR_CLIENT_ID", "GROK_WEB_LINEAR_CLIENT_SECRET"}
             )
             report = doctor.Report()
-            doctor.check_seat(report, "GROK-WEB", {"FLEETLINK_TOKEN_GROK_WEB": "t"})
+            doctor.check_seat(report, "GROK-WEB", {"FLEETLINK_TOKEN_GROK_WEB": "t"}, True)
             self.assertEqual(report.rows[0]["status"], "OK")
             names["/zulip"] = frozenset(
                 {"GROK_BUILD_ZULIP_EMAIL", "GROK_BUILD_ZULIP_KEY", "GROK_BUILD_ZULIP_SITE"}
             )
             report = doctor.Report()
-            doctor.check_seat(report, "GROK", {})
+            doctor.check_seat(report, "GROK", {}, False)
             self.assertNotIn("zulip bot", report.rows[0]["detail"])
             names["/zulip"] = None
             report = doctor.Report()
-            doctor.check_seat(report, "GROK", {})
+            doctor.check_seat(report, "GROK", {}, False)
             self.assertEqual(report.rows[0]["status"], "WARN")
 
     def mcp_rows(self, fleetlink_tokens=frozenset(), readable=True):

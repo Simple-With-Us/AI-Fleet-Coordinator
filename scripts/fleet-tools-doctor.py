@@ -1446,7 +1446,12 @@ def seat_has_fleetlink_token(seat: str, env: dict[str, str]) -> bool | None:
     return f"FLEETLINK_TOKEN_{code}" in names
 
 
-def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
+def check_seat(
+    report: Report,
+    seat: str,
+    env: dict[str, str],
+    fleetlink: bool | None,
+) -> None:
     code = seat_file(seat)
     zulip_names = infisical_names("/zulip", env)
     if zulip_names is None:
@@ -1461,13 +1466,12 @@ def check_seat(report: Report, seat: str, env: dict[str, str]) -> None:
     linear = (
         linear_env or {f"{code}_LINEAR_CLIENT_ID", f"{code}_LINEAR_CLIENT_SECRET"} <= linear_names
     )
-    fleetlink = seat_has_fleetlink_token(seat, env)
     missing = [
         label
         for label, ok in (
             ("zulip bot", zulip),
             ("linear app", linear),
-            ("fleetlink token", fleetlink is True),
+            ("fleetlink token", fleetlink is not None and bool(fleetlink)),
         )
         if not ok
     ]
@@ -1612,15 +1616,16 @@ def codex_mcp_names(text: str) -> list[str]:
         return []
 
 
-def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None] | None = None) -> None:
+def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None]) -> None:
     """The registrations each seat holds:  the fleet's stdio server and FleetLink.
 
     A seat without a FleetLink token cannot run the fleetlink server, so it is not asked to
     register one.  The token reading is passed in, so this check never lists credentials
     itself and stays a pure function of the client files.  None means the token names could
-    not be read, and the row says so instead of passing the seat.
+    not be read, and the row says so instead of passing the seat.  The map must carry
+    CODEX and CLAUDE:  a missing key is treated as unreadable, not as no token.
     """
-    tokens = fleetlink_tokens or {}
+    tokens = fleetlink_tokens
     for seat in ("CODEX", "CLAUDE"):
         label = "mcp:" + seat.lower()
         try:
@@ -1635,8 +1640,8 @@ def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None] | None = 
         if not registered:
             lacking.append(MCP_CANONICAL_NAME)
         if "fleetlink" not in names:
-            token = tokens.get(seat)
-            if token is True:
+            token = tokens[seat]
+            if token is not None and bool(token):
                 lacking.append("fleetlink")
             elif token is None:
                 unreadable.append("fleetlink")
@@ -3209,11 +3214,16 @@ def run(
         check_server_tools(report, rt, checkouts, runner)
     if not args.no_registry:
         check_registry(report, host, network, runner, fetch)
-    fleetlink_tokens = {seat: seat_has_fleetlink_token(seat, env) for seat in ("CODEX", "CLAUDE")}
-    for seat in [s.strip().upper() for s in args.seats.split(",") if s.strip()]:
-        check_seat(report, seat, env)
+    seats = [s.strip().upper() for s in args.seats.split(",") if s.strip()]
+    judged = list(dict.fromkeys(seats + ["CODEX", "CLAUDE"]))
+    fleetlink_tokens = {seat: seat_has_fleetlink_token(seat, env) for seat in judged}
+    for seat in seats:
+        check_seat(report, seat, env, fleetlink_tokens[seat])
         check_mcp_startup(report, seat)
-    check_mcp(report, fleetlink_tokens)
+    check_mcp(
+        report,
+        {seat: fleetlink_tokens[seat] for seat in ("CODEX", "CLAUDE")},
+    )
     check_notes(report, host, env, runner, network=network)
     finalize_rows(report, host)
     doc = host_document(report, host, expected, network, updater)
