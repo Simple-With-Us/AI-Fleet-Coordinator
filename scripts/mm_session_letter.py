@@ -13,6 +13,9 @@ and this file is where they agree:
 The store is MiniMax Code's own session table; the letter lives in the Operator
 registry, which is one file for the fleet.  This host reads that file locally when the
 deployment points at the shared store — there is no SSH fallback with a private alias.
+A host that keeps no copy of the registry names its own registry command in
+MM_OPERATOR_REGISTRY_COMMAND, and that command owns the transport and the database
+path; the code here stays free of hosts, users and aliases.
 
 Subthreads do not get a letter:  a session with a parent is part of its parent's
 thread, and a session that is not a conversation (a task, a peek, a cron run) has no
@@ -33,6 +36,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import signal
 import sqlite3
 import subprocess
@@ -136,7 +140,7 @@ def _scan_title(text: str) -> None:
         raise ValueError("secret_detected")
 
 
-# ---- the registry, locally only ---------------------------------------------------
+# ---- the registry ------------------------------------------------------------------
 
 
 def _registry_identity_args() -> list[str]:
@@ -158,20 +162,41 @@ def _json_within_limits(value: object) -> bool:
     return True
 
 
+def registry_command() -> list[str] | None:
+    """The command that runs the Operator's registry CLI, or None for the local one.
+
+    The default is this checkout's own CLI against the local registry file.  A host
+    whose registry lives in the shared store the Operator runs names its own command
+    in MM_OPERATOR_REGISTRY_COMMAND, and that command owns the database path as
+    well:  the transport belongs to the deployment, so this file never names a
+    host, a user, an alias or a path outside the checkout.
+    """
+    override = os.environ.get("MM_OPERATOR_REGISTRY_COMMAND", "").strip()
+    if not override:
+        return None
+    parts = shlex.split(override)
+    return parts or None
+
+
 def registry_call(args: list[str], *, timeout: int = 25) -> dict:
     """Run the Operator's registry CLI and return its JSON answer."""
     local_db = registry_db()
     scripts = repo_scripts_dir()
-    if not local_db or not scripts:
-        return {
-            "error": "the operator registry is not available on this host",
-            "code": "no_registry",
-        }
-    cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
+    override = registry_command()
+    if override:
+        # The host owns the transport, so the command owns the database path too.
+        cmd = override + list(args)
+    else:
+        if not local_db or not scripts:
+            return {
+                "error": "the operator registry is not available on this host",
+                "code": "no_registry",
+            }
+        cmd = [sys.executable, "-m", "agent_sync.operator_registry"] + args + ["--db", local_db]
     try:
         proc = subprocess.Popen(
             cmd,
-            cwd=scripts,
+            cwd=scripts or None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

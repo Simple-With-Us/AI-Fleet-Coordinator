@@ -197,5 +197,60 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertNotIn("denied", err.replace('"code": "denied"', ""))
 
 
+class RegistryTransportTest(unittest.TestCase):
+    """The registry transport is the deployment's, not the code's."""
+
+    def setUp(self):
+        self.saved = {
+            key: os.environ.get(key)
+            for key in ("MM_OPERATOR_REGISTRY_COMMAND", "AGENT_SYNC_OPERATOR_REGISTRY")
+        }
+        for key in self.saved:
+            os.environ.pop(key, None)
+
+    def tearDown(self):
+        for key, value in self.saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_no_command_means_the_local_cli(self):
+        self.assertIsNone(M.registry_command())
+
+    def test_the_host_names_its_own_command(self):
+        os.environ["MM_OPERATOR_REGISTRY_COMMAND"] = "/usr/local/bin/mm-registry --remote"
+        self.assertEqual(M.registry_command(), ["/usr/local/bin/mm-registry", "--remote"])
+
+    def test_a_blank_command_is_no_command(self):
+        os.environ["MM_OPERATOR_REGISTRY_COMMAND"] = "   "
+        self.assertIsNone(M.registry_command())
+
+    def test_the_command_answers_without_a_local_registry(self):
+        # A host with no copy of the registry file still reaches it, because the
+        # command it names owns the transport and the database path.
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = os.path.join(tmp, "fake-registry")
+            with open(runner, "w", encoding="utf-8") as fh:
+                fh.write('#!/bin/sh\necho \'{"ok": true}\'\n')
+            os.chmod(runner, 0o700)
+            os.environ["MM_OPERATOR_REGISTRY_COMMAND"] = runner
+            answer = M.registry_call(["history", "--platform", "minimax"])
+        self.assertNotEqual(answer.get("code"), "no_registry")
+        self.assertNotIn("error", answer)
+        self.assertTrue(answer.get("ok"))
+
+    def test_a_missing_command_reports_the_fault(self):
+        os.environ["MM_OPERATOR_REGISTRY_COMMAND"] = "/nonexistent/mm-registry"
+        answer = M.registry_call(["history", "--platform", "minimax"])
+        self.assertEqual(answer.get("code"), "missing_tool")
+
+    def test_no_registry_and_no_command_is_a_fault(self):
+        answer = M.registry_call(["history", "--platform", "minimax"])
+        if M.registry_db() and M.repo_scripts_dir():
+            self.skipTest("this host keeps a local registry copy")
+        self.assertEqual(answer.get("code"), "no_registry")
+
+
 if __name__ == "__main__":
     unittest.main()
