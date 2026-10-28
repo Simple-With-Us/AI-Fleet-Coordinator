@@ -22,10 +22,16 @@ only job and step conclusions are returned.
 
 import base64
 import binascii
+import bz2
+import gzip
+import io
+import lzma
 import re
+import zipfile
+import zlib
 from urllib.parse import quote
 
-from .github_client import RelayGitHubError
+from .github_client import MAX_DOWNLOAD_CHUNK, RelayGitHubError
 from .secret_scan import find_secret
 from .server import PreReadUnavailable, _perm_within_ceiling
 
@@ -51,12 +57,24 @@ MAX_PAGE = 50
 MAX_PROJECT = 100
 MAX_FILES = 20
 MAX_FILES_B64 = 512 * 1024
+MAX_BINARY_ASSET = 180 * 1024  # base64 must fit the Worker 256 KiB MCP body
+MAX_BINARY_ASSET_B64 = 4 * ((MAX_BINARY_ASSET + 2) // 3)
+MAX_ARCHIVE_EXPANDED = 8 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 500
+_ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
     "wf_release_assets": ({"contents": "read"}, False),
     "wf_release_asset_get": ({"contents": "read"}, False),
     "wf_release_asset_upload": ({"contents": "write"}, True),
+    "wf_release_asset_download": ({"contents": "read"}, False),
+    "wf_release_asset_upload_binary": ({"contents": "write"}, True),
+    "wf_release_asset_update": ({"contents": "write"}, True),
+    "wf_release_asset_delete": ({"contents": "write"}, True),
+    "wf_job_log": ({"actions": "read"}, False),
+    "wf_run_logs": ({"actions": "read"}, False),
+    "wf_artifact_download": ({"actions": "read"}, False),
     "wf_review_submit": ({"pull_requests": "write"}, True),
     "wf_review_inline": ({"pull_requests": "write"}, True),
     "wf_branch_create": ({"contents": "write"}, True),
@@ -176,6 +194,82 @@ def _only(args, allowed):
     extra = set(args) - set(allowed)
     if extra:
         raise Refused("unexpected argument")
+
+
+def _bounded_read(stream, limit):
+    chunks, total = [], 0
+    while True:
+        block = stream.read(65536)
+        if not block:
+            return b"".join(chunks)
+        total += len(block)
+        if total > limit:
+            raise Refused("asset archive expands past the scan bound")
+        chunks.append(block)
+
+
+def _scan_bytes(blob):
+    text = blob.decode("latin-1")
+    if find_secret(text) or find_secret(blob.decode("utf-8", "ignore")):
+        raise Refused("invalid asset content")
+    # UTF-16 text hides ASCII credential shapes from a byte scan.
+    for enc in ("utf-16-le", "utf-16-be"):
+        if find_secret(blob.decode(enc, "ignore")):
+            raise Refused("invalid asset content")
+
+
+def _scan_asset_bytes(content, depth=0):
+    """Refuse content that carries a credential shape, including inside common archives.
+
+    Opaque or encrypted containers the scanner cannot open are refused rather than
+    waved through.  Encodings inside an unrecognized binary format (for example a
+    credential base64-encoded within a file) are not detected; this is a shape scan,
+    not a guarantee.
+    """
+    if depth > 1:
+        raise Refused("asset archive nesting is not supported")
+    _scan_bytes(content)
+    head = content[:8]
+    if head.startswith(b"PK\x03\x04") or head.startswith(b"PK\x05\x06"):
+        try:
+            archive = zipfile.ZipFile(io.BytesIO(content))
+            infos = archive.infolist()
+            if len(infos) > MAX_ARCHIVE_MEMBERS or sum(i.file_size for i in infos) > MAX_ARCHIVE_EXPANDED:
+                raise Refused("asset archive expands past the scan bound")
+            for info in infos:
+                if info.flag_bits & 0x1:
+                    raise Refused("encrypted asset archives are not supported")
+                _scan_bytes(info.filename.encode("utf-8", "replace"))
+                if info.is_dir():
+                    continue
+                with archive.open(info) as member:
+                    inner = _bounded_read(member, MAX_ARCHIVE_EXPANDED)
+                _scan_asset_bytes(inner, depth + 1)
+        except (zipfile.BadZipFile, NotImplementedError, RuntimeError, EOFError, OSError):
+            raise Refused("asset archive could not be scanned") from None
+    elif head.startswith(b"\x1f\x8b"):
+        try:
+            inner = _bounded_read(gzip.GzipFile(fileobj=io.BytesIO(content)), MAX_ARCHIVE_EXPANDED)
+        except (OSError, EOFError, zlib.error):
+            raise Refused("asset archive could not be scanned") from None
+        _scan_asset_bytes(inner, depth + 1)
+    elif head.startswith(b"BZh"):
+        try:
+            inner = _bounded_read(bz2.BZ2File(io.BytesIO(content)), MAX_ARCHIVE_EXPANDED)
+        except (OSError, EOFError, ValueError):
+            raise Refused("asset archive could not be scanned") from None
+        _scan_asset_bytes(inner, depth + 1)
+    elif head.startswith(b"\xfd7zXZ\x00"):
+        try:
+            inner = _bounded_read(lzma.LZMAFile(io.BytesIO(content)), MAX_ARCHIVE_EXPANDED)
+        except (lzma.LZMAError, OSError, EOFError):
+            raise Refused("asset archive could not be scanned") from None
+        _scan_asset_bytes(inner, depth + 1)
+    elif (
+        head.startswith((b"\x28\xb5\x2f\xfd", b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x5d\x00\x00"))
+        or head[:2] in (b"\x1f\x9d", b"\x1f\xa0")
+    ):
+        raise Refused("unscannable compressed asset format")
 
 
 class WorkflowVerbs:
@@ -346,6 +440,198 @@ class WorkflowVerbs:
         if data["name"] != name or data["state"] != "uploaded" or data["size"] != len(content):
             raise RelayGitHubError(502, "release asset upload outcome unverifiable")
         return {"asset": data}
+
+    def wf_release_asset_upload_binary(self, repo, args):
+        _only(args, ("repo", "release_id", "name", "content_b64"))
+        release_id = _int(args, "release_id")
+        name = args.get("name")
+        if not isinstance(name, str) or not _ASSET_NAME.fullmatch(name) or name.endswith("."):
+            raise Refused("invalid asset name")
+        encoded = args.get("content_b64")
+        if not isinstance(encoded, str) or not 1 <= len(encoded) <= MAX_BINARY_ASSET_B64:
+            raise Refused("invalid asset content")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            raise Refused("asset must be valid base64") from None
+        if not 1 <= len(content) <= MAX_BINARY_ASSET:
+            raise Refused("invalid asset content")
+        _scan_asset_bytes(content)
+        try:
+            release = _obj(self._get(f"/repos/{repo}/releases/{release_id}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "release pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if (
+            release.get("id") != release_id
+            or isinstance(release.get("id"), bool)
+            or release.get("upload_url")
+            != f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets{{?name,label}}"
+        ):
+            raise Refused("release upload destination unverifiable")
+        data = self._asset_summary(
+            self.client.upload_release_asset(
+                repo, release_id, name, content, self.bearer, MAX_BINARY_ASSET
+            )
+        )
+        if data["name"] != name or data["state"] != "uploaded" or data["size"] != len(content):
+            raise RelayGitHubError(502, "release asset upload outcome unverifiable")
+        return {"asset": data}
+
+    def _asset_preread(self, repo, asset_id, expected_name):
+        try:
+            data = self._asset_summary(self._get(f"/repos/{repo}/releases/assets/{asset_id}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("asset pre-read unavailable; no write attempted") from None
+            raise
+        if data["id"] != asset_id or data["name"] != expected_name:
+            raise Refused("release asset does not match expected_name")
+        return data
+
+    def _expected_name(self, args):
+        name = args.get("expected_name")
+        if not isinstance(name, str) or not 1 <= len(name) <= 255 or "/" in name:
+            raise Refused("invalid expected_name")
+        return name
+
+    def wf_release_asset_delete(self, repo, args):
+        """Delete one asset by ID, only while its current name matches expected_name."""
+        _only(args, ("repo", "asset_id", "expected_name"))
+        asset_id, expected = _int(args, "asset_id"), self._expected_name(args)
+        self._asset_preread(repo, asset_id, expected)
+        result = self.client._call(
+            "DELETE", f"/repos/{repo}/releases/assets/{asset_id}", None, bearer=self.bearer
+        )
+        if result:
+            raise RelayGitHubError(502, "release asset delete outcome unverifiable")
+        return {"deleted": True, "asset_id": asset_id}
+
+    def wf_release_asset_update(self, repo, args):
+        """Rename or relabel one asset, fenced on its current name; never changes state."""
+        _only(args, ("repo", "asset_id", "expected_name", "name", "label"))
+        asset_id, expected = _int(args, "asset_id"), self._expected_name(args)
+        patch = {}
+        if "name" in args:
+            name = args["name"]
+            if not isinstance(name, str) or not _ASSET_NAME.fullmatch(name) or name.endswith("."):
+                raise Refused("invalid asset name")
+            patch["name"] = name
+        if "label" in args:
+            label = args["label"]
+            if (
+                not isinstance(label, str)
+                or len(label) > 255
+                or find_secret(label)
+                or any(ord(c) < 32 or ord(c) == 127 for c in label)
+            ):
+                raise Refused("invalid label")
+            patch["label"] = label
+        if not patch:
+            raise Refused("name or label required")
+        self._asset_preread(repo, asset_id, expected)
+        data = self._asset_summary(
+            self.client._call(
+                "PATCH", f"/repos/{repo}/releases/assets/{asset_id}", patch, bearer=self.bearer
+            )
+        )
+        if data["id"] != asset_id or data["name"] != patch.get("name", expected):
+            raise RelayGitHubError(502, "release asset update outcome unverifiable")
+        return {"asset": data}
+
+    def _range(self, args):
+        offset = _int(args, "offset", 0, 512 * 1024 * 1024) if "offset" in args else 0
+        length = (
+            _int(args, "length", 1, MAX_DOWNLOAD_CHUNK) if "length" in args else MAX_DOWNLOAD_CHUNK
+        )
+        return offset, length
+
+    @staticmethod
+    def _chunk_meta(offset, data, total):
+        end = offset + len(data)
+        complete = total is not None and end >= total
+        return {
+            "offset": offset,
+            "next_offset": end,
+            "total": total,
+            "complete": complete if total is not None else len(data) == 0,
+        }
+
+    def _binary_chunk(self, path, args, key, accept="application/vnd.github+json"):
+        offset, length = self._range(args)
+        data, total = self.client.download_chunk(path, self.bearer, offset, length, accept)
+        out = self._chunk_meta(offset, data, total)
+        out[key] = base64.b64encode(data).decode("ascii")
+        return out
+
+    def wf_release_asset_download(self, repo, args):
+        _only(args, ("repo", "asset_id", "offset", "length"))
+        asset_id = _int(args, "asset_id")
+        meta = self._asset_summary(self._get(f"/repos/{repo}/releases/assets/{asset_id}"))
+        if meta["id"] != asset_id or meta["state"] != "uploaded":
+            raise RelayGitHubError(502, "release asset not downloadable")
+        out = self._binary_chunk(
+            f"/repos/{repo}/releases/assets/{asset_id}",
+            args,
+            "content_b64",
+            "application/octet-stream",
+        )
+        out["asset_id"] = asset_id
+        if out["total"] is None:
+            out["total"] = meta["size"]
+            out["complete"] = out["next_offset"] >= meta["size"]
+        return out
+
+    def wf_artifact_download(self, repo, args):
+        _only(args, ("repo", "artifact_id", "offset", "length"))
+        artifact_id = _int(args, "artifact_id")
+        meta = _obj(self._get(f"/repos/{repo}/actions/artifacts/{artifact_id}"))
+        if (
+            meta.get("id") != artifact_id
+            or isinstance(meta.get("id"), bool)
+            or meta.get("expired") is not False
+        ):
+            raise Refused("artifact missing or expired")
+        out = self._binary_chunk(
+            f"/repos/{repo}/actions/artifacts/{artifact_id}/zip", args, "content_b64"
+        )
+        out["artifact_id"] = artifact_id
+        return out
+
+    def wf_run_logs(self, repo, args):
+        """Zip archive of a run's logs, as one bounded base64 byte range."""
+        _only(args, ("repo", "run_id", "offset", "length"))
+        run_id = _int(args, "run_id")
+        out = self._binary_chunk(f"/repos/{repo}/actions/runs/{run_id}/logs", args, "content_b64")
+        out["run_id"] = run_id
+        return out
+
+    def wf_job_log(self, repo, args):
+        """One job's plain-text log as a bounded UTF-8 byte range (untrusted text)."""
+        _only(args, ("repo", "job_id", "offset", "length"))
+        job_id = _int(args, "job_id")
+        offset, length = self._range(args)
+        data, total = self.client.download_chunk(
+            f"/repos/{repo}/actions/jobs/{job_id}/logs", self.bearer, offset, length
+        )
+        meta = self._chunk_meta(offset, data, total)
+        # Never split a multibyte character across chunks: next_offset follows the cut.
+        text = None
+        for cut in range(4 if not meta["complete"] else 1):
+            try:
+                text = data[: len(data) - cut].decode("utf-8")
+                data = data[: len(data) - cut]
+                break
+            except UnicodeDecodeError:
+                continue
+        if text is None:
+            text = data.decode("utf-8", "replace")
+        meta = self._chunk_meta(offset, data, total)
+        meta.update({"job_id": job_id, "content": text})
+        return meta
 
     def _text(self, args, key, limit=32768):
         value = args.get(key)

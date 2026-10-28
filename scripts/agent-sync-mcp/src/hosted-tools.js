@@ -64,7 +64,7 @@ import {
 } from "./recall.js";
 import { GR_SECRETS, GR_TOOLS, GR_TOOL_NAMES } from "./gr-tools.js";
 import { TYPED_V1_ACTIONS, TYPED_V1_TOOLS } from "./gr-typed-v1.js";
-import { WF_V1_ACTIONS, WF_V1_TOOLS, validWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS } from "./gr-workflow-v1.js";
+import { WF_V1_ACTIONS, WF_V1_TOOLS, validWfV1Args, boundedWorkflowInput, WF_V1_READ_ACTIONS, workflowInputLimit } from "./gr-workflow-v1.js";
 import {
   FLEETLINK_TOOLS,
   FLEETLINK_READ_TOOLS,
@@ -460,7 +460,7 @@ export class HostedTools {
         delete args.seat;
       }
       requestArgs = args;
-      if (publicName.startsWith("gr_wf_") && !boundedWorkflowInput(args)) throw new ToolError("invalid_argument", "Workflow input exceeds structural limits.");
+      if (publicName.startsWith("gr_wf_") && !boundedWorkflowInput(args, workflowInputLimit(publicName.slice(3)))) throw new ToolError("invalid_argument", "Workflow input exceeds structural limits.");
       const problem = schemaProblem(spec.inputSchema, args);
       if (problem) throw new ToolError("invalid_argument", problem);
       this.requireScope(publicName);
