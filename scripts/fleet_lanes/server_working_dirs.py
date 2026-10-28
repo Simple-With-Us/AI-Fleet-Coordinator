@@ -209,7 +209,9 @@ def write(path: Path, text: str) -> None:
 
     Every knob write goes through the atomic replace, so a write that fails
     partway leaves the file it had exactly as it was:  a knob is never left
-    half written.
+    half written.  A knob whose staged file cannot be created is refused with
+    a `PermissionError` instead of being written in place, so the file it had
+    survives that refusal too.
     """
     write_atomic(path, text)
 
@@ -223,20 +225,21 @@ def write_atomic(path: Path, text: str) -> None:
     flushed after the rename, so a crash cannot lose the new file.
 
     A symlinked knob is written through:  the link stays a link and the file it
-    points at is the one that changes.  When that file lives in a directory the
-    account cannot write, the staged replace cannot happen there, so the write
-    goes through the link in place instead:  that needs write access to the
-    file itself, which is what the file the account already edits.
-
-    That in-place write is the account's own edit and is not atomic, so a write
-    interrupted partway can leave the file truncated, and the operator restores
-    it from their own copy if the content was lost.
+    points at is the one that changes.  The staged file then lives in the
+    target's own directory, so that directory has to be writable and
+    searchable.  When it is not, the write fails closed with a
+    `PermissionError` instead of falling back to an in-place write, because an
+    in-place write is not atomic:  it truncates the target before writing, so
+    an interrupted write could leave the file corrupt.  The knob is then
+    skipped and reported like any other knob the account cannot write, and the
+    file it had is untouched.
     """
     target = Path(os.path.realpath(path)) if path.is_symlink() else path
     if path.is_symlink() and not os.access(target.parent, os.W_OK | os.X_OK):
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(text)
-        return
+        raise PermissionError(
+            f"the staged replacement of {path} needs write and search access to"
+            f" {target.parent}"
+        )
     target.parent.mkdir(parents=True, exist_ok=True)
     owner = target.stat() if target.exists() else None
     mode = owner.st_mode & 0o777 if owner is not None else 0o644
