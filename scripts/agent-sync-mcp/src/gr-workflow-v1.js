@@ -22,6 +22,9 @@ const SPECS = {
   wf_issue_create: ['Create an issue as your own GitHub App.', obj(['repo','title','body'], {repo:REPO,title:CONTENT,body:CONTENT})],
   wf_issue_update: ['Update issue text or open/closed state.', obj(['repo','number'], {repo:REPO,number:INT,title:CONTENT,body:CONTENT,state:{type:'string',enum:['open','closed']}})],
   wf_issue_comment: ['Comment on an issue as your own GitHub App.', obj(['repo','number','body'], {repo:REPO,number:INT,body:CONTENT})],
+  wf_release_assets: ['List release asset metadata, not binary downloads.',obj(['repo','release_id'],{repo:REPO,release_id:INT,per_page:PER_PAGE})],
+  wf_release_asset_get: ['Read release asset metadata, not binary downloads.',obj(['repo','asset_id'],{repo:REPO,asset_id:INT})],
+  wf_release_asset_upload: ['Upload up to 32 KiB secret-scanned UTF-8 text as a new asset; no overwrite/delete.',obj(['repo','release_id','name','content_b64'],{repo:REPO,release_id:INT,name:{type:'string',pattern:'^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?$'},content_b64:{type:'string',minLength:1,maxLength:43692}})],
   wf_review_submit: ['Submit a commit-bound PR review (pre-read is not an atomic head lock).', obj(['repo','number','commit_id','event','body'], {repo:REPO,number:INT,commit_id:SHA,event:{type:'string',enum:['APPROVE','REQUEST_CHANGES','COMMENT']},body:{type:"string",minLength:1,maxLength:32768}})],
   wf_review_inline: ['Create a commit-bound inline PR comment.', obj(['repo','number','commit_id','path','line','side','body'], {repo:REPO,number:INT,commit_id:SHA,path:PATH,line:{type:'integer',minimum:1,maximum:10000000},side:{type:'string',enum:['LEFT','RIGHT']},body:{type:"string",minLength:1,maxLength:32768}})],
   wf_branch_create: ['Create a new branch without overwrite.', obj(['repo','branch','sha'],{repo:REPO,branch:REF,sha:SHA})],
@@ -46,7 +49,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_issue_list','wf_issue_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_release_assets','wf_release_asset_get','wf_issue_list','wf_issue_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -94,6 +97,7 @@ export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
   wf_issue_list:['issues','complete'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
+  wf_release_assets:['assets','complete'],wf_release_asset_get:['asset'],wf_release_asset_upload:['asset'],
   wf_review_submit:['review'],wf_review_inline:['comment'],wf_branch_create:['ref','sha'],
   wf_pr_list: ['pulls','complete'], wf_pr_files: ['files','complete'],
   wf_file_get: ['path','sha','size','encoding','content'], wf_tree: ['sha','truncated','entries'],
@@ -115,6 +119,10 @@ export function validWfV1Response(action, body) {
   if ('issues' in body && body.issues.some(issue => !issue || typeof issue !== 'object' || !Number.isInteger(issue.number) || issue.number < 1 || !['open','closed'].includes(issue.state))) return false;
   if ('issue' in body && (!body.issue || typeof body.issue !== 'object' || Array.isArray(body.issue) || !Number.isInteger(body.issue.number) || !['open','closed'].includes(body.issue.state))) return false;
   if ('comment' in body && (!body.comment || typeof body.comment !== 'object' || !Number.isInteger(body.comment.id))) return false;
+  if (action.startsWith('wf_release_asset')) {
+    const assetOk = x => x && !Array.isArray(x) && Number.isInteger(x.id) && x.id > 0 && typeof x.name === 'string' && x.name.length > 0 && x.name.length <= 255 && ['uploaded','open','starter'].includes(x.state) && Number.isInteger(x.size) && x.size >= 0;
+    if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;
+  }
   if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
   if (action === 'wf_review_inline' && (!body.comment || !Number.isInteger(body.comment.id) || body.comment.id < 1 || !/^[0-9a-f]{40}$/.test(body.comment.commit_id))) return false;
   if (action === 'wf_branch_create' && (typeof body.ref !== 'string' || !body.ref.startsWith('refs/heads/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;

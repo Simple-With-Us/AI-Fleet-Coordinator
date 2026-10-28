@@ -200,7 +200,8 @@ test("row 6:  each grant's tools/list offers exactly its own set, required on wr
     assert.deepEqual(list.slice(0, 3).map((t) => t.name), ["whoami", "identities", "guide"]);
     // The whatsapp tools ride with the full Jet login (JET-CHAT);  every other seat
     // has them withheld, so only JET-CHAT advertises the complete catalog.
-    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET-CHAT" ? 0 : 1));
+    const withheld = HOSTED_TOOL_LIST.filter((t) => t.name.startsWith("whatsapp_")).length;
+    assert.equal(list.length, HOSTED_TOOL_LIST.length + 2 - (seat === "JET-CHAT" ?  0 : withheld));
     for (const tool of list) {
       const properties = tool.inputSchema.properties ?? {};
       if (tool.name === "identities") {

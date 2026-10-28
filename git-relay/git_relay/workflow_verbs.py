@@ -63,6 +63,9 @@ SPECS = {
     "wf_issue_create": ({"issues": "write"}, True),
     "wf_issue_update": ({"issues": "write"}, True),
     "wf_issue_comment": ({"issues": "write"}, True),
+    "wf_release_assets": ({"contents": "read"}, False),
+    "wf_release_asset_get": ({"contents": "read"}, False),
+    "wf_release_asset_upload": ({"contents": "write"}, True),
     "wf_review_submit": ({"pull_requests": "write"}, True),
     "wf_review_inline": ({"pull_requests": "write"}, True),
     "wf_branch_create": ({"contents": "write"}, True),
@@ -378,6 +381,97 @@ class WorkflowVerbs:
         ):
             raise WriteOutcomeUnknown("issue comment outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "html_url")}}
+    def _asset_summary(self, data):
+        if (
+            not isinstance(data, dict)
+            or isinstance(data.get("id"), bool)
+            or not isinstance(data.get("id"), int)
+            or data["id"] < 1
+        ):
+            raise RelayGitHubError(502, "invalid release asset summary")
+        if (
+            not isinstance(data.get("name"), str)
+            or not 1 <= len(data["name"]) <= 255
+            or data.get("state") not in ("uploaded", "open", "starter")
+        ):
+            raise RelayGitHubError(502, "invalid release asset summary")
+        if (
+            isinstance(data.get("size"), bool)
+            or not isinstance(data.get("size"), int)
+            or data["size"] < 0
+        ):
+            raise RelayGitHubError(502, "invalid release asset size")
+        return {
+            k: data.get(k)
+            for k in (
+                "id",
+                "name",
+                "state",
+                "size",
+                "content_type",
+                "digest",
+                "browser_download_url",
+            )
+        }
+
+    def wf_release_assets(self, repo, args):
+        _only(args, ("repo", "release_id", "per_page"))
+        release_id, page = _int(args, "release_id"), _page(args)
+        data = self._get(f"/repos/{repo}/releases/{release_id}/assets?per_page={page}")
+        if not isinstance(data, list) or len(data) > page:
+            raise RelayGitHubError(502, "invalid release asset list")
+        return {"assets": [self._asset_summary(x) for x in data], "complete": len(data) < page}
+
+    def wf_release_asset_get(self, repo, args):
+        _only(args, ("repo", "asset_id"))
+        asset_id = _int(args, "asset_id")
+        data = self._asset_summary(self._get(f"/repos/{repo}/releases/assets/{asset_id}"))
+        if data["id"] != asset_id:
+            raise RelayGitHubError(502, "release asset identity mismatch")
+        return {"asset": data}
+
+    def wf_release_asset_upload(self, repo, args):
+        _only(args, ("repo", "release_id", "name", "content_b64"))
+        release_id = _int(args, "release_id")
+        name = args.get("name")
+        if (
+            not isinstance(name, str)
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", name)
+            or name.endswith(".")
+        ):
+            raise Refused("invalid asset name")
+        encoded = args.get("content_b64")
+        if not isinstance(encoded, str) or not 1 <= len(encoded) <= 43692:
+            raise Refused("invalid asset content")
+        try:
+            content = base64.b64decode(encoded, validate=True)
+            text = content.decode("utf-8")
+        except (ValueError, UnicodeError, binascii.Error):
+            raise Refused("asset must be bounded UTF-8 text") from None
+        if not 1 <= len(content) <= 32768 or "\x00" in text or find_secret(text):
+            raise Refused("invalid asset content")
+        # Text-only slice avoids disguising credentials inside opaque binary archives.
+        try:
+            release = _obj(self._get(f"/repos/{repo}/releases/{release_id}"))
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "release pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if (
+            release.get("id") != release_id
+            or isinstance(release.get("id"), bool)
+            or release.get("upload_url")
+            != f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets{{?name,label}}"
+        ):
+            raise Refused("release upload destination unverifiable")
+        data = self._asset_summary(
+            self.client.upload_release_asset(repo, release_id, name, content, self.bearer)
+        )
+        if data["name"] != name or data["state"] != "uploaded" or data["size"] != len(content):
+            raise RelayGitHubError(502, "release asset upload outcome unverifiable")
+        return {"asset": data}
 
     def _text(self, args, key, limit=32768):
         value = args.get(key)
