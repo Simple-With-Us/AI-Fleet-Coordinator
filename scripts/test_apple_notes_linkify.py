@@ -626,6 +626,17 @@ class LinkifyTests(LinkifyTestCase):
         self.assertIn("Shipped in", bad)
         self.assertIn(f'<a href="{gh_url(FLEET_REPO, "957")}">PR #957</a>', bad)
 
+    def test_a_spent_lookup_budget_is_the_same_as_gh_never_asked(self):
+        #  the budget is already spent, so gh is never asked at all:  the reference links to the
+        #  repository of the team, even though gh would have said no repository holds it
+        out = self.html(
+            "[AFC, MM] Notes",
+            "OPS-1000 in PR #957.",
+            GH_STUB_MISSING="*",
+            NOTES_LINKIFY_GH_BUDGET_S="0",
+        )
+        self.assertIn(f'<a href="{gh_url(OTHER_REPO, "957", OTHER_OWNER)}">PR #957</a>', out)
+
     def test_a_pull_request_lookup_that_hangs_does_not_hang_the_note_save(self):
         #  a gh that never answers must not stall the write path
         stub = self.bindir / "gh"

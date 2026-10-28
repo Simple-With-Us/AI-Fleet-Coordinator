@@ -1421,6 +1421,7 @@ sys.stdout.write("".join(out))
 #   NOTES_LINEAR_WORKSPACE=... the Linear workspace slug, simple-with-us by default
 #   NOTES_LINEAR_TEAM_KEYS=...  the team keys that count, the sixteen Linear teams by default
 #   NOTES_LINKIFY_CONTEXT_CHARS=...  how near a repository name must be to count, 60 by default
+#   NOTES_LINKIFY_GH_BUDGET_S=...  the total gh lookup budget per run, 8 seconds by default, 0 to ask nothing
 _html_autolink() {
   /usr/bin/python3 -c '
 import html as _html
@@ -1430,6 +1431,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def _env(name, default):
@@ -1677,16 +1679,37 @@ def _mentions(text):
 
 
 _gh_cache = {}
+_gh_spent = 0.0
+_gh_bin = False
+
+
+def _gh_path():
+    """The gh CLI to ask, found once per run:  the override, PATH, then the usual places."""
+    global _gh_bin
+    if _gh_bin is False:
+        _gh_bin = None
+        for cand in (
+            _env("NOTES_LINKIFY_GH", ""),
+            shutil.which("gh") or "",
+            "/opt/homebrew/bin/gh",
+            "/usr/local/bin/gh",
+            "/usr/bin/gh",
+        ):
+            if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+                _gh_bin = cand
+                break
+    return _gh_bin
 
 
 def _gh_has_pr(repo, num):
     """Does this pull request exist in this repository?
 
     True when it does, False when the repository says it does not, and None when it could not be
-    asked:  a missing gh, a machine without a session, a network that is not there.  The three are
-    kept apart because a pull request that is not there is a reason to leave the reference alone,
-    while a failed question is not.
+    asked:  a missing gh, a machine without a session, a network that is not there, or a run whose
+    lookup budget is spent.  The two answers are kept apart because a pull request that is not
+    there is a reason to leave the reference alone, while a failed question is not.
     """
+    global _gh_spent
     if not num:
         return None
     if _env("NOTES_LINKIFY_LOOKUP", "1") == "0":
@@ -1694,18 +1717,14 @@ def _gh_has_pr(repo, num):
     key = (repo, num)
     if key in _gh_cache:
         return _gh_cache[key]
+    try:
+        _budget = float(_env("NOTES_LINKIFY_GH_BUDGET_S", "8") or 8)
+    except ValueError:
+        _budget = 8.0
     result = None
     gh = None
-    for cand in (
-        _env("NOTES_LINKIFY_GH", ""),
-        shutil.which("gh") or "",
-        "/opt/homebrew/bin/gh",
-        "/usr/local/bin/gh",
-        "/usr/bin/gh",
-    ):
-        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
-            gh = cand
-            break
+    if _gh_spent < _budget:
+        gh = _gh_path()
     if gh:
         url = "repos/" + REPO_OWNER.get(repo, owner) + "/" + repo + "/pulls/" + num
         try:
@@ -1715,9 +1734,13 @@ def _gh_has_pr(repo, num):
         try:
             with tempfile.TemporaryFile() as err:
                 with open(os.devnull, "w") as devnull:
-                    rc = subprocess.call(
-                        [gh, "api", "--silent", url], stdout=devnull, stderr=err, timeout=_timeout
-                    )
+                    _start = time.monotonic()
+                    try:
+                        rc = subprocess.call(
+                            [gh, "api", "--silent", url], stdout=devnull, stderr=err, timeout=_timeout
+                        )
+                    finally:
+                        _gh_spent += time.monotonic() - _start
                 err.seek(0)
                 said = err.read().decode("utf-8", "replace")
             if rc == 0:
@@ -1729,6 +1752,8 @@ def _gh_has_pr(repo, num):
         except (OSError, subprocess.TimeoutExpired):
             #  A gh that hangs must not hang the note save:  the timeout above ends it, and a gh
             #  that cannot be run at all is the same answer, that the question was not answered.
+            #  Either way the lookup budget of the run pays for the wait, so a hung network
+            #  stalls one run by one budget, not by one timeout per reference.
             result = None
     _gh_cache[key] = result
     return result
