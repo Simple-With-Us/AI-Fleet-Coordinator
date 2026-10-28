@@ -58,6 +58,8 @@ MAX_FILES_B64 = 512 * 1024
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_check_create": ({"checks": "write"}, True),
+    "wf_check_update": ({"checks": "write"}, True),
     "wf_deployments": ({"deployments": "read"}, False),
     "wf_deployment_get": ({"deployments": "read"}, False),
     "wf_deployment_statuses": ({"deployments": "read"}, False),
@@ -901,6 +903,102 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "inline write outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "commit_id", "html_url")}}
+
+    def _check_payload(self, args):
+        name = self._text(args, "name", 100)
+        if not re.fullmatch(r"swu-[a-z0-9-]+/report", name) or (
+            self.seat != "probe" and name != self.seat + "/report"
+        ):
+            raise Refused("check name must be own App report namespace")
+        title = self._text(args, "title", 255)
+        summary = self._text(args, "summary", 32768)
+        status = _enum(args, "status", ("queued", "in_progress", "completed"))
+        conclusion = _enum(
+            args,
+            "conclusion",
+            (
+                "none",
+                "action_required",
+                "cancelled",
+                "failure",
+                "neutral",
+                "success",
+                "skipped",
+                "timed_out",
+            ),
+        )
+        if (status == "completed") != (conclusion != "none"):
+            raise Refused("conclusion required only for completed checks")
+        payload = {"name": name, "status": status, "output": {"title": title, "summary": summary}}
+        if status == "completed":
+            payload["conclusion"] = conclusion
+        return payload
+
+    @staticmethod
+    def _check_receipt(value, sha, payload, ident=None):
+        if (
+            not isinstance(value, dict)
+            or isinstance(value.get("id"), bool)
+            or not isinstance(value.get("id"), int)
+            or value["id"] < 1
+            or ident is not None
+            and value["id"] != ident
+            or value.get("head_sha") != sha
+            or value.get("name") != payload["name"]
+            or value.get("status") != payload["status"]
+            or value.get("conclusion") != payload.get("conclusion")
+        ):
+            raise RelayGitHubError(502, "check write receipt unverifiable")
+        return {
+            k: value.get(k) for k in ("id", "head_sha", "name", "status", "conclusion", "html_url")
+        }
+
+    def wf_check_create(self, repo, args):
+        _only(args, ("repo", "sha", "name", "status", "conclusion", "title", "summary"))
+        sha, payload = _sha(args, "sha"), self._check_payload(args)
+        result = self.client._call(
+            "POST", f"/repos/{repo}/check-runs", {**payload, "head_sha": sha}, bearer=self.bearer
+        )
+        return {"check": self._check_receipt(result, sha, payload)}
+
+    def wf_check_update(self, repo, args):
+        _only(
+            args,
+            (
+                "repo",
+                "check_id",
+                "expected_sha",
+                "name",
+                "status",
+                "conclusion",
+                "title",
+                "summary",
+            ),
+        )
+        ident, sha, payload = (
+            _int(args, "check_id"),
+            _sha(args, "expected_sha"),
+            self._check_payload(args),
+        )
+        try:
+            prior = self._get(f"/repos/{repo}/check-runs/{ident}")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable("check pre-read unavailable; no write attempted") from None
+            raise
+        if (
+            not isinstance(prior, dict)
+            or prior.get("head_sha") != sha
+            or isinstance(prior.get("id"), bool)
+            or not isinstance(prior.get("id"), int)
+            or prior.get("id") != ident
+        ):
+            raise Refused("check identity or commit changed")
+        # GitHub enforces that only this App may update a check it owns. No App/node selector.
+        result = self.client._call(
+            "PATCH", f"/repos/{repo}/check-runs/{ident}", payload, bearer=self.bearer
+        )
+        return {"check": self._check_receipt(result, sha, payload, ident)}
 
     @staticmethod
     def _deployment_summary(value, status=False):
