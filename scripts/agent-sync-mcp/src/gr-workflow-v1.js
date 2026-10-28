@@ -151,10 +151,10 @@ export function validWfV1Response(action, body) {
   if ('truncated' in body && typeof body.truncated !== 'boolean') return false;
   if (action === 'wf_merge_guarded') return body.merged === true && /^[0-9a-f]{40}$/.test(body.sha);
   if (action === 'wf_update_branch') return body.accepted === true && typeof body.message === 'string';
-  if (action.startsWith('wf_run_') && action !== 'wf_run_jobs') {
+  if (['wf_run_rerun','wf_run_cancel','wf_run_approve'].includes(action)) {
     const suffix = {wf_run_rerun:'rerun-failed-jobs',wf_run_cancel:'cancel',wf_run_approve:'approve'};
     return body.requested === suffix[action] && Number.isInteger(body.run_id);
   }
-  if ('commit' in body && !/^[0-9a-f]{40}$/.test(body.commit)) return false;
+  if (action !== 'wf_commit_get' && 'commit' in body && !/^[0-9a-f]{40}$/.test(body.commit)) return false;
   return true;
 }

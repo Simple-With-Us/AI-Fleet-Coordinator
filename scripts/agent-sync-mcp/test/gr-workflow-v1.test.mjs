@@ -197,7 +197,7 @@ test('review/inline/branch additions keep bounded shapes and uncertain write fai
 });
 
 test('new read envelopes reject malformed objects and fixed routes use own bearer',async()=>{
-  const cases=[['wf_pr_get',{number:1},{pull:{number:1}}],['wf_compare',{base:'main',head:'feature/x'},{comparison:{}}],['wf_repo_get',{},{repository:{}}],['wf_run_artifacts',{run_id:1},{artifacts:{}}]];
+  const cases=[['wf_pr_get',{number:1},{pull:{number:1}}],['wf_compare',{base:'main',head:'feature/x'},{comparison:{}}],['wf_repo_get',{},{repository:{}}],['wf_commit_get',{sha:'a'.repeat(40)},{commit:{}}],['wf_run_get',{run_id:1},{run:{}}],['wf_run_artifacts',{run_id:1},{artifacts:{}}]];
   for(const [action,args,result] of cases){
     let calls=0;
     const t=harness(async(url,init)=>{
