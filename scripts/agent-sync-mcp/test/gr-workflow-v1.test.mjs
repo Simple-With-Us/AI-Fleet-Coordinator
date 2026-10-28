@@ -225,7 +225,7 @@ test('file write receipts require string branch and path',()=>{
 test('workflow state and run/artifact deletion preserve own-bearer writes and UNKNOWN',async()=>{
  const cases=[['wf_workflow_enable','workflow_id'],['wf_workflow_disable','workflow_id'],['wf_run_delete','run_id'],['wf_artifact_delete','artifact_id']];
  for(const [action,key] of cases){
-  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({completed:true,[key]:7}));});
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({completed:true,[key]:7,...(action.startsWith('wf_workflow_')?{state:action==='wf_workflow_enable'?'enabled':'disabled'}:{})}));});
   assert.ok(!(await t.call('gr_'+action,{repo,[key]:7})).isError,action);
   const fail=harness(async()=>{throw Error('no response');});const r=await fail.call('gr_'+action,{repo,[key]:7});assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);
  }
@@ -244,3 +244,9 @@ test('comment and release lifecycle envelopes and write UNKNOWN',async()=>{
 });
 
 test('actual review regression',()=>{assert.ok(validWfV1Args('wf_issue_comment_update',{repo,comment_id:1,body:'x'.repeat(501)})); assert.ok(!validWfV1Args('wf_review_comment_update',{repo,comment_id:1,body:'é'.repeat(20000)}));});
+
+test('Actions completion receipt state and request id are bound',()=>{
+ assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:2},{run_id:1}));
+ assert.ok(!validWfV1Response('wf_workflow_enable',{completed:true,workflow_id:1,state:'disabled'},{workflow_id:1}));
+ assert.ok(validWfV1Response('wf_workflow_enable',{completed:true,workflow_id:1,state:'enabled'},{workflow_id:1}));
+});
