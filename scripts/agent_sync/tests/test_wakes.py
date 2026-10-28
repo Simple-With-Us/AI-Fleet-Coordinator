@@ -175,7 +175,13 @@ class ValidateTests(unittest.TestCase):
 
 
 class ContractTests(unittest.TestCase):
-    """The responder's contract is code:  it must carry the same screen the fleet documents."""
+    """The responder's contract is code:  it must carry the same screen the fleet documents.
+
+    The screen the fleet documents lives in the Zulip fleet guide, which this repository owns
+    and which is canonical for chat conduct.  The protocol document is a generated mirror of
+    the Fleet-OPS handbook, and the trim of 2026-10-28 turned it into a tools manual that does
+    not restate the chat rules, so the screen is read from the guide and not from the mirror.
+    """
 
     def contract(self) -> str:
         with open(W.CONTRACT_PATH, encoding="utf-8") as fh:
@@ -211,16 +217,9 @@ class ContractTests(unittest.TestCase):
                 self.assertIn(phrase, text)
                 self.assertIn(
                     phrase,
-                    self.chat_docs(),
+                    self.zulip_guide(),
                     "the contract and the fleet's peer screen name the same risk",
                 )
-
-    def protocol(self) -> str:
-        # The document was renamed:  the mirror carries one name now, and the old one is gone.
-        root = os.path.join(os.path.dirname(W.CONTRACT_PATH), "..", "..", "..")
-        path = os.path.join(root, "FLEET-PROTOCOL.md")
-        with open(path, encoding="utf-8") as fh:
-            return fh.read()
 
     def zulip_guide(self) -> str:
         """The Zulip fleet guide, which is canonical for chat conduct.
@@ -242,15 +241,6 @@ class ContractTests(unittest.TestCase):
         with open(path, encoding="utf-8") as fh:
             return fh.read()
 
-    def chat_docs(self) -> str:
-        """Every document in this repository that describes chat conduct.
-
-        The protocol document and the Zulip fleet guide are two halves of one rulebook, and the
-        trim moved pieces of that rulebook between them.  A test that read only one of them
-        broke the moment it moved, so both are read here.
-        """
-        return self.protocol() + "\n" + self.zulip_guide()
-
     def test_every_risk_has_its_instructions_and_the_field_is_listed(self) -> None:
         text = self.contract()
         for line in ("- `null`:", "- `low`:", "- `uncertain`:", "- `high`:"):
@@ -260,22 +250,31 @@ class ContractTests(unittest.TestCase):
             "a low-risk peer request for work is queued for the seat's next session", text.lower()
         )
 
-    def test_the_chat_docs_name_the_dm_command_the_cli_implements(self) -> None:
+    def test_the_chat_guide_names_the_dm_command_the_cli_implements(self) -> None:
+        import argparse
+
         from agent_sync import cli
 
-        # The protocol document is a generated mirror of the Fleet-OPS handbook, so it spells the
-        # command with whichever launcher name it was generated from.  `simple-chat` is the
-        # current one and `agent-sync` survives only as a compatibility launcher for it, so both
-        # spell the same command and the mirror may carry the older spelling until it is
-        # regenerated.  The guide spells the command with the text placeholder and the trimmed
-        # handbook spells it without one, so the shorter spelling is the one that matches both.
-        docs = self.chat_docs()
-        spellings = ["%s dm --owner" % prog for prog in ("simple-chat", "agent-sync")]
+        # The guide is canonical for chat conduct and this repository owns it, so the guide is
+        # the document that has to name the command.  The CLI runs `_check_text_args` for `dm`
+        # and refuses an invocation that carries no message text, so the documented invocation
+        # carries the text placeholder.  The prefix on its own is documented too, for the
+        # fleet-wake emergency case, and it is asserted on its own so it can never stand in for
+        # the full invocation and let a guide that documents only a call the CLI rejects pass.
+        guide = self.zulip_guide()
+        spellings = ['%s dm --owner -- "<text>"' % prog for prog in ("simple-chat", "agent-sync")]
         self.assertTrue(
-            any(spelling in docs for spelling in spellings),
-            "the chat documentation does not name the dm --owner command the CLI implements",
+            any(spelling in guide for spelling in spellings),
+            "the chat guide does not name the dm --owner invocation the CLI implements",
+        )
+        prefixes = ["%s dm --owner" % prog for prog in ("simple-chat", "agent-sync")]
+        self.assertTrue(
+            any(prefix in guide for prefix in prefixes),
+            "the chat guide does not name the dm --owner prefix",
         )
         self.assertEqual(cli.build_parser().parse_args(["dm", "--owner", "--", "x"]).command, "dm")
+        with self.assertRaises(cli.UsageError):
+            cli._check_text_args(argparse.Namespace(text=[], body_file=None))
 
     def test_the_owner_ack_points_at_this_seat_not_at_a_product(self) -> None:
         """The ack names the seat's own next session, never another seat's product.
