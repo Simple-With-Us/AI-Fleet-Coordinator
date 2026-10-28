@@ -40,16 +40,16 @@ journalctl -u fleet-cli-git-update -n 20
 
 ## Install (once)
 
-Run the setup as the account that owns the checkout (`jay` on the server):  the updater moves
+Run the setup as the account that owns the checkout:  the updater moves
 `$HOME/.local/share/fleet-cli/repo` and writes wrappers into `$HOME/.local/bin`, so the service has to
-run as that same account.  The unit says so (`User=jay`, `Group=jay`, `Environment=HOME=/home/jay`) and the paths in
-`ExecStart` name that home outright, so a checkout is never moved by a different account than the
-one that owns it, and a root-run unit cannot rewrite the fleet's own tools.  The paths are spelled out
-instead of using the `%h` specifier because `%h` expands to `/root` on this host's systemd even when
-the unit sets `User=jay`, which would point the updater at root's tree.  Run the `install` step as root, because the unit files land in `/etc/systemd/system/`.
+run as that same account.  The unit says so, and the paths in `ExecStart` name that home outright, so a
+checkout is never moved by a different account than the one that owns it, and a root-run unit cannot
+rewrite the fleet's own tools.  The paths are spelled out instead of using the `%h` specifier, because `%h`
+expands to the root account's home on the server's systemd even when the unit sets a user, which
+would point the updater at the wrong tree.  Run the `install` step as root, because the unit files land in `/etc/systemd/system/`.
 
 ```bash
-sudo -u jay python3 -I scripts/fleet-cli-git-update.py setup
+sudo -u <account> python3 -I scripts/fleet-cli-git-update.py setup
 sudo install -m 644 scripts/systemd/fleet-cli-git-update.service scripts/systemd/fleet-cli-git-update.timer /etc/systemd/system/
 systemctl daemon-reload && systemctl enable --now fleet-cli-git-update.timer
 ```
