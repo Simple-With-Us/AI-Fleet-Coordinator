@@ -4,6 +4,8 @@ description: >-
   Hardcoded, mandatory safeguards for handling secrets, API keys, tokens, and credentials during any agent session.  Load and follow this BEFORE running any command whose arguments or environment touch a credential, before printing or displaying any config file, JSON dump, env listing, header, URL, or command string that could contain one, before reading from a known secret source (a secrets-handoff file, Infisical or any other secrets manager, a database, a vault), and before debugging an API/auth failure.  Trigger this even when the request doesn't say "secret" or "credential" — command args, headers, URLs, and verbose/debug tool output are the most common accidental leak vectors, not just files literally named .env or secrets.json.
 ---
 
+# Secret safety
+
 > **Runtime fork (Grok).** Mac Grok TUI / CLI is `[GROK]`, and so is Grok Build:  one seat (owner 2026-10-08), and everything is signed `GROK`.  Its Zulip display name is `Grok`.  GROK followed by BUILD, any letter case, with any non-letter, non-digit symbols between or after (GROK-BUILD, Grok (Build), grok_build), is an alias for GROK (owner 2026-10-10):  the tools accept it as a seat name and sign GROK, so do not write it as a tag, a branch prefix or a lane folder.  Old `grok-build/` branches stay readable.  Grok Bot (Cursor cloud) uses `[GB-<NAME>]` role tags, not this pack and not `[GROK-BOT]`.  Never `[MONET]`.
 
 
@@ -23,9 +25,13 @@ Neither incident was "hunting for secrets" — both credentials had already been
 2. Substitute that variable's value out of ALL output — stdout and stderr both — as part of the exact same command, before you ever see it:
    ```bash
    TOKEN="$(cat some-secret-file)"
-   some-command --header "Authorization: Bearer $TOKEN" 2>&1 | sed "s/$TOKEN/[REDACTED]/g"
+   some-command --header "Authorization: Bearer $TOKEN" 2>&1 \
+     | python3 -c 'import sys
+   tok = open(3).read().rstrip("\n")
+   data = sys.stdin.read()
+   sys.stdout.write(data.replace(tok, "[REDACTED]") if tok else data)' 3<<<"$TOKEN"
    ```
-   Do this even when you don't expect the tool to echo anything back.  Plenty of CLIs — OAuth proxies, verbose installers, debug loggers — print exactly the arguments or headers they were invoked with, and there's usually no way to know in advance which ones will until it's already too late.
+   Do this even when you don't expect the tool to echo anything back.  Plenty of CLIs — OAuth proxies, verbose installers, debug loggers — print exactly the arguments or headers they were invoked with, and there's usually no way to know in advance which ones will until it's already too late.  The substitution has to be a **literal string replacement, never a regular expression**: a token that contains `/`, `&`, `.`, `*`, `[` or a newline breaks a `sed s///` pattern, so the substitution either corrupts the output or prints the secret in full, which is the leak this skill exists to prevent.  `str.replace` is literal by construction.  The token rides on file descriptor 3, so it never reaches the process table or a file on disk, and the empty-token guard keeps an unset value from shredding the output.  Never write `sed "s/$TOKEN/[REDACTED]/g"`.
 3. If a command writes to a *file* rather than stdout/stderr (a downloaded config, a cache dump, a log), apply the same substitution when you read that file back, not just to live command output.
 4. When inspecting an existing config/JSON structure that might hold secrets (not one you're actively invoking), write the masking pass to walk the WHOLE structure recursively — every string field, every array element — not just a named `env` or `secrets` object.  The exact bug that caused incident #1 was a masking function that handled `env` correctly and simply never looked at `args`.
 
@@ -56,10 +62,10 @@ The pattern is identical everywhere: extract the one value you actually need, pr
 KEY="$(fleet-secrets get SOME_KEY)"          # exit 3 means the key is absent
 fleet-secrets run --only A,B -- some-command  # A and B appear in that command's environment only
 ```
-A key that was stored with quote-wrapping elsewhere comes back without quotes from `fleet-secrets get`.   A file the owner hands you at some other path (a `chmod 600` file) gets the same treatment: never `cat` it, `grep` it loosely, or open it with any whole-file-view tool (see above).
+A key that was stored with quote-wrapping elsewhere comes back without quotes from `fleet-secrets get`.  A file the owner hands you at some other path (a `chmod 600` file) gets the same treatment: never `cat` it, `grep` it loosely, or open it with any whole-file-view tool (see above).
 
 Listing just the key NAMES is fine — that's metadata, not a value — but **only** if
-the command cannot emit a value.   Use `-o` so the match is the name only:
+the command cannot emit a value.  Use `-o` so the match is the name only:
 
 ```bash
 fleet-secrets names | sort -u
@@ -67,16 +73,16 @@ fleet-secrets names | sort -u
 
 **Forbidden (2026-08-14 Grok incident):** `grep '^[A-Z0-9_]+=' file`, `grep '^ADMIN' file`,
 or `rg TOKEN ~/.secrets/` — those print the whole matching **line**, which is `KEY=value`.
-That dumped the entire handoff store into a chat transcript.   `grep PATTERN file` without
+That dumped the entire handoff store into a chat transcript.  `grep PATTERN file` without
 `-o` on a secrets file is a leak, even when the intent was "list which keys exist."
 
 **Forbidden (2026-09-17 loaded-key byte dump):** once the value is in a shell
 variable, `od` / `xxd` / `hexdump` / `hd` / `strings` / `base64` / `cut -c` /
-last-command `printf %s` of that variable print the live secret.   A
+last-command `printf %s` of that variable print the live secret.  A
 subagent loaded `SILICONFLOW_API_KEY` correctly, then ran `od -c` to look for
-stray quotes, and the full key hit the transcript.   Safe shape checks:
-`[ -n "$VAR" ]`, `${#VAR}`, `[[ $VAR == *'"'* ]]`.   Need length only:
-`printf '%s' "$VAR" | wc -c`.   The Bash PreToolUse hook
+stray quotes, and the full key hit the transcript.  Safe shape checks:
+`[ -n "$VAR" ]`, `${#VAR}`, `[[ $VAR == *'"'* ]]`.  Need length only:
+`printf '%s' "$VAR" | wc -c`.  The Bash PreToolUse hook
 `~/.claude/hooks/secret-guard-pretooluse.py` denies these forms in Claude Code; every other platform enforces the same rule itself.
 
 **Infisical, or any secrets-manager API/MCP tool.**  A `get-secret`/`list-secrets` call returns the value embedded in its JSON result (e.g.  `secret.secretValue`) — the tool result will contain the raw value the moment the call succeeds, which is unavoidable if the value is actually needed.  From there, treat it exactly like a locally-loaded variable: use it in the next command with inline redaction, don't restate it in your own prose, don't copy it into a new file "for reference," and don't let a later command echo it back unredacted.

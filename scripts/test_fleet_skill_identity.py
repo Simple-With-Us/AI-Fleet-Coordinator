@@ -1184,6 +1184,92 @@ class CatalogMatchesFreshRenderTests(unittest.TestCase):
         self.assertEqual(stale, [], f"stale skills/ copies; re-render with: {self.FIX}")
 
 
+class RetiredCatalogPackFreezeTests(unittest.TestCase):
+    """A retired seat's catalog pack is frozen:  the renderer must not write into it.
+
+    Rule 12 holds that a retired artifact is not maintained, so a change to the one
+    home must not write new text into a seat nobody runs.  A retired pack is not
+    deleted -- it is history and an upload pack -- it is simply left alone.
+
+    Two things are pinned here.  The renderer writes nothing under a retired seat's
+    directory, so no run can refresh one.  And the frozen skill set never grows, so a
+    newly adopted skill cannot appear in a retired pack even if the renderer is run
+    by hand against a checkout that already has it.
+    """
+
+    FROZEN_SKILLS = (
+        "apple-notes",
+        "board-ops",
+        "closeout",
+        "codex-triage",
+        "deploy-verify",
+        "dns-and-registrars",
+        "drive-grok-tui",
+        "fleet-coordination",
+        "fleet-infra",
+        "fleet-recall",
+        "housekeeper",
+        "land-lane",
+        "mac-cleanup",
+        "owner-copy",
+        "pickup-seat",
+        "pr-sweep",
+        "secret-handoff",
+        "sentence-gap",
+        "session-start",
+        "simple-tools-guide",
+        "unstick-pr",
+    )
+
+    def _retired_packs(self) -> list[Path]:
+        return [
+            Path(DOCS, "by-seat", seat.seat_key or seat.tag.lower())
+            for seat in catalog_seats()
+            if seat.retired
+        ]
+
+    def test_a_retired_pack_holds_no_skill_it_never_had(self) -> None:
+        for root in self._retired_packs():
+            self.assertTrue(root.is_dir(), "%s is missing" % root)
+            found = sorted(p.name for p in root.iterdir() if p.is_dir())
+            self.assertEqual(
+                found,
+                sorted(self.FROZEN_SKILLS),
+                "%s gained or lost a skill:  a retired pack is frozen"
+                % os.path.relpath(str(root), ROOT),
+            )
+
+    def test_the_renderer_writes_nothing_into_a_retired_pack(self) -> None:
+        def digests() -> dict:
+            out = {}
+            for root in self._retired_packs():
+                for path in sorted(root.rglob("*")):
+                    if path.is_file():
+                        out[str(path)] = path.read_bytes()
+            return out
+
+        before = digests()
+        self.assertTrue(before, "the registry names no retired seat")
+        proc = subprocess.run(
+            [
+                sys.executable,
+                os.path.join(ROOT, "scripts", "install-fleet-skills.py"),
+                "--repo-only",
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=600,
+        )
+        self.assertEqual(proc.returncode, 0, "the renderer failed:  %s" % proc.stderr.strip())
+        self.assertEqual(
+            before,
+            digests(),
+            "the renderer wrote into a retired seat's catalog pack",
+        )
+
+
 class RepoPlatformCopiesTests(unittest.TestCase):
     """The repo-tracked platform trees must equal a fresh render of the pack.
 
