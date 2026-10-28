@@ -390,7 +390,9 @@ class GitHubClient:
                     data = resp.read(length + 1)
                 elif status == 200:
                     if offset > MAX_200_SKIP:
-                        raise RelayGitHubError(416, "download range not honored beyond bounded fallback")
+                        raise RelayGitHubError(
+                            416, "download range not honored beyond bounded fallback"
+                        )
                     skipped = 0
                     while skipped < offset:
                         block = resp.read(min(65536, offset - skipped))
