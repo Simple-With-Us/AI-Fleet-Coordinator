@@ -1219,9 +1219,7 @@ class RetiredCatalogPackRenderTests(unittest.TestCase):
                     continue
                 got_path = seat_root / name / "SKILL.md"
                 self.assertTrue(got_path.is_file(), "%s is missing" % got_path)
-                want = specialize_from_monet(
-                    src.read_text(encoding="utf-8"), seat, skill_name=name
-                )
+                want = specialize_from_monet(src.read_text(encoding="utf-8"), seat, skill_name=name)
                 self.assertEqual(
                     got_path.read_text(encoding="utf-8"),
                     want,

@@ -481,11 +481,7 @@ class OneSourceOfTruthTests(unittest.TestCase):
         cannot be edited here, so it is asserted on its own."""
         for path in tracked_files():
             rel = path.relative_to(ROOT).as_posix()
-            if (
-                rel in DATED_RECORDS
-                or rel in GENERATED_MIRRORS
-                or rel in CHECKER_FILES
-            ):
+            if rel in DATED_RECORDS or rel in GENERATED_MIRRORS or rel in CHECKER_FILES:
                 continue
             try:
                 with open(path, encoding="utf-8") as fh:
