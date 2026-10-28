@@ -125,6 +125,8 @@ export function validWfV1Response(action, body) {
     if (action === 'wf_release_assets' ? !Array.isArray(body.assets) || !body.assets.every(assetOk) : !assetOk(body.asset)) return false;
   }
   if ('completed' in body && body.completed !== true) return false;
+  const completedId = {wf_workflow_enable:'workflow_id',wf_workflow_disable:'workflow_id',wf_run_delete:'run_id',wf_artifact_delete:'artifact_id'}[action];
+  if (completedId && (!Number.isInteger(body[completedId]) || body[completedId] < 1)) return false;
   if (action === 'wf_review_submit' && (!body.review || !Number.isInteger(body.review.id) || body.review.id < 1 || !["APPROVED","CHANGES_REQUESTED","COMMENTED"].includes(body.review.state) || !/^[0-9a-f]{40}$/.test(body.review.commit_id))) return false;
   if (action === 'wf_review_inline' && (!body.comment || !Number.isInteger(body.comment.id) || body.comment.id < 1 || !/^[0-9a-f]{40}$/.test(body.comment.commit_id))) return false;
   if (action === 'wf_branch_create' && (typeof body.ref !== 'string' || !body.ref.startsWith('refs/heads/') || !/^[0-9a-f]{40}$/.test(body.sha))) return false;
