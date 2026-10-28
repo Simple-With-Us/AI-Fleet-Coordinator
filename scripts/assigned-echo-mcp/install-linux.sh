@@ -11,9 +11,12 @@ adapter="$here/../mcp-servers/assigned-hosted-stdio.py"
 from pathlib import Path
 import stat
 for path in (Path('/usr/local'), Path('/usr/local/libexec')):
-    info = path.lstat()
+    try:
+        info = path.lstat()
+    except OSError:
+        raise SystemExit('Fixed root-owned code ancestor is unavailable; host owner must qualify it') from None
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
-        raise SystemExit('Unsafe fixed code ancestor')
+        raise SystemExit('Unsafe fixed code ancestor; group/world writable code is refused')
 path = Path('/usr/local/libexec/assigned-echo-mcp')
 if path.exists() or path.is_symlink():
     info = path.lstat()

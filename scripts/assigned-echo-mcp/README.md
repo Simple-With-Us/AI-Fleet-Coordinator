@@ -11,6 +11,10 @@ owned and not writable by clients. After PR1026 is qualified and available in th
 `linux-custody.py` there. It creates code only, never storage or a service. No code installer
 or helper accepts a caller-supplied seat, token path, endpoint or executable.
 The host owner verifies the installed code and root-only write permissions.
+Both `/usr/local` and `/usr/local/libexec` must already exist as root-owned,
+non-symlink, non-group/world-writable directories. The selected host was
+qualified with root0755 ancestors. A generic root:staff2775 layout is deliberately
+refused, not silently broadened or chmodded by this ECHO-specific installer.
 
 After explicit storage approval, the owner may feed its existing ECHO bearer
 through private stdin to `linux-custody.py ingress`. It validates ECHO format,
