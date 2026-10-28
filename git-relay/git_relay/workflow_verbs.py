@@ -346,6 +346,7 @@ class WorkflowVerbs:
         if data["name"] != name or data["state"] != "uploaded" or data["size"] != len(content):
             raise RelayGitHubError(502, "release asset upload outcome unverifiable")
         return {"asset": data}
+
     def _text(self, args, key, limit=32768):
         value = args.get(key)
         if (
