@@ -122,8 +122,6 @@ const gitArgsOk=(action,args)=>{
  if(!action.startsWith('wf_git_'))return true;
  if(!gitSchema(SPECS[action][1]).safeParse(args).success)return false;
  if(action==='wf_git_blob_create')return utfBytes(40000).safeParse(args.text).success;
- if(action==='wf_git_commit_create')return utfBytes(32768,true).safeParse(args.message).success&&new Set(args.parents).size===args.parents.length;
- if(action==='wf_git_tree_create')return args.files.reduce((n,x)=>n+new TextEncoder().encode(x.text).length,0)<=40000;
  return true;
 };
 export const validWfV1Args = (action, args) => boundedWorkflowInput(args) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
@@ -168,9 +166,7 @@ export function validWfV1Response(action, body) {
     wf_git_blob_get:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000),text:utfBytes(40000)}).strict().refine(v=>new TextEncoder().encode(v.text).length===v.size)}).strict(),
     wf_git_blob_create:z.object({blob:z.object({sha:gitSha,size:z.number().int().min(0).max(40000)}).strict()}).strict(),
     wf_git_commit_get:z.object({commit:commitRead}).strict(),
-    wf_git_tree_get:z.object({tree:z.object({sha:gitSha,truncated:z.boolean(),entries:z.array(z.object({sha:gitSha,type:z.enum(['blob','tree','commit']),mode:z.enum(['100644','100755','040000','120000','160000']),path:utfBytes(1024,true)}).strict()).max(100)}).strict()}).strict(),
-    wf_git_tree_create:z.object({tree:z.object({sha:gitSha,files:z.number().int().min(1).max(20)}).strict()}).strict(),
-    wf_git_commit_create:z.object({commit:z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).min(1).max(2).refine(v=>new Set(v).size===v.length)}).strict()}).strict()
+    wf_git_tree_get:z.object({tree:z.object({sha:gitSha,truncated:z.boolean(),entries:z.array(z.object({sha:gitSha,type:z.enum(['blob','tree','commit']),mode:z.enum(['100644','100755','040000','120000','160000']),path:utfBytes(1024).refine(v=>v.length>0)}).strict()).max(100)}).strict()}).strict(),
    };
    const parsed=schemas[action]?.safeParse(body);if(!parsed?.success)return false;body=parsed.data;
  }
