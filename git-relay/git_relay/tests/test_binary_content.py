@@ -119,10 +119,11 @@ class DownloadClient(unittest.TestCase):
         data, total = GitHubClient("t", opener=opener).download_chunk("/repos/o/r/x", "own", 4, 3)
         self.assertEqual((data, total), (b"456", 10))
         opener, _ = redirecting(loc, Resp(200, b"0123456789", hdrs(Content_Length="10")))
-        with self.assertRaises(RelayGitHubError):
+        with self.assertRaises(RelayGitHubError) as error:
             GitHubClient("t", opener=opener).download_chunk(
                 "/repos/o/r/x", "own", 512 * 1024 * 1024, 3
             )
+        self.assertEqual(error.exception.status, 416)
         opener, _ = redirecting(loc, Resp(206, b"abcdef", hdrs(Content_Range="bytes 0-2/10")))
         with self.assertRaises(RelayGitHubError):
             GitHubClient("t", opener=opener).download_chunk("/repos/o/r/x", "own", 0, 3)
