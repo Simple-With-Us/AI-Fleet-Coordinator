@@ -37,7 +37,7 @@ class EnvironmentReads(unittest.TestCase):
             a, {"repo": REPO, "page": 2, "per_page": 1}
         )
         self.assertEqual(len(out["environments"]), 1)
-        self.assertTrue(out["has_more"])
+        self.assertFalse(out["has_more"])
         self.assertEqual(out["environments"][0]["protection_rule_types"], ["required_reviewers"])
 
     def test_malformed_refused(self):
