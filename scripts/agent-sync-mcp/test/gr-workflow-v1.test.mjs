@@ -240,3 +240,13 @@ test('fixed PR controls and thread reads preserve scope and UNKNOWN',async()=>{
   if(action!=='wf_review_threads'){const fail=harness(async()=>{throw Error('lost');});const r=await fail.call('gr_'+action,args);assert.ok(r.isError);assert.match(r.content[0].text,/unknown/i);}
  }
 });
+
+test('merge queue closed inputs fixed own-bearer calls and unknown writes',async()=>{
+ for(const action of ['wf_merge_queue_entry','wf_merge_queue_enqueue','wf_merge_queue_dequeue']){
+  const args={repo,number:1,...(action==='wf_merge_queue_entry'?{}:{expected_sha:'a'.repeat(40)})};
+  assert.ok(validWfV1Args(action,args));assert.ok(!validWfV1Args(action,{...args,jump:true}));
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({entry:action==='wf_merge_queue_entry'?null:{id:'MQ1',pull_request_id:'PR1'}}));});
+  assert.ok(!(await t.call('gr_'+action,args)).isError);
+  if(action!=='wf_merge_queue_entry'){const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_'+action,args);assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);}
+ }
+});
