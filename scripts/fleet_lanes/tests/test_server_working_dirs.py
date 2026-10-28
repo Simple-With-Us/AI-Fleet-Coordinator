@@ -984,6 +984,103 @@ class ServerWorkingDirsTest(unittest.TestCase):
             "the file the link points at must survive the refused write",
         )
 
+    def test_the_skip_line_names_the_directory_that_needs_the_permission(self) -> None:
+        """The refusal names the directory, so the operator is sent to it.
+
+        The file the link points at can be writable while the directory the
+        staged file has to be created in is not, and only the directory can be
+        fixed, so the skip line has to carry it.
+        """
+        volume = self.tmp / "volume"
+        volume.mkdir()
+        target = volume / "settings.json"
+        target.write_text('{"old": true}\n')
+        self.settings.unlink()
+        self.settings.symlink_to(target)
+        real_access = os.access
+
+        def access(path, mode, **kwargs):
+            if os.path.realpath(str(path)) == os.path.realpath(str(target.parent)):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with mock.patch.object(swd.os, "access", access):
+            code, printed = self.apply_output()
+
+        self.assertIn("not writable by this account", printed)
+        self.assertIn(
+            str(target.parent),
+            printed,
+            "the skip line must name the directory that needs the permission",
+        )
+        self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
+
+    def test_a_refused_write_leaves_no_backup_behind(self) -> None:
+        """A refused write takes no backup, so the directory does not fill up.
+
+        The backup is taken before the write, so a knob that can never be
+        applied would drop another copy beside the link on every run, and
+        nothing would ever restore from it.
+        """
+        volume = self.tmp / "volume"
+        volume.mkdir()
+        target = volume / "settings.json"
+        target.write_text('{"old": true}\n')
+        self.settings.unlink()
+        self.settings.symlink_to(target)
+        real_access = os.access
+
+        def access(path, mode, **kwargs):
+            if os.path.realpath(str(path)) == os.path.realpath(str(target.parent)):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with mock.patch.object(swd.os, "access", access):
+            code, printed = self.apply_output()
+
+        self.assertIn("skipped  claude desktop worktrees", printed)
+        leftovers = sorted(
+            path.name for path in self.home.joinpath(".claude").glob("*.bak-*")
+        )
+        self.assertEqual(
+            leftovers, [], "a refused write must not leave a backup behind"
+        )
+        self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
+
+    def test_a_symlinked_bashrc_in_a_read_only_directory_is_skipped(self) -> None:
+        """A bashrc that is a link into a read-only directory is skipped too.
+
+        A bashrc is commonly a link into a home on a volume, so the fail-closed
+        behaviour reaches it:  the knob is skipped and reported rather than
+        written through the link in place, and no backup is left behind.
+        """
+        volume = self.tmp / "volume"
+        volume.mkdir()
+        target = volume / ".bashrc"
+        target.write_text("# base\n")
+        bashrc = self.home / ".bashrc"
+        bashrc.unlink()
+        bashrc.symlink_to(target)
+        real_access = os.access
+
+        def access(path, mode, **kwargs):
+            if os.path.realpath(str(path)) == os.path.realpath(str(target.parent)):
+                return False
+            return real_access(path, mode, **kwargs)
+
+        with mock.patch.object(swd.os, "access", access):
+            code, printed = self.apply_output()
+
+        self.assertIn("skipped  bashrc", printed)
+        self.assertEqual(
+            target.read_text(), "# base\n", "the file the link points at must survive"
+        )
+        leftovers = sorted(path.name for path in self.home.glob(".bashrc.bak-*"))
+        self.assertEqual(
+            leftovers, [], "a refused write must not leave a backup behind"
+        )
+        self.assertEqual(code, 1, "a knob that is off keeps the apply failing")
+
     def test_a_refused_group_change_is_reported(self) -> None:
         """A group the account cannot keep is reported, not changed silently."""
         path = self.tmp / "grouped"
