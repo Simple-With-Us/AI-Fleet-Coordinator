@@ -1,7 +1,8 @@
 import unittest
 
-from git_relay.workflow_verbs import WorkflowVerbs, Refused
-from test_workflow_verbs import Client, Policy, Minter, REPO
+from test_workflow_verbs import REPO, Client, Minter, Policy
+
+from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
 ISSUE = {"number": 2, "state": "open", "title": "x", "html_url": "https://example.invalid/2"}
 
@@ -85,10 +86,11 @@ class IssueTests(unittest.TestCase):
         import json
         import os
         import tempfile
+
         from git_relay.audit import AuditLog
+        from git_relay.outcomes import OutcomeStore
         from git_relay.policy import SeatPolicy
         from git_relay.server import Relay
-        from git_relay.outcomes import OutcomeStore
 
         token = "w" * 32
         seats = json.dumps(
@@ -114,7 +116,7 @@ class IssueTests(unittest.TestCase):
                     outcomes=OutcomeStore(os.path.join(tmp, "outcomes")),
                     workflow_verbs_enabled=True,
                 )
-                status, body = r.handle(token, "wf_issue_create", args)
+                status, _body = r.handle(token, "wf_issue_create", args)
                 self.assertEqual(status, expected)
                 status2, body2 = r.handle(token, "wf_issue_create", args)
                 self.assertEqual(status2, 200 if expected == 200 else 409)

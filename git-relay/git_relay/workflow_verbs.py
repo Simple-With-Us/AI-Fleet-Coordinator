@@ -37,6 +37,10 @@ class CeilingDenied(Refused):
     """The seat's App ceiling does not cover the verb's permissions (a 403, not a bad request)."""
 
 
+class WriteOutcomeUnknown(RuntimeError):
+    """A write was sent but its result cannot be verified."""
+
+
 class Unknown(RuntimeError):
     """Own App credential unavailable."""
 
@@ -306,7 +310,7 @@ class WorkflowVerbs:
             ):
                 raise Refused("unexpected issue response")
         except (Refused, KeyError, TypeError) as exc:
-            raise RuntimeError("issue write outcome unverifiable") from exc
+            raise WriteOutcomeUnknown("issue write outcome unverifiable") from exc
         return {"issue": summary}
 
     def wf_issue_update(self, repo, args):
@@ -334,7 +338,7 @@ class WorkflowVerbs:
             ):
                 raise Refused("unexpected issue response")
         except (Refused, KeyError, TypeError) as exc:
-            raise RuntimeError("issue write outcome unverifiable") from exc
+            raise WriteOutcomeUnknown("issue write outcome unverifiable") from exc
         return {"issue": summary}
 
     def wf_issue_comment(self, repo, args):
@@ -350,7 +354,7 @@ class WorkflowVerbs:
             or isinstance(result.get("id"), bool)
             or not isinstance(result.get("id"), int)
         ):
-            raise RuntimeError("issue comment outcome unverifiable")
+            raise WriteOutcomeUnknown("issue comment outcome unverifiable")
         return {"comment": {k: result.get(k) for k in ("id", "html_url")}}
 
     # ---- reads ----
