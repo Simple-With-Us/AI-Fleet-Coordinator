@@ -8,6 +8,5 @@ Returns compact issue IDs, numbers, titles and states, no bodies or arbitrary UR
 Repo/action allowlists, credential ceiling and returned secret scans remain.
 No permissions configured and no live relation changed.  Capability is source only.
 Relationship writes, replacing parents, issue transfer and cross-repo search remain
-unimplemented.  Read results can include another repo under GitHub relationships;
-returned number alone must not be treated as a bound mutation destination.
+unimplemented.  Foreign or unverifiable repository relations are refused before metadata is returned. Returned numbers remain insufficient as mutation authority.
 Source: https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json

@@ -19,21 +19,25 @@ def item(n):
 
 class Dependencies(unittest.TestCase):
     def runverb(self, c, a, args):
-        return WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(a, args)
+        return WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
+            a, args
+        )
 
     def test_fixed_routes_prereads_and_receipts(self):
         for a in ("wf_issue_dependency_add", "wf_issue_dependency_remove"):
             c = Client(item(1), item(2), item(2))
             out = self.runverb(c, a, {"repo": REPO, "number": 1, "blocker_number": 2})
             self.assertEqual(
-                c.calls[:2], [("GET", f"/repos/{REPO}/issues/{n}", None, "own") for n in [1, 2]]
+                c.calls[:2],
+                [("GET", f"/repos/{REPO}/issues/{n}", None, "own") for n in [1, 2]],
             )
             remove = a.endswith("remove")
             self.assertEqual(
                 c.calls[-1],
                 (
                     "DELETE" if remove else "POST",
-                    f"/repos/{REPO}/issues/1/dependencies/blocked_by" + ("/102" if remove else ""),
+                    f"/repos/{REPO}/issues/1/dependencies/blocked_by"
+                    + ("/102" if remove else ""),
                     None if remove else {"issue_id": 102},
                     "own",
                 ),
@@ -42,7 +46,9 @@ class Dependencies(unittest.TestCase):
             self.assertIn(a, _REAPPLY_STATE_ACTIONS)
             self.assertEqual(SPECS[a], ({"issues": "write"}, True))
             self.assertIsNone(
-                WorkflowVerbs.check_shape(a, {"repo": REPO, "number": 1, "blocker_number": 2}, REPO)
+                WorkflowVerbs.check_shape(
+                    a, {"repo": REPO, "number": 1, "blocker_number": 2}, REPO
+                )
             )
 
     def test_bad_receipts_and_identity_are_not_success(self):
@@ -110,3 +116,61 @@ class Dependencies(unittest.TestCase):
         from git_relay.server import _WORKFLOW_AUDIT_SCALARS
 
         self.assertIn("blocker_number", _WORKFLOW_AUDIT_SCALARS)
+
+    def test_real_relay_mutation_unknown_holds_without_secret_diagnostics(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from git_relay.audit import AuditLog
+        from git_relay.policy import SeatPolicy
+        from git_relay.server import Relay
+
+        # Synthetic runtime-only fixture, never a credential.
+        seat_token = "x" * 32
+        config = json.dumps(
+            {
+                "swu-wise": {
+                    "token": seat_token,
+                    "app_slug": "swu-wise",
+                    "mint_permissions": {"issues": "write", "metadata": "read"},
+                    "actions": ["wf_issue_dependency_add"],
+                    "repos": [REPO],
+                }
+            }
+        )
+
+        class Mint:
+            def token_for(self, *args):
+                return "synthetic-own-bearer-no-diagnostics", 0
+
+        class Failing(Client):
+            def _call(self, method, path, data=None, bearer=None):
+                self.calls.append((method, path, data, bearer))
+                if method == "GET":
+                    return item(int(path.rsplit("/", 1)[1]))
+                raise RelayGitHubError(502, "untrusted upstream detail")
+
+        args = {"repo": REPO, "number": 1, "blocker_number": 2}
+        with tempfile.TemporaryDirectory() as tmp:
+            client = Failing()
+
+            def make():
+                return Relay(
+                    SeatPolicy(config),
+                    client,
+                    AuditLog(str(Path(tmp) / "audit.jsonl")),
+                    app_minter=Mint(),
+                    workflow_verbs_enabled=True,
+                )
+
+            r = make()
+            status, body = r.handle(seat_token, "wf_issue_dependency_add", args)
+            self.assertEqual(status, 502, body)
+            self.assertEqual(body["outcome"], "unknown")
+            self.assertFalse(body["retryable"])
+            self.assertNotIn("synthetic-own", json.dumps(body))
+            self.assertNotIn("untrusted", json.dumps(body))
+            self.assertEqual(
+                r.handle(seat_token, "wf_issue_dependency_add", args)[0], 409
+            )
+            self.assertEqual(len([x for x in client.calls if x[0] == "POST"]), 1)

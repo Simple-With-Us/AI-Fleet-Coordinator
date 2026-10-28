@@ -152,7 +152,7 @@ Search before re-deriving a lesson.  Hits are fenced between `BEGIN_UNTRUSTED_RE
 
 ### linear
 
-The identity's own Linear app, never the owner's account.  Output is fenced between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR`.  Stdio runs `board` as the identity (`AGENT_SEAT`), so board's per-seat app, viewer check and label protection apply;  hosted calls Linear from the Worker, and its writes need the server's `LINEAR_TOOLS_WRITES` switch.  Writes take an idempotency key where the tool lists one:  a retry with the same key returns the first result.
+The identity's own Linear app, never the owner's account.  Output is fenced between `BEGIN_UNTRUSTED_LINEAR` and `END_UNTRUSTED_LINEAR`.  Stdio runs `simple-board` as the identity its bearer proves (`SIMPLE_BOARD_BEARER_LOCATOR`), so board's per-seat app, viewer check and label protection apply;  hosted calls Linear from the Worker, and its writes need the server's `LINEAR_TOOLS_WRITES` switch.  Writes take an idempotency key where the tool lists one:  a retry with the same key returns the first result.
 
 The ten core tools:
 
@@ -180,7 +180,7 @@ Plus **175 named commands** (63 reads, 112 writes) and **11 proxied official Lin
 | One-offs | `linear_share_issue`, `linear_resolve_comment`, `linear_link_attachment_url`, `linear_complete_release`, `linear_add_initiative_project`, `linear_mark_notification` |
 | Official, proxied | `linear_get_diff`, `linear_list_diffs`, `linear_submit_diff_review`, `linear_merge_diff`, `linear_extract_images`, `linear_search_documentation` |
 
-From a shell, `simple-board run NAME` is the tool `linear_NAME` (`simple-board run list_issues --arg first=5`);  `simple-board mcp call TOOL` runs a proxied official tool.  A write from a shell needs `AGENT_SEAT`, `LINEAR_BOARD_WRITES=1` and `--idempotency-key`.  The older `board` name on PATH is a wrapper that sets `LINEAR_BOARD_WRITES=1` for you, so the two names do not behave alike:  `board` writes, and `simple-board` refuses a write with exit 7 until you set the variable yourself.  `simple-board whoami` prints which one you have.
+From a shell, `simple-board run NAME` is the tool `linear_NAME` (`simple-board run list_issues --arg first=5`);  `simple-board mcp call TOOL` runs a proxied official tool.  A write from a shell needs the seat's bearer-verified identity and `--idempotency-key`.  The `board` name on PATH is retired with its wrapper:  `simple-board` is the entry point, and it refuses a write with exit 6 when no seat is verified.  `simple-board whoami` prints the verified seat and whether writes are on.
 
 ### fleetlink
 
@@ -347,4 +347,4 @@ Tool errors come back with `isError: true` and an object `{code, message, retrya
 | `zulip_error`, `unavailable`, `internal` | Upstream failure.  `unavailable` may be retryable (check `retryable`) |
 | `relay` (HTTP status) | git-relay and GR-MCP do not use the codes above:  a refusal arrives as a tool error carrying the relay's own HTTP status.  See the GitHub section |
 
-Exit codes of the `simple-chat` CLI:  0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, 6 auth, 7 writes off.
+Exit codes of the `simple-chat` CLI:  0 ok, 2 usage, 3 credentials, realm or identity refused, 4 wait timeout, 5 Zulip API error, 6 network error, 7 `verify-owner-msg` did not verify.  `simple-board` exits 1 error, 2 usage, 3 claim held, 4 no credentials, 5 rate limit, and 6 when no seat is verified or an authentication check failed.  Exit 7 is retired:  it was the writes-off switch, and the bearer-verified seat is the only write gate now.
