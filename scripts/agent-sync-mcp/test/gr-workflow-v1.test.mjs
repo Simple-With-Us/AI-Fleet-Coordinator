@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {WF_V1_ACTIONS,WF_V1_TOOLS,validWfV1Response,validWfV1Args} from '../src/gr-workflow-v1.js';
+import {WF_V1_ACTIONS,WF_V1_TOOLS,WF_V1_READ_ACTIONS,validWfV1Response,validWfV1Args} from '../src/gr-workflow-v1.js';
 const py=readFileSync(new URL('../../../git-relay/git_relay/workflow_verbs.py',import.meta.url),'utf8');
 const specs=[...py.slice(py.indexOf('SPECS = {'),py.indexOf('ACTIONS = tuple')).matchAll(/"(wf_[a-z_]+)":/g)].map(m=>m[1]);
 const onlyOf=name=>{
@@ -54,7 +54,7 @@ function harness(fetchImpl, enabled=true) {
 test('default-off discovery, cache separation and direct-call denial',async()=>{
   assert.equal(loadConfig(testEnv()).grWorkflowEnabled,false);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
-  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,31);
+  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,43);
   assert.ok(!toolListFor('JET-CHAT',{}).list.some(t=>t.name.startsWith('gr_wf_')));
   let calls=0;const t=harness(async()=>{calls++;throw Error('must not fetch');},false);
   const r=await t.call('gr_wf_runs',{repo});
@@ -63,7 +63,7 @@ test('default-off discovery, cache separation and direct-call denial',async()=>{
 test('all workflow tools have dispatch and correct read/write scope',()=>{
   for(const action of WF_V1_ACTIONS) {
     assert.equal(typeof HostedTools.prototype['tool_gr_'+action],'function');
-    const read=['wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks'].includes(action);
+    const read=WF_V1_READ_ACTIONS.includes(action);
     assert.equal(HOSTED_READ_TOOLS.has('gr_'+action),read);
     assert.equal(HOSTED_WRITE_TOOLS.has('gr_'+action),!read);
   }
@@ -147,7 +147,7 @@ test('valid refusal context is stripped without losing status or retry semantics
 
 test('typed and workflow discovery gates have independent cache keys',()=>{
  const flags={grWorkflowEnabled:true,grTypedEnabled:true};
- assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,31);
+ assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_wf_')).length,43);
  assert.equal(toolListFor('JET-CHAT',flags).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,3);
  assert.equal(toolListFor('JET-CHAT',{grWorkflowEnabled:true}).list.filter(t=>t.name.startsWith('gr_v1_pr_')).length,0);
  assert.equal(toolListFor('JET-CHAT',{grTypedEnabled:true}).list.filter(t=>t.name.startsWith('gr_wf_')).length,0);
@@ -213,3 +213,29 @@ test('workflow state and run/artifact deletion preserve own-bearer writes and UN
 });
 
 test('actual review regression',()=>{for(const id of [0,-1,true,'1']) assert.ok(!validWfV1Response('wf_run_delete',{completed:true,run_id:id}));});
+test('new read envelopes reject malformed objects and fixed routes use own bearer',async()=>{
+  const cases=[['wf_pr_get',{number:1},{pull:{number:1}}],['wf_compare',{base:'main',head:'feature/x'},{comparison:{}}],['wf_repo_get',{},{repository:{}}],['wf_commit_get',{sha:'a'.repeat(40)},{commit:{}}],['wf_run_get',{run_id:1},{run:{}}],['wf_run_artifacts',{run_id:1},{artifacts:{}}]];
+  for(const [action,args,result] of cases){
+    let calls=0;
+    const t=harness(async(url,init)=>{
+      calls++;assert.ok(url.endsWith('/v1/'+action));
+      assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');
+      assert.deepEqual(JSON.parse(init.body),{repo,...args});
+      return new Response(JSON.stringify(result));
+    });
+    const answer=await t.call('gr_'+action,{repo,...args});
+    assert.ok(!answer.isError,action+JSON.stringify(answer));assert.equal(calls,1);
+  }
+});
+
+test('read object checks preserve valid existing file-write string receipts',()=>{
+ assert.ok(validWfV1Response('wf_file_put',{path:'a.txt',branch:'feature/x',commit:'a'.repeat(40)}));
+ assert.ok(validWfV1Response('wf_files_put',{branch:'feature/x',commit:'a'.repeat(40),files:2}));
+ assert.ok(!validWfV1Response('wf_branch_get',{branch:'main'}));
+ assert.ok(!validWfV1Response('wf_commit_get',{commit:'a'.repeat(40)}));
+});
+
+test('file write receipts require string branch and path',()=>{
+ for (const bad of [{path:'x',branch:{},commit:'a'.repeat(40)},{path:2,branch:'b',commit:'a'.repeat(40)},{path:'x',branch:'',commit:'a'.repeat(40)}]) assert.equal(validWfV1Response('wf_file_put',bad),false);
+ assert.equal(validWfV1Response('wf_file_put',{path:'x',branch:'b',commit:'a'.repeat(40)}),true);
+});
