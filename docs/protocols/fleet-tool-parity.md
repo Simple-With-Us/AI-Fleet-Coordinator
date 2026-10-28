@@ -52,7 +52,7 @@ One line per check, OK, WARN or FAIL, and exit 1 on a FAIL on this host.  It co
 - each named seat's credentials (key names in Infisical, through `fleet-secrets`);
 - each client's MCP registrations.
 
-On the server, `fleet-tools-doctor.timer` runs it every hour as CLAUDE with `--post`.  It posts to #Work-In-Progress, topic `fleet tools doctor`, only when the set of failing checks changes, including the all-clear.  Since AFC-461 that set also holds a required registry tool the server lacks (`gitleaks` today) and a fleet tool that is behind past its grace window.
+On the server, `fleet-tools-doctor.timer` runs it every hour as the `jay` login with `AGENT_SEAT=CLAUDE` and `--post`, from the same managed-runtime checkout as `fleet-cli-git-update` (`~/.local/share/fleet-cli/repo`).  It posts to #Work-In-Progress, topic `fleet tools doctor`, only when the set of failing checks changes, including the all-clear.  Since AFC-461 that set also holds a required registry tool the server lacks (`gitleaks` today) and a fleet tool that is behind past its grace window.
 
 ### States
 

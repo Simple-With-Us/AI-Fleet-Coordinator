@@ -32,7 +32,9 @@ REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 UNIT_DIR = HERE
 INVENTORY = os.path.join(REPO, "docs", "compliance", "inventory.md")
 UPDATER_UNIT = "fleet-cli-git-update.service"
+DOCTOR_UNIT = "fleet-tools-doctor.service"
 INVENTORY_ROW = "SRV-S05"
+DOCTOR_INVENTORY_ROW = "SRV-S04"
 
 
 def parse_unit(path: str) -> dict[str, list[tuple[str, str]]]:
@@ -66,6 +68,7 @@ def services() -> list[str]:
 class SystemdUnitTemplates(unittest.TestCase):
     def test_systemd_unit_files_are_present(self):
         self.assertIn(UPDATER_UNIT, services())
+        self.assertIn(DOCTOR_UNIT, services())
 
     def test_system_unit_with_a_named_account_never_uses_percent_h(self):
         for name in services():
@@ -125,6 +128,19 @@ class SystemdUnitTemplates(unittest.TestCase):
             "the unit must pass --home exactly once",
         )
 
+    def test_doctor_unit_spells_its_paths_out(self):
+        path = os.path.join(UNIT_DIR, DOCTOR_UNIT)
+        sections = parse_unit(path)
+        accounts = values(sections, "Service", "User")
+        self.assertEqual(accounts, ["jay"])
+        environments = values(sections, "Service", "Environment")
+        self.assertIn("HOME=/home/jay", environments)
+        self.assertIn("AGENT_SEAT=CLAUDE", environments)
+        command = values(sections, "Service", "ExecStart")[0]
+        self.assertIn("/home/jay/.local/share/fleet-cli/repo/scripts/fleet-tools-doctor.py", command)
+        self.assertIn("--post", command)
+        self.assertNotIn("--home", command)
+
     def test_compliance_inventory_quotes_the_current_exec_start(self):
         path = os.path.join(UNIT_DIR, UPDATER_UNIT)
         command = values(parse_unit(path), "Service", "ExecStart")[0]
@@ -135,6 +151,19 @@ class SystemdUnitTemplates(unittest.TestCase):
             command,
             rows[0],
             f"the {INVENTORY_ROW} inventory row must quote the unit's current "
+            "ExecStart;  a unit that changes without the row changing is drift",
+        )
+
+    def test_compliance_inventory_quotes_the_doctor_exec_start(self):
+        path = os.path.join(UNIT_DIR, DOCTOR_UNIT)
+        command = values(parse_unit(path), "Service", "ExecStart")[0]
+        with open(INVENTORY, encoding="utf-8") as handle:
+            rows = [line for line in handle if line.startswith(f"| {DOCTOR_INVENTORY_ROW} ")]
+        self.assertEqual(len(rows), 1, f"expected exactly one {DOCTOR_INVENTORY_ROW} inventory row")
+        self.assertIn(
+            command,
+            rows[0],
+            f"the {DOCTOR_INVENTORY_ROW} inventory row must quote the unit's current "
             "ExecStart;  a unit that changes without the row changing is drift",
         )
 
