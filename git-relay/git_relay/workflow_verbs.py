@@ -2809,6 +2809,9 @@ class WorkflowVerbs:
             "has_more": len(files) == limit,
             "history_complete": False,
         }
+        if len(json.dumps(receipt).encode("utf-8")) > 262144:
+            raise Refused("PR file serialized page exceeds supported size")
+        return receipt
 
     def wf_pr_files(self, repo, args):
         _only(args, ("repo", "number", "per_page"))
@@ -3006,9 +3009,6 @@ class WorkflowVerbs:
 
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
-        if len(json.dumps(receipt).encode("utf-8")) > 262144:
-            raise Refused("PR file serialized page exceeds supported size")
-        return receipt
 
     def wf_file_delete(self, repo, args):
         _only(args, ("repo", "path", "branch", "message", "prior_sha"))
