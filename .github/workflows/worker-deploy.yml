@@ -19,7 +19,7 @@ jobs:
       max-parallel: 1
       fail-fast: false
       matrix:
-        worker: ["agent-sync-mcp"]
+        worker: ["agent-sync-mcp", "alert-ingress"]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,6 +34,7 @@ jobs:
       - run: npm test
         working-directory: scripts/agent-sync-mcp
       - run: node --test workers/pr-conflict-watch/state.test.js
+      - run: node --test workers/alert-ingress/src/*.test.js
       - run: python3 scripts/test-deploy-mapped-worker.py
       - name: Load scoped deploy credential from Fleet-OPS
         env:
