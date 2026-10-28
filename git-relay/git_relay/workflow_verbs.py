@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_runs_page": ({"actions": "read"}, False),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -2823,6 +2824,116 @@ class WorkflowVerbs:
                 for i in ((data or {}).get("items") or [])[:MAX_PROJECT]
             ],
             "complete": False,
+        }
+
+    def wf_runs_page(self, repo, args):
+        """Bounded mutable Actions list with provider search cap made explicit."""
+        _only(args, ("repo", "branch", "head_sha", "status", "per_page", "page"))
+        statuses = ("queued", "in_progress", "completed", "requested", "waiting", "pending")
+        conclusions = (
+            "action_required",
+            "cancelled",
+            "failure",
+            "neutral",
+            "skipped",
+            "stale",
+            "success",
+            "timed_out",
+        )
+        branch = _ref(args, "branch") if "branch" in args else None
+        sha = _sha(args, "head_sha") if "head_sha" in args else None
+        status = _enum(args, "status", statuses + conclusions) if "status" in args else None
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        filtered = any(v is not None for v in (branch, sha, status))
+        if filtered and (page - 1) * limit >= 1000:
+            raise Refused("filtered run search exceeds provider 1000-result window")
+        q = f"per_page={limit}&page={page}"
+        if branch is not None:
+            q += "&branch=" + quote(branch, safe="")
+        if sha is not None:
+            q += "&head_sha=" + sha
+        if status is not None:
+            q += "&status=" + status
+        value = self._get(f"/repos/{repo}/actions/runs?{q}")
+        if (
+            not isinstance(value, dict)
+            or type(value.get("total_count")) is not int
+            or not 0 <= value["total_count"] <= 1000000000
+            or not isinstance(value.get("workflow_runs"), list)
+            or len(value["workflow_runs"]) > limit
+            or value["total_count"] < len(value["workflow_runs"])
+        ):
+            raise RelayGitHubError(502, "run page unverifiable")
+        runs = []
+        seen = set()
+        for row in value["workflow_runs"]:
+            if (
+                not isinstance(row, dict)
+                or any(
+                    type(row.get(k)) is not int or row[k] < 1
+                    for k in ("id", "run_attempt", "workflow_id")
+                )
+                or row["id"] in seen
+                or row.get("status") not in statuses
+                or row.get("conclusion") not in (None, *conclusions)
+                or (row["status"] == "completed") != (row["conclusion"] is not None)
+            ):
+                raise RelayGitHubError(502, "run metadata unverifiable")
+            if (
+                not isinstance(row.get("head_sha"), str)
+                or not _SHA.fullmatch(row["head_sha"])
+                or row.get("head_branch") is not None
+                and (
+                    not isinstance(row["head_branch"], str)
+                    or not _REF.fullmatch(row["head_branch"])
+                )
+            ):
+                raise RelayGitHubError(502, "run head unverifiable")
+            if (
+                branch is not None
+                and row["head_branch"] != branch
+                or sha is not None
+                and row["head_sha"] != sha
+                or status is not None
+                and status not in (row["status"], row["conclusion"])
+            ):
+                raise RelayGitHubError(502, "run filter unverifiable")
+            prs = row.get("pull_requests")
+            if (
+                not isinstance(prs, list)
+                or len(prs) > 100
+                or any(
+                    not isinstance(p, dict) or type(p.get("number")) is not int or p["number"] < 1
+                    for p in prs
+                )
+            ):
+                raise RelayGitHubError(502, "run PR metadata unverifiable")
+            numbers = [p["number"] for p in prs]
+            if len(set(numbers)) != len(numbers):
+                raise RelayGitHubError(502, "duplicate run PR metadata")
+            item = {
+                k: row[k]
+                for k in (
+                    "id",
+                    "run_attempt",
+                    "workflow_id",
+                    "head_branch",
+                    "head_sha",
+                    "status",
+                    "conclusion",
+                )
+            }
+            item["pull_numbers"] = numbers
+            seen.add(row["id"])
+            runs.append(item)
+        return {
+            "runs": runs,
+            "total": value["total_count"],
+            "page": page,
+            "has_more": len(runs) == limit,
+            "search_cap": 1000 if filtered else None,
+            "snapshot": False,
         }
 
     def wf_runs(self, repo, args):

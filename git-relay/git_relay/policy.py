@@ -168,6 +168,7 @@ class SeatPolicy:
         "wf_branches",
         "wf_commits",
         "wf_code_search",
+        "wf_runs_page",
         "wf_runs",
         "wf_run_jobs",
         "wf_checks",
