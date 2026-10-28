@@ -96,6 +96,7 @@ class SeatPolicy:
         "wf_milestone_create",
         "wf_milestone_update",
         "wf_milestone_delete",
+        "wf_labels_add",
         "wf_labels_set",
         "wf_reviewers_request",
         "wf_reviewers_remove",

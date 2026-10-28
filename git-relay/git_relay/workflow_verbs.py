@@ -69,6 +69,7 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_labels_add": ({"issues": "write"}, True),
     "wf_review_thread_resolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_thread_unresolve": ({"pull_requests": "write", "contents": "write"}, True),
     "wf_review_update": ({"pull_requests": "write"}, True),
@@ -1678,6 +1679,61 @@ class WorkflowVerbs:
         ):
             raise RelayGitHubError(502, "branch write outcome unverifiable")
         return {"ref": result["ref"], "sha": sha}
+
+    def wf_labels_add(self, repo, args):
+        """Add an exact bounded label set without replacing unrelated issue/PR labels."""
+        _only(args, ("repo", "number", "labels"))
+        number = _int(args, "number")
+        labels = args.get("labels")
+        if not isinstance(labels, list) or not 1 <= len(labels) <= 20:
+            raise Refused("invalid additive labels")
+        for value in labels:
+            if (
+                not isinstance(value, str)
+                or not value.strip()
+                or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", value)
+                or find_secret(value)
+            ):
+                raise Refused("invalid additive label")
+        folded = [x.casefold() for x in labels]
+        if len(set(folded)) != len(folded):
+            raise Refused("duplicate additive labels")
+        data = self.client._call(
+            "POST", f"/repos/{repo}/issues/{number}/labels", {"labels": labels}, bearer=self.bearer
+        )
+        if not isinstance(data, list) or len(data) > 100:
+            raise RelayGitHubError(502, "additive label receipt unverifiable")
+        found = {}
+        ids = set()
+        for item in data:
+            if (
+                not isinstance(item, dict)
+                or type(item.get("id")) is not int
+                or item["id"] <= 0
+                or not isinstance(item.get("name"), str)
+            ):
+                raise RelayGitHubError(502, "additive label identity unverifiable")
+            name = item["name"]
+            if not 1 <= len(name) <= 100 or name.casefold() in found or item["id"] in ids:
+                raise RelayGitHubError(502, "additive label identity unverifiable")
+            ids.add(item["id"])
+            found[name.casefold()] = item
+        if not set(folded).issubset(found):
+            raise RelayGitHubError(502, "added labels not confirmed")
+        # Return only requested label metadata, not unrelated labels or descriptions.
+        result = []
+        for name in folded:
+            item = found[name]
+            color = item.get("color")
+            if (
+                not isinstance(color, str)
+                or not re.fullmatch(r"[A-Fa-f0-9]{6}", color)
+                or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", item["name"])
+                or find_secret(item["name"])
+            ):
+                raise RelayGitHubError(502, "added label metadata unverifiable")
+            result.append({"id": item["id"], "name": item["name"], "color": color.lower()})
+        return {"number": number, "added": result}
 
     def wf_labels_set(self, repo, args):
         _only(

@@ -49,6 +49,8 @@ class OutcomeStoreError(RuntimeError):
 def key_for(seat: str, action: str, args: dict) -> str:
     if action == "wf_file_delete":
         args = {k: args[k] for k in ("repo", "path", "branch", "prior_sha")}
+    if action == "wf_labels_add":
+        args = {**args, "labels": sorted(x.casefold() for x in args["labels"])}
     canonical = json.dumps(args, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(f"{seat}\0{action}\0{canonical}".encode()).hexdigest()
 
