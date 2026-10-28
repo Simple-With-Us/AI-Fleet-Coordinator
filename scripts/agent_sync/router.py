@@ -42,6 +42,20 @@ key) is not the owner, not eligible, and flagged `owner_api`.  The `client` is w
 request reports, so this catches honest API use but cannot stop someone holding the owner's key
 from claiming a human client:  owner priority is a routing hint, never authority for a side
 effect.
+
+The Oct 27 2026 rule (owner):  `@all` is mostly Jay's.  A bot uses it when Jay asks or explicitly
+approves, or on its own judgment in an extremely serious situation (an ongoing targeted attack, a
+fleet-wide outage of about twenty minutes).  A bot that uses it without explicit approval DMs Jay
+why.  A fleet bot's `@all` therefore wakes like the owner's, under peer budgets, the loop guard
+and the stale rule:  `peer_broadcast` is the class for it, and the daemon treats it like the
+owner's broadcast for the fanout and the inbox copy.  The listener keeps the book:  when a bot's
+`@all` is not explained to Jay within ten minutes, the held-alert seat DMs Jay a reminder
+(`broadcast_audit.py`).
+
+The broadcast tokens (owner, Oct 27 2026):  `@all`, `@channel` and `@stream` all count exactly
+like `@all`; `@everyone` on its own is still inert.  `@topic` is not a broadcast token and never
+was.  A silent `@_**all**` (an escaped mention) is not a token either:  the leading underscore
+keeps it out of the wildcard set, and a message that carries no token is ordinary text.
 """
 
 from __future__ import annotations
@@ -65,9 +79,13 @@ FLEET_WAKE_CHANNEL = DEFAULT_CHANNEL
 FLEET_WAKE_TOPIC = "fleet"
 FLEET_WAKE_KEY = topic_key(FLEET_WAKE_CHANNEL, FLEET_WAKE_TOPIC)
 _BROADCAST_TOKEN_RE = re.compile(
-    r"(?<![\\\w*])@(?:\*\*(all|everyone)\*\*|(all|everyone)\b(?![-\w*]))",
+    r"(?<![\\\w*])@(?:\*\*(all|everyone|channel|stream)\*\*|(all|everyone|channel|stream)\b(?![-\w*]))",
     re.IGNORECASE,
 )
+#: The tokens that mean "wake the fleet" (owner, Oct 27 2026):  `@all`, `@channel` and `@stream`
+#: count exactly like `@all`.  `@everyone` is NOT one of them:  on its own it lands unread in
+#: every bot's inbox and wakes nobody.
+BROADCAST_TOKENS = frozenset({"all", "channel", "stream"})
 _WAKE_TAG_RE = re.compile(r"^\s*\[[A-Za-z0-9_-]+·wake\b")
 # A route post (`[CLAUDE·route→CODEX] re=N`):  a wake seat paged another seat on the owner's behalf.  It
 # counts on the loop guard like a wake reply, but it never blocks the wake of the seat it mentions.
@@ -146,19 +164,19 @@ def _broadcast_tokens_visible(visible: str) -> frozenset[str]:
 
 
 def broadcast_tokens(content: str) -> frozenset[str]:
-    """Raw `@all` / `@everyone` tokens outside code, quotes and escapes.
+    """Raw `@all` / `@everyone` / `@channel` / `@stream` tokens outside code, quotes and escapes.
 
-    Zulip sets the same wildcard flags for both tokens, so wake routing must read the raw token,
-    not `wildcard_mentioned` or `stream_wildcard_mentioned`.  `@channel`, `@stream` and `@topic`
-    are out of scope here."""
+    Zulip sets the same wildcard flags for every one of those tokens, so wake routing must read
+    the raw token, not `wildcard_mentioned` or `stream_wildcard_mentioned`.  `@topic` is out of
+    scope here and always was."""
     return _broadcast_tokens_visible(outside_code(content))
 
 
 def fleet_wake_mention(content_outside_code: str, flags: Iterable[str]) -> bool:
-    """True when the visible content carries a raw `@all` token (not `@everyone` alone).
+    """True when the visible content carries a raw `@all`, `@channel` or `@stream` token.
 
     Wildcard flags are ignored:  they cannot distinguish `@all` from `@everyone`."""
-    return "all" in _broadcast_tokens_visible(content_outside_code)
+    return bool(_broadcast_tokens_visible(content_outside_code) & BROADCAST_TOKENS)
 
 
 def is_owner_topic(topic: str) -> bool:
@@ -327,6 +345,7 @@ class Classes:
         self.own = self.owner = self.owner_api = self.eligible = self.direct = False
         self.broadcast_all = False
         self.everyone_inert = False
+        self.peer_broadcast = False
         self.fleet = self.wildcard = self.dm = self.wake_tag = self.stale = self.sender_is_bot = (
             False
         )
@@ -350,6 +369,7 @@ class Classes:
                 "fleet",
                 "broadcast_all",
                 "everyone_inert",
+                "peer_broadcast",
                 "wildcard",
                 "dm",
                 "wake_tag",
@@ -420,8 +440,15 @@ def classify(message: Mapping[str, Any], me: SeatIdentity, ctx: Context) -> Clas
     names = ("@**%s**" % me.full_name, "@**%s|%d**" % (me.full_name, me.user_id))
     c.direct = "mentioned" in flags and any(n in visible for n in names)
     tokens = _broadcast_tokens_visible(visible)  # `visible` is already outside_code(content)
-    c.broadcast_all = "all" in tokens
+    # `@all`, `@channel` and `@stream` count exactly like `@all` (owner, Oct 27 2026).  `@everyone`
+    # is inert on its own:  it lands unread in every bot's inbox and wakes nobody.
+    c.broadcast_all = bool(tokens & BROADCAST_TOKENS)
     c.everyone_inert = "everyone" in tokens and not c.broadcast_all
+    # A fleet bot's `@all` (owner, Oct 27 2026):  it wakes like the owner's, under peer budgets,
+    # the loop guard and the stale rule.  The owner is not a peer broadcast, and a message in a DM
+    # is not a broadcast at all.  An OWNER topic is excluded by the eligibility rule above:  a
+    # peer's post there is never eligible, so it never becomes a peer broadcast either.
+    c.peer_broadcast = bool(c.eligible and not c.owner and c.broadcast_all and not c.dm)
     c.fleet = c.key == FLEET_WAKE_KEY and c.broadcast_all
     c.wildcard = any(f in flags for f in WILDCARD_FLAGS)
     c.wake_tag = bool(_WAKE_TAG_RE.match(content))
@@ -473,6 +500,10 @@ def prefilter(c: Classes) -> tuple[str | None, str | None]:
     if c.direct or c.dm:
         # An eligible bot's DM wakes like a direct mention (owner 2026-10-09).
         return (None, "stale") if c.stale else ("peer", None)
+    if c.peer_broadcast and not c.owner_topic:
+        # A fleet bot's `@all` wakes like the owner's (owner, Oct 27 2026):  the same stale rule,
+        # the same loop guard, the peer budgets.  It is still peer data, never owner authority.
+        return (None, "stale") if c.stale else ("peer", None)
     if c.fleet or c.wildcard:
         return None, "group_or_wildcard"
     return None, "not_a_mention"
@@ -510,6 +541,9 @@ def route(
                 (c.owner and not c.everyone_inert)
                 or c.direct
                 or (not c.everyone_inert and c.reply_to is not None and c.reply_to in lease.posted)
+                # A fleet bot's `@all` interrupts a leased topic like the owner's (owner,
+                # Oct 27 2026):  the lease on the topic is woken, under the peer budgets.
+                or (c.peer_broadcast and not c.owner_topic)
             )
             klass = PASSIVE
             if wants and not presence:
@@ -524,7 +558,9 @@ def route(
         c.direct
         or c.dm
         or (c.owner and c.fleet)
-        or (c.owner and c.broadcast_all and not c.owner_topic)
+        # The owner's and a fleet bot's channel-wide mention (owner, Oct 27 2026):  both take a
+        # claude-code lease with `mentions`, and the seat-inbox copy is marked delivered_to.
+        or (c.eligible and c.broadcast_all and not c.owner_topic)
     )
     if mention_class:
         candidates = [

@@ -49,6 +49,16 @@ Muse can receive a bounded list of existing chats and request one exact destinat
 
 The chat catalog is not a universal wake transport.  It can list stores that do not support delivery; only records marked fresh and wake-capable can be selected.  Muse may inspect one exact, listed read-capable excerpt for an owner or peer trigger when it helps resolve the request.  Muse makes the relevance and safety judgment once; the listener enforces the exact target, read capability, excerpt bounds, and fixed routing constraints.
 
+### Broadcast Wake Rules (owner, Oct 27 2026)
+
+The listener classifies every message for every seat before anything happens.  A mention, a DM and Jay's own posts wake their seat;  an ordinary channel message does not.  The wildcard tokens are the exception, and Jay's Oct 27 2026 rule decides what they do.
+
+`@all`, `@channel` and `@stream` all count exactly like `@all`.  Jay's `@all` wakes the fleet and reaches the working chats.  A fleet bot's `@all` wakes the fleet the same way now, under the peer budgets, the loop guard and the stale rule, and it lands unread in every bot's inbox.  It is right only when Jay asked or approved it, or in an extremely serious situation (an ongoing targeted attack, a fleet-wide outage of about twenty minutes), and a bot that uses it without explicit approval DMs Jay why.  Ten minutes after such a broadcast, if nobody explained it to Jay, the held-alert seat DMs Jay a reminder that names the seat and the place, never the message content.
+
+`@everyone` is not a wake:  it lands unread in every bot's inbox and wakes nobody.  `@topic` is not a broadcast token.  A leading eyes emoji (`:eyes:` or the character itself, optionally after the seat tag) means "never wake anyone", whatever the message carries.
+
+An OWNER topic (a topic whose name starts `OWNER `) is where a decision waits on Jay.  Nothing a peer posts there wakes anyone, `@all` included.
+
 ### Codex Delivery
 
 Codex receives Zulip through Operator, the existing Agent-Sync listener.  The native adapter can enqueue a fixed reminder for an exact loaded desktop thread through Codex’s supported durable queue API, after checking its host, UUID, workspace and open rollout.  Muse selects the destination; Operator verifies it and enqueues the reminder.  Queue acknowledgment and actual turn pickup are separate receipts.  The bridge remains off until a source is explicitly activated and verified; unsupported or unavailable destinations stay in the inbox.  See [Native Codex Wake Delivery](native-codex-wakes.md) for the transport and activation contract.
