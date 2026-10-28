@@ -461,7 +461,17 @@ class LinkifyTests(LinkifyTestCase):
         (line,) = self.log_lines()
         self.assertEqual(
             line["reformatted"]["links"],
-            {"issues": 2, "prs": 1, "projects": 0, "fleetlink": 0, "swu": 0, "repos": 0, "pagerduty": 0, "sentry": 0, "cursor": 0},
+            {
+                "issues": 2,
+                "prs": 1,
+                "projects": 0,
+                "fleetlink": 0,
+                "swu": 0,
+                "repos": 0,
+                "pagerduty": 0,
+                "sentry": 0,
+                "cursor": 0,
+            },
             line["reformatted"],
         )
 
@@ -483,7 +493,17 @@ class LinkifyTests(LinkifyTestCase):
         (line,) = self.log_lines()
         self.assertEqual(
             line["reformatted"]["links"],
-            {"issues": 2, "prs": 1, "projects": 0, "fleetlink": 0, "swu": 0, "repos": 0, "pagerduty": 0, "sentry": 0, "cursor": 0},
+            {
+                "issues": 2,
+                "prs": 1,
+                "projects": 0,
+                "fleetlink": 0,
+                "swu": 0,
+                "repos": 0,
+                "pagerduty": 0,
+                "sentry": 0,
+                "cursor": 0,
+            },
             line["reformatted"],
         )
 
@@ -686,9 +706,7 @@ class LinkifyTests(LinkifyTestCase):
         out = self.html(
             "[AFC, MM] Notes", "See fl/fleet-tools and fleetlink/zulip/zulip-fleet-guide.md."
         )
-        self.assertIn(
-            f'<a href="https://{FLEETLINK_HOST}/fleet-tools">fl/fleet-tools</a>', out
-        )
+        self.assertIn(f'<a href="https://{FLEETLINK_HOST}/fleet-tools">fl/fleet-tools</a>', out)
         self.assertIn(
             f'<a href="https://{FLEETLINK_HOST}/zulip/zulip-fleet-guide.md">'
             "fleetlink/zulip/zulip-fleet-guide.md</a>.",
@@ -720,9 +738,7 @@ class LinkifyTests(LinkifyTestCase):
     def test_a_pagerduty_incident_becomes_a_link_and_wins_over_the_qualified_rule(self):
         #  a pound sign usually names a pull request, but PagerDuty names an incident instead
         out = self.html("[AFC, MM] Notes", "Paged as PagerDuty#384 and PagerDuty#Q1ABC23.")
-        self.assertIn(
-            f'<a href="https://{PAGERDUTY_HOST}/incidents/384">PagerDuty#384</a>', out
-        )
+        self.assertIn(f'<a href="https://{PAGERDUTY_HOST}/incidents/384">PagerDuty#384</a>', out)
         self.assertIn(
             f'<a href="https://{PAGERDUTY_HOST}/incidents/Q1ABC23">PagerDuty#Q1ABC23</a>',
             out,
