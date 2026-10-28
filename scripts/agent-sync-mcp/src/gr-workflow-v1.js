@@ -162,7 +162,7 @@ const RESPONSE_KEYS = {
   wf_merge_guarded: ['merged','sha'],
 };
 export function validWfV1Response(action, body) {
- if(['wf_issue_events','wf_issue_timeline'].includes(action))return z.object({events:z.array(z.object({id:z.number().int().positive().nullable(),event:z.string().regex(/^[a-z][a-z_]{0,79}$/),created_at:z.string().max(100).nullable(),commit_id:z.string().regex(/^[0-9a-f]{40}$/).nullable()}).strict()).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict().safeParse(body).success;
+ if(['wf_issue_events','wf_issue_timeline'].includes(action))return z.object({events:z.array(z.object({id:z.number().int().positive().nullable(),event:z.string().regex(/^[a-z][a-z_-]{0,79}$/),created_at:z.string().max(100).nullable(),commit_id:z.string().regex(/^[0-9a-f]{40}$/).nullable()}).strict()).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict().safeParse(body).success;
 
  if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action)){
   const issue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>Buffer.byteLength(v,'utf8')<=4096).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).nullable()}).strict();

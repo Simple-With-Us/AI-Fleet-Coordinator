@@ -51,3 +51,7 @@ class History(unittest.TestCase):
         m = Minter()
         WorkflowVerbs.for_action(Client(), Policy(), m, "swu-wise", "wf_issue_events", REPO)
         self.assertEqual(m.calls[0][2], {"issues": "read", "metadata": "read"})
+
+    def test_documented_hyphenated_timeline_names(self):
+        for name in ("cross-referenced","line-commented","commit-commented"):
+            self.assertEqual(WorkflowVerbs._issue_event({"event":name})["event"],name)

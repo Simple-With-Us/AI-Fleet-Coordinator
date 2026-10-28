@@ -253,3 +253,7 @@ test('history metadata closed own-bearer reads and nullable absent fields',async
  assert.equal(validWfV1Response(action,{events:[{...event,body:'not allowed'}],page:1,has_more:false}),false);
  }
 });
+
+test('documented hyphenated timeline kinds pass receipt boundary',()=>{
+ for(const event of ['cross-referenced','line-commented','commit-commented'])assert.ok(validWfV1Response('wf_issue_timeline',{events:[{event,id:null,created_at:null,commit_id:null}],page:1,has_more:false}));
+});

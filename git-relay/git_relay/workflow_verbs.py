@@ -347,7 +347,7 @@ class WorkflowVerbs:
         if (
             not isinstance(data, dict)
             or not isinstance(data.get("event"), str)
-            or not re.fullmatch(r"[a-z][a-z_]{0,79}", data["event"])
+            or not re.fullmatch(r"[a-z][a-z_-]{0,79}", data["event"])
         ):
             raise RelayGitHubError(502, "issue event receipt unverifiable")
         event_id = data.get("id")
