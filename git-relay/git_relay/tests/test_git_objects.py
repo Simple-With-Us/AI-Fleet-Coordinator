@@ -165,12 +165,14 @@ class Objects(unittest.TestCase):
             )
 
     def test_real_relay_blob_write_unknown_persisted_restart_no_second_dispatch(self):
-        import json, tempfile
+        import json
+        import tempfile
         from pathlib import Path
+
         from git_relay.audit import AuditLog
+        from git_relay.outcomes import OutcomeStore
         from git_relay.policy import SeatPolicy
         from git_relay.server import Relay
-        from git_relay.outcomes import OutcomeStore
 
         # Synthetic runtime-only seat token, never a credential.
         token = "x" * 32

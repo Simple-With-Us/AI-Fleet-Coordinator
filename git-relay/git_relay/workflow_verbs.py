@@ -22,9 +22,9 @@ only job and step conclusions are returned.
 
 import base64
 import binascii
-import hashlib
 import bz2
 import gzip
+import hashlib
 import io
 import lzma
 import re
