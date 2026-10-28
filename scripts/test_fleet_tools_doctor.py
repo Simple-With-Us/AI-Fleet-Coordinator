@@ -159,9 +159,7 @@ class SeatAndMcpTests(unittest.TestCase):
         rows = {r["check"]: r for r in report.rows}
         self.assertEqual(rows["mcp:codex"]["status"], "WARN")
         missing = rows["mcp:codex"]["detail"].split("missing ", 1)[1]
-        self.assertEqual(
-            {name.strip() for name in missing.split(",")}, {"agent-sync", "fleetlink"}
-        )
+        self.assertEqual({name.strip() for name in missing.split(",")}, {"agent-sync", "fleetlink"})
 
     def test_post_only_when_the_failing_set_changes(self):
         calls = []
