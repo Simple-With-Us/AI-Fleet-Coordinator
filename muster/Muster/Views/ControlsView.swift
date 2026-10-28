@@ -307,6 +307,11 @@ private struct KnobEditSheet: View {
     @State private var text: String
     @State private var flag: Bool
     @State private var number: Int
+    /// The integer field's text.  A formatted `TextField(value:format:)` binding
+    /// commits only on Return or focus loss,  so clicking Show Plan straight after
+    /// typing could submit the stale `number`.  The string binds every keystroke,
+    /// and `value` reads it back,  so the plan always sees what is on screen.
+    @State private var numberText: String
 
     init(row: KnobRegistry.Row, onSave: @escaping (String) -> Void, onCancel: @escaping () -> Void) {
         self.row = row
@@ -320,13 +325,14 @@ private struct KnobEditSheet: View {
             if let high, start > high { start = high }
         }
         _number = State(initialValue: start)
+        _numberText = State(initialValue: String(start))
     }
 
     /// The value the editor holds,  as the knob engine takes it.
     private var value: String {
         switch row.editor {
         case .toggle?: return flag ? "true" : "false"
-        case .integer?: return String(number)
+        case .integer?: return numberText.trimmingCharacters(in: .whitespaces)
         case .choice?, .text?, nil: return text.trimmingCharacters(in: .whitespaces)
         }
     }
@@ -399,10 +405,18 @@ private struct KnobEditSheet: View {
             let lower = low ?? 0
             let upper = max(high ?? 1_000_000_000, lower)
             HStack(spacing: 10) {
-                TextField("Value", value: $number, format: .number)
+                TextField("Value", text: $numberText)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12, design: .monospaced))
                     .frame(width: 140)
+                    .onChange(of: numberText) { _, fresh in
+                        if let parsed = Int(fresh.trimmingCharacters(in: .whitespaces)) {
+                            number = parsed
+                        }
+                    }
+                    .onChange(of: number) { _, fresh in
+                        numberText = String(fresh)
+                    }
                 Stepper("", value: $number, in: lower...upper)
                     .labelsHidden()
                 if low != nil || high != nil {
