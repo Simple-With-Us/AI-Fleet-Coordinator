@@ -49,3 +49,25 @@ class Relations(unittest.TestCase):
                 WorkflowVerbs.check_shape(
                     "wf_issue_subissues", {"repo": REPO, "number": 1, **extra}, REPO
                 )
+
+    def test_related_repository_and_oversized_page(self):
+        value = {
+            "id": 1,
+            "number": 2,
+            "title": "related",
+            "state": "open",
+            "repository_url": "https://api.github.com/repos/Other/Repo",
+        }
+        self.assertEqual(WorkflowVerbs._relation_issue(value)["repo"], "Other/Repo")
+        self.assertIsNone(
+            WorkflowVerbs._relation_issue(
+                {**value, "repository_url": "https://evil.invalid/repos/Other/Repo"}
+            )["repo"]
+        )
+        a = "wf_issue_subissues"
+        c = Client([value, value])
+        out = WorkflowVerbs(c, Policy(), "swu-wise", "own", "swu-wise", a, REPO).run(
+            a, {"repo": REPO, "number": 1, "per_page": 1}
+        )
+        self.assertEqual(len(out["issues"]), 1)
+        self.assertTrue(out["has_more"])

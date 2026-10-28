@@ -23,7 +23,7 @@ only job and step conclusions are returned.
 import base64
 import binascii
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from .github_client import RelayGitHubError
 from .secret_scan import find_secret
@@ -289,7 +289,21 @@ class WorkflowVerbs:
             or data.get("state") not in ("open", "closed")
         ):
             raise RelayGitHubError(502, "issue relation receipt unverifiable")
-        return {k: data[k] for k in ("id", "number", "title", "state")}
+        url = data.get("repository_url")
+        bound = None
+        if isinstance(url, str):
+            parsed = urlsplit(url)
+            candidate = parsed.path.removeprefix("/repos/")
+            if (
+                parsed.scheme == "https"
+                and parsed.netloc == "api.github.com"
+                and parsed.path.startswith("/repos/")
+                and not parsed.query
+                and not parsed.fragment
+                and _REPO.fullmatch(candidate)
+            ):
+                bound = candidate
+        return {**{k: data[k] for k in ("id", "number", "title", "state")}, "repo": bound}
 
     def _relation_read(self, repo, args, suffix, single=False):
         _only(args, ("repo", "number") if single else ("repo", "number", "per_page", "page"))
@@ -300,12 +314,12 @@ class WorkflowVerbs:
         data = self._get(f"/repos/{repo}/issues/{number}/{suffix}{query}")
         if single:
             return {"issue": self._relation_issue(data)}
-        if not isinstance(data, list) or len(data) > limit:
+        if not isinstance(data, list):
             raise RelayGitHubError(502, "issue relations page unverifiable")
         return {
-            "issues": [self._relation_issue(x) for x in data],
+            "issues": [self._relation_issue(x) for x in data[:limit]],
             "page": page,
-            "has_more": len(data) == limit,
+            "has_more": len(data) >= limit,
         }
 
     def wf_issue_parent(self, repo, args):
