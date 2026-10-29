@@ -75,6 +75,8 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 SPECS = {
     "wf_issue_events": ({"issues": "read"}, False),
     "wf_issue_timeline": ({"issues": "read"}, False),
+    "wf_repo_tags": ({"contents": "read"}, False),
+    "wf_repo_languages": ({"metadata": "read"}, False),
     "wf_git_tree_create": ({"contents": "write"}, True),
     "wf_git_commit_create": ({"contents": "write"}, True),
     "wf_pr_list_page": ({"pull_requests": "read"}, False),
@@ -685,6 +687,55 @@ class WorkflowVerbs:
         result = getattr(self, action)(self.repo, args)
         return _validate_read(action, result) if action in _NEW_READS else result
 
+    @staticmethod
+    def _metadata_name(value, maximum):
+        if not isinstance(value, str) or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise RelayGitHubError(502, "repository metadata name unverifiable")
+        try:
+            length = len(value.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise RelayGitHubError(502, "repository metadata name unverifiable") from None
+        if not 1 <= length <= maximum:
+            raise RelayGitHubError(502, "repository metadata name unverifiable")
+        if find_secret(value) or re.search(
+            r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", value
+        ):
+            raise Refused("credential-shaped repository metadata name refused")
+        return value
+
+    def wf_repo_tags(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/tags?per_page={limit}&page={page}")
+        if not isinstance(data, list):
+            raise RelayGitHubError(502, "tag page unverifiable")
+        tags = []
+        for item in data[:limit]:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("commit"), dict)
+                or not isinstance(item["commit"].get("sha"), str)
+                or not _SHA.fullmatch(item["commit"]["sha"])
+            ):
+                raise RelayGitHubError(502, "tag metadata unverifiable")
+            name = self._metadata_name(item.get("name"), 1024)
+            tags.append({"name": name, "sha": item["commit"]["sha"]})
+        return {"tags": tags, "page": page, "has_more": len(data) >= limit}
+
+    def wf_repo_languages(self, repo, args):
+        _only(args, ("repo",))
+        data = self._get(f"/repos/{repo}/languages")
+        if not isinstance(data, dict) or len(data) > 100:
+            raise RelayGitHubError(502, "language metadata unverifiable")
+        values = []
+        for name, count in data.items():
+            name = self._metadata_name(name, 100)
+            if type(count) is not int or not 0 <= count <= 9007199254740991:
+                raise RelayGitHubError(502, "language count unverifiable")
+            values.append({"name": name, "bytes": count})
+        return {"languages": sorted(values, key=lambda x: x["name"])}
+
     # Fixed issue endpoints only.  No assignee, label, milestone or admin expansion.
     @staticmethod
     def _issue_summary(data):
@@ -906,9 +957,9 @@ class WorkflowVerbs:
             not isinstance(data, dict)
             or "pull_request" in data
             or type(data.get("id")) is not int
-            or data["id"] < 1
+            or not 1 <= data["id"] <= 9007199254740991
             or type(data.get("number")) is not int
-            or data["number"] < 1
+            or not 1 <= data["number"] <= 9007199254740991
             or not isinstance(data.get("title"), str)
             or len(data["title"].encode("utf-8")) > 4096
             or data.get("state") not in ("open", "closed")
@@ -932,6 +983,10 @@ class WorkflowVerbs:
                 and not parsed.fragment
                 and _REPO.fullmatch(candidate)
             ):
+                if find_secret(candidate) or re.search(
+                    r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", candidate
+                ):
+                    raise Refused("relation repository contains credential pattern")
                 bound = candidate
         return {**{k: data[k] for k in ("id", "number", "state")}, "title": title, "repo": bound}
 

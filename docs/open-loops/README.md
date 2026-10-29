@@ -1,6 +1,6 @@
 # Open-Loops Routine Texts
 
-The fleet's open-loops routines (a daily digest, a daily backup-health line and a weekly landing-sweep report) run as a pair on BotFleet and on Grok Bot.  Both platforms run the same text.  This folder is the public pointer.  The texts themselves are private, and they never enter this repository.  Only their checker (`scripts/check-routine-prompts.py`) and its synthetic fixtures (`scripts/tests/fixtures/routines/`) live here.  A real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23), with two exceptions: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space, and an Apple Note body takes the narrow no-break space plus a normal space (AFC-552).
+The fleet's open-loops routines (a daily digest, a daily backup-health line and a weekly landing-sweep report) run as a pair on BotFleet and on Grok Bot.  Both platforms run the same text.  This folder is the public pointer.  The texts themselves are private, and they never enter this repository.  Only their checker (`scripts/check-routine-prompts.py`) and its synthetic fixtures (`scripts/tests/fixtures/routines/`) live here.  A real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23), with one exception: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.
 
 ## Where the Texts Live
 
