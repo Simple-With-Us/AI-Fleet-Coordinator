@@ -112,6 +112,7 @@ export class GrRelayClient {
     // before recursive Zod parsing. Keep the normalized payload check below.
     const limit = workflowInputLimit(action);
     if (!boundedWorkflowInput(args, {maxBytes: limit, maxString: limit})) return {status:400,body:{error:"invalid_workflow_args"}};
+    if (new TextEncoder().encode(JSON.stringify(args)).length > limit) return {status:400,body:{error:"workflow_request_too_large"}};
     const parsedArgs = parseWfV1Args(action, args);
     if (parsedArgs === null) return {status:400,body:{error:"invalid_workflow_args"}};
     args = parsedArgs;
