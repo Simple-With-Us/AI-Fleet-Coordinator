@@ -641,3 +641,135 @@ test('decoded per-file and aggregate boundaries match relay budgets',()=>{
  assert.ok(validWfV1Args('wf_files_put',multi));
  multi.files.push({...file(1),path:'c'});assert.ok(!validWfV1Args('wf_files_put',multi));
 });
+
+test('exact-name check pages and run get correlate head ID and provenance without output',async()=>{
+ const row={id:7,head_sha:'a'.repeat(40),name:'Kody Code Review',status:'completed',conclusion:'success',app_id:8},args={repo,head_sha:row.head_sha,check_name:row.name,page:2,per_page:1},receipt={checks:[row],head_sha:row.head_sha,check_name:row.name,page:2,has_more:true};
+ assert.equal(validWfV1Response('wf_check_runs_page',receipt,args),true);assert.equal(validWfV1Response('wf_check_runs_page',{...receipt,has_more:false},args),false);assert.equal(validWfV1Response('wf_check_run_get',{check:row},{repo,check_run_id:8,head_sha:row.head_sha}),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_check_runs_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_check_runs_page',args)).isError);
+});
+
+test('check names fail closed before network and get binds head',async()=>{
+ for(const check_name of [' ', 'é'.repeat(128), 'x\0y', '\ud800', 'sk-proj-'+'x'.repeat(24)]){
+  assert.equal(validWfV1Args('wf_check_runs_page',{repo,head_sha:'a'.repeat(40),check_name}),false);
+  let calls=0;const t=harness(async()=>{calls++;return new Response('{}');});
+  assert.ok((await t.call('gr_wf_check_runs_page',{repo,head_sha:'a'.repeat(40),check_name})).isError);assert.equal(calls,0);
+ }
+ const row={id:7,head_sha:'a'.repeat(40),name:'test',status:'completed',conclusion:'success',app_id:8};
+ const args={repo,check_run_id:7,head_sha:row.head_sha};
+ assert.equal(validWfV1Response('wf_check_run_get',{check:row},args),true);
+ assert.equal(validWfV1Response('wf_check_run_get',{check:{...row,head_sha:'b'.repeat(40)}},args),false);
+ let calls=0;const t=harness(async(url)=>{calls++;assert.ok(url.endsWith('/v1/wf_check_run_get'));return new Response(JSON.stringify({check:row}));});
+ assert.ok(!(await t.call('gr_wf_check_run_get',args)).isError);assert.equal(calls,1);
+});
+
+test('file history immutable range and path correlated strict metadata receipt',async()=>{
+ const args={repo,path:'docs/a.txt',head_sha:'a'.repeat(40),page:2,per_page:1},receipt={commits:[{sha:'b'.repeat(40),parents:[]}],path:'docs/a.txt',head_sha:'a'.repeat(40),page:2,has_more:true};
+ assert.equal(validWfV1Response('wf_file_history',receipt,args),true);assert.ok(WF_V1_READ_ACTIONS.includes('wf_file_history'));
+ for(const bad of [{...receipt,path:'other'},{...receipt,has_more:false},{...receipt,commits:[{sha:'b'.repeat(40),parents:[],message:'private'}]}])assert.equal(validWfV1Response('wf_file_history',bad,args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_file_history'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_file_history',args)).isError);
+});
+
+test('file history closed arguments enforce bounded path head page and no credential-shaped input',()=>{
+ const args={repo,path:'docs/a.txt',head_sha:'a'.repeat(40)};
+ assert.equal(validWfV1Args('wf_file_history',args),true);
+ for(const bad of [{...args,follow:true},{...args,page:0},{...args,page:1001},{...args,per_page:51},{...args,path:'../x'},{...args,path:'a/'.repeat(17)+'x'},{...args,head_sha:true},{...args,path:'ghp_'+'x'.repeat(36)}]) assert.equal(validWfV1Args('wf_file_history',bad),false);
+ const receipt={commits:[],path:args.path,head_sha:args.head_sha,page:1,has_more:false};
+ for(const bad of [{...receipt,head_sha:'b'.repeat(40)},{...receipt,page:2},{...receipt,commits:[{sha:'b'.repeat(40),parents:Array(17).fill('c'.repeat(40))}]},{...receipt,extra:true}])assert.equal(validWfV1Response('wf_file_history',bad,args),false);
+});
+
+test('run pages expose search cap, mutable state and bounded PR-number observations',async()=>{
+ const args={repo,status:'waiting',per_page:1},row={id:7,run_attempt:1,workflow_id:8,head_branch:'wise/a',head_sha:'a'.repeat(40),status:'waiting',conclusion:null,pull_numbers:[2]},receipt={runs:[row],total:1,page:1,has_more:true,search_cap:1000,snapshot:false};
+ assert.equal(validWfV1Response('wf_runs_page',receipt,args),true);assert.equal(validWfV1Response('wf_runs_page',{...receipt,search_cap:null},args),false);assert.equal(validWfV1Response('wf_runs_page',{...receipt,runs:[{...row,logs_url:'no'}]},args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_runs_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_runs_page',args)).isError);
+});
+test('workflow pages map numeric IDs to bounded paths not display-name authority',async()=>{
+ const args={repo,per_page:1},row={id:7,path:'.github/workflows/ci.yml',state:'active'},receipt={workflows:[row],total:1,page:1,has_more:true,snapshot:false};
+ assert.equal(validWfV1Response('wf_workflows_page',receipt,args),true);assert.equal(validWfV1Response('wf_workflows_page',{...receipt,workflows:[{...row,name:'claimed authority'}]},args),false);assert.equal(validWfV1Response('wf_workflows_page',{...receipt,workflows:[{...row,path:'.github/workflows/../ci.yml'}]},args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_workflows_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_workflows_page',args)).isError);
+});
+
+test('actions pages refuse closed args and filtered search windows before transport',()=>{
+ for(const a of ['wf_runs_page','wf_workflows_page'])for(const bad of [{repo,page:0},{repo,page:1001},{repo,per_page:51},{repo,raw_query:'x'}])assert.equal(validWfV1Args(a,bad),false);
+ assert.equal(validWfV1Args('wf_runs_page',{repo,status:'queued',page:21,per_page:50}),false);
+ assert.equal(validWfV1Args('wf_runs_page',{repo,page:1000,per_page:50}),true);
+});
+
+test('PR file pages are strict metadata only and correlate expected head',async()=>{
+ const args={repo,number:2,expected_head_sha:'a'.repeat(40),per_page:1},file={sha:'b'.repeat(40),filename:'a.txt',previous_filename:null,status:'modified',additions:1,deletions:0,changes:1},receipt={files:[file],number:2,head_sha:args.expected_head_sha,page:1,has_more:true,history_complete:false};
+ assert.equal(validWfV1Response('wf_pr_files_page',receipt,args),true);assert.equal(validWfV1Response('wf_pr_files_page',{...receipt,history_complete:true},args),false);assert.equal(validWfV1Response('wf_pr_files_page',{...receipt,files:[{...file,patch:'private'}]},args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_pr_files_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_pr_files_page',args)).isError);
+});
+test('PR file cached receipt refuses oversized escaped page without truncation',()=>{
+ const args={repo,number:2,expected_head_sha:'a'.repeat(40)},row={sha:'b'.repeat(40),filename:''.repeat(1000),previous_filename:''.repeat(1000),status:'renamed',additions:1,deletions:1,changes:2};
+ assert.equal(validWfV1Response('wf_pr_files_page',{files:Array(30).fill(row),number:2,head_sha:args.expected_head_sha,page:1,has_more:true,history_complete:false},args),false);
+});
+
+test('run page observes startup_failure without treating it as successful review',()=>{
+ const args={repo,status:'completed'},row={id:7,run_attempt:1,workflow_id:8,head_branch:'wise/a',head_sha:'a'.repeat(40),status:'completed',conclusion:'startup_failure',pull_numbers:[]};
+ const receipt={runs:[row],total:1,page:1,has_more:false,search_cap:1000,snapshot:false};
+ assert.equal(validWfV1Response('wf_runs_page',receipt,args),true);
+ assert.equal(validWfV1Response('wf_runs_page',{...receipt,runs:[{...row,status:'queued'}]},args),false);
+});
+
+test('label update metadata uses closed bounded args and exact correlated receipt',async()=>{
+ const args={repo,name:'old/label',expected_label_id:7,new_name:'New label',color:'AaBbee',description:''};
+ const receipt={label:{id:7,name:'New label',color:'aabbee',description:''}};
+ assert.equal(validWfV1Args('wf_label_update',args),true);assert.equal(validWfV1Response('wf_label_update',receipt,args),true);
+ for(const bad of [{label:{...receipt.label,id:8}},{label:{...receipt.label,name:'wrong'}},{label:{...receipt.label,extra:true}}])assert.equal(validWfV1Response('wf_label_update',bad,args),false);
+ // Synthetic assembled fixture, never a credential.
+ for(const bad of [{...args,archived:true},{...args,description:'é'.repeat(51)},{...args,new_name:'ghp_'+'x'.repeat(36)},{...args,new_name:' '}])assert.equal(validWfV1Args('wf_label_update',bad),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_label_update'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');assert.deepEqual(JSON.parse(i.body),args);return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_label_update',args)).isError);
+});
+
+test('additive label contract never uses replace-all semantics or leaks unrelated labels',async()=>{
+ const args={repo,number:2,labels:['hold']},receipt={number:2,added:[{id:7,name:'hold',color:'000000'}]};assert.equal(validWfV1Response('wf_labels_add',receipt,args),true);assert.equal(validWfV1Args('wf_labels_add',{...args,labels:['hold','HOLD']}),false);assert.equal(validWfV1Response('wf_labels_add',{number:2,added:[...receipt.added,{id:8,name:'other',color:'000000'}]},args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_labels_add'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');assert.deepEqual(JSON.parse(i.body),args);return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_labels_add',args)).isError);
+});
+
+test('review/comment pages preserve provenance and do not turn text into authority',async()=>{
+ const args={repo,number:2,expected_head_sha:'a'.repeat(40),per_page:1},row={id:7,author:{id:8,login:'kody-ai[bot]',type:'Bot'},body:'Untrusted text',body_withheld:false,state:'CHANGES_REQUESTED',commit_id:'b'.repeat(40)},receipt={reviews:[row],number:2,head_sha:args.expected_head_sha,page:1,has_more:true};
+ assert.equal(validWfV1Response('wf_pr_reviews_page',receipt,args),true);assert.equal(validWfV1Response('wf_pr_reviews_page',{...receipt,reviews:[{...row,body_withheld:true}]},args),false);
+ // Synthetic scanner fixture, never a credential.
+ assert.equal(validWfV1Response('wf_pr_reviews_page',{...receipt,reviews:[{...row,body:'ghp_'+'x'.repeat(36)}]},args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_pr_reviews_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_pr_reviews_page',args)).isError);
+});
+
+test('discussion cached receipt refuses escaped aggregate overflow without dropping records',()=>{
+ const args={repo,number:2,expected_head_sha:'a'.repeat(40)},row={id:1,author:{id:2,login:'reviewer',type:'User'},body:'\x01'.repeat(30000),body_withheld:false,state:'COMMENTED',commit_id:'b'.repeat(40)};
+ const receipt={reviews:[row,{...row,id:3}],number:2,head_sha:args.expected_head_sha,page:1,has_more:false};
+ assert.equal(validWfV1Response('wf_pr_reviews_page',receipt,args),false);
+});
+test('compare graph page correlates immutable SHA inputs and excludes patches/files',async()=>{
+ const args={repo,base_sha:'a'.repeat(40),head_sha:'b'.repeat(40),per_page:1},receipt={...args,merge_base_sha:args.base_sha,status:'ahead',ahead_by:1,behind_by:0,total_commits:1,commits:[{sha:args.head_sha,parents:[args.base_sha]}],page:1,has_more:true};delete receipt.repo;delete receipt.per_page;
+ assert.equal(validWfV1Response('wf_compare_commits_page',receipt,args),true);assert.equal(validWfV1Response('wf_compare_commits_page',{...receipt,files:[]},args),false);assert.equal(validWfV1Response('wf_compare_commits_page',{...receipt,base_sha:args.head_sha},args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_compare_commits_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_compare_commits_page',args)).isError);
+});
+test('PR list pages remain non-snapshot metadata with bounded correlated receipts',async()=>{
+ const args={repo,head:'release/a',base:'main',page:2,per_page:1},row={number:2,state:'open',draft:false,head_ref:'release/a',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40)},receipt={pulls:[row],page:2,has_more:true,snapshot:false};
+ assert.equal(validWfV1Response('wf_pr_list_page',receipt,args),true);assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,pulls:[{...row,state:'closed'}]},args),false);assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,snapshot:true},args),false);assert.equal(validWfV1Response('wf_pr_list_page',{...receipt,pulls:[{...row,title:'omitted'}]},args),false);
+ const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_pr_list_page'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(receipt));});assert.ok(!(await t.call('gr_wf_pr_list_page',args)).isError);
+});
+
+test('new label and discussion boundaries reject embedded provider shapes and malformed Unicode',async()=>{
+ const args={repo,name:'hold',expected_label_id:7,new_name:'hold',color:'000000',description:'safe'};
+ for(const new_name of ['prefixsk-proj-'+'X'.repeat(32),'prefixsk_live_'+'X'.repeat(32),'\ud800']){
+  assert.equal(parseWfV1Args('wf_label_update',{...args,new_name}),null);
+  let calls=0;const t=harness(async()=>{calls++;throw Error('must not call');});assert.equal((await t.call('gr_wf_label_update',{...args,new_name})).isError,true);assert.equal(calls,0);
+ }
+ const row={id:7,author:{id:8,login:'robot[bot]',type:'Bot'},body:'prefixsk-proj-'+'X'.repeat(32),body_withheld:false,state:'APPROVED',commit_id:'a'.repeat(40)};
+ assert.equal(validWfV1Response('wf_pr_reviews_page',{reviews:[row],number:2,head_sha:'a'.repeat(40),page:1,has_more:false}),false);
+ assert.equal(validWfV1Response('wf_pr_reviews_page',{reviews:[{...row,body:'\ud800'}],number:2,head_sha:'a'.repeat(40),page:1,has_more:false}),false);
+});
+
+test('PR list retains provider branch metadata without widening write refs',()=>{
+ const args={repo:'Simple-With-Us/AI-Fleet-Coordinator'},row={number:2,state:'open',draft:false,head_ref:'deps/pkg@1.2+build#2',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40)},body={pulls:[row],page:1,has_more:false,snapshot:false};
+ assert.equal(validWfV1Response('wf_pr_list_page',body,args),true);
+ assert.equal(validWfV1Args('wf_pr_list_page',{...args,head:row.head_ref}),false);
+ for(const head_ref of ['a..b','a@{b','a\n','a/.bad','a.lock'])assert.equal(validWfV1Response('wf_pr_list_page',{...body,pulls:[{...row,head_ref}]},args),false);
+});
+
+test('label lookup dot segments and percent escapes never dispatch',()=>{
+ const repo='Simple-With-Us/AI-Fleet-Coordinator',base={repo,name:'safe',expected_label_id:7,new_name:'safe',color:'000000',description:''};
+ for(const name of ['.','..','a/../b','%2e%2e','a/%2f/b'])for(const k of ['name','new_name'])assert.equal(validWfV1Args('wf_label_update',{...base,[k]:name}),false);
+ for(const name of ['.','..','a/../b'])assert.equal(validWfV1Args('wf_labels_add',{repo,number:2,labels:[name]}),false);
+});
