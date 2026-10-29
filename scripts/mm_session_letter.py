@@ -828,7 +828,11 @@ def main(argv: list[str] | None = None) -> int:
         return sweep(args.apply, args.live_hours, args.topics_file)
     if args.command == "letter":
         try:
-            print(json.dumps(_require_registry(register(args.session_id, args.title), needs_label=True)))
+            print(
+                json.dumps(
+                    _require_registry(register(args.session_id, args.title), needs_label=True)
+                )
+            )
         except RegistryError as exc:
             print(json.dumps({"error": str(exc)}))
             return 2

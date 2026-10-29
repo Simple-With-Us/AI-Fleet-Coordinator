@@ -783,7 +783,12 @@ def update_session(
                 "SELECT * FROM sessions WHERE platform = ? AND verified_host = ?"
                 " AND profile_scope = ? AND native_session_id = ?"
                 " ORDER BY registered_at DESC LIMIT 1",
-                (namespace, verified_host, profile_scope, SI.check(native_session_id, "the native session id")),
+                (
+                    namespace,
+                    verified_host,
+                    profile_scope,
+                    SI.check(native_session_id, "the native session id"),
+                ),
             ).fetchone()
             if row is None:
                 raise ValueError(
