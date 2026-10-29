@@ -144,3 +144,36 @@ class IssueOutboundProviderTests(unittest.TestCase):
         with self.assertRaises(RelayGitHubError) as caught:
             WorkflowVerbs._relation_issue(row)
         self.assertEqual(caught.exception.status, 502)
+
+    def test_git_tree_paths_provider_shapes_refused_before_client_call(self):
+        # Runtime-assembled synthetic scanner shapes only, never credentials.
+        for prefix in PREFIXES:
+            for leading in ("", "embedded"):
+                path = "docs/" + leading + prefix + "X" * 32 + ".txt"
+                client = Client()
+                action = "wf_git_tree_create"
+                with self.subTest(prefix=prefix, leading=leading):
+                    with self.assertRaises(Refused):
+                        self.handle(client, action).run(
+                            action,
+                            {
+                                "repo": REPO,
+                                "base_tree": "a" * 40,
+                                "files": [{"path": path, "mode": "100644", "text": "safe"}],
+                            },
+                        )
+                    self.assertEqual(client.calls, [])
+
+    def test_clean_git_tree_path_and_content_keep_existing_behavior(self):
+        client = Client({"sha": "b" * 40, "truncated": False, "tree": []})
+        action = "wf_git_tree_create"
+        result = self.handle(client, action).run(
+            action,
+            {
+                "repo": REPO,
+                "base_tree": "a" * 40,
+                "files": [{"path": "docs/safe.txt", "mode": "100644", "text": "safe"}],
+            },
+        )
+        self.assertEqual(result["tree"]["files"], 1)
+        self.assertEqual(client.calls[0][:2], ("POST", "/repos/o/r/git/trees"))
