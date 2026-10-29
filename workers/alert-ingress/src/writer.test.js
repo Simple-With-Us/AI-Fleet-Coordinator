@@ -266,6 +266,12 @@ test("durable overlay preserves historical KV and reads its own writes", async (
           ? JSON.stringify({ phase: "ok" })
           : null;
       },
+      async list({ prefix }) {
+        return {
+          keys: "state:historic".startsWith(prefix) ? [{ name: "state:historic" }] : [],
+          list_complete: true,
+        };
+      },
     };
   const writer = new AlertWriter({ storage: db }, { ALERT_STATE: historical });
   db.data.set("kv:topic:generic:alerts:svc", "1");
@@ -277,6 +283,88 @@ test("durable overlay preserves historical KV and reads its own writes", async (
     await historical.get("state:historic"),
     JSON.stringify({ phase: "ok" }),
   );
+});
+// Every KV list counts against the free plan's 1,000 a day, so the frozen
+// legacy namespace is copied once and the writer never reads it again.
+function countingLegacy(records) {
+  const calls = { list: 0, get: 0 };
+  return {
+    calls,
+    async get(key) {
+      calls.get++;
+      return records[key] ?? null;
+    },
+    async list({ prefix }) {
+      calls.list++;
+      return {
+        keys: Object.keys(records).filter((k) => k.startsWith(prefix)).map((name) => ({ name })),
+        list_complete: true,
+      };
+    },
+  };
+}
+test("legacy KV is copied once, then never listed or read again", async () => {
+  const db = storage(),
+    kv = countingLegacy({
+      "topic:generic:alerts:svc": "1",
+      "idx:generic:alerts:svc:historic": "1",
+      "state:historic": JSON.stringify({ phase: "ok" }),
+    });
+  db.data.set("kv:state:historic", JSON.stringify({ phase: "alerting" }));
+  for (let i = 0; i < 3; i++) {
+    const writer = new AlertWriter({ storage: db }, { ALERT_STATE: kv });
+    for (let j = 0; j < 2; j++) {
+      const response = await writer.fetch(new Request("https://test/status"));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).summary.alerts, 1);
+    }
+  }
+  assert.deepEqual(kv.calls, { list: 1, get: 2 });
+  assert.equal(db.data.get("kv:topic:generic:alerts:svc"), "1");
+  // The writer's own newer record wins over the frozen copy.
+  assert.equal(db.data.get("kv:state:historic"), JSON.stringify({ phase: "alerting" }));
+  assert.notEqual(db.data.get("legacy:imported"), undefined);
+});
+test("a failed copy reads through to KV and retries only after ten minutes", async () => {
+  const db = storage(),
+    kv = countingLegacy({
+      "topic:generic:alerts:svc": "1",
+      "idx:generic:alerts:svc:a": "1",
+      "state:a": JSON.stringify({ phase: "ok" }),
+    });
+  const list = kv.list;
+  let quota = true;
+  kv.list = async (opts) => {
+    if (quota && opts.prefix === "") {
+      kv.calls.list++;
+      throw new Error("KV list() limit exceeded for the day");
+    }
+    return list(opts);
+  };
+  const writer = new AlertWriter({ storage: db }, { ALERT_STATE: kv }),
+    status = async () => (await (await writer.fetch(new Request("https://test/status"))).json()).summary.alerts;
+  assert.equal(await status(), 1);
+  assert.equal(await status(), 1);
+  assert.equal(db.data.get("legacy:imported"), undefined);
+  // The retry time is stored, so a writer evicted and started again waits too.
+  let copies = 0;
+  const counted = kv.list;
+  kv.list = async (opts) => {
+    if (opts.prefix === "") copies++;
+    return counted(opts);
+  };
+  const restarted = new AlertWriter({ storage: db }, { ALERT_STATE: kv });
+  assert.equal((await (await restarted.fetch(new Request("https://test/status"))).json()).summary.alerts, 1);
+  assert.equal(copies, 0);
+  kv.list = counted;
+  const before = kv.calls.list;
+  quota = false;
+  writer.importRetryAt = 0;
+  assert.equal(await status(), 1);
+  assert.notEqual(db.data.get("legacy:imported"), undefined);
+  assert.equal(kv.calls.list, before + 1);
+  assert.equal(await status(), 1);
+  assert.equal(kv.calls.list, before + 1);
 });
 test("definite pre-send inventory failure cannot advance event state", async () => {
   let writes = 0;
