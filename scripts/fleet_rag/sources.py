@@ -6,6 +6,8 @@ print; they raise on a hard failure so the orchestrator can record the source as
 
 Sources (payload `source` value):
   board          ~/apps/_retired/mac-collab-20261019/findings.db   (frozen read-only sqlite; findings + comments)
+  linear         the live board: Linear issues through the installed `simple-board` CLI (read-only
+                 GraphQL), so board work filed after the Oct-18 freeze reaches the corpus
   effort-log     ~/apps/*-EFFORT-LOG.md + EFFORT-LOG-PROTOCOL.md
   doc            markdown in fleet app repos (README/AGENTS/STATUS/CLAUDE + docs/**/*.md),
                  AI-Fleet-Coordinator, fleet-ops (its handbook/ pages too, private ones only when an
@@ -38,6 +40,8 @@ import sqlite3
 import subprocess
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
+
+from .core import FleetRagError
 
 HOME = pathlib.Path.home()
 APPS_DIR = HOME / "apps"
@@ -1751,10 +1755,331 @@ def iter_chat_logs(
             yield from emit(_yield_chat(p, "gemini", _gemini_stable_id(p), app))
 
 
+# --------------------------------------------------------------------------- linear (the live board)
+#
+# THE BOARD was retired 2026-10-19 (AFC-363);  the frozen findings.db keeps the old rows
+# searchable, but nothing new can ever arrive from it, so the corpus has missed every board
+# point since the freeze.  Linear is the live board now (docs/protocols/linear-migration.md).
+# This generator reads Linear through the installed `simple-board` CLI - read verbs only,
+# which need no bearer and run as the shared Fleet app - so credential lookup, token caching
+# and rate limiting stay in the one sanctioned place instead of being duplicated here.
+#
+# What is yielded, so the frozen board docs are never duplicated and nothing is skipped:
+#   - every issue the frozen corpus does NOT already cover, however old.  Coverage is decided
+#     against the frozen findings.db, not the migration TSV alone:  the TSV also maps GitHub
+#     and effort-log rows that were imported into Linear without ever becoming board findings
+#     (measured 2026-10-28:  4,269 of 14,209 TSV rows have no frozen finding), so TSV
+#     membership by itself would skip thousands of never-covered issues, and
+#   - every covered issue touched at or after the freeze (LINEAR_FREEZE):  its frozen doc
+#     is stale and this fresh copy is its update.
+# The light scan (id + updatedAt only, one page per 250 issues) keeps the nightly cheap;  full
+# bodies and comments are fetched only for the selected ids.  Point ids stay stable
+# (doc_id linear/<identifier>) so a re-run re-embeds only what actually changed.
+
+LINEAR_FREEZE = os.environ.get("FLEET_RAG_LINEAR_FREEZE", "2026-10-19T00:00:00.000Z")
+SIMPLE_BOARD_CLI = os.environ.get("FLEET_RAG_SIMPLE_BOARD", "simple-board")
+LINEAR_PAGE = 250
+LINEAR_COMMENT_PAGE = 100
+LINEAR_COMMENT_MAX_PAGES = 6  # first page plus up to five follow-ups;  beyond that, warn
+LINEAR_QUERY_TIMEOUT_S = 120
+
+_LINEAR_LIGHT_FIELDS = "nodes { id updatedAt } pageInfo { hasNextPage endCursor }"
+_LINEAR_FULL_FIELDS = (
+    "nodes { id identifier title url description priority createdAt updatedAt "
+    "state { name type } team { key } labels { nodes { name } } "
+    "attachments(first: 20) { nodes { url } } "
+    "comments(first: %d, orderBy: createdAt) { nodes { body createdAt user { displayName } "
+    "externalUser { displayName } } pageInfo { hasNextPage endCursor } } } "
+    "pageInfo { hasNextPage endCursor }" % LINEAR_COMMENT_PAGE
+)
+
+# Linear priority number -> the severity the board would have carried (README mapping:
+# Urgent P0, High P1, Medium P2, Low P3/P4, none -).  A Severity/<P> label wins when present.
+_LINEAR_PRIORITY_SEVERITY = {0: "", 1: "P0", 2: "P1", 3: "P2", 4: "P3"}
+
+
+class LinearSourceError(FleetRagError):
+    """The simple-board read failed;  the run must record the source as errored, not yield zero."""
+
+
+def _linear_query(query: str, timeout_s: int = LINEAR_QUERY_TIMEOUT_S) -> dict:
+    """One GraphQL read through the simple-board CLI.  Fail-closed:  any transport, exit-code or
+    GraphQL error raises LinearSourceError so a broken read can never look like an empty board."""
+    try:
+        proc = subprocess.run(
+            [SIMPLE_BOARD_CLI, "api", "query", query],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise LinearSourceError(f"linear: simple-board api query failed to run: {e}") from None
+    if proc.returncode != 0:
+        raise LinearSourceError(
+            f"linear: simple-board api query exited {proc.returncode}: {proc.stderr.strip()[:300]}"
+        )
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError as e:
+        raise LinearSourceError(f"linear: unreadable JSON from simple-board: {e}") from None
+    if isinstance(data, dict) and data.get("errors"):
+        raise LinearSourceError(f"linear: GraphQL errors: {str(data['errors'])[:300]}")
+    if not isinstance(data, dict):
+        raise LinearSourceError("linear: unexpected payload shape from simple-board")
+    return data
+
+
+def _linear_light_scan() -> dict:
+    """Every issue's id -> updatedAt, one 250-wide page at a time, oldest update first."""
+    out: dict = {}
+    after = None
+    while True:
+        clause = f', after: "{after}"' if after else ""
+        data = _linear_query(
+            "query { issues(first: %d, orderBy: updatedAt%s) { %s } }"
+            % (LINEAR_PAGE, clause, _LINEAR_LIGHT_FIELDS)
+        )
+        conn = data.get("issues") or {}
+        for node in conn.get("nodes") or []:
+            if node.get("id"):
+                out[node["id"]] = node.get("updatedAt") or ""
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return out
+        after = page.get("endCursor")
+        if not after:
+            raise LinearSourceError("linear: pageInfo said hasNextPage but gave no endCursor")
+
+
+def load_linear_covered_ids(
+    map_path: pathlib.Path | str | None = None,
+    db_path: pathlib.Path | str | None = None,
+) -> set:
+    """Linear UUIDs whose content the frozen board corpus already covers:  TSV rows whose
+    board_id exists in the frozen findings.db.  A Linear issue the migration merged several
+    rows into is covered only when EVERY mapped row is covered.  Empty when either file is
+    missing - the safe direction:  it re-ingests, it never skips."""
+    map_path = pathlib.Path(BOARD_MAP if map_path is None else map_path)
+    db_path = pathlib.Path(BOARD_DB if db_path is None else db_path)
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            covered_board_ids = {r[0] for r in con.execute("SELECT id FROM findings")}
+        finally:
+            con.close()
+        by_linear: dict[str, list[str]] = {}
+        with map_path.open(encoding="utf-8") as fh:
+            next(fh, None)  # header
+            for line in fh:
+                cols = line.rstrip("\n").split("\t")
+                if len(cols) >= 6 and cols[5].strip():
+                    by_linear.setdefault(cols[5].strip(), []).append(cols[0].strip())
+    except OSError:
+        return set()
+    return {
+        linear_id
+        for linear_id, board_ids in by_linear.items()
+        if board_ids and all(b in covered_board_ids for b in board_ids)
+    }
+
+
+def _linear_fetch_full(ids: list) -> list:
+    """Full nodes (bodies, labels, attachments, comments) for the selected ids, 250 per call."""
+    nodes: list = []
+    for start in range(0, len(ids), LINEAR_PAGE):
+        chunk = ids[start : start + LINEAR_PAGE]
+        id_list = ", ".join(json.dumps(i) for i in chunk)
+        after = None
+        while True:
+            clause = f', after: "{after}"' if after else ""
+            data = _linear_query(
+                "query { issues(first: %d, filter: { id: { in: [%s] } }%s) { %s } }"
+                % (LINEAR_PAGE, id_list, clause, _LINEAR_FULL_FIELDS)
+            )
+            conn = data.get("issues") or {}
+            batch = conn.get("nodes") or []
+            for node in batch:
+                _linear_complete_comments(node)
+            nodes.extend(batch)
+            page = conn.get("pageInfo") or {}
+            if not page.get("hasNextPage"):
+                break
+            after = page.get("endCursor")
+            if not after:
+                raise LinearSourceError("linear: full fetch lost its cursor mid-chunk")
+        if len(batch) == 0 and chunk:
+            raise LinearSourceError(
+                "linear: a full fetch returned no nodes for a non-empty id chunk"
+            )
+    found = {n.get("id") for n in nodes}
+    missing = [i for i in ids if i not in found]
+    if missing:
+        raise LinearSourceError(
+            f"linear: {len(missing)} selected id(s) came back without nodes (archived between "
+            f"scan and fetch?): {missing[:3]}"
+        )
+    return nodes
+
+
+def _linear_complete_comments(node: dict) -> None:
+    """Page the comment connection past the first page when the issue has one.  A failure here
+    raises (the doc would otherwise freeze in a truncated state);  only the page bound itself
+    degrades to a warning."""
+    comments = node.get("comments") or {}
+    page = comments.get("pageInfo") or {}
+    seen = 1
+    while page.get("hasNextPage") and seen < LINEAR_COMMENT_MAX_PAGES:
+        after = page.get("endCursor")
+        if not after:
+            raise LinearSourceError(
+                f"linear: comment pageInfo for {node.get('identifier')} lost its cursor"
+            )
+        data = _linear_query(
+            'query { issue(id: "%s") { comments(first: %d, after: "%s", orderBy: createdAt) '
+            "{ nodes { body createdAt user { displayName } externalUser { displayName } } "
+            "pageInfo { hasNextPage endCursor } } } }"
+            % (node.get("id"), LINEAR_COMMENT_PAGE, after)
+        )
+        conn = (data.get("issue") or {}).get("comments") or {}
+        comments.setdefault("nodes", []).extend(conn.get("nodes") or [])
+        page = conn.get("pageInfo") or {}
+        seen += 1
+    if page.get("hasNextPage"):
+        warn(
+            f"linear: {node.get('identifier')} has more than "
+            f"{LINEAR_COMMENT_PAGE * LINEAR_COMMENT_MAX_PAGES} comments;  ingesting the first "
+            f"{LINEAR_COMMENT_PAGE * LINEAR_COMMENT_MAX_PAGES} only"
+        )
+    comments["pageInfo"] = page
+
+
+def _linear_severity(node: dict, label_names: list) -> str:
+    for name in label_names:
+        if name.startswith("Severity/"):
+            return name.split("/", 1)[1]
+    return _LINEAR_PRIORITY_SEVERITY.get(node.get("priority") or 0, "")
+
+
+def _linear_seat(label_names: list) -> str:
+    for prefix in ("seat:", "claimed:"):
+        for name in label_names:
+            if name.startswith(prefix):
+                return seat_tag(name[len(prefix):])
+    return "FLEET"
+
+
+def _linear_kind(label_names: list) -> str:
+    for name in label_names:
+        if name.startswith("Kind/"):
+            return name.split("/", 1)[1]
+    return ""
+
+
+def _linear_markdown(node: dict, label_names: list) -> str:
+    def clean(v) -> str:
+        return (
+            _EFFORT_KEY.sub("", v).strip() if isinstance(v, str) else ("" if v is None else str(v))
+        )
+
+    parts = [f"# {clean(node.get('title')) or 'Untitled issue'}", ""]
+    meta = [f"State: {clean((node.get('state') or {}).get('name')) or 'unknown'}"]
+    severity = _linear_severity(node, label_names)
+    if severity:
+        meta.append(f"Severity: {severity}")
+    team = clean((node.get("team") or {}).get("key"))
+    if team:
+        meta.append(f"Team: {team}")
+    kind = _linear_kind(label_names)
+    if kind:
+        meta.append(f"Kind: {kind}")
+    seats = [n for n in label_names if n.startswith(("seat:", "claimed:"))]
+    if seats:
+        meta.append("Seats: " + ", ".join(sorted(seats)))
+    parts.append("- " + " \u00b7 ".join(meta))
+    parts.append(f"- Linear: {clean(node.get('identifier'))}  {clean(node.get('url'))}")
+    description = clean(node.get("description"))
+    if description:
+        parts += ["", "## Description", "", description]
+    attachments = [
+        clean(a.get("url"))
+        for a in (node.get("attachments") or {}).get("nodes") or []
+        if clean(a.get("url"))
+    ]
+    if attachments:
+        parts += ["", "## Attachments"] + [f"- {u}" for u in attachments]
+    comments = (node.get("comments") or {}).get("nodes") or []
+    if comments:
+        ordered = sorted(comments, key=lambda c: c.get("createdAt") or "")
+        parts += ["", "## Comments"]
+        for c in ordered:
+            author = clean((c.get("user") or {}).get("displayName")) or clean(
+                (c.get("externalUser") or {}).get("displayName")
+            )
+            parts += [
+                "",
+                f"### {author or '?'} \u2014 {clean(c.get('createdAt'))}",
+                "",
+                clean(c.get("body")),
+            ]
+    return "\n".join(parts).rstrip() + "\n"
+
+
+def iter_linear(
+    limit: int | None = None,
+    *,
+    map_path: pathlib.Path | str | None = None,
+    freeze: str | None = None,
+    light_scan=None,
+    fetch_full=None,
+    covered_ids=None,
+) -> Iterator[Doc]:
+    """The live board:  Linear issues the frozen board corpus does not cover.  See the section
+    comment above for the selection rule.  `light_scan`/`fetch_full` are test injection points."""
+    freeze = freeze or LINEAR_FREEZE
+    light_scan = light_scan or _linear_light_scan
+    fetch_full = fetch_full or _linear_fetch_full
+    imported = covered_ids if covered_ids is not None else load_linear_covered_ids(map_path)
+    scan = light_scan()
+    selected = [
+        uid for uid, updated in scan.items() if uid not in imported or (updated or "") >= freeze
+    ]
+    selected.sort(key=lambda uid: (scan.get(uid) or ""), reverse=True)
+    if limit:
+        selected = selected[: int(limit)]
+    if not selected:
+        return
+    for node in fetch_full(selected):
+        labels = [l.get("name") or "" for l in (node.get("labels") or {}).get("nodes") or []]
+        team_key = (node.get("team") or {}).get("key")
+        created = parse_ts_ms(node.get("createdAt"))
+        updated = parse_ts_ms(node.get("updatedAt"))
+        done = ((node.get("state") or {}).get("type") or "").lower() == "completed"
+        yield Doc(
+            doc_id=f"linear/{node.get('identifier')}",
+            title=(node.get("title") or "").strip() or f"Issue {node.get('identifier')}",
+            text_markdown=_linear_markdown(node, labels),
+            source="linear",
+            app=app_slug(team_key),
+            category="lesson" if done else "finding",
+            seat=_linear_seat(labels),
+            url=node.get("url") or "",
+            path="",
+            created_at_ms=created or updated,
+            updated_at_ms=updated or created,
+            extra={
+                "state": (node.get("state") or {}).get("name"),
+                "severity": _linear_severity(node, labels),
+                "source_kind": _linear_kind(labels) or None,
+                "linear_id": node.get("id"),
+            },
+        )
+
+
 # --------------------------------------------------------------------------- registry
 
 GENERATORS: dict[str, Callable[..., Iterator[Doc]]] = {
     "board": iter_board,
+    "linear": iter_linear,
     "effort-log": iter_effort_logs,
     "doc": iter_docs,
     "skill": iter_skills,

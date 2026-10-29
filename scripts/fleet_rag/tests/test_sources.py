@@ -1602,3 +1602,265 @@ class CaseVariantRepoTests(unittest.TestCase):
         self._git_init()
         d = sources.doc_from_file(self.repo / "README.md")
         self.assertEqual(d.doc_id, "doc/Autorotate/README.md")
+
+
+# --------------------------------------------------------------------------- linear source
+
+
+def _linear_node(
+    uid="uuid-1",
+    identifier="AFC-999",
+    title="Board row filed after the freeze",
+    state=("Done", "completed"),
+    team="AFC",
+    labels=("Kind/agent-report", "Severity/P2", "seat:CLAUDE"),
+    description="The body of the issue.",
+    comments=(),
+    created="2026-10-20T01:00:00.000Z",
+    updated="2026-10-21T01:00:00.000Z",
+    priority=3,
+):
+    return {
+        "id": uid,
+        "identifier": identifier,
+        "title": title,
+        "url": f"https://linear.app/simple-with-us/issue/{identifier}/slug",
+        "description": description,
+        "priority": priority,
+        "createdAt": created,
+        "updatedAt": updated,
+        "state": {"name": state[0], "type": state[1]},
+        "team": {"key": team},
+        "labels": {"nodes": [{"name": n} for n in labels]},
+        "attachments": {"nodes": []},
+        "comments": {
+            "nodes": [
+                {
+                    "body": body,
+                    "createdAt": ts,
+                    "user": {"displayName": author} if author else None,
+                    "externalUser": None,
+                }
+                for author, body, ts in comments
+            ],
+            "pageInfo": {"hasNextPage": False, "endCursor": None},
+        },
+    }
+
+
+class LinearSourceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        self.map_path = pathlib.Path(self.tmp) / "board-to-linear.tsv"
+        self.map_path.write_text(
+            "board_id\tsource_key\tteam\tlinear_identifier\tlinear_url\tlinear_id\n"
+            "aaaa1111\tsk\tAFC\tAFC-1\thttps://linear.app/x/AFC-1\tuuid-imported-old\n"
+            "bbbb2222\tsk\tAFC\tAFC-2\thttps://linear.app/x/AFC-2\tuuid-imported-active\n",
+            encoding="utf-8",
+        )
+
+    def test_selection_skips_imported_untouched_but_keeps_new_and_updated(self) -> None:
+        scan = {
+            "uuid-imported-old": "2026-10-11T00:00:00.000Z",  # in TSV, untouched -> skip
+            "uuid-imported-active": "2026-10-25T00:00:00.000Z",  # in TSV, post-freeze -> yield
+            "uuid-new": "2026-10-12T00:00:00.000Z",  # not in TSV -> yield however old
+        }
+        nodes = [
+            _linear_node(uid="uuid-imported-active", identifier="AFC-2"),
+            _linear_node(uid="uuid-new", identifier="AFC-3", title="Filed straight into Linear"),
+        ]
+        seen_fetch = {}
+
+        def fetch(ids):
+            seen_fetch["ids"] = list(ids)
+            return nodes
+
+        docs = list(
+            sources.iter_linear(
+                covered_ids={"uuid-imported-old", "uuid-imported-active"},
+                light_scan=lambda: scan,
+                fetch_full=fetch,
+            )
+        )
+        self.assertEqual(sorted(seen_fetch["ids"]), ["uuid-imported-active", "uuid-new"])
+        self.assertEqual([d.doc_id for d in docs], ["linear/AFC-2", "linear/AFC-3"])
+        self.assertTrue(all(d.source == "linear" for d in docs))
+
+    def test_mapping_category_seat_url_markdown_and_comment_order(self) -> None:
+        node = _linear_node(
+            comments=[
+                ("Codex", "second", "2026-10-21T02:00:00.000Z"),
+                ("Claude", "first", "2026-10-20T02:00:00.000Z"),
+            ],
+            description="Body with marker.\n\n<!-- effort-key: deadbeef -->",
+        )
+        docs = list(
+            sources.iter_linear(
+                covered_ids=set(),
+                light_scan=lambda: {"uuid-1": "2026-10-21T01:00:00.000Z"},
+                fetch_full=lambda ids: [node],
+            )
+        )
+        (doc,) = docs
+        self.assertEqual(doc.doc_id, "linear/AFC-999")
+        self.assertEqual(doc.category, "lesson")  # state type completed
+        self.assertEqual(doc.seat, "CLAUDE")
+        self.assertEqual(doc.app, "afc")
+        self.assertTrue(doc.url.startswith("https://linear.app/"))
+        self.assertEqual(doc.extra["severity"], "P2")  # Severity label beats priority number
+        self.assertIn("## Description", doc.text_markdown)
+        self.assertNotIn("effort-key", doc.text_markdown)  # machine marker stripped
+        self.assertLess(doc.text_markdown.index("first"), doc.text_markdown.index("second"))
+        self.assertIn("## Comments", doc.text_markdown)
+        self.assertEqual(doc.created_at_ms, sources.parse_ts_ms("2026-10-20T01:00:00.000Z"))
+        self.assertEqual(doc.updated_at_ms, sources.parse_ts_ms("2026-10-21T01:00:00.000Z"))
+
+    def test_open_state_is_a_finding_and_seat_falls_back_to_claimed(self) -> None:
+        node = _linear_node(state=("In Progress", "started"), labels=("claimed:WISE",))
+        (doc,) = sources.iter_linear(
+            covered_ids=set(),
+            light_scan=lambda: {"uuid-1": "2026-10-21T01:00:00.000Z"},
+            fetch_full=lambda ids: [node],
+        )
+        self.assertEqual(doc.category, "finding")
+        self.assertEqual(doc.seat, "WISE")
+        self.assertEqual(doc.extra["severity"], "P2")  # priority 3 -> P2 without a label
+
+    def test_comment_pages_are_followed_and_the_bound_warns(self) -> None:
+        def fake_query(query, timeout_s=0):
+            if "issue(id:" in query:
+                return {
+                    "issue": {
+                        "comments": {
+                            "nodes": [
+                                {
+                                    "body": "extra page body",
+                                    "createdAt": "2026-10-22T00:00:00.000Z",
+                                    "user": None,
+                                    "externalUser": {"displayName": "Relay"},
+                                }
+                            ],
+                            "pageInfo": {"hasNextPage": True, "endCursor": "c"},
+                        }
+                    }
+                }
+            raise AssertionError("unexpected query")
+
+        node = _linear_node(comments=[("Claude", "first page body", "2026-10-20T00:00:00.000Z")])
+        node["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "c0"}
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            sources._linear_complete_comments(node)
+        bodies = [c["body"] for c in node["comments"]["nodes"]]
+        # one original page plus the follow-up pages up to the bound
+        self.assertEqual(len(bodies), sources.LINEAR_COMMENT_MAX_PAGES)
+        self.assertIn("extra page body", bodies)
+        warnings = sources.take_warnings()
+        self.assertTrue(any(w.startswith("linear: AFC-999") for w in warnings))
+
+    def test_scan_and_fetch_fail_closed(self) -> None:
+        with mock.patch.object(
+            sources.subprocess,
+            "run",
+            side_effect=OSError("no simple-board here"),
+        ):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_light_scan()
+
+        def ok_proc(*a, **k):
+            return subprocess.CompletedProcess(a, 0, stdout='{"errors": [{"message": "boom"}]}', stderr="")
+
+        with mock.patch.object(sources.subprocess, "run", side_effect=ok_proc):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_query("query { x }")
+
+        def bad_rc(*a, **k):
+            return subprocess.CompletedProcess(a, 4, stdout="", stderr="no Fleet credentials")
+
+        with mock.patch.object(sources.subprocess, "run", side_effect=bad_rc):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_query("query { x }")
+
+    def test_missing_ids_after_fetch_raise(self) -> None:
+        with mock.patch.object(
+            sources, "_linear_query", return_value={"issues": {"nodes": [], "pageInfo": {}}}
+        ):
+            with self.assertRaises(sources.LinearSourceError):
+                sources._linear_fetch_full(["uuid-gone"])
+
+    def test_limit_picks_the_most_recently_updated(self) -> None:
+        scan = {"a": "2026-10-20T00:00:00.000Z", "b": "2026-10-26T00:00:00.000Z"}
+        seen = {}
+
+        def fetch(ids):
+            seen["ids"] = ids
+            return [_linear_node(uid="b", identifier="AFC-7")]
+
+        docs = list(
+            sources.iter_linear(
+                limit=1,
+                covered_ids=set(),
+                light_scan=lambda: scan,
+                fetch_full=fetch,
+            )
+        )
+        self.assertEqual(seen["ids"], ["b"])
+        self.assertEqual([d.doc_id for d in docs], ["linear/AFC-7"])
+
+    def test_covered_ids_come_from_actual_frozen_coverage_not_tsv_membership(self) -> None:
+        db = pathlib.Path(self.tmp) / "findings.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE findings (id TEXT PRIMARY KEY)")
+        con.executemany("INSERT INTO findings VALUES (?)", [("aaaa1111",), ("bbbb2222",)])
+        con.commit()
+        con.close()
+        covered = sources.load_linear_covered_ids(self.map_path, db)
+        # uuid-imported-old maps aaaa1111 (in the frozen db) -> covered
+        self.assertIn("uuid-imported-old", covered)
+        # uuid-imported-active maps bbbb2222 (in the frozen db) -> covered too
+        self.assertIn("uuid-imported-active", covered)
+        # a TSV row whose board_id never became a finding is NOT skipped
+        self.map_path.write_text(
+            self.map_path.read_text(encoding="utf-8")
+            + "cccc3333\tgh:Simple-With-Us/X#1\tAFC\tAFC-3\thttps://linear.app/x/AFC-3\tuuid-gh-only\n",
+            encoding="utf-8",
+        )
+        covered = sources.load_linear_covered_ids(self.map_path, db)
+        self.assertNotIn("uuid-gh-only", covered)
+
+    def test_merged_issue_is_covered_only_when_every_mapped_row_is(self) -> None:
+        db = pathlib.Path(self.tmp) / "findings.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE findings (id TEXT PRIMARY KEY)")
+        con.execute("INSERT INTO findings VALUES ('aaaa1111')")
+        con.commit()
+        con.close()
+        self.map_path.write_text(
+            self.map_path.read_text(encoding="utf-8")
+            + "dddd4444\tgh:x\tAFC\tAFC-2\thttps://linear.app/x/AFC-2\tuuid-imported-active\n",
+            encoding="utf-8",
+        )
+        covered = sources.load_linear_covered_ids(self.map_path, db)
+        # uuid-imported-active now maps bbbb2222 (missing) and dddd4444 (missing) -> not covered
+        self.assertNotIn("uuid-imported-active", covered)
+        self.assertIn("uuid-imported-old", covered)
+
+    def test_rereading_a_changed_issue_keeps_the_doc_id_and_changes_the_text(self) -> None:
+        scan = {"uuid-1": "2026-10-21T01:00:00.000Z"}
+        first = list(
+            sources.iter_linear(
+                covered_ids=set(),
+                light_scan=lambda: scan,
+                fetch_full=lambda ids: [_linear_node(description="version one")],
+            )
+        )
+        second = list(
+            sources.iter_linear(
+                covered_ids=set(),
+                light_scan=lambda: {"uuid-1": "2026-10-22T01:00:00.000Z"},
+                fetch_full=lambda ids: [_linear_node(description="version two", updated="2026-10-22T01:00:00.000Z")],
+            )
+        )
+        self.assertEqual(first[0].doc_id, second[0].doc_id)
+        self.assertNotEqual(first[0].text_markdown, second[0].text_markdown)
+        self.assertLess(first[0].updated_at_ms, second[0].updated_at_ms)
