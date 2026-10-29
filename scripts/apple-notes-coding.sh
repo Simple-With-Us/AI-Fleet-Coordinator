@@ -2506,12 +2506,18 @@ if summary_text:
 sys.stdout.write('<div>' + stamp_p + extra_blocks + inner + '</div>')
 ")
 
-FULL_HTML=$(/usr/bin/python3 -c '
-import html, sys
-title = sys.argv[1]
-body = sys.argv[2]
-print("<h1>" + html.escape(title) + "</h1>" + body)
-' "$TITLE" "$BODY_HTML")
+#  The body goes in on stdin and only the title travels as an argument.  macOS gives a process
+#  1048576 bytes for the whole command line, the arguments and the environment together, and the
+#  Background Jobs Master List is about 1 MB of HTML, so an argument body did not fit:  it died
+#  with "Argument list too long" (exit 126) before the linkifier ran and before the note was
+#  written, so the pinned master list silently went stale.  The Notes write itself was never at
+#  risk, because osascript reads the HTML from a file.
+FULL_HTML=$(printf '%s' "$BODY_HTML" | NOTE_TITLE="$TITLE" /usr/bin/python3 -c '
+import html, os, sys
+title = os.environ.get("NOTE_TITLE", "")
+body = sys.stdin.read()
+sys.stdout.write("<h1>" + html.escape(title) + "</h1>" + body)
+')
 
 #  The linkifier runs on the whole note, so the date row and its pull request suffix are covered as well as the body.
 if [[ "$SKIP_BODY" == "0" ]]; then
