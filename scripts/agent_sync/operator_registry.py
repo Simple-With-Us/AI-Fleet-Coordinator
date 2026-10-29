@@ -334,6 +334,23 @@ class SessionRegistry:
         ).fetchone()
         return (row["letter"], row["generation"]) if row else ("", 0)
 
+    def _last_alias(self, conn: sqlite3.Connection, record_id: str) -> tuple[str, int]:
+        """The letter this record holds now, or, once it is retired, the last one it held.
+
+        A closed session has no live alias, but a caller asking about it still needs
+        to know which letter ended, so the history answers when the live lookup is
+        empty.
+        """
+        letter, generation = self._active_alias(conn, record_id)
+        if letter:
+            return letter, generation
+        row = conn.execute(
+            "SELECT letter, generation FROM alias_assignments WHERE record_id = ?"
+            " ORDER BY assigned_at DESC LIMIT 1",
+            (record_id,),
+        ).fetchone()
+        return (row["letter"], row["generation"]) if row else ("", 0)
+
     def lookup(
         self,
         platform: str,
@@ -835,8 +852,8 @@ def update_session(
                     % (native_session_id, namespace, verified_host, profile_scope)
                 )
             record_id = row["record_id"]
-            letter, generation = registry._active_alias(conn, record_id)
             if row["closed_at"]:
+                letter, generation = registry._last_alias(conn, record_id)
                 # The letter is already over, so the row can never be updated again.
                 # Answer with the closed state instead of raising:  a caller that
                 # only carries the title (the seat's stop hook) would otherwise be
@@ -850,6 +867,7 @@ def update_session(
                     "changed": [],
                     "title_display": display_title(letter, str(row["title"] or "")),
                 }
+            letter, generation = registry._active_alias(conn, record_id)
             if title is not None:
                 wanted["title"] = registry_title(letter, title)
             changed = {k: v for k, v in wanted.items() if (row[k] or "") != v}
@@ -974,20 +992,9 @@ def close_session(
             native_session_id=native_session_id,
         )
         record_id = row["record_id"]
-        letter, generation = registry._active_alias(registry._conn, record_id)
-        if not letter:
-            # The alias was retired by an earlier close, so the live lookup answers
-            # nothing.  The letter this session really held is the last one it was
-            # given:  a caller that closes the same session twice, or asks about one
-            # that is already closed, still needs to know which letter ended.
-            prior = registry._conn.execute(
-                "SELECT letter, generation FROM alias_assignments WHERE record_id = ?"
-                " ORDER BY assigned_at DESC LIMIT 1",
-                (record_id,),
-            ).fetchone()
-            if prior is not None:
-                letter = prior["letter"]
-                generation = prior["generation"]
+        # A session closed by an earlier call has no live alias;  the letter it really
+        # held is the last one it was given, so a second close still names it.
+        letter, generation = registry._last_alias(registry._conn, record_id)
         closed = registry.close(record_id, actor=actor, source=source, reason=reason)
         current = registry._get(record_id)
     finally:

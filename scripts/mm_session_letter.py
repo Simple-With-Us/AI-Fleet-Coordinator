@@ -79,7 +79,11 @@ REGISTRY_EXIT_CODES = {"timeout": 124, "missing_tool": 127}
 # A registry call that timed out, or answered something unreadable, may have applied
 # the write before the answer was lost.  Those outcomes are unknown rather than
 # failed, so a caller checks the state instead of assuming the write never happened.
-UNKNOWN_OUTCOME_CODES = ("timeout", "nonzero", "empty", "bad_json", "bad_shape")
+UNKNOWN_OUTCOME_CODES = ("timeout", "io_error", "nonzero", "empty", "bad_json", "bad_shape")
+
+# The bound on a registry error field:  long enough for any message the CLI writes,
+# short enough that a runaway answer cannot flood a hook's stderr.
+REGISTRY_FIELD_MAX = 2000
 
 
 # ---- where things live ------------------------------------------------------------
@@ -160,7 +164,7 @@ def _scan_title(text: str) -> None:
 
 
 def _registry_identity_args() -> list[str]:
-    return ["--location", location(), "--scope", PROFILE_SCOPE]
+    return ["--location=" + location(), "--scope=" + PROFILE_SCOPE]
 
 
 def _json_within_limits(value: object) -> bool:
@@ -265,10 +269,12 @@ def registry_call(args: list[str], *, timeout: int = 25) -> dict:
                 "outcome": "outcome_unknown",
             }
         except OSError as exc:
+            # The child started, so it may have committed its write before the pipe
+            # failed:  this is an unknown outcome, not a call that never happened.
             _kill_process_group(proc, signal.SIGKILL)
             proc.kill()
             proc.wait()
-            return {"error": str(exc)[:400], "code": "spawn_failed"}
+            return {"error": str(exc)[:400], "code": "io_error", "outcome": "outcome_unknown"}
     except BaseException:
         # This process was interrupted.  The child sits in its own process group, so
         # it would outlive us unless it is stopped here.
@@ -309,17 +315,30 @@ def _require_registry(answer: dict, *, needs_label: bool = False) -> dict:
     never happened.
     """
     if not isinstance(answer, dict):
-        raise RegistryError("the registry answer was not an object", "bad_shape")
-    if answer.get("error"):
+        raise RegistryError("the registry answer was not an object", "bad_shape", "outcome_unknown")
+    # Every field is checked for its type before anything reads it:  a field of the
+    # wrong type is a malformed answer, never coerced into one that looks valid.
+    for name in ("error", "code", "outcome", "label"):
+        if name in answer and answer[name] is not None:
+            value = answer[name]
+            if not isinstance(value, str) or len(value) > REGISTRY_FIELD_MAX:
+                raise RegistryError(
+                    f"the registry answer has a malformed {name} field",
+                    "bad_shape",
+                    "outcome_unknown",
+                )
+    if "error" in answer and answer["error"] is not None:
+        # An error key is a failure even when its text is empty:  a falsey error is
+        # never read as a success.
         raise RegistryError(
-            str(answer["error"]),
-            str(answer.get("code") or ""),
-            str(answer.get("outcome") or ""),
+            answer["error"] or "the registry reported an error with no message",
+            answer.get("code") or "",
+            answer.get("outcome") or "",
         )
     if needs_label:
         label = answer.get("label")
         if not isinstance(label, str) or not label.strip():
-            raise RegistryError("the registry answer carried no letter")
+            raise RegistryError("the registry answer carried no letter", "bad_shape")
     return answer
 
 
@@ -333,23 +352,19 @@ def register(session_id: str, title: str = "", space: str = "single") -> dict:
     always answers with the same letter."""
     args = [
         "register",
-        "--platform",
-        PLATFORM,
+        "--platform=" + PLATFORM,
         *_registry_identity_args(),
-        "--session-id",
-        session_id,
-        "--seat",
-        SEAT,
-        "--source",
-        "the MM seat's session-letter hook",
+        "--session-id=" + session_id,
+        "--seat=" + SEAT,
+        "--source=the MM seat's session-letter hook",
     ]
     if space != "single":
         # Only the double space is asked for:  the single space is the default of every
         # registry CLI, so a conversation's registration still answers an older one.
-        args += ["--letter-space", space]
+        args += ["--letter-space=" + space]
     if title:
         _scan_title(title)
-        args += ["--title", title]
+        args += ["--title=" + title]
     return _require_registry(registry_call(args))
 
 
@@ -358,11 +373,9 @@ def touch_session(session_id: str) -> dict:
         registry_call(
             [
                 "touch",
-                "--platform",
-                PLATFORM,
+                "--platform=" + PLATFORM,
                 *_registry_identity_args(),
-                "--session-id",
-                session_id,
+                "--session-id=" + session_id,
             ]
         )
     )
@@ -377,13 +390,12 @@ def update_title(session_id: str, title: str) -> dict:
         registry_call(
             [
                 "update",
-                "--platform",
-                PLATFORM,
+                "--platform=" + PLATFORM,
                 *_registry_identity_args(),
-                "--session-id",
-                session_id,
-                "--title",
-                topic,
+                "--session-id=" + session_id,
+                # The single --flag=VALUE form:  a topic that starts with "-" is still
+                # the title, never an option the child parses.
+                "--title=" + topic,
             ]
         )
     )
@@ -576,13 +588,22 @@ def space_for_row(row: dict) -> str:
     return "single"
 
 
-def letter_for(session_id: str, topic: str = "", space: str = "single") -> str:
-    """The letter for a session:  the cache first, the Operator otherwise."""
+def letter_for(
+    session_id: str, topic: str = "", space: str = "single", *, strict_touch: bool = False
+) -> str:
+    """The letter for a session:  the cache first, the Operator otherwise.
+
+    With strict_touch, a touch that did not land raises RegistryError:  the sweep is
+    a batch job whose caller keeps the failed session for a retry, so it has to see
+    the failure.  A hook keeps the cached letter instead, below.
+    """
     letter = cached_letter(session_id)
     if letter:
         try:
             touch_session(session_id)
         except RegistryError as exc:
+            if strict_touch:
+                raise
             # The letter came from the cache and it is still this session's, so a
             # touch that did not land is not a reason to lose it.  It is a reason to
             # say so:  the sweep reads last_seen_at, and a stale stamp can end a
@@ -826,6 +847,23 @@ def _failure_entry(session_id: str, exc: RegistryError) -> dict:
     return {"session_id": session_id, "error": str(exc), "code": code, "outcome": outcome}
 
 
+def _sweep_exit_code(failed: list[dict]) -> int:
+    """The sweep's status from the failures it kept.
+
+    A missing registry tool is 127 and a registry that hung is 124, the statuses a
+    shell uses, so automation can tell those apart from a refusal.  The missing tool
+    wins over the hang:  every later call would fail the same way.  Any other
+    failure is 2.
+    """
+    if not failed:
+        return 0
+    codes = {e.get("code") for e in failed}
+    for code in ("missing_tool", "timeout"):
+        if code in codes:
+            return REGISTRY_EXIT_CODES[code]
+    return 2
+
+
 def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
     """Name the sessions this host already has:  letter, English title, registry in step."""
     topics: dict[str, str] = {}
@@ -862,7 +900,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             continue
         space = "single" if kind == "conversation" else "double"
         try:
-            letter = letter_for(session_id, title, space)
+            letter = letter_for(session_id, title, space, strict_touch=True)
         except RegistryError as exc:
             out.append(_failure_entry(session_id, exc))
             continue
@@ -870,7 +908,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
             out.append({"session_id": session_id, "error": str(exc), "outcome": "failed"})
             continue
         if not letter:
-            out.append({"session_id": session_id, "error": "no letter"})
+            out.append({"session_id": session_id, "skipped": "no letter"})
             continue
         topic = topics.get(session_id) or (title if is_english(title) else "")
         if session_id in topics:
@@ -885,8 +923,10 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                 )
                 continue
         if not topic:
+            # Not a failure:  a session titled in another language is healthy and
+            # simply waits for a topic from the topic file.
             out.append(
-                {"session_id": session_id, "letter": letter, "error": "needs an English topic"}
+                {"session_id": session_id, "letter": letter, "skipped": "needs an English topic"}
             )
             continue
         wanted = wanted_title(letter, topic)
@@ -936,8 +976,9 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
     # A sweep that could not handle every session is not a success:  the caller sees
     # a nonzero status and a count on stderr, and the entries say which ones failed.
     failed = [e for e in out if e.get("error") or e.get("registry_error")]
-    exit_code = 2 if failed else 0
-    if failed:
+    exit_code = _sweep_exit_code(failed)
+    skipped = sum(1 for e in out if e.get("skipped"))
+    if failed or skipped:
         print(
             json.dumps(
                 {
@@ -945,6 +986,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                     "sessions_outcome_unknown": sum(
                         1 for e in failed if e.get("outcome") == "outcome_unknown"
                     ),
+                    "sessions_skipped": skipped,
                 }
             ),
             file=sys.stderr,
@@ -956,27 +998,28 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
         answer = registry_call(
             [
                 "sweep",
-                "--platform",
-                PLATFORM,
-                "--seat",
-                SEAT,
-                "--stale-after-minutes",
-                str(max(60, int(live_hours) * 60)),
+                "--platform=" + PLATFORM,
+                "--seat=" + SEAT,
+                "--stale-after-minutes=" + str(max(60, int(live_hours) * 60)),
             ]
         )
-        if answer.get("error"):
-            error_code = answer.get("code")
+        try:
+            answer = _require_registry(answer)
+            count = answer.get("count", 0)
+            if not isinstance(count, int) or isinstance(count, bool):
+                raise RegistryError(
+                    "the registry sweep answer has a malformed count",
+                    "bad_shape",
+                    "outcome_unknown",
+                )
+        except RegistryError as exc:
+            error_code = exc.code
             # The registry classifies the failure itself;  the list of codes is the
             # fallback for an answer that came from somewhere else.
-            outcome = str(answer.get("outcome") or "")
+            outcome = exc.outcome
             if not outcome:
                 outcome = "outcome_unknown" if error_code in UNKNOWN_OUTCOME_CODES else "failed"
-            if error_code == "timeout":
-                exit_code = 124
-            elif error_code == "missing_tool":
-                exit_code = 127
-            else:
-                exit_code = 2
+            exit_code = REGISTRY_EXIT_CODES.get(error_code, 2)
             print(json.dumps(out, indent=2))
             print(
                 json.dumps(
@@ -989,7 +1032,7 @@ def sweep(apply: bool, live_hours: int = 36, topics_file: str = "") -> int:
                 file=sys.stderr,
             )
             return exit_code
-        print(json.dumps({"registry_sweep": answer.get("count", 0)}), file=sys.stderr)
+        print(json.dumps({"registry_sweep": count}), file=sys.stderr)
     print(json.dumps(out, indent=2))
     return exit_code
 

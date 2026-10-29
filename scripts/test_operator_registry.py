@@ -395,6 +395,9 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(out["outcome"], "closed")
         self.assertEqual(out["changed"], [])
         self.assertEqual(out["record_id"], a["record_id"])
+        # The letter that ended is named, the same one close_session reports.
+        self.assertEqual(out["label"], a["label"])
+        self.assertGreater(out["generation"], 0)
         row = self.reg._conn.execute(
             "SELECT title FROM sessions WHERE record_id = ?", (a["record_id"],)
         ).fetchone()

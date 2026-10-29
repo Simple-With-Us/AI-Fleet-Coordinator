@@ -19,6 +19,10 @@ import mm_session_letter as M
 # Synthetic:  the accepted session-ID shape, never a real native session.
 SESSION_ID = "mvs_test0000000000000000000000000001"
 
+# Synthetic and provider-neutral:  an assigned credential the scanner refuses, with no
+# real provider prefix, so it never looks like a leaked key to a repository scanner.
+FIXTURE_SECRET = "FIXTURE_TOKEN=" + "NotARealValue" * 2
+
 
 class _StdinBytes:
     """A stand-in for sys.stdin whose .buffer is a real byte stream.
@@ -81,7 +85,7 @@ class MmSessionLetterTest(unittest.TestCase):
             self.assertEqual(M.cached_letter("sid"), "")
 
     def test_a_title_with_a_credential_is_refused_with_a_stable_code(self):
-        secret = "ghp_" + "a1B2c3D4" * 5
+        secret = FIXTURE_SECRET
         with self.assertRaises(ValueError) as caught:
             M._scan_title("Deploy with " + secret)
         self.assertEqual(str(caught.exception), "secret_detected")
@@ -192,7 +196,7 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertEqual(code, 2)
 
     def test_the_rename_command_refuses_a_credential_title_without_a_traceback(self):
-        secret = "ghp_" + "a1B2c3D4" * 5
+        secret = FIXTURE_SECRET
         out = io.StringIO()
         with (
             mock.patch.object(M, "registry_call", return_value={"label": "B"}),
@@ -276,7 +280,7 @@ class MmSessionLetterTest(unittest.TestCase):
         return code, out.getvalue(), err.getvalue()
 
     def test_a_secret_shaped_topic_answers_with_a_stable_code(self):
-        secret = "ghp_" + "a1B2c3D4" * 5
+        secret = FIXTURE_SECRET
         with tempfile.TemporaryDirectory() as tmp:
             path = self._topic_file(tmp, {SESSION_ID: secret})
             code, out, err = self._run_sweep(path, {"count": 0})
@@ -379,7 +383,8 @@ class MmSessionLetterTest(unittest.TestCase):
             contextlib.redirect_stderr(err),
         ):
             code = M.sweep(True)
-        self.assertEqual(code, 2)
+        # A registry that hung is 124, the status a shell uses for a timeout.
+        self.assertEqual(code, 124)
         entry = json.loads(out.getvalue())[0]
         self.assertEqual(entry["outcome"], "outcome_unknown")
         self.assertEqual(entry["code"], "timeout")
@@ -440,6 +445,88 @@ class MmSessionLetterTest(unittest.TestCase):
         self.assertEqual(M.space_for_row({"session_kind": "task"}), "double")
         self.assertEqual(M.space_for_row({"parent_session_id": "p"}), "double")
         self.assertEqual(M.space_for_row({"session_kind": "conversation"}), "single")
+
+    # ---- the Kody pass of Oct 29 ----
+
+    def test_an_error_field_that_is_empty_is_still_a_failure(self):
+        with self.assertRaises(M.RegistryError):
+            M._require_registry({"error": "", "label": "B"})
+
+    def test_a_malformed_error_field_is_a_bad_shape_not_a_coerced_message(self):
+        for answer in ({"error": 7}, {"error": "x", "code": ["timeout"]}, {"label": 3}):
+            with self.assertRaises(M.RegistryError) as caught:
+                M._require_registry(answer)
+            self.assertEqual(caught.exception.code, "bad_shape")
+            self.assertEqual(caught.exception.outcome, "outcome_unknown")
+
+    def test_a_topic_starting_with_a_dash_is_passed_as_one_title_argument(self):
+        seen = []
+        with (
+            mock.patch.object(M, "cached_letter", return_value="B"),
+            mock.patch.object(M, "registry_call", side_effect=lambda a: seen.append(a) or {}),
+        ):
+            M.update_title(SESSION_ID, "B: --seat=XX")
+        self.assertIn("--title=--seat=XX", seen[0])
+        self.assertNotIn("--title", [a for a in seen[0] if a == "--title"])
+        self.assertIn("--session-id=" + SESSION_ID, seen[0])
+
+    def test_an_io_error_after_the_child_started_has_an_unknown_outcome(self):
+        proc = _FakeProc()
+        proc.communicate = mock.Mock(side_effect=OSError("broken pipe"))
+        with (
+            mock.patch.object(M, "registry_db", return_value="/tmp/registry.sqlite3"),
+            mock.patch.object(M, "repo_scripts_dir", return_value="/tmp"),
+            mock.patch.object(M.subprocess, "Popen", return_value=proc),
+            mock.patch.object(M.os, "killpg"),
+        ):
+            answer = M.registry_call(["touch"])
+        self.assertEqual(answer["code"], "io_error")
+        self.assertEqual(answer["outcome"], "outcome_unknown")
+
+    def test_a_session_waiting_for_an_english_topic_does_not_fail_the_sweep(self):
+        code, out, err = self._run_sweep("", {"count": 0}, title="\u8bb0\u5fc6\u540c\u6b65")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)[0]["skipped"], "needs an English topic")
+        self.assertIn('"sessions_skipped": 1', err)
+        self.assertIn('"sessions_failed": 0', err)
+
+    def test_a_missing_registry_tool_fails_the_sweep_with_127(self):
+        self.assertEqual(M._sweep_exit_code([{"code": "timeout"}, {"code": "missing_tool"}]), 127)
+        self.assertEqual(M._sweep_exit_code([{"code": "denied"}]), 2)
+        self.assertEqual(M._sweep_exit_code([]), 0)
+
+    def test_the_sweep_reports_a_touch_that_did_not_land(self):
+        rows = [
+            {
+                "session_id": SESSION_ID,
+                "title": "M: Wake platform verification",
+                "session_kind": "conversation",
+                "created_at_ms": 0,
+            }
+        ]
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            mock.patch.object(M, "sessions", return_value=rows),
+            mock.patch.object(M, "cached_letter", return_value="M"),
+            mock.patch.object(
+                M,
+                "touch_session",
+                side_effect=M.RegistryError("lost", "timeout", "outcome_unknown"),
+            ),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            code = M.sweep(False)
+        self.assertEqual(code, 124)
+        self.assertEqual(json.loads(out.getvalue())[0]["outcome"], "outcome_unknown")
+
+    def test_a_hook_keeps_the_cached_letter_when_the_touch_did_not_land(self):
+        with (
+            mock.patch.object(M, "cached_letter", return_value="M"),
+            mock.patch.object(M, "touch_session", side_effect=M.RegistryError("lost", "timeout")),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(M.letter_for(SESSION_ID), "M")
 
 
 if __name__ == "__main__":
