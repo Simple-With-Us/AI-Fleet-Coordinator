@@ -249,7 +249,6 @@ class ZulipError(Exception):
     and keeps serving, and optional fetches degrade to None ids."""
 
 
-
 class Zulip:
     def __init__(self, email: str, key: str, site: str) -> None:
         self.base = f"{site}/api/v1/"
