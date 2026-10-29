@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
 import hashlib
 import http.client
-import re
-import threading
+import json
 import os
+import re
 import stat
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -44,9 +44,8 @@ def _pairs(pairs):
 
 
 def _origin(value):
-    if (
-        not isinstance(value, str)
-        or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value)
+    if not isinstance(value, str) or any(
+        c.isspace() or ord(c) < 32 or ord(c) == 127 for c in value
     ):
         raise ReaderError("reader-config-invalid")
     try:
@@ -107,7 +106,15 @@ def load(home: Path | None = None):
         config = json.loads(raw, object_pairs_hook=_pairs)
         if (
             not isinstance(config, dict)
-            or set(config) != {"schema", "service_token", "operator_api_url", "project_id", "token_id", "token_name"}
+            or set(config)
+            != {
+                "schema",
+                "service_token",
+                "operator_api_url",
+                "project_id",
+                "token_id",
+                "token_name",
+            }
             or type(config["schema"]) is not int
             or config["schema"] != 1
         ):
@@ -126,20 +133,28 @@ def load(home: Path | None = None):
                 r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", config[name]
             ):
                 raise ReaderError("reader-config-invalid")
-        if (not isinstance(config["token_name"], str)
-                or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", config["token_name"])):
+        if not isinstance(config["token_name"], str) or not re.fullmatch(
+            r"[a-z][a-z0-9-]{0,63}", config["token_name"]
+        ):
             raise ReaderError("reader-config-invalid")
         config["operator_api_url"] = _origin(config["operator_api_url"])
-        pins = {name: config[name] for name in ("project_id", "token_id", "token_name", "operator_api_url")}
-        commitment = hashlib.sha256(json.dumps(pins, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        pins = {
+            name: config[name]
+            for name in ("project_id", "token_id", "token_name", "operator_api_url")
+        }
+        commitment = hashlib.sha256(
+            json.dumps(pins, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
         if commitment != DEPLOYMENT_SHA256:
             raise ReaderError("reader-deployment-unqualified")
         reader = Reader(config)
         fingerprint = hashlib.sha256(raw).digest()
+
         def check_custody():
             current = load(home)
             if current is None or current._fingerprint != fingerprint:
                 raise ReaderError("reader-config-changed")
+
         reader._fingerprint = fingerprint
         reader._check_custody = check_custody
         return reader
@@ -194,7 +209,13 @@ class Reader:
             return json.loads(raw, object_pairs_hook=_pairs)
         except ReaderError:
             raise
-        except (OSError, http.client.HTTPException, urllib.error.URLError, ValueError, UnicodeError):
+        except (
+            OSError,
+            http.client.HTTPException,
+            urllib.error.URLError,
+            ValueError,
+            UnicodeError,
+        ):
             raise ReaderError("reader-api-failed") from None
 
     def forget(self):
@@ -214,8 +235,11 @@ class Reader:
             now = self._clock()
             tick = self._monotonic()
             age = tick - self._cache_started
-            if (self._cached_key is not None and 0 <= age < KEY_CACHE_S
-                    and now < self._cache_expiry - 30):
+            if (
+                self._cached_key is not None
+                and 0 <= age < KEY_CACHE_S
+                and now < self._cache_expiry - 30
+            ):
                 return self._cached_key
             # Expired cache is discarded before a fresh request, never a fallback.
             self._cached_key = None
