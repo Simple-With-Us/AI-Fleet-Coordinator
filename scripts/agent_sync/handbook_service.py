@@ -149,7 +149,7 @@ def execute(args, *, env=None, client=None, credentials=None):
         return {"message": message}
     if args.action != "post":
         raise ValueError("only post/read are allowed")
-    if args.repo != "jaywedgeworth22/Fleet-OPS":
+    if args.repo != "Simple-With-Us/Fleet-OPS":
         raise ValueError("invalid repository slug")
     body_path = Path(args.body_file)
     if body_path.stat().st_size > 40000:

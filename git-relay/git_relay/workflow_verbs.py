@@ -74,6 +74,8 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 # action -> (permissions needed, writes)
 SPECS = {
     "wf_git_blob_binary_get": ({"contents": "read"}, False),
+    "wf_git_tree_create": ({"contents": "write"}, True),
+    "wf_git_commit_create": ({"contents": "write"}, True),
     "wf_pr_list_page": ({"pull_requests": "read"}, False),
     "wf_compare_commits_page": ({"contents": "read"}, False),
     "wf_pr_reviews_page": ({"pull_requests": "read"}, False),
@@ -4178,6 +4180,99 @@ class WorkflowVerbs:
                 "sha": sha,
                 "size": len(raw),
                 "content_b64": base64.b64encode(raw).decode("ascii"),
+    def wf_git_tree_create(self, repo, args):
+        _only(args, ("repo", "base_tree", "files"))
+        base = _sha(args, "base_tree")
+        files = args.get("files")
+        if not isinstance(files, list) or not 1 <= len(files) <= 20:
+            raise Refused("invalid files")
+        entries, seen, total = [], set(), 0
+        for value in files:
+            if not isinstance(value, dict):
+                raise Refused("invalid file")
+            _only(value, ("path", "text", "mode"))
+            path = _path(value)
+            if find_secret(path):
+                raise Refused("credential-shaped file path refused")
+            mode = _enum(value, "mode", ("100644", "100755"))
+            text = value.get("text")
+            if (
+                _workflow_path(path)
+                or path in seen
+                or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
+                or not isinstance(text, str)
+                or find_secret(text)
+            ):
+                raise Refused("invalid file content or path")
+            try:
+                total += len(text.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise Refused("invalid file content or path") from None
+            if total > 40000:
+                raise Refused("file content budget exceeded")
+            seen.add(path)
+            entries.append({"path": path, "mode": mode, "type": "blob", "content": text})
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/git/trees",
+            {"base_tree": base, "tree": entries},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("sha"), str)
+            or not _SHA.fullmatch(result["sha"])
+            or result.get("truncated") is not False
+            or not isinstance(result.get("tree"), list)
+        ):
+            raise RelayGitHubError(502, "tree creation receipt unverifiable")
+        return {"tree": {"sha": result["sha"], "files": len(entries)}}
+
+    def wf_git_commit_create(self, repo, args):
+        _only(args, ("repo", "tree_sha", "parents", "message"))
+        tree = _sha(args, "tree_sha")
+        parents, message = args.get("parents"), args.get("message")
+        if (
+            not isinstance(parents, list)
+            or not 1 <= len(parents) <= 2
+            or any(not isinstance(x, str) or not _SHA.fullmatch(x) for x in parents)
+            or len(set(parents)) != len(parents)
+            or not isinstance(message, str)
+            or not message.strip()
+            or find_secret(message)
+        ):
+            raise Refused("invalid commit input")
+        try:
+            message_size = len(message.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise Refused("invalid commit input") from None
+        if message_size > 32768:
+            raise Refused("invalid commit input")
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/git/commits",
+            {"tree": tree, "parents": parents, "message": message},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("sha"), str)
+            or not _SHA.fullmatch(result["sha"])
+            or not isinstance(result.get("tree"), dict)
+            or result["tree"].get("sha") != tree
+            or not isinstance(result.get("parents"), list)
+            or len(result["parents"]) != len(parents)
+            or any(
+                not isinstance(x, dict) or x.get("sha") != expected
+                for x, expected in zip(result["parents"], parents)
+            )
+        ):
+            raise RelayGitHubError(502, "commit creation receipt unverifiable")
+        return {
+            "commit": {
+                "sha": result["sha"],
+                "tree_sha": tree,
+                "parents": parents,
             }
         }
 
@@ -4237,6 +4332,15 @@ class WorkflowVerbs:
         sha = hashlib.sha1(
             b"blob " + str(len(raw)).encode() + b"\0" + raw, usedforsecurity=False
         ).hexdigest()
+        if not isinstance(text, str) or find_secret(text):
+            raise Refused("invalid blob text")
+        try:
+            raw = text.encode("utf-8")
+        except UnicodeEncodeError:
+            raise Refused("invalid blob text") from None
+        if len(raw) > 40000:
+            raise Refused("invalid blob text")
+        sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
         result = self.client._call(
             "POST",
             f"/repos/{repo}/git/blobs",

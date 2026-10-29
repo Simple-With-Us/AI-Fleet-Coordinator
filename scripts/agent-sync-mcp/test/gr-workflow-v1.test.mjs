@@ -309,6 +309,37 @@ test('file write receipts require string branch and path',()=>{
  for (const bad of [{path:'x',branch:{},commit:'a'.repeat(40)},{path:2,branch:'b',commit:'a'.repeat(40)},{path:'x',branch:'',commit:'a'.repeat(40)}]) assert.equal(validWfV1Response('wf_file_put',bad),false);
  assert.equal(validWfV1Response('wf_file_put',{path:'x',branch:'b',commit:'a'.repeat(40)}),true);
 });
+test('bounded git object fixed own-bearer calls and unknown blob creates',async()=>{
+ for(const [action,args,reply] of [['wf_git_blob_get',{sha:'a'.repeat(40)},{blob:{sha:'a'.repeat(40),size:2,text:'hi'}}],['wf_git_blob_create',{text:'hi'},{blob:{sha:'a'.repeat(40),size:2}}],['wf_git_commit_get',{sha:'a'.repeat(40)},{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[],message:'message'}}],['wf_git_tree_get',{sha:'a'.repeat(40)},{tree:{sha:'a'.repeat(40),entries:[],truncated:false}}]]){
+  assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,url:'https://evil.invalid'}));
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
+ }
+ const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_wf_git_blob_create',{repo,text:'hi'});assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
+});
+
+test('unattached tree commit writes have closed schemas own bearer and UNKNOWN',async()=>{
+ for(const [action,args,reply] of [['wf_git_tree_create',{base_tree:'a'.repeat(40),files:[{path:'x.txt',text:'hi',mode:'100644'}]},{tree:{sha:'b'.repeat(40),files:1}}],['wf_git_commit_create',{tree_sha:'a'.repeat(40),parents:['b'.repeat(40)],message:'edit'},{commit:{sha:'c'.repeat(40),tree_sha:'a'.repeat(40),parents:['b'.repeat(40)]}}]]){
+  assert.ok(validWfV1Args(action,{repo,...args}));assert.ok(!validWfV1Args(action,{repo,...args,author:'other'}));
+  const t=harness(async(url,init)=>{assert.ok(url.endsWith('/v1/'+action));assert.equal(init.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify(reply));});assert.ok(!(await t.call('gr_'+action,{repo,...args})).isError);
+  const lost=harness(async()=>{throw Error('lost');});const out=await lost.call('gr_'+action,{repo,...args});assert.ok(out.isError);assert.match(out.content[0].text,/unknown/i);
+ }
+});
+
+test('Git create UTF8 budgets and strict receipt parent sets',()=>{
+ const args={repo,tree_sha:'a'.repeat(40),parents:['b'.repeat(40)],message:'edit'};
+ assert.ok(!validWfV1Args('wf_git_commit_create',{...args,message:'é'.repeat(16385)}));
+ assert.ok(!validWfV1Args('wf_git_commit_create',{...args,parents:['b'.repeat(40),'b'.repeat(40)]}));
+ assert.ok(!validWfV1Args('wf_git_blob_create',{repo,text:'é'.repeat(20001)}));
+ assert.ok(!validWfV1Response('wf_git_commit_create',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:[]}}));
+ assert.ok(!validWfV1Response('wf_git_commit_create',{commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:['c'.repeat(40),'c'.repeat(40)]}}));
+});
+
+test('all actions parse strict Zod before dispatch including nongit',async()=>{
+ for(const args of [{repo,number:1,extra:1},{repo,number:true}])assert.equal(validWfV1Args('wf_pr_get',args),false);
+ let calls=0;const t=harness(async()=>{calls++;throw Error('must not dispatch');});const r=await t.call('gr_wf_pr_get',{repo,number:1,extra:1});assert.ok(r.isError);assert.equal(calls,0);
+ let sent=0;const ok=harness(async(url,init)=>{sent++;assert.ok(url.endsWith('/v1/wf_git_commit_create'));assert.equal(JSON.parse(init.body).message,'edit');return new Response(JSON.stringify({commit:{sha:'a'.repeat(40),tree_sha:'b'.repeat(40),parents:['c'.repeat(40)]}}));});assert.ok(!(await ok.call('gr_wf_git_commit_create',{repo,tree_sha:'b'.repeat(40),parents:['c'.repeat(40)],message:'edit'})).isError);assert.equal(sent,1);
+});
+
 test('comment and release lifecycle envelopes and write UNKNOWN',async()=>{
  const cases=[['wf_issue_comment_update',{comment_id:2,body:'updated'},{result:{id:2}}],['wf_issue_comment_delete',{comment_id:2},{deleted:true}],['wf_review_comment_update',{comment_id:2,body:'updated'},{result:{id:2}}],['wf_review_comment_delete',{comment_id:2},{deleted:true}],['wf_release_list',{},{releases:[],complete:false}],['wf_release_get',{release_id:4},{result:{id:4}}],['wf_release_delete',{release_id:4},{deleted:true}]];
  for(const [action,args,reply] of cases){
@@ -591,6 +622,25 @@ test('PR response text scan refuses credential-shaped title and body without blo
  for(const key of ['title','body'])for(const value of ['ghp_'+'x'.repeat(30),'github_pat_'+'x'.repeat(30)])assert.equal(validWfV1Response('wf_pr_get',{pull:{...base,[key]:value}}),false);
 });
 
+
+test('Git create receipts bind counts tree and ordered parents to request',async()=>{
+ const treeArgs={repo,base_tree:'a'.repeat(40),files:[{path:'x',text:'hi',mode:'100644'}]};
+ const commitArgs={repo,tree_sha:'a'.repeat(40),parents:['b'.repeat(40),'c'.repeat(40)],message:'edit'};
+ const tree={tree:{sha:'d'.repeat(40),files:1}};
+ const commit={commit:{sha:'d'.repeat(40),tree_sha:commitArgs.tree_sha,parents:commitArgs.parents}};
+ for(const [action,args,good,bad] of [
+  ['wf_git_tree_create',treeArgs,tree,{tree:{...tree.tree,files:2}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,tree_sha:'e'.repeat(40)}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,parents:[...commitArgs.parents].reverse()}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,parents:[commitArgs.parents[0]]}}],
+  ['wf_git_commit_create',commitArgs,commit,{commit:{...commit.commit,parents:['e'.repeat(40),'f'.repeat(40)]}}],
+ ]){
+  assert.equal(validWfV1Response(action,good,args),true);
+  assert.equal(validWfV1Response(action,bad,args),false);
+  let calls=0;const t=harness(async()=>{calls++;return new Response(JSON.stringify(bad));});
+  const result=await t.call('gr_'+action,args);assert.ok(result.isError);assert.match(result.content[0].text,/unknown/i);assert.equal(calls,1);
+ }
+});
 test('persisted status, rename, dismiss and deployment text refuses credential shapes before network',async()=>{
  // Synthetic-only credential shape, assembled at runtime; not a real token.
  const fake='gh'+'p_'+'A'.repeat(36);
