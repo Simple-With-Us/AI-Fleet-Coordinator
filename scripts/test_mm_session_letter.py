@@ -31,7 +31,6 @@ class MmSessionLetterTest(unittest.TestCase):
                 fh.write('{"letter": "not-a-letter"}')
             self.assertEqual(M.cached_letter("sid"), "")
 
-
     def test_a_title_with_a_credential_is_refused_with_a_stable_code(self):
         secret = "ghp_" + "a1B2c3D4" * 5
         with self.assertRaises(ValueError) as caught:
@@ -48,6 +47,7 @@ class MmSessionLetterTest(unittest.TestCase):
             self.assertEqual(oct(os.stat(path).st_mode & 0o777), "0o600")
             leftovers = [n for n in os.listdir(M.letter_cache_dir()) if n.endswith(".tmp")]
             self.assertEqual(leftovers, [])
+
 
 if __name__ == "__main__":
     unittest.main()
