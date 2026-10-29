@@ -125,6 +125,27 @@ class SeatAndMcpTests(unittest.TestCase):
             doctor.check_seat(report, "GROK", {}, False)
             self.assertEqual(report.rows[0]["status"], "WARN")
 
+    def test_unreadable_fleetlink_token_names_warns_instead_of_missing(self):
+        names: dict[str, frozenset[str] | None] = {
+            "/zulip": frozenset(
+                {"GROK_WEB_ZULIP_EMAIL", "GROK_WEB_ZULIP_KEY", "GROK_WEB_ZULIP_SITE"}
+            ),
+            "/linear": frozenset(
+                {"GROK_WEB_LINEAR_CLIENT_ID", "GROK_WEB_LINEAR_CLIENT_SECRET"}
+            ),
+            "/fleetlink": None,
+        }
+
+        def fake_names(folder, env, project="fleet-ops"):
+            return names[folder]
+
+        with mock.patch.object(doctor, "infisical_names", fake_names):
+            report = doctor.Report()
+            doctor.check_seat(report, "GROK-WEB", {}, None)
+            self.assertEqual(report.rows[0]["status"], "WARN")
+            self.assertIn("fleetlink token names", report.rows[0]["detail"])
+            self.assertNotIn("missing fleetlink", report.rows[0]["detail"])
+
     def mcp_rows(self, fleetlink_tokens=frozenset(), readable=True):
         """Run check_mcp with a fixed FleetLink token reading for the two seats.
 
@@ -183,6 +204,13 @@ class SeatAndMcpTests(unittest.TestCase):
         for seat in ("mcp:codex", "mcp:claude"):
             self.assertEqual(rows[seat]["status"], "WARN")
             self.assertIn("token names could not be read", rows[seat]["detail"])
+
+    def test_mcp_requires_codex_and_claude_in_the_token_map(self):
+        report = doctor.Report()
+        doctor.check_mcp(report, {"CODEX": False})
+        rows = {r["check"]: r for r in report.rows}
+        self.assertEqual(rows["mcp:claude"]["status"], "FAIL")
+        self.assertIn("missing CLAUDE", rows["mcp:claude"]["detail"])
 
     def test_both_names_registered_name_the_retired_key_as_the_drift(self):
         self.touch(

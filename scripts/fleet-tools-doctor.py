@@ -1397,6 +1397,7 @@ def check_fleet_mode_doc(report: Report, rt: dict | None = None) -> None:
 # The Zulip key prefix where it differs from the seat (agent_sync/zulip.py SEAT_FILE_OVERRIDES).
 ZULIP_PREFIX_OVERRIDES = {"GROK": "GROK_BUILD"}
 _names_cache: dict[str, frozenset[str] | None] = {}
+_UNSET = object()
 
 
 def infisical_names(
@@ -1430,17 +1431,25 @@ def infisical_names(
     return names
 
 
-def seat_has_fleetlink_token(seat: str, env: dict[str, str]) -> bool | None:
+def seat_has_fleetlink_token(
+    seat: str,
+    env: dict[str, str],
+    fleetlink_names: frozenset[str] | None | object = _UNSET,
+) -> bool | None:
     """Whether this seat holds a FleetLink token, from the environment or from Infisical.
 
     A seat without one cannot run the fleetlink server, so the doctor does not ask it to
     register one.  None is not the same as False:  it means the token names could not be
     listed, and the doctor reports that as unknown rather than dropping the check.
+    Pass `fleetlink_names` when the caller already listed `/fleetlink` once for this run.
     """
     code = seat_file(seat)
     if env.get(f"FLEETLINK_TOKEN_{code}"):
         return True
-    names = infisical_names("/fleetlink", env, "ai-fleet-coordinator")
+    if fleetlink_names is _UNSET:
+        names = infisical_names("/fleetlink", env, "ai-fleet-coordinator")
+    else:
+        names = fleetlink_names
     if names is None:
         return None
     return f"FLEETLINK_TOKEN_{code}" in names
@@ -1466,12 +1475,19 @@ def check_seat(
     linear = (
         linear_env or {f"{code}_LINEAR_CLIENT_ID", f"{code}_LINEAR_CLIENT_SECRET"} <= linear_names
     )
+    if fleetlink is None:
+        report.add(
+            f"seat:{seat}",
+            "WARN",
+            "fleet-secrets could not list Infisical fleetlink token names",
+        )
+        return
     missing = [
         label
         for label, ok in (
             ("zulip bot", zulip),
             ("linear app", linear),
-            ("fleetlink token", fleetlink is not None and bool(fleetlink)),
+            ("fleetlink token", bool(fleetlink)),
         )
         if not ok
     ]
@@ -1628,6 +1644,9 @@ def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None]) -> None:
     tokens = fleetlink_tokens
     for seat in ("CODEX", "CLAUDE"):
         label = "mcp:" + seat.lower()
+        if seat not in tokens:
+            report.add(label, "FAIL", "internal: fleetlink token map missing " + seat)
+            continue
         try:
             names = sorted(client_servers(seat, HOME))
         except ClientConfigError as exc:
@@ -1641,10 +1660,10 @@ def check_mcp(report: Report, fleetlink_tokens: dict[str, bool | None]) -> None:
             lacking.append(MCP_CANONICAL_NAME)
         if "fleetlink" not in names:
             token = tokens[seat]
-            if token is not None and bool(token):
-                lacking.append("fleetlink")
-            elif token is None:
+            if token is None:
                 unreadable.append("fleetlink")
+            elif token:
+                lacking.append("fleetlink")
         status = "OK"
         detail = "registered: " + (", ".join(names) or "none")
         if lacking:
@@ -3216,7 +3235,10 @@ def run(
         check_registry(report, host, network, runner, fetch)
     seats = [s.strip().upper() for s in args.seats.split(",") if s.strip()]
     judged = list(dict.fromkeys(seats + ["CODEX", "CLAUDE"]))
-    fleetlink_tokens = {seat: seat_has_fleetlink_token(seat, env) for seat in judged}
+    fleetlink_names = infisical_names("/fleetlink", env, "ai-fleet-coordinator")
+    fleetlink_tokens = {
+        seat: seat_has_fleetlink_token(seat, env, fleetlink_names) for seat in judged
+    }
     for seat in seats:
         check_seat(report, seat, env, fleetlink_tokens[seat])
         check_mcp_startup(report, seat)

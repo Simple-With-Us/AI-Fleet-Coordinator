@@ -12,7 +12,7 @@ Since 2026-10-19 the Hetzner server runs `simple-chat`, `simple-board`, `recall`
 ## How an update happens
 
 1. A merge to main that touches the tools runs `.github/workflows/fleet-cli-server-update.yml`.  It SSHes to the server with a key whose `authorized_keys` entry is `restrict` plus a forced command that only starts `fleet-cli-git-update.service`.  The key can do nothing else.
-2. The service runs `scripts/fleet-cli-git-update.py update --home /home/jay` (the script accepts `--home`;  the unit also sets `Environment=HOME=/home/jay`).  It fetches main, checks the new commit out, and runs the smoke test (every tool starts with an empty HOME).  A failure returns to the last good commit and skips the bad one until main moves again.  Any wrapper the host lacks is written;  existing ones are never touched.
+2. The service runs `scripts/fleet-cli-git-update.py update --home <account-home>` (the script accepts `--home`;  the unit also sets `Environment=HOME=` to that same home).  It fetches main, checks the new commit out, and runs the smoke test (every tool starts with an empty HOME).  A failure returns to the last good commit and skips the bad one until main moves again.  Any wrapper the host lacks is written;  existing ones are never touched.
 3. `fleet-cli-git-update.timer` runs the same service hourly, in case a signal is lost.
 
 The workflow runs only when the repository variable `FLEET_CLI_SIGNAL_ENABLED` is `true`.  It reads three repository secrets, which Infisical (AFC `prod` `/fleet-cli`) holds as the source of truth:  `FLEET_CLI_UPDATE_SSH_KEY`, `FLEET_CLI_UPDATE_HOST` and `FLEET_CLI_UPDATE_KNOWN_HOSTS`.

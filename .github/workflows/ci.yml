@@ -230,6 +230,13 @@ jobs:
     - name: Fleet skill identity tests
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # The housekeeper locks, read from the one home:  the lock blocks are run
+    # as written, with the ssh hop replaced by a fake, so the free, peer-held
+    # and unmakeable paths are all covered and the destructive commands are
+    # checked to run inside the locked block.
+    - name: Housekeeper lock tests
+      run: |
+        cd scripts && python3 -m unittest test_housekeeper_lock -v
     # The sentence-gap converter, read from the one home:  its shape (one or more
     # spaces, the numbered-list lookbehind, the markup group) and its behaviour on
     # every shape a body can hold, plus the check that no copy has drifted.
@@ -394,6 +401,13 @@ jobs:
         node-version: '24'
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    # The alert-ingress secret provisioner (AFC-351):  the batched read against a
+    # fake `fleet-secrets` that keeps the CLI's own contract -- one name answers
+    # with the raw value, several answer with a JSON object -- so a one-name
+    # batch cannot decode as the other.  No network, no secret in any assertion.
+    - name: alert_ingress provisioner tests
+      run: |
+        cd scripts && python3 -m unittest test_alert_ingress_provision -v
     # Shared alert ingress: state transitions, vendor normalization, and the
     # Zulip status rendering.  Pure functions, so no Workers runtime needed.
     # The test files are named explicitly: on Node 24 the directory form
