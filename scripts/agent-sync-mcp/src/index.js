@@ -209,18 +209,7 @@ async function recordDiagnostic(env, entry) {
 
 // ---------------------------------------------------------------- /mcp
 
-/** Raw request bytes for one /mcp POST:  read with a hard cap BEFORE the MCP
- * SDK parses (kody 4372745946).  A generous quarter megabyte - the largest
- * honest call is a long PR body, and the relay caps its own requests at 64
- * KiB anyway. */
-const MCP_MAX_BODY = 262_144;
-
 async function serveMcp(request, env, ctx) {
-  if (request.method === "POST") {
-    const bytes = await readBodyBytes(request, MCP_MAX_BODY);
-    if (bytes === null) return textResponse("Payload Too Large", 413);
-    request = new Request(request.url, { method: "POST", headers: request.headers, body: bytes });
-  }
   const config = loadConfig(env);
   // One listing per folder beats a cold per-name burst (sentry 4364275308);
   // the listings also make later optional misses subrequest-free.

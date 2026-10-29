@@ -6,7 +6,7 @@ description: >-
 
 # Fleet mode
 
-> **Retired seat.** Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
+> **Retired seat.**  Owner directive 2026-08-21: do not assign or accept new Kimi work.  Do not start a Kimi session.  Do not take work.  This catalog copy is inactive — do not install to `~/.kimi`.
 
 
 Fleet mode is not a special mode.  It is how every agent on this fleet is expected to work by default, on every platform, forever.  The trigger phrases exist only to *remind* an agent that has drifted back into grinding everything inline.

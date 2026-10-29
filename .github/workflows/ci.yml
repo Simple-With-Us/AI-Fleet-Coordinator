@@ -124,6 +124,14 @@ jobs:
         python3 scripts/test_fleet_cli_sync.py
         python3 scripts/test_fleet_cli_runtime.py
         bash -n scripts/agent-sync-runtime-sync.sh
+    # systemd unit templates (the fleet CLI updater unit):  the measured host
+    # quirk that %h expands to the root account's home inside a system unit even
+    # when User= names another account, the unit's own internal consistency, and
+    # the compliance inventory row that quotes its ExecStart.  A unit that
+    # changes without the row changing is the drift this suite exists to catch.
+    # Unwired tests are decoration:  a step is what makes the test real.
+    - name: systemd unit template tests
+      run: python3 -m unittest discover -s scripts/systemd -t scripts/systemd -v
     # fleet-server-status (AFC-548):  the server collector whose report the Muster
     # Server Status panel reads.  The drift against the previous report, the omission
     # of a measurement that could not be taken, the credential path filter and the
@@ -157,6 +165,14 @@ jobs:
       run: |
         cd scripts && python3 -m unittest discover -s agent_sync/tests -t . -v
         python3 -m unittest discover -s whatsapp_bridge/tests -t . -v
+    # The Operator's session registry and the MM seat's letter hook:  the letter
+    # allocation, the two letter spaces, the registry CLI, and the secret scan that
+    # guards every title.  Both files sit at the top of scripts/, outside the
+    # directories discovery walks, so nothing ran them:  before this step their
+    # assertions were decoration and a regression would ship under a green CI.
+    - name: Operator session registry and letter hook tests
+      run: |
+        cd scripts && python3 -m unittest test_operator_registry test_mm_session_letter -v
     # Infisical knobs for the open-loops jobs:  fake-CLI fetch, last-known-good, secrets fail
     # closed, local files only narrow, and INFISICAL.md equal to the registry.
     - name: fleet_knobs tests
@@ -407,7 +423,7 @@ jobs:
     - name: Set up Node
       uses: actions/setup-node@v7
       with:
-        node-version: '24'
+        node-version: '26'
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
     # The alert-ingress secret provisioner (AFC-351):  the batched read against a
