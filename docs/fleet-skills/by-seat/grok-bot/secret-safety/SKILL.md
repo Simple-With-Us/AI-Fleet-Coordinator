@@ -6,7 +6,7 @@ description: >-
 
 # Secret safety
 
-> **This install is for Grok Bot roles.** Chat tag is `[GB-<NAME>]` — `[GB-DIRECTOR]`, `[GB-FIXER]`, `[GB-DESIGNER]`, `[GB-COMPILER]` (Compiler), `[GB-HOUSEKEEPER]`, `[GB-PUBLISHER]`, `[GB-DEPLOYER]`, `[GB-MONITOR]`, `[GB-PLUMBER]`, `[GB-ORACLE]`, `[GB-TRADER]`, `[GB-ENGINEER]`.  Notes name is the role in Title Case (`Director`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
+> **This install is for Grok Bot roles.**  Chat tag is `[GB-<NAME>]` — `[GB-DIRECTOR]`, `[GB-FIXER]`, `[GB-DESIGNER]`, `[GB-COMPILER]` (Compiler), `[GB-HOUSEKEEPER]`, `[GB-PUBLISHER]`, `[GB-DEPLOYER]`, `[GB-MONITOR]`, `[GB-PLUMBER]`, `[GB-ORACLE]`, `[GB-TRADER]`, `[GB-ENGINEER]`.  Notes name is the role in Title Case (`Director`, `Monitor`, …).  Cloud branches are often `cursor/`.  Never `[GROK-BOT]`, `[CURSOR]`, `[GROK]`, or `[MONET]`.
 
 
 ## Why this exists
