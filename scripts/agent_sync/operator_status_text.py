@@ -67,7 +67,9 @@ GAP = "  "
 MAX_MESSAGE_ID = 10**18 - 1
 
 _HEAD_RE = re.compile(
-    r"\A" + re.escape(TAG) + r" re=([1-9][0-9]{0,17})\nYour message tagged ([A-Z][A-Z0-9_-]{0,31})\."
+    r"\A"
+    + re.escape(TAG)
+    + r" re=([1-9][0-9]{0,17})\nYour message tagged ([A-Z][A-Z0-9_-]{0,31})\."
 )
 
 
