@@ -27,3 +27,13 @@ test('large deeply nested arguments fail closed rather than throwing',async()=>{
  const body=prefix+'{"a":'.repeat(20000)+'"'+ 'A'.repeat(300000)+'"'+'}'.repeat(20000)+'}}';
  assert.equal((await boundedMcpRequest(req(body))).status,413);
 });
+
+test('reconstructed request preserves original request context',async()=>{
+ const controller=new AbortController();
+ const original=new Request('https://example.test/mcp',{method:'POST',body:'{}',signal:controller.signal,credentials:'include'});
+ const rebuilt=await boundedMcpRequest(original);
+ assert.equal(rebuilt.credentials,'include');
+ controller.abort();
+ assert.equal(rebuilt.signal.aborted,true);
+ assert.equal(await rebuilt.text(),'{}');
+});

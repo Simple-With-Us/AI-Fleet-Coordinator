@@ -42,7 +42,7 @@ MAX_REQUEST_BYTES = 64 * 1024
 # Only the binary release-asset upload may exceed MAX_REQUEST_BYTES (base64 of 180 KiB).
 MAX_BINARY_REQUEST_BYTES = 256 * 1024
 BINARY_REQUEST_ACTIONS = frozenset({"wf_release_asset_upload_binary"})
-# Existing full-file actions get a narrow envelope allowance. No default,
+# Existing full-file actions get a narrow envelope allowance.  No default,
 # permission, scan budget or workflow verb is widened.
 MAX_FILE_REQUEST_BYTES = 6 * 1024 * 1024
 FILE_REQUEST_ACTIONS = frozenset({"wf_file_put", "wf_files_put"})

@@ -288,10 +288,6 @@ class AdapterTests(unittest.TestCase):
         )
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FileFrameTests(unittest.TestCase):
     def test_larger_frames_are_file_only_and_bounded(self):
         message = {
@@ -311,3 +307,7 @@ class FileFrameTests(unittest.TestCase):
         self.assertFalse(mod.file_frame_allowed(message, mod.MAX_FILE_FRAME_BYTES + 1))
         self.assertFalse(mod.file_frame_allowed([message], size))
         self.assertEqual(mod.MAX_BYTES, 4 * 1024 * 1024)
+
+
+if __name__ == "__main__":
+    unittest.main()

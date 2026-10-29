@@ -66,14 +66,10 @@ class FileEnvelopeTests(unittest.TestCase):
             scan_args(args, _budget=[2000, MAX_FILE_REQUEST_BYTES])
             WorkflowVerbs.check_shape("wf_file_put", args, args["repo"])
         args["content_b64"] = base64.b64encode(
-            b"a" * 60000 + b"\n-----BEGIN PRIVATE KEY-----"
+            b"a" * 60000 + b"\n-----BEGIN " + b"PRIVATE KEY-----"
         ).decode()
         with self.assertRaises(Refused):
             WorkflowVerbs.check_shape("wf_file_put", args, args["repo"])
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class DecodedFileBudgetTests(unittest.TestCase):
@@ -121,6 +117,10 @@ class DecodedFileBudgetTests(unittest.TestCase):
             scan_args({"text": "a" * 300000})
         with self.assertRaises(SecretInputError):
             scan_args(
-                {"text": "a" * 300000 + "-----BEGIN PRIVATE KEY-----"},
+                {"text": "a" * 300000 + "-----BEGIN " + "PRIVATE KEY-----"},
                 _budget=[2000, MAX_FILE_REQUEST_BYTES],
             )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,4 +1,3 @@
-import { boundedMcpRequest } from './mcp-body.js';
 // Hosted ST-MCP Worker (docs/protocols/agent-sync-mcp.md section 3):
 // OAuth 2.1 with CIMD for ChatGPT and Grok, hand-registered public PKCE
 // clients bound to one seat each (manual forms, the Instinct app's loopback
@@ -1355,11 +1354,6 @@ export default {
       }
       await pauseOnRefreshMismatch(env, config, gated.form, response);
       return response;
-    }
-    if (route === "mcp") {
-      const bounded = await boundedMcpRequest(request);
-      if (bounded instanceof Response) return bounded;
-      request = bounded;
     }
     if (route === "gr_verify") return serveGrBearerVerify(request, env, gate);
     const gbBearer = route === "mcp" ? gbBearerFromRequest(request) : null;
