@@ -175,9 +175,7 @@ def _fsync_dir(directory: Path) -> None:
 def write(path: Path, text: str, stamp: str) -> Path:
     st = path.stat()
     backup = path.with_name("%s.bak-%s" % (path.name, stamp))
-    backup_fd, backup_tmp = tempfile.mkstemp(
-        prefix=".%s." % backup.name, dir=str(path.parent)
-    )
+    backup_fd, backup_tmp = tempfile.mkstemp(prefix=".%s." % backup.name, dir=str(path.parent))
     try:
         with os.fdopen(backup_fd, "wb") as bfh:
             with path.open("rb") as source:
