@@ -16,7 +16,7 @@ const facts = {
 };
 
 for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
-  test(`ST-MCP Admin Status ${viewport.width}`, async ({ page }) => {
+  test(`Fleet MCP Admin Status ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const response = adminPage(facts);
     const html = await response.text();
@@ -26,8 +26,8 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     // asserted as the document title, the visible h1, and its own screenshot
     // baseline so a rename regression is caught by name and by pixels
     // (kody 4372747419).
-    await expect(page).toHaveTitle('ST-MCP + GR-MCP Admin');
-    const heading = page.getByRole('heading', { name: 'ST-MCP + GR-MCP Admin', exact: true });
+    await expect(page).toHaveTitle('Fleet MCP Admin');
+    const heading = page.getByRole('heading', { name: 'Fleet MCP Admin', exact: true });
     await expect(heading).toBeVisible();
     await expect(heading).toHaveScreenshot(`agent-sync-admin-title-${viewport.width}.png`, { animations: 'disabled', maxDiffPixels: 0 });
     // The status overview folds by default (AFC-347); open it before asserting on its cards.
@@ -46,7 +46,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
   // come from the fixture below and the line has no time, so nothing is masked (a mask
   // over p.warn would blank the element under test), and the tolerance is an explicit
   // zero pixels (kody 4367022364, 4367022518).
-  test(`ST-MCP Admin Secrets Mode ${viewport.width}`, async ({ page }) => {
+  test(`Fleet MCP Admin Secrets Mode ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const response = adminPage({ ...facts, infisical: { mode: 'fallback', fetched: 5, cacheHits: 40, fallbacks: 2, absent: 5 } });
     const html = await response.text();
@@ -63,7 +63,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
   // signal):  present (small and seven-figure), read-unavailable, and inert
   // zero in one table.  ownerTime is fixed-zone, so a fixed stamp renders
   // deterministically and no mask is needed.
-  test(`ST-MCP Admin bearer mismatch counters ${viewport.width}`, async ({ page }) => {
+  test(`Fleet MCP Admin bearer mismatch counters ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const response = adminPage({ ...facts, gbBearers: [
       { identity: 'JET', kind: 'seat', credentials: true,
@@ -86,7 +86,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   });
 
-  test(`ST-MCP Admin manual seats populated ${viewport.width}`, async ({ page }) => {
+  test(`Fleet MCP Admin manual seats populated ${viewport.width}`, async ({ page }) => {
     await page.setViewportSize(viewport);
     // All three redirect-status variants: configured, configured+shared, none yet.
     const populated = { ...facts, manualSeats: [

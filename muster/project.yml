@@ -69,6 +69,10 @@ targets:
       - path: Muster/Model/FleetStore.swift
       - path: Muster/Model/FleetToolsReport.swift
       - path: Muster/Model/ServerStatusReport.swift
+      - path: Muster/Model/WorkerHealthReport.swift
+      - path: Muster/Model/MacServicesReport.swift
+      - path: Muster/Model/OpsAuditLog.swift
+      - path: Muster/Model/OpsControl.swift
       - path: Muster/Model/KnobRegistry.swift
       - path: Muster/Model/MiniMaxSurface.swift
       - path: Muster/Model/SeatManifest.swift

@@ -353,8 +353,19 @@ A wake may name one fallback runtime, tried **only when the primary could not pr
 
 ```
 mcode exec --prompt-mode work --permission off --output-format json --input - \
-  --output-schema <schema> --max-steps 8 --timeout 4m --cwd <inert dir> -o <last-message>
+  --model minimax/MiniMax-M3.1-Flash \
+  --output-schema <schema> --max-steps 16 --timeout 3m30s --cwd <inert dir> -o <last-message>
 ```
+
+**The model is named on the command line.**  Without `--model`, mcode inherits MiniMax Code's own `defaultModel`, which on this Mac names `minimax/MiniMax-M3.1-Flash-Preview` — an id the current catalog does not serve, so the run times out with no usage and no answer.  Naming the model here makes the backup runtime run on a model the catalog carries.
+
+**The step budget is 16, and that number is measured.**  At eight steps the wake contract does not fit: a four-message pending set runs longer and mcode exits 7 with `mcode exec limit_exceeded: The run reached its step limit.`, which the daemon reads as a failed fallback.  A failed fallback can never be pinned, so the seat keeps whatever runtime it had.  The identical run at sixteen steps exits 0 and returns the contract's answer.
+
+**The step budget is a bound on live actions, so the prompt is bounded to match.**  mcode has neither a sandbox nor a tool-deny switch, so `--max-steps` is the ONLY thing limiting how much the fallback may act, and the step cost grows with the prompt: the daemon builds a wake prompt with up to `PROMPT_HISTORY` (15) messages plus `items_in_wake` (20) held-back entries, while the budget of 16 is measured on a FOUR-message prompt.  An unbounded prompt would blow a budget that was never measured at that size and would hand a misled model twice the live rounds before the cap stopped it.  The fallback is therefore given a bounded prompt — the trigger messages and then the newest of the rest, up to `MCODE_FALLBACK_MAX_MESSAGES` (4), and no held-back detail — so the budget it runs under is the budget it was measured against, and the exposure the cap allows does not scale with the backlog.  Every other runtime keeps the whole prompt, and `test-wake --runtime fallback` builds the same bounded prompt, so the proof covers the prompt the fallback is actually given.
+
+**The child's own deadline sits under the runner's.**  The runner's outer deadline is `WAKE_TIMEOUT` (240s).  The child's `--timeout` is 3m30s, so mcode's clean timeout fires first and the daemon's group-kill stays a backstop: with the two equal the daemon's kill, not mcode's timeout, would end a long fallback run, the ledger would record a hard timeout instead of mcode's own, and one failing wake would occupy the seat's serialized worker for the whole outer budget.  It is 210s rather than 180s because the measured run takes about 145s and the fallback is the LAST resort, where a timeout means no answer at all rather than a slower one; the extra 30s of margin is worth more than the 30s it adds to a path that already spent the primary's 240s.
+
+**This change invalidates every existing mcode pin.**  The pin fingerprint hashes the whole fallback command, so a pin made under the old step budget, timeout or prompt bound no longer matches and the fallback is HELD (`pin_stale`) until a person re-pins it.  That is the never-self-heal rule working, not a fault: run `simple-chat daemon test-wake --seat <SEAT> --runtime fallback --run`, read the result, then the same command with `--pin`.  A seat whose fallback was pinned before this change therefore answers no wake until it is re-pinned.
 
 **Same contract, proven.**  Gate 0 ran a real `mcode exec` with the actual wake schema:  it round-tripped through `wakes.validate` with zero coercion and a populated `board` object, and on the hostile deploy-and-bypass-PR request it returned `escalate` / `risk: high` / a dropped board payload, exactly as the contract requires.  The prompt arrives on **stdin** (`--input -`), not as an argument:  mcode has no `--prompt-file`, which is an argv mistake the first fallback run caught in 0.7 s.  `-o` writes the final message to a file, a cleaner transport than muse's MSP envelope.
 

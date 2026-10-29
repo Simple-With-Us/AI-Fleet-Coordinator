@@ -352,7 +352,8 @@ class RouteUnitTests(RouteHarness):
     def test_the_schema_seat_enum_is_the_live_tag_set_sorted(self) -> None:
         schema = json.loads(W.schema_text(["codex", "CLAUDE", "GB-FIXER"]))
         self.assertEqual(schema["properties"]["route"]["properties"]["seat"], {"enum": ["CLAUDE", "CODEX", "GB-FIXER"]})
-        self.assertIn("route", schema["required"])
+        self.assertIn("route", schema["properties"])
+        self.assertNotIn("route", schema["required"], "route is optional: a result without it validates")
         self.assertEqual(schema["properties"]["route"]["type"], ["object", "null"])
         plain = json.loads(W.schema_text())
         self.assertEqual(plain["properties"]["route"]["properties"]["seat"], {"type": "string"})

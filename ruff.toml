@@ -30,6 +30,15 @@ extend-exclude = [
 [per-file-target-version]
 "scripts/fleet_lanes/**" = "py39"
 "scripts/fleet_config/**" = "py39"
+# Muster's helpers and the collectors its LaunchAgents run:  the Mac runs every one of them
+# under /usr/bin/python3 (3.9).  An automated fix once rewrote `timezone.utc` to the 3.11+
+# `datetime.UTC` here,  which does not import on that interpreter.
+"scripts/fleet_knobs/**" = "py39"
+"scripts/fleet-ops-control.py" = "py39"
+"scripts/fleet-mac-services.py" = "py39"
+"scripts/fleet-worker-health.py" = "py39"
+"scripts/fleet-tools-doctor.py" = "py39"
+"scripts/fleet-server-status.py" = "py39"
 
 [lint.per-file-ignores]
 "scripts/fleet_lanes/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
@@ -39,6 +48,16 @@ extend-exclude = [
 # other newer-Python spellings.  Without this an automated fix rewrites the package
 # into something that no longer imports on the interpreter the fleet runs.  See AFC-425.
 "scripts/fleet_config/**" = ["UP006", "UP007", "UP017", "UP035", "UP045", "RUF100"]
+
+# The Muster helpers above:  the same 3.9 contract.  They use `from __future__ import
+# annotations`,  so builtin generics and `X | None` in annotations are fine;  UP017 is the one
+# rewrite that breaks them.
+"scripts/fleet_knobs/**" = ["UP017"]
+"scripts/fleet-ops-control.py" = ["UP017"]
+"scripts/fleet-mac-services.py" = ["UP017"]
+"scripts/fleet-worker-health.py" = ["UP017"]
+"scripts/fleet-tools-doctor.py" = ["UP017"]
+"scripts/fleet-server-status.py" = ["UP017"]
 
 [format]
 # Whitespace churn and py313-only syntax: the 3.9-run package keeps its hand layout.  See AFC-425.
