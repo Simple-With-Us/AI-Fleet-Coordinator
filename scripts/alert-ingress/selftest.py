@@ -17,16 +17,24 @@ Zulip topic back through the vendor bot's own credentials.  It asserts:
      second row, rather than a second message.
 
 The first firing event is HELD for MIN_OPEN_MS before it is announced as an
-alert line, so the alert line that proves the announcement path is posted by
-the cron sweep, minutes later -- not by this script.  Run the script, then
+alert line, so the alert line that proves the announcement path is posted by the
+cron sweep, minutes later -- not by this script.  Run the script, then
 check the topic again after the sweep has run.
 
-Secrets are read through `fleet-secrets` and never printed:  names and lengths
-only.  --cleanup deletes the messages this test created.
+The assertions are made against the messages this run posted, not against every
+message the topic holds:  the ids present before the run are the baseline, so a
+second run over a healthy ingress proves the same thing the first one did.
+
+Secrets are read from the environment first and from `fleet-secrets` second,
+and are never printed:  names and lengths only.  --cleanup deletes the one-line
+alert messages this test created and leaves the standing status messages alone,
+because the ingress still points at them.
 """
 
 import argparse
+import base64
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -43,36 +51,131 @@ TEST_SERVICE = "alert-ingress-selftest"
 AFC_SLUG = "ai-fleet-coordinator"
 SECRET_PATH = "/zulip"
 
+# The first line of every rendered standing block, exactly as the Worker writes
+# it (workers/alert-ingress/src/zulip.js, STANDING_BLOCK_HEADER).  A one-line
+# alert message carries no such header, so this is what tells the two apart.
+STANDING_BLOCK_HEADER = "**Status: "
+
+# The only fields of a refusal that are ever read out of a response body.  The
+# body itself is never interpolated into a message.
+ALLOWED_REFUSAL_FIELDS = ("code", "request_id")
+
+# Exit codes, as the shell reads them.
+EXIT_FAILED = 1
+EXIT_TIMEOUT = 124
+EXIT_MISSING_EXECUTABLE = 127
+
+# The shortest secret whose preview says anything without handing over most of
+# the value.  Below this length no preview is shown at all.
+MIN_PREVIEW_LENGTH = 16
+
+# The actions the Worker answers a datadog event with.  A held incident is
+# never announced by the event itself ("hold", "refresh", "discard"), and an
+# incident that was already announced closes with "resolve".
+ALLOWED_ACTIONS = ("hold", "refresh", "discard", "resolve")
+
 
 class Failed(Exception):
     """The self-test did not prove what it claims to prove."""
 
+    def __init__(self, message, code=EXIT_FAILED):
+        super().__init__(message)
+        self.code = code
+
+
+def masked_preview(secret):
+    """The shape the board's own preview has:  secret[:8] + "…" + secret[-4:].
+
+    A secret too short for that shape gets no preview at all:  the shape would
+    hand over most of the value.
+    """
+    if not isinstance(secret, str) or len(secret) < MIN_PREVIEW_LENGTH:
+        return "***"
+    return secret[:8] + "…" + secret[-4:]
+
 
 def fs_get(name, project, path):
+    """One value through `fleet-secrets get`, or None when it is absent.
+
+    A missing binary, a timeout and a refused read are all this script's own
+    failures, so they are raised as `Failed` and never as a raw traceback.
+    """
     binary = shutil.which("fleet-secrets") or str(
         pathlib.Path.home() / ".local" / "bin" / "fleet-secrets"
     )
-    proc = subprocess.run(
-        [binary, "get", name, "--path", path, "--project", project],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        timeout=90,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            [binary, "get", name, "--path", path, "--project", project],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=90,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise Failed(
+            f"{name} could not be read:  fleet-secrets timed out", EXIT_TIMEOUT
+        ) from None
+    except FileNotFoundError:
+        raise Failed(
+            f"{name} could not be read:  fleet-secrets is not installed",
+            EXIT_MISSING_EXECUTABLE,
+        ) from None
+    except OSError as error:
+        raise Failed(
+            f"{name} could not be read:  fleet-secrets could not run "
+            f"({type(error).__name__})"
+        ) from None
     if proc.returncode == 3:
         return None
     if proc.returncode != 0:
         raise Failed(f"{name} could not be read (exit {proc.returncode})")
-    return proc.stdout.decode("utf-8")
+    try:
+        return proc.stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        raise Failed(f"{name} could not be read (unreadable output)")
 
+
+def secret_get(name, project, path):
+    """One credential:  the environment first, then fleet-secrets.
+
+    The value is never printed.
+    """
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    return fs_get(name, project, path)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A 3xx is refused, not followed.
+
+    `urlopen` follows a redirect by default and the `Authorization` header
+    travels with it, so a redirect could carry the credential to another
+    origin.  Every request that carries a credential goes through the opener
+    below instead.
+    """
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
 
 # Cloudflare answers the default Python user agent with "error code: 1010"
 # (the browser-fight rule), so every outbound call names itself.
 USER_AGENT = "AI-Fleet-Coordinator alert-ingress selftest/1.0"
 
 
+def _decode_json(raw):
+    """The parsed body, or None when the body is not JSON."""
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
 def post_json(url, body, headers=None, timeout=40):
+    """One POST.  Returns (status, the parsed body or None)."""
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode(),
@@ -84,19 +187,20 @@ def post_json(url, body, headers=None, timeout=40):
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.status, json.loads(response.read().decode())
+        with OPENER.open(request, timeout=timeout) as response:
+            return response.status, _decode_json(response.read())
     except urllib.error.HTTPError as error:
-        raw = error.read().decode()
-        try:
-            return error.code, json.loads(raw)
-        except ValueError:
-            return error.code, {"raw": raw[:400]}
+        return error.code, _decode_json(error.read())
+    except urllib.error.URLError as error:
+        raise Failed(
+            f"the Worker could not be reached:  {type(error.reason).__name__}"
+        ) from None
+    except TimeoutError:
+        raise Failed("the Worker could not be reached:  the request timed out") from None
 
 
 def zulip(path, email, api_key, form=None, method="GET"):
-    import base64
-
+    """One Zulip API call.  Returns (status, the parsed body or None)."""
     token = base64.b64encode(f"{email}:{api_key}".encode()).decode()
     body = urllib.parse.urlencode(form).encode() if form is not None else None
     request = urllib.request.Request(
@@ -110,17 +214,78 @@ def zulip(path, email, api_key, form=None, method="GET"):
         method=method,
     )
     try:
-        with urllib.request.urlopen(request, timeout=40) as response:
-            return response.status, json.loads(response.read().decode())
+        with OPENER.open(request, timeout=40) as response:
+            return response.status, _decode_json(response.read())
     except urllib.error.HTTPError as error:
-        raw = error.read().decode()
-        try:
-            return error.code, json.loads(raw)
-        except ValueError:
-            return error.code, {"raw": raw[:400]}
+        return error.code, _decode_json(error.read())
+    except urllib.error.URLError as error:
+        raise Failed(
+            f"Zulip could not be reached:  {type(error.reason).__name__}"
+        ) from None
+    except TimeoutError:
+        raise Failed("Zulip could not be reached:  the request timed out") from None
+
+
+def refusal_detail(answer):
+    """The allow-listed fields of a refusal, and nothing else."""
+    fields = []
+    if isinstance(answer, dict):
+        for field in ALLOWED_REFUSAL_FIELDS:
+            value = answer.get(field)
+            if isinstance(value, (str, int, float, bool)) and value != "":
+                fields.append(f"{field}={value}")
+    return "  ".join(fields)
+
+
+def worker_refusal(status, answer, secret, what):
+    """A Worker refusal, described without its body.
+
+    Only the HTTP status, the allow-listed fields and, for an auth failure, a
+    masked preview of the credential are reported.  The response body itself
+    is never interpolated into the message.
+    """
+    text = f"the Worker refused the {what} event (HTTP {status})"
+    detail = refusal_detail(answer)
+    if detail:
+        text += f"  [{detail}]"
+    if status in (401, 403):
+        text += f"  credential={masked_preview(secret)}"
+    return text
+
+
+def zulip_refusal(status, answer, secret, what):
+    """A Zulip refusal, described without its body."""
+    text = f"Zulip refused {what} (HTTP {status})"
+    if 300 <= status < 400:
+        text += "  (a redirect was refused, not followed)"
+    detail = refusal_detail(answer)
+    if detail:
+        text += f"  [{detail}]"
+    if status in (401, 403):
+        text += f"  credential={masked_preview(secret)}"
+    return text
+
+
+def worker_event(path, payload, header, secret, what):
+    """One synthetic vendor event, delivered to the live Worker.
+
+    The answer is shape-checked before anything reads it, so a Worker that
+    answered with something else fails here, with a precise diagnostic, and
+    not later with an attribute error.
+    """
+    status, answer = post_json(f"{BASE}{path}", payload, {header: secret})
+    if status != 200:
+        raise Failed(worker_refusal(status, answer, secret, what))
+    if not isinstance(answer, dict):
+        raise Failed(
+            f"the Worker's answer to the {what} event was not a JSON object "
+            f"(got {type(answer).__name__})"
+        )
+    return answer
 
 
 def topic_messages(email, api_key, topic):
+    """Every message in the topic, oldest last."""
     narrow = json.dumps(
         [
             {"operator": "stream", "operand": CHANNEL},
@@ -139,9 +304,34 @@ def topic_messages(email, api_key, topic):
         }
     )
     status, data = zulip(f"/messages?{query}", email, api_key)
+    if status in (401, 403):
+        raise Failed(
+            zulip_refusal(status, data, api_key, f"the read of #{CHANNEL} > {topic}")
+        )
     if status != 200:
         raise Failed(f"the topic could not be read (HTTP {status})")
-    return data.get("messages", [])
+    if not isinstance(data, dict):
+        raise Failed(
+            f"the topic read answered with {type(data).__name__}, not a JSON object"
+        )
+    messages = data.get("messages")
+    if not isinstance(messages, list):
+        raise Failed("the topic read carried no message list")
+    return messages
+
+
+def is_standing(message):
+    """A standing status block, as the Worker renders it."""
+    return str(message.get("content", "")).startswith(STANDING_BLOCK_HEADER)
+
+
+def standing_ids(messages, sender_email):
+    """The ids of the standing blocks one vendor owns in the topic."""
+    return [
+        m["id"]
+        for m in messages
+        if m.get("sender_email") == sender_email and is_standing(m)
+    ]
 
 
 def datadog_payload(monitor_id, scope, transition, title, severity="SEVERE"):
@@ -174,20 +364,65 @@ def betterstack_payload(name, status):
     }
 
 
-def standing_ids(messages, sender_email):
-    """The ids of the standing blocks one vendor owns in the topic."""
-    return [
-        m["id"]
-        for m in messages
-        if m.get("sender_email") == sender_email
-        and str(m.get("content", "")).startswith("**Status: ")
-    ]
-
-
 def check(label, condition, detail=""):
     mark = "PASS" if condition else "FAIL"
     print(f"  [{mark}] {label}{(' -- ' + detail) if detail else ''}")
     return bool(condition)
+
+
+def status_first_line(answer):
+    """The first line of the standing block the Worker rewrote, or ""."""
+    status = answer.get("status")
+    if not isinstance(status, str) or not status:
+        return ""
+    return status.splitlines()[0]
+
+
+def cleanup(dd_email, dd_key, bs_email, bs_key):
+    """Delete the one-line alert messages, and only those.
+
+    A standing block is the message the ingress edits in place;  deleting it
+    would leave the Worker's stored message id pointing at a message that is
+    gone, so every later refresh would fail.  It is left alone and reported.
+    """
+    messages = topic_messages(dd_email, dd_key, TEST_SERVICE)
+    owners = {dd_email: dd_key, bs_email: bs_key}
+    deleted = 0
+    kept = []
+    for message in messages:
+        sender = message.get("sender_email")
+        if sender not in owners:
+            continue
+        key = owners[sender]
+        if is_standing(message):
+            kept.append((sender, message["id"]))
+            continue
+        status, _ = zulip(f"/messages/{message['id']}", sender, key, method="DELETE")
+        if status == 200:
+            deleted += 1
+            continue
+        if status in (408, 429) or status >= 500:
+            raise Failed(
+                f"the delete of message {message['id']} did not answer cleanly "
+                f"(HTTP {status}, retryable)  credential={masked_preview(key)}"
+            )
+        raise Failed(
+            f"the delete of message {message['id']} was refused "
+            f"(HTTP {status}, permanent)  credential={masked_preview(key)}"
+        )
+    print(
+        f"Cleanup: {deleted} one-line alert message(s) deleted from "
+        f"#{CHANNEL} > {TEST_SERVICE}."
+    )
+    if kept:
+        print(
+            "Left in place (the standing status message the ingress still points at):"
+        )
+        for sender, message_id in kept:
+            print(f"  id={message_id}  bot={sender}")
+    else:
+        print("No standing status message was left behind.")
+    return 0
 
 
 def main():
@@ -195,12 +430,12 @@ def main():
     parser.add_argument("--cleanup", action="store_true", help="delete the test messages")
     args = parser.parse_args()
 
-    datadog_secret = fs_get("DATADOG_WEBHOOK_SECRET", AFC_SLUG, SECRET_PATH)
-    betterstack_secret = fs_get("BETTERSTACK_WEBHOOK_SECRET", AFC_SLUG, SECRET_PATH)
-    dd_email = fs_get("ZULIP_DATADOG_BOT_EMAIL", AFC_SLUG, SECRET_PATH)
-    dd_key = fs_get("ZULIP_DATADOG_BOT_API_KEY", AFC_SLUG, SECRET_PATH)
-    bs_email = fs_get("ZULIP_BETTERSTACK_BOT_EMAIL", AFC_SLUG, SECRET_PATH)
-    bs_key = fs_get("ZULIP_BETTERSTACK_BOT_API_KEY", AFC_SLUG, SECRET_PATH)
+    datadog_secret = secret_get("DATADOG_WEBHOOK_SECRET", AFC_SLUG, SECRET_PATH)
+    betterstack_secret = secret_get("BETTERSTACK_WEBHOOK_SECRET", AFC_SLUG, SECRET_PATH)
+    dd_email = secret_get("ZULIP_DATADOG_BOT_EMAIL", AFC_SLUG, SECRET_PATH)
+    dd_key = secret_get("ZULIP_DATADOG_BOT_API_KEY", AFC_SLUG, SECRET_PATH)
+    bs_email = secret_get("ZULIP_BETTERSTACK_BOT_EMAIL", AFC_SLUG, SECRET_PATH)
+    bs_key = secret_get("ZULIP_BETTERSTACK_BOT_API_KEY", AFC_SLUG, SECRET_PATH)
     for name, value in (
         ("DATADOG_WEBHOOK_SECRET", datadog_secret),
         ("BETTERSTACK_WEBHOOK_SECRET", betterstack_secret),
@@ -214,14 +449,14 @@ def main():
         print(f"  secret {name} present (len {len(value)})")
 
     if args.cleanup:
-        deleted = 0
-        for email, key in ((dd_email, dd_key), (bs_email, bs_key)):
-            for message in topic_messages(email, key, TEST_SERVICE):
-                status, _ = zulip(f"/messages/{message['id']}", email, key, method="DELETE")
-                if status == 200:
-                    deleted += 1
-        print(f"Cleanup: {deleted} message(s) deleted from #{CHANNEL} > {TEST_SERVICE}.")
-        return 0
+        return cleanup(dd_email, dd_key, bs_email, bs_key)
+
+    # The baseline:  every message the topic holds before this run's own
+    # events.  A healthy ingress edits its standing message in place, so a
+    # second run over the same topic has to find the same standing message
+    # and must not count what an earlier run posted.
+    baseline = topic_messages(dd_email, dd_key, TEST_SERVICE)
+    baseline_ids = {message["id"] for message in baseline}
 
     print("\nA. a flapping monitor produces ONE standing message")
     events = [
@@ -231,42 +466,50 @@ def main():
         ("Triggered", 999001, "flap", "Selftest flapping monitor"),
     ]
     seen = []
-    for transition, monitor, scope, title in events:
-        status, answer = post_json(
-            f"{BASE}/webhook/datadog",
+    standing_after_first = []
+    for index, (transition, monitor, scope, title) in enumerate(events):
+        answer = worker_event(
+            "/webhook/datadog",
             datadog_payload(monitor, scope, transition, title),
-            {"X-Datadog-Token": datadog_secret},
+            "X-Datadog-Token",
+            datadog_secret,
+            "datadog",
         )
-        if status != 200:
-            raise Failed(f"the Worker refused the event (HTTP {status}): {answer}")
+        action = answer.get("action")
+        seen.append(action)
         print(
-            f"    {transition:9s} -> action={answer.get('action')} "
-            f"posted={answer.get('posted')} status={answer.get('status')}"
+            f"    {transition:9s} -> action={action} posted={answer.get('posted')} "
+            f"standing={status_first_line(answer)}"
         )
-        seen.append(answer.get("action"))
+        if index == 0:
+            standing_after_first = standing_ids(
+                topic_messages(dd_email, dd_key, TEST_SERVICE), dd_email
+            )
 
     messages = topic_messages(dd_email, dd_key, TEST_SERVICE)
+    new_messages = [m for m in messages if m["id"] not in baseline_ids]
     dd_standing = standing_ids(messages, dd_email)
+    dd_new = [m for m in new_messages if m.get("sender_email") == dd_email]
     ok = check(
         "exactly one standing message from the datadog bot",
         len(dd_standing) == 1,
         f"ids={dd_standing}",
     )
     ok &= check(
+        "the standing message kept its id through every event",
+        bool(standing_after_first) and standing_after_first == dd_standing,
+        f"after the first event={standing_after_first}  at the end={dd_standing}",
+    )
+    ok &= check(
+        "the four events did not post one message each",
+        len(dd_new) < len(events),
+        f"{len(dd_new)} new message(s) from the datadog bot:  "
+        f"{[m['id'] for m in dd_new]}",
+    )
+    ok &= check(
         "no alert line was posted while the incident was held",
-        all(a in ("hold", "refresh", "discard") for a in seen),
+        all(action in ALLOWED_ACTIONS for action in seen),
         f"actions={seen}",
-    )
-    dd_messages = [m for m in messages if m.get("sender_email") == dd_email]
-    ok &= check(
-        "the datadog bot has posted exactly one message: the standing block",
-        len(dd_messages) == 1,
-        f"{len(dd_messages)} message(s) from the datadog bot",
-    )
-    ok &= check(
-        "no alert line was posted for any of the four events",
-        not [m for m in dd_messages if not str(m.get("content", "")).startswith("**Status: ")],
-        f"{len(dd_messages)} message(s) from the datadog bot",
     )
     if dd_standing:
         content = next((m.get("content", "") for m in messages if m["id"] == dd_standing[0]), "")
@@ -275,16 +518,16 @@ def main():
             print(f"      | {line}")
 
     print("\nB. a second vendor gets its own standing message in the same topic")
-    status, answer = post_json(
-        f"{BASE}/webhook/betterstack",
+    answer = worker_event(
+        "/webhook/betterstack",
         betterstack_payload(TEST_SERVICE, "down"),
-        {"X-BetterStack-Token": betterstack_secret},
+        "X-BetterStack-Token",
+        betterstack_secret,
+        "betterstack",
     )
-    if status != 200:
-        raise Failed(f"the Worker refused the betterstack event (HTTP {status}): {answer}")
     print(
         f"    down      -> action={answer.get('action')} "
-        f"posted={answer.get('posted')} status={answer.get('status')}"
+        f"posted={answer.get('posted')} standing={status_first_line(answer)}"
     )
     messages = topic_messages(dd_email, dd_key, TEST_SERVICE)
     dd_standing = standing_ids(messages, dd_email)
@@ -311,16 +554,16 @@ def main():
     )
 
     print("\nC. a second alert joins the same standing block as a second row")
-    status, answer = post_json(
-        f"{BASE}/webhook/datadog",
+    answer = worker_event(
+        "/webhook/datadog",
         datadog_payload(999002, "second", "Triggered", "Selftest second monitor"),
-        {"X-Datadog-Token": datadog_secret},
+        "X-Datadog-Token",
+        datadog_secret,
+        "datadog",
     )
-    if status != 200:
-        raise Failed(f"the Worker refused the event (HTTP {status}): {answer}")
     print(
         f"    Triggered -> action={answer.get('action')} "
-        f"posted={answer.get('posted')} status={answer.get('status')}"
+        f"posted={answer.get('posted')} standing={status_first_line(answer)}"
     )
     messages = topic_messages(dd_email, dd_key, TEST_SERVICE)
     dd_standing = standing_ids(messages, dd_email)
@@ -353,4 +596,4 @@ if __name__ == "__main__":
         sys.exit(main())
     except Failed as error:
         print(f"STOP: {error}")
-        sys.exit(1)
+        sys.exit(error.code)
