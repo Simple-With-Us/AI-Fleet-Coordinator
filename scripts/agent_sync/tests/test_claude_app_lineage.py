@@ -232,9 +232,17 @@ class ParentOfTests(Base):
         self.assertNotIn(private, json.dumps(record))
         self.assertNotIn("do-not-leak", json.dumps(record))
 
-    def test_a_record_nested_past_the_parsers_limit_is_unreadable_not_an_error(self) -> None:
+    def test_a_deeply_nested_record_never_raises(self) -> None:
+        # Older Pythons refuse this with RecursionError (unreadable);  3.15 parses it, and it names no parent.
         write(self.home, CHILD_HOST, '{"a":' * 100000 + "1" + "}" * 100000)
-        self.assertEqual(AL.lookup(self.home, host_session_id=CHILD_HOST), ("", AL.UNREADABLE))
+        parent, why = AL.lookup(self.home, host_session_id=CHILD_HOST)
+        self.assertEqual(parent, "")
+        self.assertIn(why, (AL.UNREADABLE, AL.NOT_STARTED))
+
+    def test_a_record_the_parser_refuses_as_too_deep_is_unreadable_not_an_error(self) -> None:
+        self.family()
+        with mock.patch.object(AL.json, "loads", side_effect=RecursionError("maximum recursion depth exceeded")):
+            self.assertEqual(AL.lookup(self.home, host_session_id=CHILD_HOST), ("", AL.UNREADABLE))
 
     def test_one_file_that_vanishes_does_not_end_the_scan_of_its_folder(self) -> None:
         self.family()
