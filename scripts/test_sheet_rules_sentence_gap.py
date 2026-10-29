@@ -112,14 +112,19 @@ class SheetRuleSentenceGapTests(unittest.TestCase):
             self.assertIn("Claude Code", sentence)
             self.assertIn("MiniMax Code", sentence)
 
-    def test_the_apple_notes_exception_is_named(self) -> None:
-        canonical = _canonical()
+    def test_apple_notes_has_no_exception_of_its_own(self) -> None:
+        """AFC-552 gave Apple Notes the narrow no-break space;  the Oct 29, 2026 measurement
+        withdrew it, so neither the sheet rule nor the canonical skill's live rule names it."""
         detail = _rule()["detail"]
-        self.assertIn("&#8239;", canonical, "the canonical skill changed shape")
-        note_sentences = [s for s in _sentences(detail) if "&#8239;" in s]
-        self.assertTrue(note_sentences, "the Apple Notes sentence is gone; update this gate")
-        for sentence in note_sentences:
-            self.assertIn("Apple Note", sentence)
+        for form in ("&#8239;", "narrow no-break", "U+202F"):
+            self.assertNotIn(form, detail, "the sheet rule gives Apple Notes its own character")
+        self.assertNotIn("AFC-552", detail)
+        canonical_rows = [
+            line for line in _canonical().splitlines() if line.startswith("| **Apple Notes**")
+        ]
+        self.assertEqual(len(canonical_rows), 1, "the canonical skill changed shape")
+        self.assertIn("&#160;", canonical_rows[0])
+        self.assertNotIn("&#8239;", canonical_rows[0])
 
     def test_the_chat_panes_are_not_listed_as_taking_the_real_character(self) -> None:
         listing = [s for s in _sentences(_rule()["detail"]) if "alike" in s]

@@ -1103,17 +1103,16 @@ def inline(s: str) -> str:
         return "\x00code" + str(len(code_spans) - 1) + "\x00"
     s = re.sub(r"`[^`]+`", hold_code_span, s)
     # Notes.app is an HTML renderer — two ASCII spaces collapse.
-    # Sentence gap in HTML is the numeric reference for a NARROW NO-BREAK SPACE, `&#8239; ` + space.
+    # Sentence gap in HTML is the numeric reference `&#160; ` + space, the same U+00A0 plus a
+    # normal space as every other surface.
     # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
     # raw non-ASCII byte to the note HTML.
-    # AFC-552:  the character the reference names decides whether the gap arrives.  Apple Notes
-    # normalises a NO-BREAK space away on import, so `&#160; ` came back as two ordinary spaces,
-    # which the renderer collapses to one, and the gap never reached the note at all.  The NARROW
-    # NO-BREAK SPACE survives the import unchanged.  Measured Oct 26, 2026 by writing ten candidate
-    # mechanisms into a real note and reading them back:  the no-break space, the named entity
-    # and two of them all come back as ordinary spaces, and the narrow no-break, en, em, thin and
-    # ideographic spaces all come back as themselves.
-    s = re.sub(r"([.!?]) {2,}", r"\1&#8239; ", s)
+    # Oct 29, 2026, measured through this writer:  Apple Notes stores the no-break space as an
+    # ordinary space on import, so the note holds two ordinary spaces after a sentence end, and
+    # Notes.app shows two ordinary spaces as a wide gap (the owner's screenshot of the gap
+    # sample note).  A one-space gap is the thing that reads as no gap.  The AFC-552 premise that
+    # the renderer collapses a run of ordinary spaces was never checked on screen.
+    s = re.sub(r"([.!?]) {2,}", r"\1&#160; ", s)
     s = re.sub(r"\x00code(\d+)\x00", lambda m: code_spans[int(m.group(1))], s)
     # links [text](url) — after escape brackets still match
     s = re.sub(
@@ -1330,13 +1329,11 @@ PY
 }
 
 # Notes.app collapses ASCII double spaces.  Turn leftover `.  ` / `!  ` / `?  `
-# into `&#8239; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
+# into `&#160; ` so sentence gaps survive.  Skip <pre>, <code>, <style>, <script>.
 # Owner ruling 2026-10-23:  never the named `&nbsp;` entity.  The numeric reference adds no
 # raw non-ASCII byte to the note HTML.
-# AFC-552:  the character the reference names decides whether the gap arrives.  Apple Notes
-# normalises a NO-BREAK space away on import, so `&#160; ` came back as two ordinary spaces,
-# which the renderer collapses to one, and the gap never reached the note at all.  The NARROW
-# NO-BREAK SPACE survives the import unchanged.
+# Notes stores the no-break space as an ordinary space on import and still shows the pair as a
+# wide gap, so U+00A0 plus a normal space is the gap here too (measured Oct 29, 2026).
 # A sentence that ends INSIDE inline markup puts the closing tag between the punctuation
 # and the run of spaces (`Bold end.</b>  Next`), so the run never sits next to the
 # punctuation and the gap was lost.  The optional tag group carries the closing tag
@@ -1351,7 +1348,7 @@ for i, part in enumerate(parts):
     if i % 2 == 1:
         out.append(part)
         continue
-    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#8239; ", part))
+    out.append(re.sub(r"([.!?])(</[a-zA-Z][^>]*>)? {2,}", r"\1\2&#160; ", part))
 sys.stdout.write("".join(out))
 '
 }
@@ -2469,12 +2466,12 @@ def _one_space_gaps(segment, gap_entity=False):
             if re.fullmatch(r'\s*\d{1,9}', segment[:m.start()]):
                 return m.group(0)
         _changes['gaps'] += 1
-        #  AFC-552:  the note body is HTML, so the gap is the numeric reference,
+        #  The note body is HTML, so the gap is the numeric reference for a no-break space,
         #  like the two HTML passes and with no raw non-ASCII byte in the note HTML.
         #  The mobile quick view is plain text that is embedded with html.escape, so
-        #  a reference there would reach the owner as the literal six characters.
-        #  It carries the character itself, which Notes keeps byte-intact.
-        return m.group(1) + ('&#8239; ' if gap_entity else '\u202f ')
+        #  a reference there would reach the owner as the literal five characters.
+        #  It carries the no-break space itself.
+        return m.group(1) + ('&#160; ' if gap_entity else '\xa0 ')
     return _GAP1.sub(repl, segment)
 
 inner = fleet_dates(inner, gap_entity=True)
