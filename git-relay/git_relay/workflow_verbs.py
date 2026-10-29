@@ -73,6 +73,17 @@ _ASSET_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
 
 # action -> (permissions needed, writes)
 SPECS = {
+    "wf_job_get": ({"actions": "read"}, False),
+    "wf_job_rerun": ({"actions": "write"}, True),
+    "wf_run_rerun_all": ({"actions": "write"}, True),
+    "wf_run_force_cancel": ({"actions": "write"}, True),
+    "wf_run_logs_delete": ({"actions": "write"}, True),
+    "wf_review_requests_add": ({"pull_requests": "write"}, True),
+    "wf_review_requests_remove": ({"pull_requests": "write"}, True),
+    "wf_review_requests_rerequest": ({"pull_requests": "write"}, True),
+    "wf_commit_comments_page": ({"contents": "read"}, False),
+    "wf_commit_comment_get": ({"contents": "read"}, False),
+    "wf_pr_requested_reviewers": ({"pull_requests": "read"}, False),
     "wf_repo_tags": ({"contents": "read"}, False),
     "wf_repo_languages": ({"metadata": "read"}, False),
     "wf_git_tree_create": ({"contents": "write"}, True),
@@ -700,6 +711,139 @@ class WorkflowVerbs:
         ):
             raise Refused("credential-shaped repository metadata name refused")
         return value
+
+    @staticmethod
+    def _context_user(user):
+        if (
+            not isinstance(user, dict)
+            or type(user.get("id")) is not int
+            or not 0 < user["id"] <= 9007199254740991
+            or not isinstance(user.get("login"), str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", user["login"])
+            or user.get("type") not in ("User", "Bot", "Organization")
+            or find_secret(user["login"])
+        ):
+            raise RelayGitHubError(502, "context author unverifiable")
+        return {key: user[key] for key in ("id", "login", "type")}
+
+    @classmethod
+    def _commit_comment(cls, row, sha, expected_id=None):
+        if (
+            not isinstance(row, dict)
+            or type(row.get("id")) is not int
+            or not 0 < row["id"] <= 9007199254740991
+            or expected_id is not None
+            and row["id"] != expected_id
+            or row.get("commit_id") != sha
+        ):
+            raise RelayGitHubError(502, "commit comment identity unverifiable")
+        author = cls._context_user(row.get("user"))
+        body = row.get("body")
+        if not isinstance(body, str) or "\x00" in body:
+            raise RelayGitHubError(502, "commit comment body unverifiable")
+        try:
+            size = len(body.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise RelayGitHubError(502, "commit comment body unverifiable") from None
+        if size > 32768:
+            raise Refused("commit comment exceeds supported text size")
+        withheld = bool(
+            find_secret(body)
+            or re.search(
+                r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                body,
+            )
+        )
+        return {
+            "id": row["id"],
+            "commit_id": sha,
+            "author": author,
+            "body": "<withheld: credential-shaped text>" if withheld else body,
+            "body_withheld": withheld,
+        }
+
+    @staticmethod
+    def _context_size(receipt):
+        if len(json.dumps(receipt).encode("utf-8")) > 262144:
+            raise Refused("context receipt exceeds supported size")
+        return receipt
+
+    def wf_commit_comments_page(self, repo, args):
+        _only(args, ("repo", "sha", "page", "per_page"))
+        sha = _sha(args, "sha")
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        limit = _page(args)
+        rows = self._get(f"/repos/{repo}/commits/{sha}/comments?per_page={limit}&page={page}")
+        if not isinstance(rows, list) or len(rows) > limit:
+            raise RelayGitHubError(502, "commit comment page unverifiable")
+        comments = [self._commit_comment(row, sha) for row in rows]
+        if len({c["id"] for c in comments}) != len(comments):
+            raise RelayGitHubError(502, "duplicate commit comment")
+        return self._context_size(
+            {
+                "sha": sha,
+                "comments": comments,
+                "page": page,
+                "has_more": len(comments) == limit,
+                "snapshot": False,
+            }
+        )
+
+    def wf_commit_comment_get(self, repo, args):
+        _only(args, ("repo", "sha", "comment_id"))
+        sha, comment_id = _sha(args, "sha"), _int(args, "comment_id")
+        row = self._get(f"/repos/{repo}/comments/{comment_id}")
+        return self._context_size({"comment": self._commit_comment(row, sha, comment_id)})
+
+    def wf_pr_requested_reviewers(self, repo, args):
+        _only(args, ("repo", "number", "expected_head_sha"))
+        number, head = _int(args, "number"), _sha(args, "expected_head_sha")
+
+        def verify():
+            pull = self._get(f"/repos/{repo}/pulls/{number}")
+            if (
+                not isinstance(pull, dict)
+                or type(pull.get("number")) is not int
+                or pull["number"] != number
+                or not isinstance(pull.get("head"), dict)
+                or pull["head"].get("sha") != head
+            ):
+                raise Refused("PR head not matched")
+
+        verify()
+        row = self._get(f"/repos/{repo}/pulls/{number}/requested_reviewers")
+        if (
+            not isinstance(row, dict)
+            or not isinstance(row.get("users"), list)
+            or not isinstance(row.get("teams"), list)
+            or len(row["users"]) > 100
+            or len(row["teams"]) > 100
+        ):
+            raise RelayGitHubError(502, "requested reviewers unverifiable")
+        users = [self._context_user(user) for user in row["users"]]
+        teams = []
+        for team in row["teams"]:
+            if (
+                not isinstance(team, dict)
+                or type(team.get("id")) is not int
+                or not 0 < team["id"] <= 9007199254740991
+                or not isinstance(team.get("slug"), str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", team["slug"])
+                or find_secret(team["slug"])
+            ):
+                raise RelayGitHubError(502, "requested team unverifiable")
+            teams.append({"id": team["id"], "slug": team["slug"]})
+        if (
+            len({u["id"] for u in users}) != len(users)
+            or len({u["login"].lower() for u in users}) != len(users)
+            or len({t["id"] for t in teams}) != len(teams)
+            or len({t["slug"].lower() for t in teams}) != len(teams)
+        ):
+            raise RelayGitHubError(502, "duplicate requested reviewer")
+        verify()
+        return self._context_size(
+            {"number": number, "head_sha": head, "users": users, "teams": teams, "snapshot": False}
+        )
 
     def wf_repo_tags(self, repo, args):
         _only(args, ("repo", "per_page", "page"))
@@ -2078,6 +2222,123 @@ class WorkflowVerbs:
         if {x["name"].casefold() for x in result} != {x.casefold() for x in labels}:
             raise RelayGitHubError(502, "label receipt does not match requested labels")
         return {"labels": [{k: x.get(k) for k in ("id", "name", "color")} for x in result]}
+
+    def _review_request_change(self, repo, args, operation):
+        _only(args, ("repo", "number", "expected_head_sha", "reviewers", "team_reviewers"))
+        number, head = _int(args, "number"), _sha(args, "expected_head_sha")
+
+        def names(key):
+            rows = args.get(key, [])
+            if (
+                not isinstance(rows, list)
+                or len(rows) > 50
+                or any(
+                    not isinstance(v, str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", v)
+                    or find_secret(v)
+                    or re.search(
+                        r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}",
+                        v,
+                    )
+                    for v in rows
+                )
+                or len({v.lower() for v in rows}) != len(rows)
+            ):
+                raise Refused("invalid requested reviewer identities")
+            return rows
+
+        users, teams = names("reviewers"), names("team_reviewers")
+        if not users and not teams:
+            raise Refused("at least one requested reviewer required")
+        if any("[" in team for team in teams):
+            raise Refused("invalid team slug")
+        # The REST endpoint has no atomic head precondition. The receipt states
+        # this explicitly; no submitted review is ever deleted or dismissed.
+        try:
+            pull = self._get(f"/repos/{repo}/pulls/{number}")
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "review request pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if (
+            not isinstance(pull, dict)
+            or type(pull.get("number")) is not int
+            or pull["number"] != number
+            or not isinstance(pull.get("head"), dict)
+            or pull["head"].get("sha") != head
+        ):
+            raise Refused("pull request number/head not matched")
+        endpoint = f"/repos/{repo}/pulls/{number}/requested_reviewers"
+        if operation == "rerequest":
+            endpoint += "/rerequest"
+        value = self.client._call(
+            "DELETE" if operation == "remove" else "POST",
+            endpoint,
+            {"reviewers": users, "team_reviewers": teams},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(value, dict)
+            or type(value.get("number")) is not int
+            or value["number"] != number
+            or not isinstance(value.get("head"), dict)
+            or value["head"].get("sha") != head
+        ):
+            raise RelayGitHubError(
+                502, "review request PR receipt unverifiable; write may have occurred"
+            )
+        observed = {}
+        for key, field in (("requested_reviewers", "login"), ("requested_teams", "slug")):
+            rows = value.get(key)
+            if (
+                not isinstance(rows, list)
+                or len(rows) > 100
+                or any(
+                    not isinstance(row, dict)
+                    or not isinstance(row.get(field), str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}(?:\[bot\])?", row[field])
+                    or find_secret(row[field])
+                    for row in rows
+                )
+            ):
+                raise RelayGitHubError(
+                    502, "review request membership unverifiable; write may have occurred"
+                )
+            observed[key] = {row[field].lower() for row in rows}
+            if len(observed[key]) != len(rows):
+                raise RelayGitHubError(502, "duplicate review request receipt")
+        for key, requested in (("requested_reviewers", users), ("requested_teams", teams)):
+            wanted = {v.lower() for v in requested}
+            if (
+                bool(wanted & observed[key])
+                if operation == "remove"
+                else not wanted <= observed[key]
+            ):
+                raise RelayGitHubError(
+                    502, "requested membership change unconfirmed; write may have occurred"
+                )
+        return {
+            "number": number,
+            "head_sha": head,
+            "operation": operation,
+            "reviewers": users,
+            "team_reviewers": teams,
+            "atomic": False,
+        }
+
+    def wf_review_requests_add(self, repo, args):
+        _only(args, ("repo", "number", "expected_head_sha", "reviewers", "team_reviewers"))
+        return self._review_request_change(repo, args, "add")
+
+    def wf_review_requests_remove(self, repo, args):
+        _only(args, ("repo", "number", "expected_head_sha", "reviewers", "team_reviewers"))
+        return self._review_request_change(repo, args, "remove")
+
+    def wf_review_requests_rerequest(self, repo, args):
+        _only(args, ("repo", "number", "expected_head_sha", "reviewers", "team_reviewers"))
+        return self._review_request_change(repo, args, "rerequest")
 
     def wf_reviewers_request(self, repo, args):
         _only(
@@ -4190,6 +4451,108 @@ class WorkflowVerbs:
             bearer=self.bearer,
         )
         return {"requested": suffix, "run_id": run_id}
+
+    def _actions_identity(self, repo, args, job=False):
+        run_id, head = _int(args, "run_id"), _sha(args, "head_sha")
+        attempt = _int(args, "run_attempt", 1, 1000000)
+        job_id = _int(args, "job_id") if job else None
+        try:
+            row = self._get(
+                f"/repos/{repo}/actions/jobs/{job_id}"
+                if job
+                else f"/repos/{repo}/actions/runs/{run_id}"
+            )
+        except RelayGitHubError as exc:
+            if exc.status in (0, 408) or exc.status >= 500:
+                raise PreReadUnavailable(
+                    "Actions pre-read unavailable; no write attempted"
+                ) from None
+            raise
+        if (
+            not isinstance(row, dict)
+            or type(row.get("id")) is not int
+            or row["id"] != (job_id if job else run_id)
+            or row.get("head_sha") != head
+            or type(row.get("run_attempt")) is not int
+            or row["run_attempt"] != attempt
+            or job
+            and (type(row.get("run_id")) is not int or row["run_id"] != run_id)
+            or row.get("status")
+            not in ("queued", "in_progress", "completed", "waiting", "requested", "pending")
+            or row.get("conclusion")
+            not in (
+                None,
+                "success",
+                "failure",
+                "neutral",
+                "cancelled",
+                "skipped",
+                "timed_out",
+                "action_required",
+                "stale",
+                "startup_failure",
+            )
+            or (row["status"] == "completed") != (row.get("conclusion") is not None)
+        ):
+            raise Refused("workflow identity, attempt or state not matched")
+        return {
+            "job_id": job_id,
+            "run_id": run_id,
+            "head_sha": head,
+            "run_attempt": attempt,
+            "status": row["status"],
+            "conclusion": row.get("conclusion"),
+        }
+
+    def wf_job_get(self, repo, args):
+        _only(args, ("repo", "job_id", "run_id", "head_sha", "run_attempt"))
+        return {"job": self._actions_identity(repo, args, True)}
+
+    def _actions_change(self, repo, args, operation, job=False):
+        observed = self._actions_identity(repo, args, job)
+        rerun = operation in ("job_rerun", "rerun_all")
+        if rerun and observed["status"] != "completed":
+            raise Refused("only completed workflow attempts may be rerun")
+        if operation == "force_cancel" and observed["status"] == "completed":
+            raise Refused("completed workflow cannot be force cancelled")
+        if operation == "logs_delete" and observed["status"] != "completed":
+            raise Refused("only completed workflow logs may be deleted")
+        root = (
+            f"/repos/{repo}/actions/jobs/{observed['job_id']}"
+            if job
+            else f"/repos/{repo}/actions/runs/{observed['run_id']}"
+        )
+        suffix = {
+            "job_rerun": "rerun",
+            "rerun_all": "rerun",
+            "force_cancel": "force-cancel",
+            "logs_delete": "logs",
+        }[operation]
+        self.client._call(
+            "DELETE" if operation == "logs_delete" else "POST",
+            root + "/" + suffix,
+            {"enable_debug_logging": False} if rerun else None,
+            bearer=self.bearer,
+            expected_status=201 if rerun else 202 if operation == "force_cancel" else 204,
+            allow_empty_object=rerun or operation == "force_cancel",
+        )
+        return {**observed, "requested": operation, "completed": False, "atomic": False}
+
+    def wf_job_rerun(self, repo, args):
+        _only(args, ("repo", "job_id", "run_id", "head_sha", "run_attempt"))
+        return self._actions_change(repo, args, "job_rerun", True)
+
+    def wf_run_rerun_all(self, repo, args):
+        _only(args, ("repo", "run_id", "head_sha", "run_attempt"))
+        return self._actions_change(repo, args, "rerun_all")
+
+    def wf_run_force_cancel(self, repo, args):
+        _only(args, ("repo", "run_id", "head_sha", "run_attempt"))
+        return self._actions_change(repo, args, "force_cancel")
+
+    def wf_run_logs_delete(self, repo, args):
+        _only(args, ("repo", "run_id", "head_sha", "run_attempt"))
+        return self._actions_change(repo, args, "logs_delete")
 
     def wf_run_rerun(self, repo, args):
         return self._run_post(repo, args, "rerun-failed-jobs")
