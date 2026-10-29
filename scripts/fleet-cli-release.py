@@ -32,6 +32,7 @@ LINEAR_CATALOG = ("named-commands.json", "official-mcp-tools.json", "public-inpu
 # `recall` runs from these fleet_rag modules only (its static import closure).  `recall eval` and
 # `recall ingest` import eval/ingest lazily;  they are Mac and Hetzner-box jobs and are not shipped.
 RECALL_MODULES = (
+    "storage_guard",
     "__init__",
     "contribute_guard",
     "core",
