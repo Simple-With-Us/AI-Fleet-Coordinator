@@ -10,6 +10,9 @@ const REPO = { type: 'string', pattern: '^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Z
 const SHA = { type: 'string', pattern: '^[0-9a-f]{40}$' };
 const INT = { type: 'integer', minimum: 1, maximum: 1e12 };
 const PER_PAGE = { type: 'integer', minimum: 1, maximum: 50 };
+// Two existing file actions only: 2 MiB decoded/file, 4 MiB decoded/commit.
+const FILE_INPUT_BYTES = 6 * 1024 * 1024;
+const FILE_CONTENT = { type: 'string', minLength: 1, maxLength: 2796204 };
 const CONTENT = { type: 'string', minLength: 1, maxLength: 60000 };
 const PATH = {type:'string', maxLength:1024, pattern:'^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$'};
 const REF = {type:'string', maxLength:200, pattern:'^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$'};
@@ -18,7 +21,7 @@ const CHUNK = { type: 'integer', minimum: 1, maximum: 262144 };
 const ASSET_NAME = { type: 'string', pattern: '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?$' };
 // Largest base64 payload: 180 KiB raw.  The Worker MCP body bound (256 KiB) stays the outer limit.
 const BINARY_B64 = 245760;
-export const WF_V1_INPUT_LIMITS = Object.freeze({ wf_release_asset_upload_binary: 253952 });
+export const WF_V1_INPUT_LIMITS = Object.freeze({ wf_release_asset_upload_binary: 253952, wf_file_put: FILE_INPUT_BYTES, wf_files_put: FILE_INPUT_BYTES });
 export const workflowInputLimit = action => WF_V1_INPUT_LIMITS[action] ?? 65536;
 const STR = { type: 'string', maxLength: 500 };
 const obj = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
@@ -27,6 +30,11 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 const SPECS = {
  wf_git_tree_create:['Create unattached tree from base tree and up to20 text files; no workflow paths/ref changes.',obj(['repo','base_tree','files'],{repo:REPO,base_tree:SHA,files:{type:'array',minItems:1,maxItems:20,items:obj(['path','text','mode'],{path:PATH,text:{type:'string',maxLength:40000},mode:{type:'string',enum:['100644','100755']}})}})],
  wf_git_commit_create:['Create unattached commit with exact tree and one/two parents. No arbitrary author/signature/ref changes.',obj(['repo','tree_sha','parents','message'],{repo:REPO,tree_sha:SHA,parents:{type:'array',minItems:1,maxItems:2,items:SHA},message:{type:'string',minLength:1,maxLength:32768}})],
+ wf_issue_parent:['Read issue parent in exact repo; missing parent, visibility and other upstream refusals are indistinguishable; never a fabricated empty parent.',obj(['repo','number'],{repo:REPO,number:INT})],
+ wf_issue_subissues:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_issue_blocked_by:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_issue_blocking:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+
   wf_merge_queue_entry:['Read one PR merge-queue entry.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_merge_queue_enqueue:['Enqueue exact PR head without jumping the queue. Requires separate execution authority, never bypasses GitHub gates.',obj(['repo','number','expected_sha'],{repo:REPO,number:INT,expected_sha:SHA})],
   wf_merge_queue_dequeue:['Dequeue PR with non-atomic expected-head pre-read; requires separate execution authority.',obj(['repo','number','expected_sha'],{repo:REPO,number:INT,expected_sha:SHA})],
@@ -138,14 +146,14 @@ const SPECS = {
   wf_run_rerun: ['Re-run a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_run_cancel: ['Cancel a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_run_approve: ['Approve a pending workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
-  wf_file_put: ['Write one file to a branch.', obj(['repo', 'path', 'branch', 'message', 'content_b64'], { repo: REPO, path: PATH, branch: REF, message: STR, content_b64: CONTENT, prior_sha: SHA })],
+  wf_file_put: ['Write one file to a branch.', obj(['repo', 'path', 'branch', 'message', 'content_b64'], { repo: REPO, path: PATH, branch: REF, message: STR, content_b64: FILE_CONTENT, prior_sha: SHA })],
   wf_files_put: ['Write up to 20 files in one commit, fenced on the branch head.', obj(['repo', 'branch', 'message', 'expected_head_sha', 'files'], {
     repo: REPO, branch: REF, message: STR, expected_head_sha: SHA,
-    files: { type: 'array', minItems: 1, maxItems: 20, items: obj(['path'], { path: PATH, content_b64: CONTENT, delete: { type: 'boolean' } }) } })],
+    files: { type: 'array', minItems: 1, maxItems: 20, items: obj(['path'], { path: PATH, content_b64: FILE_CONTENT, delete: { type: 'boolean' } }) } })],
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_merge_queue_entry','wf_commit_statuses','wf_review_threads','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_issue_list','wf_issue_get']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_merge_queue_entry','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -206,6 +214,22 @@ const gitArgsOk=(action,args)=>{
  if(action==='wf_git_tree_create')return args.files.reduce((n,x)=>n+new TextEncoder().encode(x.text).length,0)<=40000;
  return true;
 };
+const fileContentBudget = (action,args) => {
+  if(!['wf_file_put','wf_files_put'].includes(action)) return true;
+  const files=action==='wf_file_put'?[args]:args?.files;
+  if(!Array.isArray(files)) return false;
+  let total=0;
+  for(const file of files) {
+    if(file?.delete===true) continue;
+    const content=file?.content_b64;
+    if(typeof content!=='string') return false;
+    const bytes=Math.floor(content.length/4)*3-(content.endsWith('==')?2:content.endsWith('=')?1:0);
+    if(bytes>2*1024*1024) return false;
+    total+=bytes;
+    if(total>4*1024*1024) return false;
+  }
+  return true;
+};
 export function parseWfV1Args(action,args){
  if(!boundedWorkflowInput(args,{maxBytes:workflowInputLimit(action),maxString:workflowInputLimit(action)})||!WF_V1_ACTIONS.includes(action))return null;
  const parsed=ARG_SCHEMAS[action].safeParse(args);
@@ -213,7 +237,7 @@ export function parseWfV1Args(action,args){
  const value=parsed.data;
  if(!validWfV1Args2(SPECS[action][1],value)||!gitArgsOk(action,value))return null;
  if(['wf_review_submit','wf_review_inline'].includes(action)&&!reviewBodyOk(value))return null;
- if(!wfV1ExtraOk(action,value))return null;
+ if(!wfV1ExtraOk(action,value)||!fileContentBudget(action,value)||new TextEncoder().encode(JSON.stringify(value)).length>workflowInputLimit(action))return null;
  return value;
 }
 export const validWfV1Args=(action,args)=>parseWfV1Args(action,args)!==null;
@@ -222,6 +246,7 @@ export const validWfV1Args=(action,args)=>parseWfV1Args(action,args)!==null;
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
  wf_git_tree_create:['tree'],wf_git_commit_create:['commit'],
+ wf_issue_parent:['issue'],wf_issue_subissues:['issues','page','has_more'],wf_issue_blocked_by:['issues','page','has_more'],wf_issue_blocking:['issues','page','has_more'],
  wf_merge_queue_entry:['entry'],wf_merge_queue_enqueue:['entry'],wf_merge_queue_dequeue:['entry'],
  wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
  wf_file_rename:['source_path','destination_path','branch','commit','blob_sha'],
@@ -334,9 +359,14 @@ const lifecycleReview=z.object({id:positive,state:z.enum(['PENDING','COMMENTED',
 const lifecycleResponses={wf_review_update:z.object({review:lifecycleReview}).strict(),wf_review_dismiss:z.object({review:lifecycleReview.refine(v=>v.state==='DISMISSED')}).strict(),wf_review_pending_delete:z.object({review:lifecycleReview.refine(v=>v.state==='PENDING')}).strict(),wf_review_comment_reply:z.object({comment:z.object({id:positive,in_reply_to_id:positive,html_url:z.string().nullable()}).strict()}).strict()};
 const commitStatus=z.object({id:positive,state:z.enum(['error','failure','pending','success']),context:z.string().min(1).refine(v=>v.trim()!==''&&new TextEncoder().encode(v).length<=255),description:z.string().refine(v=>new TextEncoder().encode(v).length<=140).nullable(),created_at:z.string().max(100).nullable()}).strict();
 const commitStatusResponses={wf_commit_statuses:z.object({statuses:z.array(commitStatus).max(50),complete:z.boolean()}).strict(),wf_commit_status_create:z.object({status:commitStatus}).strict()};
+const relationIssue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>new TextEncoder().encode(v).length<=4096).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).nullable()}).strict();
+const relationParent=z.object({issue:relationIssue}).strict();
+const relationPage=z.object({issues:z.array(relationIssue).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
 const renameReceipt=z.object({source_path:z.string().min(1).max(1024),destination_path:z.string().min(1).max(1024),branch:z.string().min(1).max(200),commit:z.string().regex(/^[0-9a-f]{40}$/),blob_sha:z.string().regex(/^[0-9a-f]{40}$/)}).strict();
 export function validWfV1Response(action, body, args) {
+ if(typeof action!=="string")return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
+ if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success;
  if(action.startsWith('wf_git_')){
    const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768)}).strict();
    const schemas={

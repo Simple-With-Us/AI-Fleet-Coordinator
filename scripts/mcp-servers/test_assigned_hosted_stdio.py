@@ -288,5 +288,56 @@ class AdapterTests(unittest.TestCase):
         )
 
 
+class FileFrameTests(unittest.TestCase):
+    def test_larger_frames_are_file_only_and_bounded(self):
+        message = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "gr_wf_files_put",
+                "arguments": {"content_b64": "A" * (5 * 1024 * 1024)},
+            },
+        }
+        size = len(json.dumps(message).encode())
+        self.assertTrue(mod.file_frame_allowed(message, size))
+        message["params"]["name"] = "gr_wf_runs"
+        self.assertFalse(mod.file_frame_allowed(message, size))
+        message["params"]["name"] = "gr_wf_files_put"
+        self.assertFalse(mod.file_frame_allowed(message, mod.MAX_FILE_FRAME_BYTES + 1))
+        self.assertFalse(mod.file_frame_allowed([message], size))
+        self.assertEqual(mod.MAX_BYTES, 4 * 1024 * 1024)
+
+
+class FileWireEncodingTests(unittest.TestCase):
+    def test_non_ascii_metadata_uses_wire_encoder_for_argument_bytes(self):
+        message = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "gr_wf_files_put",
+                "arguments": {
+                    "content_b64": "A" * (5 * 1024 * 1024),
+                    "metadata": "😀" * 10000,
+                },
+            },
+        }
+        wire_size = len(json.dumps(message).encode())
+        compact_args = len(
+            json.dumps(
+                message["params"]["arguments"], separators=(",", ":"), ensure_ascii=False
+            ).encode()
+        )
+        self.assertGreater(wire_size - compact_args, 65536)
+        self.assertTrue(mod.file_frame_allowed(message, wire_size))
+        message["params"]["arguments"]["metadata"] = "😀" * 90000
+        wire = len(json.dumps(message).encode())
+        args_size = len(json.dumps(message["params"]["arguments"]).encode())
+        self.assertGreater(args_size, mod.MAX_FILE_ARGS_BYTES)
+        self.assertLessEqual(wire, mod.MAX_FILE_FRAME_BYTES)
+        self.assertFalse(mod.file_frame_allowed(message, wire))
+
+
 if __name__ == "__main__":
     unittest.main()

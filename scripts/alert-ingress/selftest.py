@@ -26,7 +26,8 @@ message the topic holds:  the ids present before the run are the baseline, so a
 second run over a healthy ingress proves the same thing the first one did.
 
 Secrets are read from the environment first and from `fleet-secrets` second,
-and are never printed:  names and lengths only.  --cleanup deletes the one-line
+and are never printed:  names and lengths only.  --cleanup first sends each test
+incident its recovery, so none stays firing in /status, then deletes the one-line
 alert messages this test created and leaves the standing status messages alone,
 because the ingress still points at them.
 """
@@ -364,6 +365,38 @@ def status_first_line(answer):
     return status.splitlines()[0]
 
 
+def resolve_incidents(datadog_secret, betterstack_secret):
+    """Close every incident the self-test opens, so none stays firing.
+
+    The ingress keeps an incident open until its vendor says it recovered, and
+    `/status` (which the Usage Monitor /ops card renders) counts it as firing
+    until then.  A self-test that never recovers its incidents leaves false
+    alarms on the dashboard, so the cleanup sends each one its recovery first.
+    The recovery of an announced incident posts one "recovered" line, which the
+    delete below removes with the others.
+    """
+    for monitor, scope, title in (
+        (999001, "flap", "Selftest flapping monitor"),
+        (999002, "second", "Selftest second monitor"),
+    ):
+        answer = worker_event(
+            "/webhook/datadog",
+            datadog_payload(monitor, scope, "Recovered", title),
+            "X-Datadog-Token",
+            datadog_secret,
+            "datadog",
+        )
+        print(f"Resolved datadog {monitor}:{scope} -> action={answer.get('action')}")
+    answer = worker_event(
+        "/webhook/betterstack",
+        betterstack_payload(TEST_SERVICE, "resolved"),
+        "X-BetterStack-Token",
+        betterstack_secret,
+        "betterstack",
+    )
+    print(f"Resolved betterstack bs-selftest-1 -> action={answer.get('action')}")
+
+
 def cleanup(dd_email, dd_key, bs_email, bs_key):
     """Delete the one-line alert messages, and only those.
 
@@ -436,6 +469,7 @@ def main():
         print(f"  secret {name} present (len {len(value)})")
 
     if args.cleanup:
+        resolve_incidents(datadog_secret, betterstack_secret)
         return cleanup(dd_email, dd_key, bs_email, bs_key)
 
     # The baseline:  every message the topic holds before this run's own

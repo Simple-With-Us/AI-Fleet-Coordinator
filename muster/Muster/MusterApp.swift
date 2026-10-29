@@ -4,6 +4,7 @@ import SwiftUI
 struct MusterApp: App {
     @StateObject private var store: FleetStore
     @StateObject private var monitor: DriftMonitor
+    @StateObject private var admin: FleetAdmin
 
     init() {
         // The owner is asked once,  here,  whether this app may notify them.  An
@@ -13,6 +14,7 @@ struct MusterApp: App {
         let store = FleetStore()
         _store = StateObject(wrappedValue: store)
         _monitor = StateObject(wrappedValue: DriftMonitor(grid: store))
+        _admin = StateObject(wrappedValue: FleetAdmin())
     }
 
     var body: some Scene {
@@ -20,6 +22,7 @@ struct MusterApp: App {
             FleetOverviewView()
                 .environmentObject(store)
                 .environmentObject(monitor)
+                .environmentObject(admin)
                 .task { monitor.start() }
         }
         .defaultSize(width: 1080, height: 820)
@@ -31,6 +34,7 @@ struct MusterApp: App {
             DriftMenuBarContent()
                 .environmentObject(store)
                 .environmentObject(monitor)
+                .environmentObject(admin)
         } label: {
             DriftMenuBarLabel()
                 .environmentObject(monitor)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -634,33 +635,81 @@ class SeatControlMCP:
             pass
 
     def _arguments_within_bounds(self, arguments: Mapping[str, Any]) -> bool:
-        try:
-            normalized = dict(arguments)
-            payload = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
-        except (TypeError, ValueError, RecursionError):
+        if not isinstance(arguments, Mapping):
             return False
-        if len(payload.encode("utf-8")) > MAX_TOOL_ARGUMENT_BYTES:
-            return False
-        nodes = 0
+        budget = {"bytes": 0, "nodes": 0}
+        ancestors: set[int] = set()
 
-        def walk(value: Any, depth: int, ancestors: set[int]) -> bool:
-            nonlocal nodes
-            nodes += 1
-            if nodes > MAX_ARGUMENT_NODES or depth > MAX_ARGUMENT_DEPTH:
-                return False
-            if isinstance(value, (dict, list)):
+        def add_text(value: str) -> None:
+            if len(value) > MAX_TOOL_ARGUMENT_BYTES:
+                raise ValueError("MCP arguments exceed the supported bound")
+            size = len(value.encode("utf-8"))
+            if size > MAX_TOOL_ARGUMENT_BYTES:
+                raise ValueError("MCP arguments exceed the supported bound")
+            budget["bytes"] += size
+            if budget["bytes"] > MAX_TOOL_ARGUMENT_BYTES:
+                raise ValueError("MCP arguments exceed the supported bound")
+
+        def walk(value: Any, depth: int) -> Any:
+            budget["nodes"] += 1
+            if budget["nodes"] > MAX_ARGUMENT_NODES or depth > MAX_ARGUMENT_DEPTH:
+                raise ValueError("MCP arguments exceed the supported structure bound")
+            budget["bytes"] += 2  # Bound delimiters/separators before serialization.
+            if budget["bytes"] > MAX_TOOL_ARGUMENT_BYTES:
+                raise ValueError("MCP arguments exceed the supported bound")
+            if value is None:
+                budget["bytes"] += 4
+                return None
+            if type(value) is bool:
+                budget["bytes"] += 4 if value else 5
+                return value
+            if isinstance(value, str):
+                add_text(value)
+                return value
+            if isinstance(value, int) and not isinstance(value, bool):
+                if value.bit_length() > 4096:
+                    raise ValueError("MCP integer exceeds the supported bound")
+                add_text(str(value))
+                return value
+            if isinstance(value, float):
+                if not math.isfinite(value):
+                    raise ValueError("MCP number is not finite")
+                add_text(repr(value))
+                return value
+            if isinstance(value, Mapping):
                 marker = id(value)
                 if marker in ancestors:
-                    return False
+                    raise ValueError("MCP arguments contain a cycle")
                 ancestors.add(marker)
-                children = value.values() if isinstance(value, dict) else value
-                for child in children:
-                    if not walk(child, depth + 1, ancestors):
-                        return False
-                ancestors.remove(marker)
-            return True
+                normalized = {}
+                try:
+                    for key, child in value.items():
+                        if not isinstance(key, str):
+                            raise ValueError("MCP object keys must be strings")
+                        add_text(key)
+                        normalized[key] = walk(child, depth + 1)
+                finally:
+                    ancestors.remove(marker)
+                return normalized
+            if isinstance(value, list):
+                marker = id(value)
+                if marker in ancestors:
+                    raise ValueError("MCP arguments contain a cycle")
+                ancestors.add(marker)
+                try:
+                    return [walk(child, depth + 1) for child in value]
+                finally:
+                    ancestors.remove(marker)
+            raise ValueError("MCP arguments must contain only JSON values")
 
-        return walk(normalized, 0, set())
+        try:
+            normalized = walk(arguments, 0)
+            payload = json.dumps(
+                normalized, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            )
+            return len(payload.encode("utf-8")) <= MAX_TOOL_ARGUMENT_BYTES
+        except (TypeError, ValueError, RecursionError, UnicodeError):
+            return False
 
     def _scan_prompt(self, prompt: str) -> bool:
         return secretscan.scan(prompt, self.scan_known) is not None

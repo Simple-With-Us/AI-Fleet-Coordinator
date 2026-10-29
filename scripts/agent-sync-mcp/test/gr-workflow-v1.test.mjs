@@ -135,7 +135,7 @@ test('success completion, file-count receipts and malformed failure metadata',as
    const t=harness(async()=>new Response(JSON.stringify({branch:'b',commit:'a'.repeat(40),files})));
    assert.ok((await t.call('gr_wf_files_put',args)).isError);
  }
- assert.ok(!validWfV1Args('wf_file_put',{repo,path:'a',branch:'b',message:'m',content_b64:'A'.repeat(60001)}));
+ assert.ok(!validWfV1Args('wf_file_put',{repo,path:'a',branch:'b',message:'m',content_b64:'A'.repeat(2796205)}));
 });
 
 test('valid refusal context is stripped without losing status or retry semantics',async()=>{
@@ -489,6 +489,22 @@ test('review lifecycle projected receipts use cached strict schemas and own bear
  assert.equal(validWfV1Response('wf_review_pending_delete',{review:{...review,id:true}}),false);
  const t=harness(async(u,i)=>{assert.ok(u.endsWith('/v1/wf_review_pending_delete'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({review}));});assert.ok(!(await t.call('gr_wf_review_pending_delete',{repo,number:1,review_id:2})).isError);
 });
+
+test('relation receipts preserve page availability without credentials and use browser-safe cached schemas',async()=>{
+ const item={id:1,number:2,title:'<withheld: credential-shaped title>',state:'open',repo};
+ const orig=globalThis.Buffer;globalThis.Buffer=undefined;
+ try{assert.equal(validWfV1Response('wf_issue_parent',{issue:item}),true);}finally{globalThis.Buffer=orig;}
+ // Synthetic runtime-assembled fixture, never a credential. Only exercises receipt rejection.
+ for(const title of ['ghp_'+'x'.repeat(36),'sk-proj-'+'x'.repeat(24)])assert.equal(validWfV1Response('wf_issue_parent',{issue:{...item,title}}),false);
+ assert.equal(validWfV1Response('wf_issue_subissues',{issues:[item,{...item,title:'normal'}],page:1,has_more:false}),true);
+ let calls=0;const t=harness(async(u,i)=>{calls++;assert.ok(u.endsWith('/v1/wf_issue_parent'));assert.equal(i.headers.Authorization,'Bearer caller-own-bearer');return new Response(JSON.stringify({issue:item}));});
+ assert.ok(!(await t.call('gr_wf_issue_parent',{repo,number:1})).isError);assert.equal(calls,1);
+ assert.ok((await t.call('gr_wf_issue_parent',{repo,number:1,extra:'x'.repeat(65537)})).isError);assert.equal(calls,1);
+ const gr=new GrRelayClient({baseUrl:'https://broker.invalid',bearer:'own',fetch:async()=>{calls++;return new Response('{}');}});
+ assert.deepEqual(await gr.callWorkflow('wf_issue_parent',{repo,number:1,payload:'x'.repeat(70000)}),{status:400,body:{error:'workflow_request_too_large'}});
+ assert.equal(calls,1);
+});
+
 test('rename strict receipts correlate paths branch and prior blob and use caller bearer',async()=>{
  const args={repo,source_path:'old.txt',destination_path:'new.txt',branch:'feature/x',message:'Rename file',expected_head_sha:'a'.repeat(40),prior_sha:'b'.repeat(40)};
  const receipt={source_path:'old.txt',destination_path:'new.txt',branch:'feature/x',commit:'c'.repeat(40),blob_sha:'b'.repeat(40)};
@@ -560,4 +576,49 @@ test('Git create receipts bind counts tree and ordered parents to request',async
   let calls=0;const t=harness(async()=>{calls++;return new Response(JSON.stringify(bad));});
   const result=await t.call('gr_'+action,args);assert.ok(result.isError);assert.match(result.content[0].text,/unknown/i);assert.equal(calls,1);
  }
+});
+test('full-file request budgets are action-local, encoded and bounded',()=>{
+ const one=n=>({repo,path:'source.swift',branch:'review',message:'update',content_b64:'A'.repeat(n-1)+'='});
+ for(const n of [60001,191012,2796204]) assert.ok(validWfV1Args('wf_file_put',one(n)));
+ assert.ok(!validWfV1Args('wf_file_put',one(2796205)));
+ const multi={repo,branch:'review',message:'update',expected_head_sha:'a'.repeat(40),files:[{path:'a',content_b64:'A'.repeat(191012)},{path:'b',content_b64:'A'.repeat(61816)}]};
+ assert.ok(validWfV1Args('wf_files_put',multi));
+ multi.files.push({path:'c',content_b64:'A'.repeat(6291456)});
+ assert.ok(!validWfV1Args('wf_files_put',multi));
+ assert.ok(!validWfV1Args('wf_runs',{repo,term:'x'.repeat(70000)}));
+});
+
+test('file aggregate counts actual JSON escapes, not just string bytes',()=>{
+ const make=()=>({repo,branch:'review',message:'m',expected_head_sha:'a'.repeat(40),files:[{path:'a',content_b64:'A'.repeat(2796204)},{path:'b',content_b64:'A'},{path:'c',content_b64:'A'.repeat(1000000)}]});
+ const args=make();
+ args.files[1].content_b64='A'.repeat(6291456-new TextEncoder().encode(JSON.stringify(args)).length+1);
+ assert.equal(new TextEncoder().encode(JSON.stringify(args)).length,6291456);
+ assert.ok(!validWfV1Args('wf_files_put',args));
+ args.files[1].content_b64+='A';assert.ok(!validWfV1Args('wf_files_put',args));
+ const escaped=make();escaped.message='"'.repeat(500);
+ escaped.files[1].content_b64='A'.repeat(6291456-new TextEncoder().encode(JSON.stringify(escaped)).length+2);
+ assert.ok(!validWfV1Args('wf_files_put',escaped));
+});
+
+
+test('only file content advertises the larger content limit',()=>{
+ const schema=name=>WF_V1_TOOLS.find(t=>t.name==='gr_'+name).inputSchema.properties;
+ assert.equal(schema('wf_file_put').content_b64.maxLength,2796204);
+ assert.equal(schema('wf_files_put').files.items.properties.content_b64.maxLength,2796204);
+ for(const action of ['wf_issue_create','wf_issue_update','wf_issue_comment']){
+   const props=schema(action);
+   assert.equal(props.body.maxLength,60000);
+   if(props.title) assert.equal(props.title.maxLength,60000);
+ }
+});
+
+test('decoded per-file and aggregate boundaries match relay budgets',()=>{
+ const file=n=>({path:'a',content_b64:Buffer.alloc(n,97).toString('base64')});
+ const one={repo,branch:'review',message:'update',...file(2*1024*1024)};
+ assert.ok(validWfV1Args('wf_file_put',one));
+ one.content_b64=Buffer.alloc(2*1024*1024+1,97).toString('base64');
+ assert.ok(!validWfV1Args('wf_file_put',one));
+ const multi={repo,branch:'review',message:'update',expected_head_sha:'a'.repeat(40),files:[file(2*1024*1024),{...file(2*1024*1024),path:'b'}]};
+ assert.ok(validWfV1Args('wf_files_put',multi));
+ multi.files.push({...file(1),path:'c'});assert.ok(!validWfV1Args('wf_files_put',multi));
 });
