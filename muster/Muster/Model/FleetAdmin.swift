@@ -163,6 +163,10 @@ final class FleetAdmin: ObservableObject {
             let status = try await api.status()
             apiAvailable = true
             blockingWorkSummary = status.blockingWorkSummary
+        } catch is CancellationError {
+            // A read that was called off says nothing about the server, so the
+            // last answer stands.
+            return
         } catch {
             apiAvailable = false
             blockingWorkSummary = nil

@@ -196,7 +196,7 @@ public final class ControlAPI {
             // The token is read from Infisical for this request only, and the
             // error names the secret, never its value.
             let token: String
-            do { token = try secrets.secret(named: secretName) }
+            do { token = try await awaitOffThePool { [secrets] in try secrets.secret(named: secretName) } }
             catch { throw ControlAPIError.refused(error.localizedDescription) }
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             request.setValue(token, forHTTPHeaderField: "x-botfleet-gate-token")
@@ -209,6 +209,10 @@ public final class ControlAPI {
         let response: URLResponse
         do { (data, response) = try await session.data(for: request, delegate: NoRedirects()) }
         catch {
+            // A cancelled caller is not a server that failed:  the cancellation
+            // is passed on, so a refresh that was called off is not read as
+            // the server being down.
+            if isCancellation(error) { throw CancellationError() }
             // A read that failed changed nothing.  A change that failed may
             // have reached the server before the connection dropped or timed
             // out, and URLSession cannot say whether it did, so its outcome

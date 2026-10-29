@@ -169,10 +169,31 @@ public final class HetznerCloudVMProvider: VMProviderPlugin {
         return serverID
     }
 
-    /// Parses an answer as a JSON object, within the byte cap.
+    /// The deepest nesting and the most values an answer may hold.  Hetzner's
+    /// server and error objects are a few levels deep and a few hundred values.
+    static let maxAnswerDepth = 32
+    static let maxAnswerNodes = 10_000
+
+    /// Parses an answer as a JSON object, within the byte, depth and node caps.
+    ///
+    /// The byte cap is checked before parsing;  the parsed tree is then walked
+    /// without recursion, and an answer nested deeper or wider than the caps
+    /// is refused as a whole.
     static func boundedObject(_ data: Data) -> [String: Any]? {
-        guard data.count <= maxAnswerBytes else { return nil }
-        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        guard data.count <= maxAnswerBytes,
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        var stack: [(Any, Int)] = [(object, 1)]
+        var nodes = 0
+        while let (value, depth) = stack.popLast() {
+            nodes += 1
+            guard nodes <= maxAnswerNodes, depth <= maxAnswerDepth else { return nil }
+            if let dictionary = value as? [String: Any] {
+                stack.append(contentsOf: dictionary.values.map { ($0, depth + 1) })
+            } else if let array = value as? [Any] {
+                stack.append(contentsOf: array.map { ($0, depth + 1) })
+            }
+        }
+        return object
     }
 
     private func send(path: String, method: String, timeout: TimeInterval) async throws -> Data {
@@ -180,7 +201,7 @@ public final class HetznerCloudVMProvider: VMProviderPlugin {
             throw VMProviderError.refused("The Hetzner Cloud endpoint could not be read.")
         }
         let bearer: String
-        do { bearer = try token() }
+        do { bearer = try await awaitOffThePool(token) }
         catch { throw VMProviderError.refused(error.localizedDescription) }
         let url = base.appendingPathComponent(path)
         var request = URLRequest(url: url)
@@ -195,6 +216,7 @@ public final class HetznerCloudVMProvider: VMProviderPlugin {
         // Hetzner Cloud endpoint;  a 3xx answer is a refusal below.
         do { (data, response) = try await session.data(for: request, delegate: NoRedirects()) }
         catch {
+            if isCancellation(error) { throw CancellationError() }
             // A read that failed changed nothing.  A power action that failed
             // may have reached Hetzner before the connection dropped, so the
             // owner is told to read the state rather than to try again.

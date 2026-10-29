@@ -49,6 +49,21 @@ public struct ServerHost: Codable, Equatable, Identifiable, Sendable {
     )
 }
 
+/// Why the host list could not be changed.  Only the path is ever reported.
+public enum ServerHostStoreError: LocalizedError, Equatable {
+    case unreadable(String)
+    case writeFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .unreadable(let path):
+            return "\(path) could not be read, so it was not changed.  Fix or move it, then try again."
+        case .writeFailed(let path):
+            return "\(path) could not be saved."
+        }
+    }
+}
+
 /// Atomic storage for known server hosts in `~/.botfleet/control-hosts.json`.
 public final class ServerHostStore: @unchecked Sendable {
     private let fileURL: URL
@@ -70,7 +85,10 @@ public final class ServerHostStore: @unchecked Sendable {
 
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             let defaults = [ServerHost.defaultLocal, ServerHost.defaultHetzner]
-            saveInternal(defaults)
+            // A read still answers the defaults when the seed cannot be
+            // written;  the next change reports the failure, because every
+            // change throws.
+            try? saveInternal(defaults)
             return defaults
         }
 
@@ -81,7 +99,7 @@ public final class ServerHostStore: @unchecked Sendable {
             if !hosts.contains(where: { $0.id == ServerHost.defaultLocal.id || $0.isLocal }) {
                 var augmented = [ServerHost.defaultLocal]
                 augmented.append(contentsOf: hosts)
-                saveInternal(augmented)
+                try? saveInternal(augmented)
                 return augmented
             }
             return hosts
@@ -102,37 +120,38 @@ public final class ServerHostStore: @unchecked Sendable {
     public func saveHosts(_ hosts: [ServerHost]) throws {
         lock.lock()
         defer { lock.unlock() }
-        saveInternal(hosts)
+        try saveInternal(hosts)
     }
 
-    /// Appends or updates a host. Refuses to overwrite if an existing file failed decoding.
-    public func upsertHost(_ host: ServerHost) {
+    /// Appends or updates a host.  Refuses to overwrite a file that failed
+    /// decoding, and throws when the list cannot be read or saved.
+    public func upsertHost(_ host: ServerHost) throws {
         lock.lock()
         defer { lock.unlock() }
         guard var current = loadHostsInternal() else {
-            return
+            throw ServerHostStoreError.unreadable(fileURL.path)
         }
         if let idx = current.firstIndex(where: { $0.id == host.id }) {
             current[idx] = host
         } else {
             current.append(host)
         }
-        saveInternal(current)
+        try saveInternal(current)
     }
 
     /// Removes a host by id (refusing to remove the local host anchor).
     @discardableResult
-    public func removeHost(id: String) -> Bool {
+    public func removeHost(id: String) throws -> Bool {
         guard id != ServerHost.defaultLocal.id else { return false }
         lock.lock()
         defer { lock.unlock() }
         guard var current = loadHostsInternal() else {
-            return false
+            throw ServerHostStoreError.unreadable(fileURL.path)
         }
         let countBefore = current.count
         current.removeAll { $0.id == id && !$0.isLocal }
         if current.count != countBefore {
-            saveInternal(current)
+            try saveInternal(current)
             return true
         }
         return false
@@ -149,18 +168,26 @@ public final class ServerHostStore: @unchecked Sendable {
         return hosts
     }
 
-    private func saveInternal(_ hosts: [ServerHost]) {
+    /// Writes the list, or throws `writeFailed` naming the path.  A failed
+    /// save leaves the previous file in place and no temporary file behind.
+    private func saveInternal(_ hosts: [ServerHost]) throws {
         let dir = fileURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        guard let data = try? encoder.encode(hosts) else { return }
+        let data: Data
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            data = try encoder.encode(hosts)
+        } catch {
+            throw ServerHostStoreError.writeFailed(fileURL.path)
+        }
 
         let tempURL = dir.appendingPathComponent("control-hosts.\(UUID().uuidString).tmp")
         do {
             guard FileManager.default.createFile(atPath: tempURL.path, contents: nil,
-                                                 attributes: [.posixPermissions: 0o600]) else { return }
+                                                 attributes: [.posixPermissions: 0o600]) else {
+                throw ServerHostStoreError.writeFailed(fileURL.path)
+            }
             // Written in place rather than with `.atomic`:  an atomic write
             // makes a fresh file with the default permissions and renames it
             // over this one.  The rename below is what makes the save atomic.
@@ -174,6 +201,7 @@ public final class ServerHostStore: @unchecked Sendable {
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
         } catch {
             try? FileManager.default.removeItem(at: tempURL)
+            throw ServerHostStoreError.writeFailed(fileURL.path)
         }
     }
 }

@@ -50,17 +50,17 @@ final class MultiHostControlTests: XCTestCase {
             isLocal: false
         )
 
-        store.upsertHost(customHost)
+        try store.upsertHost(customHost)
         var hosts = store.loadHosts()
         XCTAssertEqual(hosts.count, 3)
         XCTAssertTrue(hosts.contains(where: { $0.id == "work-vps" && $0.authTokenSecret == "WORK_VPS_TOKEN" }))
 
         // Refuses to remove the local Mac anchor host
-        XCTAssertFalse(store.removeHost(id: "local"))
+        XCTAssertFalse(try store.removeHost(id: "local"))
         XCTAssertEqual(store.loadHosts().count, 3)
 
         // Removes remote host
-        XCTAssertTrue(store.removeHost(id: "work-vps"))
+        XCTAssertTrue(try store.removeHost(id: "work-vps"))
         hosts = store.loadHosts()
         XCTAssertEqual(hosts.count, 2)
         XCTAssertFalse(hosts.contains(where: { $0.id == "work-vps" }))
@@ -161,9 +161,9 @@ final class MultiHostControlTests: XCTestCase {
          {"id":"old","name":"Old","baseURL":"https://old.example.test","isLocal":false,"authToken":"legacy-value"}]
         """#.write(to: storeFile, atomically: true, encoding: .utf8)
         let store = ServerHostStore(fileURL: storeFile)
-        store.upsertHost(ServerHost(id: "work-vps", name: "Work VPS",
-                                    baseURL: URL(string: "https://vps.example.test")!,
-                                    authTokenSecret: "WORK_VPS_TOKEN"))
+        try store.upsertHost(ServerHost(id: "work-vps", name: "Work VPS",
+                                        baseURL: URL(string: "https://vps.example.test")!,
+                                        authTokenSecret: "WORK_VPS_TOKEN"))
         let raw = try String(contentsOf: storeFile, encoding: .utf8)
         XCTAssertTrue(raw.contains("WORK_VPS_TOKEN"))
         XCTAssertFalse(raw.contains("legacy-value"))
@@ -218,11 +218,47 @@ final class MultiHostControlTests: XCTestCase {
         // Re-corrupt the file
         try "corrupt content".write(to: storeFile, atomically: true, encoding: .utf8)
         let hostToUpsert = ServerHost(id: "h1", name: "H1", baseURL: URL(string: "https://example.com")!)
-        store.upsertHost(hostToUpsert)
+        XCTAssertThrowsError(try store.upsertHost(hostToUpsert)) { error in
+            XCTAssertEqual(error as? ServerHostStoreError, .unreadable(storeFile.path))
+        }
+        XCTAssertThrowsError(try store.removeHost(id: "hetzner"))
 
         // Refused to overwrite with defaults, original corrupt content is preserved
         let raw = try String(contentsOf: storeFile, encoding: .utf8)
         XCTAssertEqual(raw, "corrupt content")
+    }
+
+    func testAHostSaveThatFailsIsReportedAndNotLost() throws {
+        // The folder the list lives in is a file, so nothing can be saved there.
+        let blocker = tempDir.appendingPathComponent("not-a-folder")
+        try Data().write(to: blocker)
+        let store = ServerHostStore(fileURL: blocker.appendingPathComponent("hosts.json"))
+        XCTAssertThrowsError(try store.saveHosts([ServerHost.defaultLocal])) { error in
+            guard case .writeFailed = error as? ServerHostStoreError else {
+                return XCTFail("Expected writeFailed, got \(error)")
+            }
+        }
+    }
+
+    func testACancelledReadIsPassedOnAsACancellation() async {
+        MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
+        MockURLProtocol.failure = { _ in URLError(.cancelled) }
+        defer { MockURLProtocol.failure = nil }
+        do {
+            _ = try await ControlAPI(session: mockSession()).status()
+            XCTFail("Expected a cancellation")
+        } catch {
+            XCTAssertTrue(error is CancellationError, "got \(error)")
+        }
+    }
+
+    func testAnAnswerNestedTooDeepIsRefused() {
+        let deep = String(repeating: #"{"a":"#, count: HetznerCloudVMProvider.maxAnswerDepth + 1) + "1"
+            + String(repeating: "}", count: HetznerCloudVMProvider.maxAnswerDepth + 1)
+        XCTAssertNil(HetznerCloudVMProvider.boundedObject(Data(deep.utf8)))
+        let wide = "{\"a\":[" + Array(repeating: "1", count: HetznerCloudVMProvider.maxAnswerNodes).joined(separator: ",") + "]}"
+        XCTAssertNil(HetznerCloudVMProvider.boundedObject(Data(wide.utf8)))
+        XCTAssertNotNil(HetznerCloudVMProvider.boundedObject(Data(#"{"server":{"status":"running"}}"#.utf8)))
     }
 
     private func mockSession() -> URLSession {

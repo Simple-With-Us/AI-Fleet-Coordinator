@@ -73,3 +73,25 @@ public struct FleetSecrets: SecretResolving {
         return value
     }
 }
+
+/// Runs blocking work on a dispatch queue and awaits its result.
+///
+/// `fleet-secrets get` can take up to its 20-second timeout.  Run inline, it
+/// would hold one of the cooperative pool's few threads for that long and
+/// stall every other fleet read;  a global queue thread is the one that
+/// waits instead.
+func awaitOffThePool<T>(_ work: @escaping () throws -> T) async throws -> T {
+    try await withCheckedThrowingContinuation { continuation in
+        DispatchQueue.global(qos: .userInitiated).async {
+            continuation.resume(with: Result { try work() })
+        }
+    }
+}
+
+/// True when an error means the caller's task was cancelled.
+///
+/// URLSession reports a cancelled task as `URLError.cancelled`;  either form
+/// is passed on as `CancellationError`, never mapped to a server failure.
+func isCancellation(_ error: Error) -> Bool {
+    error is CancellationError || (error as? URLError)?.code == .cancelled
+}
