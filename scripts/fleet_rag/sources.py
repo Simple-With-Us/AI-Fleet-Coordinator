@@ -1946,9 +1946,7 @@ def _linear_fetch_chunk(chunk: list) -> list:
         )
         return [_linear_placeholder(chunk[0])]
     if not nodes:
-        raise LinearSourceError(
-            "linear: a full fetch returned no nodes for a non-empty id chunk"
-        )
+        raise LinearSourceError("linear: a full fetch returned no nodes for a non-empty id chunk")
     for node in nodes:
         _linear_complete_comments(node)
     return nodes
