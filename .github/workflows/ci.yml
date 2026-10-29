@@ -130,6 +130,14 @@ jobs:
     # atomic private write.  Fakes only:  no docker, no network, no server.
     - name: fleet-server-status tests
       run: python3 scripts/test_fleet_server_status.py
+    # Muster operations (AFC-563):  the Mac LaunchAgent collector and the allowlisted
+    # control helper (plan then yes, the ssh forced-command gate, the audit row, and
+    # no token in an argv, an answer or the audit).  Fakes only:  no launchctl,
+    # no systemctl, no Coolify, no network.
+    - name: Muster operations tests
+      run: |
+        python3 scripts/test_fleet_mac_services.py
+        python3 scripts/test_fleet_ops_control.py
     # The Lark bridge: the eyes marker, the Operator's signal path and the
     # durable write of a record.  No job ran this file, so every assertion in
     # it was decoration: the write could lose a record on a crash and CI would
@@ -214,6 +222,13 @@ jobs:
     - name: Fleet skill identity tests
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # The housekeeper locks, read from the one home:  the lock blocks are run
+    # as written, with the ssh hop replaced by a fake, so the free, peer-held
+    # and unmakeable paths are all covered and the destructive commands are
+    # checked to run inside the locked block.
+    - name: Housekeeper lock tests
+      run: |
+        cd scripts && python3 -m unittest test_housekeeper_lock -v
     # The sentence-gap converter, read from the one home:  its shape (one or more
     # spaces, the numbered-list lookbehind, the markup group) and its behaviour on
     # every shape a body can hold, plus the check that no copy has drifted.

@@ -1335,7 +1335,7 @@ class ReportAndRunTests(HomeCase):
             if r["state"] == "current"
             and (
                 r["check"] == "runtime"
-                or r["check"].startswith(("tool:agent", "tool:board", "tool:lane", "tool:recall"))
+                or r["check"].startswith(("tool:agent", "tool:lane", "tool:recall"))
             )
         ]
         self.assertEqual(current, [])
@@ -1395,6 +1395,207 @@ class ReportAndRunTests(HomeCase):
         runtime = {r["check"]: r for r in json.loads(text)["checks"]}["runtime"]
         self.assertEqual(runtime["installed"], TIP)  # the managed runtime's HEAD, not the release's
         self.assertNotIn("release", runtime["detail"])
+
+
+class ServerStatusTests(HomeCase):
+    """The server's doctor carries the collector's report, and the Mac keeps it beside its own."""
+
+    run_doctor = ReportAndRunTests.run_doctor
+    CONFIGURED = (("ssh", "-G"), (0, "user root\nhostname 192.0.2.10\n"))
+
+    def status(self, **overrides):
+        status = {
+            "schemaVersion": 1,
+            "tool": "fleet-server-status",
+            "generatedAt": "2026-10-28T15:00:00Z",
+            "host": "server",
+            "coolify": [],
+            "processes": [],
+            "files": [],
+            "hostMetrics": {"cpuCount": 4, "disks": []},
+            "services": [],
+            "filesSummary": {"found": 0, "limit": 200, "truncated": False},
+        }
+        status.update(overrides)
+        return status
+
+    def status_path(self):
+        return self.home / doctor.SERVER_STATUS_RELATIVE
+
+    def write_status(self, text):
+        path = self.status_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text if isinstance(text, str) else json.dumps(text))
+        return path
+
+    def server_answer(self, status):
+        doc = {"ok": True, "checks": [], "schemaVersion": 1, "host": "server"}
+        if status is not None:
+            doc["serverStatus"] = status
+        return (("BatchMode=yes",), (0, json.dumps(doc).encode()))
+
+    def test_the_server_json_carries_a_valid_status(self):
+        self.write_status(self.status())
+        text, _ = self.run_doctor(["--json", "--no-network", "--no-registry"])
+        doc = json.loads(text)
+        self.assertEqual(doc["serverStatus"], self.status())
+        # The doctor's own contract is unchanged beside it.
+        self.assertEqual((doc["schemaVersion"], doc["host"]), (1, "server"))
+        self.assertIsInstance(doc["checks"], list)
+
+    def test_the_server_json_leaves_out_a_status_that_is_not_one(self):
+        too_big = self.status(files=[{"path": "x" * 1024}] * 600)
+        for text in (
+            None,  # no file at all
+            "not json",
+            "[1, 2]",
+            json.dumps(self.status(tool="something-else")),
+            json.dumps({"schemaVersion": 1}),
+            json.dumps(too_big),
+        ):
+            if text is None:
+                self.assertFalse(self.status_path().exists())
+            else:
+                self.write_status(text)
+            out, _ = self.run_doctor(["--json", "--no-network", "--no-registry"])
+            self.assertNotIn("serverStatus", json.loads(out), (text or "")[:40])
+
+    def test_only_the_server_and_only_json_carry_it(self):
+        self.write_status(self.status())
+        text, _ = self.run_doctor(["--json", "--no-network", "--no-registry"], host="mac")
+        self.assertNotIn("serverStatus", json.loads(text))
+        text, _ = self.run_doctor(["--no-network", "--no-registry", "--write", "-"])
+        self.assertNotIn("serverStatus", json.loads(text)["hosts"][0])
+
+    def test_the_mac_writes_a_valid_status_privately_and_drops_it_from_the_report(self):
+        report = self.home / ".local/state/fleet-tools/report.json"
+        rules = [self.CONFIGURED, self.server_answer(self.status())]
+        self.run_doctor(
+            ["--no-network", "--no-registry", "--remote", "fleet-tools-ro", "--write", str(report)],
+            rules,
+            host="mac",
+        )
+        combined = json.loads(report.read_text())
+        server = combined["hosts"][1]
+        self.assertTrue(server["reachable"])
+        self.assertNotIn("serverStatus", server)
+        path = self.status_path()
+        self.assertEqual(json.loads(path.read_text()), self.status())
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        # Atomic:  no temporary file is left beside the two reports.
+        self.assertEqual(
+            sorted(p.name for p in path.parent.iterdir()), ["report.json", "server-status.json"]
+        )
+
+    def test_the_mac_drops_an_invalid_status_and_keeps_the_previous_file(self):
+        report = self.home / ".local/state/fleet-tools/report.json"
+        previous = self.write_status(self.status(host="before"))
+        for status in (
+            self.status(tool="other"),
+            ["not", "an", "object"],
+            "a string",
+            self.status(files=[{"path": "x" * 1024}] * 600),
+        ):
+            rules = [self.CONFIGURED, self.server_answer(status)]
+            self.run_doctor(
+                [
+                    "--no-network",
+                    "--no-registry",
+                    "--remote",
+                    "fleet-tools-ro",
+                    "--write",
+                    str(report),
+                ],
+                rules,
+                host="mac",
+            )
+            server = json.loads(report.read_text())["hosts"][1]
+            self.assertTrue(server["reachable"])
+            self.assertNotIn("serverStatus", server)
+            self.assertEqual(json.loads(previous.read_text())["host"], "before")
+
+    def test_printing_the_report_strips_the_status_and_writes_nothing(self):
+        rules = [self.CONFIGURED, self.server_answer(self.status())]
+        text, _ = self.run_doctor(
+            ["--no-network", "--no-registry", "--remote", "fleet-tools-ro", "--write", "-"],
+            rules,
+            host="mac",
+        )
+        self.assertNotIn("serverStatus", json.loads(text)["hosts"][1])
+        self.assertFalse(self.status_path().exists())
+
+    def test_an_unreachable_server_writes_nothing(self):
+        server = doctor.unreachable_server("no route")
+        server["serverStatus"] = self.status()
+        self.assertFalse(doctor.keep_server_status(server, self.status_path()))
+        self.assertNotIn("serverStatus", server)
+        self.assertFalse(self.status_path().exists())
+        self.assertFalse(doctor.keep_server_status(None, self.status_path()))
+        self.assertFalse(doctor.keep_server_status({"reachable": True}, self.status_path()))
+
+    def test_a_write_that_fails_never_fails_the_doctor(self):
+        blocked = self.home / "blocked"
+        blocked.write_text("a file where the folder should be")
+        server = {"reachable": True, "serverStatus": self.status()}
+        self.assertFalse(doctor.keep_server_status(server, blocked / "server-status.json"))
+
+    def test_the_answer_bound_leaves_room_for_the_status(self):
+        self.assertGreaterEqual(
+            doctor.MAX_REMOTE_BYTES, 1024 * 1024 + 2 * doctor.MAX_SERVER_STATUS_BYTES
+        )
+        self.assertEqual(doctor.MAX_SERVER_STATUS_BYTES, 512 * 1024)
+
+    def test_a_status_with_too_many_nodes_is_refused(self):
+        many = self.status(processes=[{"pid": n} for n in range(doctor.MAX_REMOTE_NODES // 2)])
+        self.assertFalse(doctor.server_status_valid(many))
+        self.assertTrue(doctor.server_status_valid(self.status()))
+
+    def test_a_deeply_nested_status_file_is_left_out_without_a_crash(self):
+        # Within 512 KiB, but past the parser's recursion limit:  --json still prints a document.
+        self.write_status("[" * 200000)
+        out, _ = self.run_doctor(["--json", "--no-network", "--no-registry"])
+        doc = json.loads(out)
+        self.assertNotIn("serverStatus", doc)
+        self.assertIsInstance(doc["checks"], list)
+        self.assertIsNone(doctor.read_server_status(self.status_path()))
+
+    def timer_row(self, minutes_old, linger, user="root"):
+        linger_dir = self.home / "linger"
+        linger_dir.mkdir(exist_ok=True)
+        if linger:
+            (linger_dir / user).touch()
+        stamp = doctor.parse_utc(self.status()["generatedAt"])
+        report = doctor.Report()
+        doctor.check_server_status_timer(
+            report,
+            self.status_path(),
+            clock=lambda: stamp + minutes_old * 60,
+            user=user,
+            linger_dir=linger_dir,
+        )
+        return report.row("updater:fleet-server-status.timer")
+
+    def test_the_collector_timer_row(self):
+        row = self.timer_row(10, linger=True)
+        self.assertEqual((row["state"], row["status"]), ("absent", "OK"))
+        self.write_status(self.status())
+        row = self.timer_row(10, linger=True)
+        self.assertEqual((row["state"], row["status"]), ("current", "OK"))
+        # Fresh, but the timer stops when the last session closes.
+        (self.home / "linger/root").unlink()
+        row = self.timer_row(10, linger=False)
+        self.assertEqual((row["state"], row["status"]), ("unknown", "WARN"))
+        self.assertIn("loginctl enable-linger root", row["reason"])
+        # Past Muster's window:  stale, and the linger hint when it is the likely cause.
+        row = self.timer_row(60, linger=False)
+        self.assertEqual((row["state"], row["status"]), ("stale", "FAIL"))
+        self.assertIn("enable-linger", row["reason"])
+        row = self.timer_row(60, linger=True)
+        self.assertEqual((row["state"], row["status"]), ("stale", "FAIL"))
+        self.assertNotIn("enable-linger", row["reason"])
+        self.write_status("[" * 5000)
+        row = self.timer_row(10, linger=True)
+        self.assertEqual((row["state"], row["status"]), ("stale", "FAIL"))
 
 
 class NotesServiceTests(unittest.TestCase):
