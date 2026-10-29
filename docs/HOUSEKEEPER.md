@@ -1,6 +1,6 @@
 # Housekeeper playbook (BotFleet + GB-HOUSEKEEPER)
 
-Canonical prompt pasted into BotFleet Housekeeper routines, the resource webhook, and first-class resource triggers.  The bot id is private resource inventory and is not in this pack:  it lives in the operator's own inventory on that Mac.  A real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23), with two exceptions: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space, and an Apple Note body takes the narrow no-break space plus a normal space (AFC-552).
+Canonical prompt pasted into BotFleet Housekeeper routines, the resource webhook, and first-class resource triggers.  The bot id is private resource inventory and is not in this pack:  it lives in the operator's own inventory on that Mac.  A real U+00A0 plus a normal space between sentences (owner ruling 2026-10-23), with one exception: the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space.
 
 **Ownership (prefer BF).**  BF-Housekeeper owns Mac disk reclaim.  GB-HOUSEKEEPER keeps Coolify/Hetzner until BF proves Mac-independent Coolify wake.  Prefer BF for Mac work.  Extra-ship no.  Do not install Tailscale or change Mac networking.  HOLD MiniMax process kills unless Jay says otherwise.
 
