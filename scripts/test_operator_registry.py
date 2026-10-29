@@ -290,6 +290,35 @@ class RegistryTest(unittest.TestCase):
         self.assertNotIn(secret, str(caught.exception))
         self.assertEqual(self.reg._get(a["record_id"])["title"], "Placeholder")
 
+    def test_a_title_that_is_not_a_string_is_refused_not_coerced(self):
+        # str() of a mapping or a number can scan clean, so a value of another type is
+        # refused with its own code instead of being turned into text.
+        for value in (123, {"a": 1}, ["x"], b"bytes"):
+            with self.assertRaises(ValueError) as caught:
+                R._scan_title(value)
+            self.assertEqual(str(caught.exception), "title_not_string")
+            with self.assertRaises(ValueError) as caught:
+                R._scan_fields({"title": value})
+            self.assertEqual(str(caught.exception), "title_not_string")
+        R._scan_title(None)
+        R._scan_title("A plain title")
+
+    def test_register_refuses_a_title_that_is_not_a_string(self):
+        with self.assertRaises(ValueError) as caught:
+            R.register_session(
+                self.db,
+                platform="minimax",
+                native_session_id="native-1",
+                seat="MM",
+                source="test",
+                title=123,
+                issuer=R.ISSUER_OPERATOR,
+                **self._loc(platform="minimax"),
+            )
+        self.assertEqual(str(caught.exception), "title_not_string")
+        stored = self.reg._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        self.assertEqual(stored, 0)
+
     def test_update_refuses_a_project_that_carries_a_credential(self):
         # Every field that is written is scanned, not only the title.
         a = self.reg.resolve_or_register(ident(platform="minimax", title="Placeholder"))
