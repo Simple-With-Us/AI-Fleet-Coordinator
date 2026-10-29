@@ -45,15 +45,15 @@ final class MultiHostControlTests: XCTestCase {
         let customHost = ServerHost(
             id: "work-vps",
             name: "Work VPS",
-            baseURL: URL(string: "https://vps.company.internal:8799")!,
-            authToken: "secret-token-123",
+            baseURL: URL(string: "https://vps.example.test:8799")!,
+            authTokenSecret: "WORK_VPS_TOKEN",
             isLocal: false
         )
 
         store.upsertHost(customHost)
         var hosts = store.loadHosts()
         XCTAssertEqual(hosts.count, 3)
-        XCTAssertTrue(hosts.contains(where: { $0.id == "work-vps" && $0.authToken == "secret-token-123" }))
+        XCTAssertTrue(hosts.contains(where: { $0.id == "work-vps" && $0.authTokenSecret == "WORK_VPS_TOKEN" }))
 
         // Refuses to remove the local Mac anchor host
         XCTAssertFalse(store.removeHost(id: "local"))
@@ -71,7 +71,7 @@ final class MultiHostControlTests: XCTestCase {
             id: "hetzner",
             name: "Hetzner Server",
             baseURL: URL(string: "https://hetzner.botfleet.app")!,
-            authToken: "fleet-remote-bearer-key",
+            authTokenSecret: "BOTFLEET_REMOTE_TOKEN",
             isLocal: false
         )
 
@@ -94,8 +94,10 @@ final class MultiHostControlTests: XCTestCase {
             return (404, Data("{}".utf8))
         }
 
-        let api = ControlAPI(session: mockSession(), host: host)
+        let secrets = StubSecrets(values: ["BOTFLEET_REMOTE_TOKEN": "fleet-remote-bearer-key"])
+        let api = ControlAPI(session: mockSession(), host: host, secrets: secrets)
         let status = try await api.status()
+        XCTAssertEqual(secrets.asked.first, "BOTFLEET_REMOTE_TOKEN")
         XCTAssertEqual(status.activeBotCount, 2)
         XCTAssertTrue(status.isSharedVMRunning)
         XCTAssertFalse(status.canStartSharedVM)
@@ -150,6 +152,57 @@ final class MultiHostControlTests: XCTestCase {
         XCTAssertTrue(MockURLProtocol.requests.contains { $0.url!.path == "/api/system/control/vms/stop" })
     }
 
+    func testTheHostsFileKeepsTheSecretNameAndNeverAToken() throws {
+        let storeFile = tempDir.appendingPathComponent("hosts.json")
+        // A file from an older build may still carry a token value.  It is
+        // ignored when read, and the next save drops it.
+        try #"""
+        [{"id":"local","name":"Local Mac","baseURL":"http://127.0.0.1:8799","isLocal":true},
+         {"id":"old","name":"Old","baseURL":"https://old.example.test","isLocal":false,"authToken":"legacy-value"}]
+        """#.write(to: storeFile, atomically: true, encoding: .utf8)
+        let store = ServerHostStore(fileURL: storeFile)
+        store.upsertHost(ServerHost(id: "work-vps", name: "Work VPS",
+                                    baseURL: URL(string: "https://vps.example.test")!,
+                                    authTokenSecret: "WORK_VPS_TOKEN"))
+        let raw = try String(contentsOf: storeFile, encoding: .utf8)
+        XCTAssertTrue(raw.contains("WORK_VPS_TOKEN"))
+        XCTAssertFalse(raw.contains("legacy-value"))
+        XCTAssertFalse(raw.contains("\"authToken\""))
+        let perms = try FileManager.default.attributesOfItem(atPath: storeFile.path)[.posixPermissions] as? NSNumber
+        XCTAssertEqual(perms?.intValue, 0o600)
+    }
+
+    func testAMissingSecretIsRefusedByNameAndSendsNoRequest() async {
+        let host = ServerHost(id: "hetzner", name: "Hetzner Server",
+                              baseURL: URL(string: "https://hetzner.botfleet.app")!,
+                              authTokenSecret: "BOTFLEET_REMOTE_TOKEN", isLocal: false)
+        let api = ControlAPI(session: mockSession(), host: host, secrets: StubSecrets(values: [:]))
+        do {
+            _ = try await api.status()
+            XCTFail("Expected a refusal")
+        } catch {
+            XCTAssertEqual(error as? ControlAPIError,
+                           .refused(FleetSecretError.missing("BOTFLEET_REMOTE_TOKEN").localizedDescription))
+        }
+        XCTAssertTrue(MockURLProtocol.requests.isEmpty)
+    }
+
+    func testAChangeThatGetsNoAnswerHasAnUnknownOutcome() async {
+        // The health check answers, and the stop is sent and then dropped:
+        // the server may have applied it, so it is not reported as unavailable.
+        MockURLProtocol.handler = { _ in (200, Data(#"{"app":"botfleet","pid":42,"ready":true}"#.utf8)) }
+        MockURLProtocol.failure = { request in
+            request.url!.path == "/api/system/control/stop" ? URLError(.timedOut) : nil
+        }
+        defer { MockURLProtocol.failure = nil }
+        do {
+            try await ControlAPI(session: mockSession()).stopServer()
+            XCTFail("Expected an unknown outcome")
+        } catch {
+            XCTAssertEqual(error as? ControlAPIError, .outcomeUnknown)
+        }
+    }
+
     func testServerHostStorePreservesCorruptFileAndRefusesOverwrite() throws {
         let storeFile = tempDir.appendingPathComponent("hosts.json")
         try "{ not valid json ...".write(to: storeFile, atomically: true, encoding: .utf8)
@@ -176,5 +229,19 @@ final class MultiHostControlTests: XCTestCase {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockURLProtocol.self]
         return URLSession(configuration: config)
+    }
+}
+
+/// Answers secrets from a table, and records which names were asked for.
+final class StubSecrets: SecretResolving {
+    private let values: [String: String]
+    private(set) var asked: [String] = []
+
+    init(values: [String: String]) { self.values = values }
+
+    func secret(named name: String) throws -> String {
+        asked.append(name)
+        guard let value = values[name] else { throw FleetSecretError.missing(name) }
+        return value
     }
 }

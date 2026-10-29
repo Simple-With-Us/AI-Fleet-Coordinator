@@ -96,6 +96,7 @@ targets:
       - path: Muster/FleetServices/ControlAPI.swift
       - path: Muster/FleetServices/FleetServiceControl.swift
       - path: Muster/FleetServices/FleetServices.swift
+      - path: Muster/FleetServices/FleetSecrets.swift
       - path: Muster/FleetServices/FleetSnapshotSequencer.swift
       - path: Muster/FleetServices/ManagedServices.swift
       - path: Muster/FleetServices/McpServerControl.swift

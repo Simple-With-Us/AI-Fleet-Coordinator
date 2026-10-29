@@ -338,7 +338,9 @@ public struct FleetServices: Equatable {
     /// not an action worth offering.  A service the owner stopped on
     /// purpose can always be started again, and a service that cannot be
     /// wanted yet - the BotFleet MCP Server while the BotFleet Server is
-    /// down - offers only a restart.
+    /// down - offers nothing:  the reconciler stops it when it runs
+    /// (`action(wanted: false, state: .running)` is `.stop`), and it would
+    /// undo a start or a restart at once.
     public static func availableActions(for state: ManagedServiceState,
                                         wanted: Bool?,
                                         policy: FleetServiceWantedPolicy,
@@ -359,7 +361,6 @@ public struct FleetServices: Equatable {
         case .running: return [.stop, .restart]
         case .stopped:
             if stoppedByOwner { return [.start, .restart] }
-            if wanted == false && policy == .whileServerRuns { return [.restart] }
             return [.start, .restart]
         case .failed: return [.start, .restart]
         case .notInstalled: return []

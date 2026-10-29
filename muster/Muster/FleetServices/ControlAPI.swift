@@ -72,6 +72,10 @@ public enum ControlAPIError: LocalizedError, Equatable {
     case foreignService
     case invalidResponse
     case refused(String)
+    /// A change was sent and no answer came back, so the server may or may
+    /// not have applied it.  It is not the same as `unavailable`:  retrying
+    /// blindly could apply the change twice, so the state is read first.
+    case outcomeUnknown
 
     public var errorDescription: String? {
         switch self {
@@ -80,6 +84,8 @@ public enum ControlAPIError: LocalizedError, Equatable {
         case .foreignService: return "Port is not answering as BotFleet Server."
         case .invalidResponse: return "BotFleet Server returned an invalid response.  Update BotFleet and try again."
         case .refused(let message): return message
+        case .outcomeUnknown:
+            return "BotFleet Server did not answer, so the change may or may not have been made.  Refresh before trying again."
         }
     }
 }
@@ -89,11 +95,15 @@ public final class ControlAPI {
     public let host: ServerHost
     private let baseURL: URL
     private let decoder = JSONDecoder()
+    /// Where the host's bearer token is read from, when it names one.
+    private let secrets: SecretResolving
 
-    public init(session: URLSession = .shared, host: ServerHost = .defaultLocal) {
+    public init(session: URLSession = .shared, host: ServerHost = .defaultLocal,
+                secrets: SecretResolving = FleetSecrets()) {
         self.session = session
         self.host = host
         self.baseURL = host.baseURL
+        self.secrets = secrets
     }
 
     public convenience init(session: URLSession, baseURL: URL) {
@@ -179,10 +189,15 @@ public final class ControlAPI {
         request.timeoutInterval = timeout
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token = host.authToken, !token.isEmpty {
+        if let secretName = host.authTokenSecret, !secretName.isEmpty {
             if !host.isLocal && !isLocalLoopback && baseURL.scheme != "https" {
                 throw ControlAPIError.refused("Remote servers configured with authentication tokens must use HTTPS.")
             }
+            // The token is read from Infisical for this request only, and the
+            // error names the secret, never its value.
+            let token: String
+            do { token = try secrets.secret(named: secretName) }
+            catch { throw ControlAPIError.refused(error.localizedDescription) }
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             request.setValue(token, forHTTPHeaderField: "x-botfleet-gate-token")
         }
@@ -193,7 +208,13 @@ public final class ControlAPI {
         let data: Data
         let response: URLResponse
         do { (data, response) = try await session.data(for: request, delegate: NoRedirects()) }
-        catch { throw ControlAPIError.unavailable }
+        catch {
+            // A read that failed changed nothing.  A change that failed may
+            // have reached the server before the connection dropped or timed
+            // out, and URLSession cannot say whether it did, so its outcome
+            // is unknown rather than unavailable.
+            throw method == "GET" ? ControlAPIError.unavailable : ControlAPIError.outcomeUnknown
+        }
         guard let http = response as? HTTPURLResponse else { throw ControlAPIError.invalidResponse }
         if host.isLocal {
             guard http.url?.scheme == "http",
@@ -220,7 +241,10 @@ private struct Health: Decodable {
 
 private struct ActionResult: Decodable { let ok: Bool }
 
-private final class NoRedirects: NSObject, URLSessionTaskDelegate {
+/// Refuses every redirect, so a bearer token is never forwarded to another
+/// origin.  The 3xx answer itself comes back to the caller, which treats any
+/// status outside 2xx as a refusal.
+final class NoRedirects: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest,

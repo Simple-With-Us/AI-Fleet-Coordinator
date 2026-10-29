@@ -395,11 +395,24 @@ public struct FleetProcessMonitor {
         return FleetProcessSnapshot(processes: fleet, listeners: known)
     }
 
-    /// Stops one process.
+    /// Stops one of the fleet's own processes.
     ///
-    /// PID 1 and this app's own PID are refused: killing either would take
-    /// down something the owner did not ask to stop.
+    /// The PID is checked against a fresh read of the fleet, because the one
+    /// the caller holds may be stale:  the process may have exited and its PID
+    /// been reused by something that is not the fleet's.  A PID that is not in
+    /// that read is refused before anything is signalled.
     public func terminate(pid: Int32) throws {
+        guard snapshot().processes.contains(where: { $0.pid == pid }) else {
+            throw FleetProcessError.refused("PID \(pid) is not a BotFleet process.")
+        }
+        try sendKill(pid: pid)
+    }
+
+    /// Sends the kill to a PID that has already been checked.
+    ///
+    /// PID 1 and this app's own PID are refused all the same:  killing either
+    /// would take down something the owner did not ask to stop.
+    private func sendKill(pid: Int32) throws {
         guard pid > 1 else { throw FleetProcessError.refused("That process cannot be stopped.") }
         guard pid != selfPID else { throw FleetProcessError.refused("BotFleet Control cannot stop itself.") }
         do {
@@ -428,7 +441,7 @@ public struct FleetProcessMonitor {
         guard snapshot.processes.contains(where: { $0.pid == pid }) else {
             throw FleetProcessError.refused("Port \(port) is not held by a BotFleet process.")
         }
-        try terminate(pid: pid)
+        try sendKill(pid: pid)
         return pid
     }
 

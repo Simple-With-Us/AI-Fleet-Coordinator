@@ -68,6 +68,9 @@ final class FleetAdmin: ObservableObject {
     /// The menu bar item has to be there when the owner logs in,  so the app carries the
     /// login item the way the BotFleet Control app did.
     @Published private(set) var launchesAtLogin = false
+    /// The work in flight that would block a stop,  as the server's last status
+    /// said it,  or nil when nothing is in flight or the server did not answer.
+    @Published private(set) var blockingWorkSummary: String?
 
     /// The fleet services the admin watches and changes.
     private let control: FleetServiceControl
@@ -105,7 +108,16 @@ final class FleetAdmin: ObservableObject {
             pm2: PM2Client(),
             startup: startup,
             mcpServer: mcp,
-            stopServer: { [api] in try await api.stopServer() }
+            stopServer: { [api] in try await api.stopServer() },
+            // The server is observed the way the admin reads it:  its API,
+            // its installed wrapper and its port, never launchd's view of a
+            // wrapper that exits once the server is healthy.
+            observeServer: { [api, startup, presence] in
+                let answered = (try? await api.status(timeout: 3)) != nil
+                return ManagedServices.serverState(statusAvailable: answered,
+                                                   installedServerState: startup.installedServerState,
+                                                   serverPresence: presence.presence()).managedState
+            }
         )
         self.launchesAtLogin = SMAppService.mainApp.status == .enabled
         // The fleet is read as the admin comes up,  so the menu bar carries the
@@ -148,10 +160,12 @@ final class FleetAdmin: ObservableObject {
     /// can be known to be up.
     private func readServerAPI() async {
         do {
-            _ = try await api.status()
+            let status = try await api.status()
             apiAvailable = true
+            blockingWorkSummary = status.blockingWorkSummary
         } catch {
             apiAvailable = false
+            blockingWorkSummary = nil
         }
     }
 
@@ -258,6 +272,21 @@ final class FleetAdmin: ObservableObject {
             problem = "The startup policy did not change:  \(error.localizedDescription)"
         }
         await refresh()
+    }
+
+    /// What the owner is told before a stop,  and asked to confirm.
+    ///
+    /// The words are the service's own stop warning,  and for the BotFleet Server
+    /// the work in flight that the server would refuse the stop for,  so the dialog
+    /// and the refusal agree.
+    func stopConfirmation(for serviceID: String) -> String {
+        let item = services?.menuItems.first { $0.id == serviceID }
+            ?? FleetServiceMenuItem(id: serviceID, title: serviceID, summary: "", actions: [])
+        var body = FleetServices.stopBody(for: item, startupPolicySupported: startupPolicySupported)
+        if serviceID == FleetServiceRegistry.server.id, let work = blockingWorkSummary {
+            body += "\n\nIn flight now:  \(work)."
+        }
+        return body
     }
 
     /// The entries,  as the menu and the panel show them.

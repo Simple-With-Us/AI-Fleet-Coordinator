@@ -42,15 +42,31 @@ public final class FleetServiceControl {
     /// port, so booting the agent out can leave a server that is still
     /// serving.  Asking the server is the only stop that is the server's.
     private let stopServer: (() async throws -> Void)?
+    /// How the BotFleet Server's own state is observed.
+    ///
+    /// The server's LaunchAgent is a wrapper that exits once the harness is
+    /// healthy, so launchd can report it stopped while the server is still
+    /// serving.  The caller that knows the server's API and port observes it
+    /// here;  without one, launchd's view is all there is.
+    private let observeServer: (() async -> ManagedServiceState)?
 
     public init(pm2: PM2Client = PM2Client(),
                 startup: StartupPolicy = StartupPolicy(),
                 mcpServer: McpServerControl? = nil,
-                stopServer: (() async throws -> Void)? = nil) {
+                stopServer: (() async throws -> Void)? = nil,
+                observeServer: (() async -> ManagedServiceState)? = nil) {
         self.pm2 = pm2
         self.startup = startup
         self.mcpServer = mcpServer
         self.stopServer = stopServer
+        self.observeServer = observeServer
+    }
+
+    /// The BotFleet Server's state as its own API and port show it, or
+    /// launchd's view of its agent when nothing better was given.
+    private func serverObservation(label: String) async -> ManagedServiceState {
+        if let observeServer { return await observeServer() }
+        return startup.state(ofAgent: label).managedState
     }
 
     /// Reads the state of every fleet service.
@@ -147,11 +163,14 @@ public final class FleetServiceControl {
                     try await stopServer()
                     // The server's own shutdown is asynchronous, so what is
                     // reported is the state that was observed after it, not
-                    // a constant that happens to be the expected one.
+                    // a constant that happens to be the expected one.  It is
+                    // the server's own state, not launchd's view of the
+                    // wrapper, which can already say stopped while the
+                    // server is still serving.
                     return await ManagedServices.settle(to: .stopped,
                                                         attempts: attempts,
                                                         interval: FleetServiceControl.settleInterval) {
-                        await self.state(of: descriptor)
+                        await self.serverObservation(label: label)
                     }
                 }
             } else if running {
@@ -208,7 +227,13 @@ public final class FleetServiceControl {
                     // running puts the marker back.  An unknown state means
                     // launchctl could not be asked, not that the restart
                     // failed, and the marker must not be re-created on it.
-                    if observed != .unknown { deliberateStop.restore() }
+                    // launchd's view alone is not that proof, because the
+                    // wrapper exits once the server is healthy, so the
+                    // server's own state has to say stopped as well.
+                    // Without an observer, launchd's view is all there is, and
+                    // it is not asked a second time.
+                    let server = observeServer == nil ? observed : await serverObservation(label: label)
+                    if observed != .unknown && server == .stopped { deliberateStop.restore() }
                     throw FleetServiceError.refused(observed == .unknown
                         ? "The BotFleet Server could not be checked after the restart, so nothing can be said about it."
                         : "The BotFleet Server was not replaced: its LaunchAgent owns no process, so the server that is running was not started by launchd.")

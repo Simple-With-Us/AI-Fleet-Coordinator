@@ -159,9 +159,14 @@ public struct PM2Client {
     ///
     /// pm2 reports every application it knows about as JSON, with the state
     /// of each one under its own environment.
-    public static func parseAppStates(_ listing: String) -> [String: ManagedServiceState] {
+    ///
+    /// A listing that cannot be decoded is `nil`, not an empty registry:  an
+    /// empty registry reads every application as stopped, and the reconciler
+    /// would act on that.  Only a listing that decodes to an empty array means
+    /// pm2 knows about no application.
+    public static func parseAppStates(_ listing: String) -> [String: ManagedServiceState]? {
         guard let data = listing.data(using: .utf8),
-              let applications = try? JSONDecoder().decode([PM2Application].self, from: data) else { return [:] }
+              let applications = try? JSONDecoder().decode([PM2Application].self, from: data) else { return nil }
         var states: [String: ManagedServiceState] = [:]
         for application in applications {
             states[application.name] = state(forStatus: application.status)

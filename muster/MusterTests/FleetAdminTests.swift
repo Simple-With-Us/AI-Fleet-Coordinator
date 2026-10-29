@@ -120,6 +120,8 @@ private final class FleetAdminCommands: CommandRunning {
     /// array that two threads write at once is not an array any more.
     private let lock = NSLock()
     private var recorded: [FleetAdminCall] = []
+    /// A boot-session identifier made up for this run.
+    private let boot = UUID().uuidString
 
     var calls: [FleetAdminCall] {
         lock.lock()
@@ -143,7 +145,7 @@ private final class FleetAdminCommands: CommandRunning {
             // behind it,  so launchd reports both as stopped.
             return "PID\tStatus\tLabel\n-\t0\tother.service"
         }
-        if executable == "/usr/sbin/sysctl" { return "4F9389E9-AFE4-42C8-AE2C-7FEEDBA31B6C" }
+        if executable == "/usr/sbin/sysctl" { return boot }
         if arguments.contains("jlist") { return "[]" }
         return ""
     }

@@ -9,13 +9,13 @@ final class VMProviderTests: XCTestCase {
         let store = VMProviderStore(fileURL: url)
         let config = VMProviderConfiguration(id: "host-1", providerID: "hetzner-cloud",
                                              displayName: "Hetzner Cloud VM",
-                                             remoteVMID: "42", apiToken: "secret")
+                                             remoteVMID: "42", apiTokenSecret: "HETZNER_API_TOKEN")
         try store.upsert(config)
-        let loaded = store.loadConfigurations()
+        let loaded = try store.loadConfigurations()
         XCTAssertEqual(loaded.count, 1)
         XCTAssertEqual(loaded[0].id, "host-1")
         XCTAssertEqual(loaded[0].remoteVMID, "42")
-        XCTAssertEqual(store.configuration(for: "host-1")?.apiToken, "secret")
+        XCTAssertEqual(try store.configuration(for: "host-1")?.apiTokenSecret, "HETZNER_API_TOKEN")
     }
 
     func testTheConfigurationFileIsOnlyReadableByItsOwner() throws {
@@ -24,10 +24,10 @@ final class VMProviderTests: XCTestCase {
         let store = VMProviderStore(fileURL: url)
         try store.upsert(VMProviderConfiguration(id: "host-1", providerID: "hetzner-cloud",
                                                 displayName: "Hetzner Cloud VM",
-                                                remoteVMID: "42", apiToken: "secret"))
+                                                remoteVMID: "42", apiTokenSecret: "HETZNER_API_TOKEN"))
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
-        // The file holds an API token, so nobody else may read it.
+        // The file names the secret only, and still nobody else may read it.
         XCTAssertEqual(permissions.int16Value, 0o600)
     }
 
@@ -39,7 +39,7 @@ final class VMProviderTests: XCTestCase {
                                                 displayName: "Hetzner Cloud VM", remoteVMID: "42"))
         try store.upsert(VMProviderConfiguration(id: "host-1", providerID: "custom-script",
                                                 displayName: "Custom Script VM", command: "/tmp/vm.sh"))
-        let loaded = store.loadConfigurations()
+        let loaded = try store.loadConfigurations()
         XCTAssertEqual(loaded.count, 1)
         XCTAssertEqual(loaded[0].providerID, "custom-script")
     }
@@ -52,13 +52,54 @@ final class VMProviderTests: XCTestCase {
                                                 displayName: "Hetzner Cloud VM", remoteVMID: "42"))
         XCTAssertTrue(try store.remove(id: "host-1"))
         XCTAssertFalse(try store.remove(id: "host-1"))
-        XCTAssertTrue(store.loadConfigurations().isEmpty)
+        XCTAssertTrue(try store.loadConfigurations().isEmpty)
     }
 
-    func testThereIsNoConfigurationUntilOneIsSaved() {
+    func testThereIsNoConfigurationUntilOneIsSaved() throws {
         let url = temporaryFile()
         defer { try? FileManager.default.removeItem(at: url) }
-        XCTAssertTrue(VMProviderStore(fileURL: url).loadConfigurations().isEmpty)
+        XCTAssertTrue(try VMProviderStore(fileURL: url).loadConfigurations().isEmpty)
+    }
+
+    func testAnUnreadableConfigurationIsARefusalAndIsNotOverwritten() throws {
+        // An unreadable file is not "no providers":  reading it fails and
+        // names the file, and a save does not erase what was there.
+        let url = temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "not json".write(to: url, atomically: true, encoding: .utf8)
+        let store = VMProviderStore(fileURL: url)
+        XCTAssertThrowsError(try store.loadConfigurations()) { error in
+            guard case VMProviderError.refused(let message) = error else {
+                return XCTFail("Expected a refusal, got \(error)")
+            }
+            XCTAssertTrue(message.contains(url.path))
+        }
+        XCTAssertThrowsError(try store.upsert(VMProviderConfiguration(id: "host-1", providerID: "custom-script",
+                                                                      displayName: "Custom Script VM",
+                                                                      command: "/tmp/vm.sh")))
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "not json")
+    }
+
+    func testAFieldThatHoldsACredentialIsNotSaved() throws {
+        let url = temporaryFile()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let store = VMProviderStore(fileURL: url)
+        let pasted = "ghp_" + String(repeating: "x", count: 36)
+        XCTAssertThrowsError(try store.upsert(VMProviderConfiguration(id: "host-1", providerID: "custom-script",
+                                                                      displayName: "Custom Script VM",
+                                                                      command: "/tmp/vm.sh",
+                                                                      arguments: ["--token", pasted]))) { error in
+            guard case VMProviderError.refused(let message) = error else {
+                return XCTFail("Expected a refusal, got \(error)")
+            }
+            XCTAssertTrue(message.contains("argument 2"))
+            XCTAssertFalse(message.contains(pasted))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        // An ordinary flag is not a credential.
+        XCTAssertNil(VMProviderStore.fieldHoldingACredential(
+            VMProviderConfiguration(id: "host-1", providerID: "custom-script", displayName: "Custom Script VM",
+                                    command: "/tmp/vm.sh", arguments: ["--disk-size", "40", "--profile", "prod"])))
     }
 
     func testAProviderThatWasNeverThereIsNotAFailure() {
@@ -83,7 +124,7 @@ final class VMProviderTests: XCTestCase {
 
         let hetzner = VMProviderConfiguration(id: "local", providerID: "hetzner-cloud",
                                               displayName: "Hetzner Cloud VM",
-                                              remoteVMID: "42", apiToken: "secret")
+                                              remoteVMID: "42", apiTokenSecret: "HETZNER_API_TOKEN")
         XCTAssertTrue(VMProviderFactory.makeProvider(for: hetzner, hosts: hosts) is HetznerCloudVMProvider)
 
         let script = VMProviderConfiguration(id: "local", providerID: "custom-script",
@@ -180,6 +221,42 @@ final class VMProviderTests: XCTestCase {
         XCTAssertEqual(request?.httpMethod, "POST")
         XCTAssertEqual(request?.url?.path, "/v1/servers/42/actions/poweron")
         XCTAssertEqual(request?.value(forHTTPHeaderField: "Authorization"), "Bearer secret")
+    }
+
+    func testTheHetznerProviderReadsItsTokenFromTheNamedSecret() async throws {
+        let session = makeSession { _ in
+            (200, try JSONSerialization.data(withJSONObject: ["action": ["command": "poweroff"]]))
+        }
+        let secrets = StubSecrets(values: ["HETZNER_API_TOKEN": "from-infisical"])
+        let provider = HetznerCloudVMProvider(serverID: "42", tokenSecret: "HETZNER_API_TOKEN",
+                                              secrets: secrets, session: session)
+        try await provider.stopRemoteVM()
+        XCTAssertEqual(secrets.asked, ["HETZNER_API_TOKEN"])
+        XCTAssertEqual(StubbedRequests.last?.value(forHTTPHeaderField: "Authorization"), "Bearer from-infisical")
+    }
+
+    func testTheHetznerProviderRefusesARedirect() async throws {
+        // A 3xx is never followed, so the bearer token cannot be forwarded to
+        // another origin, and the answer is a refusal.
+        let session = makeSession { _ in (302, Data()) }
+        let provider = HetznerCloudVMProvider(serverID: "42", token: "secret", session: session)
+        do {
+            _ = try await provider.remoteVMState()
+            XCTFail("Expected the provider to refuse a redirect")
+        } catch let error as VMProviderError {
+            guard case .refused = error else { return XCTFail("Expected a refusal, got \(error)") }
+        }
+    }
+
+    func testTheHetznerProviderRefusesAnOversizedAnswer() async throws {
+        let session = makeSession { _ in (200, Data(repeating: 0x20, count: HetznerCloudVMProvider.maxAnswerBytes + 1)) }
+        let provider = HetznerCloudVMProvider(serverID: "42", token: "secret", session: session)
+        do {
+            _ = try await provider.remoteVMState()
+            XCTFail("Expected the provider to refuse an oversized answer")
+        } catch let error as VMProviderError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
     }
 
     func testTheHetznerProviderRefusesAnAnswerItCannotRead() async throws {

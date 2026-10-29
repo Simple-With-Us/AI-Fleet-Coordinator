@@ -199,7 +199,9 @@ public struct ManagedServices: Equatable {
         // nanoseconds, and this is public API, so the value is clamped
         // before it is used.
         let seconds = interval.isFinite ? min(max(interval, 0), 60) : 0
-        for _ in 0..<attempts {
+        // The count is clamped for the same reason:  a negative count would
+        // trap the range below.
+        for _ in 0..<max(attempts, 0) {
             let next = await observe()
             if next == wanted { return next }
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))

@@ -213,7 +213,7 @@ final class FleetServicesTests: XCTestCase {
 
     // MARK: - Reading the pm2 applications
 
-    func testThePM2StatesAreReadFromTheJSON() {
+    func testThePM2StatesAreReadFromTheJSON() throws {
         let listing = """
         [
           {"name": "shellular", "pm2_env": {"status": "online"}},
@@ -221,10 +221,22 @@ final class FleetServicesTests: XCTestCase {
           {"name": "grok-acp", "pm2_env": {"status": "errored"}}
         ]
         """
-        let states = PM2Client.parseAppStates(listing)
+        let states = try XCTUnwrap(PM2Client.parseAppStates(listing))
         XCTAssertEqual(states["shellular"], .running)
         XCTAssertEqual(states["botfleet-mcp"], .stopped)
         XCTAssertEqual(states["grok-acp"], .failed)
+    }
+
+    func testAListingThatCannotBeReadIsNotAnEmptyRegistry() {
+        // An empty registry would read every application as stopped, and the
+        // reconciler would act on that, so a corrupt listing knows nothing.
+        XCTAssertNil(PM2Client.parseAppStates("not json"))
+        XCTAssertNil(PM2Client.parseAppStates(#"{"name": "shellular"}"#))
+        XCTAssertEqual(PM2Client.parseAppStates("[]"), [:])
+        let commands = FleetServiceCommands()
+        commands.pm2Listing = "garbled"
+        let pm2 = PM2Client(commands: commands, nodePath: "/usr/bin/node", pm2Path: "/usr/bin/pm2")
+        XCTAssertEqual(pm2.state(ofApp: "grok-acp"), .unknown)
     }
 
     func testAnApplicationPM2HasNoRecordOfIsNotRunning() {
@@ -628,6 +640,35 @@ final class FleetServicesTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
     }
 
+    func testTheMarkerIsNotPutBackWhileTheServerItselfIsRunning() async throws {
+        // launchd's view of the wrapper says no process, but the server's own
+        // API and port say it is serving.  That is not proof the server is
+        // down, so the deliberate-stop marker must not come back.
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("apps"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent("Library/LaunchAgents"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".botfleet"), withIntermediateDirectories: true)
+        try Data("BF_CONTROL_STARTUP_POLICY_V1".utf8).write(to: home.appendingPathComponent("apps/botfleet-server-start.sh"))
+        try Data().write(to: home.appendingPathComponent("Library/LaunchAgents/app.botfleet.server.plist"))
+        let marker = home.appendingPathComponent(".botfleet/stopped.marker")
+        try Data().write(to: marker)
+        let commands = LaunchAgentCommands()
+        commands.loaded = false
+        let control = FleetServiceControl(
+            pm2: pm2(FleetServiceCommands()),
+            startup: StartupPolicy(home: home, commands: commands, uid: 501, environment: [:]),
+            mcpServer: nil,
+            observeServer: { .running })
+        do {
+            _ = try await control.perform(.restart, serviceID: FleetServiceRegistry.server.id, attempts: 2)
+            XCTFail("a restart that replaced nothing should not be reported as a success")
+        } catch {
+            XCTAssertTrue("\(error)".contains("not replaced"))
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
     func testARefusedRestartDoesNotPutTheMarkerBackWhenTheStateIsUnknown() async throws {
         // launchctl could not be asked, so nothing is known about the
         // server.  The marker must not be re-created on that, and the
@@ -880,7 +921,7 @@ private final class LaunchAgentCommands: CommandRunning {
     /// True when launchctl cannot be asked at all.
     var listingFails = false
     /// The boot id the startup policy records.
-    var boot = "4F9389E9-AFE4-42C8-AE2C-7FEEDBA31B6C"
+    var boot = UUID().uuidString
 
     func run(_ executable: String, _ arguments: [String]) throws -> String {
         calls.append(([executable] + arguments).joined(separator: " "))

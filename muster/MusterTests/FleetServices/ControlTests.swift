@@ -309,7 +309,9 @@ final class ControlTests: XCTestCase {
 }
 
 private final class MockCommands: CommandRunning {
-    let boot = "4F9389E9-AFE4-42C8-AE2C-7FEEDBA31B6C"
+    /// A boot-session identifier made up for this run, so no real machine's is
+    /// committed.  It is fixed for the life of the fake.
+    let boot = UUID().uuidString
     var calls: [String] = []
     var failKickstart = false
     var launchctlListing = "PID\tStatus\tLabel\n-\t0\tother.service"

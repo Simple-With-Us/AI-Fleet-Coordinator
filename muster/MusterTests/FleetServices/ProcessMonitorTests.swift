@@ -6,13 +6,13 @@ final class ProcessMonitorTests: XCTestCase {
     func testTheProcessListingIsRead() {
         let listing = """
          501     1 /usr/libexec/logd
-         76463  76450 node /Users/jay/apps/BotFleet/agents/qdrant-proxy.js --port 6333
+         76463  76450 node /tmp/fixture-home/apps/BotFleet/agents/qdrant-proxy.js --port 6333
         """
         let rows = FleetProcessMonitor.parseProcesses(listing)
         XCTAssertEqual(rows.count, 2)
         XCTAssertEqual(rows[1].pid, 76463)
         XCTAssertEqual(rows[1].parentPID, 76450)
-        XCTAssertEqual(rows[1].command, "node /Users/jay/apps/BotFleet/agents/qdrant-proxy.js --port 6333")
+        XCTAssertEqual(rows[1].command, "node /tmp/fixture-home/apps/BotFleet/agents/qdrant-proxy.js --port 6333")
     }
 
     func testTheProcessListingSkipsRowsItCannotRead() {
@@ -62,11 +62,11 @@ final class ProcessMonitorTests: XCTestCase {
 
     func testTheExecutablePathIsReadSeparately() {
         let listing = """
-               45222 /Users/jay/Applications/BotFleet Control.app/Contents/MacOS/BotFleetControl
+               45222 /tmp/fixture-home/Applications/BotFleet Control.app/Contents/MacOS/BotFleetControl
                101   /usr/local/bin/node
         """
         let paths = FleetProcessMonitor.parseExecutablePaths(listing)
-        XCTAssertEqual(paths[45222], "/Users/jay/Applications/BotFleet Control.app/Contents/MacOS/BotFleetControl")
+        XCTAssertEqual(paths[45222], "/tmp/fixture-home/Applications/BotFleet Control.app/Contents/MacOS/BotFleetControl")
         XCTAssertEqual(paths[101], "/usr/local/bin/node")
     }
 
@@ -74,8 +74,8 @@ final class ProcessMonitorTests: XCTestCase {
         // The command line is split on spaces, so the name has to come from
         // the executable's own path.
         let rows = [RawProcess(pid: 45222, parentPID: 1,
-                               command: "/Users/jay/Applications/BotFleet Control.app/Contents/MacOS/BotFleetControl",
-                               executablePath: "/Users/jay/Applications/BotFleet Control.app/Contents/MacOS/BotFleetControl")]
+                               command: "/tmp/fixture-home/Applications/BotFleet Control.app/Contents/MacOS/BotFleetControl",
+                               executablePath: "/tmp/fixture-home/Applications/BotFleet Control.app/Contents/MacOS/BotFleetControl")]
         let classified = FleetProcessClassifier.classify(processes: rows, portsByPID: [:], selfPID: 999)
         XCTAssertEqual(classified[0].name, "BotFleetControl")
         XCTAssertTrue(classified[0].isFleetProcess)
@@ -84,7 +84,7 @@ final class ProcessMonitorTests: XCTestCase {
     // MARK: - Telling the fleet's processes from everyone else's
 
     func testAFleetHelperIsNamedByItsHelperNotItsRuntime() {
-        let rows = [RawProcess(pid: 10, parentPID: 1, command: "node /Users/jay/apps/BotFleet/agents/qdrant-proxy.js")]
+        let rows = [RawProcess(pid: 10, parentPID: 1, command: "node /tmp/fixture-home/apps/BotFleet/agents/qdrant-proxy.js")]
         let classified = FleetProcessClassifier.classify(processes: rows, portsByPID: [:], selfPID: 999)
         XCTAssertEqual(classified.count, 1)
         XCTAssertEqual(classified[0].name, "qdrant-proxy")
@@ -101,8 +101,8 @@ final class ProcessMonitorTests: XCTestCase {
     func testAHelperTheServerIsDrivingIsNotAnOrphan() {
         // The server started the helper, so the helper is doing its job.
         let rows = [
-            RawProcess(pid: 100, parentPID: 1, command: "node /Users/jay/Code/BotFleet/server/index.js"),
-            RawProcess(pid: 101, parentPID: 100, command: "node /Users/jay/apps/BotFleet/agents/qdrant-proxy.js"),
+            RawProcess(pid: 100, parentPID: 1, command: "node /tmp/fixture-home/Code/BotFleet/server/index.js"),
+            RawProcess(pid: 101, parentPID: 100, command: "node /tmp/fixture-home/apps/BotFleet/agents/qdrant-proxy.js"),
         ]
         let classified = FleetProcessClassifier.classify(processes: rows, portsByPID: [:], selfPID: 999)
         let helper = classified.first { $0.pid == 101 }
@@ -117,10 +117,10 @@ final class ProcessMonitorTests: XCTestCase {
         let rows = [
             RawProcess(pid: 100, parentPID: 1,
                        command: "node --experimental-strip-types server/index.ts",
-                       workingDirectory: "/Users/jay/Code/BotFleet"),
+                       workingDirectory: "/tmp/fixture-home/Code/BotFleet"),
             RawProcess(pid: 101, parentPID: 100,
-                       command: "node /Users/jay/Code/BotFleet/agents/qdrant-proxy.js",
-                       workingDirectory: "/Users/jay/Code/BotFleet"),
+                       command: "node /tmp/fixture-home/Code/BotFleet/agents/qdrant-proxy.js",
+                       workingDirectory: "/tmp/fixture-home/Code/BotFleet"),
         ]
         let classified = FleetProcessClassifier.classify(processes: rows, portsByPID: [:], selfPID: 999)
         XCTAssertEqual(classified.first { $0.pid == 100 }?.isFleetProcess, true)
@@ -133,7 +133,7 @@ final class ProcessMonitorTests: XCTestCase {
         // fleet's server.
         let rows = [RawProcess(pid: 100, parentPID: 1,
                                command: "node --experimental-strip-types server/index.ts",
-                               workingDirectory: "/Users/jay/Code/Congress.Trade")]
+                               workingDirectory: "/tmp/fixture-home/Code/other-project")]
         let classified = FleetProcessClassifier.classify(processes: rows, portsByPID: [:], selfPID: 999)
         XCTAssertFalse(classified[0].isFleetProcess)
         XCTAssertFalse(classified[0].isOrphan)
@@ -143,7 +143,7 @@ final class ProcessMonitorTests: XCTestCase {
         // The server is gone, so the helper was reparented to launchd and is
         // only holding its port.
         let rows = [
-            RawProcess(pid: 101, parentPID: 1, command: "node /Users/jay/apps/BotFleet/agents/connector-proxy.js"),
+            RawProcess(pid: 101, parentPID: 1, command: "node /tmp/fixture-home/apps/BotFleet/agents/connector-proxy.js"),
         ]
         let classified = FleetProcessClassifier.classify(processes: rows, portsByPID: [:], selfPID: 999)
         XCTAssertEqual(classified[0].isOrphan, true)
@@ -152,7 +152,7 @@ final class ProcessMonitorTests: XCTestCase {
     func testAHelperThatPm2IsDrivingIsNotAnOrphan() {
         let rows = [
             RawProcess(pid: 50, parentPID: 1, command: "PM2 v5.3.0: God Daemon"),
-            RawProcess(pid: 51, parentPID: 50, command: "node /Users/jay/apps/BotFleet/agents/agents-proxy.js"),
+            RawProcess(pid: 51, parentPID: 50, command: "node /tmp/fixture-home/apps/BotFleet/agents/agents-proxy.js"),
         ]
         let classified = FleetProcessClassifier.classify(processes: rows, portsByPID: [:], selfPID: 999)
         XCTAssertEqual(classified.first { $0.pid == 51 }?.isOrphan, false)
@@ -162,14 +162,14 @@ final class ProcessMonitorTests: XCTestCase {
         // A development server is never part of the running fleet, even while
         // a shell still holds it open.
         let rows = [
-            RawProcess(pid: 17449, parentPID: 500, command: "node /Users/jay/apps/lanes/BotFleet/x/vite.js --port 5173"),
+            RawProcess(pid: 17449, parentPID: 500, command: "node /tmp/fixture-home/apps/lanes/BotFleet/x/vite.js --port 5173"),
         ]
         let classified = FleetProcessClassifier.classify(processes: rows, portsByPID: [:], selfPID: 999)
         XCTAssertEqual(classified[0].isOrphan, true)
     }
 
     func testTheServerItselfIsNeverAnOrphan() {
-        let rows = [RawProcess(pid: 100, parentPID: 1, command: "node /Users/jay/Code/BotFleet/server/index.js")]
+        let rows = [RawProcess(pid: 100, parentPID: 1, command: "node /tmp/fixture-home/Code/BotFleet/server/index.js")]
         let classified = FleetProcessClassifier.classify(processes: rows, portsByPID: [:], selfPID: 999)
         XCTAssertTrue(classified[0].isFleetProcess)
         XCTAssertFalse(classified[0].isOrphan)
@@ -195,7 +195,7 @@ final class ProcessMonitorTests: XCTestCase {
     }
 
     func testThePortsAProcessHoldsAreCarried() {
-        let rows = [RawProcess(pid: 101, parentPID: 1, command: "node /Users/jay/apps/BotFleet/agents/qdrant-proxy.js")]
+        let rows = [RawProcess(pid: 101, parentPID: 1, command: "node /tmp/fixture-home/apps/BotFleet/agents/qdrant-proxy.js")]
         let classified = FleetProcessClassifier.classify(processes: rows, portsByPID: [101: [6333]], selfPID: 999)
         XCTAssertEqual(classified[0].ports, [6333])
         XCTAssertEqual(classified[0].summary, "qdrant-proxy (PID 101, port 6333)")
@@ -252,22 +252,35 @@ final class ProcessMonitorTests: XCTestCase {
         XCTAssertTrue(commands.killed.contains(101))
     }
 
+    func testAProcessOutsideTheFleetIsNeverKilled() {
+        // PID 500 holds a port in the fake, but it is not one of the fleet's
+        // processes, so a stale or foreign PID is refused before any kill.
+        let commands = FakeFleetCommands()
+        let monitor = FleetProcessMonitor(commands: commands, selfPID: 999)
+        XCTAssertThrowsError(try monitor.terminate(pid: 500)) { error in
+            guard case FleetProcessError.refused = error else {
+                return XCTFail("Expected a refusal, got \(error)")
+            }
+        }
+        XCTAssertTrue(commands.killed.isEmpty)
+    }
+
     // MARK: - The checkout's own spelling
 
     func testALowercaseCheckoutIsStillTheFleet() {
         // The case of a checkout directory is the owner's choice, so the
         // fleet's own processes are found whichever way it is spelled.
-        XCTAssertTrue(FleetProcessClassifier.isFleetPath("/Users/jay/Code/botfleet"))
-        XCTAssertTrue(FleetProcessClassifier.isFleetPath("/Users/jay/Code/botfleet/server"))
-        XCTAssertTrue(FleetProcessClassifier.isFleetPath("/Users/jay/Code/BotFleet"))
-        XCTAssertFalse(FleetProcessClassifier.isFleetPath("/Users/jay/Code/botfleet-other"))
+        XCTAssertTrue(FleetProcessClassifier.isFleetPath("/tmp/fixture-home/Code/botfleet"))
+        XCTAssertTrue(FleetProcessClassifier.isFleetPath("/tmp/fixture-home/Code/botfleet/server"))
+        XCTAssertTrue(FleetProcessClassifier.isFleetPath("/tmp/fixture-home/Code/BotFleet"))
+        XCTAssertFalse(FleetProcessClassifier.isFleetPath("/tmp/fixture-home/Code/botfleet-other"))
         XCTAssertFalse(FleetProcessClassifier.isFleetPath(nil))
     }
 
     func testTheFleetServerIsFoundInALowercaseCheckout() {
         XCTAssertTrue(FleetProcessClassifier.isFleetServer(command: "node server/index.ts",
-                                                           workingDirectory: "/Users/jay/Code/botfleet"))
-        XCTAssertTrue(FleetProcessClassifier.isFleetServer(command: "node /Users/jay/Code/botfleet/server/index.ts"))
+                                                           workingDirectory: "/tmp/fixture-home/Code/botfleet"))
+        XCTAssertTrue(FleetProcessClassifier.isFleetServer(command: "node /tmp/fixture-home/Code/botfleet/server/index.ts"))
     }
 
     func testALowercaseCheckoutIsACandidateForTheWorkingDirectory() {
@@ -300,11 +313,11 @@ final class ProcessMonitorTests: XCTestCase {
         // else's project, and its development server must never be offered
         // for stopping.
         XCTAssertFalse(FleetProcessClassifier.isDevelopmentServer(
-            command: "node /Users/jay/projects/botfleet-tools/node_modules/.bin/vite",
-            workingDirectory: "/Users/jay/projects/botfleet-tools"))
-        XCTAssertFalse(FleetProcessClassifier.namesFleetCheckout("/Users/jay/projects/botfleet-tools"))
-        XCTAssertTrue(FleetProcessClassifier.namesFleetCheckout("/Users/jay/projects/botfleet/node_modules/.bin/vite"))
-        XCTAssertTrue(FleetProcessClassifier.namesFleetCheckout("node --root=/Users/jay/Code/BotFleet vite"))
+            command: "node /tmp/fixture-home/projects/botfleet-tools/node_modules/.bin/vite",
+            workingDirectory: "/tmp/fixture-home/projects/botfleet-tools"))
+        XCTAssertFalse(FleetProcessClassifier.namesFleetCheckout("/tmp/fixture-home/projects/botfleet-tools"))
+        XCTAssertTrue(FleetProcessClassifier.namesFleetCheckout("/tmp/fixture-home/projects/botfleet/node_modules/.bin/vite"))
+        XCTAssertTrue(FleetProcessClassifier.namesFleetCheckout("node --root=/tmp/fixture-home/Code/BotFleet vite"))
     }
 
     func testACheckoutNameAttachedToAnArgumentIsStillACheckout() {
@@ -355,7 +368,7 @@ final class ProcessMonitorTests: XCTestCase {
         let monitor = FleetProcessMonitor(commands: commands, selfPID: 999)
         let snapshot = monitor.snapshot()
         XCTAssertEqual(snapshot.processes.first { $0.pid == 101 }?.workingDirectory,
-                       "/Users/jay/Code/BotFleet")
+                       "/tmp/fixture-home/Code/BotFleet")
     }
 
     func testThePortsAreKeptWhenLsofWarns() {
@@ -393,7 +406,7 @@ private final class RecordingFleetCommands: CommandRunning {
             return """
             p101
             fcwd
-            n/Users/jay/Code/BotFleet
+            n/tmp/fixture-home/Code/BotFleet
             """
         }
         if executable == "/usr/sbin/lsof" {
@@ -408,7 +421,7 @@ private final class RecordingFleetCommands: CommandRunning {
             guard systemHasFleet else { return "   1     0 /sbin/launchd" }
             return """
                    1     0 /sbin/launchd
-                 101     1 node /Users/jay/apps/BotFleet/agents/qdrant-proxy.js --port 6333
+                 101     1 node /tmp/fixture-home/apps/BotFleet/agents/qdrant-proxy.js --port 6333
             """
         }
         return ""
@@ -439,7 +452,7 @@ private final class FakeFleetCommands: CommandRunning {
         if executable == "/bin/ps" {
             return """
                    1     0 /sbin/launchd
-                   101     1 node /Users/jay/apps/BotFleet/agents/qdrant-proxy.js --port 6333
+                   101     1 node /tmp/fixture-home/apps/BotFleet/agents/qdrant-proxy.js --port 6333
             """
         }
         if executable == "/usr/sbin/lsof", arguments.contains("cwd") {
@@ -470,7 +483,7 @@ private final class FakeFleetCommands: CommandRunning {
         """
         p101
         fcwd
-        n/Users/jay/Code/BotFleet
+        n/tmp/fixture-home/Code/BotFleet
         """
     }
 }
@@ -478,7 +491,7 @@ private final class FakeFleetCommands: CommandRunning {
 /// A stand-in for a command that warned and still answered.
 private final class WarnedCommands: CommandRunning {
     func run(_ executable: String, _ arguments: [String]) throws -> String {
-        throw CommandExitError(output: "p101\nfcwd\nn/Users/jay/Code/BotFleet")
+        throw CommandExitError(output: "p101\nfcwd\nn/tmp/fixture-home/Code/BotFleet")
     }
 
     func run(_ executable: String, _ arguments: [String], timeout: TimeInterval) throws -> String {
@@ -498,6 +511,6 @@ final class CommandRunnerOutputTests: XCTestCase {
         // one conformer and full from another.
         let commands = WarnedCommands()
         XCTAssertEqual(commands.runKeepingOutput("/usr/sbin/lsof", ["-a"]),
-                       "p101\nfcwd\nn/Users/jay/Code/BotFleet")
+                       "p101\nfcwd\nn/tmp/fixture-home/Code/BotFleet")
     }
 }

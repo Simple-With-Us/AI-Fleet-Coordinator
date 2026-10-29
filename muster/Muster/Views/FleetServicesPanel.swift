@@ -66,6 +66,9 @@ struct FleetServicesPanel: View {
                 }
                 .disabled(admin.serverRunning || admin.busyServiceID != nil)
                 Button("Stop Server") {
+                    guard confirmFleetStop(title: "BotFleet Server",
+                                           message: admin.stopConfirmation(for: FleetServiceRegistry.server.id))
+                    else { return }
                     Task { await admin.stopServer() }
                 }
                 .disabled(!admin.serverRunning || admin.busyServiceID != nil)
@@ -133,6 +136,13 @@ struct FleetServicesPanel: View {
             HStack(spacing: 8) {
                 ForEach(fleetAdminActions(for: entry)) { action in
                     Button(action.title) {
+                        // A stop is confirmed first,  with the service's own warning
+                        // and the work in flight that would block it.
+                        if action.action == .stop,
+                           !confirmFleetStop(title: entry.title,
+                                             message: admin.stopConfirmation(for: entry.id)) {
+                            return
+                        }
                         Task { await admin.perform(action.action, serviceID: entry.id) }
                     }
                     .disabled(admin.busyServiceID != nil)

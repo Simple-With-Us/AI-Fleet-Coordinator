@@ -59,6 +59,13 @@ public final class OfflineVMHelper {
                 throw OfflineVMHelperError.refused(String(message.prefix(300)))
             }
             throw OfflineVMHelperError.refused("The Local VM helper could not complete the action.")
+        } catch StartupPolicyError.commandFailed {
+            // The command runner reports a timeout as a generic command
+            // failure, whose message is about the server's LaunchAgent.  Say
+            // which command it was.
+            throw OfflineVMHelperError.refused("The Local VM helper did not finish \(action) in time.")
+        } catch {
+            throw OfflineVMHelperError.refused("The Local VM helper could not be run.")
         }
         let result = try? decoder.decode(Result.self, from: Data(output.utf8))
         guard let result else { throw OfflineVMHelperError.invalidResponse }

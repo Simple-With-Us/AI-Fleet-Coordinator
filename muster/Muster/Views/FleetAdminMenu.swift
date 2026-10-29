@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// One action the owner can take on a fleet service,  with a title the menu can show.
@@ -61,6 +62,11 @@ struct FleetAdminMenu: View {
                 Menu {
                     ForEach(fleetAdminActions(for: entry)) { action in
                         Button(action.title) {
+                            if action.action == .stop,
+                               !confirmFleetStop(title: entry.title,
+                                                 message: admin.stopConfirmation(for: entry.id)) {
+                                return
+                            }
                             Task { await admin.perform(action.action, serviceID: entry.id) }
                         }
                         .disabled(admin.busyServiceID != nil)
@@ -75,4 +81,20 @@ struct FleetAdminMenu: View {
             set: { admin.setLaunchesAtLogin($0) }
         ))
     }
+}
+
+/// Asks the owner to confirm a stop,  with the service's own warning.
+///
+/// A stop takes a service down at once,  and for the BotFleet Server its Local VMs
+/// with it,  so the warning is shown before the stop and not after.
+@MainActor
+func confirmFleetStop(title: String, message: String) -> Bool {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "Stop \(title)?"
+    alert.informativeText = message
+    alert.addButton(withTitle: "Stop")
+    alert.addButton(withTitle: "Cancel")
+    NSApp.activate(ignoringOtherApps: true)
+    return alert.runModal() == .alertFirstButtonReturn
 }
