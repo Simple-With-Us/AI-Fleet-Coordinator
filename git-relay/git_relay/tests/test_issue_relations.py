@@ -76,9 +76,13 @@ class Relations(unittest.TestCase):
             "title": "related",
             "state": "open",
             "repository_url": f"https://api.github.com/repos/{REPO}",
-            "repository_url": "https://api.github.com/repos/Other/Repo",
         }
-        self.assertEqual(WorkflowVerbs._relation_issue(value)["repo"], "Other/Repo")
+        self.assertEqual(WorkflowVerbs._relation_issue(value)["repo"], REPO)
+        self.assertEqual(
+            WorkflowVerbs._relation_issue(
+                {**value, "repository_url": "https://api.github.com/repos/Other/Repo"}
+            )["repo"], "Other/Repo"
+        )
         self.assertIsNone(
             WorkflowVerbs._relation_issue(
                 {**value, "repository_url": "https://evil.invalid/repos/Other/Repo"}
@@ -142,9 +146,22 @@ class Relations(unittest.TestCase):
             None,
             "https://api.github.com/repos/Other/Repo",
             "https://evil.invalid/repos/Other/Repo",
+            f"https://api.github.com/repos/{REPO}?x=1",
+            f"https://api.github.com/repos/{REPO}#fragment",
+            f"https://api.github.com/repos/{REPO}/",
+            f"http://api.github.com/repos/{REPO}",
         ]:
             issue = {"id": 1, "number": 2, "title": "x", "state": "open", "repository_url": url}
             with self.assertRaises(Refused):
                 WorkflowVerbs(
                     Client(issue), Policy(), "swu-wise", "own", "swu-wise", "wf_issue_parent", REPO
                 ).run("wf_issue_parent", {"repo": REPO, "number": 1})
+
+    def test_canonical_repository_casing_does_not_change_scope(self):
+        for action in ("wf_issue_parent", "wf_issue_subissues", "wf_issue_blocked_by", "wf_issue_blocking"):
+            for bound, canonical in ((REPO.lower(), REPO), (REPO, REPO.swapcase())):
+                issue = {"id": 1, "number": 2, "title": "x", "state": "open", "repository_url": f"https://api.github.com/repos/{canonical}"}
+                payload = issue if action == "wf_issue_parent" else [issue]
+                result = WorkflowVerbs(Client(payload), Policy(), "swu-wise", "own", "swu-wise", action, bound).run(action, {"repo": bound, "number": 1})
+                item = result["issue"] if action == "wf_issue_parent" else result["issues"][0]
+                self.assertEqual(item["repo"], canonical)

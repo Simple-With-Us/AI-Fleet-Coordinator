@@ -907,12 +907,10 @@ class WorkflowVerbs:
         data = self._get(f"/repos/{repo}/issues/{number}/{suffix}{query}")
 
         def scoped(value):
-            if (
-                not isinstance(value, dict)
-                or value.get("repository_url") != f"https://api.github.com/repos/{repo}"
-            ):
+            issue = self._relation_issue(value)
+            if issue["repo"] is None or issue["repo"].casefold() != repo.casefold():
                 raise Refused("relation repository is outside or unverifiable in authorized scope")
-            return self._relation_issue(value)
+            return issue
 
         if single:
             return {"issue": scoped(data)}
