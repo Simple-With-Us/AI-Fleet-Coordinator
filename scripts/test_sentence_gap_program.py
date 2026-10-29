@@ -413,6 +413,16 @@ class ProgramBehaviourTests(unittest.TestCase):
             "the program and the canonical one-liner disagree on a body with no code",
         )
 
+    def test_the_entity_mode_holds_every_inline_span(self) -> None:
+        """Every inline span is held before the gap, not only the first one."""
+        out = run_program(self.program, INLINE_SPANS_BODY, "--entity")
+        self.assertIn("&nbsp; Next.", out)
+        self.assertNotIn("&nbsp; Bar", out.split("`", 1)[0])
+        for region in ("`span one with  two spaces`", "`span two with  two spaces`"):
+            self.assertIn(region, out)
+        for span in re.findall(r"`[^`\n]*`", out):
+            self.assertNotIn("&nbsp;", span, "the entity landed inside a span")
+
     def test_the_entity_mode_holds_a_fenced_block_byte_for_byte(self) -> None:
         """The entity mode holds the code aside exactly as the default mode does.
 
@@ -492,6 +502,17 @@ class ProgramBehaviourTests(unittest.TestCase):
             run_program(program_text(), body),
             run_program(match.group("program"), body),
             "the checkout's program and the pack's copy no longer agree",
+        )
+
+    def test_the_checkout_program_agrees_with_the_pack_copy_in_entity_mode(self) -> None:
+        """The pack's embedded program must match the checkout in entity mode too."""
+        match = _HEREDOC_RE.search((ROOT / SURFACES[0]).read_text(encoding="utf-8"))
+        self.assertIsNotNone(match, "%s embeds no program" % SURFACES[0])
+        body = "Plain sentence.  Next sentence.\n"
+        self.assertEqual(
+            run_program(program_text(), body, "--entity"),
+            run_program(match.group("program"), body, "--entity"),
+            "the checkout's program and the pack's copy disagree in entity mode",
         )
 
     def test_the_program_holds_a_fence_that_is_never_closed(self) -> None:

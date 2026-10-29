@@ -6,7 +6,7 @@ description: >-
 
 # Fleet mode
 
-> **Runtime (fx).** Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
+> **Runtime (fx).**  Local Cursor IDE remains `[CURSOR]`.  Codex CLI remains `[CODEX]`.  Do not inherit those tags from a shared skill directory fx also scans (`~/.claude/skills`, `~/.codex/skills`).  Prefer `~/.fx/skills` for this seat.
 
 
 Fleet mode is not a special mode.  It is how every agent on this fleet is expected to work by default, on every platform, forever.  The trigger phrases exist only to *remind* an agent that has drifted back into grinding everything inline.
