@@ -31,6 +31,16 @@ A message is only warranted when **state** changes.  The channel ends up as:
 - **one standing status block per topic**, edited in place, always showing current truth (a recovered signal is counted in its header but not drawn as a row); and
 - **a sparse timeline** of events that actually mattered.
 
+Three channels, one topic per service in each, and every channel requires topics (owner, Oct 29, 2026):
+
+| Channel | Holds |
+|---|---|
+| `#Alerts` | only the standing status blocks, the distilled view |
+| `#Alerts-Log` | the sparse one-line timeline |
+| `#Alerts-Raw` | every authenticated delivery as the vendor sent it:  its own title and full text, then the whole payload in a collapsed spoiler |
+
+The raw copy is a record, not a decision.  It is posted for every authenticated delivery except a PagerDuty ping, under the service's topic, and a failure to post it never changes how the event is handled.  Vendor text cannot ping anyone (the mention syntax is broken with a zero-width space), and every credential shape the identity check knows is replaced with `[redacted]` before anything is posted.  It goes through the normal messages API with the vendor's status bot, because Zulip's own vendor integrations take the key only in the URL.
+
 ## Routes
 
 | Route | Purpose |
@@ -176,11 +186,11 @@ cd workers/alert-ingress && node --test src/*.test.js
 
 Pure functions, no Workers runtime needed.  The suite includes the real Oct 18 flap replayed: ten events, zero messages until it genuinely stays open.
 
-The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 161 tests.  `writer.test.js` checks that the legacy KV is listed once and never again, and that a failed copy reads through and waits ten minutes to retry.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, a ping dropped without a write, and a closed incident pruned to a tombstone that only a reopen lifts.
+The test files are named explicitly on purpose.  On Node 24 the directory form (`node --test src/`) resolves `src/index.js` as a single module and reports one passing test without running any test file, so a gate written that way proves nothing.  The CI step uses the form above, and it runs 169 tests.  `raw.test.js` covers the raw copy:  each vendor's title and text, the payload spoiler, mentions made harmless, credentials redacted, fences a payload cannot close, and the 10,000-character Zulip limit.  `writer.test.js` checks that the legacy KV is listed once and never again, and that a failed copy reads through and waits ten minutes to retry.  `pagerduty.test.js` covers the PagerDuty source:  the incident key and its service topic, acknowledged and resolved, the status deciding over the event type, the priority and urgency severities, both ways in (static header and v1 signature), the refusals, a ping dropped without a write, and a closed incident pruned to a tombstone that only a reopen lifts.
 
 `vendor-routing.test.js` covers the vendor routing: same-topic isolation between two vendors, message ids that are never reused across vendors, the sweep and the resolve path using the right vendor credential, a missing or refused credential failing closed, an ambiguous write that never creates a second message, and a refresh that is refused outside the alerts channel.
 
-`vendor-routing-hardening.test.js` covers the hardening that answered the review: the missing credential names the operator has to set, a failed status delivery is surfaced instead of swallowed, only an unknown outcome holds a repeat delivery, the delivery outcome is scoped to a content revision while the uncertainty barrier is scoped to the source, channel and topic, a standing message id whose owner is unknown is held rather than adopted or posted over, a standing message another source owns is left alone, a pre-routing membership marker names an incident rather than a source, the credential slug is injective in the source name, the sweep survives one bad incident, the legacy refresh route reports the sources it could not refresh, a malformed percent-escape is a bad request, and an unknown webhook field never reaches persistence or the channel.
+`vendor-routing-hardening.test.js` covers the hardening that answered the review: the missing credential names the operator has to set, a failed status delivery is surfaced instead of swallowed, only an unknown outcome holds a repeat delivery, the delivery outcome is scoped to a content revision while the uncertainty barrier is scoped to the source, channel and topic, a standing message id whose owner is unknown is held rather than adopted or posted over, a standing message another source owns is left alone, a pre-routing membership marker names an incident rather than a source, the credential slug is injective in the source name, the sweep survives one bad incident, the legacy refresh route reports the sources it could not refresh, a malformed percent-escape is a bad request, and an unknown webhook field never reaches persistence, the standing block or the timeline (only the raw copy keeps it).
 
 It also covers the Sentry source, which arrives as a native webhook body rather than through the generic shape: the issue shape and the metric-alert shape are both parsed, the webhook is accepted only under the Sentry identity and only with the Sentry secret, a request with no Sentry secret is refused rather than served by the shared token, and the generic route refuses a native Sentry body instead of flattening it into a generic alert.
 
@@ -247,13 +257,13 @@ State on Thu, Oct 29, 2026, 3:00 AM (AFC-566):
 
 Every change was made through the vendor's API from the server, with the vendor key and the header secret read from Infisical into the process's memory, so no secret passed through a transcript or a URL.  The vendor keys are Fleet-OPS `DD_API_KEY` / `DD_APP_KEY` / `DD_SITE` and `BETTERSTACK_API_KEY` in `/global-api-keys`, and `PAGERDUTY_API_KEY` in `/pagerduty-api-key`.  The previous configurations were saved for rollback first.
 
-The Datadog payload template, which is what `fromDatadog()` reads (`$EVENT_MSG`, the long runbook body, is left out on purpose):
+The Datadog payload template, which is what `fromDatadog()` reads, plus `event_msg` (`$EVENT_MSG`, the full Markdown body with the runbook) for the raw copy.  That one field may run to 32 KiB;  every other text field stays under 4 KiB:
 
 ```json
 {"monitor_id": "$ALERT_ID", "alert_id": "$ALERT_ID", "alert_type": "$ALERT_TYPE",
  "alert_transition_type": "$ALERT_TRANSITION", "alert_title": "$ALERT_TITLE",
  "alert_transition": "$ALERT_TITLE", "priority": "$ALERT_PRIORITY", "host": "$HOSTNAME",
- "scope": "$ALERT_SCOPE", "event_url": "$LINK"}
+ "scope": "$ALERT_SCOPE", "event_url": "$LINK", "event_msg": "$EVENT_MSG"}
 ```
 
 Re-pointing a vendor is enough to stop its old messages:  the legacy incoming-webhook URL receives nothing once the vendor posts to the ingress.  The incoming-webhook bots `[Datadog]`, `[BetterStack]`, `[PagerDuty]` and `[Sentry]` are now unused, and their keys sat in the old vendor URLs, so deactivating them is the clean end of the cutover.  No secret ever travels in a URL;  each vendor carries its credential in a header, and the shared bearer token `INGRESS_SHARED_TOKEN` gates the operator routes only.

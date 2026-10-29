@@ -69,7 +69,11 @@ function stubZulip() {
   let nextId = 500;
   globalThis.fetch = async (url, opts) => {
     const decoded = atob(opts.headers.Authorization.replace(/^Basic /, ""));
-    calls.push({ method: opts.method, email: decoded.slice(0, decoded.indexOf(":")) });
+    calls.push({
+      method: opts.method,
+      email: decoded.slice(0, decoded.indexOf(":")),
+      form: opts.body ? new URLSearchParams(opts.body) : null,
+    });
     if (opts.method === "POST")
       return { ok: true, json: async () => ({ result: "success", id: nextId++ }) };
     return { ok: true, json: async () => ({ result: "success" }) };
@@ -285,7 +289,8 @@ test("a trigger and a resolve inside the wait window never reach the channel as 
     const response = await handler.fetch(post(incident("resolved"), headers), env, {});
     assert.equal((await response.json()).action, "discard");
     // Only the standing block was written:  one POST creating it, no alert line.
-    const posts = zulip.calls.filter((call) => call.method === "POST");
+    // The raw copies in #Alerts-Raw are records, not lines.
+    const posts = zulip.calls.filter((call) => call.method === "POST" && call.form?.get("to") !== "Alerts-Raw");
     assert.equal(posts.length, 1);
   } finally {
     zulip.restore();
@@ -336,5 +341,47 @@ test("after a close, a late trigger is ignored and a reopen revives the incident
     assert.equal(JSON.parse(kv.store.get(stateKey(key))).phase, "pending");
   } finally {
     zulip.restore();
+  }
+});
+
+test("every incident delivery leaves a raw record in #Alerts-Raw under its service topic", async () => {
+  const kv = fakeKV();
+  const zulip = stubZulip();
+  try {
+    const env = envFor(kv);
+    const headers = { "x-pagerduty-token": "header-fixture" };
+    await handler.fetch(post(incident("triggered"), headers), env, {});
+    await handler.fetch(post(incident("acknowledged"), headers), env, {});
+    const raw = zulip.calls.filter((call) => call.form?.get("to") === "Alerts-Raw");
+    assert.equal(raw.length, 2);
+    assert.equal(raw[0].form.get("topic"), "jays.services");
+    assert.equal(raw[0].email, "pagerduty-status-bot@example.invalid");
+    assert.match(raw[0].form.get("content"), /^\*\*#578 BotFleet production error spike\*\*/);
+    assert.match(raw[1].form.get("content"), /Status:  acknowledged/);
+    // A ping says nothing about an alert, so it leaves no raw record.
+    const before = zulip.calls.length;
+    await handler.fetch(post({ event: { event_type: "pagey.ping", resource_type: "pagey", data: {} } }, headers), env, {});
+    assert.equal(zulip.calls.length, before);
+  } finally {
+    zulip.restore();
+  }
+});
+
+test("a raw copy Zulip refuses never changes how the event is handled", async () => {
+  const kv = fakeKV();
+  const original = globalThis.fetch;
+  let nextId = 700;
+  globalThis.fetch = async (url, opts) => {
+    if (new URLSearchParams(opts.body || "").get("to") === "Alerts-Raw") return { ok: false, status: 400, headers: new Map() };
+    return { ok: true, json: async () => ({ result: "success", id: nextId++ }) };
+  };
+  try {
+    const env = envFor(kv);
+    const response = await handler.fetch(post(incident("triggered"), { "x-pagerduty-token": "header-fixture" }), env, {});
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).action, "hold");
+    assert.equal(JSON.parse(kv.store.get(stateKey("pagerduty:q094ck9dag3rye"))).phase, "pending");
+  } finally {
+    globalThis.fetch = original;
   }
 });
