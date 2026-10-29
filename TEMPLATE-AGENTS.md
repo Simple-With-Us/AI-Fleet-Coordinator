@@ -83,7 +83,7 @@ Before every commit/push to the GitHub repo, you MUST update the following:
    handoff, commit, PR, merge, and deploy boundaries: move each effort between **Todo → In Progress (with a one-line status) →
    Done (merged to `main`) → Deployed to production** as its state changes, and file new
    efforts as they are conceived (`simple-board file`, `simple-board claim`, `simple-board status`; writes need
-   `AGENT_SEAT` and `LINEAR_BOARD_WRITES=1`, which the `board` wrapper on PATH sets for you).  This is the owner's at-a-glance board; never delete another agent's comment —
+   your bearer-verified seat, and nothing else).  This is the owner's at-a-glance board; never delete another agent's comment —
    correct it with a new one. "Completed" means merged to `main`. **As of 2026-07-10, merging to `main` AUTO-DEPLOYS to production**
    (owner-directed): Coolify auto-deploys `socratic-trade-prod` on every push to `main`, so
    "Completed (merged)" and "Deployed to production" now collapse — there is no separate manual deploy

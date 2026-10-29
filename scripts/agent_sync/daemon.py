@@ -6022,8 +6022,6 @@ class Daemon:
         # The board CLI proves its seat from the bearer at SIMPLE_BOARD_BEARER_LOCATOR and never reads AGENT_SEAT.
         # The locator comes only from this seat's own trusted daemon config;  with none configured the seat files
         # no board item (fail closed), and no AGENT_SEAT is ever offered as an identity.
-        # LINEAR_BOARD_WRITES=1: the old ~/.local/bin/board wrapper exported it; simple-board is a
-        # symlink to scripts/simple-board and sets nothing, so without this every `file` exits 7.
         locator = getattr(runner.cfg, "bearer_locator", None)
         if not locator:
             return {"board_skipped": "no bearer_locator configured for this seat"}
@@ -6032,7 +6030,6 @@ class Daemon:
             for k, v in A.claude_env(self.env, self.home, self.wake_path, seat=runner.seat).items()
             if k not in ("AGENT_SEAT", "AGENT_LAUNCH_SEAT")
         }
-        board_env["LINEAR_BOARD_WRITES"] = "1"
         board_env["SIMPLE_BOARD_BEARER_LOCATOR"] = locator
         ok, detail = A.run_board(
             argv,

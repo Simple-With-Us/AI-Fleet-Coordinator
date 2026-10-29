@@ -1,6 +1,6 @@
 // Mergeable-state transitions for pr-conflict-watch (testable without Workers runtime).
 
-/** States that warrant a Slack alert and a KV dedupe key (real merge conflicts only). */
+/** States that warrant a Zulip alert and a KV dedupe key (real merge conflicts only). */
 export const ALERT_STATES = new Set(["dirty"]);
 
 /**
