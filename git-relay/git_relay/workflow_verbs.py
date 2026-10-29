@@ -3149,6 +3149,7 @@ class WorkflowVerbs:
                 raise RelayGitHubError(502, "git tree entry unverifiable")
             entries.append({k: value[k] for k in ("sha", "type", "mode", "path")})
         return {"tree": {"sha": sha, "entries": entries, "truncated": result["truncated"]}}
+
     def wf_file_rename(self, repo, args):
         """Rename one regular blob without fetching its contents or overwriting a destination."""
         _only(
