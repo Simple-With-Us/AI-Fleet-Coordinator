@@ -42,8 +42,6 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # FLEET-PROTOCOL.md is excluded because it is a Fleet-OPS mirror:  it is generated from
 # the Fleet-OPS handbook, which carries the same fix, so this repo does not edit it.
-# FLEET-UI-COPY.md is excluded because it is owned by open PR #904, which carries the
-# same fix there; editing it here would collide with that pull request.
 # The Cursor rule is not listed here:  like the canonical sentence-gap skill it keeps
 # the 2026-08-19/20 findings block, which records what was found that day rather than
 # prescribing a rule, so the stale-split scan would read that block as a prescription.
@@ -64,6 +62,9 @@ STALE_RULE_FILES = (
     "docs/INSTINCT-ONBOARDING-PROMPT.md",
     "docs/OPENCODE-ONBOARDING-PROMPT.md",
     "docs/fleet-skills/README-add-in-app.md",
+    # The compliance inventory's AFC-P05 row states the mechanism for every
+    # surface, so it states the exception with it.
+    "docs/compliance/inventory.md",
     # The converter and its own test describe the entity mode, and each one names the
     # two chat panes as the surfaces that take it.  They are scanned here so the
     # withdrawn 2026-10-22 GitHub-entity split can never come back into them.  The
@@ -73,7 +74,11 @@ STALE_RULE_FILES = (
     "scripts/test_sentence_gap_program.py",
 )
 
-# The packs whose own text states the rule.  The installer writes a copy of each
+# Dated rollout records whose body is intentionally preserved; the stale-prescription
+# scan skips them wholesale because their tables are history, not live guidance.
+HISTORY_FILES = ("docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",)
+
+# The packs whose own text states the rule.
 # one into skills/ and a per-seat copy into docs/fleet-skills/by-seat/, so the
 # gate covers every copy through a glob instead of a hand-kept list of paths.
 RULE_STATING_PACKS = ("fleet-coordination", "land-lane", "owner-copy", "sentence-gap")
@@ -89,9 +94,9 @@ def _pack_copies(pack: str) -> tuple[str, ...]:
     return tuple(str(p.relative_to(ROOT)) for p in paths if p.is_file())
 
 
-# The files that state the rule, and therefore must carry the one exception.
+# The files that state the rule, and therefore must carry the pane exception.
 # The Cursor rule and the Zulip guide all state the rule, so all of them must
-# name the one exception.
+# name the pane exception.
 EXCEPTION_FILES = (
     "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
     "docs/grok-web/INSTRUCTIONS.md",
@@ -121,6 +126,14 @@ EXCEPTION_FILES = (
     # The status log carries the rule as it stands, next to the dated entries
     # that record how it stood before.
     "STATUS.md",
+    # The dated rollout record for the 2026-10-08 ruling, and the compliance
+    # inventory's AFC-P05 row.  Both state the mechanism for every surface, so
+    # both name the pane exception with it.
+    "docs/rollouts/2026-10-08-sentence-gap-chat-entity.md",
+    "docs/compliance/inventory.md",
+    # The UI copy standard states the mechanism for product copy, so it names the
+    # pane exceptions with it; line 264 is marked history-only for the stale scan.
+    "FLEET-UI-COPY.md",
 ) + tuple(path for pack in RULE_STATING_PACKS for path in _pack_copies(pack))
 
 # The files whose fenced block is what a reader pastes.  A rule inside the
@@ -178,10 +191,13 @@ HISTORY_MARKERS = (
 )
 
 # The panes have to be called an exception, not listed as one option among many.
-# The wording moved with AFC-552:  there are two exceptions now, so a file may say
-# "two exceptions" where it used to say "the one exception", so the check looks for
-# the word and not for a count.
-EXCEPTION_WORD_RE = re.compile(r"exception", re.IGNORECASE)
+# The wording moved with AFC-552:  there are two exceptions now, so a file may
+# say "two exceptions" where it used to say "the one exception", so the check
+# looks for an explicit exception phrase and not for a bare "exception".
+EXCEPTION_PHRASE_RE = re.compile(
+    r"(only exception|one exception|single exception|two exceptions)",
+    re.IGNORECASE,
+)
 
 # A file that states the rule has to name the Apple Note exception with it, or a
 # reader who reads only that file thinks there is one exception.  The mechanism is
@@ -243,7 +259,7 @@ def _states_the_exception(text: str) -> bool:
     for match in re.finditer(re.escape("`&nbsp;`"), text):
         window = text[max(0, match.start() - 600) : match.end() + 600]
         if "Claude Code" in window and "MiniMax Code" in window:
-            if EXCEPTION_WORD_RE.search(window):
+            if EXCEPTION_PHRASE_RE.search(window):
                 return True
     return False
 
@@ -299,6 +315,8 @@ class StaleGuidanceTests(unittest.TestCase):
     def test_no_live_line_prescribes_the_github_entity_split(self) -> None:
         problems = []
         for rel in STALE_RULE_FILES:
+            if rel in HISTORY_FILES:
+                continue
             for number, line in enumerate(_read(rel).splitlines(), start=1):
                 if _is_history(line):
                     continue
@@ -316,7 +334,7 @@ class StaleGuidanceTests(unittest.TestCase):
 
 
 class PaneExceptionTests(unittest.TestCase):
-    """Every file that states the rule names the one exception."""
+    """Every file that states the rule names the pane exception."""
 
     def test_each_file_names_both_panes_and_the_entity_together(self) -> None:
         for rel in EXCEPTION_FILES:

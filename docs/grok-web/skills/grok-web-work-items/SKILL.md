@@ -22,7 +22,7 @@ You have no Mac shell or checkout.  Work that must land on the Mac, and anything
 Only if this chat itself can open a PR:
 - Branch `grok-web/<slug>`;  after cutover `grok-web/<issue-id>-<slug>`.  Never `main`;  nobody pushes `main`.
 - Body:  `Fixes AFC-123`, or `Refs AFC-123` for partial work.
-- Claim first.  Title and body use the sentence gap:  a real U+00A0 plus a normal space, owner ruling 2026-10-23, one mechanism on every surface, with two exceptions:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space, and the entity is never the form anywhere else.  The body of an Apple Note in the Coding folder takes the narrow no-break space (U+202F) plus a normal space, because Apple Notes normalizes a no-break space away on import (AFC-552).
+- Claim first.  Title and body use the sentence gap:  a real U+00A0 plus a normal space, owner ruling 2026-10-23, one mechanism on every surface, with two exceptions:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane) take the `&nbsp;` entity plus a normal space, and an Apple Notes body takes the narrow no-break space (AFC-552);  the entity is never the form anywhere else.
 - If you cannot arm auto-merge, ask in the work topic.
 - Post `DONE` with the PR link.
 - Never invent a GitHub repo.
