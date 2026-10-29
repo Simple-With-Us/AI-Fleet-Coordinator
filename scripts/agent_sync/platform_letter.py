@@ -23,7 +23,9 @@ The letters.  Every chat takes a pair (AA to ZZ, 676 per platform).  A main ch
 (AA, BB ... ZZ), oldest first; a sub-thread, a chat another chat started, takes the first free pair after its
 parent's (parent CC, child CD, the next CE).  The allocation is the registry's own rule (`letter_space="double"`,
 `letter_pick="primary"`, `parent_session_id`); this module only asks, through ONE function (`operator_register`)
-that reads the registry's signature, so a registry without a parameter still answers, with the lowest free pair.
+that reads the registry's signature, so a registry without a parameter still answers, with the lowest free pair.  The
+exception is a closed chat whose pair went to another chat: a registry that predates pair letters would give it a
+single letter, so that reopen is refused (see `operator_reopen`).
 
 What the hook does.
 - A start event registers the chat, or resumes its registration, and titles it: "<letter>: <Title>" when the chat
@@ -52,6 +54,7 @@ Python 3.11+, standard library only.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -60,6 +63,7 @@ import shlex
 import subprocess
 import sys
 import time
+import unicodedata
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -101,7 +105,13 @@ TITLE_CHARS = 60
 # costs a bounded amount of work inside the hook's budget.
 PROMPT_SCAN_CHARS = 4096
 PROMPT_SCAN_WORDS = 64
+# The scanner's context rules ("api_key: <value>", "authorization: bearer <value>", "Linear client secret = <value>")
+# span several words, so a prompt word is scanned together with the words kept before it, this many at most.
+SECRET_WINDOW = 12
 STDIN_LIMIT = 1 << 20
+# What the registry side answers for a chat it has no registration for (the registry was restored from an older copy,
+# or never saw the chat), and what the hook reads as "register again".
+NO_REGISTRATION = "this chat has no registration"
 
 #: The events the library knows, whatever a platform calls them.
 EVENTS = ("start", "prompt", "rename", "end")
@@ -112,13 +122,18 @@ DEFAULT_EVENTS = {"SessionStart": "start", "UserPromptSubmit": "prompt", "Sessio
 HOOK_TIMEOUTS = {"SessionStart": 20, "UserPromptSubmit": 15, "SessionEnd": 15}
 #: The `source` values of a start event after which a hook-output title is applied.
 TITLE_SOURCES = ("startup", "resume", "fork")
+#: The `source` values of a start event for a chat made from another chat: its title is the other chat's, letter and
+#: all, so the other chat's letter is not this chat's and comes off.
+CARRIED_SOURCES = ("fork", "branch", "copy")
 #: What a chat is, for the in-scope rule.
 KINDS = ("chat", "headless", "subagent")
 OUTPUT_STYLES = ("hook", "text", "json")
 _HOOK_NAMES = {"start": "SessionStart", "prompt": "UserPromptSubmit", "rename": "SessionRename"}
 
 LETTER_PREFIX = re.compile(r"^[A-Z]{1,2}: ")
-WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9'’+#.\-]*")
+# A word starts with a letter or digit of any script (accents, Cyrillic, CJK) and goes on with letters, digits and the
+# marks a name can carry ( ' ’ + # . - ), so "configuración" and "请修复登录页面" are words and an underscore is a break.
+WORD = re.compile(r"[^\W_](?:[^\W_]|['’+#.\-])*")
 SMALL_WORDS = frozenset(
     [
         "a",
@@ -160,6 +175,12 @@ def _text(value: object) -> str:
 
 def one_line(text: object) -> str:
     return " ".join(str(text or "").split())
+
+
+def tidy(text: object) -> str:
+    """`one_line` without control characters or lone surrogates (a title cut mid-emoji at a UTF-16 boundary): neither
+    survives an ssh command line, and a NUL is not a character a title can hold."""
+    return one_line("".join(ch for ch in one_line(text) if unicodedata.category(ch) not in ("Cc", "Cs")))
 
 
 def from_payload(*keys: str) -> Accessor:
@@ -395,8 +416,10 @@ def clean_title(text: object) -> str:
     """One line, at most TITLE_CHARS characters, cut at a word boundary, with any secret-shaped word dropped.
 
     A title is relayed to the registry and from there to the Fleet Reference sheet, and a first prompt can carry a
-    pasted key, so every word goes through the fleet's secret scanner first; it reports only that a word matched."""
-    words = [w for w in one_line(text).split(" ") if w and not secretscan.scan(w)]
+    pasted key, so every word goes through the fleet's secret scanner first; it reports only that a word matched.
+    Control characters and lone surrogates (a title cut mid-emoji) are dropped too: neither survives an ssh command
+    line or a JSON note."""
+    words = [w for w in tidy(text).split(" ") if w and not secretscan.scan(w)]
     line = " ".join(words)
     if secretscan.scan(line):
         return ""
@@ -459,14 +482,18 @@ def title_from_prompt(prompt: object) -> str:
     text = re.sub(r"https?://\S+", " ", text)
     for line in text.splitlines():
         line = re.sub(r"^\s*/\S*", " ", line)
-        words = []
+        words: list[str] = []
+        kept: list[str] = []  # the line's tokens that are not secrets, in order
         # Each whitespace-delimited token is scanned whole, then split into words: a token such as ghp_<key> must
-        # not reach the scanner as the two harmless halves an underscore would cut it into.
+        # not reach the scanner as the two harmless halves an underscore would cut it into.  It is scanned as the
+        # last of the tokens kept before it, because the scanner's context rules need the keyword and the value
+        # together ("api_key: <value>" is a secret only with "api_key:"); the value is dropped, never the line.
         for scanned, token in enumerate(line.split()):
             if len(words) >= TITLE_WORDS or scanned >= PROMPT_SCAN_WORDS:
                 break
-            if secretscan.scan(token):
+            if secretscan.scan(" ".join([*kept[-SECRET_WINDOW:], token])):
                 continue
+            kept.append(token)
             words.extend(m.group() for m in WORD.finditer(token))
         del words[TITLE_WORDS:]
         while len(words) > 1 and words[-1].rstrip(".-").lower() in SMALL_WORDS:
@@ -550,13 +577,50 @@ def operator_register(
     return OR.register_session(db, **kwargs)
 
 
+class SpaceLost(RuntimeError):
+    """A reopen would give a chat that held a pair a single letter: the registry's `reopen` does not keep the space."""
+
+
+def _last_letter(db: str, record_id: str) -> tuple[str, bool]:
+    """(the letter a chat held last, whether another live chat of the platform holds it now), read-only like
+    `_open_rows`: mode=rw so a hot journal can be recovered, and never a create."""
+    import sqlite3
+    from pathlib import Path
+
+    conn = sqlite3.connect("%s?mode=rw" % Path(os.path.abspath(db)).as_uri(), uri=True)
+    try:
+        row = conn.execute(
+            "SELECT letter, platform FROM alias_assignments WHERE record_id = ? ORDER BY assigned_at DESC LIMIT 1",
+            (record_id,),
+        ).fetchone()
+        if row is None:
+            return "", False
+        taken = conn.execute(
+            "SELECT 1 FROM alias_assignments WHERE platform = ? AND letter = ? AND retired_at IS NULL",
+            (row[1], row[0]),
+        ).fetchone()
+        return row[0], taken is not None
+    finally:
+        conn.close()
+
+
 def operator_reopen(
-    OR: Any, reg: Any, record_id: str, *, actor: str, source: str, pick: str, parent: str = ""
+    OR: Any, db: str, reg: Any, record_id: str, *, actor: str, source: str, pick: str, parent: str = ""
 ) -> tuple[str, int, str]:
-    """Give a closed chat a letter again (`SessionRegistry.reopen`), with the pick and parent when it takes them."""
+    """Give a closed chat a letter again (`SessionRegistry.reopen`), with the pick and parent when it takes them.
+
+    A chat that held a pair comes back with a pair.  A `reopen` that predates pair letters (it takes no `pick`) gives
+    the chat its old pair back when that is free, which is right, and allocates from the single letters when it is
+    not, which would title the chat "A: ..." on a platform where every other chat has a pair.  That second case is
+    refused before anything is written (SpaceLost): the chat waits for a letter until the Mac's registry is the
+    pair-aware one, and nothing is left behind in its history to answer for a letter it never had."""
     kwargs: dict[str, Any] = dict(actor=actor, source=source)
     if _accepts(reg.reopen, "pick"):
         kwargs["pick"] = pick
+    else:
+        previous, taken = _last_letter(db, record_id)
+        if len(previous) == 2 and taken:
+            raise SpaceLost("the pair %s went to another chat, and this registry reopens into single letters" % previous)
     for name in PARENT_PARAMS:
         if parent and _accepts(reg.reopen, name):
             kwargs[name] = parent
@@ -703,6 +767,7 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
                         keep,
                         lambda: operator_reopen(
                             OR,
+                            db,
                             reg,
                             out["record_id"],
                             actor=args.seat,
@@ -729,6 +794,8 @@ def _register(OR: Any, db: str, args: Any, sid: str, now: float) -> dict[str, An
                 reg.close_db()
     except OR.LabelExhausted:
         return {"error": "all %s letters are in use" % args.letter_space, "swept": swept}
+    except SpaceLost:
+        return {"error": "this registry cannot give a closed chat a pair letter again yet", "swept": swept}
     out["swept"] = swept
     out["evicted"] = evicted
     return out
@@ -739,7 +806,7 @@ def _on_record(OR: Any, db: str, args: Any, sid: str) -> dict[str, Any]:
     try:
         rec = reg.lookup(args.platform, args.location, SCOPE, sid)
         if rec is None:
-            return {"error": "this chat has no registration"}
+            return {"error": NO_REGISTRATION}
         if args.op == "show":
             return dict(rec, found=True)
         if rec.get("state") == "closed" or not rec.get("label"):
@@ -917,20 +984,29 @@ class Chat:
             return {}
         return data if isinstance(data, dict) else {}
 
-    def write(self, note: Mapping[str, Any]) -> None:
-        folder = os.path.dirname(self.path)
-        os.makedirs(folder, mode=0o700, exist_ok=True)
+    def write(self, note: Mapping[str, Any]) -> bool:
+        """Save the note; False when it cannot be saved (a state folder that is not writable).  The hook goes on
+        without it, so the letter is still shown, and the next event only resumes the registration."""
         tmp = "%s.%d.tmp" % (self.path, os.getpid())
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(
-                dict(note, session_id=self.session_id, platform=self.spec.platform, updated_at=self.now),
-                fh,
-                sort_keys=True,
-            )
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, self.path)
+        try:
+            os.makedirs(os.path.dirname(self.path), mode=0o700, exist_ok=True)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(
+                    dict(note, session_id=self.session_id, platform=self.spec.platform, updated_at=self.now),
+                    fh,
+                    sort_keys=True,
+                )
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.path)
+        except (OSError, TypeError, ValueError):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return False
+        return True
 
     # ---- the registry ----------------------------------------------------------------------
 
@@ -954,10 +1030,21 @@ class Chat:
         if words:
             argv.append("--title=" + words)
         if parent and op == "register":
-            argv.append("--parent-session-id=" + parent)
+            try:
+                argv.append("--parent-session-id=" + SI.check(parent, "the parent session id"))
+            except ValueError:
+                pass  # not a session id, so no parent: the chat is picked like a main chat
         return argv
 
     def registry(self, op: str, title: str = "", parent: str = "") -> dict[str, Any]:
+        """One call to the registry side, answered as its JSON.  Whatever goes wrong, on the way or in the registry
+        side, is an error answer: a hook never blocks a chat, and never stops on a call that failed."""
+        try:
+            return self._registry(op, title, parent)
+        except Exception as exc:  # noqa: BLE001 - the hook never blocks a chat
+            return {"error": "the registry call failed (%s)" % type(exc).__name__}
+
+    def _registry(self, op: str, title: str, parent: str) -> dict[str, Any]:
         argv = self.argv(op, title, parent)
         if self.transport is not None:
             return _answer(dict(self.transport(argv)))
@@ -1071,6 +1158,7 @@ def _apply(chat: Chat, answer: Mapping[str, Any], note: dict[str, Any]) -> dict[
         out["titled"] = False
     out.pop("error", None)
     out.pop("failed_at", None)
+    out.pop("sync_failed_at", None)  # the registry just answered
     return out
 
 
@@ -1123,20 +1211,25 @@ def present(
 ) -> str | None:
     """Put `title` on the chat: through the adapter's writer when it has one, else in the hook's own output.  Returns
     the title the hook should print, or None.  A writer that fails with no output route leaves the title pending, and
-    the next prompt tries again."""
+    a later prompt tries again, no sooner than RETRY_SECONDS after the failure."""
     spec = chat.spec
     note["want"] = title
     if title == current:
         note.update(shown=title, pending=False)
+        note.pop("retry_at", None)
         return None
     wrote = _write_title(chat, note, title, current, data, reason)
     if wrote:
         note.update(shown=title, pending=False)
+        note.pop("retry_at", None)
         return None
     if spec.title_in_output and settable:
         note.update(shown=title, pending=False)
+        note.pop("retry_at", None)
         return title
     note["pending"] = spec.title_writer is not None
+    if note["pending"]:
+        note["retry_at"] = chat.now + RETRY_SECONDS  # a writer that is down is not asked again on every prompt
     return None
 
 
@@ -1144,22 +1237,63 @@ def _retry_pending(chat: Chat, note: dict[str, Any], current: str, data: Mapping
     want = str(note.get("want") or "")
     if not (note.get("pending") and want and chat.spec.title_writer is not None):
         return
+    if chat.now < float(note.get("retry_at") or 0):
+        return
     if want == current or _write_title(chat, note, want, current, data, "retry"):
         note.update(shown=want, pending=False)
+        note.pop("retry_at", None)
+    else:
+        note["retry_at"] = chat.now + RETRY_SECONDS
+
+
+def _gone(answer: Mapping[str, Any]) -> bool:
+    """The Operator has no live registration for this chat: its letter was retired, or the registry was restored from
+    an older copy.  Either way the hook registers again."""
+    return bool(answer.get("retired")) or answer.get("error") == NO_REGISTRATION
+
+
+def _failed(answer: Mapping[str, Any]) -> bool:
+    """The call did not reach a registry that answered (an asleep Mac, a refused request): try it again later."""
+    return "error" in answer and not _gone(answer)
+
+
+def _push(chat: Chat, note: dict[str, Any], op: str, words: str = "") -> dict[str, Any]:
+    """Tell the Operator a chat's words (`title`) or that it is still here (`touch`).  An answer that is an error is not
+    a delivery: the words stay in the note as `unsent`, and nothing more is sent until RETRY_SECONDS have passed, so a
+    Mac that is asleep costs one hop every ten minutes, not one on every prompt.  Returns the registry's answer, or {}
+    when the call was held back."""
+    if op == "title" and words:
+        note["unsent"] = words
+    if chat.now - float(note.get("sync_failed_at") or 0) < RETRY_SECONDS:
+        return {}
+    answer = chat.registry(op, title=words)
+    if _failed(answer):
+        note["sync_failed_at"] = chat.now
+        return answer
+    note.pop("sync_failed_at", None)
+    if not _gone(answer):
+        note["touched_at"] = chat.now
+        if op == "title":
+            note.pop("unsent", None)
+    return answer
 
 
 def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     spec = chat.spec
     source = _text(data.get("source")) or "startup"
-    current = spec.current_title(data, chat.env)
+    current = tidy(spec.current_title(data, chat.env))
     note = chat.read()
     if source == "compact":
         if note.get("state") == "open" and note.get("label"):
             out.emit("start", context=reminder(spec, note), label=str(note["label"]))
         return 0
     # /clear starts a new chat that can carry the old chat's name; that name is not this chat's title.
-    inherited = current if source == "clear" else ""
-    named = "" if inherited else bare(current)
+    cleared = source == "clear"
+    # A fork, branch or copy carries the other chat's title, and with it the other chat's letter: its words are this
+    # chat's to keep, its letter is not.
+    carried = source in CARRIED_SOURCES
+    named = "" if cleared else bare(current)
+    inherited = current if (cleared or carried) else ""
     if named == PLACEHOLDER:
         named = ""  # "<letter>: New Chat" holds the place of a title; it is not one
     loose = named
@@ -1167,16 +1301,16 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
         loose = clean_title(spec.stored_title(data, chat.env))
     parent = _text(spec.parent_id(data, chat.env)) or str(note.get("parent") or "")
     answer = chat.registry("register", title=loose, parent=parent)
-    note = _apply(
-        chat,
-        answer,
-        dict(note, inherited=inherited, title=loose or note.get("title", ""), parent=parent),
-    )
+    start = dict(note, inherited=inherited, title=loose or note.get("title", ""), parent=parent)
+    if inherited:
+        start["seen"] = inherited  # the name the chat started with is not a rename
+    note = _apply(chat, answer, start)
     if note["state"] == "failed":
         chat.write(note)
         out.emit(
             "start",
-            context="No Operator letter yet (%s).  The next prompt tries again." % note["error"],
+            context="No Operator letter yet (%s).  "
+            "A later prompt tries again, at most every ten minutes." % note["error"],
         )
         return 0
     if note["state"] == "mismatch":
@@ -1188,13 +1322,14 @@ def on_start(chat: Chat, data: Mapping[str, Any], out: Out, home: str) -> int:
     label = note["label"]
     text = loose
     if named:
-        # With the letters this chat holds in hand, only those come off its title: an acronym stays.
-        text = bare(current, held(note, answer.get("previous")))
+        # With the letters this chat holds in hand, only those come off its title: an acronym stays.  A carried
+        # title is the other chat's, and its letter is not one this chat holds, so the letter-shaped prefix goes.
+        text = named if carried else bare(current, held(note, answer.get("previous")))
         if text == PLACEHOLDER:
             text = ""
-        if text != loose:
-            chat.registry("title", title=text)
         note["title"] = text
+        if text != loose:
+            _push(chat, note, "title", text)
     placeholder = compose(label, "")
     note["titled"] = bool(text)
     note["placeholder"] = placeholder
@@ -1236,7 +1371,8 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     state = note.get("state")
     if state in ("mismatch", "closed"):
         return 0
-    current = spec.current_title(data, chat.env)
+    current = tidy(spec.current_title(data, chat.env))
+    announce = False  # the model has not been told this letter yet
     if state != "open" or not note.get("label"):  # a note that says open with no letter is not one to trust
         if state == "failed" and chat.now - float(note.get("failed_at") or 0) < RETRY_SECONDS:
             return 0
@@ -1249,6 +1385,7 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
         if note["state"] != "open":
             chat.write(note)
             return 0
+        announce = True  # a start that found no Operator now has one: the letter is news to the model
     title = None
     answer: dict[str, Any] = {}
     text = "" if note.get("titled") else _first_title(note, current, data.get("prompt"))
@@ -1259,28 +1396,32 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
             title=text,
             placeholder=note.get("placeholder") or compose(note["label"], ""),
         )
-        answer = chat.registry("title", title=text)
-        note["touched_at"] = chat.now
+        answer = _push(chat, note, "title", text)
     else:
         words, show = _renamed(note, current)
         if words or show:
             note["seen"] = current  # one try for each name the platform shows, never one for every prompt
             if words:
                 note["title"] = words
-                answer = chat.registry("title", title=words)
+                answer = _push(chat, note, "title", words)
             title = show or None
-            note["touched_at"] = chat.now
+        elif note.get("unsent"):
+            answer = _push(chat, note, "title", str(note["unsent"]))  # an earlier send failed
         elif chat.now - float(note.get("touched_at") or 0) >= TOUCH_SECONDS:
-            answer = chat.registry("touch")
-            note["touched_at"] = chat.now
-    if answer.get("retired"):
-        # The letter was retired while this chat was open: check with the Operator again, in case it needs a new one.
-        words = str(note.get("title") or "") or bare(current, held(note)) or PLACEHOLDER
+            answer = _push(chat, note, "touch")
+    if _gone(answer):
+        # The Operator has no registration for this chat any more (its letter was retired, or the registry was
+        # restored from an older copy): check with it again, in case it needs a new one.
+        words = str(note.get("title") or "") or bare(current, held(note))
+        if words == PLACEHOLDER:
+            words = ""
         parent = str(note.get("parent") or "")
         note = _apply(chat, chat.registry("register", title=words, parent=parent), note)
         if note["state"] == "open":
-            note.update(titled=True, title=words, placeholder=compose(note["label"], ""))
+            note.pop("unsent", None)
+            note.update(titled=bool(words), title=words, placeholder=compose(note["label"], ""))
             title = compose(note["label"], words)
+            announce = True  # the letter may have changed
         else:
             title = bare(current, held(note)) if current != bare(current, held(note)) else None
     shown = None
@@ -1289,8 +1430,13 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     else:
         _retry_pending(chat, note, current, data)
     chat.write(note)
-    if shown and shown != current:
-        out.emit("prompt", title=shown, label=str(note.get("label") or ""))
+    if announce or (shown and shown != current):
+        out.emit(
+            "prompt",
+            context=reminder(spec, note) if announce else "",
+            title=shown,
+            label=str(note.get("label") or ""),
+        )
     return 0
 
 
@@ -1299,14 +1445,14 @@ def on_rename(chat: Chat, data: Mapping[str, Any], out: Out) -> int:
     note = chat.read()
     if note.get("state") != "open":
         return 0
-    current = chat.spec.current_title(data, chat.env)
+    current = tidy(chat.spec.current_title(data, chat.env))
     words, show = _renamed(note, current)
     if not (words or show):
         return 0
     note["seen"] = current
     if words:
         note["title"] = words
-        chat.registry("title", title=words)
+        _push(chat, note, "title", words)  # a failed send is kept in the note for a later prompt
     shown = present(chat, note, show, current, data, "rename") if show else None
     chat.write(note)
     if shown:
@@ -1329,8 +1475,8 @@ def on_end(chat: Chat, data: Mapping[str, Any]) -> int:
     )
     if (closing is None or reason in closing) and note.get("state") == "open":
         answer = chat.registry("close")
-        if answer.get("closed") or answer.get("retired"):
-            note["state"] = "closed"
+        if answer.get("closed") or _gone(answer):
+            note["state"] = "closed"  # a registration the Operator no longer has needs no closing
     chat.write(note)
     return 0
 
@@ -1368,8 +1514,31 @@ def hook(
     transport: Transport | None = None,
     location_flag: str = "",
     remote_flag: str = "",
+    stderr: TextIO | None = None,
 ) -> int:
     """Run one hook event for `spec`.  Always 0: whatever goes wrong is a line of context, or nothing."""
+    try:
+        return _run_hook(spec, env, stdin, stdout, runner, now, platform, transport, location_flag, remote_flag)
+    except Exception as exc:  # noqa: BLE001 - the hook never blocks a chat, whatever an adapter or the host does
+        try:
+            (stderr or sys.stderr).write("platform-letter hook: %s\n" % type(exc).__name__)
+        except (OSError, ValueError):
+            pass
+        return 0
+
+
+def _run_hook(
+    spec: PlatformSpec,
+    env: Mapping[str, str],
+    stdin: TextIO,
+    stdout: TextIO,
+    runner: Runner,
+    now: float | None,
+    platform: str,
+    transport: Transport | None,
+    location_flag: str,
+    remote_flag: str,
+) -> int:
     data = read_hook_input(stdin)
     event = canonical_event(spec, data)
     if not event or not in_scope(spec, env, data):
@@ -1482,6 +1651,90 @@ def installed_command(entry: object, platform: str) -> list[str] | None:
     return None
 
 
+# A hook entry is often a group (Claude Code and Codex: a matcher and a list of hooks), and the group can hold hooks
+# that are not ours, under a matcher that is not ours.  The installer therefore works on this platform's own command
+# object (the dict that holds the command string) and leaves the rest of the group as it finds it.
+_GONE = object()
+
+
+def _is_ours(node: dict[str, Any], platform: str) -> bool:
+    """The dict holds this platform's command as a string, or in a list of strings, of its own."""
+    return any(
+        isinstance(s, str) and installed_command(s, platform)
+        for v in node.values()
+        for s in (v if isinstance(v, list) else [v])
+    )
+
+
+def _command_objects(node: Any, platform: str) -> list[dict[str, Any]]:
+    """The dicts in a hook entry that hold this platform's command string directly (the entry itself, when flat)."""
+    found: list[dict[str, Any]] = []
+    if isinstance(node, dict):
+        if _is_ours(node, platform):
+            found.append(node)
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                found += _command_objects(value, platform)
+    elif isinstance(node, list):
+        for item in node:
+            found += _command_objects(item, platform)
+    return found
+
+
+def _strip(node: Any, platform: str) -> Any:
+    """A copy of `node` without this platform's command objects.  A group that loses its last hook goes with it
+    (`_GONE`), and a group that keeps another tool's hook keeps its matcher and that hook."""
+    if isinstance(node, list):
+        return [k for k in (_strip(item, platform) for item in node) if k is not _GONE]
+    if not isinstance(node, dict):
+        return node
+    if _is_ours(node, platform):
+        return _GONE
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if isinstance(value, (dict, list)):
+            kept = _strip(value, platform)
+            if kept is _GONE or (isinstance(value, list) and value and not kept):
+                return _GONE
+            out[key] = kept
+        else:
+            out[key] = value
+    return out
+
+
+def _renew(node: Any, platform: str, fresh: dict[str, Any], used: list[bool]) -> Any:
+    """A copy of `node` with the first command object of this platform (in document order, across the entries sharing
+    `used`) replaced by `fresh` where it stands, and every later one taken out like `_strip` does."""
+    if isinstance(node, list):
+        return [k for k in (_renew(item, platform, fresh, used) for item in node) if k is not _GONE]
+    if not isinstance(node, dict):
+        return node
+    if _is_ours(node, platform):
+        if used[0]:
+            return _GONE
+        used[0] = True
+        return copy.deepcopy(fresh)
+    out: dict[str, Any] = {}
+    for key, value in node.items():
+        if isinstance(value, (dict, list)):
+            kept = _renew(value, platform, fresh, used)
+            if kept is _GONE or (isinstance(value, list) and value and not kept):
+                return _GONE
+            out[key] = kept
+        else:
+            out[key] = value
+    return out
+
+
+def _vacant(node: Any) -> bool:
+    """True for a document that holds nothing but empty objects and lists: the file has nothing left worth keeping."""
+    if isinstance(node, dict):
+        return all(_vacant(v) for v in node.values())
+    if isinstance(node, list):
+        return all(_vacant(v) for v in node)
+    return False
+
+
 def hooks_key(doc: dict[str, Any]) -> dict[str, Any]:
     """Where Claude Code and Codex style files keep their events: the top-level "hooks" object."""
     hooks = doc.get("hooks")
@@ -1545,15 +1798,54 @@ class InstallOptions:
     remove: bool = False
 
 
-def _write_private(path: str, data: bytes, mode: int) -> None:
+def _write_private(path: str, data: bytes, mode: int, *, exclusive: bool = False) -> None:
     """Write a file that may hold secrets: created 0600, flushed and fsynced, then given `mode`; nothing is ever
-    readable by others while it is written."""
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    readable by others while it is written.  With `exclusive` an existing file is an error (FileExistsError), never
+    overwritten."""
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_EXCL if exclusive else os.O_TRUNC)
+    fd = os.open(path, flags, 0o600)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
         fh.flush()
         os.fsync(fh.fileno())
     os.chmod(path, mode)
+
+
+def _backup(path: str) -> str:
+    """Copy `path` to `<path>.bak-letter-<UTC stamp>` (0600) and return the new name.  The stamp has microseconds and
+    a name that is taken gets a counter, so two rewrites in the same moment (an install, then a remove) never share a
+    backup: the first one holds the file as the owner left it."""
+    with open(path, "rb") as src:
+        data = src.read()
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    for n in range(1000):
+        name = "%s.bak-letter-%s%s" % (path, stamp, "-%d" % n if n else "")
+        try:
+            _write_private(name, data, 0o600, exclusive=True)
+        except FileExistsError:
+            continue
+        return name
+    raise OSError("no free backup name for %s" % path)
+
+
+def _plan_event(
+    installer: JsonHookInstaller,
+    events: Mapping[str, Any],
+    ev: str,
+    timeout: int,
+    command: str,
+    platform: str,
+    remove: bool,
+) -> tuple[list[Any], list[Any]]:
+    """(the entries `ev` holds after the install or the remove, the entries it holds now)."""
+    entries = list(events.get(ev) or [])
+    if remove:
+        return _strip(entries, platform), entries
+    wanted = installer.build(command, timeout, ev)
+    if not any(installed_command(e, platform) for e in entries):
+        return [*entries, wanted], entries
+    fresh = next(iter(_command_objects(wanted, platform)), wanted)
+    return _renew(entries, platform, fresh, [False]), entries
 
 
 def install_json_hooks(
@@ -1563,9 +1855,12 @@ def install_json_hooks(
 
     It is idempotent: an entry that is already current is left where it is, an outdated one is replaced in place,
     and a missing one is appended, so running it twice changes nothing and no other hook is ever removed or
-    reordered.  A file it rewrites is backed up first (`<file>.bak-letter-<UTC stamp>`, 0600) and keeps its mode.  A
-    file that is not the shape the adapter's `locate` expects is refused, never edited.  The location and registry
-    host go into the hook command as flags; running it again without them keeps the ones already installed."""
+    reordered.  Only this platform's own command is touched: a group that also holds another tool's hook
+    keeps its matcher and that hook, and a group is dropped only when it has no hook left.  A file it
+    rewrites is backed up first (`<file>.bak-letter-<UTC stamp>`, 0600, a name no earlier backup has) and keeps its
+    mode.  A file that is not the shape the adapter's `locate` expects is refused, never edited.  The
+    location and registry host go into the hook command as flags; running it again without them keeps the ones
+    already installed."""
     home = str(env.get("HOME") or os.path.expanduser("~"))
     path = installer.path if os.path.isabs(installer.path) else os.path.join(home, installer.path)
     if opts.remote and not DEST_RE.fullmatch(opts.remote):
@@ -1600,39 +1895,28 @@ def install_json_hooks(
         for ev in installer.events
     }
     if opts.check:
-        current = {
-            ev: any(e == installer.build(command, t, ev) for e in events.get(ev) or [])
-            for ev, t in installer.events.items()
-        }
+        current = {}
+        for ev, timeout in installer.events.items():
+            new, entries = _plan_event(installer, events, ev, timeout, command, platform, False)
+            current[ev] = have[ev] and new == entries  # an install would change nothing
         answer = {"platform": platform, "path": path, "installed": have, "current": current}
         return _emit(stdout, answer, 0 if all(have.values()) else 1)
     changed = []
     for ev, timeout in installer.events.items():
-        entries = list(events.get(ev) or [])
-        wanted = installer.build(command, timeout, ev)
-        mine = [i for i, e in enumerate(entries) if installed_command(e, platform)]
-        if opts.remove:
-            new = [e for i, e in enumerate(entries) if i not in mine]
-        elif mine:
-            new = [e for i, e in enumerate(entries) if i not in mine[1:]]
-            new[mine[0]] = wanted
-        else:
-            new = [*entries, wanted]
+        new, entries = _plan_event(installer, events, ev, timeout, command, platform, opts.remove)
         if new != entries:
             changed.append(ev)
         if new:
             events[ev] = new
         else:
             events.pop(ev, None)
-    drop = installer.whole_file and opts.remove and not any(events.get(e) for e in installer.events)
+    drop = installer.whole_file and opts.remove and _vacant(doc)
     if not changed:
         return _emit(stdout, {"platform": platform, "changed": [], "path": path}, 0)
     backup = ""
     if existed:
         file_mode = os.stat(path).st_mode & 0o777
-        backup = "%s.bak-letter-%s" % (path, datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"))
-        with open(path, "rb") as src:
-            _write_private(backup, src.read(), 0o600)
+        backup = _backup(path)
     else:
         file_mode = 0o600
         os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
@@ -1746,6 +2030,7 @@ def main(
                 transport=transport,
                 location_flag=flags.get("location", ""),
                 remote_flag=flags.get("remote", ""),
+                stderr=stderr,
             )
         except Exception as exc:  # noqa: BLE001 - the hook never blocks a chat
             stderr.write("platform-letter hook: %s\n" % type(exc).__name__)

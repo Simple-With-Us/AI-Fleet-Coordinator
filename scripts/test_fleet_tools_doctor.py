@@ -397,12 +397,24 @@ class SeatAndMcpTests(unittest.TestCase):
         ):
             self.assertFalse(doctor.is_shipped(path), path)
 
-    def test_the_same_six_tools_on_both_hosts(self):
+    def test_the_same_seven_tools_on_both_hosts(self):
         self.assertEqual(
             doctor.FLEET_TOOLS,
-            ("simple-chat", "simple-notes", "simple-board", "recall", "lane", "fleet-mode"),
+            (
+                "simple-chat",
+                "simple-notes",
+                "simple-board",
+                "recall",
+                "lane",
+                "fleet-mode",
+                "platform-letter",
+            ),
         )
         self.assertTrue(set(doctor.FLEET_TOOLS) <= set(doctor.COMMANDS))
+        # AFC-564: the Mac links platform-letter only when install.sh is rerun, and the server hooks depend on it, so
+        # both hosts check it.
+        self.assertIn(("platform-letter", "platform-letter"), doctor.MAC_SIMPLE_TOOLS)
+        self.assertEqual(doctor.SERVER_WRAPPERS["platform-letter"], "scripts/platform-letter")
 
     def test_commands_accept_the_macs_apps_folder_but_not_a_missing_tool(self):
         apps = self.home / "apps"
