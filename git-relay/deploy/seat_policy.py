@@ -45,6 +45,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -65,6 +66,8 @@ SECRETS_PATH_VAR = "GIT_RELAY_SECRETS_PATH"
 VERIFY_REPO = "Simple-With-Us/AI-Fleet-Coordinator"
 # The unit environment the inner check needs, copied from the running unit (never a secret).
 UNIT_ENV = ("PATH", "INFISICAL_FLEET_OPS_PROJECT_ID", "INFISICAL_ENVIRONMENT")
+# One EnvironmentFiles entry as `systemctl show` prints it:  "<path> (ignore_errors=no)".
+ENV_FILE = re.compile(r"(\S+) \(ignore_errors=(?:yes|no)\)")
 TOP_KEYS = {"//", "profiles", "seats"}
 PROFILE_KEYS = {"//", "actions", "mint_permissions", "repos"}
 SEAT_KEYS = {"identity", "app_slug", "profile"}
@@ -213,7 +216,8 @@ def read_unit(name: str, show=None, cat=None) -> Unit:
         if key == "WorkingDirectory":
             relay = value.strip()
         elif key == "EnvironmentFiles" and value.strip():
-            files.append(value.split(" (")[0].strip())
+            # One line per file or several space-joined on one line:  count every path.
+            files.extend(ENV_FILE.findall(value))
         elif key == "Environment":
             env.update(item.split("=", 1) for item in value.split() if "=" in item)
     tokens = []

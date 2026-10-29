@@ -8,7 +8,9 @@ some repository use a synthetic one.
 """
 
 import importlib.util
+import inspect
 import json
+import os
 import re
 import stat
 import sys
@@ -161,6 +163,19 @@ class SeatPolicyFile(unittest.TestCase):
         self.assertEqual(echo["mint_permissions"], fleet["mint_permissions"])
         self.assertEqual(echo["repos"], DOC["profiles"]["echo"]["repos"])
         self.assertLess(set(echo["repos"]), set(fleet["repos"]))
+        # Only Echo is narrowed:  every other seat carries the fleet set exactly.
+        for slug, cfg in SEATS.items():
+            if slug != "swu-echo":
+                self.assertEqual(cfg["repos"], fleet["repos"], slug)
+                self.assertEqual(cfg["actions"], fleet["actions"], slug)
+                self.assertEqual(cfg["mint_permissions"], fleet["mint_permissions"], slug)
+
+    def test_the_reviewed_scope_is_pinned(self):
+        # The rendered policy's digest, pinned here apart from the file:  any change to a
+        # seat's repositories, actions or permission ceiling fails until this line is edited
+        # too, so a widening can never ride in on the policy file alone.  When a policy
+        # change is meant, run `seat_policy.py install` for the new digest and update it here.
+        self.assertEqual(seat_policy.digest(SEATS), "07bce10edb33ccba")
 
     def test_render_refuses_a_malformed_file(self):
         good = json.loads(json.dumps(DOC))
@@ -212,6 +227,25 @@ class SeatPolicyFile(unittest.TestCase):
 
         seat_policy.require_root_owned([target], lstat=all_root)
 
+    def test_the_root_guard_reads_links_with_os_lstat(self):
+        # The default must be os.lstat:  os.stat would follow a symlink to its target.
+        default = inspect.signature(seat_policy.require_root_owned).parameters["lstat"].default
+        self.assertIs(default, os.lstat)
+        with tempfile.TemporaryDirectory() as folder:
+            real = Path(folder, "real.py")
+            real.write_text("# a file\n", encoding="utf-8")
+            link = Path(folder, "seat_policy.py")
+            link.symlink_to(real)
+
+            def root_owned_but_real_mode(path):
+                # Ownership faked to root so only the real os.lstat mode decides.
+                if Path(path) == link:
+                    return fake_stat(0, os.lstat(path).st_mode)
+                return fake_stat(0, stat.S_IFDIR | 0o755)
+
+            with self.assertRaisesRegex(SystemExit, "root-owned"):
+                seat_policy.require_root_owned([link], lstat=root_owned_but_real_mode)
+
     def test_the_unit_is_the_only_deployment_source(self):
         show = "\n".join(
             [
@@ -236,6 +270,14 @@ class SeatPolicyFile(unittest.TestCase):
             ("EnvironmentFiles=/tmp/fixture/relay/relay.env (ignore_errors=no)", cat),
             (show, "[Service]\n"),
             (show + "\nEnvironmentFiles=/tmp/fixture/relay/second.env (ignore_errors=no)", cat),
+            # `systemctl show` may print several EnvironmentFiles space-joined on one line.
+            (
+                show.replace(
+                    "relay.env (ignore_errors=no)",
+                    "relay.env (ignore_errors=no) /tmp/fixture/relay/second.env (ignore_errors=yes)",
+                ),
+                cat,
+            ),
         ):
             with self.assertRaises(SystemExit):
                 seat_policy.read_unit("relay.service", show=broken_show, cat=broken_cat)
