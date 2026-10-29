@@ -182,8 +182,11 @@ class Unit:
 
     @property
     def health(self) -> str:
-        host = self.environment.get("GIT_RELAY_HOST", "127.0.0.1")
-        port = self.environment.get("GIT_RELAY_PORT", "8471")
+        """The relay's health URL, from the bind address the unit sets;  no assumed default."""
+        host = self.environment.get("GIT_RELAY_HOST", "").strip()
+        port = self.environment.get("GIT_RELAY_PORT", "").strip()
+        if not host or not port:
+            raise SystemExit(f"{self.name} sets no GIT_RELAY_HOST or GIT_RELAY_PORT;  no health URL")
         return f"http://{host}:{port}/healthz"
 
 
@@ -337,6 +340,7 @@ def _restore(unit: Unit, wait: int, before: str, backup: str) -> int:
 def install(args, unit: Unit) -> int:
     seats = render(load(args.policy))
     validate_with(unit.relay, seats)
+    _ = unit.health  # refuse now, before anything is written, if health cannot be checked
     lines, index, current = _read_config(unit.config)
     report = diff(current, seats)
     print("\n".join(report))

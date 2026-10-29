@@ -180,7 +180,7 @@ class SeatPolicyFile(unittest.TestCase):
                 seat_policy.render(doc)
 
     def test_root_refuses_a_copy_another_account_can_write(self):
-        target = Path("/deploy/seat_policy.py")
+        target = Path("/tmp/fixture/deploy/seat_policy.py")
         root_dir = fake_stat(0, stat.S_IFDIR | 0o755)
         cases = {
             "a file another account owns": fake_stat(1000, stat.S_IFREG | 0o644),
@@ -215,21 +215,25 @@ class SeatPolicyFile(unittest.TestCase):
     def test_the_unit_is_the_only_deployment_source(self):
         show = "\n".join(
             [
-                "WorkingDirectory=/srv/relay/code",
-                "EnvironmentFiles=/srv/relay/relay.env (ignore_errors=no)",
-                "Environment=PATH=/usr/bin GIT_RELAY_HOST=127.0.0.2 GIT_RELAY_PORT=9000",
+                "WorkingDirectory=/tmp/fixture/relay/code",
+                "EnvironmentFiles=/tmp/fixture/relay/relay.env (ignore_errors=no)",
+                "Environment=PATH=/usr/bin GIT_RELAY_HOST=localhost GIT_RELAY_PORT=18080",
             ]
         )
-        cat = "[Service]\nLoadCredential=other-token:/srv/other\nLoadCredential=git-relay-apps-token:/srv/apps\n"
+        cat = "[Service]\nLoadCredential=other-token:/tmp/fixture/other-token\nLoadCredential=git-relay-apps-token:/tmp/fixture/apps-token\n"
         unit = seat_policy.read_unit("relay.service", show=show, cat=cat)
-        self.assertEqual(unit.relay, "/srv/relay/code")
-        self.assertEqual(unit.config, "/srv/relay/relay.env")
-        self.assertEqual(unit.apps_token, "/srv/apps")
-        self.assertEqual(unit.health, "http://127.0.0.2:9000/healthz")
+        self.assertEqual(unit.relay, "/tmp/fixture/relay/code")
+        self.assertEqual(unit.config, "/tmp/fixture/relay/relay.env")
+        self.assertEqual(unit.apps_token, "/tmp/fixture/apps-token")
+        self.assertEqual(unit.health, "http://localhost:18080/healthz")
+        # No assumed bind address:  a unit that sets none cannot be health-checked.
+        no_bind = seat_policy.read_unit("relay.service", show=show.split(" GIT_RELAY_HOST")[0], cat=cat)
+        with self.assertRaisesRegex(SystemExit, "no health URL"):
+            _ = no_bind.health
         for broken_show, broken_cat in (
-            ("EnvironmentFiles=/srv/relay/relay.env (ignore_errors=no)", cat),
+            ("EnvironmentFiles=/tmp/fixture/relay/relay.env (ignore_errors=no)", cat),
             (show, "[Service]\n"),
-            (show + "\nEnvironmentFiles=/srv/second.env (ignore_errors=no)", cat),
+            (show + "\nEnvironmentFiles=/tmp/fixture/relay/second.env (ignore_errors=no)", cat),
         ):
             with self.assertRaises(SystemExit):
                 seat_policy.read_unit("relay.service", show=broken_show, cat=broken_cat)
