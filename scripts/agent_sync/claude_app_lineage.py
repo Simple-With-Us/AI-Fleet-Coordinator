@@ -216,7 +216,9 @@ def lookup(
         record, unreadable = _record_for_cli_id(root, cli_session_id)
         if record is None:
             return "", UNREADABLE if unreadable else NO_RECORD
-        host_session_id = ""  # the app id named another chat's record, so it says nothing about this one
+        host_session_id = (
+            ""  # the app id named another chat's record, so it says nothing about this one
+        )
     spawned = record.get("spawnedFrom")
     if not spawned or not spawned["sessionId"]:
         return "", NOT_STARTED

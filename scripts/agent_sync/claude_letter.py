@@ -301,7 +301,9 @@ def _secret_like(token: str) -> bool:
     if secretscan.scan(token):
         return True
     run = token.strip(".,;:()[]{}\"'`")
-    return len(run) >= SECRET_RUN and any(c.isdigit() for c in run) and any(c.isalpha() for c in run)
+    return (
+        len(run) >= SECRET_RUN and any(c.isdigit() for c in run) and any(c.isalpha() for c in run)
+    )
 
 
 def _without_secrets(line: str) -> str:
@@ -326,7 +328,9 @@ def title_from_prompt(prompt: object) -> str:
     for number, line in enumerate(lines):
         before = lines[number - 1] if number else ""
         after = lines[number + 1] if number + 1 < len(lines) else ""
-        if any(secretscan.scan(joined) for joined in (line, before + " " + line, line + " " + after)):
+        if any(
+            secretscan.scan(joined) for joined in (line, before + " " + line, line + " " + after)
+        ):
             continue  # what is left still reads as a secret, alone or across a line break
         words = []
         for scanned, match in enumerate(WORD.finditer(line)):
@@ -630,7 +634,9 @@ def registry_main(
     parser.add_argument("--source", default=SOURCE)
     parser.add_argument("--parent-session-id", default="")
     parser.add_argument("--host-session-id", default="")
-    parser.add_argument("--after-clear", action="store_true")  # the app's record may not hold this session UUID yet
+    parser.add_argument(
+        "--after-clear", action="store_true"
+    )  # the app's record may not hold this session UUID yet
     try:
         with io.StringIO() as sink:
             from contextlib import redirect_stderr, redirect_stdout
@@ -1017,7 +1023,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
                     note["title"] = cleaned
                     note.pop("rename_failed_at", None)
                     note.pop("rename_failed_for", None)
-                    note.pop("title_unsent", None)  # this title replaces the one that never reached the Operator
+                    note.pop(
+                        "title_unsent", None
+                    )  # this title replaces the one that never reached the Operator
                     note.pop("title_failed_at", None)
                     note["touched_at"] = chat.now
     # A title the Operator never took (the first one, when the registry did not answer) is sent again after the wait.
@@ -1059,7 +1067,12 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
             title = bare(current, held) if held and current.startswith("%s: " % held) else None
     chat.write(note)
     if (title and title != current) or context:
-        _hook_out(stdout, "UserPromptSubmit", context=context, title=title if title and title != current else None)
+        _hook_out(
+            stdout,
+            "UserPromptSubmit",
+            context=context,
+            title=title if title and title != current else None,
+        )
     return 0
 
 

@@ -637,27 +637,64 @@ class RegistryTest(unittest.TestCase):
 
     def _register(self, native, platform="claude", **kw):
         return R.register_session(
-            self.db, platform=platform, verified_host="mac", profile_scope="default", native_session_id=native,
-            seat="CLAUDE", source="test", issuer=R.ISSUER_OPERATOR, **kw,
+            self.db,
+            platform=platform,
+            verified_host="mac",
+            profile_scope="default",
+            native_session_id=native,
+            seat="CLAUDE",
+            source="test",
+            issuer=R.ISSUER_OPERATOR,
+            **kw,
         )
 
     def test_a_caller_that_names_no_space_gets_the_platforms(self):
         # The Operator's own ask-and-answer path registers a chat with no space or pick.  A Claude chat it letters takes
         # a pair, in the main-chat order, so it is not left holding a single letter that no sweep frees.
-        self.assertEqual([self._register("thread-000%d" % i)["label"] for i in (1, 2)], ["AA", "BB"])
+        self.assertEqual(
+            [self._register("thread-000%d" % i)["label"] for i in (1, 2)], ["AA", "BB"]
+        )
         # every other platform is unchanged:  a single letter, the lowest free
-        self.assertEqual([self._register("mm-000%d" % i, platform="minimax")["label"] for i in (1, 2)], ["A", "B"])
+        self.assertEqual(
+            [self._register("mm-000%d" % i, platform="minimax")["label"] for i in (1, 2)],
+            ["A", "B"],
+        )
         # and a caller that does name a space is obeyed
         self.assertEqual(self._register("thread-0003", letter_space="single")["label"], "A")
-        self.assertEqual(self._register("thread-0004", letter_space="double", letter_pick="lowest")["label"], "AB")
+        self.assertEqual(
+            self._register("thread-0004", letter_space="double", letter_pick="lowest")["label"],
+            "AB",
+        )
 
     def test_the_register_command_defaults_by_platform(self):
-        base = ["register", "--db", self.db, "--location", "mac", "--scope", "default", "--seat", "CLAUDE", "--source", "test"]
+        base = [
+            "register",
+            "--db",
+            self.db,
+            "--location",
+            "mac",
+            "--scope",
+            "default",
+            "--seat",
+            "CLAUDE",
+            "--source",
+            "test",
+        ]
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             R.main(base + ["--platform", "claude", "--session-id", "thread-0001"])
             R.main(base + ["--platform", "codex", "--session-id", "thread-0002"])
-            R.main(base + ["--platform", "claude", "--session-id", "thread-0003", "--letter-space", "single"])
+            R.main(
+                base
+                + [
+                    "--platform",
+                    "claude",
+                    "--session-id",
+                    "thread-0003",
+                    "--letter-space",
+                    "single",
+                ]
+            )
         labels = [json.loads(line)["label"] for line in out.getvalue().splitlines()]
         self.assertEqual(labels, ["AA", "A", "A"])
 
