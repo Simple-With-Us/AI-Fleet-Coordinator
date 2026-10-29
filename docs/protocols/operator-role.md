@@ -218,10 +218,13 @@ Three concrete changes carry that:
     message travels by direct message to the seat that asked, with a link to the thread, because a
     conversation belongs in a direct message and not in a channel.  A message that pairs with no
     thread gets the Operator's question, and that goes by direct message too.  The direct message
-    is the fleet's exception, used only by the Operator, and it carries that question, the exchange
-    it opens, and the candidate list that tells the sender of a tagged address which sessions the
-    letter could mean (`scripts/agent_sync/operator_candidates.py`).  Jay's Oct 26 ruling is what
-    moved it:  the Operator may speak to anyone and converse with them, and it converses by direct
+    is the fleet's exception, used only by the Operator:  that question and the exchange it opens,
+    and, as a separate direct message, the candidate list that tells the sender of a tagged address
+    which sessions the letter could mean (`scripts/agent_sync/operator_candidates.py`).  That list
+    carries the fleet's internal session inventory, so it goes only to the pinned owner or to a user
+    the owner has allowed in `[operator] dm_allow`, and the gate that decides it is
+    `operator_dm_allowed()` in `scripts/agent_sync/daemon.py`.  Jay's Oct 26 ruling is what moved
+    it:  the Operator may speak to anyone and converse with them, and it converses by direct
     message rather than in a channel post, so that conversations do not get bloated.  The question
     itself is bounded:  it asks about a tag to wake, and it is not an opening for an open-ended
     conversation.
