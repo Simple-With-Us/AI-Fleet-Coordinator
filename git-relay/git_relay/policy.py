@@ -77,6 +77,13 @@ class SeatPolicy:
     # permission in SPECS.  They need the seat's own App, like APP_ACTIONS, but are not
     # wired into the HTTP dispatch: the server refuses them as registered-not-wired.
     WORKFLOW_ACTIONS = (
+        "wf_merge_queue_entry",
+        "wf_merge_queue_enqueue",
+        "wf_merge_queue_dequeue",
+        "wf_git_blob_get",
+        "wf_git_blob_create",
+        "wf_git_commit_get",
+        "wf_git_tree_get",
         "wf_commit_statuses",
         "wf_commit_status_create",
         "wf_review_thread_resolve",
@@ -107,6 +114,10 @@ class SeatPolicy:
         "wf_environment_get",
         "wf_file_rename",
         "wf_file_delete",
+        "wf_issue_parent",
+        "wf_issue_subissues",
+        "wf_issue_blocked_by",
+        "wf_issue_blocking",
         "wf_issue_list",
         "wf_issue_get",
         "wf_issue_create",
