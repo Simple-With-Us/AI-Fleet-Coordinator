@@ -2132,6 +2132,8 @@ def _linear_complete_comments(node: dict, deadline: float | None = None) -> None
                 f"linear: comment pageInfo for {node.get('identifier')} lost its cursor"
             )
         try:
+            # Singular issue(id:) includes native archives without an includeArchived argument.
+            # The archive-inclusive list queries above select ids; this direct lookup pages them.
             data = _linear_query(
                 'query { issue(id: "%s") { comments(first: %d, after: "%s", orderBy: createdAt) '
                 "{ nodes { body createdAt user { displayName } externalUser { displayName } } "

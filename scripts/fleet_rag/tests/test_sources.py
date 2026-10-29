@@ -1696,6 +1696,27 @@ class LinearSourceTests(unittest.TestCase):
         self.assertIn("Original archived evidence", doc.text_markdown)
         self.assertEqual(node["state"], {"name": "In Progress", "type": "started"})
 
+    def test_archived_comment_follow_on_page_uses_singular_lookup(self) -> None:
+        """issue(id:) reads native archives directly; paging retains all comment text."""
+        node = _linear_node(uid="uuid-archived", comments=[("Wise", "first page", "2026-10-20T00:00:00Z")])
+        node["archivedAt"] = "2026-10-21T00:00:00Z"
+        node["comments"]["pageInfo"] = {"hasNextPage": True, "endCursor": "first"}
+
+        def fake_query(query, timeout_s=0):
+            self.assertIn('issue(id: "uuid-archived")', query)
+            self.assertIn('after: "first"', query)
+            return {"issue": {"comments": {"nodes": [
+                {"body": "archived second page", "createdAt": "2026-10-20T01:00:00Z",
+                 "user": {"displayName": "Wise"}, "externalUser": None}],
+                "pageInfo": {"hasNextPage": False, "endCursor": "last"}}}}
+
+        with mock.patch.object(sources, "_linear_query", side_effect=fake_query):
+            sources._linear_complete_comments(node)
+        self.assertEqual([c["body"] for c in node["comments"]["nodes"]],
+                         ["first page", "archived second page"])
+        self.assertFalse(node.get("_linear_truncated", False))
+        self.assertEqual(node["archivedAt"], "2026-10-21T00:00:00Z")
+
     def test_archived_overflow_placeholder_lookup_is_inclusive(self) -> None:
         def fake_query(query, timeout_s=0):
             self.assertIn("includeArchived: true", query)
