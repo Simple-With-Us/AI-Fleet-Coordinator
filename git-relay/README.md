@@ -52,7 +52,7 @@ the owner's cutover decision.
 
 Only opening a PR is authored as the owner through the scoped PR-only token.  Edits, review
 replies, comments, merges, workflow dispatches, thread resolves and token mints run under each
-seat's OWN GitHub App with a relay-minted installation token - see the action catalog below.  Seats can never push;  no seat policy can exceed its GitHub credential.
+seat's OWN GitHub App with a relay-minted installation token - see the action catalog below.  Seats never get a raw token or a `git push`:  the file-write verbs (`wf_file_put`, `wf_files_put`) commit through the API, on a non-default branch only and never under `.github/workflows`;  no seat policy can exceed its GitHub credential.
 
 ## Scope and action catalog (owner direction 2026-10-21)
 
@@ -140,18 +140,25 @@ is a second login on Jet's bot and one bot has one App (Q7).  Seats share the `
 set.  `git_relay/tests/test_seat_policy_file.py` holds the file to the relay's SeatPolicy, the
 Worker's identity lists and each action's permission needs.
 
-On the relay host, as root:
+On the relay host, as root.  Root runs only a root-owned copy that only root can write, never
+the files in a checkout another account can change.  So copy the two files from the merged
+commit first, and check that the blob ids the script prints equal `git rev-parse
+<commit>:git-relay/deploy/seat_policy.py` and the same for `seat-policy.json`:
 
 ```
-python3 -I git-relay/deploy/seat_policy.py install            # validate with the deployed code, show the diff
-python3 -I git-relay/deploy/seat_policy.py install --apply    # back up, write, restart, check health (restores on failure)
-python3 -I git-relay/deploy/seat_policy.py verify-apps        # every seat's own App mints read-only and reads a repo
+install -d -m 0755 /opt/git-relay/deploy
+install -m 0644 git-relay/deploy/seat_policy.py git-relay/deploy/seat-policy.json /opt/git-relay/deploy/
+python3 -I /opt/git-relay/deploy/seat_policy.py install                          # validate with the deployed code, diff, digest
+python3 -I /opt/git-relay/deploy/seat_policy.py install --apply --expect DIGEST  # back up, write, restart, check health
+python3 -I /opt/git-relay/deploy/seat_policy.py verify-apps                      # every seat's own App mints read-only and reads
 ```
 
-`verify-apps` runs the deployed minter in a transient unit with the relay's own credential binding,
-so it reads the App keys exactly as the service does, and it never prints a token.  A policy entry
-does not make a seat usable alone:  the seat also needs its bearer, minted by the owner on the
-Admin page.
+`--apply` installs only the policy whose digest the dry run printed.  It restores the previous
+file when the restart fails, the relay is not healthy within 30 seconds, or the run is
+interrupted.  `verify-apps` runs the deployed minter in a transient unit with the relay's own
+credential binding and App-key folder, so it reads the App keys exactly as the service does, and
+it never prints a token.  A policy entry does not make a seat usable alone:  the seat also needs
+its bearer, minted by the owner on the Admin page.
 
 ## Outbound hygiene
 

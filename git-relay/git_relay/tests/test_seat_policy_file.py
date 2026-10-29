@@ -8,12 +8,15 @@ entry here, with its own App, unless the file says why not.
 
 import importlib.util
 import json
+import os
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
 from git_relay.app_tokens import MINT_PERMISSION_CEILING
 from git_relay.policy import SeatPolicy
+from git_relay.server import ACTION_REQUIRED_PERMISSIONS
 from git_relay.shared_bearer import SharedBearerVerifier
 from git_relay.tests.test_bot_compatibility import BOT_IDENTITIES
 from git_relay.workflow_verbs import SPECS
@@ -110,9 +113,14 @@ class SeatPolicyFile(unittest.TestCase):
             ceiling = cfg["mint_permissions"]
             self.assertTrue(set(ceiling) <= set(MINT_PERMISSION_CEILING))
             for action in cfg["actions"]:
-                if action not in SPECS:
-                    continue
-                for name, level in SPECS[action][0].items():
+                if action == "open_pr":
+                    continue  # the owner's PR-only token, never the seat's App
+                if action in SPECS:
+                    needs = SPECS[action][0]
+                else:
+                    self.assertIn(action, ACTION_REQUIRED_PERMISSIONS, f"{action} has no needs")
+                    needs = ACTION_REQUIRED_PERMISSIONS[action]
+                for name, level in needs.items():
                     need = f"{action} needs {name}:{level}"
                     self.assertIn(name, ceiling, need)
                     self.assertGreaterEqual(rank[ceiling[name]], rank[level], need)
@@ -145,11 +153,34 @@ class SeatPolicyFile(unittest.TestCase):
             (lambda d: d["seats"][0].update(profile="nope"), "unknown profile"),
             (lambda d: d["profiles"]["echo"].update(actions="echo"), "concrete profile"),
             (lambda d: d["seats"][0].pop("identity"), "identity, app_slug and profile"),
+            # A per-seat narrowing the renderer would drop must be refused, not ignored.
+            (lambda d: d["seats"][0].update(repos=["Simple-With-Us/CodeCaps"]), "unknown keys"),
+            (lambda d: d["profiles"]["fleet"].update(ceiling={}), "unknown keys"),
+            (lambda d: d.update(extra=1), "unknown keys"),
         ):
             doc = json.loads(json.dumps(good))
             mutate(doc)
             with self.assertRaisesRegex(seat_policy.PolicyFileError, message):
                 seat_policy.render(doc)
+
+    def test_root_refuses_a_copy_another_account_can_write(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder, "seat_policy.py")
+            path.write_text("# a copy\n", encoding="utf-8")
+            if os.geteuid() == 0:
+                os.chown(folder, 1, 1)
+            with self.assertRaisesRegex(SystemExit, "root-owned"):
+                seat_policy.require_root_owned([path])
+
+    def test_blob_id_and_digest(self):
+        with tempfile.TemporaryDirectory() as folder:
+            empty = Path(folder, "empty")
+            empty.write_bytes(b"")
+            # `git hash-object` of an empty file.
+            self.assertEqual(seat_policy.blob_id(empty), "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391")
+        self.assertRegex(seat_policy.digest(SEATS), r"^[0-9a-f]{16}$")
+        narrowed = {k: v for k, v in SEATS.items() if k != "swu-ag"}
+        self.assertNotEqual(seat_policy.digest(narrowed), seat_policy.digest(SEATS))
 
     def test_diff_names_seats_and_fields_only(self):
         old = {k: dict(v) for k, v in SEATS.items() if k != "swu-ag"}
