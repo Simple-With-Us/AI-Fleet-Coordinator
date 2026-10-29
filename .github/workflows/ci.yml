@@ -259,8 +259,8 @@ jobs:
       run: |
         cd scripts && python3 -m unittest test_sentence_gap_program -v
     # The FINAL owner sentence-gap policy (AFC-521):  every file that states the
-    # rule names the exceptions (the Claude Code Code tab and the MiniMax Code chat
-    # pane take the entity, and an Apple Note body takes the narrow no-break space),
+    # rule names the exception (the Claude Code Code tab and the MiniMax Code chat
+    # pane take the entity),
     # no live line prescribes the superseded 2026-10-22
     # GitHub-entity split, and the published note takes a real U+00A0 on GitHub too.
     - name: Sentence gap final policy tests

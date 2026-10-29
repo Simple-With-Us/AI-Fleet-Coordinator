@@ -15,8 +15,7 @@ whole thing is idempotent, which is the check that sees a prose double space tha
 grep over the body can see.  Third, that the two gap forms the program produces are the
 two the owner ruling of 2026-10-23 names:  a real U+00A0 plus a space with no flag, on
 every surface, and the `&nbsp;` entity plus a normal space with `--entity`, which is the
-form the two chat panes take.  (The body of an Apple Note takes the narrow no-break space
-plus a normal space, AFC-552; the note helper writes that one, not this program.)
+form the two chat panes take.
 """
 
 from __future__ import annotations

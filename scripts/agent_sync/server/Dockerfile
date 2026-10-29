@@ -35,6 +35,8 @@ WORKDIR /app
 # The entry script and the package must be siblings:  the script puts its own directory on sys.path.
 COPY scripts/simple-chat /app/scripts/simple-chat
 COPY scripts/agent_sync /app/scripts/agent_sync
+# The Operator's Linear project webhook (AFC-565) runs these two with the listener.
+COPY scripts/linear_project_linkifiers.py scripts/zulip_linkifiers.py /app/scripts/
 # The seat partition, read by the daemon at start (it refuses a seat of the Mac instance).
 COPY docs/protocols/agent-sync-partition.toml /app/docs/protocols/agent-sync-partition.toml
 # The seat registry, read by identity.strict_seat and seat_app (no secrets in it:  tags, bot emails, app names).

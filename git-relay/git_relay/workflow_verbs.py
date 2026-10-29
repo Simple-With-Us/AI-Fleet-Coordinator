@@ -78,6 +78,10 @@ SPECS = {
     "wf_repo_variable_create": ({"variables": "write"}, True),
     "wf_repo_variable_update": ({"variables": "write"}, True),
     "wf_repo_variable_delete": ({"variables": "write"}, True),
+    "wf_repo_tags": ({"contents": "read"}, False),
+    "wf_repo_languages": ({"metadata": "read"}, False),
+    "wf_git_tree_create": ({"contents": "write"}, True),
+    "wf_git_commit_create": ({"contents": "write"}, True),
     "wf_pr_list_page": ({"pull_requests": "read"}, False),
     "wf_compare_commits_page": ({"contents": "read"}, False),
     "wf_pr_reviews_page": ({"pull_requests": "read"}, False),
@@ -686,6 +690,55 @@ class WorkflowVerbs:
         result = getattr(self, action)(self.repo, args)
         return _validate_read(action, result) if action in _NEW_READS else result
 
+    @staticmethod
+    def _metadata_name(value, maximum):
+        if not isinstance(value, str) or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise RelayGitHubError(502, "repository metadata name unverifiable")
+        try:
+            length = len(value.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise RelayGitHubError(502, "repository metadata name unverifiable") from None
+        if not 1 <= length <= maximum:
+            raise RelayGitHubError(502, "repository metadata name unverifiable")
+        if find_secret(value) or re.search(
+            r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}", value
+        ):
+            raise Refused("credential-shaped repository metadata name refused")
+        return value
+
+    def wf_repo_tags(self, repo, args):
+        _only(args, ("repo", "per_page", "page"))
+        limit = _page(args)
+        page = _int(args, "page", 1, 1000) if "page" in args else 1
+        data = self._get(f"/repos/{repo}/tags?per_page={limit}&page={page}")
+        if not isinstance(data, list):
+            raise RelayGitHubError(502, "tag page unverifiable")
+        tags = []
+        for item in data[:limit]:
+            if (
+                not isinstance(item, dict)
+                or not isinstance(item.get("commit"), dict)
+                or not isinstance(item["commit"].get("sha"), str)
+                or not _SHA.fullmatch(item["commit"]["sha"])
+            ):
+                raise RelayGitHubError(502, "tag metadata unverifiable")
+            name = self._metadata_name(item.get("name"), 1024)
+            tags.append({"name": name, "sha": item["commit"]["sha"]})
+        return {"tags": tags, "page": page, "has_more": len(data) >= limit}
+
+    def wf_repo_languages(self, repo, args):
+        _only(args, ("repo",))
+        data = self._get(f"/repos/{repo}/languages")
+        if not isinstance(data, dict) or len(data) > 100:
+            raise RelayGitHubError(502, "language metadata unverifiable")
+        values = []
+        for name, count in data.items():
+            name = self._metadata_name(name, 100)
+            if type(count) is not int or not 0 <= count <= 9007199254740991:
+                raise RelayGitHubError(502, "language count unverifiable")
+            values.append({"name": name, "bytes": count})
+        return {"languages": sorted(values, key=lambda x: x["name"])}
+
     # Fixed issue endpoints only.  No assignee, label, milestone or admin expansion.
     @staticmethod
     def _issue_summary(data):
@@ -1023,9 +1076,9 @@ class WorkflowVerbs:
             not isinstance(data, dict)
             or "pull_request" in data
             or type(data.get("id")) is not int
-            or data["id"] < 1
+            or not 1 <= data["id"] <= 9007199254740991
             or type(data.get("number")) is not int
-            or data["number"] < 1
+            or not 1 <= data["number"] <= 9007199254740991
             or not isinstance(data.get("title"), str)
             or len(data["title"].encode("utf-8")) > 4096
             or data.get("state") not in ("open", "closed")
@@ -1049,6 +1102,10 @@ class WorkflowVerbs:
                 and not parsed.fragment
                 and _REPO.fullmatch(candidate)
             ):
+                if find_secret(candidate) or re.search(
+                    r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}", candidate
+                ):
+                    raise Refused("relation repository contains credential pattern")
                 bound = candidate
         return {**{k: data[k] for k in ("id", "number", "state")}, "title": title, "repo": bound}
 
@@ -4256,6 +4313,102 @@ class WorkflowVerbs:
     def wf_run_approve(self, repo, args):
         return self._run_post(repo, args, "approve")
 
+    def wf_git_tree_create(self, repo, args):
+        _only(args, ("repo", "base_tree", "files"))
+        base = _sha(args, "base_tree")
+        files = args.get("files")
+        if not isinstance(files, list) or not 1 <= len(files) <= 20:
+            raise Refused("invalid files")
+        entries, seen, total = [], set(), 0
+        for value in files:
+            if not isinstance(value, dict):
+                raise Refused("invalid file")
+            _only(value, ("path", "text", "mode"))
+            path = _path(value)
+            if find_secret(path):
+                raise Refused("credential-shaped file path refused")
+            mode = _enum(value, "mode", ("100644", "100755"))
+            text = value.get("text")
+            if (
+                _workflow_path(path)
+                or path in seen
+                or any(path.startswith(x + "/") or x.startswith(path + "/") for x in seen)
+                or not isinstance(text, str)
+                or find_secret(text)
+            ):
+                raise Refused("invalid file content or path")
+            try:
+                total += len(text.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise Refused("invalid file content or path") from None
+            if total > 40000:
+                raise Refused("file content budget exceeded")
+            seen.add(path)
+            entries.append({"path": path, "mode": mode, "type": "blob", "content": text})
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/git/trees",
+            {"base_tree": base, "tree": entries},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("sha"), str)
+            or not _SHA.fullmatch(result["sha"])
+            or result.get("truncated") is not False
+            or not isinstance(result.get("tree"), list)
+        ):
+            raise RelayGitHubError(502, "tree creation receipt unverifiable")
+        return {"tree": {"sha": result["sha"], "files": len(entries)}}
+
+    def wf_git_commit_create(self, repo, args):
+        _only(args, ("repo", "tree_sha", "parents", "message"))
+        tree = _sha(args, "tree_sha")
+        parents, message = args.get("parents"), args.get("message")
+        if (
+            not isinstance(parents, list)
+            or not 1 <= len(parents) <= 2
+            or any(not isinstance(x, str) or not _SHA.fullmatch(x) for x in parents)
+            or len(set(parents)) != len(parents)
+            or not isinstance(message, str)
+            or not message.strip()
+            or find_secret(message)
+        ):
+            raise Refused("invalid commit input")
+        try:
+            message_size = len(message.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise Refused("invalid commit input") from None
+        if message_size > 32768:
+            raise Refused("invalid commit input")
+        result = self.client._call(
+            "POST",
+            f"/repos/{repo}/git/commits",
+            {"tree": tree, "parents": parents, "message": message},
+            bearer=self.bearer,
+        )
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("sha"), str)
+            or not _SHA.fullmatch(result["sha"])
+            or not isinstance(result.get("tree"), dict)
+            or result["tree"].get("sha") != tree
+            or not isinstance(result.get("parents"), list)
+            or len(result["parents"]) != len(parents)
+            or any(
+                not isinstance(x, dict) or x.get("sha") != expected
+                for x, expected in zip(result["parents"], parents)
+            )
+        ):
+            raise RelayGitHubError(502, "commit creation receipt unverifiable")
+        return {
+            "commit": {
+                "sha": result["sha"],
+                "tree_sha": tree,
+                "parents": parents,
+            }
+        }
+
     def wf_git_blob_get(self, repo, args):
         _only(args, ("repo", "sha"))
         sha = _sha(args, "sha")
@@ -4292,9 +4445,14 @@ class WorkflowVerbs:
     def wf_git_blob_create(self, repo, args):
         _only(args, ("repo", "text"))
         text = args.get("text")
-        if not isinstance(text, str) or len(text.encode("utf-8")) > 40000 or find_secret(text):
+        if not isinstance(text, str) or find_secret(text):
             raise Refused("invalid blob text")
-        raw = text.encode("utf-8")
+        try:
+            raw = text.encode("utf-8")
+        except UnicodeEncodeError:
+            raise Refused("invalid blob text") from None
+        if len(raw) > 40000:
+            raise Refused("invalid blob text")
         sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
         result = self.client._call(
             "POST",

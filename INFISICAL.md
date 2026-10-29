@@ -73,6 +73,21 @@ Apple Notes requests from the server and cloud seats go to the Operator's notes 
 
 Each key is at least 32 random characters and is never printed, logged or written to a file.  The retired relay's knob `NOTES_RELAY_CONSUMER` (AFC-331) is no longer read by anything.
 
+## Linear project linkifiers (AFC-565)
+
+The Operator's Linear project webhook keeps Zulip and the repo linkifiers equal to Linear's projects (scripts/linear_project_linkifiers.py).  Its five secrets live in this project, `prod`, folder `/operator-linkifiers`, and are read only through its own scoped read-only service token, never from the environment.
+
+| Name | Kind | Who reads it |
+|---|---|---|
+| `ZULIP_OPERATOR_EMAIL` | env config | the Operator webhook (the realm-admin bot's email) |
+| `ZULIP_OPERATOR_API_KEY` | secret | the Operator webhook (upserts the realm linkifiers) |
+| `LINEAR_API_KEY` | secret | the Operator webhook (reads Linear projects) |
+| `LINEAR_WEBHOOK_SECRET` | secret | the Operator webhook (verifies the Linear-Signature) |
+| `GITHUB_TOKEN` | secret | the Operator webhook (opens the sync PR) |
+| `AFC_OPERATOR_LINKIFIERS_READ_TOKEN` | service token, read-only, scope prod:/operator-linkifiers | bound to the Operator container as `OPERATOR_LINKIFIERS_INFISICAL_TOKEN`; registered in the Fleet Reference sheet's Infisical Service Tokens tab |
+
+Each value is never printed, logged or written to a file.
+
 ## Zulip Outgoing Wake Tokens
 
 The existing server listener loads `ZULIP_OUTGOING_<CODE>_TOKEN` from prod `/zulip` at startup for each server seat.  `<CODE>` replaces hyphens in the seat tag with underscores.  These separate Zulip service tokens authenticate outgoing webhook requests; they are neither `ZULIP_<CODE>_API_KEY` nor the routine's bearer/HMAC key.  Missing tokens deny requests for that seat.
