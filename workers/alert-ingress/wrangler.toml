@@ -3,13 +3,21 @@ main = "src/index.js"
 compatibility_date = "2026-10-01"
 
 # The standing status message per topic, and each alertable thing's state.
-# The id is deliberately empty, not a placeholder-looking string: no namespace
-# is created until the deploy boundary for this Worker is decided (accepted
-# new runtime, vs. hosting on the existing Coolify app).  An empty id makes the
-# deploy fail loudly; a fake id would bind nothing and fail quietly.
+# This is the namespace the Worker has used since its first deployment, so
+# every record it wrote before the vendor cutover stays readable.
 [[kv_namespaces]]
 binding = "ALERT_STATE"
-id = ""
+id = "73264a997a34457da2d3bd45697a5f70"
+
+# One writer serializes state reads, transitions, inventory rendering and the
+# Zulip writes, so a standing message is never written twice.
+[[durable_objects.bindings]]
+name = "ALERT_WRITER"
+class_name = "AlertWriter"
+
+[[migrations]]
+tag = "alert-writer-v1"
+new_sqlite_classes = ["AlertWriter"]
 
 # The sweep that promotes incidents which stayed open past the wait window.
 [triggers]
