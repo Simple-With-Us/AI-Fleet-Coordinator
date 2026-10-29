@@ -157,7 +157,7 @@ def http_json(
     last: Exception | None = None
     for attempt in range(retries + 1):
         if before_attempt is not None:
-            before_attempt()
+            before_attempt(len(data) if data is not None else 0)
         req = urllib.request.Request(
             url,
             data=data,
@@ -596,10 +596,9 @@ class Qdrant:
         if write and not key:
             raise FleetRagError("QDRANT_API_KEY (write key) not available on this machine")
 
-        def check_storage():
+        def check_storage(size):
             if self.storage_guard is not None:
                 try:
-                    size = len(json.dumps(body).encode()) if body is not None else 0
                     self.storage_guard.check(size)
                 except StorageGuardError as exc:
                     raise FleetRagError(str(exc)) from None

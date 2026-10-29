@@ -51,6 +51,45 @@ class StorageGuardTests(unittest.TestCase):
     def test_oversize_refuses_without_probe(self):
         with self.assertRaises(StorageGuardError):self.guard().check(41)
         self.run.assert_not_called()
+    def test_request_cannot_exceed_write_allowance_even_with_larger_cap(self):
+        self.cfg['max_request_bytes'] = 1000
+        os.environ['FLEET_RAG_STORAGE_GUARD'] = json.dumps(self.cfg)
+        self.guard().check(50)
+        self.run.reset_mock()
+        for size in (51, -1, True, 1.5):
+            with self.subTest(size=size), self.assertRaises(StorageGuardError):
+                self.guard().check(size)
+        self.run.assert_not_called()
+
+    def test_remote_paths_require_canonical_spelling(self):
+        for path in ('/volume/', '/volume/../volume', '/volume/./qdrant', '//volume'):
+            for field in ('storage_path', 'mount'):
+                with self.subTest(field=field, path=path):
+                    with patch.dict(os.environ, {'FLEET_RAG_STORAGE_GUARD': json.dumps({**self.cfg, field:path})}):
+                        with self.assertRaises(StorageGuardError): self.guard()
+        self.run.assert_not_called()
+
+    def test_remote_alias_mismatch_does_not_resolve_on_client(self):
+        self.info['storage_path'] = '/remote-symlink/qdrant'
+        with patch('os.path.realpath', side_effect=AssertionError('must not resolve remote paths locally')):
+            with self.assertRaises(StorageGuardError): self.guard().check()
+
+    def test_guard_reuses_exact_serialized_request_length_on_retries(self):
+        q=core.Qdrant({'QDRANT_URL':'http://remote:6333','QDRANT_FLEET_COLLECTION':'fleet','QDRANT_API_KEY':'test'})
+        q.storage_guard = Mock()
+        body={'payload': 'é'}
+        expected = len(json.dumps(body).encode())
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.read.return_value = b'{}'
+        failure=core.urllib.error.HTTPError('http://remote',500,'retry',None,None)
+        with patch.object(core.json, 'dumps', wraps=json.dumps) as encode, patch.object(core.urllib.request, 'urlopen', side_effect=[failure,response]) as net, patch.object(core.time, 'sleep'):
+            q._call('/test', body=body, write=True)
+            self.assertEqual(encode.call_count, 1)
+            self.assertEqual(q.storage_guard.check.call_args_list, [((expected,),), ((expected,),)])
+            self.assertEqual(net.call_count, 2)
+
     def test_bad_policies_fail_closed(self):
         for key,val in [('reserve_bytes',0),('max_age_seconds',float('inf')),('probe_argv',[]),
                         ('write_allowance_bytes',True),('endpoint','http://different')]:

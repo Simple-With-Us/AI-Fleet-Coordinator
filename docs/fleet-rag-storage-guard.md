@@ -16,11 +16,18 @@ Policy fields:
 - `endpoint`, `collection`: exact client destination binding.
 - `storage_path`, `device`, `mount`: qualified service storage path on the actual
   destination host, not the client's disk or another mount with more space.
+  Configure canonical absolute POSIX paths exactly as returned by the host probe:
+  no symlink aliases, trailing slash (except `/`), `.` or `..` components. Noncanonical
+  spellings fail policy validation before any write. Resolve symlinks on the
+  storage host during qualification, never with the client machine's `realpath`.
+  A spelling mismatch stays a refusal rather than weakening the volume binding.
 - `reserve_bytes`: explicit operator-approved emergency headroom.
 - `write_allowance_bytes`: approved worst-case allowance for one request including
   WAL/index/compaction overhead, concurrent activity and probe-to-write delay.
 - `max_request_bytes`: maximum serialized JSON request covered by that allowance.
-  JSON bytes are a size cap, not an estimate of total storage amplification.
+  It cannot permit a request larger than `write_allowance_bytes`: the effective
+  request cap is the smaller of the two values. JSON bytes are a size cap, not an
+  estimate of total storage amplification.
 - `probe_argv`: trusted program argument array, no shell, returning fresh evidence.
 - `probe_timeout_seconds`, `max_age_seconds`: approved bounded probe timeout and
   allowed evidence age. No cached free-space measurement is used.

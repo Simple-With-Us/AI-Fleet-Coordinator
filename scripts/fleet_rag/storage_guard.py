@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import posixpath
 import selectors
 import signal
 import subprocess
@@ -103,8 +104,14 @@ class StorageGuard:
             for key in ("endpoint", "collection", "storage_path", "device", "mount"):
                 if not isinstance(getattr(guard, key), str) or not getattr(guard, key):
                     raise ValueError()
-            if not guard.storage_path.startswith("/") or not guard.mount.startswith("/"):
-                raise ValueError()
+            # These are remote-host paths. Never resolve them on the client.
+            for path in (guard.storage_path, guard.mount):
+                if (
+                    not path.startswith("/")
+                    or path.startswith("//")
+                    or posixpath.normpath(path) != path
+                ):
+                    raise ValueError()
             if not isinstance(guard.probe_argv, (list, tuple)) or not guard.probe_argv:
                 raise ValueError()
             if any(not isinstance(arg, str) or not arg for arg in guard.probe_argv):
@@ -118,7 +125,9 @@ class StorageGuard:
             ) from None
 
     def check(self, request_bytes: int = 0):
-        if request_bytes > self.max_request_bytes:
+        if type(request_bytes) is not int or request_bytes < 0 or request_bytes > min(
+            self.max_request_bytes, self.write_allowance_bytes
+        ):
             raise StorageGuardError("write request exceeds configured storage allowance")
         try:
             output = bounded_probe(self.probe_argv, self.probe_timeout_seconds)
