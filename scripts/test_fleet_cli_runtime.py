@@ -237,6 +237,13 @@ class ActualRuntime(unittest.TestCase):
         self.assertEqual(self.receipt["bundle_sha256"], self.bundle["bundle_sha256"])
         self.assertLessEqual(len(self.raw), self.receiver.MAX_BUNDLE_BYTES)
         self.assertLessEqual(len(self.bundle["files"]), self.receiver.MAX_FILES)
+        sender_spec = importlib.util.spec_from_file_location(
+            "fleet_cli_runtime_sender", ROOT / "scripts/fleet-cli-sync.py"
+        )
+        sender = importlib.util.module_from_spec(sender_spec)
+        sender_spec.loader.exec_module(sender)
+        self.assertEqual(sender.MAX_FILES, self.receiver.MAX_FILES)
+
         status = self.receiver.control(self.home, "status")
         self.assertEqual(status["status"], "ready")
         self.assertEqual(status["bundle_sha256"], self.bundle["bundle_sha256"])
