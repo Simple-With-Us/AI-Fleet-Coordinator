@@ -107,7 +107,10 @@ class Variables(unittest.TestCase):
 
         client = GitHubClient("synthetic", opener=lambda *a, **k: Response(b"{}"))
         self.assertEqual(
-            client._call("POST", "/repos/a/b/actions/variables", expected_status=201, allow_empty_object=True), {}
+            client._call(
+                "POST", "/repos/a/b/actions/variables", expected_status=201, allow_empty_object=True
+            ),
+            {},
         )
         with self.assertRaises(Refused):
             WorkflowVerbs._variable_receipt(
