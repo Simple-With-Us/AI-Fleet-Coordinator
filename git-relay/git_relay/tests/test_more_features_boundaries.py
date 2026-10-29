@@ -163,7 +163,7 @@ class PracticalPageRelayIngress(unittest.TestCase):
                 [pr, [], pr],
                 "pull_requests",
             ),
-            ("wf_labels_add", {"number": 2, "labels": ["hold"]}, [[label]], "issues"),
+            ("wf_labels_add", {"number": 2, "labels": ["hold"]}, [label, [label]], "issues"),
             (
                 "wf_label_update",
                 {

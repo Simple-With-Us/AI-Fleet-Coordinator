@@ -6,8 +6,19 @@ from git_relay.github_client import RelayGitHubError
 from git_relay.outcomes import OutcomeStore, key_for
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
 
-from .test_workflow_verbs import REPO, Client, Minter, Policy
+from .test_workflow_verbs import REPO, Minter, Policy
+from .test_workflow_verbs import Client as BaseClient
 from .test_workflow_wiring import TOKEN, relay
+
+
+class Client(BaseClient):
+    def _call(self, method, path, payload=None, bearer=None):
+        if method == "GET" and "/labels/" in path:
+            from urllib.parse import unquote
+
+            name = unquote(path.rsplit("/", 1)[1])
+            return {"id": 7 if name.casefold() == "hold" else 8, "name": name}
+        return super()._call(method, path, payload, bearer)
 
 
 class AddLabels(unittest.TestCase):
@@ -66,6 +77,8 @@ class AddLabels(unittest.TestCase):
     def test_real_unknown_reordered_case_changed_no_replay(self):
         class Lost(Client):
             def _call(self, method, path, payload=None, bearer=None):
+                if method == "GET":
+                    return super()._call(method, path, payload, bearer)
                 self.calls.append((method, path, payload, bearer))
                 raise RelayGitHubError(502, "lost")
 
@@ -112,3 +125,30 @@ class AddLabels(unittest.TestCase):
                         r.handle(TOKEN, "wf_labels_add", self.args(repo="example/x"))[0], 200
                     )
             self.assertEqual(len(c.calls), 2)
+
+    def test_unknown_label_or_changed_identity_does_not_succeed(self):
+        for pre in ({}, {"id": 0, "name": "hold"}, {"id": 7, "name": "other"}):
+            c = BaseClient(pre)
+            with self.assertRaises(Refused):
+                self.handle(c).run("wf_labels_add", self.args())
+            self.assertTrue(all(x[0] == "GET" for x in c.calls))
+        c = BaseClient({"id": 8, "name": "hold"}, [{"id": 7, "name": "hold", "color": "000000"}])
+        with self.assertRaises(RelayGitHubError):
+            self.handle(c).run("wf_labels_add", self.args())
+
+    def test_transient_existence_read_is_unsent_and_retryable(self):
+        from git_relay.workflow_verbs import PreReadUnavailable
+
+        class Down(BaseClient):
+            def _call(self, method, path, payload=None, bearer=None):
+                raise RelayGitHubError(502, "unavailable")
+
+        with self.assertRaises(PreReadUnavailable):
+            self.handle(Down()).run("wf_labels_add", self.args())
+
+    def test_label_path_dot_segments_refuse_before_read(self):
+        for name in (".", "..", "a/../b"):
+            c = Client()
+            with self.assertRaises(Refused):
+                self.handle(c).run("wf_labels_add", self.args(labels=[name]))
+            self.assertEqual(c.calls, [])

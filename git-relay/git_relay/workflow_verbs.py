@@ -3142,6 +3142,9 @@ class WorkflowVerbs:
             return value
 
         name, new_name = text("name", 100), text("new_name", 100)
+        for value in (name, new_name):
+            if any(segment in (".", "..") for segment in value.split("/")) or "%" in value:
+                raise Refused("invalid label path text")
         description = text("description", 100, True)
         color = args.get("color")
         if not isinstance(color, str) or not re.fullmatch(r"[A-Fa-f0-9]{6}", color):
@@ -3197,6 +3200,7 @@ class WorkflowVerbs:
                 not isinstance(value, str)
                 or not value.strip()
                 or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", value)
+                or any(segment in (".", "..") for segment in value.split("/"))
                 or find_secret(value)
                 or re.search(
                     r"sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}", value
@@ -3206,6 +3210,26 @@ class WorkflowVerbs:
         folded = [x.casefold() for x in labels]
         if len(set(folded)) != len(folded):
             raise Refused("duplicate additive labels")
+        # Existence is observed, not an atomic lock against concurrent deletion.
+        existing = {}
+        for name in labels:
+            try:
+                row = self._get(f"/repos/{repo}/labels/{quote(name, safe='')}")
+            except RelayGitHubError as exc:
+                if exc.status in (0, 408) or exc.status >= 500:
+                    raise PreReadUnavailable(
+                        "label pre-read unavailable; no write attempted"
+                    ) from None
+                raise
+            if (
+                not isinstance(row, dict)
+                or type(row.get("id")) is not int
+                or row["id"] <= 0
+                or not isinstance(row.get("name"), str)
+                or row["name"].casefold() != name.casefold()
+            ):
+                raise Refused("additive label does not exist or identity mismatched")
+            existing[name.casefold()] = row["id"]
         data = self.client._call(
             "POST", f"/repos/{repo}/issues/{number}/labels", {"labels": labels}, bearer=self.bearer
         )
@@ -3234,7 +3258,8 @@ class WorkflowVerbs:
             item = found[name]
             color = item.get("color")
             if (
-                not isinstance(color, str)
+                item["id"] != existing[name]
+                or not isinstance(color, str)
                 or not re.fullmatch(r"[A-Fa-f0-9]{6}", color)
                 or not re.fullmatch(r"[A-Za-z0-9_. /-]{1,100}", item["name"])
                 or find_secret(item["name"])
@@ -3446,9 +3471,20 @@ class WorkflowVerbs:
                     or not _SHA.fullmatch(part["sha"])
                 ):
                     raise RelayGitHubError(502, "PR list commit unverifiable")
-                try:
-                    ref = _ref({"ref": part.get("ref")}, "ref")
-                except Refused:
+                ref = part.get("ref")
+                # Provider metadata is not a write ref: retain valid printable
+                # branch characters without widening the shared input grammar.
+                if (
+                    not isinstance(ref, str)
+                    or not 1 <= len(ref) <= 200
+                    or not re.fullmatch(r"[^\x00-\x20\x7f~^:?*\[\\]+", ref)
+                    or ref.startswith(("/", "."))
+                    or ref.endswith(("/", "."))
+                    or ".." in ref
+                    or "@{" in ref
+                    or "//" in ref
+                    or any(x.startswith(".") or x.endswith(".lock") for x in ref.split("/"))
+                ):
                     raise RelayGitHubError(502, "PR list ref unverifiable")
                 item[key + "_ref"] = ref
                 item[key + "_sha"] = part["sha"]

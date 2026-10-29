@@ -195,3 +195,11 @@ class LabelUpdate(unittest.TestCase):
             with self.assertRaises(Refused):
                 self.handle(c).run("wf_label_update", self.args(new_name=value))
             self.assertEqual(c.calls, [])
+
+    def test_path_dot_segments_and_encoded_forms_refuse_before_read(self):
+        for name in (".", "..", "a/../b", "%2e%2e", "a/%2f/b"):
+            for key in ("name", "new_name"):
+                c = Client()
+                with self.assertRaises(Refused):
+                    self.handle(c).run("wf_label_update", self.args(**{key: name}))
+                self.assertEqual(c.calls, [])

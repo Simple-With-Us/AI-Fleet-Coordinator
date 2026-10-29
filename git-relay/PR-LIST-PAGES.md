@@ -20,3 +20,8 @@ This supplies a qualified page, not proof that no PR exists. No live inventory
 read, PR opened, review triggered, deployment or credential change performed.
 Verified endpoint/filter semantics:
 https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
+
+Observed branch metadata accepts printable Git-ref characters including @,+,#
+and Unicode. It is never reused as a write ref. Caller head/base filter grammar
+and all existing write-ref validation stay unchanged. Malformed rows still refuse
+as a whole rather than silently omit PRs.

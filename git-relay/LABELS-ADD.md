@@ -21,3 +21,9 @@ No label applied live, permission widened, deployment or review triggered.
 Fleet anchor: scripts/hold-guard/guard_run.sh uses additive POST labels.
 Official additive-vs-replacement schema verified:
 https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json
+
+Every requested label now has an exact-name existence/ID pre-read before POST,
+and the returned ID must match. Unknown or malformed labels refuse before any
+write; transient pre-reads are definitely unsent. This is not atomic against a
+concurrent deletion/recreation. Such a changed ID after POST is UNKNOWN, not a
+verified success. No provider CAS or concurrency-proof no-creation guarantee.

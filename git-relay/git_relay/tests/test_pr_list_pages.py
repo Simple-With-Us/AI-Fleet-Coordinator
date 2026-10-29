@@ -68,3 +68,14 @@ class PrListPages(unittest.TestCase):
         ]:
             with self.assertRaises(Refused):
                 WorkflowVerbs.check_shape("wf_pr_list_page", {"repo": REPO, **bad}, REPO)
+
+    def test_provider_branch_metadata_does_not_use_write_ref_grammar(self):
+        for name in ("deps/pkg@1.2+build#2", "feature/é"):
+            row = self.row(head={"ref": name, "sha": SHA})
+            out = self.handle(Client([row])).run("wf_pr_list_page", {"repo": REPO})
+            self.assertEqual(out["pulls"][0]["head_ref"], name)
+        for name in ("a..b", "a@{b", "a\n", "a/.bad", "a.lock"):
+            with self.assertRaises(RelayGitHubError):
+                self.handle(Client([self.row(head={"ref": name, "sha": SHA})])).run(
+                    "wf_pr_list_page", {"repo": REPO}
+                )

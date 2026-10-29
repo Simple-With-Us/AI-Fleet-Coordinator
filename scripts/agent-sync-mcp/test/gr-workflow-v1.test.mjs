@@ -760,3 +760,16 @@ test('new label and discussion boundaries reject embedded provider shapes and ma
  assert.equal(validWfV1Response('wf_pr_reviews_page',{reviews:[row],number:2,head_sha:'a'.repeat(40),page:1,has_more:false}),false);
  assert.equal(validWfV1Response('wf_pr_reviews_page',{reviews:[{...row,body:'\ud800'}],number:2,head_sha:'a'.repeat(40),page:1,has_more:false}),false);
 });
+
+test('PR list retains provider branch metadata without widening write refs',()=>{
+ const args={repo:'Simple-With-Us/AI-Fleet-Coordinator'},row={number:2,state:'open',draft:false,head_ref:'deps/pkg@1.2+build#2',head_sha:'a'.repeat(40),base_ref:'main',base_sha:'b'.repeat(40)},body={pulls:[row],page:1,has_more:false,snapshot:false};
+ assert.equal(validWfV1Response('wf_pr_list_page',body,args),true);
+ assert.equal(validWfV1Args('wf_pr_list_page',{...args,head:row.head_ref}),false);
+ for(const head_ref of ['a..b','a@{b','a\n','a/.bad','a.lock'])assert.equal(validWfV1Response('wf_pr_list_page',{...body,pulls:[{...row,head_ref}]},args),false);
+});
+
+test('label lookup dot segments and percent escapes never dispatch',()=>{
+ const repo='Simple-With-Us/AI-Fleet-Coordinator',base={repo,name:'safe',expected_label_id:7,new_name:'safe',color:'000000',description:''};
+ for(const name of ['.','..','a/../b','%2e%2e','a/%2f/b'])for(const k of ['name','new_name'])assert.equal(validWfV1Args('wf_label_update',{...base,[k]:name}),false);
+ for(const name of ['.','..','a/../b'])assert.equal(validWfV1Args('wf_labels_add',{repo,number:2,labels:[name]}),false);
+});
