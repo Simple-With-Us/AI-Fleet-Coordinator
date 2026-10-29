@@ -1,7 +1,9 @@
 """Synthetic credential-shape fixtures only, never real credentials."""
 
 import unittest
+
 from git_relay.workflow_verbs import Refused, WorkflowVerbs
+
 from .test_workflow_verbs import Client, Policy
 
 PREFIXES = ("sk-", "sk-ant-", "sk-proj-", "sk_live_", "sk_test_")
