@@ -48,8 +48,8 @@ test("each canonical seat bearer round-trips and is recognized by the signed has
   }
 });
 
-test("new bearer identities cannot activate from off/fallback env credentials", async () => {
-  for (const mode of ["off", "fallback"]) {
+test("new bearer identities cannot activate from off env credentials", async () => {
+  for (const mode of ["off"]) {
     const env = { INFISICAL_MODE: mode, AG_ZULIP_KEY: "offline-dummy", AG_ZULIP_EMAIL: BEARER_ONLY_SEATS.AG.email };
     assert.equal(await resolveBearerSeatCredentials(env, config, "AG"), null);
   }
@@ -83,7 +83,7 @@ test("new seats resolve only their exact own Infisical names and reject swapped 
 });
 
 test("BotFleet roles are explicit, distinct from GB personas, and never wildcard admitted", () => {
-  const roles = ["BUILDER", "COMPILER", "DEPLOYER", "DESIGNER", "DIRECTOR", "FIXER", "HOUSEKEEPER", "MONITOR", "ORACLE", "PLUMBER", "PUBLISHER"];
+  const roles = ["BUILDER", "COMPILER", "DEPLOYER", "DESIGNER", "DIRECTOR", "ENGINEER", "TRADER", "FIXER", "HOUSEKEEPER", "MONITOR", "ORACLE", "PLUMBER", "PUBLISHER"];
   assert.deepEqual(Object.keys(BF_BEARER_SEATS).sort(), roles.map((r) => `BF-${r}`).sort());
   for (const role of roles) {
     const row = BF_BEARER_SEATS[`BF-${role}`];
@@ -91,7 +91,7 @@ test("BotFleet roles are explicit, distinct from GB personas, and never wildcard
     assert.equal(row.prefix, `BF_${role}`);
     assert.ok(!KNOWN_SEATS.includes(`BF-${role}`));
   }
-  for (const identity of ["BF-ENGINEER", "BF-TRADER", "BF-TYPO", "constructor", "toString", "__proto__"]) {
+  for (const identity of ["BF-TYPO", "constructor", "toString", "__proto__"]) {
     assert.ok(!BEARER_SEATS.includes(identity));
   }
 });
@@ -140,6 +140,50 @@ test("unhosted CODEX bearer readiness uses only its own native records without O
     await assert.rejects(() => resolveBearerSeatCredentials(env, unhosted, "CODEX"), /network unavailable/);
     assert.equal(await resolveBearerSeatCredentials({ ...env, INFISICAL_MODE: "off" }, unhosted, "CODEX"), null);
     assert.equal(await resolveBearerSeatCredentials({ ...env, INFISICAL_MODE: "off" }, unhosted, "AG"), null);
+  } finally {
+    globalThis.fetch = originalFetch;
+    _resetInfisicalForTests();
+  }
+});
+
+
+test("fallback additional identities and unhosted MA use strict own records without outer-mode mutation", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    const rows = {...ADDITIONAL_BEARER_SEATS, MA: {prefix: "MA", email: "muse-assist-bot@simplewithus.zulipchat.com"}};
+    for (const [identity,row] of Object.entries(rows)) {
+      if (identity === "BF-BUILDER") continue;
+      const env = Object.freeze({INFISICAL_MODE: "fallback", INFISICAL_SERVICE_TOKEN: "offline", INFISICAL_WORKSPACE_ID: "offline", [`${row.prefix}_ZULIP_KEY`]: "must-not-fallback"});
+      for (const outcome of ["valid", "swapped", "missing", "denied", "failed"]) {
+        _resetInfisicalForTests();
+        const reads=[];
+        globalThis.fetch=async url=>{
+          const u=new URL(url); const name=decodeURIComponent(u.pathname.split("/").at(-1)); reads.push(name);
+          assert.equal(u.searchParams.get("secretPath"), "/zulip");
+          if(outcome==="denied") return new Response("denied",{status:403});
+          if(outcome==="failed") throw new Error("offline failure");
+          if(outcome==="missing") return new Response("missing",{status:404});
+          return Response.json({secret:{secretValue:name.endsWith("_KEY") ? "own-key" : outcome==="swapped" ? "echo-bot@simplewithus.zulipchat.com" : row.email}});
+        };
+        if(outcome==="denied"||outcome==="failed") await assert.rejects(()=>resolveBearerSeatCredentials(env,config,identity));
+        else assert.deepEqual(await resolveBearerSeatCredentials(env,config,identity), outcome==="valid" ? {key:"own-key",email:row.email}:null);
+        assert.deepEqual(reads.sort(),[`${row.prefix}_ZULIP_EMAIL`,`${row.prefix}_ZULIP_KEY`].sort());
+        assert.equal(env.INFISICAL_MODE,"fallback");
+      }
+      _resetInfisicalForTests();
+      globalThis.fetch=async()=>{throw new Error("off must not fetch")};
+      assert.equal(await resolveBearerSeatCredentials({...env,INFISICAL_MODE:"off"},config,identity),null);
+    }
+  } finally {globalThis.fetch=originalFetch;_resetInfisicalForTests();}
+});
+
+test("fallback readiness does not revive retired Builder", async () => {
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = async () => { throw new Error("Builder must not fetch"); };
+    for (const mode of ["fallback", "off"]) {
+      assert.equal(await resolveBearerSeatCredentials({ INFISICAL_MODE: mode }, config, "BF-BUILDER"), null);
+    }
   } finally {
     globalThis.fetch = originalFetch;
     _resetInfisicalForTests();

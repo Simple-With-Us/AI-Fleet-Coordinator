@@ -30,6 +30,21 @@ const obj = (required, properties) => ({ type: 'object', additionalProperties: f
 const SPECS = {
  wf_git_tree_create:['Create unattached tree from base tree and up to20 text files; no workflow paths/ref changes.',obj(['repo','base_tree','files'],{repo:REPO,base_tree:SHA,files:{type:'array',minItems:1,maxItems:20,items:obj(['path','text','mode'],{path:PATH,text:{type:'string',maxLength:40000},mode:{type:'string',enum:['100644','100755']}})}})],
  wf_git_commit_create:['Create unattached commit with exact tree and one/two parents. No arbitrary author/signature/ref changes.',obj(['repo','tree_sha','parents','message'],{repo:REPO,tree_sha:SHA,parents:{type:'array',minItems:1,maxItems:2,items:SHA},message:{type:'string',minLength:1,maxLength:32768}})],
+ wf_pr_list_page:['Read bounded created-ascending PR metadata page. Mutable list, not snapshot/full inventory; head means same-owner branch only.',obj(['repo'],{repo:REPO,state:{type:'string',enum:['open','closed','all']},head:REF,base:REF,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_compare_commits_page:['Read exact-SHA compare graph metadata page, not patches/files or complete diff. Merge-base/counts/commit-parent SHAs only; conservative full-page has_more.',obj(['repo','base_sha','head_sha'],{repo:REPO,base_sha:SHA,head_sha:SHA,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_pr_reviews_page:['Read bounded review records and untrusted text with commit/App-user provenance, not an approval verdict. Head observed before/after, no atomic snapshot.',obj(['repo','number','expected_head_sha'],{repo:REPO,number:INT,expected_head_sha:SHA,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_pr_comments_page:['Read PR issue-conversation comments with untrusted text, NOT inline review comments. Head observed before/after; no user authority from author metadata.',obj(['repo','number','expected_head_sha'],{repo:REPO,number:INT,expected_head_sha:SHA,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_labels_add:['Add1-20 exact labels to an issue or PR without replacing unrelated labels. No label creation or suggestions. Returns requested labels only.',obj(['repo','number','labels'],{repo:REPO,number:INT,labels:{type:'array',minItems:1,maxItems:20,items:{type:'string',pattern:'^[A-Za-z0-9_. /-]{1,100}$'}}})],
+ wf_label_update:['Update exact pre-read label metadata. No archive, deletion or issue-label replacement. Requires separate execution authority.',obj(['repo','name','expected_label_id','new_name','color','description'],{repo:REPO,name:{type:'string',minLength:1,maxLength:100},expected_label_id:INT,new_name:{type:'string',minLength:1,maxLength:100},color:{type:'string',pattern:'^[A-Fa-f0-9]{6}$'},description:{type:'string',maxLength:100}})],
+ wf_check_runs_page:['Read one exact-name check-run metadata page at a commit; all attempts, not a verdict. No output text; full page has_more is conservative.',obj(['repo','head_sha','check_name'],{repo:REPO,head_sha:SHA,check_name:{type:'string',minLength:1,maxLength:255},page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_check_run_get:['Read exact check-run metadata bound to requested commit SHA. App ID is provenance, not independent CI proof.',obj(['repo','check_run_id','head_sha'],{repo:REPO,check_run_id:INT,head_sha:SHA})],
+ wf_file_history:['Read bounded exact-path commit/parent SHA history at immutable head. No messages, authors, contents, rename-follow or full-history claim.',obj(['repo','path','head_sha'],{repo:REPO,path:PATH,head_sha:SHA,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_workflows_page:['Read numeric workflow identity/path/state page, not display-name authority or execution permission. Mutable list, no full inventory claim.',obj(['repo'],{repo:REPO,page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_runs_page:['Read bounded Actions run metadata pages with PR numbers, not logs or review approval. Mutable list; filtered search capped1000 by GitHub.',obj(['repo'],{repo:REPO,branch:REF,head_sha:SHA,status:{type:'string',enum:['queued','in_progress','completed','requested','waiting','pending','action_required','cancelled','failure','neutral','skipped','stale','success','timed_out']},page:{type:'integer',minimum:1,maximum:1000},per_page:PER_PAGE})],
+ wf_pr_files_page:['Read one metadata-only PR file page with before/after expected-head observations. No patches/URLs, no atomic snapshot or complete diff guarantee.',obj(['repo','number','expected_head_sha'],{repo:REPO,number:INT,expected_head_sha:SHA,page:{type:'integer',minimum:1,maximum:100},per_page:PER_PAGE})],
+ wf_issue_dependency_add:['Make issue blocked by another exact same-repository issue. Identity prereads are non-atomic, not a version fence; cycles and remote policy refused by GitHub; no replacement parent or transfer.',obj(['repo','number','blocker_number'],{repo:REPO,number:INT,blocker_number:INT})],
+ wf_issue_dependency_remove:['Remove same-repo issue dependency by validated blocker identity. No head/version CAS; concurrent relation changes remain possible. Not authority to hide work or bypass policy.',obj(['repo','number','blocker_number'],{repo:REPO,number:INT,blocker_number:INT})],
+
  wf_issue_parent:['Read issue parent in exact repo; missing parent, visibility and other upstream refusals are indistinguishable; never a fabricated empty parent.',obj(['repo','number'],{repo:REPO,number:INT})],
  wf_issue_subissues:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
  wf_issue_blocked_by:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
@@ -153,7 +168,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking','wf_merge_queue_entry','wf_commit_statuses','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_review_threads','wf_issue_list','wf_issue_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_pr_list_page','wf_compare_commits_page','wf_pr_reviews_page','wf_pr_comments_page','wf_check_runs_page','wf_check_run_get','wf_file_history','wf_runs_page','wf_workflows_page','wf_pr_files_page','wf_issue_parent', 'wf_issue_subissues', 'wf_issue_blocked_by', 'wf_issue_blocking', 'wf_commit_statuses', 'wf_git_blob_get', 'wf_git_commit_get', 'wf_git_tree_get', 'wf_release_asset_download', 'wf_job_log', 'wf_run_logs', 'wf_artifact_download', 'wf_milestones', 'wf_milestone_get', 'wf_deployments', 'wf_deployment_get', 'wf_deployment_statuses', 'wf_environments', 'wf_environment_get', 'wf_release_list', 'wf_release_get', 'wf_tag_get', 'wf_review_threads', 'wf_issue_list', 'wf_issue_get', 'wf_pr_get', 'wf_pr_reviews', 'wf_pr_comments', 'wf_issue_comments', 'wf_commit_get', 'wf_compare', 'wf_branch_get', 'wf_repo_get', 'wf_labels', 'wf_workflows', 'wf_run_get', 'wf_run_artifacts', 'wf_release_assets', 'wf_release_asset_get', 'wf_pr_list', 'wf_pr_files', 'wf_file_get', 'wf_tree', 'wf_branches', 'wf_commits', 'wf_code_search', 'wf_runs', 'wf_run_jobs', 'wf_checks', 'wf_merge_queue_entry']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -195,9 +210,18 @@ export function boundedWorkflowInput(args, {maxDepth=6,maxNodes=500,maxBytes=655
 // mirror that here so bad input fails before network instead of as a relay 400.
 const reviewBodyOk = args => typeof args?.body === 'string' && args.body.trim() !== '' &&
   new TextEncoder().encode(args.body).length <= 32768;
-function wfV1ExtraOk(action, args) {
-  return (action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' && action !== 'wf_release_create' && action !== 'wf_release_update' && action !== 'wf_review_update' && action !== 'wf_review_comment_reply' || reviewBodyOk(args)) && (!['wf_file_delete','wf_file_rename'].includes(action) || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768)&& (!action.startsWith('wf_deployment') || ['environment','description'].every(k => !(k in args) || typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k==='environment' ? 100 : 140))) && (!['wf_milestone_create','wf_milestone_update'].includes(action) || typeof args.title === 'string' && args.title.trim() !== '' && new TextEncoder().encode(args.title).length <= 1024 && reviewBodyOk({body:args.description}))&& (!['wf_check_create','wf_check_update'].includes(action) || (args.status === 'completed') === (args.conclusion !== 'none') && ['name','title','summary'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= ({name:100,title:255,summary:32768}[k]))) && (action !== 'wf_review_dismiss' || reviewBodyOk({body:args.message})) && (action !== 'wf_commit_status_create' || ['context','description'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k === 'context' ? 255 : 140)));
-}
+const relationCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|\bst\.[A-Za-z0-9]{20,})/;
+// Free text an action persists on GitHub.  A credential shape in any of it is
+// refused before network, and the refusal never echoes the value.
+const CREDENTIAL_TEXT_FIELDS = Object.freeze({
+  wf_issue_create:['title','body'], wf_issue_update:['title','body'],
+  wf_file_delete:['message'], wf_file_rename:['message'], wf_review_dismiss:['message'],
+  wf_commit_status_create:['context','description'],
+  wf_deployment_create:['environment','description'], wf_deployment_status_create:['description'],
+});
+const textCredentialFree = (action, args) => (CREDENTIAL_TEXT_FIELDS[action] ?? []).every(
+  k => !(k in args) || (typeof args[k] === 'string' && !relationCredential.test(args[k])),
+);
 const gitSha=z.string().regex(/^[0-9a-f]{40}$/);
 const utfBytes=(limit,nonblank=false)=>z.string().refine(v=>(!nonblank||v.trim()!=='')&&new TextEncoder().encode(v).length<=limit);
 function gitSchema(schema){
@@ -207,7 +231,7 @@ function gitSchema(schema){
  if(schema.type==='boolean')return z.boolean();
  let out=z.string();if(schema.minLength)out=out.min(schema.minLength);if(schema.maxLength)out=out.max(schema.maxLength);if(schema.pattern)out=out.regex(new RegExp(schema.pattern));if(schema.enum)out=out.refine(v=>schema.enum.includes(v));return out;
 }
-const ARG_SCHEMAS=Object.fromEntries(Object.entries(SPECS).map(([a,[,s]])=>[a,gitSchema(s)]));
+const argSchemas=Object.fromEntries(Object.entries(SPECS).map(([a,s])=>[a,gitSchema(s[1])]));
 const gitArgsOk=(action,args)=>{
  if(action==='wf_git_blob_create')return utfBytes(40000).safeParse(args.text).success;
  if(action==='wf_git_commit_create')return utfBytes(32768,true).safeParse(args.message).success&&new Set(args.parents).size===args.parents.length;
@@ -230,22 +254,36 @@ const fileContentBudget = (action,args) => {
   }
   return true;
 };
+const readExpansionArgsOk=(action,args)=>true&& (action!=='wf_check_runs_page' || args.check_name.trim()!=='' && new TextEncoder().encode(args.check_name).length<=255 && !args.check_name.includes('\0') && !/[\uD800-\uDFFF]/u.test(args.check_name) && !/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,})/.test(args.check_name)) && (action!=='wf_file_history' || args.path.length<=1024 && args.path.split('/').length<=16 && !/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(args.path)) && (action!=='wf_runs_page' || !['branch','head_sha','status'].some(k=>args[k]!==undefined) || ((args.page??1)-1)*(args.per_page??30)<1000);
+// The size guard runs first, then Zod, and the per-action checks read only the
+// Zod-parsed data, never the raw caller object.
 export function parseWfV1Args(action,args){
- if(!boundedWorkflowInput(args,{maxBytes:workflowInputLimit(action),maxString:workflowInputLimit(action)})||!WF_V1_ACTIONS.includes(action))return null;
- const parsed=ARG_SCHEMAS[action].safeParse(args);
- if(!parsed.success)return null;
- const value=parsed.data;
- if(!validWfV1Args2(SPECS[action][1],value)||!gitArgsOk(action,value))return null;
- if(['wf_review_submit','wf_review_inline'].includes(action)&&!reviewBodyOk(value))return null;
- if(!wfV1ExtraOk(action,value)||!fileContentBudget(action,value)||new TextEncoder().encode(JSON.stringify(value)).length>workflowInputLimit(action))return null;
- return value;
+ if(typeof action!=='string'||!WF_V1_ACTIONS.includes(action))return null;
+ if(!boundedWorkflowInput(args,{maxBytes:workflowInputLimit(action),maxString:workflowInputLimit(action)}))return null;
+ const parsed=argSchemas[action].safeParse(args);
+ if(!parsed.success||!parsedArgsOk(action,parsed.data)||!fileContentBudget(action,parsed.data)||!readExpansionArgsOk(action,parsed.data)||new TextEncoder().encode(JSON.stringify(parsed.data)).length>workflowInputLimit(action))return null;
+ if(['wf_review_submit','wf_review_inline'].includes(action)&&!reviewBodyOk(parsed.data))return null;
+ return parsed.data;
 }
-export const validWfV1Args=(action,args)=>parseWfV1Args(action,args)!==null;
-
+// Every caller-facing check goes through parseWfV1Args, so nothing here ever
+// reads a raw caller object.
+export const validWfV1Args = (action, args) => parseWfV1Args(action, args) !== null;
+// Per-action checks.  Only parseWfV1Args calls this, and only with Zod-parsed data.
+const parsedArgsOk = (action, args) => typeof action==='string' && boundedWorkflowInput(args,{maxBytes:workflowInputLimit(action),maxString:workflowInputLimit(action)}) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
+(action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' && action !== 'wf_release_create' && action !== 'wf_release_update' && action !== 'wf_review_update' && action !== 'wf_review_comment_reply' || reviewBodyOk(args)) && textCredentialFree(action,args) && (action !== 'wf_label_update' || ['name','new_name','description'].every(k=>typeof args[k]==='string' && !/[\uD800-\uDFFF]/u.test(args[k]) && (k==='description'||args[k].trim()!=='' && !args[k].includes('%') && !args[k].split('/').some(s=>s==='.'||s==='..')) && new TextEncoder().encode(args[k]).length<=100 && !/[\x00-\x1f\x7f]/.test(args[k]) && !/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|\bst\.[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----)/.test(args[k]))) && (action !== 'wf_labels_add' || args.labels.every(x=>x.trim()!=='' && !x.split('/').some(s=>s==='.'||s==='..') && !relationCredential.test(x)) && new Set(args.labels.map(x=>x.toLowerCase())).size===args.labels.length) && (!['wf_file_delete','wf_file_rename'].includes(action) || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768)&& (!action.startsWith('wf_deployment') || ['environment','description'].every(k => !(k in args) || typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k==='environment' ? 100 : 140))) && (!['wf_milestone_create','wf_milestone_update'].includes(action) || typeof args.title === 'string' && args.title.trim() !== '' && new TextEncoder().encode(args.title).length <= 1024 && reviewBodyOk({body:args.description}))&& (!['wf_check_create','wf_check_update'].includes(action) || (args.status === 'completed') === (args.conclusion !== 'none') && ['name','title','summary'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= ({name:100,title:255,summary:32768}[k]))) && (action !== 'wf_review_dismiss' || reviewBodyOk({body:args.message})) && (action !== 'wf_commit_status_create' || ['context','description'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k === 'context' ? 255 : 140))) && gitArgsOk(action,args);
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
- wf_git_tree_create:['tree'],wf_git_commit_create:['commit'],
+ wf_pr_list_page:['pulls','page','has_more','snapshot'],
+ wf_compare_commits_page:['base_sha','head_sha','merge_base_sha','status','ahead_by','behind_by','total_commits','commits','page','has_more'],
+ wf_pr_reviews_page:['reviews','number','head_sha','page','has_more'],wf_pr_comments_page:['comments','number','head_sha','page','has_more'],
+ wf_labels_add:['number','added'],
+ wf_label_update:['label'],
+ wf_check_runs_page:['checks','head_sha','check_name','page','has_more'],wf_check_run_get:['check'],
+ wf_file_history:['commits','path','head_sha','page','has_more'],
+ wf_workflows_page:['workflows','total','page','has_more','snapshot'],
+ wf_runs_page:['runs','total','page','has_more','search_cap','snapshot'],
+ wf_pr_files_page:['files','number','head_sha','page','has_more','history_complete'],
  wf_issue_parent:['issue'],wf_issue_subissues:['issues','page','has_more'],wf_issue_blocked_by:['issues','page','has_more'],wf_issue_blocking:['issues','page','has_more'],
  wf_merge_queue_entry:['entry'],wf_merge_queue_enqueue:['entry'],wf_merge_queue_dequeue:['entry'],
  wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
@@ -284,6 +322,7 @@ const RESPONSE_KEYS = {
  wf_check_create:['check'],wf_check_update:['check'],
  wf_commit_statuses:['statuses','complete'],wf_commit_status_create:['status'],
  wf_review_update:['review'],wf_review_dismiss:['review'],wf_review_pending_delete:['review'],wf_review_comment_reply:['comment'],
+ wf_issue_parent:['issue'],wf_issue_subissues:['issues','page','has_more'],wf_issue_blocked_by:['issues','page','has_more'],wf_issue_blocking:['issues','page','has_more'],
   wf_pr_get:['pull'],
   wf_pr_reviews:['reviews','complete'],
   wf_pr_comments:['comments','complete'],
@@ -362,11 +401,56 @@ const commitStatusResponses={wf_commit_statuses:z.object({statuses:z.array(commi
 const relationIssue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>new TextEncoder().encode(v).length<=4096).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).nullable()}).strict();
 const relationParent=z.object({issue:relationIssue}).strict();
 const relationPage=z.object({issues:z.array(relationIssue).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
+const dependencyResult=(blocking)=>z.object({completed:z.literal(true),number:positive,blocker_number:positive,blocking:z.literal(blocking)}).strict();
+const relationResponses={wf_issue_dependency_add:dependencyResult(true),wf_issue_dependency_remove:dependencyResult(false)};
+const checkRunMetadata=z.object({id:z.number().int().positive(),head_sha:shaValue,name:z.string().min(1).refine(v=>new TextEncoder().encode(v).length<=255&&!v.includes('\0')&&!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),status:z.enum(['queued','in_progress','completed','waiting','requested','pending']),conclusion:z.enum(['action_required','cancelled','failure','neutral','success','skipped','stale','timed_out','startup_failure']).nullable(),app_id:z.number().int().positive()}).strict().refine(v=>(v.status==='completed')===(v.conclusion!==null));
+const checkRunsPage=z.object({checks:z.array(checkRunMetadata).max(50),head_sha:shaValue,check_name:z.string().min(1).max(255),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
+const checkRunGet=z.object({check:checkRunMetadata}).strict();
+const fileHistorySha=z.string().regex(/^[0-9a-f]{40}$/);
+const fileHistoryReceipt=z.object({commits:z.array(z.object({sha:fileHistorySha,parents:z.array(fileHistorySha).max(16)}).strict()).max(50),path:z.string().min(1).max(1024),head_sha:fileHistorySha,page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
+const runPageConclusions=['action_required','cancelled','failure','neutral','skipped','stale','success','timed_out','startup_failure'];
+const runPageItem=z.object({id:positive,run_attempt:positive,workflow_id:positive,head_branch:z.string().max(200).regex(/^[A-Za-z0-9._/-]+$/).nullable(),head_sha:shaValue,status:z.enum(['queued','in_progress','completed','requested','waiting','pending']),conclusion:z.enum(runPageConclusions).nullable(),pull_numbers:z.array(positive).max(100)}).strict().refine(v=>(v.status==='completed')===(v.conclusion!==null)&&new Set(v.pull_numbers).size===v.pull_numbers.length);
+const runPage=z.object({runs:z.array(runPageItem).max(50),total:z.number().int().min(0).max(1e9),page:z.number().int().min(1).max(1000),has_more:z.boolean(),search_cap:z.literal(1000).nullable(),snapshot:z.literal(false)}).strict();
+const workflowPagePath=z.string().min(1).max(1024).regex(/^\.github\/workflows\/[A-Za-z0-9._/+@~-]+\.ya?ml$/).refine(v=>v.split('/').every(x=>!['','.','..'].includes(x))&&!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bst\.[A-Za-z0-9]{20,})/.test(v));
+const workflowsPage=z.object({workflows:z.array(z.object({id:positive,path:workflowPagePath,state:z.enum(['active','deleted','disabled_fork','disabled_inactivity','disabled_manually'])}).strict()).max(50),total:z.number().int().min(0).max(1e9),page:z.number().int().min(1).max(1000),has_more:z.boolean(),snapshot:z.literal(false)}).strict();
+const prFilePath=z.string().min(1).max(1024).refine(v=>new TextEncoder().encode(v).length<=4096&&!v.includes('\0')&&!/[\uD800-\uDFFF]/u.test(v)&&!/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v));
+const prFileCount=z.number().int().min(0).max(1e9);
+const prFileItem=z.object({sha:shaValue,filename:prFilePath,previous_filename:prFilePath.nullable(),status:z.enum(['added','removed','modified','renamed','copied','changed','unchanged']),additions:prFileCount,deletions:prFileCount,changes:prFileCount}).strict().refine(v=>(v.status==='renamed')===(v.previous_filename!==null));
+const prFilePage=z.object({files:z.array(prFileItem).max(50),number:z.number().int().positive(),head_sha:shaValue,page:z.number().int().min(1).max(100),has_more:z.boolean(),history_complete:z.literal(false)}).strict();
+
+const labelUpdateReceipt=z.object({label:z.object({id:z.number().int().positive(),name:z.string().min(1).max(100),color:z.string().regex(/^[a-f0-9]{6}$/),description:z.string().max(100)}).strict()}).strict();
+const additiveLabel=z.object({id:z.number().int().positive(),name:z.string().regex(/^[A-Za-z0-9_. /-]{1,100}$/).refine(v=>!relationCredential.test(v)),color:z.string().regex(/^[a-f0-9]{6}$/)}).strict();
+const additiveLabels=z.object({number:z.number().int().positive(),added:z.array(additiveLabel).min(1).max(20)}).strict();
+const discussionCredential=/(?:github_pat_[A-Za-z0-9_]{20,}|gh[opusr]_[A-Za-z0-9]{20,}|sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/;
+const discussionAuthor=z.object({id:z.number().int().positive(),login:z.string().regex(/^[A-Za-z0-9_-]{1,100}(?:\[bot\])?$/),type:z.enum(['User','Bot','Organization'])}).strict();
+const discussionBase={id:z.number().int().positive(),author:discussionAuthor,body:z.string().refine(v=>!v.includes('\0')&&!/[\uD800-\uDFFF]/u.test(v)&&new TextEncoder().encode(v).length<=32768&&!discussionCredential.test(v)),body_withheld:z.boolean()};
+const discussionValid=v=>!v.body_withheld||v.body==='<withheld: credential-shaped text>';
+const discussionReview=z.object({...discussionBase,state:z.enum(['APPROVED','CHANGES_REQUESTED','COMMENTED','DISMISSED','PENDING']),commit_id:shaValue}).strict().refine(discussionValid);
+const discussionComment=z.object(discussionBase).strict().refine(discussionValid);
+const discussionPageShape={number:z.number().int().positive(),head_sha:shaValue,page:z.number().int().min(1).max(1000),has_more:z.boolean()};
+const discussionPages={wf_pr_reviews_page:z.object({...discussionPageShape,reviews:z.array(discussionReview).max(50)}).strict(),wf_pr_comments_page:z.object({...discussionPageShape,comments:z.array(discussionComment).max(50)}).strict()};
+const compareCount=z.number().int().min(0).max(1e9);
+const compareCommit=z.object({sha:shaValue,parents:z.array(shaValue).max(16)}).strict();
+const comparePage=z.object({base_sha:shaValue,head_sha:shaValue,merge_base_sha:shaValue,status:z.enum(['ahead','behind','diverged','identical']),ahead_by:compareCount,behind_by:compareCount,total_commits:compareCount,commits:z.array(compareCommit).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
+const prListObservedRef=z.string().min(1).max(200).refine(v=>!/[\x00-\x20\x7f~^:?*\[\\]/.test(v) && !v.startsWith('/') && !v.endsWith('/') && !v.endsWith('.') && !v.includes('..') && !v.includes('@{') && !v.includes('//') && v.split('/').every(x=>!x.startsWith('.')&&!x.endsWith('.lock')));
+const prListRow=z.object({number:positive,state:z.enum(['open','closed']),draft:z.boolean(),head_ref:prListObservedRef,head_sha:shaValue,base_ref:prListObservedRef,base_sha:shaValue}).strict();
+const prListPage=z.object({pulls:z.array(prListRow).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean(),snapshot:z.literal(false)}).strict();
 const renameReceipt=z.object({source_path:z.string().min(1).max(1024),destination_path:z.string().min(1).max(1024),branch:z.string().min(1).max(200),commit:z.string().regex(/^[0-9a-f]{40}$/),blob_sha:z.string().regex(/^[0-9a-f]{40}$/)}).strict();
 export function validWfV1Response(action, body, args) {
  if(typeof action!=="string")return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
- if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success;
+ if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>typeof v.repo==='string' && v.repo.toLowerCase()===args.repo.toLowerCase()));
+ if(action==='wf_check_runs_page')return checkRunsPage.safeParse(body).success && body.checks.every(x=>x.head_sha===body.head_sha&&x.name===body.check_name) && (!args || body.head_sha===args.head_sha && body.check_name===args.check_name && body.page===(args.page??1) && body.checks.length<=(args.per_page??30) && body.has_more===(body.checks.length===(args.per_page??30)));
+ if(action==='wf_check_run_get')return checkRunGet.safeParse(body).success && (!args || body.check.id===args.check_run_id&&body.check.head_sha===args.head_sha);
+ if(action==='wf_file_history')return fileHistoryReceipt.safeParse(body).success && (!args || body.path===args.path && body.head_sha===args.head_sha && body.page===(args.page??1) && body.commits.length<=(args.per_page??30) && body.has_more===(body.commits.length===(args.per_page??30)));
+ if(action==='wf_workflows_page')return workflowsPage.safeParse(body).success&&body.total>=body.workflows.length&&new Set(body.workflows.map(x=>x.id)).size===body.workflows.length&&(!args||body.page===(args.page??1)&&body.workflows.length<=(args.per_page??30)&&body.has_more===(body.workflows.length===(args.per_page??30)));
+ if(action==='wf_runs_page')return runPage.safeParse(body).success&&body.total>=body.runs.length&&new Set(body.runs.map(x=>x.id)).size===body.runs.length&&(!args||body.page===(args.page??1)&&body.runs.length<=(args.per_page??30)&&body.has_more===(body.runs.length===(args.per_page??30))&&body.search_cap===(args.branch!==undefined||args.head_sha!==undefined||args.status!==undefined?1000:null)&&body.runs.every(x=>(!args.branch||x.head_branch===args.branch)&&(!args.head_sha||x.head_sha===args.head_sha)&&(!args.status||[x.status,x.conclusion].includes(args.status))));
+ if(action==='wf_pr_files_page')return prFilePage.safeParse(body).success && new TextEncoder().encode(JSON.stringify(body)).length<=262144 && (!args || body.number===args.number && body.head_sha===args.expected_head_sha && body.page===(args.page??1) && body.files.length<=(args.per_page??30) && body.has_more===(body.files.length===(args.per_page??30)));
+ if(action==='wf_pr_list_page')return prListPage.safeParse(body).success&&new Set(body.pulls.map(x=>x.number)).size===body.pulls.length&&(!args||body.page===(args.page??1)&&body.pulls.length<=(args.per_page??30)&&body.has_more===(body.pulls.length===(args.per_page??30))&&body.pulls.every(x=>((args.state??'open')==='all'||x.state===(args.state??'open'))&&(!args.base||x.base_ref===args.base)&&(!args.head||x.head_ref===args.head)));
+ if(action==='wf_compare_commits_page')return comparePage.safeParse(body).success&&body.total_commits>=body.commits.length&&new Set(body.commits.map(x=>x.sha)).size===body.commits.length&&(!args||body.base_sha===args.base_sha&&body.head_sha===args.head_sha&&body.page===(args.page??1)&&body.commits.length<=(args.per_page??30)&&body.has_more===(body.commits.length===(args.per_page??30)));
+ if(action==='wf_labels_add')return additiveLabels.safeParse(body).success && new Set(body.added.map(x=>x.id)).size===body.added.length && new Set(body.added.map(x=>x.name.toLowerCase())).size===body.added.length && (!args || body.number===args.number && body.added.length===args.labels.length && body.added.every(x=>args.labels.some(v=>v.toLowerCase()===x.name.toLowerCase())));
+ if(action==='wf_label_update')return labelUpdateReceipt.safeParse(body).success && (!args || body.label.id===args.expected_label_id && body.label.name===args.new_name && body.label.color===args.color.toLowerCase() && body.label.description===args.description);
+ if(discussionPages[action]){if(!discussionPages[action].safeParse(body).success||new TextEncoder().encode(JSON.stringify(body)).length>262144)return false;const rows=body.reviews??body.comments;return new Set(rows.map(x=>x.id)).size===rows.length&&rows.reduce((n,x)=>n+new TextEncoder().encode(x.body).length,0)<=262144&&(!args||body.number===args.number&&body.head_sha===args.expected_head_sha&&body.page===(args.page??1)&&rows.length<=(args.per_page??30)&&body.has_more===(rows.length===(args.per_page??30)));}
  if(action.startsWith('wf_git_')){
    const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768)}).strict();
    const schemas={
@@ -399,6 +483,8 @@ export function validWfV1Response(action, body, args) {
  if(threadStateResponses[action])return threadStateResponses[action].safeParse(body).success;
  if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;
+ if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>typeof v.repo==='string' && v.repo.toLowerCase()===args.repo.toLowerCase()));
+ if(relationResponses[action])return relationResponses[action].safeParse(body).success && (!args || (body.issues??[body.issue]).filter(Boolean).every(v=>v.repo===args.repo));
  if(readResponseSchemas[action])return readResponseSchemas[action].safeParse(body).success;
 
  if(environmentResponses[action])return environmentResponses[action].safeParse(body).success;
