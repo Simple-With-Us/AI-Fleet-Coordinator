@@ -185,6 +185,50 @@ class HeldAlertTests(HeldBackRoutineTests):
         self.step(daemon, 2400)
         self.assertEqual(self.edits(first), 1, "the next window edits the same message")
 
+    def test_a_refused_key_keeps_the_stale_list_for_its_owner(self) -> None:
+        """A 401 is the bot's key, not the message:  the key can come back, so an all-clear keeps the
+        pointer and clears the list once it does, instead of orphaning it (Kody, PR #1112)."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        first = self.alerts()[0]["id"]
+        HELD.surface(self.seat_paths(SEAT), message_ids=[r["message_id"] for r in self.held()], lost=0)
+        self.fail_post_for(daemon, SEAT, error=Z.ApiError("Invalid API key", code="UNAUTHORIZED", status=401))
+        self.step(daemon, 4000)
+        self.assertEqual(self.count_attempts(daemon), 1)
+        self.assertEqual(HELDALERT.standing(self.root)["message_id"], first, "kept for its owner")
+        for _ in range(60):
+            self.step(daemon, 30)
+        self.assertEqual(self.count_attempts(daemon), 1, "a refused edit spends the window too")
+        self.fail_post_for(daemon, SEAT, fail=False)
+        self.step(daemon, 2400)
+        self.assertEqual([m["id"] for m in self.alerts()], [first])
+        self.assertIn("Nothing is held back now", self.alert_texts()[0], "cleared once the key is back")
+
+    def test_a_refused_key_with_no_other_seat_posts_nothing_and_waits(self) -> None:
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.fail_post_for(daemon, SEAT, error=Z.ApiError("Invalid API key", code="UNAUTHORIZED", status=401))
+        self.step(daemon, 4000)
+        for _ in range(60):
+            self.step(daemon, 30)
+        self.assertEqual(self.count_attempts(daemon), 1, "one edit an hour against a refused key")
+        self.assertEqual(len(self.alerts()), 1)
+
+    def test_the_posted_text_carries_the_fleet_sentence_gap(self) -> None:
+        """The composer writes two ASCII spaces and the client turns each into U+00A0 plus a space on
+        the way out (zulip.outbound_params), for the post and the edit alike."""
+        daemon = self.alert_daemon()
+        self.hold_one(daemon)
+        self.step(daemon, 31)
+        self.assertIn("  ", self.alert_texts()[0])
+        self.assertNotIn(".  ", self.alert_texts()[0])
+        HELD.surface(self.seat_paths(SEAT), message_ids=[r["message_id"] for r in self.held()], lost=0)
+        self.step(daemon, 4000)
+        self.assertIn("listener.**  Nothing is held back now", self.alert_texts()[0])
+        self.assertIn(".  This message is edited in place", self.alert_texts()[0])
+
     def test_a_seat_that_cannot_edit_hands_the_digest_to_a_fresh_post(self) -> None:
         """Only the bot that posted a message may edit it.  A standing message owned by a seat that is
         not running here cannot be edited, so the digest is posted fresh by a seat that can."""

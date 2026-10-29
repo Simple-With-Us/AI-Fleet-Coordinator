@@ -6214,18 +6214,25 @@ class Daemon:
             "counts": {s: h.get("count") for s, h in seats},
             "evicted": {s: h.get("evicted") for s, h in seats if h.get("evicted")},
         }
+        skip: str | None = None
         if standing is not None:
             editor = self.seats.get(standing["seat"])
             if editor is not None and editor.client is not None and not editor.fatal:
                 outcome = self._held_alert_edit(editor, standing["message_id"], text, now, fields)
-                if outcome != "refused":
+                if outcome in ("edited", "failed"):
                     return
-                # Zulip refused the edit (the message is gone, or this bot may not edit it), so
-                # nothing can bring that message back:  forget it and fall through to a fresh post.
-                HELDALERT.drop_standing(self.root)
+                if outcome == "gone":
+                    # Zulip refused the edit (the message is gone, or this bot may not edit it), so
+                    # nothing can bring that message back:  forget it and fall through to a fresh post.
+                    HELDALERT.drop_standing(self.root)
+                else:
+                    # That bot's key or account was refused, which can recover:  holds go out with
+                    # another seat (whose post becomes the standing one), and an all-clear keeps the
+                    # pointer for its owner.
+                    skip = editor.seat
             if not seats:
                 # An all-clear is never a fresh post.  The bot that owns the stale list is not here
-                # (or was refused), so the clear waits a window for it, or for nothing at all when
+                # or was refused, so the clear waits a window for it, or for nothing at all when
                 # the message is gone.  The window is spent so this is one log line a window, not
                 # one a tick.
                 self.log.write(
@@ -6235,7 +6242,7 @@ class Daemon:
                 )
                 HELDALERT.note_post(self.root, now)
                 return
-        runner = self._alert_runner()
+        runner = self._alert_runner(skip=skip)
         if runner is None:
             # No seat can post (every key refused, or none configured).  Nothing was sent, so the
             # window is NOT consumed and the digest goes out as soon as a usable key returns;  the
@@ -6281,18 +6288,23 @@ class Daemon:
     def _held_alert_edit(
         self, runner: SeatRunner, message_id: int, text: str, now: float, fields: Mapping[str, Any]
     ) -> str:
-        """Rewrite the standing digest with the bot that posted it.  `edited`, `failed` (the window is
-        spent and the same message is edited again next window) or `refused` (Zulip answered no for
-        good, so the caller posts a fresh one in the same attempt).  Only a 4xx other than a rate
-        limit is a refusal:  a timeout or a gateway error may have landed, and turning it into a new
-        post would leave two copies of the list."""
+        """Rewrite the standing digest with the bot that posted it.  One of:
+
+        - `edited`.
+        - `failed`:  a timeout, a rate limit or a gateway error, which may have landed.  The window
+          is spent and the same message is edited again next window;  turning it into a new post
+          would leave two copies of the list.
+        - `gone`:  400 or 404, Zulip's answer for a message that is gone or that this bot may not
+          edit.  Nothing brings it back, so the caller forgets it and posts fresh.
+        - `refused`:  401 or 403, the bot's key or account was refused.  That can recover, so the
+          caller keeps the pointer for its owner and carries only this window's holds elsewhere."""
         assert runner.client is not None
         self._pace(runner)
         try:
             runner.client.patch("messages/%d" % message_id, {"content": text})
         except Z.ApiError as exc:
             status = exc.status or 0
-            if 400 <= status < 500 and status != 429:
+            if status in (400, 404, 401, 403):
                 self.log.write(
                     "held-alert-edit-refused",
                     seat=runner.seat,
@@ -6300,7 +6312,9 @@ class Daemon:
                     status=status,
                     error=self.scrub(str(exc)),
                 )
-                return "refused"
+                # Still an attempt:  if no other seat can post either, the next try is next window.
+                HELDALERT.note_post(self.root, now)
+                return "gone" if status in (400, 404) else "refused"
             self.log.write(
                 "held-alert-edit-failed",
                 seat=runner.seat,
@@ -6339,16 +6353,17 @@ class Daemon:
         if wait > 0:
             self.clock.sleep(wait)
 
-    def _alert_runner(self) -> SeatRunner | None:
+    def _alert_runner(self, skip: str | None = None) -> SeatRunner | None:
         """The seat whose bot carries the digest:  `held_alert_seat`, else the claude seat, else the
         first enabled seat that has a usable key.  A seat that is fatal or not yet connected cannot
-        post (its key is refused or absent), so it is skipped rather than failing the whole digest."""
+        post (its key is refused or absent), so it is skipped rather than failing the whole digest,
+        and so is `skip`, a seat whose key Zulip just refused."""
         wanted = self.config.held_alert_seat or self.config.claude_seat
         order = ([self.seats[wanted]] if wanted in self.seats else []) + [
             r for r in self.seats.values() if r.seat != wanted
         ]
         for runner in order:
-            if runner.client is not None and not runner.fatal:
+            if runner.client is not None and not runner.fatal and runner.seat != skip:
                 return runner
         return None
 
