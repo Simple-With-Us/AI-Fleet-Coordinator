@@ -119,17 +119,23 @@ class MmSessionLetterTest(unittest.TestCase):
 
     def test_register_fails_closed_on_a_registry_error(self):
         # A registry that is out of reach is a failure, not a session with no letter.
-        with mock.patch.object(
-            M,
-            "registry_call",
-            return_value={"error": "the registry is out of reach", "code": "no_registry"},
-        ), self.assertRaises(M.RegistryError):
+        with (
+            mock.patch.object(
+                M,
+                "registry_call",
+                return_value={"error": "the registry is out of reach", "code": "no_registry"},
+            ),
+            self.assertRaises(M.RegistryError),
+        ):
             M.register("sid")
 
     def test_touch_fails_closed_on_a_registry_error(self):
-        with mock.patch.object(
-            M, "registry_call", return_value={"error": "the registry is out of reach"}
-        ), self.assertRaises(M.RegistryError):
+        with (
+            mock.patch.object(
+                M, "registry_call", return_value={"error": "the registry is out of reach"}
+            ),
+            self.assertRaises(M.RegistryError),
+        ):
             M.touch_session("sid")
 
     def test_an_interrupted_registry_call_stops_the_child(self):
