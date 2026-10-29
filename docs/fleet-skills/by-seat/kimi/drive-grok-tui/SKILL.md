@@ -1,6 +1,6 @@
 ---
 name: drive-grok-tui
-description: Drive a live Mac Grok TUI session from any local or cloud agent (Claude, Cursor, Grok, Shellular, Grok Bot, this TUI, …).  List chats with idle/working/needs-input and pendingTool, peek or tail the transcript, inject a prefixed follow-up, await the next turn via disk poll, or cancel.  Cloud seats use https://agents.jays.services/mcp (Access + Bearer), not grok-drive on the VM.  Use when you need to send work into an already-open grok terminal instead of spawning grok-acp :12419.
+description: Drive a live Mac Grok TUI session from any local or cloud agent (Claude, Cursor, Grok, Shellular, Grok Bot, this TUI, …).  List chats with idle/working/needs-input and pendingTool, peek or tail the transcript, inject a prefixed follow-up, await the next turn via disk poll, or cancel.  Cloud seats use the fleet MCP gateway in docs/RECALL-ACCESS-CHECK.md (Access + Bearer), not grok-drive on the VM.  Use when you need to send work into an already-open grok terminal instead of spawning grok-acp :12419.
 ---
 
 # Drive a live Grok TUI
@@ -47,9 +47,7 @@ python3 ~/apps/grok-acp-runtime/grok-idle-unload.py --dry-run
 Local stdio launcher: `sh ~/apps/mcp-servers/seat-mcp-launch.sh`
 (already in `~/.grok/config.toml`).  Loopback HTTP: `http://127.0.0.1:8793/mcp`.
 
-Cloud / Grok Bot / Cursor cloud / Claude Code Cloud: HTTPS
-
-`https://agents.jays.services/mcp`
+Cloud / Grok Bot / Cursor cloud / Claude Code Cloud: HTTPS MCP URL from `docs/RECALL-ACCESS-CHECK.md` (example shape: `https://agents.[REDACTED].com/mcp`).
 
 Cloudflare Access **and** Bearer `SEAT_MCP_TOKEN`.  Env placeholders only — never
 literals in git:
@@ -58,7 +56,7 @@ literals in git:
 {
   "mcpServers": {
     "seat-mcp": {
-      "url": "https://agents.jays.services/mcp",
+      "url": "https://agents.[REDACTED].com/mcp",
       "headers": {
         "Authorization": "Bearer ${SEAT_MCP_TOKEN}",
         "CF-Access-Client-Id": "${CF_ACCESS_CLIENT_ID}",
@@ -80,7 +78,7 @@ Flow: list → pick a `live=true` row → prompt `{sessionId, prompt, from}` →
 await `{sessionId}` (or `awaitReply` on the prompt job).
 
 A cloud agent cannot run `grok-drive.py` on the VM.  The MCP hop is the path
-into the Mac TUI.  GET `https://agents.jays.services/health` is public (no
+into the Mac TUI.  The gateway health check URL is named in `docs/RECALL-ACCESS-CHECK.md` (public, no
 token).  POST `/mcp` without Access is 302.
 
 ## Do not

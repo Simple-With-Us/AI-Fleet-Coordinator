@@ -49,10 +49,10 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin in
 ## Invariants for Public Repositories
 
 1. **Never Hardcode Infrastructure IDs in Public Repos:**
-   Always read values from environment variables (`INFISICAL_PROJECT_ID`, `COOLIFY_ST_APP_UUID`, `HETZNER_HOST_IP`, etc.) or query them dynamically via authenticated APIs.
+   Read host IPs, Tailscale names, and Coolify UUIDs from `fleet-ops:ATTACK-MAP.md` (or ask a Mac seat with access).  Load tunables through Infisical at process start — never commit literals or teach agents to read ad-hoc process environment variables for infrastructure IDs.
 
 2. **Secrets Handoff Protection:**
-   Read credentials from the process environment when it already holds the value, and `fleet-secrets get NAME` (Infisical Fleet-OPS) or the app's own Infisical project only as the fallback.  Never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
+   Read credentials only with `fleet-secrets get NAME` (Infisical Fleet-OPS) or the app's own Infisical project.  Do not read process environment variables for secrets, and never `cat`, `grep -E '^[A-Z0-9_]+='`, or log secret values into transcripts.
 
 3. **Mock Data in Tests & Documentation:**
    Use RFC 5737 documentation ranges (`192.0.2.1`, `198.51.100.1`, `203.0.113.1`) and generic mock UUIDs (`mock-app-uuid`, `mock-project-id`) in test fixtures and public rollouts.

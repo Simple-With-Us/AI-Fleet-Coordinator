@@ -118,7 +118,7 @@ Cloud cannot `df` this Mac.  Drive the Mac instead:
 python3 ~/apps/grok-acp-runtime/grok-drive.py --help
 ```
 
-Or hop via `https://agents.jays.services/mcp` (`drive-grok-tui` skill) and inject:
+Or hop via the fleet MCP gateway (`drive-grok-tui` skill; URL in `docs/RECALL-ACCESS-CHECK.md`) and inject:
 
 `Run python3 /Users/jay/apps/mac-resource-watch.py --once then report disk free, swap, load, and what cleanup did.`
 

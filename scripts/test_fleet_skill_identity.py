@@ -161,7 +161,14 @@ class SpecializeTests(unittest.TestCase):
             r"e\.g\.\u00a0",
             "non-terminal abbreviation e.g. must not take a sentence gap",
         )
+        self.assertNotIn("agents.jays.services", out_sess)
         self.assertNotIn("AGENT_SEAT=MONET", out_sess)
+
+        out_pickup = specialize_universal(
+            Path(ROOT, "docs", "fleet-skills", "pickup-seat", "SKILL.md").read_text(encoding="utf-8"),
+            skill_name="pickup-seat",
+        )
+        self.assertIn("You are **<YOUR_AGENT_TAG>**.\u00a0 Keep", out_pickup)
 
         out_not = specialize_universal(_notes(), skill_name="apple-notes")
         self.assertIn("[TEAM_KEY, Agent]", out_not)
@@ -2194,6 +2201,28 @@ class PrivateInventoryTests(unittest.TestCase):
             hits,
             [],
             "a published skill copy must name the private inventory, not carry it:\n"
+            + "\n".join(hits),
+        )
+
+    FORBIDDEN_SKILL_ENDPOINT_LITERALS = (
+        re.compile(r"agents\.jays\.services"),
+        re.compile(r"recall\.jays\.services"),
+        re.compile(r"\bcongress-ci\b|\bsocratic-ci\b|\bhetzner-ci\b"),
+    )
+
+    def test_published_skill_copies_carry_no_internal_host_or_runner_labels(self) -> None:
+        files = self._published_skill_files()
+        hits: list[str] = []
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            for pattern in self.FORBIDDEN_SKILL_ENDPOINT_LITERALS:
+                for match in pattern.finditer(text):
+                    line = text.count("\n", 0, match.start()) + 1
+                    hits.append(f"{path.relative_to(ROOT)}:{line}: {match.group(0)}")
+        self.assertEqual(
+            hits,
+            [],
+            "a published skill copy must not carry internal gateway hostnames or CI runner labels:\n"
             + "\n".join(hits),
         )
 

@@ -1595,7 +1595,7 @@ def specialize_universal(text: str, skill_name: str = "") -> str:
     text = text.replace(IDENTITY_TOKEN, universal_identity)
     text = text.replace(
         YOU_ARE_TOKEN,
-        "You are **<YOUR_AGENT_TAG>**.  Keep `<seat>/` branches.",
+        "You are **<YOUR_AGENT_TAG>**.\u00a0 Keep `<seat>/` branches.",
     )
     text = text.replace(
         SEAT_LINE_TOKEN,

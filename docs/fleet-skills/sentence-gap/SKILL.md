@@ -30,7 +30,8 @@ chat replies, Zulip, GitHub PR and issue text and review comments, Linear,
 commit messages, repo docs and Markdown, skills, agent instructions, and UI copy, on every
 surface but the two chat panes named below.
 
-- **The two exceptions:  the chat panes of Claude Code (the Code tab) and MiniMax Code (the MiniMax Code pane), and the body of an Apple Note.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.`  The entity is never the form anywhere else.  An Apple Note body takes the narrow no-break space plus a normal space, because Apple Notes normalizes a no-break space away on import (AFC-552).
+- **The chat-pane exceptions: the Claude Code Code tab and the MiniMax Code chat pane.**  Those panes normalize a raw U+00A0 away, so a chat reply there uses the `&nbsp;` entity plus a normal space, outside code spans:  `End.&nbsp; Next.`  The entity is never the form anywhere else.
+- **Apple Note bodies** (Coding-folder notes from `scripts/apple-notes-coding.sh`) take the narrow no-break space (U+202F) plus a normal space, because Apple Notes normalizes a no-break space away on import (AFC-552).
 - **Never write the `&nbsp;` entity anywhere else.**  It shows up as literal text in squash-merge commits,
   plain-text email and many APIs.
 - **Two plain ASCII spaces are not enough.**  Rendered surfaces (Zulip, GitHub, Linear, HTML,

@@ -75,7 +75,7 @@ listing the `/recall/*` routes, both BotFleet routines present, the last ingest 
 ssh.  Only file names, route names, ages, and booleans are printed.  Exit 1 on any FAIL.
 
 **Tailscale down.**  `recall_search` / `recall_stats` / `recall_contribute` fall back to the
-public twin (`recall.jays.services`) automatically when Tailscale is down on this Mac, but
+public twin (hostname in `docs/RECALL-ACCESS-CHECK.md`) automatically when Tailscale is down on this Mac, but
 `recall ingest`, `recall eval`, and the `doctor --platforms` sentinel row need the direct
 Qdrant/TEI path -- there is no public route for ingest and the public twin drops the
 rerank/per_doc knobs eval needs.  Those three fail fast with one actionable line instead of a
@@ -94,7 +94,7 @@ contribute or say `no lesson`; a per-session marker under `~/apps/fleet-rag/stat
 prevents repeats and `FLEET_RECALL_HOOKS=0` disables both hooks.
 
 Cloud seats (Cursor cloud, Codex cloud, Claude cloud, Grok Bot personas) reach the same three
-tools through the fleet MCP gateway at `https://agents.jays.services/mcp` (Cloudflare Access +
+tools through the fleet MCP gateway (`docs/RECALL-ACCESS-CHECK.md` names the URL; Cloudflare Access +
 bearer, see `docs/fleet-skills/drive-grok-tui`).  Nothing else on the internet can reach the
 corpus; both services bind to the Tailscale mesh only.
 

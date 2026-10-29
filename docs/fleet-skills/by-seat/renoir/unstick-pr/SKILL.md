@@ -57,7 +57,7 @@ Do not guess.  Open the failing job.
 - ST Playwright `smoke` (`test/e2e/dashboard-smoke.spec.ts`) has a documented flake class: `docs/rollouts/2026-06-22-e2e-smoke-auth-fix.md`.
 - Money-path / typecheck / gitleaks failures are real until proven otherwise.
 
-CI runs on Coolify self-hosted runners (`congress-ci` / `socratic-ci` / `hetzner-ci` labels).  Do not start or "fix" a local Mac Actions runner — permanently banned for PR checks. iOS ship is GitHub-hosted `macos-latest` only (Compiler / `GB-COMPILER`).  DealDex's hosted Actions ship stays — do not disable it.  Do not compile or upload from this Mac, and do not force a ship past the gate.
+CI for this repo runs on Coolify self-hosted runners (see the `runs-on` labels in `.github/workflows/` — do not copy runner hostnames or labels into public skill text).  Do not start or "fix" a local Mac Actions runner — permanently banned for PR checks. iOS ship is GitHub-hosted `macos-latest` only (Compiler / `GB-COMPILER`).  DealDex's hosted Actions ship stays — do not disable it.  Do not compile or upload from this Mac, and do not force a ship past the gate.
 
 ### D) No CI on this head SHA
 
