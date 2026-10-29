@@ -462,6 +462,7 @@ def process_group(
                 "doc_hash": doc_hash,
                 "chunk_ids": new_ids,
                 "updated_at": int(doc.updated_at_ms or 0),
+                "refreshed_at": now_ms(),
                 "source": doc.source,
             }
     if not writer.dry_run:
@@ -769,6 +770,7 @@ def _run_locked(
             qd = None
     writer = Writer(cfg, qd, dry_run, log)
     state = load_state(state_path)
+    state_touched = False
     t_run = time.monotonic()
     seen_run: dict[str, str] = {}  # doc_id -> source, for the duplicate guard
     live_owners: set[str] = set()  # doc_ids yielded so far (shared-chunk re-pointing)
@@ -799,6 +801,17 @@ def _run_locked(
                 doc_hash = content_hash(doc.text_markdown)
                 prev = state.get(doc.doc_id)
                 if prev and prev.get("doc_hash") == doc_hash:
+                    # Content verified unchanged against the committed corpus:  the hash
+                    # match is proof the corpus holds this exact content, so record the
+                    # verification and carry the provider timestamp forward.  A state row
+                    # advances only through this hash check or a committed upsert - a
+                    # fetched-but-uncommitted doc (failed upsert, dry run, crashed run)
+                    # advances nothing and is retried.
+                    prev["refreshed_at"] = now_ms()
+                    doc_updated = int(doc.updated_at_ms or 0)
+                    if doc_updated > int(prev.get("updated_at") or 0):
+                        prev["updated_at"] = doc_updated
+                    state_touched = True
                     continue
                 stats["docs_changed"] += 1
                 group.append((doc, doc_hash))
@@ -837,6 +850,8 @@ def _run_locked(
                 telemetry.capture_exception(e, operation="ingest-prune", source=name)
         log(f"[{name}] done in {time.monotonic() - t0:.1f}s: {json.dumps(stats)}")
 
+    if state_touched and not dry_run:
+        save_state(state, state_path)
     report["finished_at"] = now_ms()
     report["wall_s"] = round(time.monotonic() - t_run, 1)
     if not dry_run:

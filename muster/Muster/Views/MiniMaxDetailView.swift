@@ -218,7 +218,9 @@ struct MiniMaxDetailView: View {
                     ForEach(agents) { agent in
                         GridRow(cells: [
                             GridCellText(
-                                value: agent.ownsSeatMemory ? "\(agent.name) (this seat)" : agent.name
+                                // The runtime calls this seat's own agent `mavis` and the fleet
+                                // calls that seat `MM`, so the row names both of them.
+                                value: agent.ownsSeatMemory ? "\(agent.name) (\(seat), this seat)" : agent.name
                             ),
                             GridCellText(
                                 value: agent.hasPrompt ? "agent.md" : "none",

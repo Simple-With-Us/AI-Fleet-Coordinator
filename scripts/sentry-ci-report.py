@@ -4,11 +4,35 @@ sentry-ci-report.py — reports CI workflow outcomes to the shared fleet-infra
 Sentry project (org simple-with-us), via raw envelope HTTP (no sentry-sdk
 dependency, no GitHub Actions marketplace action).
 
-Invoked by .github/workflows/sentry-ci-report.yml, which listens for
-`workflow_run: types: [requested, completed]` across every other workflow in
-this repo and sets the env vars this script reads.  This script itself does not
+Invoked by .github/workflows/sentry-ci-report-reusable.yml, the shared
+`workflow_call` reporter every repo in the fleet calls from its own thin
+`workflow_run` listener (in this repository, .github/workflows/sentry-ci-report.yml).
+That listener sets the env vars this script reads.  This script itself does not
 know about GitHub Actions beyond reading those env vars — all the wiring lives
-in the workflow file.
+in the workflow files.
+
+THE PER-CALLER CONTRACT.  A shared reporter cannot hard-code the caller's
+data,  so four environment variables carry it:
+  SENTRY_OBSERVED_WORKFLOWS — JSON array of the observed workflow `name:`
+      values.  The reporter runs from a checkout of THIS repository,  not the
+      caller's,  so the caller's workflow files are not on disk to discover;  the
+      observed list is what the cron-drift guard below checks the cron map
+      against.  Absent:  an empty list,  and the cron-drift guard then reports
+      "cannot tell" instead of pretending no workflow was renamed.  Present but
+      not a JSON array:  a hard error,  because a broken list must never read as
+      an empty one.
+  SENTRY_CRON_SCHEDULES — JSON object mapping an observed workflow `name:` to
+      its cron expression.  Absent:  the CRON_SCHEDULES constant below,  which
+      is this repository's own.  Present but not a JSON object:  an empty map
+      and a warning,  NEVER that constant —  mirroring this repository's
+      schedules for another caller would create Crons monitors for workflows
+      that caller does not have,  while the caller's real monitors went
+      inactive.
+  SENTRY_APP — the calling repository's display name,  the `app` tag on every
+      event.  Absent:  "AI-Fleet-Coordinator".
+  SENTRY_APP_IDENTITY — the stable lowercase identity used in the issue
+      fingerprint,  the monitor slug and the check-in id.  Absent:  the slugified
+      SENTRY_APP,  which is this repository's own historical value.
 
 Three signals are sent, across the two phases of one observed run:
   1. REQUESTED phase, schedule-triggered runs only (WORKFLOW_RUN_ACTION ==
@@ -38,7 +62,7 @@ Three signals are sent, across the two phases of one observed run:
      in ALERT_CONCLUSIONS, "ok" for every other conclusion — the monitor
      answers "did this cron fire", and a cancelled/skipped tick is not a
      failure of the schedule) with an upsert monitor_config whose schedule
-     mirrors that workflow's own cron expression (see CRON_SCHEDULES below) so a
+     mirrors that workflow's own cron expression (see the cron map below) so a
      nightly/weekly job that silently STOPS running raises a missed-check-in
      alert.  It carries the SAME check_in_id as (1), which is what CLOSES the
      in_progress check-in that phase opened.
@@ -83,22 +107,41 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
+
+def slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    slug = re.sub(r"-+", "-", slug)
+    return slug
+
+
 # This repo's identity in the shared fleet-infra project. Tags every event and
 # participates in the fingerprint so cross-repo CI failures never collapse into
 # one Sentry issue.
-APP = "AI-Fleet-Coordinator"
+#
+# This reporter is SHARED:  a caller passes its own repository name in
+# SENTRY_APP,  because a hard-coded app tag would fold every repo's "CI"
+# failures into one single Sentry issue.  The defaults below are this
+# repository's own values,  so a caller that passes nothing keeps the
+# historical behaviour exactly.
+APP = os.environ.get("SENTRY_APP", "").strip() or "AI-Fleet-Coordinator"
 # Stable identity for Sentry-keyed identifiers, kept at the pre-rename
 # lowercase repo name on purpose: monitor slugs, issue fingerprints and
 # check-in UUIDs were all minted under it, so adopting the renamed casing
 # there would orphan every existing Crons monitor and split every open
 # Sentry issue. Display strings (messages, tags) use APP above.
-APP_IDENTITY = "ai-fleet-coordinator"
+# A shared caller passes its own identity in SENTRY_APP_IDENTITY;  the default
+# is the slugified APP,  which is exactly this repository's historical value.
+APP_IDENTITY = os.environ.get("SENTRY_APP_IDENTITY", "").strip() or slugify(APP)
 
+# The cron schedules this reporter mirrors.  The literal below is the FALLBACK:
+# it is what a per-repo run used before this reporter became shared.  A caller
+# that goes through the reusable workflow passes its own map in
+# SENTRY_CRON_SCHEDULES instead,  because the mirrored schedules belong to the
+# caller's repository and not to this one.
 CRON_SCHEDULES = {
     "Backup fleet GitHub repositories": "0 7 * * *",
     "Fleet daily digest + calendars": "25 1,7,13,19 * * *",
 }
-_CRON_SCHEDULES_FOLDED = {name.casefold(): expr for name, expr in CRON_SCHEDULES.items()}
 
 DEFAULT_CHECKIN_MARGIN = 15
 # GitHub `schedule` delivery is best-effort.  These daily monitors always
@@ -134,10 +177,92 @@ WORKFLOWS_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 ALERT_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure"})
 
 
-def slugify(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-    slug = re.sub(r"-+", "-", slug)
-    return slug
+def _env_json(name: str):
+    """Parse one JSON environment variable into a (value, present, valid) triple.
+
+    `present` is True whenever the variable is SET in the environment,  even
+    when its content is unusable,  so a caller can tell "the caller supplied
+    nothing" apart from "the caller supplied something broken".  The two must
+    never be confused:  answering a broken input with another repository's
+    built-in literal would report another repository's data as the caller's.
+    `valid` says whether the content actually parsed as JSON.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return None, False, False
+    text = raw.strip()
+    if not text:
+        return None, True, False
+    try:
+        return json.loads(text), True, True
+    except (TypeError, ValueError):
+        return None, True, False
+
+
+def cron_schedules_from_env() -> dict[str, str]:
+    """The effective cron map:  the caller's SENTRY_CRON_SCHEDULES, else the fallback.
+
+    A shared reporter mirrors the CALLER's schedules,  so the reusable workflow
+    passes them in as JSON.  Absent:  the CRON_SCHEDULES literal above,  which is
+    what a per-repo run used.  Present but unusable:  an EMPTY map and a
+    warning,  never that literal —  the literal belongs to THIS repository,  and
+    mirroring it for another caller would create Crons monitors for workflows
+    the caller does not have,  while the caller's real monitors went inactive.
+    """
+    parsed, present, valid = _env_json("SENTRY_CRON_SCHEDULES")
+    if not present:
+        return dict(CRON_SCHEDULES)
+    if not valid:
+        print(
+            "::warning::SENTRY_CRON_SCHEDULES is not valid JSON;  using an empty "
+            "cron map instead of the built-in fallback"
+        )
+        return {}
+    if not isinstance(parsed, dict):
+        print(
+            "::warning::SENTRY_CRON_SCHEDULES is not a JSON object;  using an empty "
+            "cron map instead of the built-in fallback"
+        )
+        return {}
+    out: dict[str, str] = {}
+    for key, value in parsed.items():
+        if isinstance(key, str) and isinstance(value, str) and key.strip() and value.strip():
+            out[key.strip()] = value.strip()
+    return out
+
+
+def observed_workflows_from_env() -> list[str]:
+    """The effective observed-workflow list:  the caller's, else empty.
+
+    The names the caller observes belong to the caller's repository.  The
+    reporter runs from a checkout of THIS repository,  so the caller's workflow
+    files are not on disk to discover,  and the observed list is what the
+    cron-drift guard must check against.
+
+    Absent:  an empty list.  Present but unusable:  a ValueError — a malformed
+    list must never be mistaken for "the caller observed nothing",  which would
+    silently disable the cron-drift guard.
+    """
+    parsed, present, valid = _env_json("SENTRY_OBSERVED_WORKFLOWS")
+    if not present:
+        return []
+    if not valid:
+        raise ValueError(
+            "SENTRY_OBSERVED_WORKFLOWS is not valid JSON;  it must be a JSON array of "
+            "observed workflow names,  and the shared reporter cannot check the cron map "
+            "for a renamed workflow without it"
+        )
+    if not isinstance(parsed, list):
+        raise ValueError(
+            "SENTRY_OBSERVED_WORKFLOWS must be a JSON array of observed workflow names;  "
+            "the shared reporter cannot check the cron map for a renamed workflow without it"
+        )
+    return [name.strip() for name in parsed if isinstance(name, str) and name.strip()]
+
+
+EFFECTIVE_CRON_SCHEDULES = cron_schedules_from_env()
+_EFFECTIVE_CRON_FOLDED = {name.casefold(): expr for name, expr in EFFECTIVE_CRON_SCHEDULES.items()}
+EFFECTIVE_OBSERVED_WORKFLOWS = observed_workflows_from_env()
 
 
 def discover_workflow_names(workflows_dir: Path = WORKFLOWS_DIR) -> set[str] | None:
@@ -148,6 +273,10 @@ def discover_workflow_names(workflows_dir: Path = WORKFLOWS_DIR) -> set[str] | N
     deliberately dumb line scan rather than a YAML parse: this must not add a
     PyYAML dependency to a script whose whole point is having none, and the
     top-level `name:` of a GitHub workflow is always a plain unindented scalar.
+    The shared reusable checks out ONE file,  so its sparse checkout has no
+    .github/workflows directory at all and this scan cannot run there;  the
+    cron-drift guard uses the caller's observed-workflow list instead (see
+    known_workflow_names()).
     """
     if not workflows_dir.is_dir():
         return None
@@ -165,8 +294,31 @@ def discover_workflow_names(workflows_dir: Path = WORKFLOWS_DIR) -> set[str] | N
     return names
 
 
+def known_workflow_names() -> set[str] | None:
+    """The workflow names the cron-drift guard checks against,  or None.
+
+    The observed list the caller passes is the only source the shared reporter
+    can trust:  it runs from a checkout of ITS OWN repository,  where the
+    caller's workflow files are not on disk to discover.  An empty list means
+    "cannot tell":  it warns and returns None,  because reporting no drift from
+    an unknown workflow set would hide a renamed workflow,  and the local scan
+    cannot rescue it either — the reusable's sparse checkout has no
+    .github/workflows directory to scan.
+    """
+    if EFFECTIVE_OBSERVED_WORKFLOWS:
+        return set(EFFECTIVE_OBSERVED_WORKFLOWS)
+    print(
+        "::warning::no observed-workflow list is available,  so the cron-drift "
+        "guard cannot check the cron map for a renamed workflow"
+    )
+    return None
+
+
 def find_cron_schedule_drift(known_names: set[str] | None) -> list[str]:
-    """CRON_SCHEDULES keys that match no real workflow `name:`, case-insensitively.
+    """Cron-map keys that match no real workflow `name:`, case-insensitively.
+
+    The map is the effective one:  the caller's SENTRY_CRON_SCHEDULES when it
+    supplied one,  the CRON_SCHEDULES constant otherwise.
 
     Empty when the workflow set is unknown (None) or empty — "I could not read
     the workflows" must never masquerade as "every key is stale".
@@ -174,7 +326,7 @@ def find_cron_schedule_drift(known_names: set[str] | None) -> list[str]:
     if not known_names:
         return []
     folded = {name.casefold() for name in known_names}
-    return sorted(key for key in CRON_SCHEDULES if key.casefold() not in folded)
+    return sorted(key for key in EFFECTIVE_CRON_SCHEDULES if key.casefold() not in folded)
 
 
 def checkin_id_for_run(run_id: str, run_attempt: str) -> str:
@@ -253,19 +405,19 @@ def resolve_cron_expr(
     Lookup is case-folded — a workflow rename that only changes capitalisation
     must never again silently detach a job from its Crons monitor.
     """
-    cron_expr = _CRON_SCHEDULES_FOLDED.get(workflow_name.casefold())
+    cron_expr = _EFFECTIVE_CRON_FOLDED.get(workflow_name.casefold())
     if cron_expr:
         return cron_expr
     print(
         f"::warning::Schedule-triggered run for '{workflow_name}' has no known cron "
-        "expression mapped in CRON_SCHEDULES; skipping check-in."
+        "expression mapped in SENTRY_CRON_SCHEDULES (or in the CRON_SCHEDULES constant); "
+        "skipping check-in."
     )
     send_config_drift_event(
         envelope_url,
         auth_header,
         "unmapped-schedule",
-        f"sentry-ci-report has no CRON_SCHEDULES entry for scheduled workflow "
-        f"'{workflow_name}' [{APP}]",
+        f"sentry-ci-report has no cron map entry for scheduled workflow '{workflow_name}' [{APP}]",
         ["ci-report-config-drift", APP_IDENTITY, "unmapped-schedule", workflow_name],
         {"workflow": workflow_name, "run_url": run_url, "run_id": run_id},
     )
@@ -445,20 +597,21 @@ def main() -> int:
         f"Sentry sentry_version=7, sentry_client=sentry-ci-report/1.0, sentry_key={public_key}"
     )
 
-    # ── 0. Config-drift guard for CRON_SCHEDULES ────────────────────────────
-    stale_keys = find_cron_schedule_drift(discover_workflow_names())
+    # ── 0. Config-drift guard for the cron map ─────────────────────────────
+    stale_keys = find_cron_schedule_drift(known_workflow_names())
     if stale_keys:
         joined = ", ".join(repr(key) for key in stale_keys)
         print(
-            f"::error::CRON_SCHEDULES key(s) {joined} match no workflow `name:` under "
-            ".github/workflows/ — those cron check-ins are not being sent. "
-            "Re-key CRON_SCHEDULES in scripts/sentry-ci-report.py to the current name."
+            f"::error::cron map key(s) {joined} match no observed workflow name — "
+            "those cron check-ins are not being sent. "
+            "Re-key SENTRY_CRON_SCHEDULES (or CRON_SCHEDULES in scripts/sentry-ci-report.py) "
+            "to the current name."
         )
         send_config_drift_event(
             envelope_url,
             auth_header,
             "stale-cron-key",
-            f"sentry-ci-report CRON_SCHEDULES has stale workflow name(s): {joined} [{APP}]",
+            f"sentry-ci-report cron map has stale workflow name(s): {joined} [{APP}]",
             ["ci-report-config-drift", APP_IDENTITY, "stale-cron-key"],
             {"stale_keys": stale_keys, "run_url": run_url},
         )
