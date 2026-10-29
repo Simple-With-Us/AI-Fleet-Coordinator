@@ -153,6 +153,82 @@ class Dependencies(unittest.TestCase):
             self.runverb(AuthClient(), a, args)
         self.assertEqual(ctx.exception.credential_preview, "ghs_abcd\u2026wxyz")
 
+    def test_write_rate_limit_releases_idempotency_key(self):
+        import json
+        import tempfile
+        from pathlib import Path
+
+        from git_relay.audit import AuditLog
+        from git_relay.policy import SeatPolicy
+        from git_relay.server import Relay
+
+        seat_token = "y" * 32
+        config = json.dumps(
+            {
+                "swu-wise": {
+                    "token": seat_token,
+                    "app_slug": "swu-wise",
+                    "mint_permissions": {"issues": "write", "metadata": "read"},
+                    "actions": ["wf_issue_dependency_add"],
+                    "repos": [REPO],
+                }
+            }
+        )
+
+        class Mint:
+            def token_for(self, *args):
+                return "synthetic-own-bearer", 0
+
+        class RateWrite(Client):
+            def __init__(self):
+                super().__init__()
+                self.write_attempts = 0
+
+            def _call(self, method, path, payload=None, bearer=None):
+                self.calls.append((method, path, payload, bearer))
+                if method == "GET":
+                    return item(int(path.rsplit("/", 1)[1]))
+                if method == "POST" and "dependencies" in path:
+                    self.write_attempts += 1
+                    if self.write_attempts == 1:
+                        raise RelayGitHubError(429, "rate", retry_after=9)
+                    return item(2)
+                return super()._call(method, path, payload, bearer)
+
+        args = {"repo": REPO, "number": 1, "blocker_number": 2}
+        with tempfile.TemporaryDirectory() as tmp:
+            client = RateWrite()
+
+            def make():
+                return Relay(
+                    SeatPolicy(config),
+                    client,
+                    AuditLog(str(Path(tmp) / "audit.jsonl")),
+                    app_minter=Mint(),
+                    workflow_verbs_enabled=True,
+                )
+
+            r = make()
+            status, body = r.handle(seat_token, "wf_issue_dependency_add", args)
+            self.assertEqual(status, 429, body)
+            self.assertTrue(body.get("retryable"))
+            self.assertEqual(body.get("retry_after_seconds"), 9)
+            status2, body2 = r.handle(seat_token, "wf_issue_dependency_add", args)
+            self.assertEqual(status2, 200, body2)
+            self.assertTrue(body2.get("completed"))
+
+    def test_dependency_target_accepts_canonical_repo_casing(self):
+        alt = REPO.swapcase()
+        if alt == REPO:
+            self.skipTest("repo name is casing-invariant under swapcase")
+        c = Client({**item(1), "repository_url": "https://api.github.com/repos/" + alt}, item(2), item(2))
+        out = self.runverb(
+            c,
+            "wf_issue_dependency_add",
+            {"repo": REPO, "number": 1, "blocker_number": 2},
+        )
+        self.assertTrue(out["completed"])
+
     def test_real_relay_mutation_unknown_holds_without_secret_diagnostics(self):
         import json
         import tempfile

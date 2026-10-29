@@ -324,6 +324,11 @@ test('issue relation pages closed boundary and own bearer',async()=>{
 test('relations title credential rejected and closed nongit Zod before dispatch',()=>{
  assert.equal(validWfV1Response('wf_issue_parent',{issue:{id:1,number:2,title:'ghp_'+'x'.repeat(36),state:'open',repo}}),false);
  assert.equal(validWfV1Args('wf_issue_blocking',{repo,number:1,raw:true}),false);
+ // Synthetic runtime-only shapes, never credentials.
+ for(const title of ['sk-'+'x'.repeat(30),'sk-ant-'+'x'.repeat(30)]) {
+  assert.equal(validWfV1Args('wf_issue_create',{repo,title,body:'ok body'}),false);
+  assert.equal(validWfV1Args('wf_issue_update',{repo,number:1,title}),false);
+ }
 });
 
 test('dependency writes exact own bearer, closed shapes and unknown no replay',async()=>{
