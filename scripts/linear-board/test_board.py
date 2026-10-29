@@ -128,6 +128,7 @@ class MockLinear:
         self.mint_down = False
         self.request_id = ""  # a request id the token endpoint's answer carries, if any
         self.scopes: list[str] = []
+        self.omit_scope = False
         self.tokens: set[str] = set()
         self.ratelimit400 = 0
         self.limit_ops: dict = {}  # operation name -> requests to rate-limit (400 RATELIMITED)
@@ -781,7 +782,7 @@ def make_handler(mock: MockLinear):
                             "access_token": tok,
                             "token_type": "Bearer",
                             "expires_in": 2592000,
-                            "scope": form.get("scope"),
+                            **({} if mock.omit_scope else {"scope": form.get("scope")}),
                         },
                     )
                 if self.path != "/graphql":
@@ -3061,6 +3062,48 @@ class SeatAppTests(BoardTest):
         self.assertFalse(
             (self.ops_vault / ".run-called").exists(), "board called `fleet-secrets run`"
         )
+
+    def test_ma_mints_with_its_own_installed_scope_and_other_seats_keep_the_global_one(self):
+        ma_scope = "comments:create,issues:create,read,write"
+        ma, _ = self.seat_app("MA", "Muse Assist (MA)")
+        claude, _ = self.seat_app("CLAUDE", "Claude")
+        self.as_seat("MA", "whoami")
+        self.as_seat("MA", "whoami")
+        self.assertEqual(self.mock.scopes, [ma_scope], "one mint, with MA's own scope")
+        self.assertNotIn("assignable", ma_scope)
+        self.assertNotIn("mentionable", ma_scope)
+        self.assertEqual(json.loads(self.cache("MA").read_text())["scope"], ma_scope)
+        self.as_seat("CLAUDE", "whoami")
+        self.assertEqual(self.mock.scopes, [ma_scope, EXPECTED_SCOPE], "CLAUDE still mints with the global scope")
+        self.assertEqual(json.loads(self.cache("CLAUDE").read_text())["scope"], EXPECTED_SCOPE)
+        self.assertEqual(self.mock.mints_by, {ma: 1, claude: 1})
+
+    def test_ma_cache_scope_falls_back_to_ma_scope_when_linear_omits_it(self):
+        self.seat_app("MA", "Muse Assist (MA)")
+        self.seat_app("CLAUDE", "Claude")
+        self.mock.omit_scope = True
+        self.as_seat("MA", "whoami")
+        self.as_seat("CLAUDE", "whoami")
+        self.assertEqual(json.loads(self.cache("MA").read_text())["scope"], "comments:create,issues:create,read,write")
+        self.assertEqual(json.loads(self.cache("CLAUDE").read_text())["scope"], EXPECTED_SCOPE)
+
+    def test_ma_with_no_pair_of_its_own_uses_the_fleet_app_and_the_global_scope(self):
+        self.as_seat("MA", "whoami", code=None)
+        self.assertEqual(self.mock.scopes, [EXPECTED_SCOPE])
+        self.assertTrue(self.cache("FLEET").exists())
+        self.assertFalse(self.cache("MA").exists())
+
+    def test_a_generic_env_pair_is_refused_before_any_mint_for_ma_but_not_for_other_seats(self):
+        pair = {"LINEAR_CLIENT_ID": CLIENT_ID, "LINEAR_CLIENT_SECRET": CLIENT_SECRET}
+        self.as_seat("MA", "whoami", extra=pair, code=None)
+        self.assertEqual(self.mock.mints, 0)
+        self.assertEqual(self.mock.scopes, [])
+        self.as_seat("CLAUDE", "whoami", extra=pair)
+        self.assertEqual(self.mock.scopes, [EXPECTED_SCOPE])
+
+    def test_the_shared_fleet_app_mints_with_the_global_scope(self):
+        self.board("whoami")
+        self.assertEqual(self.mock.scopes, [EXPECTED_SCOPE])
 
     def test_two_seats_use_their_own_app_token_and_cache(self):
         claude, _ = self.seat_app("CLAUDE", "Claude")
