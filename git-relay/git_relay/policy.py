@@ -126,7 +126,6 @@ class SeatPolicy:
         "wf_tag_create",
         "wf_tag_get",
         "wf_tag_delete",
-
         "wf_pr_draft",
         "wf_pr_ready",
         "wf_automerge_enable",
