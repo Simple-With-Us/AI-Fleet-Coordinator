@@ -15,8 +15,8 @@ Two things follow, and this module enforces both:
     refusal, so a free-text field cannot be added by accident;
   - the send goes through `ZulipClient.operator_status_dm`, the one send that skips the
     owner-in-the-conversation guard (AFC-469).  `ZulipClient.request` enforces the exemption on the
-    exact shape of the call:  a client verified as the pinned Operator bot, one recipient, a status
-    tag and no mention.
+    exact shape of the call:  a client verified as the pinned Operator bot, one recipient, and a
+    content that is exactly a text this vocabulary builds (operator_status_text.is_status_text).
 
 The Operator's clarifying question is not here.  Its reply leg is not built:  the sender's answer
 would be a direct message to the Operator, which the owner guard refuses for a bot, and nothing
@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -43,42 +42,21 @@ from typing import Any
 
 from . import live as L
 from . import operator_candidates as OC
+from . import operator_status_text as ST
 from . import secretscan
 from . import service_identity as SI
 from . import zulip as Z
 
-KIND_STATUS = "status"
-KINDS = (KIND_STATUS,)
-
-#: What a status message can say happened to a wake.  The sentence is fixed;  only the seat tag is
-#: filled in.  "Operator" speaks about itself in the third person, because an automated process
-#: must not read as a person.
-OUTCOMES: Mapping[str, str] = {
-    "woken": "{seat} was woken.",
-    "alerted": "{seat} was alerted and will see it at its next check.",
-    "queued": "It is queued for the next session of {seat}.",
-    "held": "It is held back, and a catch-up wake for {seat} will cover it.",
-    "dropped": "It was not delivered to {seat}.",
-    "paused": "Waking {seat} is paused, so nothing was delivered.",
-}
-
-#: Why a wake was held back or dropped.  Fixed sentences again, so a reason cannot carry a detail.
-REASONS: Mapping[str, str] = {
-    "budget": "The seat is over its wake budget.",
-    "quota": "The seat's provider quota is used up.",
-    "loop_guard": "The loop guard stopped a repeat wake.",
-    "stale": "The message was too old to wake anyone.",
-    "paused": "Waking is paused.",
-    "no_session": "No live session could take it.",
-    "unreachable": "The seat could not be reached.",
-}
-
-#: The outcomes that may carry a reason.  A woken seat has nothing to explain, and `paused` says
-#: why in its own sentence.
-REASON_OUTCOMES = frozenset({"held", "dropped"})
-
-#: A seat tag:  `MM`, `CLAUDE`, `GB-ORACLE`.
-SEAT_RE = re.compile(r"^[A-Z][A-Z0-9_-]{0,31}$")
+# The vocabulary and the text builder live in operator_status_text, a leaf module that zulip.py also
+# reads:  the client checks, on the exemption path, that a status message is exactly one of these texts.
+KIND_STATUS = ST.KIND_STATUS
+KINDS = ST.KINDS
+OUTCOMES = ST.OUTCOMES
+REASONS = ST.REASONS
+REASON_OUTCOMES = ST.REASON_OUTCOMES
+SEAT_RE = ST.SEAT_RE
+GAP = ST.GAP
+build_text = ST.build_text
 
 #: The Zulip bot types that can take a status message:  generic (1) and outgoing webhook (3).  A
 #: fleet seat bot is either, and the router treats both as fleet bots.  An incoming webhook (2) and
@@ -91,57 +69,6 @@ STATE_FILE = "operator-status-dms.json"
 #: wake outcome for one message goes to one recipient once;  a later, different outcome for the
 #: same message (queued, then woken) is a different key and is reported.
 DEDUPE_WINDOW = 24 * 3600.0
-
-#: Two literal ASCII spaces between sentences:  the Zulip client turns them into the owner's
-#: sentence gap on the way out.
-GAP = "  "
-
-
-# --------------------------------------------------------------------------------------------
-# Text
-# --------------------------------------------------------------------------------------------
-
-
-def _seat(value: Any) -> str:
-    text = str(value or "").strip().upper()
-    if not SEAT_RE.fullmatch(text):
-        raise ValueError("not a seat tag")
-    return text
-
-
-def _message_id(value: Any) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError("not a message id")
-    return value
-
-
-def build_text(
-    kind: str,
-    *,
-    reply_to: int,
-    seat: str | None = None,
-    outcome: str | None = None,
-    reason: str | None = None,
-) -> str:
-    """The text of one status message, from the fixed vocabulary alone.
-
-    `kind` is `status`.  `reply_to` is the Zulip id of the sender's own message, `seat` the seat tag
-    it named, `outcome` what became of the wake, and `reason` (only for a held or dropped wake) why.
-    Any value outside the lists raises ValueError."""
-    if kind not in KINDS:
-        raise ValueError("not an Operator status kind")
-    mid = _message_id(reply_to)
-    who = _seat(seat)
-    if outcome not in OUTCOMES:
-        raise ValueError("not a status outcome")
-    sentences = ["Your message tagged %s." % who, OUTCOMES[outcome].format(seat=who)]
-    if reason is not None:
-        if outcome not in REASON_OUTCOMES:
-            raise ValueError("this outcome carries no reason")
-        if reason not in REASONS:
-            raise ValueError("not a status reason")
-        sentences.append(REASONS[reason])
-    return "%s re=%d\n%s" % (Z.OPERATOR_STATUS_TAGS[0], mid, GAP.join(sentences))
 
 
 # --------------------------------------------------------------------------------------------
@@ -170,9 +97,11 @@ def connect_operator(
 
     The credential comes from Fleet-OPS `/zulip_operator` (service_identity), the client's
     `users/me` has to be the pinned Operator bot (id, address, bot flag and the owner as its
-    owner), and only then is the client marked with the Operator's id and address.  The asking
-    seat's own credential is never used here.  A client passed in is marked in place, so a caller
-    that shares one should pass a client of its own."""
+    owner), and only then is the client marked with the Operator's id and address and the owner
+    pin it was checked against.  The asking seat's own credential is never used here.  A client
+    passed in is marked in place, so a caller that shares one should pass a client of its own;  one
+    built with another owner pin than `owner_user_id` is refused.  The mark is checked again on
+    every exempt call, so removing or rotating the pin afterwards voids it."""
     if isinstance(owner_user_id, bool) or not isinstance(owner_user_id, int) or owner_user_id <= 0:
         return _outcome("refused", "the owner is not pinned, so the Operator bot cannot be checked")
     creds = credentials
@@ -224,7 +153,7 @@ def connect_operator(
     if not callable(mark):
         return _outcome("refused", "the client cannot send an Operator status message")
     try:
-        mark(me["user_id"], me["email"])
+        mark(me["user_id"], me["email"], owner_user_id)
     except Exception as exc:
         return _outcome(
             "refused", "the Operator client could not be marked: %s" % type(exc).__name__
@@ -391,7 +320,7 @@ def _send_status_dm(
     recipient_id = recipient_user_id
 
     path = state_path(environment)
-    key = _fingerprint(recipient_id, kind, reply_to, _seat(seat), str(outcome), reason)
+    key = _fingerprint(recipient_id, kind, reply_to, ST.seat_tag(seat), str(outcome), reason)
     seen = _peek(path, key, at, window)
     if seen is not None:
         return _answer_for_stored(seen[1], seen[0], recipient_id, text)

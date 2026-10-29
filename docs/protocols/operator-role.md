@@ -269,10 +269,11 @@ The Operator's direct message does not carry Jay, because Jay's Oct 26 ruling is
 converses by direct message and that it may be addressed to anyone, so the guard has to let the
 Operator through.  That change is made for the Operator's status message:  the AFC-469 guard
 has one exemption, `ZulipClient.operator_status_dm`, enforced in `ZulipClient.request` on the
-exact shape of the call:  a client verified as the pinned Operator bot and still authenticating
-as it, one recipient, a message that opens with the Operator status tag, and no mention.
+exact shape of the call:  a client verified as the pinned Operator bot, still authenticating as it
+and still holding the owner pin it was checked against, one recipient, and a content that is
+exactly a text the fixed vocabulary builds (the tag with anything else after it is refused).
 `dm_policy.check_new_dm` accepts `status=True` for the Operator.  The text is built from a fixed
-vocabulary in `operator_send.py`, with no project, topic or quoted message in it.  Every other
+vocabulary in `operator_status_text.py`, with no project, topic or quoted message in it.  Every other
 Operator direct message, the candidate list included, still carries Jay, and the Operator's
 clarifying question waits for its reply leg.
 

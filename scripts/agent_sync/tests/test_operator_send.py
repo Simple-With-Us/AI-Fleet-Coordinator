@@ -8,9 +8,11 @@ something about like the project or details I want to be able to see".  What thi
   - the message goes out one to one from the Operator bot, with the owner NOT in the conversation,
     and it is the only direct message that skips the owner-in-the-conversation guard (AFC-469);
   - the skip is narrow and is enforced where the request is made:  a client that was not verified
-    as the pinned Operator, a client whose credential changed after it was verified, a seat's own
-    bot, a second recipient, a draft, a scheduled message, a PATCH, a missing tag or a mention are
-    all refused, even when a caller passes the exemption flag on some other call;
+    as the pinned Operator, a client whose credential changed or whose owner pin was removed or
+    rotated after it was verified, a seat's own bot, a second recipient, a draft, a scheduled
+    message, a PATCH, and any content that is not exactly a text the vocabulary builds (a tag with
+    free text under it, a mention) are all refused, even when a caller passes the exemption flag
+    on some other call;
   - the router never wakes the recipient for it and never reads it as a wake reply, a route or a
     note, so it cannot start a loop;
   - a repeat costs no request, a delivered message is reported once, and a write whose outcome is
@@ -36,6 +38,7 @@ from agent_sync import config as CFG
 from agent_sync import dm_policy as DMP
 from agent_sync import operator_candidates as OC
 from agent_sync import operator_send as OS
+from agent_sync import operator_status_text as OST
 from agent_sync import router as R
 from agent_sync import zulip as Z
 from agent_sync.tests.fake_zulip import FakeZulip
@@ -148,6 +151,7 @@ class TextTests(unittest.TestCase):
             dict(kind="status", reply_to=1, seat="@**Jay**", outcome="woken"),
             dict(kind="status", reply_to=1, seat="A" * 40, outcome="woken"),
             dict(kind="status", reply_to=0, seat="MM", outcome="woken"),
+            dict(kind="status", reply_to=OST.MAX_MESSAGE_ID + 1, seat="MM", outcome="woken"),
             dict(kind="status", reply_to=True, seat="MM", outcome="woken"),
             dict(kind="status", reply_to="12", seat="MM", outcome="woken"),
             dict(kind="status", reply_to=1, seat=None, outcome="woken"),
@@ -203,10 +207,43 @@ class ClientGuardTests(Base):
         client = self.seat_client()
         for bad in (True, 0, -4, "9101", None):
             with self.assertRaises(ValueError, msg=repr(bad)):
-                client.mark_operator_verified(bad, OPERATOR_EMAIL)
-        client.mark_operator_verified(OPERATOR_ID, "")
+                client.mark_operator_verified(bad, OPERATOR_EMAIL, OWNER_ID)
+        client.mark_operator_verified(OPERATOR_ID, "", OWNER_ID)
         with self.assertRaises(Z.DmGuardRefused):
             client.operator_status_dm(CODEX_ID, TAGGED)
+
+    def test_a_verified_client_stops_qualifying_when_the_owner_pin_is_removed(self) -> None:
+        client = self.operator_client()
+        client.owner_user_id = 0
+        with self.assertRaises(Z.DmGuardRefused) as caught:
+            client.operator_status_dm(CODEX_ID, TAGGED)
+        self.assertEqual(caught.exception.code, "dm_owner_not_pinned")
+        self.assertEqual(self.direct_messages(), [])
+
+    def test_a_verified_client_stops_qualifying_when_the_owner_pin_is_rotated(self) -> None:
+        client = self.operator_client()
+        client.owner_user_id = 99
+        with self.assertRaises(Z.DmGuardRefused) as caught:
+            client.operator_status_dm(CODEX_ID, TAGGED)
+        self.assertEqual(caught.exception.code, "dm_operator_not_verified")
+        self.assertEqual(self.direct_messages(), [])
+
+    def test_a_client_built_against_another_owner_pin_cannot_be_marked(self) -> None:
+        for pin, code in ((0, "dm_owner_not_pinned"), (99, "dm_operator_not_verified")):
+            client = Z.ZulipClient(
+                Z.Credentials(OPERATOR_EMAIL, self.operator_key, self.fake.url, "test"),
+                self.fake.url,
+                owner_user_id=pin,
+            )
+            with self.assertRaises(Z.DmGuardRefused, msg=pin) as caught:
+                client.mark_operator_verified(OPERATOR_ID, OPERATOR_EMAIL, OWNER_ID)
+            self.assertEqual(caught.exception.code, code)
+            with self.assertRaises(Z.DmGuardRefused):
+                client.operator_status_dm(CODEX_ID, TAGGED)
+        for unpinned in (0, None, "x"):
+            with self.assertRaises(Z.DmGuardRefused, msg=repr(unpinned)):
+                self.seat_client().mark_operator_verified(OPERATOR_ID, OPERATOR_EMAIL, unpinned)
+        self.assertEqual(self.direct_messages(), [])
 
     def test_the_verified_client_still_cannot_dm_anyone_else_without_the_owner(self) -> None:
         client = self.operator_client()
@@ -272,6 +309,55 @@ class ClientGuardTests(Base):
             self.assertEqual(caught.exception.code, "dm_status_content")
         self.assertEqual(self.direct_messages(), [])
 
+    def test_free_text_under_the_tag_is_refused(self) -> None:
+        """The tag alone is not the key:  anything but the vocabulary's own text is refused."""
+        client = self.operator_client()
+        woken = "[OPERATOR·status] re=1\nYour message tagged MM.  MM was woken."
+        self.assertEqual(woken, TAGGED)
+        for bad in (
+            woken + "  The AFC budget thread is blocked on the Q3 plan.",
+            woken + "\nThe AFC budget thread is blocked on the Q3 plan.",
+            woken + "\n",
+            woken + " ",
+            woken.replace("  ", " "),
+            woken.replace("  ", "  "),
+            woken.replace("\n", "\r\n"),
+            woken.replace("was woken", "was woken, see the budget thread"),
+            woken.replace("MM was woken", "Everyone was woken"),
+            woken.replace("tagged MM", "tagged mm"),
+            woken.replace("re=1", "re=01"),
+            woken.replace("re=1", "re=0"),
+            woken.replace("re=1", "re=" + "9" * 19),
+            woken.replace("re=1", "re=1 topic=budget"),
+            woken.replace("Your message", "Your note"),
+            "[OPERATOR·status] re=1\nProject plan: ship the thing on Friday.",
+            "[OPERATOR·status]",
+            "[OPERATOR·status] re=1\nYour message tagged MM.  It was not delivered to MM.  Because of the budget.",
+            "[OPERATOR·status] re=1\nYour message tagged MM.  MM was woken.  The seat is over its wake budget.",
+            "[OPERATOR•status] re=1\nYour message tagged MM.  MM was woken.",
+        ):
+            with self.assertRaises(Z.DmGuardRefused, msg=repr(bad)[:60]) as caught:
+                client.operator_status_dm(CODEX_ID, bad)
+            self.assertEqual(caught.exception.code, "dm_status_content")
+            self.assertFalse(OST.is_status_text(bad), repr(bad)[:60])
+        self.assertEqual(self.direct_messages(), [])
+
+    def test_every_text_the_vocabulary_builds_passes_the_guard(self) -> None:
+        params = {"type": "direct", "to": [CODEX_ID]}
+        for seat in ("MM", "CLAUDE", "GB-ORACLE", "A" * 32):
+            for outcome in OS.OUTCOMES:
+                reasons = [None, *OS.REASONS] if outcome in OS.REASON_OUTCOMES else [None]
+                for reason in reasons:
+                    text = OS.build_text(
+                        "status", reply_to=987654321, seat=seat, outcome=outcome, reason=reason
+                    )
+                    self.assertTrue(OST.is_status_text(text), text)
+                    Z.check_operator_status_send("POST", "messages", dict(params, content=text))
+        text = OS.build_text("status", reply_to=OST.MAX_MESSAGE_ID, seat="MM", outcome="woken")
+        self.assertTrue(OST.is_status_text(text))
+        for not_text in (None, 7, b"x", ["x"], ""):
+            self.assertFalse(OST.is_status_text(not_text), repr(not_text))
+
 
 class IdentityTests(Base):
     def test_a_bot_that_users_me_does_not_confirm_is_never_marked(self) -> None:
@@ -313,6 +399,18 @@ class IdentityTests(Base):
 
         out = self.send(fetch=seat_fetch)
         self.assertEqual(out["status"], "refused")
+        self.assertEqual(self.direct_messages(), [])
+
+    def test_a_passed_in_client_with_another_owner_pin_is_refused(self) -> None:
+        creds = Z.Credentials(OPERATOR_EMAIL, self.operator_key, self.fake.url, "test")
+        client = Z.ZulipClient(creds, self.fake.url, owner_user_id=99)
+        link = OS.connect_operator(
+            env=self.env(), owner_user_id=OWNER_ID, client=client, credentials=creds
+        )
+        self.assertEqual(link["status"], "refused")
+        self.assertIn("could not be marked", link["reason"])
+        with self.assertRaises(Z.DmGuardRefused):
+            client.operator_status_dm(CODEX_ID, TAGGED)
         self.assertEqual(self.direct_messages(), [])
 
     def test_the_owner_must_be_pinned_so_the_operator_can_be_checked(self) -> None:
