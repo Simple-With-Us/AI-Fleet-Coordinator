@@ -32,6 +32,7 @@ const SPECS = {
  wf_git_commit_get:['Read bounded Git commit object, not full REST commit diff.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
  wf_git_tree_get:['Read nonrecursive tree with at most100 entries; larger trees refused.',obj(['repo','sha'],{repo:REPO,sha:SHA})],
 
+ wf_file_rename:['Rename exact regular blob on non-default branch, absent destination, no workflow paths. Bounded trees; no force and no automatic replay.',obj(['repo','source_path','destination_path','branch','message','expected_head_sha','prior_sha'],{repo:REPO,source_path:PATH,destination_path:PATH,branch:REF,message:{type:'string',minLength:1,maxLength:500},expected_head_sha:SHA,prior_sha:SHA})],
   wf_review_thread_resolve: ['Resolve a review thread only after addressing its finding; never a review-gate bypass. Membership is checked against the repository PR first 100 threads.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
   wf_review_thread_unresolve: ['Unresolve a repository PR review thread after bounded membership validation.',obj(['repo','number','thread_id'],{repo:REPO,number:INT,thread_id:{type:'string',pattern:'^[A-Za-z0-9_/=+-]{1,200}$'}})],
 
@@ -201,11 +202,12 @@ export function parseWfV1Args(action,args){
  if(action==='wf_git_blob_create' && (!utfBytes(40000).safeParse(parsed.data.text).success || gitCredential.test(parsed.data.text)))return null;
  return parsed.data;
 }
-export const validWfV1Args = (action, args) => boundedWorkflowInput(args,{maxBytes:workflowInputLimit(action),maxString:workflowInputLimit(action)}) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
-(action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' && action !== 'wf_release_create' && action !== 'wf_release_update' && action !== 'wf_review_update' && action !== 'wf_review_comment_reply' || reviewBodyOk(args)) && (action !== 'wf_file_delete' || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768)&& (!action.startsWith('wf_deployment') || ['environment','description'].every(k => !(k in args) || typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k==='environment' ? 100 : 140))) && (!['wf_milestone_create','wf_milestone_update'].includes(action) || typeof args.title === 'string' && args.title.trim() !== '' && new TextEncoder().encode(args.title).length <= 1024 && reviewBodyOk({body:args.description}))&& (!['wf_check_create','wf_check_update'].includes(action) || (args.status === 'completed') === (args.conclusion !== 'none') && ['name','title','summary'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= ({name:100,title:255,summary:32768}[k]))) && (action !== 'wf_review_dismiss' || reviewBodyOk({body:args.message}));
+export const validWfV1Args = (action, args) => typeof action==='string' && boundedWorkflowInput(args,{maxBytes:workflowInputLimit(action),maxString:workflowInputLimit(action)}) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
+(action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' && action !== 'wf_release_create' && action !== 'wf_release_update' && action !== 'wf_review_update' && action !== 'wf_review_comment_reply' || reviewBodyOk(args)) && (!['wf_file_delete','wf_file_rename'].includes(action) || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768)&& (!action.startsWith('wf_deployment') || ['environment','description'].every(k => !(k in args) || typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k==='environment' ? 100 : 140))) && (!['wf_milestone_create','wf_milestone_update'].includes(action) || typeof args.title === 'string' && args.title.trim() !== '' && new TextEncoder().encode(args.title).length <= 1024 && reviewBodyOk({body:args.description}))&& (!['wf_check_create','wf_check_update'].includes(action) || (args.status === 'completed') === (args.conclusion !== 'none') && ['name','title','summary'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= ({name:100,title:255,summary:32768}[k]))) && (action !== 'wf_review_dismiss' || reviewBodyOk({body:args.message}));
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_file_rename:['source_path','destination_path','branch','commit','blob_sha'],
   wf_review_thread_resolve:['thread'],wf_review_thread_unresolve:['thread'],
   wf_issue_list:['issues','complete'], wf_issue_get:['issue'], wf_issue_create:['issue'], wf_issue_update:['issue'], wf_issue_comment:['comment'],
   wf_issue_comment_update:['result'],
@@ -322,9 +324,11 @@ const gitResponses={
     wf_git_commit_get:z.object({commit:commitRead}).strict(),
     wf_git_tree_get:z.object({tree:z.object({sha:gitSha,truncated:z.boolean(),entries:z.array(z.object({sha:gitSha,type:z.enum(['blob','tree','commit']),mode:z.enum(['100644','100755','040000','120000','160000']),path:utfBytes(1024).refine(v=>v.length>0)}).strict()).max(100)}).strict()}).strict(),
    };
+const renameReceipt=z.object({source_path:z.string().min(1).max(1024),destination_path:z.string().min(1).max(1024),branch:z.string().min(1).max(200),commit:z.string().regex(/^[0-9a-f]{40}$/),blob_sha:z.string().regex(/^[0-9a-f]{40}$/)}).strict();
 export function validWfV1Response(action, body, args) {
  if(typeof action!=='string')return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
+ if(action==='wf_file_rename')return renameReceipt.safeParse(body).success && (!args || body.source_path===args.source_path && body.destination_path===args.destination_path && body.branch===args.branch && body.blob_sha===args.prior_sha);
  if(threadStateResponses[action])return threadStateResponses[action].safeParse(body).success;
  if(binaryResponses[action])return binaryResponses[action].safeParse(body).success;
  if(lifecycleResponses[action])return lifecycleResponses[action].safeParse(body).success;
