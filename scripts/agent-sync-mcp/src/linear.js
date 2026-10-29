@@ -50,6 +50,36 @@ export const LINEAR_WORKSPACE_URL_KEY = "simple-with-us";
 // value as REMINT_AFTER in scripts/linear-board/board (linear-parity test).
 export const LINEAR_REMINT_AFTER_S = 28 * 86_400;
 
+// An own-app seat's pair, under one prefix for both the Worker secret names and
+// the Fleet-OPS /linear Infisical names (LINEAR_<PREFIX>_CLIENT_ID / _SECRET).
+const ownAppPair = (prefix) => Object.freeze({ clientId: `LINEAR_${prefix}_CLIENT_ID`, clientSecret: `LINEAR_${prefix}_CLIENT_SECRET` });
+// Own-app seats added for coverage: prefix per seat tag.  BF-BUILDER is retired
+// and has no entry.  An entry names a pair and nothing else:  the seat is not
+// Linear-enabled until LINEAR_SEATS says so, and no write passes before the
+// viewer check (confirmViewer) shows the seat's own app.
+export const OWN_APP_LINEAR_PREFIXES = Object.freeze({
+  "MA": "MA",
+  "AG": "AG",
+  "CLUTCH": "CLUTCH",
+  "FX": "FX",
+  "GROK": "GROK",
+  "MC": "MC",
+  "MM": "MM",
+  "OPENCODE": "OPENCODE",
+  "BF-COMPILER": "BF_COMPILER",
+  "BF-DEPLOYER": "BF_DEPLOYER",
+  "BF-DESIGNER": "BF_DESIGNER",
+  "BF-DIRECTOR": "BF_DIRECTOR",
+  "BF-ENGINEER": "BF_ENGINEER",
+  "BF-FIXER": "BF_FIXER",
+  "BF-HOUSEKEEPER": "BF_HOUSEKEEPER",
+  "BF-MONITOR": "BF_MONITOR",
+  "BF-ORACLE": "BF_ORACLE",
+  "BF-PLUMBER": "BF_PLUMBER",
+  "BF-PUBLISHER": "BF_PUBLISHER",
+  "BF-TRADER": "BF_TRADER",
+});
+
 export const LINEAR_SECRETS = Object.freeze({
   JET: Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
   // JET-CHAT is Jet's second login on the SAME Linear app (owner, Oct 23 2026:
@@ -63,6 +93,26 @@ export const LINEAR_SECRETS = Object.freeze({
   CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
   CLAUDE: Object.freeze({ clientId: "LINEAR_CLAUDE_CLIENT_ID", clientSecret: "LINEAR_CLAUDE_CLIENT_SECRET" }),
   CODEX: Object.freeze({ clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" }),
+  "MA": ownAppPair(OWN_APP_LINEAR_PREFIXES["MA"]),
+  "AG": ownAppPair(OWN_APP_LINEAR_PREFIXES["AG"]),
+  "CLUTCH": ownAppPair(OWN_APP_LINEAR_PREFIXES["CLUTCH"]),
+  "FX": ownAppPair(OWN_APP_LINEAR_PREFIXES["FX"]),
+  "GROK": ownAppPair(OWN_APP_LINEAR_PREFIXES["GROK"]),
+  "MC": ownAppPair(OWN_APP_LINEAR_PREFIXES["MC"]),
+  "MM": ownAppPair(OWN_APP_LINEAR_PREFIXES["MM"]),
+  "OPENCODE": ownAppPair(OWN_APP_LINEAR_PREFIXES["OPENCODE"]),
+  "BF-COMPILER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-COMPILER"]),
+  "BF-DEPLOYER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DEPLOYER"]),
+  "BF-DESIGNER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DESIGNER"]),
+  "BF-DIRECTOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DIRECTOR"]),
+  "BF-ENGINEER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-ENGINEER"]),
+  "BF-FIXER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-FIXER"]),
+  "BF-HOUSEKEEPER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-HOUSEKEEPER"]),
+  "BF-MONITOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-MONITOR"]),
+  "BF-ORACLE": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-ORACLE"]),
+  "BF-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PLUMBER"]),
+  "BF-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PUBLISHER"]),
+  "BF-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-TRADER"]),
 });
 
 /** The Worker secret names for a seat, or null when the seat has no Linear app. */
@@ -71,20 +121,41 @@ export function linearSecretNames(seat) {
   return Object.hasOwn(LINEAR_SECRETS, canonical) ? LINEAR_SECRETS[canonical] : null;
 }
 
-/** The Fleet-OPS /linear Infisical names for each seat pair (Oct 22 fleet
- * decision:  the WISE seat's Worker names are LINEAR_INSTINCT_*, its
- * Infisical names WISE_LINEAR_*).  Names verified against the live folder. */
+/** The Fleet-OPS /linear Infisical names for each seat pair:  LINEAR_<SEAT>_CLIENT_ID
+ * and _CLIENT_SECRET, hyphens as underscores, checked against the live folder
+ * by a names-only read on 2026-10-29.  WISE's Infisical names are LINEAR_WISE_*,
+ * while its Worker names stay LINEAR_INSTINCT_* (LINEAR_SECRETS above). */
 export const LINEAR_INFISICAL = Object.freeze({
-  JET: Object.freeze({ clientId: "JET_LINEAR_CLIENT_ID", clientSecret: "JET_LINEAR_CLIENT_SECRET" }),
+  JET: Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
   // JET-CHAT is Jet's second login on the same Linear app (LINEAR_SECRETS
   // above):  its runtime read is Jet's record, never a copy.
-  "JET-CHAT": Object.freeze({ clientId: "JET_LINEAR_CLIENT_ID", clientSecret: "JET_LINEAR_CLIENT_SECRET" }),
-  "GROK-WEB": Object.freeze({ clientId: "GROK_WEB_LINEAR_CLIENT_ID", clientSecret: "GROK_WEB_LINEAR_CLIENT_SECRET" }),
-  ECHO: Object.freeze({ clientId: "ECHO_LINEAR_CLIENT_ID", clientSecret: "ECHO_LINEAR_CLIENT_SECRET" }),
-  WISE: Object.freeze({ clientId: "WISE_LINEAR_CLIENT_ID", clientSecret: "WISE_LINEAR_CLIENT_SECRET" }),
-  CURSOR: Object.freeze({ clientId: "CURSOR_LINEAR_CLIENT_ID", clientSecret: "CURSOR_LINEAR_CLIENT_SECRET" }),
-  CLAUDE: Object.freeze({ clientId: "CLAUDE_LINEAR_CLIENT_ID", clientSecret: "CLAUDE_LINEAR_CLIENT_SECRET" }),
-  CODEX: Object.freeze({ clientId: "CODEX_LINEAR_CLIENT_ID", clientSecret: "CODEX_LINEAR_CLIENT_SECRET" }),
+  "JET-CHAT": Object.freeze({ clientId: "LINEAR_JET_CLIENT_ID", clientSecret: "LINEAR_JET_CLIENT_SECRET" }),
+  "GROK-WEB": Object.freeze({ clientId: "LINEAR_GROK_WEB_CLIENT_ID", clientSecret: "LINEAR_GROK_WEB_CLIENT_SECRET" }),
+  ECHO: Object.freeze({ clientId: "LINEAR_ECHO_CLIENT_ID", clientSecret: "LINEAR_ECHO_CLIENT_SECRET" }),
+  WISE: Object.freeze({ clientId: "LINEAR_WISE_CLIENT_ID", clientSecret: "LINEAR_WISE_CLIENT_SECRET" }),
+  CURSOR: Object.freeze({ clientId: "LINEAR_CURSOR_CLIENT_ID", clientSecret: "LINEAR_CURSOR_CLIENT_SECRET" }),
+  CLAUDE: Object.freeze({ clientId: "LINEAR_CLAUDE_CLIENT_ID", clientSecret: "LINEAR_CLAUDE_CLIENT_SECRET" }),
+  CODEX: Object.freeze({ clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" }),
+  "MA": ownAppPair(OWN_APP_LINEAR_PREFIXES["MA"]),
+  "AG": ownAppPair(OWN_APP_LINEAR_PREFIXES["AG"]),
+  "CLUTCH": ownAppPair(OWN_APP_LINEAR_PREFIXES["CLUTCH"]),
+  "FX": ownAppPair(OWN_APP_LINEAR_PREFIXES["FX"]),
+  "GROK": ownAppPair(OWN_APP_LINEAR_PREFIXES["GROK"]),
+  "MC": ownAppPair(OWN_APP_LINEAR_PREFIXES["MC"]),
+  "MM": ownAppPair(OWN_APP_LINEAR_PREFIXES["MM"]),
+  "OPENCODE": ownAppPair(OWN_APP_LINEAR_PREFIXES["OPENCODE"]),
+  "BF-COMPILER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-COMPILER"]),
+  "BF-DEPLOYER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DEPLOYER"]),
+  "BF-DESIGNER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DESIGNER"]),
+  "BF-DIRECTOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-DIRECTOR"]),
+  "BF-ENGINEER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-ENGINEER"]),
+  "BF-FIXER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-FIXER"]),
+  "BF-HOUSEKEEPER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-HOUSEKEEPER"]),
+  "BF-MONITOR": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-MONITOR"]),
+  "BF-ORACLE": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-ORACLE"]),
+  "BF-PLUMBER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PLUMBER"]),
+  "BF-PUBLISHER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-PUBLISHER"]),
+  "BF-TRADER": ownAppPair(OWN_APP_LINEAR_PREFIXES["BF-TRADER"]),
 });
 
 /** Async: the seat's Linear pair resolved through Infisical when INFISICAL_MODE
@@ -117,7 +188,7 @@ export function linearClientFromPair(pair, seat, { gate, fetch: fetchImpl = glob
 // JET, ECHO, WISE and CLAUDE joined on 2026-10-16 (owner), each pair checked
 // first with `board whoami` against its own app.  JET-CHAT carries Jet's
 // normal access (owner, Oct 23 2026), so it is enabled with the Jet app.
-export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE", "CODEX"]);
+export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE", "CODEX", ...Object.keys(OWN_APP_LINEAR_PREFIXES)]);
 
 // ---------------------------------------------------------------- ported board rules
 

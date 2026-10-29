@@ -278,7 +278,9 @@ test("a seat whose Linear tools are off is told so in the instructions", () => {
   for (const seat of ["GROK-WEB", "CURSOR", "JET", "ECHO", "WISE", "CLAUDE"]) {
     assert.match(hostedInstructions(seat), /BEGIN_UNTRUSTED_LINEAR and END_UNTRUSTED_LINEAR/, seat);
   }
-  assert.equal(hostedInstructions("MA").includes("UNTRUSTED_LINEAR"), false);
+  // MA joined LINEAR_SEATS with the own-app coverage patch;  retired BF-BUILDER never has a Linear pair.
+  assert.match(hostedInstructions("MA"), /BEGIN_UNTRUSTED_LINEAR and END_UNTRUSTED_LINEAR/);
+  assert.equal(hostedInstructions("BF-BUILDER").includes("UNTRUSTED_LINEAR"), false);
 });
 
 // ---------------------------------------------------------------- routing
@@ -380,11 +382,11 @@ test("with the write switch off every Linear write is refused and no mutation is
 });
 
 test("a seat not on LINEAR_SEATS is refused at run time, even with a client, naming the seat and sending nothing", async () => {
-  // MA has no Linear app and is not enabled:  the requireLinear gate answers before any mint.
-  const { tools, fake } = harness({ seat: "MA" });
+  // Retired BF-BUILDER has no Linear app and is not enabled:  the requireLinear gate answers before any mint.
+  const { tools, fake } = harness({ seat: "BF-BUILDER" });
   for (const [name, args] of [["linear_whoami", {}], ["linear_list", {}], ["linear_show", { id: "AFC-1" }], ["linear_file", { title: "x" }], ["linear_comment", { id: "AFC-1", body: "hello" }]]) {
     const error = toolError(await tools.call(name, args), "not_configured");
-    assert.match(error.message, /not enabled for MA/);
+    assert.match(error.message, /not enabled for BF-BUILDER/);
   }
   assert.equal(fake.requests.length, 0);
 });

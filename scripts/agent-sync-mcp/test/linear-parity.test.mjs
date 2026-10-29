@@ -165,7 +165,7 @@ test("CLUTCH canonical name and CK compatibility alias route to the live C team"
 test("CODEX has its own Linear pair, app name and deploy gate, shared with no other seat", async () => {
   const L = await import("../src/linear.js");
   assert.deepEqual({ ...L.LINEAR_SECRETS.CODEX }, { clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" });
-  assert.deepEqual({ ...L.LINEAR_INFISICAL.CODEX }, { clientId: "CODEX_LINEAR_CLIENT_ID", clientSecret: "CODEX_LINEAR_CLIENT_SECRET" });
+  assert.deepEqual({ ...L.LINEAR_INFISICAL.CODEX }, { clientId: "LINEAR_CODEX_CLIENT_ID", clientSecret: "LINEAR_CODEX_CLIENT_SECRET" });
   assert.ok(L.LINEAR_SEATS.includes("CODEX"));
   assert.deepEqual([...L.seatAppNames("CODEX")], ["Codex"]);
   assert.ok(L.appNameOk("Codex", "CODEX"));
@@ -176,4 +176,67 @@ test("CODEX has its own Linear pair, app name and deploy gate, shared with no ot
   }
   // Same scope string as the CLI:  Linear revokes every app token when a mint asks for another one.
   assert.equal(L.LINEAR_SCOPE, "read,write,app:assignable,app:mentionable");
+});
+
+// ---- Linear coverage for the own-app seats (read-only names; activation stays a deploy gate) ----
+
+const HOST_VERIFIED_LINEAR_PREFIXES = Object.freeze({
+  JET: "LINEAR_JET", "GROK-WEB": "LINEAR_GROK_WEB", ECHO: "LINEAR_ECHO", WISE: "LINEAR_WISE",
+  CURSOR: "LINEAR_CURSOR", CLAUDE: "LINEAR_CLAUDE", CODEX: "LINEAR_CODEX",
+  MA: "LINEAR_MA", AG: "LINEAR_AG", CLUTCH: "LINEAR_CLUTCH", FX: "LINEAR_FX", GROK: "LINEAR_GROK",
+  MC: "LINEAR_MC", MM: "LINEAR_MM", OPENCODE: "LINEAR_OPENCODE",
+  "BF-COMPILER": "LINEAR_BF_COMPILER", "BF-DEPLOYER": "LINEAR_BF_DEPLOYER", "BF-DESIGNER": "LINEAR_BF_DESIGNER",
+  "BF-DIRECTOR": "LINEAR_BF_DIRECTOR", "BF-ENGINEER": "LINEAR_BF_ENGINEER", "BF-FIXER": "LINEAR_BF_FIXER",
+  "BF-HOUSEKEEPER": "LINEAR_BF_HOUSEKEEPER", "BF-MONITOR": "LINEAR_BF_MONITOR", "BF-ORACLE": "LINEAR_BF_ORACLE",
+  "BF-PLUMBER": "LINEAR_BF_PLUMBER", "BF-PUBLISHER": "LINEAR_BF_PUBLISHER", "BF-TRADER": "LINEAR_BF_TRADER",
+});
+
+test("the Infisical /linear names are the live LINEAR_<SEAT>_CLIENT_* names for every seat", async () => {
+  const L = await import("../src/linear.js");
+  for (const [seat, prefix] of Object.entries(HOST_VERIFIED_LINEAR_PREFIXES)) {
+    assert.deepEqual({ ...L.LINEAR_INFISICAL[seat] }, { clientId: `${prefix}_CLIENT_ID`, clientSecret: `${prefix}_CLIENT_SECRET` }, seat);
+  }
+  assert.deepEqual({ ...L.LINEAR_INFISICAL["JET-CHAT"] }, { ...L.LINEAR_INFISICAL.JET }, "JET-CHAT keeps reading Jet's record, never a copy");
+  for (const [seat, names] of Object.entries(L.LINEAR_INFISICAL)) {
+    assert.ok(!/^[A-Z0-9_]+_LINEAR_CLIENT/.test(names.clientId), `${seat} still uses the reverse <SEAT>_LINEAR_ name`);
+  }
+});
+
+test("the 20 own-app seats are covered, BF-BUILDER is not, and no pair is shared between seats", async () => {
+  const L = await import("../src/linear.js");
+  const own = Object.keys(L.OWN_APP_LINEAR_PREFIXES);
+  assert.equal(own.length, 20);
+  assert.ok(!own.includes("BF-BUILDER") && !Object.hasOwn(L.LINEAR_SECRETS, "BF-BUILDER") && !L.LINEAR_SEATS.includes("BF-BUILDER"));
+  for (const seat of own) {
+    assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat) && L.LINEAR_SEATS.includes(seat), seat);
+    assert.deepEqual({ ...L.LINEAR_SECRETS[seat] }, { ...L.LINEAR_INFISICAL[seat] }, `${seat}: Worker and Infisical names agree`);
+    assert.deepEqual({ ...L.linearSecretNames(seat) }, { ...L.LINEAR_SECRETS[seat] });
+  }
+  const ids = new Map();
+  for (const [seat, names] of Object.entries(L.LINEAR_INFISICAL)) {
+    if (seat === "JET-CHAT") continue; // the one deliberate JET/JET-CHAT share, unchanged
+    assert.ok(!ids.has(names.clientId), `${seat} shares ${names.clientId} with ${ids.get(names.clientId)}`);
+    ids.set(names.clientId, seat);
+  }
+});
+
+test("an own-app seat resolves only its own pair, in every Infisical mode, and a missing pair stays unconfigured", async () => {
+  const L = await import("../src/linear.js");
+  const { _resetInfisicalForTests } = await import("../src/infisical.js");
+  _resetInfisicalForTests();
+  const env = { LINEAR_CLUTCH_CLIENT_ID: "id-clutch", LINEAR_CLUTCH_CLIENT_SECRET: "sec-clutch", LINEAR_MC_CLIENT_ID: "id-mc", LINEAR_MC_CLIENT_SECRET: "sec-mc" };
+  assert.deepEqual(await L.resolveLinearPair(env, "CLUTCH"), { clientId: "id-clutch", clientSecret: "sec-clutch" });
+  assert.deepEqual(await L.resolveLinearPair(env, "MC"), { clientId: "id-mc", clientSecret: "sec-mc" });
+  assert.deepEqual(await L.resolveLinearPair(env, "FX"), { clientId: "", clientSecret: "" }, "no pair installed: empty, so no client is built");
+  assert.equal(L.linearClientFromPair(await L.resolveLinearPair(env, "FX"), "FX", { gate: {} }), null);
+  assert.equal(await L.resolveLinearPair(env, "BF-BUILDER"), null, "retired BF-BUILDER has no Linear record");
+});
+
+test("own-app seats gain no app-name alias: the viewer check accepts only the seat tag until the real app name is grounded", async () => {
+  const L = await import("../src/linear.js");
+  for (const seat of Object.keys(L.OWN_APP_LINEAR_PREFIXES).filter((s) => s !== "MA")) {
+    assert.deepEqual([...L.seatAppNames(seat)], [], `${seat}: no guessed app names`);
+    assert.ok(L.appNameOk(seat, seat));
+    assert.ok(!L.appNameOk("Jay", seat) && !L.appNameOk("Codex", seat) && !L.appNameOk("Jet", seat));
+  }
 });
