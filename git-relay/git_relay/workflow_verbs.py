@@ -103,7 +103,6 @@ SPECS = {
     "wf_environments": ({"actions": "read"}, False),
     "wf_environment_get": ({"actions": "read"}, False),
     "wf_file_delete": ({"contents": "write"}, True),
-
     "wf_issue_list": ({"issues": "read"}, False),
     "wf_issue_get": ({"issues": "read"}, False),
     "wf_issue_create": ({"issues": "write"}, True),
