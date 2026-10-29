@@ -10,6 +10,9 @@ const REPO = { type: 'string', pattern: '^(?!.*\\.\\.)[A-Za-z0-9_.-]{1,100}/[A-Z
 const SHA = { type: 'string', pattern: '^[0-9a-f]{40}$' };
 const INT = { type: 'integer', minimum: 1, maximum: 1e12 };
 const PER_PAGE = { type: 'integer', minimum: 1, maximum: 50 };
+// Two existing file actions only: 2 MiB decoded/file, 4 MiB decoded/commit.
+const FILE_INPUT_BYTES = 6 * 1024 * 1024;
+const FILE_CONTENT = { type: 'string', minLength: 1, maxLength: 2796204 };
 const CONTENT = { type: 'string', minLength: 1, maxLength: 60000 };
 const PATH = {type:'string', maxLength:1024, pattern:'^(?!/)(?!.*//)(?!.*(?:^|/)[.]{1,2}(?:/|$))(?!.*[/]$)[A-Za-z0-9._/+@~-]+$'};
 const REF = {type:'string', maxLength:200, pattern:'^(?![/-])(?!.*[.][.])(?!.*(?:/|[.]lock)$)[A-Za-z0-9._/-]+$'};
@@ -18,7 +21,7 @@ const CHUNK = { type: 'integer', minimum: 1, maximum: 262144 };
 const ASSET_NAME = { type: 'string', pattern: '^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9_-])?$' };
 // Largest base64 payload: 180 KiB raw.  The Worker MCP body bound (256 KiB) stays the outer limit.
 const BINARY_B64 = 245760;
-export const WF_V1_INPUT_LIMITS = Object.freeze({ wf_release_asset_upload_binary: 253952 });
+export const WF_V1_INPUT_LIMITS = Object.freeze({ wf_release_asset_upload_binary: 253952, wf_file_put: FILE_INPUT_BYTES, wf_files_put: FILE_INPUT_BYTES });
 export const workflowInputLimit = action => WF_V1_INPUT_LIMITS[action] ?? 65536;
 const STR = { type: 'string', maxLength: 500 };
 const obj = (required, properties) => ({ type: 'object', additionalProperties: false, required, properties });
@@ -145,10 +148,10 @@ const SPECS = {
   wf_run_rerun: ['Re-run a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_run_cancel: ['Cancel a workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
   wf_run_approve: ['Approve a pending workflow run.', obj(['repo', 'run_id'], { repo: REPO, run_id: INT })],
-  wf_file_put: ['Write one file to a branch.', obj(['repo', 'path', 'branch', 'message', 'content_b64'], { repo: REPO, path: PATH, branch: REF, message: STR, content_b64: CONTENT, prior_sha: SHA })],
+  wf_file_put: ['Write one file to a branch.', obj(['repo', 'path', 'branch', 'message', 'content_b64'], { repo: REPO, path: PATH, branch: REF, message: STR, content_b64: FILE_CONTENT, prior_sha: SHA })],
   wf_files_put: ['Write up to 20 files in one commit, fenced on the branch head.', obj(['repo', 'branch', 'message', 'expected_head_sha', 'files'], {
     repo: REPO, branch: REF, message: STR, expected_head_sha: SHA,
-    files: { type: 'array', minItems: 1, maxItems: 20, items: obj(['path'], { path: PATH, content_b64: CONTENT, delete: { type: 'boolean' } }) } })],
+    files: { type: 'array', minItems: 1, maxItems: 20, items: obj(['path'], { path: PATH, content_b64: FILE_CONTENT, delete: { type: 'boolean' } }) } })],
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
@@ -209,7 +212,23 @@ const gitArgsOk=(action,args)=>{
  if(action==='wf_git_blob_create')return utfBytes(40000).safeParse(args.text).success;
  return true;
 };
-export const validWfV1Args = (action, args) => typeof action==='string' && boundedWorkflowInput(args,{maxBytes:workflowInputLimit(action),maxString:workflowInputLimit(action)}) && WF_V1_ACTIONS.includes(action) && validWfV1Args2(SPECS[action][1], args) &&
+const fileContentBudget = (action,args) => {
+  if(!['wf_file_put','wf_files_put'].includes(action)) return true;
+  const files=action==='wf_file_put'?[args]:args?.files;
+  if(!Array.isArray(files)) return false;
+  let total=0;
+  for(const file of files) {
+    if(file?.delete===true) continue;
+    const content=file?.content_b64;
+    if(typeof content!=='string') return false;
+    const bytes=Math.floor(content.length/4)*3-(content.endsWith('==')?2:content.endsWith('=')?1:0);
+    if(bytes>2*1024*1024) return false;
+    total+=bytes;
+    if(total>4*1024*1024) return false;
+  }
+  return true;
+};
+export const validWfV1Args = (action, args) => typeof action==='string' && boundedWorkflowInput(args,{maxBytes:workflowInputLimit(action),maxString:workflowInputLimit(action)}) && WF_V1_ACTIONS.includes(action) && (!['wf_file_put','wf_files_put'].includes(action) || new TextEncoder().encode(JSON.stringify(args)).length <= FILE_INPUT_BYTES) && fileContentBudget(action,args) && validWfV1Args2(SPECS[action][1], args) &&
 (action !== 'wf_review_submit' && action !== 'wf_review_inline' && action !== 'wf_issue_comment_update' && action !== 'wf_review_comment_update' && action !== 'wf_release_create' && action !== 'wf_release_update' && action !== 'wf_review_update' && action !== 'wf_review_comment_reply' || reviewBodyOk(args)) && (!['wf_file_delete','wf_file_rename'].includes(action) || typeof args.message === 'string' && args.message.trim() !== '' && new TextEncoder().encode(args.message).length <= 500) && (!['wf_release_create','wf_release_update'].includes(action) || typeof args.name === 'string' && args.name.trim() !== '' && new TextEncoder().encode(args.name).length <= 32768)&& (!action.startsWith('wf_deployment') || ['environment','description'].every(k => !(k in args) || typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k==='environment' ? 100 : 140))) && (!['wf_milestone_create','wf_milestone_update'].includes(action) || typeof args.title === 'string' && args.title.trim() !== '' && new TextEncoder().encode(args.title).length <= 1024 && reviewBodyOk({body:args.description}))&& (!['wf_check_create','wf_check_update'].includes(action) || (args.status === 'completed') === (args.conclusion !== 'none') && ['name','title','summary'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= ({name:100,title:255,summary:32768}[k]))) && (action !== 'wf_review_dismiss' || reviewBodyOk({body:args.message})) && (action !== 'wf_commit_status_create' || ['context','description'].every(k => typeof args[k] === 'string' && args[k].trim() !== '' && new TextEncoder().encode(args[k]).length <= (k === 'context' ? 255 : 140))) && gitArgsOk(action,args) && (!['wf_repo_variable_create','wf_repo_variable_update'].includes(action) || typeof args.value === 'string' && new TextEncoder().encode(args.value).length <= 8192);
 function inputSchema(schema) {
  if(schema.type==='object')return z.object(Object.fromEntries(Object.entries(schema.properties).map(([k,v])=>[k,schema.required.includes(k)?inputSchema(v):inputSchema(v).optional()]))).strict();

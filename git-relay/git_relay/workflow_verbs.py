@@ -57,11 +57,13 @@ _SHA = re.compile(r"[0-9a-f]{40}")
 _REF = re.compile(r"[A-Za-z0-9._/-]{1,200}")
 _PATH = re.compile(r"[A-Za-z0-9._/+@~-]{1,1024}")
 _REPO = re.compile(r"[A-Za-z0-9._-]{1,100}/[A-Za-z0-9._-]{1,100}")
-MAX_FILE_B64 = 256 * 1024
+MAX_FILE_RAW = 2 * 1024 * 1024
+MAX_FILE_B64 = 4 * ((MAX_FILE_RAW + 2) // 3)
 MAX_PAGE = 50
 MAX_PROJECT = 100
 MAX_FILES = 20
-MAX_FILES_B64 = 512 * 1024
+MAX_FILES_RAW = 4 * 1024 * 1024
+MAX_FILES_B64 = 4 * ((MAX_FILES_RAW + 2) // 3) + 4 * MAX_FILES
 MAX_BINARY_ASSET = 180 * 1024  # base64 must fit the Worker 256 KiB MCP body
 MAX_BINARY_ASSET_B64 = 4 * ((MAX_BINARY_ASSET + 2) // 3)
 MAX_ARCHIVE_EXPANDED = 8 * 1024 * 1024
@@ -3702,6 +3704,8 @@ class WorkflowVerbs:
             raw = base64.b64decode(content, validate=True)
         except (binascii.Error, ValueError):
             raise Refused("invalid content") from None
+        if len(raw) > MAX_FILE_RAW:
+            raise Refused("file too large")
         if find_secret(message) or find_secret(raw.decode("utf-8", "replace")):
             raise Refused("credential-shaped content refused")
         payload = {"message": message, "content": content, "branch": branch}
@@ -3755,6 +3759,7 @@ class WorkflowVerbs:
         if not isinstance(files, list) or not 1 <= len(files) <= MAX_FILES:
             raise Refused("invalid files")
         seen, plan, total = set(), [], 0
+        total_raw = 0
         for f in files:
             if not isinstance(f, dict) or set(f) - {"path", "content_b64", "delete"}:
                 raise Refused("invalid files")
@@ -3768,7 +3773,12 @@ class WorkflowVerbs:
                 plan.append((path, None))
                 continue
             content = f.get("content_b64")
-            if not isinstance(content, str) or not content or "delete" in f:
+            if (
+                not isinstance(content, str)
+                or not content
+                or len(content) > MAX_FILE_B64
+                or "delete" in f
+            ):
                 raise Refused("invalid files")
             total += len(content)
             if total > MAX_FILES_B64:
@@ -3777,6 +3787,9 @@ class WorkflowVerbs:
                 raw = base64.b64decode(content, validate=True)
             except (binascii.Error, ValueError):
                 raise Refused("invalid content") from None
+            total_raw += len(raw)
+            if len(raw) > MAX_FILE_RAW or total_raw > MAX_FILES_RAW:
+                raise Refused("files too large")
             if find_secret(raw.decode("utf-8", "replace")):
                 raise Refused("credential-shaped content refused")
             plan.append((path, content))

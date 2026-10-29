@@ -42,6 +42,10 @@ MAX_REQUEST_BYTES = 64 * 1024
 # Only the binary release-asset upload may exceed MAX_REQUEST_BYTES (base64 of 180 KiB).
 MAX_BINARY_REQUEST_BYTES = 256 * 1024
 BINARY_REQUEST_ACTIONS = frozenset({"wf_release_asset_upload_binary"})
+# Existing full-file actions get a narrow envelope allowance.  No default,
+# permission, scan budget or workflow verb is widened.
+MAX_FILE_REQUEST_BYTES = 6 * 1024 * 1024
+FILE_REQUEST_ACTIONS = frozenset({"wf_file_put", "wf_files_put"})
 
 
 def _positive_int(raw: str, default: int) -> int:
@@ -292,6 +296,8 @@ class Relay:
                     # The base64 payload gets a larger text budget; the byte scan of the decoded
                     # content happens in the verb.
                     scan_args(args, _budget=[MAX_SCAN_NODES, MAX_BINARY_REQUEST_BYTES])
+                elif action in FILE_REQUEST_ACTIONS:
+                    scan_args(args, _budget=[MAX_SCAN_NODES, MAX_FILE_REQUEST_BYTES])
                 else:
                     scan_args(args)
                 if action in SeatPolicy.WORKFLOW_ACTIONS and self.workflow_verbs_enabled:
@@ -807,10 +813,14 @@ def make_handler(relay: Relay):
                 self._send(400, {"error": "bad Content-Length"})
                 return
             cap = (
-                MAX_BINARY_REQUEST_BYTES if action in BINARY_REQUEST_ACTIONS else MAX_REQUEST_BYTES
+                MAX_BINARY_REQUEST_BYTES
+                if action in BINARY_REQUEST_ACTIONS
+                else MAX_FILE_REQUEST_BYTES
+                if action in FILE_REQUEST_ACTIONS
+                else MAX_REQUEST_BYTES
             )
             if length < 1 or length > cap:
-                self._send(400, {"error": "request body missing or over the 64 KiB bound"})
+                self._send(400, {"error": "request body missing or over the action byte bound"})
                 return
             raw = self.rfile.read(length)
             try:
