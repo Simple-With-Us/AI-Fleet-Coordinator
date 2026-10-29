@@ -23,8 +23,8 @@ export function adminSeatLabel(seat) {
 // One fixed stylesheet, allowed by hash so the CSP can keep `default-src 'none'`.
 // test/pages.test.mjs recomputes the hash, so editing the CSS without updating
 // STYLE_HASH fails the build instead of shipping an unstyled page.
-export const STYLE = "body{font:16px/1.5 system-ui,sans-serif;max-width:70rem;margin:2rem auto;padding:0 1rem;background:#fff;color:#1a1a1a}h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:2rem}h3{font-size:1rem;margin:1.2rem 0 .4rem}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:.35rem .5rem;text-align:left;vertical-align:top}code{background:#f3f3f3;padding:0 .2rem}.warn{background:#fff4e5;border:1px solid #f0c36d;padding:.6rem .8rem}.ok{color:#196c2e}button{font:inherit;padding:.4rem .9rem;margin:.2rem .3rem .2rem 0}form.inline{display:inline}.bearer-warn{display:block;margin:.5rem 0;max-width:34rem}.mismatch-note{display:block;width:fit-content;max-width:100%;margin:.2rem 0 0;padding:.15rem .4rem}.bearer-form{display:block}.bearer-form .bearer-accept{display:block;margin:.2rem 0 .5rem}.status-overview{border:1px solid #bbb;border-radius:.6rem;padding:1rem;margin:1rem 0 2rem}.overview-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem}.overview-heading h2{margin:.25rem 0}.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:.8rem}.status-card,.error-card{border:1px solid #ddd;border-radius:.45rem;padding:.7rem .85rem;min-width:0}.status-card h3,.error-card p{margin:.2rem 0 .5rem}.status-state{font-weight:700}.state-ready{color:#196c2e}.state-attention{color:#8a4b00}.state-neutral{color:#333}.status-card dl{display:grid;grid-template-columns:minmax(6rem,auto) 1fr;gap:.2rem .7rem;margin:.4rem 0}.status-card dt{font-weight:600}.status-card dd{margin:0;overflow-wrap:anywhere}.coverage,.error-meta{color:#555;font-size:.9rem}.error-list{display:grid;gap:.55rem}.error-card header{display:flex;justify-content:space-between;gap:1rem}.error-card time{white-space:nowrap}.status-overview{overflow-wrap:anywhere}details.fold{border:1px solid #ddd;border-radius:.45rem;margin:1rem 0;padding:0 1rem}details.fold[open]{padding-bottom:1rem}details.fold>summary{cursor:pointer;padding:.6rem 0;list-style-position:outside}details.fold>summary h2{display:inline;font-size:1.05rem;margin:0}details.fold>summary .count,details.fold>summary .status-state{margin-left:.6rem;font-size:.95rem}details.status-overview{padding:0 1rem}@media(max-width:38rem){.overview-heading{align-items:flex-start;flex-direction:column}.error-card header{flex-direction:column;gap:0}.status-card dl{grid-template-columns:1fr}.status-card dd{margin-bottom:.35rem}table{display:block;overflow-x:auto;white-space:nowrap;background:linear-gradient(to right,#fff 30%,rgba(255,255,255,0)) 0 0,linear-gradient(to left,#fff 30%,rgba(255,255,255,0)) 100% 0,radial-gradient(farthest-side at 0 50%,rgba(0,0,0,.18),rgba(0,0,0,0)) 0 0,radial-gradient(farthest-side at 100% 50%,rgba(0,0,0,.18),rgba(0,0,0,0)) 100% 0;background-color:#fff;background-repeat:no-repeat;background-size:2.5rem 100%,2.5rem 100%,.9rem 100%,.9rem 100%;background-attachment:local,local,scroll,scroll}.bearer-warn,.bearer-form .bearer-accept{white-space:normal;max-width:22rem}.mismatch-note{white-space:normal;max-width:min(22rem,calc(100vw - 10rem))}}#gb-bearer-token{overflow-wrap:anywhere}";
-export const STYLE_HASH = "sha256-tlNLdyhqJoh0i5BEGl3UhPFnQQDUg/r6zbfzTY7TznM=";
+export const STYLE = "body{font:16px/1.5 system-ui,sans-serif;max-width:70rem;margin:2rem auto;padding:0 1rem;background:#fff;color:#1a1a1a}h1{font-size:1.4rem}h2{font-size:1.1rem;margin-top:2rem}h3{font-size:1rem;margin:1.2rem 0 .4rem}table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid #ddd;padding:.35rem .5rem;text-align:left;vertical-align:top}code{background:#f3f3f3;padding:0 .2rem}.warn{background:#fff4e5;border:1px solid #f0c36d;padding:.6rem .8rem}.ok{color:#196c2e}.service-missing{color:#b00020}button{font:inherit;padding:.4rem .9rem;margin:.2rem .3rem .2rem 0}form.inline{display:inline}.bearer-warn{display:block;margin:.5rem 0;max-width:34rem}.mismatch-note{display:block;width:fit-content;max-width:100%;margin:.2rem 0 0;padding:.15rem .4rem}.bearer-form{display:block}.bearer-form .bearer-accept{display:block;margin:.2rem 0 .5rem}.status-overview{border:1px solid #bbb;border-radius:.6rem;padding:1rem;margin:1rem 0 2rem}.overview-heading{display:flex;align-items:center;justify-content:space-between;gap:1rem}.overview-heading h2{margin:.25rem 0}.status-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:.8rem}.status-card,.error-card{border:1px solid #ddd;border-radius:.45rem;padding:.7rem .85rem;min-width:0}.status-card h3,.error-card p{margin:.2rem 0 .5rem}.status-state{font-weight:700}.state-ready{color:#196c2e}.state-attention{color:#8a4b00}.state-neutral{color:#333}.status-card dl{display:grid;grid-template-columns:minmax(6rem,auto) 1fr;gap:.2rem .7rem;margin:.4rem 0}.status-card dt{font-weight:600}.status-card dd{margin:0;overflow-wrap:anywhere}.coverage,.error-meta{color:#555;font-size:.9rem}.error-list{display:grid;gap:.55rem}.error-card header{display:flex;justify-content:space-between;gap:1rem}.error-card time{white-space:nowrap}.status-overview{overflow-wrap:anywhere}details.fold{border:1px solid #ddd;border-radius:.45rem;margin:1rem 0;padding:0 1rem}details.fold[open]{padding-bottom:1rem}details.fold>summary{cursor:pointer;padding:.6rem 0;list-style-position:outside}details.fold>summary h2{display:inline;font-size:1.05rem;margin:0}details.fold>summary .count,details.fold>summary .status-state{margin-left:.6rem;font-size:.95rem}details.status-overview{padding:0 1rem}@media(max-width:38rem){.overview-heading{align-items:flex-start;flex-direction:column}.error-card header{flex-direction:column;gap:0}.status-card dl{grid-template-columns:1fr}.status-card dd{margin-bottom:.35rem}table{display:block;overflow-x:auto;white-space:nowrap;background:linear-gradient(to right,#fff 30%,rgba(255,255,255,0)) 0 0,linear-gradient(to left,#fff 30%,rgba(255,255,255,0)) 100% 0,radial-gradient(farthest-side at 0 50%,rgba(0,0,0,.18),rgba(0,0,0,0)) 0 0,radial-gradient(farthest-side at 100% 50%,rgba(0,0,0,.18),rgba(0,0,0,0)) 100% 0;background-color:#fff;background-repeat:no-repeat;background-size:2.5rem 100%,2.5rem 100%,.9rem 100%,.9rem 100%;background-attachment:local,local,scroll,scroll}.bearer-warn,.bearer-form .bearer-accept{white-space:normal;max-width:22rem}.mismatch-note{white-space:normal;max-width:min(22rem,calc(100vw - 10rem))}}#gb-bearer-token{overflow-wrap:anywhere}";
+export const STYLE_HASH = "sha256-TjS3lP/R2Wij0EyPO3ufMfyltgxi5X5DeLFkSiQhHIE=";
 
 export const PAGE_CSP = `default-src 'none'; style-src '${STYLE_HASH}'; frame-ancestors 'none'; base-uri 'none'`;
 
@@ -91,7 +91,7 @@ export function noConnectionPage() {
     "No Connection Expected",
     `<h1>No Connection Expected</h1><p>${sentences(
       "No seat is armed for this app right now, so nothing was granted.",
-      "If you meant to connect, open ST-MCP + GR-MCP Admin, arm the seat, and start again within 10 minutes.",
+      "If you meant to connect, open Fleet MCP Admin, arm the seat, and start again within 10 minutes.",
     )}</p>`,
     { status: 403 },
   );
@@ -133,7 +133,7 @@ export function consentPage({ clientName, clientDomain, clientId, redirectHost, 
   }
   const verified = clientDomain
     ? `Published by <strong>${escapeHtml(clientDomain)}</strong> (a client metadata document on that domain).`
-    : `Registered by hand in ST-MCP + GR-MCP Admin.${SENTENCE_GAP}Its name is not verified.`;
+    : `Registered by hand in Fleet MCP Admin.${SENTENCE_GAP}Its name is not verified.`;
   const replaceLine = replacing.length
     ? `<p class="warn">${replacing
         .map((g) => `This replaces the grant from ${escapeHtml(g.client)}, created ${escapeHtml(ownerTime(g.createdAt))}.`)
@@ -179,7 +179,7 @@ function gbBearerSection(rows, csrf, mintId = "") {
     .map((r) => {
       const st = r.status ?? {};
       const state = r.status === null ? "Unknown (diagnostic read failed)" : st.active ? `<span class="ok">Active</span>` : st.expired ? `<span class="warn">Expired</span>` : "None";
-      const mcpState = st.active || st.expired ? (st.mcp_accept ? "also accepted on /mcp" : "GR-MCP only") : "";
+      const mcpState = st.active || st.expired ? (st.mcp_accept_recorded === false ? "No recorded /mcp acceptance (legacy); /mcp refused" : st.mcp_accept ? "also accepted on /mcp" : "Git Relay only") : "";
       const detail = st.created_at ? `minted ${escapeHtml(ownerTime(st.created_at))}, expires ${escapeHtml(ownerTime(st.expires_at))}${st.last_used_at ? `, last used ${escapeHtml(ownerTime(st.last_used_at))}` : ", never used"}` : "";
       // Wrong-secret presentations against this identity:  counts and a time,
       // never a hash (the narrowing review verdict:  make a guessing storm visible here).
@@ -193,11 +193,16 @@ function gbBearerSection(rows, csrf, mintId = "") {
         : r.mismatches && Number(r.mismatches.count) > 0
           ? `<small class="warn mismatch-note">${Number(r.mismatches.count)} wrong-secret attempt${Number(r.mismatches.count) === 1 ? "" : "s"}${r.mismatches.last_at ? `, last ${escapeHtml(ownerTime(r.mismatches.last_at))}` : ""} (approximate; updates at most once a minute)</small>`
           : "";
+      const serviceReady = r.credentialsUnavailable
+        ? `<span class="warn">Service readiness unknown (diagnostic read failed)</span>`
+        : !r.credentials
+          ? `<strong class="service-missing">${r.kind === "seat" ? "Missing Zulip credentials (token or bot email)" : "Missing service credentials (Zulip or Linear bundle)"}</strong><br><small>Not ready for service calls; an active bearer is not service readiness.</small>`
+          : `<span>Service credentials loaded; connectivity not verified</span>`;
       const mintLabel = st.active || st.expired ? "Rotate (Mint New)" : "Mint";
       // A rotation without the box ticked drops a seat's existing /mcp access:
       // a block-level warning ABOVE the actions, before the owner commits.
       const rotateDrops = r.kind === "seat" && (st.active || st.expired) && st.mcp_accept === true
-        ? `<div class="warn bearer-warn">This bearer is currently accepted on /mcp.  Rotating without the box ticked removes that:  the new bearer will be GR-MCP only.</div>`
+        ? `<div class="warn bearer-warn">This bearer is currently accepted on /mcp.  Rotating without the box ticked removes that:  the new bearer will be Git Relay only.</div>`
         : "";
       const mint = r.credentialsUnavailable
         ? `<span class="warn">Credential readiness unknown (diagnostic read failed)</span>`
@@ -210,13 +215,13 @@ function gbBearerSection(rows, csrf, mintId = "") {
         mint,
         st.active || st.expired ? actionButton(csrf, "revoke_gb_bearer", "Revoke", { identity: r.identity }) : "",
       ].join("");
-      return `<tr><td><strong>${escapeHtml(r.identity)}</strong><br><small>${r.kind === "seat" ? "seat" : "Grok Bot"}</small></td><td>${state}${mcpState ? `<br><small>${mcpState}</small>` : ""}<br><small>${detail}</small>${mm}</td><td>${buttons}</td></tr>`;
+      return `<tr><td><strong>${escapeHtml(r.identity)}</strong><br><small>${r.kind === "seat" ? "seat" : "Grok Bot"}</small></td><td>${state}${mcpState ? `<br><small>${mcpState}</small>` : ""}<br><small>${detail}</small>${mm}</td><td>${serviceReady}</td><td>${buttons}</td></tr>`;
     })
     .join("");
   return `<h2>Per-Identity Bearers</h2>
-<p>${sentences("A bearer is one credential per identity, and every bearer is honored by GR-MCP (git-relay).", "The same bearer is the identity's credential for fleet tools that verify with this Worker;  support lands per tool, starting with simple-board.", "Minting shows it once, and the server keeps only its hash.", "Rotating replaces the old one at once.", "Each lasts 90 days.")}</p>
-<p>${sentences("A Grok Bot's bearer is its only credential, so it is also accepted on ST-MCP's /mcp.", "A seat's bearer is accepted on ST-MCP's /mcp only when minted with the box ticked;  minted unticked, ST-MCP refuses it and GR-MCP still honors it.", "Ticking the box lets that seat act without the consent screen:  it is your per-seat choice, recorded with the mint.")}</p>
-<table><tr><th>Identity</th><th>Bearer</th><th>Actions</th></tr>${body}</table>`;
+<p>${sentences("A bearer is one credential per identity, and every bearer is honored by Git Relay (git-relay).", "The same bearer is the identity's credential for fleet tools that verify with this Worker;  support lands per tool, starting with simple-board.", "Minting shows it once, and the server keeps only its hash.", "Rotating replaces the old one at once.", "Each lasts 90 days.")}</p>
+<p>${sentences("A Grok Bot's bearer is its only credential, so it is also accepted on Fleet MCP's /mcp.", "A seat's bearer is accepted on Fleet MCP's /mcp only when minted with the box ticked;  minted unticked, Fleet MCP refuses it and Git Relay still honors it.", "Ticking the box lets that seat act without the consent screen:  it is your per-seat choice, recorded with the mint.")}</p>
+<table><tr><th>Identity</th><th>Bearer</th><th>Service Readiness</th><th>Actions</th></tr>${body}</table>`;
 }
 
 function csrfField(csrf) {
@@ -238,8 +243,8 @@ function actionButton(csrf, action, label, fields = {}) {
  * accidental refresh or resubmit cannot touch the bearer - it is acked from
  * the stored outcome instead (gbBearerMintCompletedPage).  The
  * send line states what THIS minted bearer can actually do:  a persona bearer
- * and a seat bearer minted with the acceptance reach ST-MCP's /mcp and GR-MCP;
- * a seat bearer minted without it is GR-MCP only.  Both forms also note that a
+ * and a seat bearer minted with the acceptance reach Fleet MCP's /mcp and Git Relay;
+ * a seat bearer minted without it is Git Relay only.  Both forms also note that a
  * fleet tool verifying with this Worker (simple-board is the first) uses the
  * same bearer - the /mcp acceptance does not gate that, and per-tool support
  * is stated as landing, never as already shipped.
@@ -247,24 +252,24 @@ function actionButton(csrf, action, label, fields = {}) {
 export function gbBearerRevealPage({ identity, token, expiresAt, kind = "persona", mcpAccept = true }) {
   const onMcp = kind !== "seat" || mcpAccept === true;
   const send = onMcp
-    ? "Send it as an Authorization: Bearer header to ST-MCP's /mcp URL and to GR-MCP;  it acts only as this identity.  A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity's credential."
-    : "Send it as an Authorization: Bearer header to GR-MCP (git-relay) only;  it acts only as this identity.  ST-MCP's /mcp refuses this bearer because it was minted without /mcp acceptance.  A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity's credential.  If this seat should act on /mcp too, mint a new one with the box ticked.";
+    ? "Send it as an Authorization: Bearer header to Fleet MCP's /mcp URL and to Git Relay;  it acts only as this identity.  A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity's credential."
+    : "Send it as an Authorization: Bearer header to Git Relay (git-relay) only;  it acts only as this identity.  Fleet MCP's /mcp refuses this bearer because it was minted without /mcp acceptance.  A fleet tool that verifies with this Worker (simple-board is the first) uses this same bearer as the identity's credential.  If this seat should act on /mcp too, mint a new one with the box ticked.";
   const body = `<h1>Bearer For ${escapeHtml(identity)}</h1>
 <p class="warn">${sentences("This is the only time it is shown.", "Copy it now.", "The server keeps only its hash, so it cannot show it again.", "Refreshing or resubmitting cannot mint a replacement by accident:  this form was single-use, so a resubmit only shows this bearer's details again (never the token) and the bearer stays exactly as it is.", "To replace it on purpose, mint a new one from the admin page.")}</p>
 <p><code id="gb-bearer-token">${escapeHtml(token)}</code></p>
 <p>${sentences(`Expires ${ownerTime(expiresAt)}.`)}${SENTENCE_GAP}${gapped(send)}</p>
-<p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
+<p><a href="/admin">Back to Fleet MCP Admin</a></p>`;
   return htmlResponse(`Bearer For ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
 /** A form whose mint already completed:  the stored outcome, never the token. */
 export function gbBearerMintCompletedPage({ identity, result = null }) {
   const detail = result
-    ? [`That form already minted this identity's bearer ${ownerTime(result.created_at)}.`, `It expires ${ownerTime(result.expires_at)}.`, `This is mint #${Number(result.mint_count) || 1} for the identity.`, result.mcp_accept ? "It was minted with /mcp acceptance." : "It was minted for GR-MCP only (no /mcp acceptance)."]
+    ? [`That form already minted this identity's bearer ${ownerTime(result.created_at)}.`, `It expires ${ownerTime(result.expires_at)}.`, `This is mint #${Number(result.mint_count) || 1} for the identity.`, result.mcp_accept ? "It was minted with /mcp acceptance." : "It was minted for Git Relay only (no /mcp acceptance)."]
     : ["That form already minted this identity's bearer."];
   const body = `<h1>Already Minted</h1>
 <p>${sentences(...detail, "The token itself is never shown again - the server keeps only its hash.", "If you lost it, mint a new one from the admin page (that replaces it).")}</p>
-<p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
+<p><a href="/admin">Back to Fleet MCP Admin</a></p>`;
   return htmlResponse(`Already Minted - ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
@@ -278,7 +283,7 @@ export function gbBearerMintRefusedPage({ identity, reason = "stale" }) {
     : "Reload the admin page and mint again from the fresh form.";
   const body = `<h1>Nothing Was Minted</h1>
 <p>${sentences(why, "No bearer was minted and the current one is unchanged.", next)}</p>
-<p><a href="/admin">Back to ST-MCP + GR-MCP Admin</a></p>`;
+<p><a href="/admin">Back to Fleet MCP Admin</a></p>`;
   return htmlResponse(`Nothing Was Minted - ${identity}`, body, { headers: { "Cache-Control": "no-store, private", Pragma: "no-cache" } });
 }
 
@@ -369,7 +374,7 @@ export function adminPage({ gbBearers = [], mintId = "", email, seats, clients, 
   // Owner controls first, then everything long folded behind a summary that shows its count (AFC-347).
   const fold = (title, count, inner) =>
     `<details class="fold"><summary><h2>${escapeHtml(title)}</h2> <span class="count">${escapeHtml(count)}</span></summary>${inner}</details>`;
-  const body = `<h1>ST-MCP + GR-MCP Admin</h1>
+  const body = `<h1>Fleet MCP Admin</h1>
 <p>Signed in as ${escapeHtml(email)}.${SENTENCE_GAP}A seat serves tools only with its key installed and a live member role.</p>
 ${notice ? `<p class="warn">${gapped(notice)}</p>` : ""}
 <h2>Seats</h2>
@@ -393,5 +398,5 @@ ${fold("Refused Token Requests (Unauthenticated, Counted)", `${tokenRefusals.len
 ${fold("Tool Calls", `${calls.length} calls`, `<p>${sentences("One row per call, newest first.", "Bodies, keys and tokens are never stored.", "A topic that looked like a secret shows as its hash.")}</p>
 <table><tr><th>When</th><th>Seat</th><th>Tool</th><th>Outcome</th><th>Stream</th><th>Topic</th><th>Message</th><th>Ms</th><th>Grant</th><th>Network</th></tr>${callRows}</table>`)}
 ${fold("Audit", `${audits.length} events`, `<table><tr><th>When</th><th>Seat</th><th>Event</th><th>Detail</th></tr>${auditRows}</table>`)}`;
-  return htmlResponse("ST-MCP + GR-MCP Admin", body, { headers });
+  return htmlResponse("Fleet MCP Admin", body, { headers });
 }

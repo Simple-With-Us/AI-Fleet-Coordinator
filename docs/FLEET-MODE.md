@@ -12,9 +12,10 @@ drifted back into grinding everything inline.
 Typing any one of them at any agent means: read this file (or your platform's copy) and work
 this way for the rest of the session.
 
-- **Claude Code** — the `fleet-mode` skill at `~/.claude/skills/fleet-mode/SKILL.md` loads on
-  any of the phrases, and `/fleet-mode` invokes it directly.
-- **Any other platform** — paste the block below, or run `~/apps/fleet-mode` to print it.
+- **Every platform** — the `fleet-mode` skill is installed into every seat's skill home by the
+  fleet skill installer, so the phrases load it directly. 
+- **Any platform without that skill** — paste the block below, or run `~/apps/fleet-mode` to
+  print it. 
 - **Repos** — the same rule is binding via `AGENTS.md`, which points here.
 
 ## The pasteable block
@@ -77,7 +78,7 @@ because an agent that delegates only when certain delegates almost never.
 ## Canonical sources
 
 - Full policy: `/Users/jay/apps/FLEET-PROTOCOL.md` § Delegation & model economics
-- Claude Code skill: `~/.claude/skills/fleet-mode/SKILL.md`
+- Skill source: `docs/fleet-skills/fleet-mode/SKILL.md`, installed into every seat's skill home
 - Claude Code enforcement hook: `~/.claude/hooks/subagent-economy-pretooluse.py`
 - Printer: `~/apps/fleet-mode` (on-demand helper script)
 
@@ -86,7 +87,7 @@ because an agent that delegates only when certain delegates almost never.
 - **`~/Code/` is for integration trees only** — no new top-level folder may be
   added to `~/Code/` unless it is the integration tree for a brand-new fleet
   app being onboarded.  Per-seat worktrees, lane checkouts, scratch clones,
-  and `*-wt-*` directories all belong in `~/apps/`.  See `AGENT-SYNC.md` §
+  and `*-wt-*` directories all belong in `~/apps/`.  See `FLEET-PROTOCOL.md` §
   *"Hard rule: `~/Code/` is for integration trees only"* and the
   `code-main-keeper.sh` `STRAY-WORKTREE` enforcement scan.  Owner ruling
   2026-09-25, all agents, all apps, forever.

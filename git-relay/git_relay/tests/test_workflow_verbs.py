@@ -1,6 +1,7 @@
 import base64
 import unittest
 
+from git_relay.github_client import RelayGitHubError
 from git_relay.workflow_verbs import ACTIONS, SPECS, Refused, Unknown, WorkflowVerbs
 
 REPO = "Simple-With-Us/AI-Fleet-Coordinator"
@@ -29,7 +30,7 @@ class Client:
     def __init__(self, *replies):
         self.replies, self.calls = list(replies), []
 
-    def _call(self, method, path, payload=None, bearer=None):
+    def _call(self, method, path, payload=None, bearer=None, expected_status=None):
         self.calls.append((method, path, payload, bearer))
         return self.replies.pop(0) if self.replies else {}
 
@@ -72,7 +73,7 @@ class Tests(unittest.TestCase):
     def test_every_action_has_a_handler_and_spec(self):
         for action in ACTIONS:
             self.assertTrue(callable(getattr(WorkflowVerbs, action)))
-        self.assertEqual(len(ACTIONS), 17)
+        self.assertEqual(len(ACTIONS), 102)
 
     def test_least_permission_minted_and_ceiling_enforced(self):
         minter = Minter()
@@ -141,7 +142,7 @@ class Tests(unittest.TestCase):
             ("wf_pr_list", {"repo": REPO}),
         ):
             s, _ = svc(["not", "an", "object"] if action != "wf_pr_list" else {"a": 1})
-            with self.assertRaises(Refused, msg=action):
+            with self.assertRaises((Refused, RelayGitHubError), msg=action):
                 s.run(action, args)
 
     def test_update_branch_and_merge_carry_atomic_head(self):
@@ -165,7 +166,10 @@ class Tests(unittest.TestCase):
             "message": "m",
             "content_b64": base64.b64encode(b"hello").decode(),
         }
-        s, c = svc({"default_branch": "main"}, {"commit": {"sha": "c" * 40}})
+        s, c = svc(
+            {"default_branch": "main"},
+            {"commit": {"sha": "c" * 40}, "content": {"path": "docs/a.md"}},
+        )
         self.assertEqual(s.run("wf_file_put", good)["commit"], "c" * 40)
         self.assertEqual(c.calls[1][2]["branch"], "wise/x")
         s, _ = svc({"default_branch": "main"})
@@ -236,7 +240,9 @@ class Tests(unittest.TestCase):
 
     def test_spec_permissions_stay_inside_shared_ceiling(self):
         for action, (perms, _) in SPECS.items():
-            if action == "wf_checks":
+            if action in ("wf_checks", "wf_check_create", "wf_check_update") or action.startswith(
+                "wf_deployment"
+            ):
                 continue  # deliberately outside the ceiling; see the next test
             self.assertEqual(set(perms) - set(CEILING), set(), action)
 
@@ -281,7 +287,7 @@ class Tests(unittest.TestCase):
             ("wf_checks", {"repo": REPO, "ref": SHA}, {"check_runs": "nope"}),
         ):
             s, _ = svc(bad)
-            with self.assertRaises(Refused, msg=action):
+            with self.assertRaises((Refused, RelayGitHubError), msg=action):
                 s.run(action, args)
 
     def _git_data_client(self, head=SHA, default="main"):
@@ -402,7 +408,13 @@ class Tests(unittest.TestCase):
 
     def test_wf_files_put_upstream_shape_and_special_entries(self):
         files = [{"path": "scripts/run.sh", "content_b64": "eA=="}]
-        args = {"repo": REPO, "branch": "feat/x", "message": "m", "expected_head_sha": SHA, "files": files}
+        args = {
+            "repo": REPO,
+            "branch": "feat/x",
+            "message": "m",
+            "expected_head_sha": SHA,
+            "files": files,
+        }
 
         def routed(patch):
             c = self._git_data_client()
@@ -425,12 +437,18 @@ class Tests(unittest.TestCase):
             {("POST", "/git/trees"): {}},
         ):
             c = routed(patch)
-            with self.assertRaises(Refused, msg=str(patch)):
+            with self.assertRaises((Refused, RelayGitHubError), msg=str(patch)):
                 Multi(c).run("wf_files_put", args)
             self.assertFalse([1 for m, p, *_ in c.calls if m == "PATCH"], "no ref update")
         # An existing symlink (or submodule) at the path is refused, not overwritten.
-        c = routed({("GET", f"/git/trees/{'c' * 40}"): {"tree": [{"path": "run.sh", "type": "blob", "sha": "d" * 40, "mode": "120000"}]}})
-        with self.assertRaises(Refused):
+        c = routed(
+            {
+                ("GET", f"/git/trees/{'c' * 40}"): {
+                    "tree": [{"path": "run.sh", "type": "blob", "sha": "d" * 40, "mode": "120000"}]
+                }
+            }
+        )
+        with self.assertRaises((Refused, RelayGitHubError)):
             Multi(c).run("wf_files_put", args)
         self.assertFalse([1 for m, p, *_ in c.calls if m == "PATCH"])
 

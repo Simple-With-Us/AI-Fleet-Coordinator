@@ -58,7 +58,7 @@ jobs:
       run: |
         timeout 60 ruby scripts/check-workflow-duplicate-keys.rb .github/workflows .github/pr-autofix-trusted.yml
         cd scripts && python3 -m unittest test_workflow_duplicate_keys -v
-    # AGENT-SYNC.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
+    # FLEET-PROTOCOL.md is generated from Fleet-OPS handbook/ and mirrored here by the sync job's pull request from
     # handbook-sync/mirror.  The mirror must start with the GENERATED header, its body must hash to the header, and
     # only that branch may change it.  To change policy, open a PR to Fleet-OPS handbook/ (its README has the rules).
     # `test` is a required status check on main (strict:  the branch must be up to date), so this step is a hard gate:
@@ -130,6 +130,14 @@ jobs:
     # atomic private write.  Fakes only:  no docker, no network, no server.
     - name: fleet-server-status tests
       run: python3 scripts/test_fleet_server_status.py
+    # Muster operations (AFC-563):  the Mac LaunchAgent collector and the allowlisted
+    # control helper (plan then yes, the ssh forced-command gate, the audit row, and
+    # no token in an argv, an answer or the audit).  Fakes only:  no launchctl,
+    # no systemctl, no Coolify, no network.
+    - name: Muster operations tests
+      run: |
+        python3 scripts/test_fleet_mac_services.py
+        python3 scripts/test_fleet_ops_control.py
     # The Lark bridge: the eyes marker, the Operator's signal path and the
     # durable write of a record.  No job ran this file, so every assertion in
     # it was decoration: the write could lose a record on a crash and CI would
@@ -210,10 +218,17 @@ jobs:
     - name: Muster guard live proof tests
       run: python3 scripts/test_muster_guard_live_proof.py
     # Fleet skills pack: canonical pin-or-fail identity block, every rendered
-    # tree equal to a fresh render, and the AGENT-SYNC roster the pack mirrors.
+    # tree equal to a fresh render, and the FLEET-PROTOCOL roster the pack mirrors.
     - name: Fleet skill identity tests
       run: |
         cd scripts && python3 -m unittest test_fleet_skill_identity -v
+    # The housekeeper locks, read from the one home:  the lock blocks are run
+    # as written, with the ssh hop replaced by a fake, so the free, peer-held
+    # and unmakeable paths are all covered and the destructive commands are
+    # checked to run inside the locked block.
+    - name: Housekeeper lock tests
+      run: |
+        cd scripts && python3 -m unittest test_housekeeper_lock -v
     # The sentence-gap converter, read from the one home:  its shape (one or more
     # spaces, the numbered-list lookbehind, the markup group) and its behaviour on
     # every shape a body can hold, plus the check that no copy has drifted.
@@ -250,7 +265,7 @@ jobs:
     - name: Autofix request gate tests
       run: |
         cd scripts && python3 -m unittest test_autofix_request_gate -v
-    # Owner seat-precedence rule (AGENT-SYNC Identity Rules, 2026-10-09):  no
+    # Owner seat-precedence rule (FLEET-PROTOCOL Identity Rules, 2026-10-09):  no
     # rendered skill may export a platform seat over a launcher's, write the
     # launcher variables, or lack the launcher clause.
     - name: Seat blocks in the rendered skill trees
@@ -293,11 +308,11 @@ jobs:
       run: python3 scripts/test-public-activity.py
     - name: Verify fleet registry
       run: python3 scripts/check-fleet-registry.py
-    # The registry's AGENT-SYNC.md rows are read under the GENERATED header, which itself names Fleet-OPS.
-    - name: Registry checks read AGENT-SYNC.md under its header
+    # The registry's FLEET-PROTOCOL.md rows are read under the GENERATED header, which itself names Fleet-OPS.
+    - name: Registry checks read FLEET-PROTOCOL.md under its header
       run: python3 scripts/test_check_fleet_registry.py
-    # check-ci-runner-policy.py must recognize AGENT-SYNC's local-Mac-runner ban wording.
-    - name: CI runner policy lint tracks AGENT-SYNC ban text
+    # check-ci-runner-policy.py must recognize FLEET-PROTOCOL's local-Mac-runner ban wording.
+    - name: CI runner policy lint tracks FLEET-PROTOCOL ban text
       run: python3 scripts/test_check_ci_runner_policy.py
     # GROK-BUILD in any spelling is an alias for GROK (owner 2026-10-10).  The standalone runtimes (the
     # Linear board, recall) carry a copy of the registry's aliasPattern;  these fail when a copy drifts.
@@ -378,6 +393,13 @@ jobs:
         node-version: '24'
     - name: Verify operator start routing
       run: node --test scripts/safari-start/worker.test.mjs
+    # The alert-ingress secret provisioner (AFC-351):  the batched read against a
+    # fake `fleet-secrets` that keeps the CLI's own contract -- one name answers
+    # with the raw value, several answer with a JSON object -- so a one-name
+    # batch cannot decode as the other.  No network, no secret in any assertion.
+    - name: alert_ingress provisioner tests
+      run: |
+        cd scripts && python3 -m unittest test_alert_ingress_provision -v
     # Shared alert ingress: state transitions, vendor normalization, and the
     # Zulip status rendering.  Pure functions, so no Workers runtime needed.
     # The test files are named explicitly: on Node 24 the directory form

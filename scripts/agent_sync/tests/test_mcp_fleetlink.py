@@ -118,7 +118,7 @@ class FleetLinkHarness(IdentityHarness):
     def assert_fleetlink_fence(self, text: str) -> dict:
         lines = text.split("\n")
         self.assertEqual(len(lines), 5, text)
-        self.assertTrue(lines[0].startswith("agent-sync fleetlink_"))
+        self.assertTrue(lines[0].startswith("simple-tools fleetlink_"))
         self.assertEqual(lines[1], FL.UNTRUSTED_NOTE)
         nonce = lines[2].split("nonce=", 1)[1]
         self.assertRegex(nonce, r"^[0-9a-f]{16}$")
@@ -504,7 +504,7 @@ class ScanAndFenceTests(FleetLinkHarness):
             {"file_url": "https://fleetlink.online/plan/a.md", "encoding": "utf-8"},
         )
         self.assertTrue(
-            text.startswith("agent-sync fleetlink_read_file:  as CLAUDE's FleetLink account\n")
+            text.startswith("simple-tools fleetlink_read_file:  as CLAUDE's FleetLink account\n")
         )
 
     def test_the_summary_is_the_hosted_one(self):

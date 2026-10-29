@@ -65,7 +65,7 @@ def _notes() -> str:
 def _protocol_doc_path() -> Path:
     """The protocol document is being renamed:  the mirror holds it under exactly one of the two names.
     Remove the old name when the rename is complete."""
-    for name in ("FLEET-PROTOCOL.md", "AGENT-SYNC.md"):
+    for name in ("FLEET-PROTOCOL.md",):
         if Path(ROOT, name).is_file():
             return Path(ROOT, name)
     return Path(ROOT, "FLEET-PROTOCOL.md")
@@ -307,6 +307,31 @@ class SpecializeTests(unittest.TestCase):
         out = fold_yaml_description(src)
         self.assertIn("description: Guides Cloudflare One Zero Trust work.", out)
         self.assertNotIn("description: >-", out)
+
+    def test_seat_banner_stays_after_the_front_matter_when_the_skill_has_no_h1(self) -> None:
+        """A skill that starts at `## ` has no top-level heading to insert after.
+
+        The seat banner was prepended ahead of the YAML front matter in that
+        case, so no front-matter parser could read the name or the description
+        of any seat copy that carried one.  The banner belongs after the
+        closing delimiter.
+        """
+        seat = SEATS["clutch"]
+        src = (
+            "---\n"
+            "name: secret-safety\n"
+            "description: >-\n"
+            "  Hardcoded, mandatory safeguards for handling secrets.\n"
+            "---\n\n"
+            "## Why this exists\n\n"
+            "Because.\n"
+        )
+        out = specialize_from_monet(src, seat, skill_name="secret-safety")
+        self.assertTrue(out.startswith("---\nname: secret-safety\n"))
+        self.assertIn("Runtime (Clutch)", out)
+        closing = out.index("\n---\n", 4) + len("\n---\n")
+        self.assertLess(closing, out.index("Runtime (Clutch)"))
+        self.assertLess(out.index("Runtime (Clutch)"), out.index("## Why this exists"))
 
 
 DOCS = os.path.join(ROOT, "docs", "fleet-skills")
@@ -1159,6 +1184,66 @@ class CatalogMatchesFreshRenderTests(unittest.TestCase):
         self.assertEqual(stale, [], f"stale skills/ copies; re-render with: {self.FIX}")
 
 
+class RetiredCatalogPackRenderTests(unittest.TestCase):
+    """A retired seat's catalog pack is rendered from the canonical pack, like every
+    other seat's.
+
+    The owner ruled on Oct 22 2026 that the rename guard's skip of the retired
+    seats' catalog copies goes away:  the copies are rendered from the canonical
+    pack like every other seat's are, so a stale consumer under one of those
+    folders is caught instead of passing unnoticed.  A retired seat's pack still
+    carries its retirement notice, because that notice comes from the renderer and
+    not from a hand edit.
+
+    So the pin here is a positive one.  A retired pack is a fresh render of the
+    canonical pack for that seat, byte for byte, and it carries the retirement
+    notice the renderer writes.  A pack left behind by hand, and a pack that has
+    drifted from the one home, fail both.
+    """
+
+    def _retired_seats(self) -> list:
+        return [seat for seat in catalog_seats() if seat.retired]
+
+    def test_a_retired_pack_is_a_fresh_render_of_the_canonical_pack(self) -> None:
+        seats = self._retired_seats()
+        self.assertTrue(seats, "the registry names no retired seat")
+        for seat in seats:
+            key = seat.seat_key or seat.tag.lower()
+            seat_root = Path(DOCS, "by-seat", key)
+            self.assertTrue(seat_root.is_dir(), "%s is missing" % seat_root)
+            for name in catalog_skill_names(DOCS):
+                if not skill_allowed_for_seat(name, seat):
+                    continue
+                src = Path(DOCS, name, "SKILL.md")
+                if not src.is_file():
+                    continue
+                got_path = seat_root / name / "SKILL.md"
+                self.assertTrue(got_path.is_file(), "%s is missing" % got_path)
+                want = specialize_from_monet(src.read_text(encoding="utf-8"), seat, skill_name=name)
+                self.assertEqual(
+                    got_path.read_text(encoding="utf-8"),
+                    want,
+                    "%s/%s is not a fresh render of the canonical pack" % (key, name),
+                )
+
+    def test_a_retired_pack_carries_its_retirement_notice(self) -> None:
+        for seat in self._retired_seats():
+            key = seat.seat_key or seat.tag.lower()
+            path = Path(DOCS, "by-seat", key, "session-start", "SKILL.md")
+            self.assertTrue(path.is_file(), "%s is missing" % path)
+            text = path.read_text(encoding="utf-8")
+            self.assertIn(
+                seat.tag,
+                text,
+                "%s/session-start does not name the seat it was rendered for" % key,
+            )
+            self.assertIn(
+                "retired",
+                text.lower(),
+                "%s/session-start carries no retirement notice" % key,
+            )
+
+
 class RepoPlatformCopiesTests(unittest.TestCase):
     """The repo-tracked platform trees must equal a fresh render of the pack.
 
@@ -1275,6 +1360,79 @@ def _load_installer():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+class AlwaysOnRuleFileTests(unittest.TestCase):
+    """The always-on rule files a tool home reads are installed from the repo.
+
+    Without this, the live copy of a repo-tracked rule file drifts silently and a
+    seat reads the stale one (the sentence-gap rule sat a month behind the repo).
+    """
+
+    def setUp(self) -> None:
+        self.installer = _load_installer()
+
+    def test_every_repo_rule_file_is_mapped(self) -> None:
+        repo_rules = sorted(
+            os.path.relpath(os.path.join(root, name), ROOT)
+            for root, _dirs, files in os.walk(os.path.join(ROOT, ".cursor", "rules"))
+            for name in files
+            if name.endswith(".mdc")
+        )
+        self.assertTrue(repo_rules, "no repo cursor rules found to check")
+        mapped = {rel for rules in self.installer.ALWAYS_ON_RULE_FILES.values() for rel in rules}
+        for rel in repo_rules:
+            self.assertIn(rel, mapped, f"{rel} is not installed to a tool home")
+
+    def test_the_installed_gap_rule_is_the_current_one(self) -> None:
+        rel = ".cursor/rules/sentence-gap.mdc"
+        mapped = {rule for rules in self.installer.ALWAYS_ON_RULE_FILES.values() for rule in rules}
+        self.assertIn(rel, mapped)
+        with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+            body = fh.read()
+        self.assertIn("Current rule (owner ruling 2026-10-23)", body)
+        # The retired per-surface table: two literal ASCII spaces for files,
+        # commits, terminals and untested surfaces.
+        self.assertNotIn("| two literal ASCII spaces |", body)
+        # The entity belongs to the two exception panes and nowhere else.
+        self.assertNotIn("Any other agent chat pane that renders Markdown", body)
+
+    def _install_with_home(self, home: str) -> list[str]:
+        env_home = os.environ.get("HOME")
+        os.environ["HOME"] = home
+        try:
+            return self.installer._install_always_on_rules()
+        finally:
+            if env_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = env_home
+
+    def test_the_copy_lands_at_the_home_path(self) -> None:
+        with tempfile.TemporaryDirectory() as home:
+            # The tool home has to exist already:  the install is gated on it.
+            for tool_home in self.installer.ALWAYS_ON_RULE_FILES:
+                os.makedirs(os.path.join(home, tool_home.replace("~/", "", 1)), exist_ok=True)
+            written = self._install_with_home(home)
+            self.assertTrue(written, "nothing was installed")
+            for rules in self.installer.ALWAYS_ON_RULE_FILES.values():
+                for src_rel, dest_rel in rules.items():
+                    path = os.path.join(home, dest_rel.replace("~/", "", 1))
+                    self.assertTrue(os.path.isfile(path), path)
+                    src = os.path.join(ROOT, src_rel)
+                    with open(path, "rb") as a, open(src, "rb") as b:
+                        self.assertEqual(a.read(), b.read())
+
+    def test_a_tool_home_that_is_not_there_is_not_created(self) -> None:
+        # tool_home_exists() reads the tool home to decide whether the tool is installed
+        # at all, so creating an empty one here would flip the next run's answer and hand
+        # a host a tool it never had.
+        with tempfile.TemporaryDirectory() as home:
+            written = self._install_with_home(home)
+            self.assertEqual(written, [], "a rule was installed into a home that was not there")
+            for tool_home in self.installer.ALWAYS_ON_RULE_FILES:
+                path = os.path.join(home, tool_home.replace("~/", "", 1))
+                self.assertFalse(os.path.exists(path), f"{tool_home} was created")
 
 
 class InstallerRepoOnlyTests(unittest.TestCase):
@@ -1518,7 +1676,7 @@ class LinearTeamListTests(unittest.TestCase):
         return tuple(ast.literal_eval(match.group(1)))
 
     def _sources(self) -> list[Path]:
-        #  Only files this repo owns.  AGENT-SYNC.md is deliberately absent:  it
+        #  Only files this repo owns.  FLEET-PROTOCOL.md is deliberately absent:  it
         #  is a generated mirror of the Fleet-OPS handbook, check-generated-mirror.py
         #  refuses an edit here, and its copy of the team list is fixed where it is
         #  generated rather than in this tree.
@@ -2244,6 +2402,111 @@ class PrivateInventoryTests(unittest.TestCase):
             [],
             "an allowlist entry must name a file that still carries the private "
             "inventory; clean the file up and take the entry off the list:\n" + "\n".join(stale),
+        )
+
+
+class GuardedBlockSyntaxTests(unittest.TestCase):
+    """A `:?` guard whose word holds a quote cannot be parsed.
+
+    bash reads the word of a `:?` guard inside the surrounding double quotes,
+    so an apostrophe in it opens a single-quoted string that never closes and
+    the whole block fails to parse.  The guard line reads like ordinary
+    English and the snippet cannot run at all, so the check belongs to the
+    pack:  a seat that copies the block gets a syntax error instead of the
+    lock the prose describes.
+
+    The scan reads the fenced blocks and nothing else.  A guard quoted inline
+    in a sentence is prose, and a `:?` word whose match runs over a line
+    break names text the reader never sees as one command, so the guard scan
+    never runs over the whole document.
+    """
+
+    # A fence is a run of three or more backticks, and the closing fence has to
+    # be the same run, so a four-backtick block can hold a three-backtick one.
+    # The opener and the closer may both sit inside a list item, so up to three
+    # spaces of indentation are allowed in front of them.
+    FENCE = re.compile(
+        r"^[ ]{0,3}(?P<fence>`{3,})(?P<info>[^\n`]*)\n(?P<body>.*?)^[ ]{0,3}(?P=fence)[ \t]*$",
+        re.DOTALL | re.MULTILINE,
+    )
+    GUARD = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*:\?[^}]*\}")
+    # The info strings that name a shell.  A block in any other language is
+    # not shell code, so parsing it as shell reports a failure nobody can fix.
+    SHELL_LANGUAGES = frozenset({"bash", "sh", "shell"})
+    # A block that takes longer than this to parse is a runaway, not a guard.
+    BASH_TIMEOUT = 10
+
+    def _texts(self):
+        for root, dirs, files in os.walk(ROOT):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__")]
+            for name in files:
+                if name.endswith((".md", ".mdc")):
+                    path = os.path.join(root, name)
+                    try:
+                        with open(path, encoding="utf-8") as handle:
+                            yield path, handle.read()
+                    except (OSError, UnicodeDecodeError):
+                        continue
+
+    def _bash_parse(self, body: str) -> tuple[int, str]:
+        """The exit code and the first line of the complaint from `bash -n`.
+
+        A block that never finishes and a host without bash both count as a
+        failure, so a broken guard can never hide behind either one.
+        """
+        try:
+            proc = subprocess.run(
+                ["bash", "-n"],
+                input=body,
+                capture_output=True,
+                text=True,
+                timeout=self.BASH_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return 124, "bash -n did not finish within %d seconds" % self.BASH_TIMEOUT
+        except FileNotFoundError:
+            return 127, "bash is not on the PATH of this host"
+        except OSError as exc:
+            return 127, "bash could not be run: %s" % exc
+        if proc.returncode != 0:
+            return proc.returncode, proc.stderr.strip().split("\n")[0][:90]
+        return 0, ""
+
+    def test_no_guard_word_holds_a_quote(self) -> None:
+        offenders: list[str] = []
+        for path, text in self._texts():
+            rel = os.path.relpath(path, ROOT)
+            for fence in self.FENCE.finditer(text):
+                body = fence.group("body")
+                body_line = text[: fence.start("body")].count("\n") + 1
+                for guard in self.GUARD.finditer(body):
+                    if "'" in guard.group(0) or '"' in guard.group(0):
+                        line = body_line + body[: guard.start()].count("\n")
+                        offenders.append("%s:%d %s" % (rel, line, guard.group(0)))
+        self.assertEqual(
+            offenders,
+            [],
+            "a `:?` guard word holds a quote, so the block cannot parse:\n" + "\n".join(offenders),
+        )
+
+    def test_every_guarded_block_parses(self) -> None:
+        broken: list[str] = []
+        for path, text in self._texts():
+            rel = os.path.relpath(path, ROOT)
+            for fence in self.FENCE.finditer(text):
+                if fence.group("info").strip().lower() not in self.SHELL_LANGUAGES:
+                    continue
+                body = fence.group("body")
+                if ":?" not in body:
+                    continue
+                code, complaint = self._bash_parse(body)
+                if code != 0:
+                    line = text[: fence.start("body")].count("\n") + 1
+                    broken.append("%s:%d exit %d: %s" % (rel, line, code, complaint))
+        self.assertEqual(
+            broken,
+            [],
+            "a block with a `:?` guard does not parse:\n" + "\n".join(broken),
         )
 
 

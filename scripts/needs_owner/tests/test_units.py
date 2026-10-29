@@ -272,7 +272,7 @@ class ItemTests(unittest.TestCase):
 
 
 class BoardWriteOptInTests(unittest.TestCase):
-    def test_board_calls_export_the_write_opt_in(self):
+    def test_board_calls_export_no_write_opt_in(self):
         import os
         import stat
         import tempfile
@@ -289,7 +289,7 @@ class BoardWriteOptInTests(unittest.TestCase):
             seatmod.MANAGED_BIN_DIR = d  # the import-only seam:  the managed board is this folder's
             runner = Runner(None, {"PATH": d, "HOME": d})
             result = runner.board("comment", "AFC-1", "x")
-            self.assertEqual(result.out, "1")
+            self.assertEqual(result.out, "")
             self.assertNotIn("LINEAR_BOARD_WRITES", runner.env)
 
 

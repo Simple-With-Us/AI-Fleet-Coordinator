@@ -45,7 +45,7 @@ function apiResult(tools, data, { max_chars = 24000, operation = "query", duplic
   }
   // Only the fenced text contains remote data.  No untrusted fields are
   // promoted to structured MCP output as trusted metadata.
-  return okResult(linearEnvelope(`agent-sync linear_${operation}`, duplicate ? "Previously completed mutation; not repeated." : "Linear API result (untrusted data).", [safe], newNonce()));
+  return okResult(linearEnvelope(`simple-tools linear_${operation}`, duplicate ? "Previously completed mutation; not repeated." : "Linear API result (untrusted data).", [safe], newNonce()));
 }
 
 export async function apiSchema(tools, args) {

@@ -3,7 +3,7 @@
 fleet's delegation rules.
 
 WHY THIS IS A HOOK AND NOT A PARAGRAPH
-The rules below already exist in CLAUDE.md and AGENT-SYNC.md, and are violated on
+The rules below already exist in CLAUDE.md and FLEET-PROTOCOL.md, and are violated on
 essentially every spawn anyway.  That is structural, not forgetful: a subagent
 with no `model` INHERITS the session model, nothing in the run output states which
 tier was used, and the overspend is only visible afterward by reading agent meta
@@ -21,6 +21,7 @@ three ways delegation gets done WRONG:
   3. two worktrees per agent, paying isolation cost twice for one benefit
 The right move is almost always MORE agents at the RIGHT tier, in the background.
 """
+
 import json
 import re
 import sys
@@ -46,6 +47,7 @@ def resolve_tier(raw):
         return "haiku"
     return None
 
+
 TIER_GUIDANCE = (
     "Choose from the shape of the work.  "
     "SMALL (haiku): mechanical and well-specified -- a rename, a fixture update, a doc that "
@@ -64,7 +66,7 @@ DELEGATE_MORE = (
     "cheaper, and keeps this conversation free for the owner while they run."
 )
 
-MAKES_OWN_WORKTREE = re.compile(r"git\s+worktree\s+add", re.I)
+MAKES_OWN_WORKTREE = re.compile(r"git\s+worktree\s+add", re.IGNORECASE)
 AGENT_CALL = re.compile(r"\bagent\s*\(")
 MODEL_VALUE = re.compile(r"model\s*:\s*['\"]([a-zA-Z0-9._-]+)['\"]")
 
@@ -99,10 +101,9 @@ def check_agent(tool_input):
 
     if resolve_tier(model) is None:
         deny(
-            f"`model: \"{model}\"` is not a tier this tool accepts.  Use one of: "
+            f'`model: "{model}"` is not a tier this tool accepts.  Use one of: '
             f"{', '.join(sorted(KNOWN_TIERS))} -- or a Cursor model slug containing one "
-            f"(claude-sonnet-5-thinking-high); composer-2.5-fast counts as haiku.  "
-            + TIER_GUIDANCE
+            f"(claude-sonnet-5-thinking-high); composer-2.5-fast counts as haiku.  " + TIER_GUIDANCE
         )
 
     # Blocking the main loop is the one thing that costs the owner their own
@@ -120,7 +121,7 @@ def check_agent(tool_input):
         prompt = tool_input.get("prompt", "") or ""
         if MAKES_OWN_WORKTREE.search(prompt):
             deny(
-                "This sets isolation:\"worktree\" AND tells the agent to run `git worktree add` "
+                'This sets isolation:"worktree" AND tells the agent to run `git worktree add` '
                 "itself, so one agent gets two worktrees -- the harness's, plus the lane it "
                 "actually works in.  The first is then pure setup cost and disk.  Keep exactly "
                 "one: isolation when the harness should own the checkout, or the instruction "
@@ -162,20 +163,19 @@ def check_workflow(tool_input):
             "A genuine fan-out has cheap lanes in it -- doc edits, fixture updates, mechanical "
             "reviews -- so an all-frontier assignment means the tiers were inherited in spirit "
             "even though they were typed out.  Re-tier per lane, keeping opus for the "
-            "design-heavy or security-subtle ones and the critical verifications.  "
-            + TIER_GUIDANCE
+            "design-heavy or security-subtle ones and the critical verifications.  " + TIER_GUIDANCE
         )
 
     if "isolation: 'worktree'" in script or 'isolation: "worktree"' in script:
         if MAKES_OWN_WORKTREE.search(script):
             deny(
-                "This workflow sets isolation:\"worktree\" AND its prompts tell agents to run "
+                'This workflow sets isolation:"worktree" AND its prompts tell agents to run '
                 "`git worktree add`, so every agent gets two worktrees.  Drop one.  Isolation is "
                 "also unnecessary for lanes that touch DIFFERENT repos, or that only read."
             )
         if agent_calls == 1:
             deny(
-                "isolation:\"worktree\" on a single-agent workflow isolates that agent from "
+                'isolation:"worktree" on a single-agent workflow isolates that agent from '
                 "nothing.  Worktrees cost setup time and disk -- use them only when parallel "
                 "agents would otherwise write the same checkout."
             )
