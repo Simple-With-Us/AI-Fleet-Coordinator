@@ -352,6 +352,15 @@ jobs:
       timeout-minutes: 10
       run: |
         cd scripts && python3 -m unittest test_apple_notes_linkify
+    # AFC-565:  a note body over the command line budget could not be written.  The helper passed the
+    # body as an argument, so a body over 1048576 bytes died with "Argument list too long" and the
+    # note kept the content it already had, which left the pinned Background Jobs Master List stale
+    # with nothing to show for it.  The body travels on stdin now.  The test drives the script
+    # through the preview hook, so it touches no Notes.
+    - name: Notes body size (AFC-565)
+      timeout-minutes: 10
+      run: |
+        cd scripts && python3 -m unittest test_apple_notes_body_size
     # The open-loops tools (needs-owner, ask-capture, claim expiry, lane sweep) file and comment through
     # `board` with the text in a 0600 file, never in argv, and set flat labels that only a fixed
     # allow-list may name.  These two classes (about a minute) pin that contract; the full suite is
