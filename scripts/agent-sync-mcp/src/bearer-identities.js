@@ -22,6 +22,8 @@ export const BF_BEARER_SEATS = Object.freeze({
   "BF-DEPLOYER": Object.freeze({ prefix: "BF_DEPLOYER", email: "bf-deployer-bot@simplewithus.zulipchat.com" }),
   "BF-DESIGNER": Object.freeze({ prefix: "BF_DESIGNER", email: "bf-designer-bot@simplewithus.zulipchat.com" }),
   "BF-DIRECTOR": Object.freeze({ prefix: "BF_DIRECTOR", email: "bf-director-bot@simplewithus.zulipchat.com" }),
+  "BF-ENGINEER": Object.freeze({ prefix: "BF_ENGINEER", email: "bf-engineer-bot@simplewithus.zulipchat.com" }),
+  "BF-TRADER": Object.freeze({ prefix: "BF_TRADER", email: "bf-trader-bot@simplewithus.zulipchat.com" }),
   "BF-FIXER": Object.freeze({ prefix: "BF_FIXER", email: "bf-fixer-bot@simplewithus.zulipchat.com" }),
   "BF-HOUSEKEEPER": Object.freeze({ prefix: "BF_HOUSEKEEPER", email: "bf-housekeeper-bot@simplewithus.zulipchat.com" }),
   "BF-MONITOR": Object.freeze({ prefix: "BF_MONITOR", email: "bf-monitor-bot@simplewithus.zulipchat.com" }),
@@ -34,29 +36,33 @@ export const BEARER_SEATS = Object.freeze([...KNOWN_SEATS, ...Object.keys(ADDITI
 
 // Existing OAuth seats keep their deployed hosting/key/email checks. Additional
 // bearer-only seats use their own canonical Infisical records, never env keys or
-// another seat's bundle. Off/fallback modes cannot activate these new identities.
+// another seat's bundle. Off remains disabled; transitional fallback mode never
+// permits an environment credential for these identities.
 export async function resolveBearerSeatCredentials(env, config, identity) {
-  // Unhosted CODEX mints from its own Infisical /zulip records without an
-  // OAuth client.  A CODEX that is still listed in hostedSeats must keep the
+  // Retired Builder must not gain mintability from the fallback readiness fix.
+  if (identity === "BF-BUILDER" && infisicalMode(env) !== "required") return null;
+  // Unhosted CODEX and MA resolve their own Infisical /zulip records without an
+  // OAuth client. A seat still listed in hostedSeats must keep the
   // deployed env-binding / botEmails path below, or minting and verify break.
-  if (identity === "CODEX" && !config.hostedSeats.includes(identity)) {
+  if ((identity === "CODEX" || identity === "MA") && !config.hostedSeats.includes(identity)) {
     if (infisicalMode(env) === "off") return null;
     const ownSource = { ...env, INFISICAL_MODE: "required" };
     const [key, email] = await Promise.all([
-      resolveSecret(ownSource, { name: "CODEX_ZULIP_KEY", path: "/zulip", optional: true }),
-      resolveSecret(ownSource, { name: "CODEX_ZULIP_EMAIL", path: "/zulip", optional: true }),
+      resolveSecret(ownSource, { name: `${identity}_ZULIP_KEY`, path: "/zulip", optional: true }),
+      resolveSecret(ownSource, { name: `${identity}_ZULIP_EMAIL`, path: "/zulip", optional: true }),
     ]);
-    const canonicalEmail = "codex-bot@simplewithus.zulipchat.com";
+    const canonicalEmail = identity === "MA" ? "muse-assist-bot@simplewithus.zulipchat.com" : "codex-bot@simplewithus.zulipchat.com";
     const nativeEmail = String(email ?? "").trim().toLowerCase();
     if (!key || nativeEmail !== canonicalEmail) return null;
     return { key, email: nativeEmail };
   }
   const row = Object.hasOwn(ADDITIONAL_BEARER_SEATS, identity) ? ADDITIONAL_BEARER_SEATS[identity] : null;
   if (row) {
-    if (infisicalMode(env) !== "required") return null;
+    if (infisicalMode(env) === "off") return null;
+    const ownSource = { ...env, INFISICAL_MODE: "required" };
     const [key, email] = await Promise.all([
-      resolveSecret(env, { name: `${row.prefix}_ZULIP_KEY`, path: "/zulip", optional: true }),
-      resolveSecret(env, { name: `${row.prefix}_ZULIP_EMAIL`, path: "/zulip", optional: true }),
+      resolveSecret(ownSource, { name: `${row.prefix}_ZULIP_KEY`, path: "/zulip", optional: true }),
+      resolveSecret(ownSource, { name: `${row.prefix}_ZULIP_EMAIL`, path: "/zulip", optional: true }),
     ]);
     if (!key || String(email).trim().toLowerCase() !== row.email) return null;
     return { key, email: row.email };
