@@ -87,7 +87,6 @@ class SeatPolicy:
         "wf_git_blob_create",
         "wf_git_commit_get",
         "wf_git_tree_get",
-
         "wf_commit_statuses",
         "wf_commit_status_create",
         "wf_review_thread_resolve",

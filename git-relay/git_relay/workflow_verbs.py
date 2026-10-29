@@ -80,7 +80,6 @@ SPECS = {
     "wf_git_blob_create": ({"contents": "write"}, True),
     "wf_git_commit_get": ({"contents": "read"}, False),
     "wf_git_tree_get": ({"contents": "read"}, False),
-
     "wf_commit_statuses": ({"statuses": "read"}, False),
     "wf_commit_status_create": ({"statuses": "write"}, True),
     "wf_file_rename": ({"contents": "write"}, True),
