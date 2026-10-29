@@ -2008,6 +2008,33 @@ class LinearSourceTests(unittest.TestCase):
         # advance refreshed_at, so the uncommitted fetch above leaves the row stale
         self.assertEqual(state_body, json.loads(state_path.read_text(encoding="utf-8")))
 
+    def test_fetch_deadline_is_per_chunk_not_per_selection(self) -> None:
+        """A backlog fetch spanning more healthy CLI time than one deadline must still
+        complete:  the stall bound resets per chunk (the full-repair run died when one
+        deadline was shared across every chunk of a multi-hour selection)."""
+        clock = [1000.0]
+        remainings = []
+
+        def fake_chunk(ids, deadline):
+            remainings.append(deadline - clock[0])
+            clock[0] += 500  # healthy but slow chunk, slower than the whole budget
+            return [_linear_node(uid=u) for u in ids]
+
+        with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_DEADLINE_S": "200"}):
+            with mock.patch.object(sources.time, "monotonic", lambda: clock[0]):
+                with mock.patch.object(sources, "_linear_fetch_chunk", fake_chunk):
+                    nodes = sources._linear_fetch_full([f"uuid-{i}" for i in range(120)])
+        self.assertEqual(120, len(nodes))
+        self.assertEqual(3, len(remainings))  # 50-wide chunks
+        self.assertTrue(all(r > 150 for r in remainings), remainings)
+
+    def test_fetch_chunk_deadline_still_fails_closed(self) -> None:
+        """The stall guard is intact inside a fetch:  an already-exhausted chunk deadline
+        raises instead of issuing another CLI read (fail closed, retried next run)."""
+        past = sources.time.monotonic() - 1
+        with self.assertRaises(sources.LinearSourceError):
+            sources._linear_fetch_full(["uuid-1"], deadline=past)
+
     def test_missing_refreshed_at_counts_as_stale(self) -> None:
         """Rows written before refreshed_at existed (and any hand-built row) refetch once,
         then the next commit stamps the field - fail-safe toward refetching, never skipping."""

@@ -1794,11 +1794,15 @@ LINEAR_COMMENT_MAX_PAGES = 6
 LINEAR_QUERY_TIMEOUT_S = 120
 # One absolute deadline shared by every page of one scan or fetch operation (Kody: a fresh
 # per-page timeout lets aggregate runtime grow without bound).
-LINEAR_DEADLINE_S = 900
+LINEAR_DEADLINE_S = 1800  # per-operation stall bound;  FLEET_RAG_LINEAR_DEADLINE_S overrides
 
 
 def _linear_deadline() -> float:
-    return time.monotonic() + LINEAR_DEADLINE_S
+    try:
+        budget = int(os.environ.get("FLEET_RAG_LINEAR_DEADLINE_S") or LINEAR_DEADLINE_S)
+    except ValueError:
+        budget = LINEAR_DEADLINE_S
+    return time.monotonic() + max(budget, LINEAR_QUERY_TIMEOUT_S + 1)
 
 
 def _linear_remaining(deadline: float | None) -> int:
@@ -2094,12 +2098,14 @@ def _linear_fetch_chunk(chunk: list, deadline: float | None = None) -> list:
 
 def _linear_fetch_full(ids: list, deadline: float | None = None) -> list:
     """Full nodes (bodies, labels, attachments, comments) for the selected ids, LINEAR_FULL_PAGE
-    per call, halving on CLI size overflow.  Every page of every chunk shares one absolute
-    deadline."""
-    deadline = deadline if deadline is not None else _linear_deadline()
+    per call, halving on CLI size overflow.  Each chunk gets its own absolute deadline:  the
+    bound exists so a stuck CLI read dies, and a backlog of thousands of issues - hours of
+    perfectly healthy reads - must not trip a deadline minted for the whole selection (the
+    full-repair run failed exactly that way, timing out a page with 6s of budget left)."""
     nodes: list = []
     for start in range(0, len(ids), LINEAR_FULL_PAGE):
-        nodes.extend(_linear_fetch_chunk(ids[start : start + LINEAR_FULL_PAGE], deadline))
+        chunk_deadline = deadline if deadline is not None else _linear_deadline()
+        nodes.extend(_linear_fetch_chunk(ids[start : start + LINEAR_FULL_PAGE], chunk_deadline))
     found = {n.get("id") for n in nodes}
     missing = [i for i in ids if i not in found]
     if missing:
