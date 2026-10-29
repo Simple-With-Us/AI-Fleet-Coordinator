@@ -6,7 +6,8 @@ its live label;  a fork or a new native session id is a new registration.
 
 Labels are per-platform letters A-Z with one namespace across all hosts.  RECYCLE is on (owner
 2026-10-20, option B):  allocation takes the lowest letter with no active assignment, wrapping
-after Z back to A, and a reused letter gets the next generation.  Cross-seat references to a
+after Z back to A, and a reused letter gets the next generation.  A platform may ask for pairs
+(AA to ZZ, `letter_space`) and for the free letter unused the longest (`letter_pick`, default the lowest).  Cross-seat references to a
 generation > 1 letter must carry the generation:  "MM A (gen 2)".
 
 Seat is checked separately from identity:  a resolve under an unexpected seat returns the
@@ -46,6 +47,8 @@ LETTER_SPACES = {
     "double": tuple(a + b for a in LETTERS for b in LETTERS),
 }
 ALL_LETTERS = tuple(sorted(set(LETTERS) | set(LETTER_SPACES["double"])))
+# How a free letter is chosen:  the lowest in the alphabet, or the one unused the longest.
+LETTER_PICKS = ("lowest", "oldest")
 MUTABLE_ATTRS = ("title", "project", "thread_link", "apple_note_link", "state", "wake_capability")
 IDENTITY_FIELDS = ("platform", "verified_host", "profile_scope", "native_session_id")
 
@@ -100,7 +103,12 @@ EVENTS_HEADERS = (
 
 
 class LabelExhausted(RuntimeError):
-    """Every letter A-Z on this platform has an active assignment."""
+    """Every letter of one space on this platform has an active assignment.
+
+    `space` says which one ("single" or "double"), so a caller that frees a letter to make room can
+    free one of the right length."""
+
+    space = "single"
 
 
 class UnknownRecord(KeyError):
@@ -392,13 +400,27 @@ class SessionRegistry:
         record_id: str,
         now: str,
         space: str = "single",
+        pick: str = "lowest",
     ) -> tuple[str, int]:
         """Lowest letter with no active assignment, wrapping after Z to A (RECYCLE on).  A reused
         letter gets the next generation.  Raises LabelExhausted when the space is full.
 
         The space is chosen by the caller:  "single" for a main conversation, "double"
-        for a subthread."""
-        for letter in LETTER_SPACES.get(space, LETTERS):
+        for a subthread.  The pick is "lowest" (the default, first in the alphabet) or
+        "oldest" (the letter that has gone unused the longest, never-issued letters first),
+        which keeps a retired letter from being reused for as long as the space allows."""
+        candidates = LETTER_SPACES.get(space, LETTERS)
+        if pick == "oldest":
+            last_use = {
+                r["letter"]: r["last_use"]
+                for r in conn.execute(
+                    "SELECT letter, MAX(COALESCE(retired_at, assigned_at)) AS last_use"
+                    " FROM alias_assignments WHERE platform = ? GROUP BY letter",
+                    (platform,),
+                )
+            }
+            candidates = sorted(candidates, key=lambda letter: (last_use.get(letter, ""), letter))
+        for letter in candidates:
             live = conn.execute(
                 "SELECT 1 FROM alias_assignments"
                 " WHERE platform = ? AND letter = ? AND retired_at IS NULL",
@@ -417,10 +439,12 @@ class SessionRegistry:
                 (platform, letter, generation, record_id, now),
             )
             return letter, generation
-        raise LabelExhausted(
+        exhausted = LabelExhausted(
             f"all {len(LETTER_SPACES.get(space, LETTERS))} letters are active on"
             f" platform {platform!r}"
         )
+        exhausted.space = space if space in LETTER_SPACES else "single"
+        raise exhausted
 
     def _insert_event(
         self,
@@ -557,6 +581,7 @@ class SessionRegistry:
                 record_id,
                 now,
                 str(identity.get("letter_space") or "single"),
+                str(identity.get("letter_pick") or "lowest"),
             )
             self._insert_event(
                 conn,
@@ -656,13 +681,15 @@ class SessionRegistry:
         at: str | None = None,
         actor: str = "registry",
         source: str = "registry",
+        pick: str = "lowest",
     ) -> tuple[str, int, str]:
         """Give a closed session a letter again (AFC-564, owner Oct 28 2026:  a reopened chat checks with the
         Operator in case it needs a new letter).
 
         The record keeps its record_id and identity, and closed_at is cleared.  It gets back the letter it held
         while no other session holds that letter (a new generation of it, as any reuse is);  otherwise the letter
-        is allocated by the same rule as a first registration, the lowest free one.  Returns (letter, generation,
+        is allocated by the same rule as a first registration (the lowest free one, or with pick="oldest" the one
+        unused the longest), in the space of the letter it held.  Returns (letter, generation,
         previous letter).  An open session comes back as it is, with nothing written.  Raises LabelExhausted, with
         nothing written, when every letter is live.
         """
@@ -701,7 +728,11 @@ class SessionRegistry:
                 )
                 letter = previous
             else:
-                letter, generation = self._allocate(conn, row["platform"], record_id, now)
+                # A session stays in the space it was first given:  a pair letter comes back as a pair.
+                space = "double" if len(previous) == 2 else "single"
+                letter, generation = self._allocate(
+                    conn, row["platform"], record_id, now, space, pick
+                )
             conn.execute(
                 "UPDATE sessions SET closed_at = NULL, state = 'active', last_seen_at = ?"
                 " WHERE record_id = ?",
@@ -763,6 +794,7 @@ def register_session(
     wake_capability: str = "unknown",
     issuer: str = "",
     letter_space: str = "single",
+    letter_pick: str = "lowest",
 ) -> dict[str, Any]:
     """Register one session and hand back its letter.
 
@@ -770,7 +802,8 @@ def register_session(
     registered here is one the wake can find:  a native session id that would not
     survive the join's own check is refused here rather than stored and never matched.
 
-    A seat never chooses its own letter.  The lowest free letter on the platform goes to
+    A seat never chooses its own letter.  The lowest free letter on the platform (letter_pick "lowest", the
+    default;  "oldest" is the one unused the longest, in the letter_space asked for) goes to
     the session, a recycled letter takes the next generation, and the title comes back in
     the display form the platform expects:  "H: Title".
 
@@ -782,6 +815,8 @@ def register_session(
     """
     if str(issuer or "").strip().upper() != ISSUER_OPERATOR:
         raise ValueError("only the Operator may issue a letter (issuer %r)" % (issuer or ""))
+    if letter_pick not in LETTER_PICKS:
+        raise ValueError("letter_pick must be one of %s" % ", ".join(LETTER_PICKS))
     _scan_fields(
         {
             "title": title,
@@ -817,6 +852,7 @@ def register_session(
                 "apple_note_link": apple_note_link,
                 "wake_capability": wake_capability,
                 "letter_space": letter_space,
+                "letter_pick": letter_pick,
             }
         )
     finally:
@@ -1711,6 +1747,12 @@ def main(argv: list[str] | None = None) -> int:
         choices=sorted(LETTER_SPACES),
         help="single for a main conversation, double for a subthread",
     )
+    r.add_argument(
+        "--letter-pick",
+        default="lowest",
+        choices=LETTER_PICKS,
+        help="lowest free letter (default) or the letter unused the longest",
+    )
     rs = sub.add_parser("resolve", help="name the session a letter points at")
     rs.add_argument("--db", default="", help="the registry file (default: the shared path)")
     rs.add_argument("--platform", required=True, help="the platform namespace, such as minimax")
@@ -1804,7 +1846,12 @@ def main(argv: list[str] | None = None) -> int:
                 wake_capability=args.wake_capability,
                 issuer=ISSUER_OPERATOR,
                 letter_space=args.letter_space,
+                letter_pick=args.letter_pick,
             )
+        except LabelExhausted as exc:
+            # A platform that asks for a letter gets an answer it can read, never a traceback and an empty line.
+            print(json.dumps({"error": str(exc), "code": "labels_exhausted"}))
+            return 2
         except ValueError as exc:
             print(json.dumps({"error": str(exc)}))
             return 2
