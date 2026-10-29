@@ -20,6 +20,7 @@ import { IdentityRouter } from "./delegated-identities.js";
 import { PUBLIC_HOST } from "./config.js";
 import { EventError } from "./events.js";
 import { z } from "zod";
+import { boundedMcpRequest, MCP_FILE_BYTES } from "./mcp-body.js";
 
 export const SERVER_VERSION = "2.0.0-phase2";
 
@@ -89,9 +90,16 @@ export function buildServer(tools, events = null) {
 }
 
 /** Serve one /mcp request for `tools` (the Worker checked the grant first). */
-export function serveMcpRequest(request, tools, authInfo, events = null) {
+export async function serveMcpRequest(request, tools, authInfo, events = null) {
+  // All callers already checked their OAuth grant or assigned bearer, consent
+  // and seat state.  Never read a large body before these existing auth gates.
+  const bounded = await boundedMcpRequest(request);
+  if (bounded instanceof Response) return bounded;
+  request = bounded;
   const handler = createMcpHandler(() => buildServer(tools, events), {
     route: "/mcp",
+    // Authenticated guard classifies larger single file calls; keep SDK bound equal.
+    maxRequestBodySize: MCP_FILE_BYTES,
     allowedHostnames: [PUBLIC_HOST],
     onerror: (error) => console.log(JSON.stringify({ event: "mcp_error", name: error?.name ?? "Error" })),
   });

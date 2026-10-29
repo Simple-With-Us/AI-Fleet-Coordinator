@@ -11,6 +11,11 @@ resolved row. A title is returned for display only and is never used to resolve
 a target. Missing, stale, duplicate, or mismatched targets fail closed. No path
 creates a replacement session for an unresolved target.
 
+Decoded MCP arguments are checked for JSON-only values, cycles, depth, node
+count, and a decoded-byte budget before serialization. Their compact UTF-8 JSON
+byte length is then checked again to account for escaping. The MCP parser must
+still enforce its raw request-byte limit before decoding the request.
+
 ## Capability matrix
 
 `implemented` means the adapter code exists in this checkout. It does not mean

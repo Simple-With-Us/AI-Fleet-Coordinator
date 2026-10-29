@@ -6189,26 +6189,67 @@ class Daemon:
 
         `#alerts` is already a presence topic, so this post is classified PASSIVE for every seat
         (router.route checks `is_presence` before a topic can interrupt), and it names no one:  an
-        alert that woke the seats it is about would be a second way to hold wakes back."""
+        alert that woke the seats it is about would be a second way to hold wakes back.
+
+        The digest is ONE standing message edited in place (AFC-569, heldalert.py):  the seat that
+        posted it edits it each window, a fresh post goes out only when that seat's bot cannot edit
+        it, and once every hold clears the message is edited to say so.  The all-clear is only ever
+        an edit, so an instance that has never held anything still says nothing."""
         every = float(self.config.held_alert_minutes) * 60.0
         if not HELDALERT.due(self.root, every=every, now=now):
             return
         seats = HELDALERT.collect(self.root, list(self.seats), now)
-        if not seats:
-            return  # nothing held:  no all-clear either, so the channel is silent until it matters
-        text = HELDALERT.compose(seats)
+        standing = HELDALERT.standing(self.root)
+        updated = format_time(now)
+        if seats:
+            text = HELDALERT.compose(seats, updated=updated)
+        elif standing is not None and not standing["clear"]:
+            text = HELDALERT.compose_clear(updated=updated)
+        else:
+            return  # nothing held and nothing stale to clear:  the channel is silent until it matters
         if not text:
             return
-        runner = self._alert_runner()
+        fields: dict[str, Any] = {
+            "seats": [s for s, _ in seats],
+            "counts": {s: h.get("count") for s, h in seats},
+            "evicted": {s: h.get("evicted") for s, h in seats if h.get("evicted")},
+        }
+        skip: str | None = None
+        if standing is not None:
+            editor = self.seats.get(standing["seat"])
+            if editor is not None and editor.client is not None and not editor.fatal:
+                outcome = self._held_alert_edit(editor, standing["message_id"], text, now, fields)
+                if outcome in ("edited", "failed"):
+                    return
+                if outcome == "gone":
+                    # Zulip refused the edit (the message is gone, or this bot may not edit it), so
+                    # nothing can bring that message back:  forget it and fall through to a fresh post.
+                    HELDALERT.drop_standing(self.root)
+                else:
+                    # That bot's key or account was refused, which can recover:  holds go out with
+                    # another seat (whose post becomes the standing one), and an all-clear keeps the
+                    # pointer for its owner.
+                    skip = editor.seat
+            if not seats:
+                # An all-clear is never a fresh post.  The bot that owns the stale list is not here
+                # or was refused, so the clear waits a window for it, or for nothing at all when
+                # the message is gone.  The window is spent so this is one log line a window, not
+                # one a tick.
+                self.log.write(
+                    "held-alert-clear-skipped",
+                    seat=standing["seat"],
+                    message_id=standing["message_id"],
+                )
+                HELDALERT.note_post(self.root, now)
+                return
+        runner = self._alert_runner(skip=skip)
         if runner is None:
             # No seat can post (every key refused, or none configured).  Nothing was sent, so the
             # window is NOT consumed and the digest goes out as soon as a usable key returns;  the
             # cost of waiting is one seat scan a tick, which is nothing next to a post attempt.
-            self.log.write("held-alert-skipped", now=now, seats=[s for s, _ in seats])
+            self.log.write("held-alert-skipped", now=now, seats=fields["seats"])
             return
-        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
-        if wait > 0:
-            self.clock.sleep(wait)
+        self._pace(runner)
         try:
             result = runner.client.post(
                 "messages",
@@ -6231,27 +6272,98 @@ class Daemon:
             runner.last_post = self.clock.monotonic()
         HELDALERT.note_post(self.root, now)
         message_id = result.get("id")
+        message_id = int(message_id) if isinstance(message_id, int) and message_id > 0 else None
+        if message_id is not None:
+            HELDALERT.note_standing(self.root, runner.seat, message_id, clear=False)
         self.log.write(
             "held-alert-posted",
             seat=runner.seat,
             channel=HELDALERT.CHANNEL,
             topic=HELDALERT.TOPIC,
-            seats=[s for s, _ in seats],
-            counts={s: h.get("count") for s, h in seats},
-            evicted={s: h.get("evicted") for s, h in seats if h.get("evicted")},
-            message_id=int(message_id) if isinstance(message_id, int) else None,
+            message_id=message_id,
+            replaced=standing["message_id"] if standing is not None else None,
+            **fields,
         )
 
-    def _alert_runner(self) -> SeatRunner | None:
+    def _held_alert_edit(
+        self, runner: SeatRunner, message_id: int, text: str, now: float, fields: Mapping[str, Any]
+    ) -> str:
+        """Rewrite the standing digest with the bot that posted it.  One of:
+
+        - `edited`.
+        - `failed`:  a timeout, a rate limit or a gateway error, which may have landed.  The window
+          is spent and the same message is edited again next window;  turning it into a new post
+          would leave two copies of the list.
+        - `gone`:  400 or 404, Zulip's answer for a message that is gone or that this bot may not
+          edit.  Nothing brings it back, so the caller forgets it and posts fresh.
+        - `refused`:  401 or 403, the bot's key or account was refused.  That can recover, so the
+          caller keeps the pointer for its owner and carries only this window's holds elsewhere."""
+        assert runner.client is not None
+        self._pace(runner)
+        try:
+            runner.client.patch("messages/%d" % message_id, {"content": text})
+        except Z.ApiError as exc:
+            status = exc.status or 0
+            if status in (400, 404, 401, 403):
+                self.log.write(
+                    "held-alert-edit-refused",
+                    seat=runner.seat,
+                    message_id=message_id,
+                    status=status,
+                    error=self.scrub(str(exc)),
+                )
+                # Still an attempt:  if no other seat can post either, the next try is next window.
+                HELDALERT.note_post(self.root, now)
+                return "gone" if status in (400, 404) else "refused"
+            self.log.write(
+                "held-alert-edit-failed",
+                seat=runner.seat,
+                message_id=message_id,
+                error=self.scrub(str(exc)),
+            )
+            HELDALERT.note_post(self.root, now)
+            return "failed"
+        except Z.AgentSyncError as exc:
+            self.log.write(
+                "held-alert-edit-failed",
+                seat=runner.seat,
+                message_id=message_id,
+                error=self.scrub(str(exc)),
+            )
+            HELDALERT.note_post(self.root, now)
+            return "failed"
+        finally:
+            runner.last_post = self.clock.monotonic()
+        HELDALERT.note_post(self.root, now)
+        clear = not fields.get("seats")
+        HELDALERT.note_standing(self.root, runner.seat, message_id, clear=clear)
+        self.log.write(
+            "held-alert-cleared" if clear else "held-alert-edited",
+            seat=runner.seat,
+            channel=HELDALERT.CHANNEL,
+            topic=HELDALERT.TOPIC,
+            message_id=message_id,
+            **fields,
+        )
+        return "edited"
+
+    def _pace(self, runner: SeatRunner) -> None:
+        """Keep a bot's writes about POST_SPACING apart, the spacing every post here keeps."""
+        wait = POST_SPACING - (self.clock.monotonic() - runner.last_post)
+        if wait > 0:
+            self.clock.sleep(wait)
+
+    def _alert_runner(self, skip: str | None = None) -> SeatRunner | None:
         """The seat whose bot carries the digest:  `held_alert_seat`, else the claude seat, else the
         first enabled seat that has a usable key.  A seat that is fatal or not yet connected cannot
-        post (its key is refused or absent), so it is skipped rather than failing the whole digest."""
+        post (its key is refused or absent), so it is skipped rather than failing the whole digest,
+        and so is `skip`, a seat whose key Zulip just refused."""
         wanted = self.config.held_alert_seat or self.config.claude_seat
         order = ([self.seats[wanted]] if wanted in self.seats else []) + [
             r for r in self.seats.values() if r.seat != wanted
         ]
         for runner in order:
-            if runner.client is not None and not runner.fatal:
+            if runner.client is not None and not runner.fatal and runner.seat != skip:
                 return runner
         return None
 

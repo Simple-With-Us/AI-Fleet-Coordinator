@@ -114,6 +114,15 @@ const deliveryBarrierKey = (source, c, t) =>
 // Which source pinned a standing message id.  A vendor never edits a message
 // another vendor pinned.
 const statusOwnerKey = (id) => `statusowner:${id}`;
+// Sources whose alert key names one incident rather than one monitor.  A
+// monitor comes back, so its records are kept;  an incident does not, so a
+// closed one is pruned, or every incident ever opened would stay a row of the
+// standing block and the inventory would grow until it hit MAX_KEYS.
+const PER_INCIDENT_SOURCES = new Set(["pagerduty"]);
+// What is left of a pruned incident:  the time it closed.  It is never
+// listed, so it costs nothing in the inventory, and it is what stops a late
+// retry of the original trigger from opening the incident a second time.
+const closedKey = (k) => `closed:${k}`;
 // Source names are route segments, so they are bounded and boring.
 const SOURCE_TOKEN = /^[a-z0-9_-]{1,32}$/;
 
@@ -339,6 +348,24 @@ async function verify(request, raw, env, source) {
     const sig = request.headers.get("sentry-hook-signature") || "";
     if (!sig) return false;
     return safeEqual(sig, await hmacHex(secret, raw));
+  }
+  if (source === "pagerduty") {
+    // A v3 webhook subscription carries static custom headers, so the
+    // subscription is created with `X-PagerDuty-Token` set to
+    // PAGERDUTY_WEBHOOK_SECRET.  PagerDuty also signs every body with the
+    // secret it generates for the subscription, sent as
+    // `X-PagerDuty-Signature: v1=<hex>[,v1=<hex>]` (more than one during a
+    // rotation), and that is honoured when PAGERDUTY_SIGNING_SECRET is set.
+    // Like Sentry, the source never falls through to the shared bearer token.
+    const token = env.PAGERDUTY_WEBHOOK_SECRET;
+    const header = request.headers.get("x-pagerduty-token") || "";
+    if (token && header && safeEqual(header, token)) return true;
+    const signing = env.PAGERDUTY_SIGNING_SECRET;
+    if (!signing) return false;
+    const expected = `v1=${await hmacHex(signing, raw)}`;
+    return (request.headers.get("x-pagerduty-signature") || "")
+      .split(",")
+      .some((part) => safeEqual(part.trim(), expected));
   }
   return authorized(request, env);
 }
@@ -811,6 +838,15 @@ async function handleEvent(source, payload, env) {
   }
   const event = normalize(sourceName, payload);
   const channel = DEFAULT_CHANNEL;
+  const perIncident = PER_INCIDENT_SOURCES.has(sourceName);
+  if (perIncident && (await env.ALERT_STATE.get(closedKey(event.key)))) {
+    // The incident closed and was pruned.  Only a reopen revives it;
+    // anything else is a late or repeated delivery about a closed incident.
+    if (!event.reopened) {
+      return { action: "ignored", posted: false, status: null, statusDelivery: null };
+    }
+    await env.ALERT_STATE.delete(closedKey(event.key));
+  }
   // Keep the original topic for a stable key when vendor labels change.  The
   // svc: pin and the state read are independent, so they run in parallel.
   let [priorService, prev] = await Promise.all([
@@ -883,15 +919,29 @@ async function handleEvent(source, payload, env) {
     );
   }
 
-  await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
-  await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
-  // The source is recorded with the state so the sweep can resolve the right
-  // vendor credential for this incident.
-  await env.ALERT_STATE.put(srcKey(event.key), JSON.stringify(sourceName));
-  if (event.key === `${sourceName}:${event.service.toLowerCase()}`) {
-    await env.ALERT_STATE.put(svcNameKey(sourceName, event.service), JSON.stringify(event.key));
+  if (perIncident && result.state.phase === "ok") {
+    // A closed incident is pruned:  its row leaves the standing block and its
+    // records leave the inventory, and the tombstone keeps it closed.
+    await env.ALERT_STATE.put(closedKey(event.key), String(now));
+    for (const key of [
+      indexPrefix(sourceName, channel, topic) + event.key,
+      stateKey(event.key),
+      svcKey(event.key),
+      srcKey(event.key),
+    ]) {
+      await env.ALERT_STATE.delete(key);
+    }
+  } else {
+    await env.ALERT_STATE.put(stateKey(event.key), JSON.stringify(result.state));
+    await env.ALERT_STATE.put(svcKey(event.key), JSON.stringify(event.service));
+    // The source is recorded with the state so the sweep can resolve the right
+    // vendor credential for this incident.
+    await env.ALERT_STATE.put(srcKey(event.key), JSON.stringify(sourceName));
+    if (event.key === `${sourceName}:${event.service.toLowerCase()}`) {
+      await env.ALERT_STATE.put(svcNameKey(sourceName, event.service), JSON.stringify(event.key));
+    }
+    await env.ALERT_STATE.put(indexPrefix(sourceName, channel, topic) + event.key, "1");
   }
-  await env.ALERT_STATE.put(indexPrefix(sourceName, channel, topic) + event.key, "1");
   await env.ALERT_STATE.put(topicKey(sourceName, channel, topic), "1");
 
   // Every outcome refreshes the standing status, which is what makes the
@@ -1037,7 +1087,7 @@ const handler = {
 
     // Liveness, so a monitor can watch the ingress itself.
     if (url.pathname === "/health") {
-      return json({ ok: true, sources: ["datadog", "betterstack", "sentry", "generic"] });
+      return json({ ok: true, sources: ["datadog", "betterstack", "sentry", "pagerduty", "generic"] });
     }
 
     if (url.pathname === "/sweep") {
@@ -1352,9 +1402,18 @@ const handler = {
       // boundary rule refuses, so it has a rule of its own.  Every other
       // source keeps the generic rule unchanged.
       if (source === "sentry") validateSentryPayload(payload);
+      else if (source === "pagerduty") validatePagerDutyPayload(payload);
       else validatePayload(payload);
     } catch {
       return json({ error: "invalid payload" }, 400);
+    }
+    // A PagerDuty subscription also delivers its own ping and events about
+    // things that are not incidents.  They are authenticated and well formed,
+    // and they say nothing about an alert, so they are acknowledged and
+    // dropped:  answering 4xx would make PagerDuty retry, then disable the
+    // subscription.
+    if (source === "pagerduty" && !pagerDutyIncidentEvent(payload)) {
+      return json({ action: "ignored", posted: false });
     }
     try {
       return json(await handleEvent(source, payload, env));
@@ -1688,6 +1747,15 @@ function validateSentryPayload(payload) {
   }
   if (hasIssue) validateSentryIssue(body);
   else validateSentryMetric(body);
+  walkBounded(payload);
+}
+
+/**
+ * Bound a native vendor body:  depth, breadth, node count and text length, with
+ * control characters refused.  Sentry and PagerDuty both send nested native
+ * shapes that the generic rule cannot accept, and both get this same bound.
+ */
+function walkBounded(payload) {
   let nodes = 0;
   const walk = (value, depth) => {
     if (++nodes > MAX_SENTRY_NODES) throw new Error("payload too large");
@@ -1717,8 +1785,63 @@ function validateSentryPayload(payload) {
   walk(payload, 0);
 }
 
+/** True when a PagerDuty v3 delivery is about an incident, whose `data` is the incident. */
+function pagerDutyIncidentEvent(payload) {
+  const event = payload?.event;
+  return (
+    event?.resource_type === "incident" &&
+    typeof event.event_type === "string" &&
+    event.event_type.startsWith("incident.") &&
+    event.data?.type === "incident"
+  );
+}
+
+/**
+ * Validate a PagerDuty v3 webhook body.
+ *
+ * Every delivery is `{ event: { event_type, resource_type, data } }`.  The
+ * envelope is required for every delivery, a ping included.  An incident
+ * event must also carry the incident's identity, and every incident field the
+ * parser reads is checked for the type it reads it as, the same rule as
+ * Sentry:  a body with no identity would otherwise file under a constant key.
+ */
+function validatePagerDutyPayload(payload) {
+  const object = (value) =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!object(payload)) throw new Error("invalid payload");
+  if (Object.keys(payload).length > 20) throw new Error("too many fields");
+  const event = payload.event;
+  if (!object(event)) throw new Error("invalid payload");
+  if (typeof event.event_type !== "string" || !event.event_type.trim()) {
+    throw new Error("missing event type");
+  }
+  if (!object(event.data)) throw new Error("invalid payload");
+  if (pagerDutyIncidentEvent(payload)) {
+    const data = event.data;
+    if (!sentryFirstText(data, ["id"])) throw new Error("missing identity");
+    for (const field of ["id", "status", "title", "number", "html_url", "urgency"]) {
+      const value = data[field];
+      if (value === undefined || value === null) continue;
+      if (sentryText(value) === null) throw new Error("invalid text field");
+    }
+    for (const field of ["service", "priority"]) {
+      const value = data[field];
+      if (value === undefined || value === null) continue;
+      if (!object(value)) throw new Error("invalid payload");
+      for (const name of ["summary", "name"]) {
+        const text = value[name];
+        if (text === undefined || text === null) continue;
+        if (sentryText(text) === null) throw new Error("invalid text field");
+      }
+    }
+  }
+  walkBounded(payload);
+}
+
 // One named object owns every read/render/write transaction.  Durable storage
 // overlays legacy KV without deleting historical records or trusting KV locks.
+const LEGACY_IMPORTED = "legacy:imported",
+  LEGACY_RETRY_AT = "legacy:retryAt";
 export class AlertWriter {
   constructor(ctx, env) {
     this.ctx = ctx;
@@ -1730,13 +1853,47 @@ export class AlertWriter {
     this.tail = task.catch(() => {});
     return task;
   }
-  async dispatch(request) {
+  // The legacy KV is frozen (nothing writes it once the writer owns the
+  // records), so it is copied into durable storage once and never read again.
+  // Every KV list counts against the account's free-plan cap of 1,000 a day,
+  // and listing it on each sweep and webhook spent about 3,300 a day.  Until a
+  // copy succeeds the overlay keeps reading through to KV, retried at most
+  // every ten minutes;  the retry time is stored, so an evicted writer waits
+  // too.  The read-through itself is not skipped, because an inventory
+  // without the frozen records could post a second standing block.
+  async legacyImported() {
     const storage = this.ctx.storage,
       legacy = this.env.ALERT_STATE;
+    if (this.imported) return true;
+    try {
+      if (!legacy || (await storage.get(LEGACY_IMPORTED)) !== undefined)
+        return (this.imported = true);
+      this.importRetryAt ??= (await storage.get(LEGACY_RETRY_AT)) || 0;
+      if (Date.now() < this.importRetryAt) return false;
+      for (const { name } of await listAll(legacy, "")) {
+        if ((await storage.get(`kv:${name}`)) !== undefined) continue;
+        const value = await legacy.get(name);
+        if (value !== null) await storage.put(`kv:${name}`, value);
+      }
+      await storage.put(LEGACY_IMPORTED, Date.now());
+      return (this.imported = true);
+    } catch {
+      console.error(JSON.stringify({ event: "alert.legacy_import_failed" }));
+      this.importRetryAt = Date.now() + 10 * 60 * 1000;
+      try {
+        await storage.put(LEGACY_RETRY_AT, this.importRetryAt);
+      } catch {}
+      return false;
+    }
+  }
+  async dispatch(request) {
+    const storage = this.ctx.storage,
+      legacy = this.env.ALERT_STATE,
+      imported = await this.legacyImported();
     const overlay = {
       async get(key, type) {
         let value = await storage.get(`kv:${key}`);
-        if (value === undefined) value = await legacy.get(key);
+        if (value === undefined && !imported) value = await legacy.get(key);
         return value == null
           ? null
           : type === "json"
@@ -1746,8 +1903,15 @@ export class AlertWriter {
       async put(key, value) {
         await storage.put(`kv:${key}`, value);
       },
+      // Only the writer's own records are deleted.  The one caller prunes the
+      // records of a closed per-incident alert, and every such record was
+      // written through this overlay, after the legacy KV was frozen, so there
+      // is no legacy copy to show through.
+      async delete(key) {
+        await storage.delete(`kv:${key}`);
+      },
       async list({ prefix }) {
-        const previous = await listAll(legacy, prefix);
+        const previous = imported ? [] : await listAll(legacy, prefix);
         const local = await storage.list({
           prefix: `kv:${prefix}`,
           limit: MAX_KEYS + 1,
@@ -1803,6 +1967,7 @@ Object.assign(__testing, {
   listAll,
   mapBounded,
   validatePayload,
+  validatePagerDutyPayload,
   verify,
   handler,
   handleEvent,
