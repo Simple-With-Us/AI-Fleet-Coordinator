@@ -6753,11 +6753,18 @@ class ServerRootResolutionTests(World):
         for path in sorted(_repo_text_files(SCRIPTS_DIR.parent)):
             self.assertNotIn(needle, path.read_text(encoding="utf-8", errors="replace"), str(path))
 
-    def test_the_lane_map_rule_templates_stay_plain_ascii(self) -> None:
-        """Every seat reads the rules on every platform, so they stay plain ASCII."""
+    def test_the_lane_map_rule_templates_stay_ascii_apart_from_the_gap(self) -> None:
+        """Every seat reads the rules on every platform, so they stay ASCII apart from the house gap.
+
+        The house gap is a real U+00A0 plus a normal space (owner 2026-10-23).  The rule
+        templates are prose every seat reads in its own AGENTS.md, so the gap character is
+        allowed; every other non-ASCII character is refused, because a smart quote or an
+        em dash in a file the installer writes into every seat home breaks a shell reader.
+        """
         for name in ("lane-map.full.md", "lane-map.minimal.md"):
             text = (REAL_PKG / "rules" / name).read_text(encoding="utf-8")
-            self.assertEqual(text, text.encode("ascii").decode("ascii"), name)
+            stripped = text.replace("\u00a0", "")
+            self.assertEqual(stripped.encode("ascii").decode("ascii"), stripped, name)
 
     def test_the_installed_rule_templates_are_not_foreign_files(self) -> None:
         """A second run must not call the installed templates foreign and refuse.

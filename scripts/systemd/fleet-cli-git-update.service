@@ -5,5 +5,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/python3 -I /root/.local/share/fleet-cli/repo/scripts/fleet-cli-git-update.py update
+User=jay
+Group=jay
+Environment=HOME=/home/jay
+ExecStart=/usr/bin/python3 -I /home/jay/.local/share/fleet-cli/repo/scripts/fleet-cli-git-update.py update --home /home/jay
 TimeoutStartSec=600
