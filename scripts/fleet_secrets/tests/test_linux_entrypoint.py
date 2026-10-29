@@ -42,7 +42,8 @@ class BootstrapTests(unittest.TestCase):
         stack.enter_context(
             mock.patch.object(entry.core.os, "fstat", side_effect=[directory] * 3 + [file])
         )
-        stream = io.StringIO(json.dumps(PAIR) if payload is None else payload)
+        payload_bytes = (json.dumps(PAIR) if payload is None else payload).encode("utf-8")
+        stream = io.BytesIO(payload_bytes)
         stack.enter_context(mock.patch.object(entry.core.os, "fdopen", return_value=stream))
         return opened, closed
 
