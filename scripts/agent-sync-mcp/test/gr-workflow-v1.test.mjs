@@ -869,3 +869,49 @@ test('metadata receipts correlate tag pages and reject malformed or credential n
  }
  assert.ok(validWfV1Response('wf_repo_languages',{languages:[{name:'日本語',bytes:1},{name:'C++',bytes:2}]}));
 });
+
+test('pending user/team request capability receipts correlate and do not dismiss reviews',()=>{
+ const sha='a'.repeat(40);
+ for(const op of ['add','remove','rerequest']){
+  const a='wf_review_requests_'+op,args={repo,number:3,expected_head_sha:sha,reviewers:['bot'],team_reviewers:['devs']},r={number:3,head_sha:sha,operation:op,reviewers:['bot'],team_reviewers:['devs'],atomic:false};
+  assert.ok(validWfV1Args(a,args));assert.ok(validWfV1Response(a,r,args));
+  for(const bad of [{...r,number:4},{...r,head_sha:'b'.repeat(40)},{...r,operation:'dismiss'},{...r,atomic:true},{...r,reviewers:['other']},{...r,team_reviewers:['devs','DEVS']},{...r,result:{private:'unbounded'}}])assert.equal(validWfV1Response(a,bad,args),false);
+  assert.ok(!WF_V1_READ_ACTIONS.includes(a));
+ }
+});
+
+test('Actions new read/write requests bind job/run/head/attempt and expose acceptance not completion',()=>{
+ for(const [a,op] of [['wf_job_get',null],['wf_job_rerun','job_rerun'],['wf_run_rerun_all','rerun_all'],['wf_run_force_cancel','force_cancel'],['wf_run_logs_delete','logs_delete']]){
+  const job=a.startsWith('wf_job_'),args={repo,run_id:3,head_sha:'a'.repeat(40),run_attempt:4,...(job?{job_id:2}:{})};
+  const v={job_id:job?2:null,run_id:3,head_sha:'a'.repeat(40),run_attempt:4,status:'completed',conclusion:'success'};
+  const r=op?{...v,requested:op,completed:false,atomic:false}:{job:v};
+  assert.ok(validWfV1Args(a,args));assert.ok(validWfV1Response(a,r,args));
+  for(const change of [{run_id:4},{head_sha:'b'.repeat(40)},{run_attempt:5},{job_id:job?3:2},{status:'completed',conclusion:null}]){
+   const changed={...v,...change},bad=op?{...r,...change}:{job:changed};assert.equal(validWfV1Response(a,bad,args),false);
+  }
+  assert.equal(WF_V1_READ_ACTIONS.includes(a),a==='wf_job_get');
+ }
+});
+
+test('review request caller shape rejects empty or duplicate principals before network',()=>{
+ for(const op of ['add','remove','rerequest'])for(const v of [{},{reviewers:[]},{reviewers:['bot','BOT']},{team_reviewers:['devs','DEVS']},{reviewers:['sk-'+('x'.repeat(25))]}])assert.equal(validWfV1Args('wf_review_requests_'+op,{repo,number:3,expected_head_sha:'a'.repeat(40),...v}),false);
+});
+test('review context exact inputs, receipts and correlation',()=>{
+ const sha='a'.repeat(40), author={id:3,login:'bot',type:'Bot'},comment={id:7,commit_id:sha,author,body:'untrusted',body_withheld:false};
+ const args={repo,sha,comment_id:7};
+ assert.ok(validWfV1Args('wf_commit_comment_get',args));
+ assert.ok(!validWfV1Args('wf_commit_comment_get',{...args,url:'https://invalid'}));
+ assert.ok(validWfV1Response('wf_commit_comment_get',{comment},args));
+ assert.ok(!validWfV1Response('wf_commit_comment_get',{comment:{...comment,id:8}},args));
+ assert.ok(!validWfV1Response('wf_commit_comment_get',{comment:{...comment,commit_id:'b'.repeat(40)}},args));
+ const page={sha,comments:[comment],page:2,has_more:true,snapshot:false},pa={repo,sha,page:2,per_page:1};
+ assert.ok(validWfV1Response('wf_commit_comments_page',page,pa));
+ for(const bad of [{...page,page:1},{...page,has_more:false},{...page,comments:[comment,comment]},{...page,snapshot:true}])assert.ok(!validWfV1Response('wf_commit_comments_page',bad,pa));
+ const ra={repo,number:9,expected_head_sha:sha},rr={number:9,head_sha:sha,users:[author],teams:[{id:4,slug:'devs'}],snapshot:false};
+ assert.ok(validWfV1Response('wf_pr_requested_reviewers',rr,ra));
+ for(const bad of [{...rr,number:8},{...rr,head_sha:'b'.repeat(40)},{...rr,users:[author,author]},{...rr,teams:[{id:4,slug:'devs',name:'extra'}]}])assert.ok(!validWfV1Response('wf_pr_requested_reviewers',bad,ra));
+ // Runtime-assembled synthetic scanner shapes only, never credentials.
+ assert.ok(!validWfV1Response('wf_commit_comment_get',{comment:{...comment,body:'sk-'+('x'.repeat(25))}},args));
+ assert.ok(validWfV1Response('wf_commit_comment_get',{comment:{...comment,body:'<withheld: credential-shaped text>',body_withheld:true}},args));
+ assert.ok(WF_V1_READ_ACTIONS.includes('wf_pr_requested_reviewers'));
+});
