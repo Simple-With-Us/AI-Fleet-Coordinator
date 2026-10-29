@@ -524,6 +524,11 @@ What it does, in order:
     alone, because the lookarounds require a non-space on both sides of the run.
 5. **Puts the code back.**
 
+With `--entity` the order changes in one place: the inline code spans are held *before* the
+gap is made (step 3 runs ahead of step 2), because the entity is six literal characters and
+must never land inside a code span.  So in the entity mode a sentence end inside a span is not
+gapped.  Every other step is the same.
+
 Two more costs it carries, and both are deliberate:
 
 - In the default mode, a sentence end *inside* an inline code span, with a space after the period, is still gapped,
@@ -598,8 +603,9 @@ Two more traps, both hit 2026-10-18:
 ### Verify, don't assume — run this self-test only on a NEW, unlisted surface
 
 Since 2026-10-23 every surface takes a real U+00A0 plus a normal space, apart from the Claude
-Code Code tab and the MiniMax Code chat pane, so there is nothing else to
-choose.  On a surface nobody has checked yet, post one test line with the gap generated in the
+Code Code tab and the MiniMax Code chat pane (the `&nbsp;` entity plus a space) and the body
+of an Apple Note in the Coding folder (the narrow no-break space, U+202F, plus a space, AFC-552),
+so there is nothing else to choose.  On a surface nobody has checked yet, post one test line with the gap generated in the
 shell and ask the human whether they see a wider gap.  If the surface strips the U+00A0, leave
 the text as it is, never switch to the `&nbsp;` entity, and report the surface in
 #Work-In-Progress.

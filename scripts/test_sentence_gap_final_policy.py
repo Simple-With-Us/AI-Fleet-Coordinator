@@ -127,23 +127,10 @@ EXCEPTION_FILES = (
 # block reaches every app, so it has to carry the exception with it.
 PASTED_BLOCK_FILES = ("docs/AGENTS-RECALL-SNIPPET.md",)
 
-# The files that state the rule and that this branch has brought into line with
-# both exceptions.  The rest of EXCEPTION_FILES belongs to the AFC-532 branch, so
-# this gate takes those in when that branch lands.
-APPLE_NOTES_FILES = (
-    "docs/SENTENCE-GAP-PORTABLE-SKILL.md",
-    "docs/ZULIP-SWITCH-PROMPT.md",
-    ".cursor/rules/sentence-gap.mdc",
-    "TEMPLATE-AGENTS.md",
-    "docs/AGENTS-RECALL-SNIPPET.md",
-    "docs/INSTINCT-ONBOARDING-PROMPT.md",
-    "docs/OPENCODE-ONBOARDING-PROMPT.md",
-    "docs/fleet-skills/README-add-in-app.md",
-    "scripts/fleet_lanes/rules/fleet-common.md",
-    "scripts/pr_sweep/rules.md",
-    "docs/HOUSEKEEPER.md",
-    "docs/open-loops/README.md",
-) + tuple(path for pack in RULE_STATING_PACKS for path in _pack_copies(pack))
+# Every file that states the rule states both exceptions:  the two chat panes and
+# the Apple Note body.  One list, so a rule-stating file can never be left out of
+# the Apple Notes gate.
+APPLE_NOTES_FILES = EXCEPTION_FILES
 
 # The stale prescriptions, as they are written.  Each one is a live instruction a
 # reader could follow:  GitHub takes the entity, or two plain ASCII spaces are the

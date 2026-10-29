@@ -38,7 +38,7 @@ If Infisical still has `COOLIFY_API_TOKEN` for metrics, it must equal `COOLIFY_S
 | DealDex | https://dealdex.net | **Vercel** on merge.  Do not Coolify.  `dealdex.vercel.app` is a different Next.js site. | `curl -sI https://dealdex.net` |
 | Personal-Site | https://jays.services | Vercel behind Cloudflare.  Production git deploys only when `site/` changed, at most once per hour.  Previews skipped.  Do not create a second Vercel project. | `curl -sI https://jays.services` |
 | CTS | published tag `vX.Y.Z` | Library.  Announce in the Zulip work topic, then tag.  Consumers pin the tag. | n/a |
-| AFC | GitHub Pages digest | `fleet-activity-site.yml`, not Coolify. | `https://simple-with-us.github.io/AI-Fleet-Coordinator/` (the old `mac.jays.services/health` check was retired 2026-10-19) |
+| AFC | GitHub Pages digest | `fleet-activity-site.yml`, not Coolify. | `https://simple-with-us.github.io/AI-Fleet-Coordinator/` (the old Mac health check was retired 2026-10-19) |
 
 Prefer live `GET /api/v1/applications` (via a helper that reads the token itself, or Coolify MCP) over memorized UUIDs.
 

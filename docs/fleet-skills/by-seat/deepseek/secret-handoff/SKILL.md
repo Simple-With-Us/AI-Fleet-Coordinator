@@ -32,7 +32,7 @@ On the Mac:
 - `fleet-secrets run --only A,B -- CMD` runs a command with just those keys as environment variables.
 - `fleet-secrets names` lists key names only.  `fleet-secrets doctor` prints booleans and counts only.
 
-Cloud: there is no key-names endpoint now (the old `mac.jays.services/files/key-names` was retired 2026-10-19); ask a Mac seat or the owner.  Runtime keys are managed via Infisical per app.
+Cloud: there is no key-names endpoint now (the old Mac key-names endpoint was retired 2026-10-19); ask a Mac seat or the owner.  Runtime keys are managed via Infisical per app.
 
 Infisical (the app's own project, prod) is the source of truth for **deployed app runtime** secrets.  Every app reads only its own project's keys, so a credential another app owns is never that app's credential: a shared service gets its own scoped token in the consuming app's own project instead of a copy of another app's key, and no app is taught to read `fleet-secrets` or the retired flat file.
 
