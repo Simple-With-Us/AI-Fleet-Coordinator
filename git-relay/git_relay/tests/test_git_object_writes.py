@@ -96,7 +96,13 @@ class Writes(unittest.TestCase):
     def test_lone_surrogates_are_terminal_refusals_before_upstream(self):
         for text in ("\ud800", "\udfff", "ok\ud800end"):
             for action, args in (
-                ("wf_git_tree_create", {"base_tree": SHA, "files": [{"path": "x.txt", "text": text, "mode": "100644"}]}),
+                (
+                    "wf_git_tree_create",
+                    {
+                        "base_tree": SHA,
+                        "files": [{"path": "x.txt", "text": text, "mode": "100644"}],
+                    },
+                ),
                 ("wf_git_commit_create", {"tree_sha": SHA, "parents": [SHA], "message": text}),
                 ("wf_git_blob_create", {"text": text}),
             ):
