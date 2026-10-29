@@ -3074,7 +3074,9 @@ class SeatAppTests(BoardTest):
         self.assertNotIn("mentionable", ma_scope)
         self.assertEqual(json.loads(self.cache("MA").read_text())["scope"], ma_scope)
         self.as_seat("CLAUDE", "whoami")
-        self.assertEqual(self.mock.scopes, [ma_scope, EXPECTED_SCOPE], "CLAUDE still mints with the global scope")
+        self.assertEqual(
+            self.mock.scopes, [ma_scope, EXPECTED_SCOPE], "CLAUDE still mints with the global scope"
+        )
         self.assertEqual(json.loads(self.cache("CLAUDE").read_text())["scope"], EXPECTED_SCOPE)
         self.assertEqual(self.mock.mints_by, {ma: 1, claude: 1})
 
@@ -3084,7 +3086,10 @@ class SeatAppTests(BoardTest):
         self.mock.omit_scope = True
         self.as_seat("MA", "whoami")
         self.as_seat("CLAUDE", "whoami")
-        self.assertEqual(json.loads(self.cache("MA").read_text())["scope"], "comments:create,issues:create,read,write")
+        self.assertEqual(
+            json.loads(self.cache("MA").read_text())["scope"],
+            "comments:create,issues:create,read,write",
+        )
         self.assertEqual(json.loads(self.cache("CLAUDE").read_text())["scope"], EXPECTED_SCOPE)
 
     def test_ma_with_no_pair_of_its_own_uses_the_fleet_app_and_the_global_scope(self):
