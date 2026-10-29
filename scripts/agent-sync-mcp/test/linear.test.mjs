@@ -971,6 +971,7 @@ test("MA spellings: every alias that reaches MA is treated as MA (label-only, no
   for (const spelling of ["M_A", "MA_", "MUSE_ASSIST", "ROB_MUSE", "rob_muse"]) {
     assert.equal(L.seatTagForSeat(spelling), spelling.toUpperCase(), `${spelling} is not mapped to a seat`);
     assert.ok(!L.LINEAR_SEATS.includes(spelling), `${spelling} is not an enabled seat`);
+    assert.ok(!L.LINEAR_SEATS.includes(L.seatTagForSeat(spelling)), `${spelling} does not canonicalize to an enabled seat`);
     assert.equal(await L.resolveLinearPair({ INFISICAL_MODE: "off" }, spelling), null, `${spelling} resolves no credentials`);
     assert.equal(L.mintScopeFor(spelling), L.LINEAR_SCOPE, `${spelling} has no pair, so this scope is never used`);
     const { tools, fake } = harness({ seat: spelling });
