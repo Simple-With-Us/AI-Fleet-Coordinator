@@ -20,6 +20,7 @@ import { IdentityRouter } from "./delegated-identities.js";
 import { PUBLIC_HOST } from "./config.js";
 import { EventError } from "./events.js";
 import { z } from "zod";
+import { MCP_FILE_BYTES } from "./mcp-body.js";
 
 export const SERVER_VERSION = "2.0.0-phase2";
 
@@ -92,6 +93,8 @@ export function buildServer(tools, events = null) {
 export function serveMcpRequest(request, tools, authInfo, events = null) {
   const handler = createMcpHandler(() => buildServer(tools, events), {
     route: "/mcp",
+    // Common entry already classifies larger single file calls; keep SDK bound equal.
+    maxRequestBodySize: MCP_FILE_BYTES,
     allowedHostnames: [PUBLIC_HOST],
     onerror: (error) => console.log(JSON.stringify({ event: "mcp_error", name: error?.name ?? "Error" })),
   });
