@@ -204,6 +204,7 @@ def fetch(
     path: str | None = None,
     token: str | None = None,
     stage: str = "read",
+    strict: bool = False,
     **kw,
 ) -> dict[str, str]:
     """{name: value} for every secret in one folder (default INFISICAL_SECRET_PATH, else /zulip).  Logs in first
@@ -223,8 +224,14 @@ def fetch(
     secrets = got.get("secrets")
     if not isinstance(secrets, list):
         raise LoadError("read: no secrets list in the response")
+    if strict and (len(secrets) > 2000 or
+            ("totalCount" in got and got["totalCount"] != len(secrets))):
+        raise LoadError("read listener keys: incomplete listing")
     out: dict[str, str] = {}
     for item in secrets:
+        if strict and (not isinstance(item, dict) or not isinstance(item.get("secretKey"), str)
+                or not isinstance(item.get("secretValue"), str) or item["secretKey"] in out):
+            raise LoadError("read listener keys: invalid or duplicate listing")
         if (
             isinstance(item, dict)
             and isinstance(item.get("secretKey"), str)
@@ -234,9 +241,38 @@ def fetch(
     return out
 
 
+LISTENER_READ_PROJECT = "INFISICAL_LISTENER_READ_PROJECT_ID"
+LISTENER_READ_CODES = frozenset({"MA", "GB_DIRECTOR", "GB_FIXER", "GB_DESIGNER", "GB_COMPILER",
+    "GB_HOUSEKEEPER", "GB_PUBLISHER", "GB_DEPLOYER", "GB_MONITOR", "GB_PLUMBER",
+    "GB_ORACLE", "GB_TRADER", "GB_ENGINEER"})
+
+
+def listener_read_keys(env: Mapping[str, str], codes: set[str], token: str, **kw) -> tuple[dict[str, str], str]:
+    """An opt-in second native read, same identity, only the 13 server-seat HMAC read keys."""
+    project = (env.get(LISTENER_READ_PROJECT) or "").strip()
+    if not project:
+        return {}, ""
+    if not re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", project):
+        return {}, "; listener read keys not loaded (invalid project id)"
+    names = {code + "_ROUTINE_KEY" for code in LISTENER_READ_CODES & codes}
+    source = dict(env, INFISICAL_PROJECT_ID=project, INFISICAL_ENVIRONMENT="prod")
+    try:
+        found = fetch(source, path="/zulip", token=token, stage="read listener keys", strict=True, **kw)
+        keys = {name: value for name, value in found.items() if name in names
+                and len(value.strip()) >= 32 and "${" not in value}
+        return keys, "; listener read keys from secondary native source: %d of %d" % (len(keys), len(names))
+    except LoadError as exc:
+        return {}, "; listener read keys not loaded (%s)" % exc
+
+
 def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     """(the environment to exec with, the one log line).  The identity is always removed."""
     out = {k: v for k, v in env.items() if k not in IDENTITY}
+    # Opt-in native secondary keys never fall back to primary-project or container copies.
+    secondary_names = {code + "_ROUTINE_KEY" for code in LISTENER_READ_CODES}
+    if (env.get(LISTENER_READ_PROJECT) or "").strip():
+        for name in secondary_names:
+            out.pop(name, None)
     missing = [name for name in REQUIRED if not (env.get(name) or "").strip()]
     if missing:
         return (
@@ -280,7 +316,10 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
         )
     except LoadError as exc:
         operator, operator_note = {}, "; notes-queue keys not loaded (%s)" % exc
-    found = dict(found, **operator)
+    read_keys, read_note = listener_read_keys(env, codes, token, **kw)
+    if (env.get(LISTENER_READ_PROJECT) or "").strip():
+        found = {name: value for name, value in found.items() if name not in secondary_names}
+    found = dict(found, **operator, **read_keys)
     allowed = allowed | set(operator)
     loaded = sorted(name for name in found if name in allowed)
     replaced = sum(1 for name in loaded if name in env)
@@ -308,7 +347,7 @@ def build_env(env: Mapping[str, str], **kw) -> tuple[dict[str, str], str]:
     ignored = len(found) - len(loaded)
     return out, (
         f"loaded {len(loaded)} variables from Infisical ({where}; {replaced} replaced a container value, "
-        f"{ignored} other names in the folder ignored){coverage}{operator_note}"
+        f"{ignored} other names in the folder ignored){coverage}{operator_note}{read_note}"
     )
 
 
