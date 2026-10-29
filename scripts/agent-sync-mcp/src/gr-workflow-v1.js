@@ -30,6 +30,10 @@ const SPECS = {
  wf_repo_variable_create:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name', 'value'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'},value:{type:'string',maxLength:8192}})],
  wf_repo_variable_update:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name', 'value'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'},value:{type:'string',maxLength:8192}})],
  wf_repo_variable_delete:['Repository non-secret Actions variable, explicit variables permission. Mutations lack compare-and-swap and require owner execution authority; deletion affects future workflows.',obj(['repo', 'name'],{repo:REPO,name:{type:'string',pattern:'^(?!GITHUB_)[A-Z_][A-Z0-9_]{0,99}$'}})],
+ wf_issue_parent:['Read issue parent in exact repo; missing parent, visibility and other upstream refusals are indistinguishable; never a fabricated empty parent.',obj(['repo','number'],{repo:REPO,number:INT})],
+ wf_issue_subissues:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_issue_blocked_by:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
+ wf_issue_blocking:['Read bounded issue relation page, no writes or cross-repo lookup.\u00A0 has_more is conservative, not completeness proof.',obj(['repo','number'],{repo:REPO,number:INT,per_page:PER_PAGE,page:{type:'integer',minimum:1,maximum:1000}})],
 
   wf_merge_queue_entry:['Read one PR merge-queue entry.',obj(['repo','number'],{repo:REPO,number:INT})],
   wf_merge_queue_enqueue:['Enqueue exact PR head without jumping the queue. Requires separate execution authority, never bypasses GitHub gates.',obj(['repo','number','expected_sha'],{repo:REPO,number:INT,expected_sha:SHA})],
@@ -148,7 +152,7 @@ const SPECS = {
   wf_merge_guarded: ['Merge a pull request, fenced on its head.', obj(['repo', 'number', 'method', 'expected_head_sha'], { repo: REPO, number: INT, method: { type: 'string', enum: ['squash', 'merge', 'rebase'] }, expected_head_sha: SHA })],
 };
 export const WF_V1_ACTIONS = Object.freeze(Object.keys(SPECS));
-export const WF_V1_READ_ACTIONS = Object.freeze(['wf_repo_variables','wf_repo_variable_get','wf_merge_queue_entry','wf_commit_statuses','wf_review_threads','wf_git_blob_get','wf_git_commit_get','wf_git_tree_get','wf_pr_get','wf_pr_reviews','wf_pr_comments','wf_issue_comments','wf_commit_get','wf_compare','wf_branch_get','wf_repo_get','wf_labels','wf_workflows','wf_run_get','wf_run_artifacts','wf_release_assets','wf_release_asset_get','wf_pr_list','wf_pr_files','wf_file_get','wf_tree','wf_branches','wf_commits','wf_code_search','wf_runs','wf_run_jobs','wf_checks','wf_release_asset_download','wf_job_log','wf_run_logs','wf_artifact_download','wf_milestones','wf_milestone_get','wf_deployments','wf_deployment_get','wf_deployment_statuses','wf_environments','wf_environment_get','wf_release_list','wf_release_get','wf_tag_get','wf_issue_list','wf_issue_get']);
+export const WF_V1_READ_ACTIONS = Object.freeze(['wf_repo_variables', 'wf_repo_variable_get', 'wf_merge_queue_entry', 'wf_commit_statuses', 'wf_review_threads', 'wf_git_blob_get', 'wf_git_commit_get', 'wf_git_tree_get', 'wf_pr_get', 'wf_pr_reviews', 'wf_pr_comments', 'wf_issue_comments', 'wf_commit_get', 'wf_compare', 'wf_branch_get', 'wf_repo_get', 'wf_labels', 'wf_workflows', 'wf_run_get', 'wf_run_artifacts', 'wf_release_assets', 'wf_release_asset_get', 'wf_pr_list', 'wf_pr_files', 'wf_file_get', 'wf_tree', 'wf_branches', 'wf_commits', 'wf_code_search', 'wf_runs', 'wf_run_jobs', 'wf_checks', 'wf_release_asset_download', 'wf_job_log', 'wf_run_logs', 'wf_artifact_download', 'wf_milestones', 'wf_milestone_get', 'wf_deployments', 'wf_deployment_get', 'wf_deployment_statuses', 'wf_environments', 'wf_environment_get', 'wf_release_list', 'wf_release_get', 'wf_tag_get', 'wf_issue_list', 'wf_issue_get', 'wf_issue_parent', 'wf_issue_subissues', 'wf_issue_blocked_by', 'wf_issue_blocking']);
 export const WF_V1_TOOLS = Object.freeze(WF_V1_ACTIONS.map(action => Object.freeze({
   name: `gr_${action}`, description: `${SPECS[action][0]} Inactive candidate; runs as your own GitHub App only when the relay enables workflow verbs.`,
   inputSchema: SPECS[action][1],
@@ -227,6 +231,7 @@ export function parseWfV1Args(action,args){
 
 // Check the fixed success envelope before returning service data to a caller.
 const RESPONSE_KEYS = {
+ wf_issue_parent:['issue'],wf_issue_subissues:['issues','page','has_more'],wf_issue_blocked_by:['issues','page','has_more'],wf_issue_blocking:['issues','page','has_more'],
  wf_merge_queue_entry:['entry'],wf_merge_queue_enqueue:['entry'],wf_merge_queue_dequeue:['entry'],
  wf_git_blob_get:['blob'],wf_git_blob_create:['blob'],wf_git_commit_get:['commit'],wf_git_tree_get:['tree'],
  wf_file_rename:['source_path','destination_path','branch','commit','blob_sha'],
@@ -339,13 +344,18 @@ const binaryAsset=z.object({id:positive,name:z.string().min(1).max(255),state:z.
 const binaryResponses={wf_release_asset_download:chunkSchema('asset_id'),wf_artifact_download:chunkSchema('artifact_id'),wf_run_logs:chunkSchema('run_id'),wf_job_log:chunkSchema('job_id',true),wf_release_asset_upload_binary:z.object({asset:binaryAsset}).strict(),wf_release_asset_update:z.object({asset:binaryAsset}).strict(),wf_release_asset_delete:z.object({deleted:z.literal(true),asset_id:positive}).strict()};
 const lifecycleReview=z.object({id:positive,state:z.enum(['PENDING','COMMENTED','APPROVED','CHANGES_REQUESTED','DISMISSED']),commit_id:shaValue.nullable(),html_url:z.string().nullable()}).strict();
 const lifecycleResponses={wf_review_update:z.object({review:lifecycleReview}).strict(),wf_review_dismiss:z.object({review:lifecycleReview.refine(v=>v.state==='DISMISSED')}).strict(),wf_review_pending_delete:z.object({review:lifecycleReview.refine(v=>v.state==='PENDING')}).strict(),wf_review_comment_reply:z.object({comment:z.object({id:positive,in_reply_to_id:positive,html_url:z.string().nullable()}).strict()}).strict()};
+const relationIssue=z.object({id:z.number().int().positive(),number:z.number().int().positive(),title:z.string().refine(v=>new TextEncoder().encode(v).length<=4096).refine(v=>!/(?:github_pat_[A-Za-z0-9_]{20,}|\bsk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}|\bsk_(?:live|test)_[A-Za-z0-9]{16,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|gh[opusr]_[A-Za-z0-9]{20,}|-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY-----|\bst\.[A-Za-z0-9]{20,})/.test(v)),state:z.enum(['open','closed']),repo:z.string().regex(/^[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/).nullable()}).strict();
+const relationParent=z.object({issue:relationIssue}).strict();
+const relationPage=z.object({issues:z.array(relationIssue).max(50),page:z.number().int().min(1).max(1000),has_more:z.boolean()}).strict();
 const renameReceipt=z.object({source_path:z.string().min(1).max(1024),destination_path:z.string().min(1).max(1024),branch:z.string().min(1).max(200),commit:z.string().regex(/^[0-9a-f]{40}$/),blob_sha:z.string().regex(/^[0-9a-f]{40}$/)}).strict();
 export function validWfV1Response(action, body, args) {
+ if(typeof action!=="string")return false;
  if(!boundedWorkflowInput(body,{maxDepth:12,maxNodes:50000,maxBytes:1048576,maxString:1048576,maxKeys:1000}))return false;
  if(action.startsWith('wf_repo_variable')){
   const name=z.string().regex(/^[A-Z_][A-Z0-9_]{0,99}$/), variable=z.object({name,value:z.string().refine(v=>Buffer.byteLength(v,'utf8')<=8192),created_at:z.string().max(100),updated_at:z.string().max(100)}).strict();
   return (action==='wf_repo_variables'?z.object({variables:z.array(variable).max(50),total_count:z.number().int().nonnegative(),page:z.number().int().min(1).max(1000)}).strict():action==='wf_repo_variable_get'?z.object({variable}).strict():z.object({completed:z.literal(true),name}).strict()).safeParse(body).success;
  }
+ if(['wf_issue_parent','wf_issue_subissues','wf_issue_blocked_by','wf_issue_blocking'].includes(action))return (action==='wf_issue_parent'?relationParent:relationPage).safeParse(body).success;
  if(action.startsWith('wf_git_')){
    const commitRead=z.object({sha:gitSha,tree_sha:gitSha,parents:z.array(gitSha).max(20),message:utfBytes(32768)}).strict();
    const schemas={
