@@ -56,6 +56,10 @@ export const MINT_SCOPE_PENDING = Object.freeze(["MA"]);
 export const SEAT_MINT_SCOPES = Object.freeze({ "MA": "comments:create,issues:create,read,write", "BF-TRADER": "read,write,app:assignable" });
 export function mintScopeFor(seat) {
   const tag = seatTagForSeat(seat);
+  // A non-canonical spelling of a parked or scoped seat (BF_TRADER for BF-TRADER) refuses.  It is NOT mapped to
+  // the seat: no credential lookup resolves it, so this only closes the scope fallback.
+  const hyphenated = tag.replace(/_/g, "-");
+  if (hyphenated !== tag && (MINT_SCOPE_PENDING.includes(hyphenated) || Object.hasOwn(SEAT_MINT_SCOPES, hyphenated))) return null;
   if (MINT_SCOPE_PENDING.includes(tag)) return null;
   if (Object.hasOwn(SEAT_MINT_SCOPES, tag)) return SEAT_MINT_SCOPES[tag];
   return LINEAR_SCOPE;
@@ -242,6 +246,9 @@ export const LINEAR_OWN_APP_ENABLED = Object.freeze([
   "BF-ENGINEER",
   "BF-TRADER",
 ]);
+// Seats whose installed app cannot be an issue delegate (no app:assignable).  linear_claim claims by the
+// claim label only for them and sends no delegateId, as the stdio board CLI does;  linear_status never clears a delegate.
+export const LINEAR_NO_DELEGATE_SEATS = Object.freeze(["MA"]);
 export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE", "CODEX", ...LINEAR_OWN_APP_ENABLED]);
 
 // ---------------------------------------------------------------- ported board rules

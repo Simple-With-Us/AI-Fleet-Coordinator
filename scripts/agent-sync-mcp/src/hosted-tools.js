@@ -85,6 +85,7 @@ import {
   LINEAR_SECRETS,
   LINEAR_SEATS,
   isOwnAppSeat,
+  LINEAR_NO_DELEGATE_SEATS,
   LINEAR_MARKER_BEGIN,
   LINEAR_MARKER_END,
   TEAM_KEYS,
@@ -1832,6 +1833,7 @@ export class HostedTools {
     // check compares it against the issue's current delegate.  The human
     // assignee stays;  assigneeId is never touched.
     const viewer = await this.linearCall(() => this.linear.confirmViewer());
+    const delegating = !LINEAR_NO_DELEGATE_SEATS.includes(seatTagForSeat(this.seat));
     const viewerId = viewer?.id || null;
     const viewerName = viewer?.name || null;
     const keys = linearLabelKeys(issue);
@@ -1858,8 +1860,10 @@ export class HostedTools {
     const added = [];
     if (claimHit) added.push(claimHit.id);
     if (seatHit) added.push(seatHit.id);
-    if (!claimHit && !viewerId) {
-      throw new ToolError("invalid_argument", `this workspace has no flat label named "${claimName}" and no Linear app user for ${seat} (viewer id missing).  Jay creates the claim labels once per seat.`);
+    if (!claimHit && !(viewerId && delegating)) {
+      throw new ToolError("invalid_argument", delegating
+        ? `this workspace has no flat label named "${claimName}" and no Linear app user for ${seat} (viewer id missing).  Jay creates the claim labels once per seat.`
+        : `this workspace has no flat label named "${claimName}".  ${seat}'s Linear app cannot be an issue delegate, so it claims by that label only.  Jay creates the claim labels once per seat.`);
     }
     const removed = [];
     for (const key of keys) {
@@ -1874,13 +1878,13 @@ export class HostedTools {
     const idem = await this.idemKey(null, ["linear_claim", this.seat, issue.id, claimName, body]);
     audit.idem_ref = (await sha256Hex(idem.key)).slice(0, 12);
     const commentId = await linearCommentId(issue.id, this.seat, "claim", body, args.session, centralDay(this.now()));
-    const input = { stateId: state.id, addedLabelIds: added, removedLabelIds: removed, ...(viewerId ? { delegateId: viewerId } : {}) };
+    const input = { stateId: state.id, addedLabelIds: added, removedLabelIds: removed, ...(viewerId && delegating ? { delegateId: viewerId } : {}) };
     const result = await this.linearWrite(idem, { issue: issue.id, label: claimName }, async () => {
       const updated = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input }), { write: true });
       if (updated?.issueUpdate?.success !== true) throw new ToolError("linear_error", "Linear did not set the claim.");
       const commented = await this.linearCall(() => this.linear.call(M_COMMENT, { input: linearCommentCreateInput(issue.id, commentId, body) }), { write: true });
       if (commented?.commentCreate?.success !== true) throw new ToolError("linear_error", "Linear did not record the CLAIMED comment.");
-      return { id: issue.id, identifier: issue.identifier, label: claimHit ? claimName : null, delegate: viewerName, held_by: null };
+      return { id: issue.id, identifier: issue.identifier, label: claimHit ? claimName : null, delegate: delegating ? viewerName : null, held_by: null };
     });
     return this.writeResult(result);
   }
@@ -1949,7 +1953,13 @@ export class HostedTools {
     // seat's delegate or any other's app delegate;  a non-release, a missing
     // delegate, or a human one leaves it alone.
     const delegate = issue?.delegate ?? null;
-    const clearDelegate = releasing && !!delegate?.id && delegate.app === true;
+    const mustClear = releasing && !!delegate?.id && delegate.app === true;
+    if (mustClear && LINEAR_NO_DELEGATE_SEATS.includes(seatTagForSeat(this.seat))) {
+      // This seat's app cannot clear a delegate, and a release that leaves one behind would block the next claim.
+      // Refuse before any change rather than release halfway.
+      throw new ToolError("not_authorized", `${issue.identifier} has the app delegate ${delegate.name || "another app"}.  ${this.seat}'s Linear app cannot clear a delegate, so the release is refused and nothing was changed.  Ask a seat that can, or the owner.`);
+    }
+    const clearDelegate = mustClear;
     const input = { stateId: state.id, ...(removed.length ? { removedLabelIds: removed } : {}), ...(clearDelegate ? { delegateId: null } : {}) };
     const result = await this.linearWrite(idem, { issue: issue.id, status: args.status }, async () => {
       const data = await this.linearCall(() => this.linear.call(M_UPDATE, { id: issue.id, input }), { write: true });

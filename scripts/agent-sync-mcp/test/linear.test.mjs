@@ -876,3 +876,88 @@ test("MA is parked: it is enabled but sends no mint and no data request until it
   assert.equal(fake.mints().length, 0);
   assert.equal(fake.calls().length, 0);
 });
+
+
+test("a wrong viewer name after a first mint refuses, keeps the cached token, and a corrected name reads without a second mint", async () => {
+  const { tools, fake, gate } = harness({ seat: "BF-ENGINEER", viewer: { id: "u-eng", name: "Engineer Display", app: true } });
+  toolError(await tools.call("linear_list", {}), "not_authorized");
+  assert.equal(fake.mints().length, 1);
+  assert.ok((await gate.linearTokenGet())?.access_token, "the token survives the refused viewer check");
+  fake.viewer.name = "BF-Engineer"; // the name correction a code change would make
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.equal(fake.mints().length, 1, "no second mint for a name fix");
+});
+
+async function maHarness() {
+  const h = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
+  h.fake.addLabel("claimed:MA");
+  h.fake.addLabel("seat:MA");
+  h.fake.issued.push("tok-ma");
+  const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  await h.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
+  return h;
+}
+
+test("MA claims by label only: no delegateId sent, and the result says no delegate was set", async () => {
+  const { tools, fake } = await maHarness();
+  fake.addIssue({ id: "issue-401", identifier: "AFC-401", team: "AFC" });
+  const claimed = ok(await tools.call("linear_claim", { id: "AFC-401" }), "linear_claim");
+  assert.equal(claimed.label, "claimed:MA");
+  assert.equal(claimed.delegate, null, "no delegate was set, so none is reported");
+  assert.ok(!Object.hasOwn(fake.mutations()[0].body.variables.input, "delegateId"));
+  assert.equal(fake.mints().length, 0);
+});
+
+test("MA claim without its claim label says the app cannot delegate, not that the viewer id is missing", async () => {
+  const { tools, fake } = harness({ seat: "MA", viewer: { id: "u-ma", name: "Muse Assist (MA)", app: true } });
+  const t0 = Date.parse("2026-10-09T10:00:00Z") / 1000;
+  fake.issued.push("tok-ma");
+  const fp = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(`agent-sync-mcp:linear:MA:${CLIENT_ID}:${CLIENT_SECRET}`)).then((b) => [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join("").slice(0, 16));
+  await tools.gate.linearTokenSet({ access_token: "tok-ma", minted_at: t0, expires_at: t0 + 30 * 86_400, mint_count: 1, cred_fp: fp });
+  fake.addIssue({ id: "issue-402", identifier: "AFC-402", team: "AFC" });
+  const error = toolError(await tools.call("linear_claim", { id: "AFC-402" }), "invalid_argument");
+  assert.match(error.message, /cannot be an issue delegate/);
+  assert.doesNotMatch(error.message, /viewer id missing/);
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("MA claim still refuses an issue another seat's app already holds", async () => {
+  const { tools, fake } = await maHarness();
+  fake.addIssue({ id: "issue-403", identifier: "AFC-403", team: "AFC", delegate: { id: "u-other", name: "Claude", app: true } });
+  toolError(await tools.call("linear_claim", { id: "AFC-403" }), "claim_held");
+  assert.equal(fake.mutations().length, 0);
+});
+
+test("MA status release works when no app delegate is set, and is refused before any change when one is", async () => {
+  const { tools, fake } = await maHarness();
+  fake.addIssue({ id: "issue-404", identifier: "AFC-404", team: "AFC", labels: ["claimed:MA"] });
+  const released = ok(await tools.call("linear_status", { id: "AFC-404", status: "open" }), "linear_status");
+  assert.equal(released.status, "open");
+  const input = fake.mutations()[0].body.variables.input;
+  assert.ok(!Object.hasOwn(input, "delegateId"));
+  const before = fake.mutations().length;
+  fake.addIssue({ id: "issue-405", identifier: "AFC-405", team: "AFC", labels: ["claimed:MA"], delegate: { id: "u-other", name: "Claude", app: true } });
+  const error = toolError(await tools.call("linear_status", { id: "AFC-405", status: "open" }), "not_authorized");
+  assert.match(error.message, /nothing was changed/);
+  assert.equal(fake.mutations().length, before, "no mutation on the refused release");
+  // A closing status never touches a delegate, so it still works for MA.
+  ok(await tools.call("linear_status", { id: "AFC-405", status: "completed" }), "linear_status");
+});
+
+test("a seat that can delegate still clears an app delegate on release (unchanged)", async () => {
+  const { tools, fake } = harness();
+  fake.addIssue({ id: "issue-406", identifier: "AFC-406", team: "AFC", labels: ["claimed:GROK-WEB"], delegate: { id: "u-other", name: "Claude", app: true } });
+  ok(await tools.call("linear_status", { id: "AFC-406", status: "open" }), "linear_status");
+  assert.equal(fake.mutations()[0].body.variables.input.delegateId, null);
+});
+
+test("a non-canonical spelling of a parked or scoped seat refuses to mint, without mapping to that seat", async () => {
+  const L = await import("../src/linear.js");
+  assert.equal(L.mintScopeFor("MA"), null);
+  assert.equal(L.mintScopeFor("BF_TRADER"), null);
+  assert.equal(L.mintScopeFor("bf_trader"), null);
+  assert.equal(L.mintScopeFor("BF-TRADER"), "read,write,app:assignable");
+  assert.equal(L.seatTagForSeat("BF_TRADER"), "BF_TRADER", "no alias or credential mapping was added");
+  assert.deepEqual([...L.LINEAR_NO_DELEGATE_SEATS], ["MA"]);
+});
