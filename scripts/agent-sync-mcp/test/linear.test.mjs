@@ -17,7 +17,7 @@ import { testEnv } from "./helpers.mjs";
 import {
   LINEAR_TOOLS, LINEAR_SCOPE, FLAT_LABELS, LinearClient, LinearError, appNameOk, seatTagForSeat, routeApp, commentId,
   neutralizeLinearMentions, linearGraphqlErrorMeta, mapLinearError, linearCommentCreateInput, M_COMMENT,
-  LINEAR_SECRETS, LINEAR_SEATS,
+  LINEAR_SECRETS, LINEAR_SEATS, OWN_APP_LINEAR_PREFIXES,
 } from "../src/linear.js";
 
 const config = loadConfig(testEnv());
@@ -278,9 +278,7 @@ test("a seat whose Linear tools are off is told so in the instructions", () => {
   for (const seat of ["GROK-WEB", "CURSOR", "JET", "ECHO", "WISE", "CLAUDE"]) {
     assert.match(hostedInstructions(seat), /BEGIN_UNTRUSTED_LINEAR and END_UNTRUSTED_LINEAR/, seat);
   }
-  // MA joined LINEAR_SEATS with the own-app coverage patch;  retired BF-BUILDER never has a Linear pair.
-  assert.match(hostedInstructions("MA"), /BEGIN_UNTRUSTED_LINEAR and END_UNTRUSTED_LINEAR/);
-  assert.equal(hostedInstructions("BF-BUILDER").includes("UNTRUSTED_LINEAR"), false);
+  assert.equal(hostedInstructions("MA").includes("UNTRUSTED_LINEAR"), false);
 });
 
 // ---------------------------------------------------------------- routing
@@ -382,18 +380,19 @@ test("with the write switch off every Linear write is refused and no mutation is
 });
 
 test("a seat not on LINEAR_SEATS is refused at run time, even with a client, naming the seat and sending nothing", async () => {
-  // Retired BF-BUILDER has no Linear app and is not enabled:  the requireLinear gate answers before any mint.
-  const { tools, fake } = harness({ seat: "BF-BUILDER" });
+  // MA has no Linear app and is not enabled:  the requireLinear gate answers before any mint.
+  const { tools, fake } = harness({ seat: "MA" });
   for (const [name, args] of [["linear_whoami", {}], ["linear_list", {}], ["linear_show", { id: "AFC-1" }], ["linear_file", { title: "x" }], ["linear_comment", { id: "AFC-1", body: "hello" }]]) {
     const error = toolError(await tools.call(name, args), "not_configured");
-    assert.match(error.message, /not enabled for BF-BUILDER/);
+    assert.match(error.message, /not enabled for MA/);
   }
   assert.equal(fake.requests.length, 0);
 });
 
 test("every hosted seat with a Linear pair is enabled;  credentials nobody installed answer not_configured and send nothing", async () => {
   // Since 2026-10-16 every seat in LINEAR_SECRETS is on LINEAR_SEATS (owner).
-  for (const seat of Object.keys(LINEAR_SECRETS)) assert.ok(LINEAR_SEATS.includes(seat), `${seat} has a pair but is not enabled`);
+  // Own-app seats with prepared names (OWN_APP_LINEAR_PREFIXES) stay off until a change gives them a grounded app name.
+  for (const seat of Object.keys(LINEAR_SECRETS)) assert.ok(LINEAR_SEATS.includes(seat) || Object.hasOwn(OWN_APP_LINEAR_PREFIXES, seat), `${seat} has a pair but is neither enabled nor a prepared own-app seat`);
   // The other half of the answer:  credentials nobody installed say the same.
   const bare = harness({ credentials: false });
   toolError(await bare.tools.call("linear_whoami", {}), "not_configured");

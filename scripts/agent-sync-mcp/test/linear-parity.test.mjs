@@ -202,16 +202,18 @@ test("the Infisical /linear names are the live LINEAR_<SEAT>_CLIENT_* names for 
   }
 });
 
-test("the 20 own-app seats are covered, BF-BUILDER is not, and no pair is shared between seats", async () => {
+test("the 20 own-app seats have prepared names, are not enabled, and share no pair", async () => {
   const L = await import("../src/linear.js");
   const own = Object.keys(L.OWN_APP_LINEAR_PREFIXES);
   assert.equal(own.length, 20);
   assert.ok(!own.includes("BF-BUILDER") && !Object.hasOwn(L.LINEAR_SECRETS, "BF-BUILDER") && !L.LINEAR_SEATS.includes("BF-BUILDER"));
   for (const seat of own) {
-    assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat) && L.LINEAR_SEATS.includes(seat), seat);
+    assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat), seat);
+    assert.ok(!L.LINEAR_SEATS.includes(seat), `${seat} must not be enabled without a grounded app name`);
     assert.deepEqual({ ...L.LINEAR_SECRETS[seat] }, { ...L.LINEAR_INFISICAL[seat] }, `${seat}: Worker and Infisical names agree`);
     assert.deepEqual({ ...L.linearSecretNames(seat) }, { ...L.LINEAR_SECRETS[seat] });
   }
+  assert.deepEqual([...L.LINEAR_OWN_APP_ENABLED], [], "no own-app seat is switched on by this change");
   const ids = new Map();
   for (const [seat, names] of Object.entries(L.LINEAR_INFISICAL)) {
     if (seat === "JET-CHAT") continue; // the one deliberate JET/JET-CHAT share, unchanged
@@ -220,23 +222,22 @@ test("the 20 own-app seats are covered, BF-BUILDER is not, and no pair is shared
   }
 });
 
-test("an own-app seat resolves only its own pair, in every Infisical mode, and a missing pair stays unconfigured", async () => {
+test("a prepared but disabled seat reads no credentials in any Infisical mode; an uninstalled enabled seat stays unconfigured", async () => {
   const L = await import("../src/linear.js");
   const { _resetInfisicalForTests } = await import("../src/infisical.js");
   _resetInfisicalForTests();
-  const env = { LINEAR_CLUTCH_CLIENT_ID: "id-clutch", LINEAR_CLUTCH_CLIENT_SECRET: "sec-clutch", LINEAR_MC_CLIENT_ID: "id-mc", LINEAR_MC_CLIENT_SECRET: "sec-mc" };
-  assert.deepEqual(await L.resolveLinearPair(env, "CLUTCH"), { clientId: "id-clutch", clientSecret: "sec-clutch" });
-  assert.deepEqual(await L.resolveLinearPair(env, "MC"), { clientId: "id-mc", clientSecret: "sec-mc" });
-  assert.deepEqual(await L.resolveLinearPair(env, "FX"), { clientId: "", clientSecret: "" }, "no pair installed: empty, so no client is built");
-  assert.equal(L.linearClientFromPair(await L.resolveLinearPair(env, "FX"), "FX", { gate: {} }), null);
-  assert.equal(await L.resolveLinearPair(env, "BF-BUILDER"), null, "retired BF-BUILDER has no Linear record");
+  const env = { LINEAR_CLUTCH_CLIENT_ID: "id-clutch", LINEAR_CLUTCH_CLIENT_SECRET: "sec-clutch", LINEAR_BF_COMPILER_CLIENT_ID: "id-bf", LINEAR_BF_COMPILER_CLIENT_SECRET: "sec-bf" };
+  for (const seat of ["CLUTCH", "BF-COMPILER", "MC", "BF-BUILDER"]) assert.equal(await L.resolveLinearPair(env, seat), null, `${seat} is not enabled`);
+  assert.equal(await L.resolveLinearPair({ INFISICAL_MODE: "off" }, "CODEX").then((p) => p.clientId), "", "an enabled seat with nothing installed still yields no client");
 });
 
-test("own-app seats gain no app-name alias: the viewer check accepts only the seat tag until the real app name is grounded", async () => {
+test("every enabled Linear seat has a grounded app name, so a bare seat tag is never the only viewer proof", async () => {
   const L = await import("../src/linear.js");
+  for (const seat of L.LINEAR_SEATS) {
+    assert.ok(L.seatAppNames(seat).length > 0, `${seat} is enabled but has no SEAT_APP_NAMES entry`);
+    assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat), seat);
+  }
   for (const seat of Object.keys(L.OWN_APP_LINEAR_PREFIXES).filter((s) => s !== "MA")) {
     assert.deepEqual([...L.seatAppNames(seat)], [], `${seat}: no guessed app names`);
-    assert.ok(L.appNameOk(seat, seat));
-    assert.ok(!L.appNameOk("Jay", seat) && !L.appNameOk("Codex", seat) && !L.appNameOk("Jet", seat));
   }
 });

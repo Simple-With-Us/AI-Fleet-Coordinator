@@ -53,10 +53,10 @@ export const LINEAR_REMINT_AFTER_S = 28 * 86_400;
 // An own-app seat's pair, under one prefix for both the Worker secret names and
 // the Fleet-OPS /linear Infisical names (LINEAR_<PREFIX>_CLIENT_ID / _SECRET).
 const ownAppPair = (prefix) => Object.freeze({ clientId: `LINEAR_${prefix}_CLIENT_ID`, clientSecret: `LINEAR_${prefix}_CLIENT_SECRET` });
-// Own-app seats added for coverage: prefix per seat tag.  BF-BUILDER is retired
+// Own-app seats prepared for coverage: prefix per seat tag.  BF-BUILDER is retired
 // and has no entry.  An entry names a pair and nothing else:  the seat is not
-// Linear-enabled until LINEAR_SEATS says so, and no write passes before the
-// viewer check (confirmViewer) shows the seat's own app.
+// Linear-enabled until LINEAR_OWN_APP_ENABLED lists it (see there), and
+// resolveLinearPair reads nothing for a seat that is not enabled.
 export const OWN_APP_LINEAR_PREFIXES = Object.freeze({
   "MA": "MA",
   "AG": "AG",
@@ -167,6 +167,8 @@ export async function resolveLinearPair(env, seat) {
   const names = Object.hasOwn(LINEAR_SECRETS, canonical) ? LINEAR_SECRETS[canonical] : null;
   const inf = Object.hasOwn(LINEAR_INFISICAL, canonical) ? LINEAR_INFISICAL[canonical] : null;
   if (!names || !inf) return null;
+  // A prepared seat that is not enabled reads nothing:  no Infisical request for a seat whose tools answer not_configured.
+  if (!LINEAR_SEATS.includes(canonical)) return null;
   const [clientId, clientSecret] = await Promise.all([
     resolveSecret(env, { name: inf.clientId, path: "/linear", envName: names.clientId, optional: true }),
     resolveSecret(env, { name: inf.clientSecret, path: "/linear", envName: names.clientSecret, optional: true }),
@@ -188,7 +190,13 @@ export function linearClientFromPair(pair, seat, { gate, fetch: fetchImpl = glob
 // JET, ECHO, WISE and CLAUDE joined on 2026-10-16 (owner), each pair checked
 // first with `board whoami` against its own app.  JET-CHAT carries Jet's
 // normal access (owner, Oct 23 2026), so it is enabled with the Jet app.
-export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE", "CODEX", ...Object.keys(OWN_APP_LINEAR_PREFIXES)]);
+// Own-app seats whose Linear tools are switched on.  EMPTY on purpose:  the
+// names in OWN_APP_LINEAR_PREFIXES are prepared, but a seat is added here only
+// in a change that also gives it a grounded SEAT_APP_NAMES entry from a
+// `board whoami` read of its own app (linear-parity.test.mjs enforces that),
+// because reads do not run the viewer check and a bare seat tag is a weak proof.
+export const LINEAR_OWN_APP_ENABLED = Object.freeze([]);
+export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE", "CODEX", ...LINEAR_OWN_APP_ENABLED]);
 
 // ---------------------------------------------------------------- ported board rules
 

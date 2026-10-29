@@ -116,7 +116,7 @@ test("resolveLinearPair: off mode reads the legacy Worker names, WISE maps to LI
   const pair = await resolveLinearPair(env, "WISE");
   assert.deepEqual(pair, { clientId: "id-wise", clientSecret: "sec-wise" });
   assert.equal(calls.length, 0);
-  assert.equal(await resolveLinearPair(env, "BF-BUILDER"), null, "a seat with no Linear app (retired BF-BUILDER) stays null");
+  assert.equal(await resolveLinearPair(env, "GROK"), null, "a seat with no Linear app stays null");
 });
 
 test("resolveLinearPair: required mode reads the LINEAR_WISE_* names at /linear", async () => {
