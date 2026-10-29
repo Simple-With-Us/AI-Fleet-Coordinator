@@ -10,6 +10,7 @@ import sqlite3
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -2020,8 +2021,10 @@ class LinearSourceTests(unittest.TestCase):
             clock[0] += 500  # healthy but slow chunk, slower than the whole budget
             return [_linear_node(uid=u) for u in ids]
 
+        fake_time = mock.Mock(wraps=time)
+        fake_time.monotonic = lambda: clock[0]
         with mock.patch.dict(os.environ, {"FLEET_RAG_LINEAR_DEADLINE_S": "200"}):
-            with mock.patch.object(sources.time, "monotonic", lambda: clock[0]):
+            with mock.patch.object(sources, "time", fake_time):
                 with mock.patch.object(sources, "_linear_fetch_chunk", fake_chunk):
                     nodes = sources._linear_fetch_full([f"uuid-{i}" for i in range(120)])
         self.assertEqual(120, len(nodes))

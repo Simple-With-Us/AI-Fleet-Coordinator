@@ -1802,7 +1802,7 @@ def _linear_deadline() -> float:
         budget = int(os.environ.get("FLEET_RAG_LINEAR_DEADLINE_S") or LINEAR_DEADLINE_S)
     except ValueError:
         budget = LINEAR_DEADLINE_S
-    return time.monotonic() + max(budget, LINEAR_QUERY_TIMEOUT_S + 1)
+    return time.monotonic() + max(budget, 1)
 
 
 def _linear_remaining(deadline: float | None) -> int:
