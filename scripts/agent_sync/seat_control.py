@@ -218,6 +218,40 @@ def _scope_for(platform: str, local_scope: str) -> str:
     return "cloud" if platform == "cursor-cloud" else local_scope
 
 
+def _operation_for(tool_name: str) -> str:
+    return {
+        "seat_control_capabilities": "capabilities",
+        "seat_control_list": "list",
+        "seat_control_read": "read",
+        "seat_control_status": "status",
+        "seat_control_output": "output",
+        "seat_control_start": "create",
+        "seat_control_resume": "resume",
+        "seat_control_prompt": "prompt",
+        "seat_control_cancel_turn": "cancel_turn",
+    }.get(tool_name, tool_name)
+
+
+def _receipt_message(receipt: Any, default: str) -> str:
+    if not isinstance(receipt, dict):
+        return default
+    message = receipt.get("message")
+    if isinstance(message, str) and message:
+        return message
+    reason = receipt.get("reason")
+    if isinstance(reason, str) and reason:
+        return reason
+    return default
+
+
+def _redacted_identity(value: str | None, scan_known: Iterable[str] = ()) -> str | None:
+    if value is None:
+        return None
+    if secretscan.scan(value, scan_known) is not None:
+        return secretscan.WITHHELD
+    return value
+
+
 def capability_matrix() -> list[dict[str, Any]]:
     """Return a JSON-safe, deterministic projection of the contract."""
     rows = []
@@ -406,7 +440,7 @@ class SeatControlMCP:
             return self._result("disabled", "seat control is disabled")
         try:
             if not self._arguments_within_bounds(arguments):
-                self._safe_audit(name, None, "invalid_request")
+                self._safe_audit(_operation_for(name), None, "invalid_request")
                 return self._result("invalid_request", "arguments exceed the supported bound")
             if name == "seat_control_capabilities":
                 if not self.authorize(self.caller_id, "capabilities", None):
@@ -426,13 +460,13 @@ class SeatControlMCP:
             }.get(name)
             if operation:
                 return self._mutate(operation, arguments)
-            self._safe_audit(name, None, "unsupported")
+            self._safe_audit(_operation_for(name), None, "unsupported")
             return self._result("unsupported", "unknown seat-control tool")
         except (TypeError, ValueError, KeyError):
-            self._safe_audit(name, None, "invalid_request")
+            self._safe_audit(_operation_for(name), None, "invalid_request")
             return self._result("invalid_request", "invalid seat-control arguments")
         except Exception:
-            self._safe_audit(name, None, "unavailable")
+            self._safe_audit(_operation_for(name), None, "unavailable")
             # Provider or store exceptions may follow a send. The mutating path
             # marks that case unknown before returning; never expose raw errors.
             return self._result("unavailable", "seat-control adapter unavailable")
@@ -462,25 +496,33 @@ class SeatControlMCP:
             return self._result("unavailable", "session catalog unavailable")
         output = []
         for row in rows:
+            if not isinstance(row, dict):
+                continue
             platform = row.get("platform")
             host = row.get("host")
-            if (
-                not isinstance(row, dict)
-                or not isinstance(platform, str)
-                or not isinstance(host, str)
-            ):
+            if not isinstance(platform, str) or not isinstance(host, str):
                 continue
             try:
                 sid = _catalog_session_id(row)
             except ValueError:
-                self._audit("list", None, "invalid_catalog")
-                return self._result("unavailable", "session catalog returned a malformed record")
+                continue
             if _scope_for(platform, self.local_scope) != target_scope or host != host_filter:
                 continue
             owner = row.get("seat")
             if not isinstance(owner, str) or not owner:
                 continue
-            target = SessionTarget(target_scope, host, platform, sid, owner)  # type: ignore[arg-type]
+            try:
+                target = SessionTarget.parse(
+                    {
+                        "host_scope": target_scope,
+                        "host": host,
+                        "platform": platform,
+                        "session_id": sid,
+                        "owner": owner,
+                    }
+                )
+            except ValueError:
+                continue
             if not self.authorize(self.caller_id, "list", target):
                 continue
             caps = self._capabilities(target, row)
@@ -535,8 +577,11 @@ class SeatControlMCP:
             if not isinstance(record_id, str) or not record_id.strip():
                 self._audit(operation, target, "invalid_catalog")
                 return self._result("unavailable", "catalog record is missing an opaque id")
+            if record_id != record_id.strip():
+                self._audit(operation, target, "invalid_catalog")
+                return self._result("unavailable", "catalog record id is not an exact identifier")
             try:
-                messages = self.catalog.excerpt(record_id.strip(), limit=limit)
+                messages = self.catalog.excerpt(record_id, limit=limit)
             except Exception:
                 messages = []
             safe = []
@@ -581,7 +626,7 @@ class SeatControlMCP:
             prior = self.idempotency.row(key)
         except Exception:
             return
-        if prior is None or prior.get("state") in {"sent", "unknown"}:
+        if prior is None or prior.get("state") in {"sent", "unknown", "refused"}:
             return
         try:
             self.idempotency.drop(key)
@@ -753,15 +798,13 @@ class SeatControlMCP:
                 "request_conflict", "request_id was already used for different content"
             )
         receipt = prior.get("result")
-        if prior.get("state") in {"held", "failed"} or (
+        if prior.get("state") == "refused" or (
             isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}
         ):
-            status = receipt.get("status") if isinstance(receipt, dict) else prior["state"]
+            status = receipt.get("status") if isinstance(receipt, dict) else "held"
             return self._result(
                 status,
-                receipt.get("reason")
-                if isinstance(receipt, dict)
-                else "previous request was not dispatched",
+                _receipt_message(receipt, "previous request was not dispatched"),
                 data=receipt,
             )
         if prior.get("state") == "sent":
@@ -770,7 +813,7 @@ class SeatControlMCP:
                 status = receipt["status"]
                 return self._result(
                     status,
-                    receipt.get("reason") or "previous request was not dispatched",
+                    _receipt_message(receipt, "previous request was not dispatched"),
                     data=receipt,
                 )
             self._audit("prompt", target, "duplicate", prompt=prompt, request_id=request_id)
@@ -815,15 +858,13 @@ class SeatControlMCP:
                     "request_conflict", "request_id was already used for different content"
                 )
             receipt = prior.get("result")
-            if prior.get("state") in {"held", "failed"} or (
+            if prior.get("state") == "refused" or (
                 isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}
             ):
-                status = receipt.get("status") if isinstance(receipt, dict) else prior["state"]
+                status = receipt.get("status") if isinstance(receipt, dict) else "held"
                 return self._result(
                     status,
-                    receipt.get("reason")
-                    if isinstance(receipt, dict)
-                    else "previous request was not dispatched",
+                    _receipt_message(receipt, "previous request was not dispatched"),
                     data=receipt,
                 )
             if prior.get("state") == "sent":
@@ -831,7 +872,7 @@ class SeatControlMCP:
                     status = receipt["status"]
                     return self._result(
                         status,
-                        receipt.get("reason") or "previous request was not dispatched",
+                        _receipt_message(receipt, "previous request was not dispatched"),
                         data=receipt,
                     )
                 self._audit("prompt", target, "duplicate", prompt=prompt, request_id=request_id)
@@ -859,25 +900,38 @@ class SeatControlMCP:
                     "unknown", "idempotency receipt is missing; dispatch is blocked"
                 )
             receipt = previous.get("result")
-            if isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}:
-                status = receipt["status"]
+            if previous.get("state") == "refused" or (
+                isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"}
+            ):
+                status = receipt.get("status") if isinstance(receipt, dict) else "held"
                 return self._result(
                     status,
-                    receipt.get("reason") or "previous request was not dispatched",
+                    _receipt_message(receipt, "previous request was not dispatched"),
                     data=receipt,
                 )
+            self._audit("prompt", target, "duplicate", prompt=prompt, request_id=request_id)
             return self._result(
                 "duplicate", "request was already accepted", data=previous.get("result")
             )
         if state == "busy":
-            if previous and isinstance(previous.get("result"), dict):
-                receipt = previous["result"]
-                if receipt.get("status") in {"held", "failed"}:
-                    return self._result(
-                        receipt["status"],
-                        receipt.get("reason") or "previous request was not dispatched",
-                        data=receipt,
-                    )
+            if previous and (
+                previous.get("state") == "refused"
+                or (
+                    isinstance(previous.get("result"), dict)
+                    and previous["result"].get("status") in {"held", "failed"}
+                )
+            ):
+                receipt = previous.get("result")
+                status = (
+                    receipt.get("status")
+                    if isinstance(receipt, dict)
+                    else "held"
+                )
+                return self._result(
+                    status,
+                    _receipt_message(receipt, "previous request was not dispatched"),
+                    data=receipt,
+                )
             self._audit("prompt", target, "pending", prompt=prompt, request_id=request_id)
             return self._result("pending", "request is already in progress")
         if state == "reconcile":
@@ -894,63 +948,41 @@ class SeatControlMCP:
             self._audit("prompt", target, "unknown", prompt=prompt, request_id=request_id)
             return self._result("unknown", "idempotency state is unrecognized; dispatch is blocked")
 
-        try:
-            # Extend the pending guard before any operation that can dispatch.
-            self.idempotency.set(key, state="pending", expires=TOMBSTONE_EXPIRES_AT)
-        except Exception:
-            self.idempotency.drop(key)
-            return self._result(
-                "unavailable", "could not persist the no-replay guard; prompt was not sent"
-            )
+        audit_outcome: str | None = None
+        audit_gate = "open"
+        audit_delegation = "approved"
+        dispatch_result: dict[str, Any] | None = None
 
-        try:
-            preflight = self.transport.preflight(binding)
-        except Exception:
-            preflight = "busy"
-        if preflight == "unsupported":
-            self.idempotency.drop(key)
-            self._audit("prompt", target, "unsupported", prompt=prompt, request_id=request_id)
-            return self._result("unsupported", "native adapter does not support this target")
-        if preflight in {"invalid", "invalid_target"}:
-            self.idempotency.drop(key)
-            self._audit("prompt", target, "invalid_target", prompt=prompt, request_id=request_id)
-            return self._result("invalid_target", "native adapter rejected the exact target")
-        if preflight != "ready":
-            result = {"status": "held", "reason": "target is busy or unavailable"}
-            self._pin_receipt(key, result)
-            self._audit("prompt", target, "held", prompt=prompt, request_id=request_id)
-            return self._result("held", result["reason"], data=result)
-
-        try:
-            # Prove the audit path is writable before any provider mutation.
-            self._audit(
-                "prompt",
-                target,
-                "dispatching",
-                prompt=prompt,
-                request_id=request_id,
-                mutation_gate="open",
-                delegation="approved",
-            )
-        except Exception:
-            self.idempotency.drop(key)
-            return self._result("unavailable", "audit sink unavailable; prompt was not sent")
-
-        def finish(status: str, state: str, result: dict[str, Any], message: str) -> dict[str, Any]:
+        def persist_and_build(
+            status: str,
+            result: dict[str, Any],
+            message: str,
+            *,
+            transient: bool = False,
+            refused: bool = False,
+        ) -> dict[str, Any]:
+            nonlocal audit_outcome, dispatch_result
+            audit_outcome = status
             try:
-                if status in {"held", "failed"}:
-                    self._pin_receipt(key, result)
-                else:
+                if transient:
+                    self.idempotency.drop(key)
+                elif refused:
+                    self._persist_refused(key, result)
+                elif status == "accepted":
                     self.idempotency.set(
                         key,
-                        state=state,
+                        state="sent",
+                        result=result,
+                        expires=TOMBSTONE_EXPIRES_AT,
+                    )
+                elif status == "unknown":
+                    self.idempotency.set(
+                        key,
+                        state="unknown",
                         result=result,
                         expires=TOMBSTONE_EXPIRES_AT,
                     )
             except Exception:
-                # The provider may already have accepted the prompt. Best-effort
-                # mark the durable pending row as unknown; even if persistence is
-                # unavailable, pending is a no-replay state on the next call.
                 try:
                     self.idempotency.set(
                         key,
@@ -960,80 +992,129 @@ class SeatControlMCP:
                     )
                 except Exception:
                     pass
-                try:
-                    self._audit("prompt", target, "unknown", prompt=prompt, request_id=request_id)
-                except Exception:
-                    pass
-                return self._result(
+                audit_outcome = "unknown"
+                dispatch_result = self._result(
                     "unknown", "delivery receipt persistence failed; automatic replay is blocked"
                 )
+                return dispatch_result
+            dispatch_result = self._result(status, message, data=result)
+            return dispatch_result
+
+        dispatch_result: dict[str, Any] | None = None
+        try:
             try:
-                self._audit("prompt", target, status, prompt=prompt, request_id=request_id)
+                preflight = self.transport.preflight(binding)
             except Exception:
-                # The transport may already have accepted the operation. Keep a
-                # terminal no-replay state rather than implying it is safe to retry.
+                preflight = "busy"
+            if preflight == "unsupported":
+                self.idempotency.drop(key)
+                audit_outcome = "unsupported"
+                dispatch_result = self._result(
+                    "unsupported", "native adapter does not support this target"
+                )
+            elif preflight in {"invalid", "invalid_target"}:
+                self.idempotency.drop(key)
+                audit_outcome = "invalid_target"
+                dispatch_result = self._result(
+                    "invalid_target", "native adapter rejected the exact target"
+                )
+            elif preflight != "ready":
+                held_message = "target is busy or unavailable"
+                held_result = {"status": "held", "message": held_message}
+                dispatch_result = persist_and_build(
+                    "held", held_result, held_message, transient=True
+                )
+            else:
                 try:
-                    self.idempotency.set(
-                        key,
-                        state="unknown",
-                        result={"status": "unknown"},
-                        expires=TOMBSTONE_EXPIRES_AT,
+                    self.idempotency.set(key, state="pending", expires=TOMBSTONE_EXPIRES_AT)
+                except Exception:
+                    self.idempotency.drop(key)
+                    audit_outcome = "unavailable"
+                    dispatch_result = self._result(
+                        "unavailable", "could not persist the no-replay guard; prompt was not sent"
+                    )
+                if dispatch_result is None:
+
+                    def permit() -> bool:
+                        return bool(
+                            self.mutations_enabled
+                            and self.authorize(self.caller_id, "prompt", target)
+                            and self.approve is not None
+                            and self.approve(self.caller_id, "prompt", target, request_id)
+                        )
+
+                    try:
+                        outcome = self.transport.send(binding, prompt, permit=permit)
+                    except Exception:
+                        result = {"status": "unknown", "request_id": request_id}
+                        dispatch_result = persist_and_build(
+                            "unknown",
+                            result,
+                            "delivery outcome is uncertain; automatic replay is blocked",
+                        )
+                    else:
+                        if outcome == "accepted":
+                            result = {
+                                "status": "accepted",
+                                "request_id": request_id,
+                                "picked_up": False,
+                                "completed": False,
+                            }
+                            dispatch_result = persist_and_build(
+                                "accepted", result, "transport accepted the prompt"
+                            )
+                        elif outcome == "unknown":
+                            result = {"status": "unknown", "request_id": request_id}
+                            dispatch_result = persist_and_build(
+                                "unknown",
+                                result,
+                                "delivery outcome is uncertain; automatic replay is blocked",
+                            )
+                        elif outcome in {"deferred", "held"}:
+                            held_message = "target is busy or unavailable"
+                            held_result = {"status": "held", "message": held_message}
+                            dispatch_result = persist_and_build(
+                                "held", held_result, held_message, transient=True
+                            )
+                        else:
+                            failed_message = (
+                                "native adapter rejected the prompt before acceptance"
+                            )
+                            dispatch_result = persist_and_build(
+                                "failed",
+                                {"status": "failed", "message": failed_message},
+                                failed_message,
+                                refused=True,
+                            )
+        finally:
+            if audit_outcome is not None and dispatch_result is not None:
+                try:
+                    self._audit(
+                        "prompt",
+                        target,
+                        audit_outcome,
+                        prompt=prompt,
+                        request_id=request_id,
+                        mutation_gate=audit_gate,
+                        delegation=audit_delegation,
                     )
                 except Exception:
-                    # The previously persisted sent/pending row is still a
-                    # no-replay state; preserve the uncertain caller outcome.
-                    pass
-                return self._result(
-                    "unknown", "audit outcome is uncertain; automatic replay is blocked"
-                )
-            return self._result(status, message, data=result)
-
-        def permit() -> bool:
-            return bool(
-                self.mutations_enabled
-                and self.authorize(self.caller_id, "prompt", target)
-                and self.approve is not None
-                and self.approve(self.caller_id, "prompt", target, request_id)
-            )
-
-        try:
-            outcome = self.transport.send(binding, prompt, permit=permit)
-        except Exception:
-            # Once send() starts, a raised error is an uncertain delivery.
-            result = {"status": "unknown", "request_id": request_id}
-            return finish(
-                "unknown",
-                "unknown",
-                result,
-                "delivery outcome is uncertain; automatic replay is blocked",
-            )
-
-        if outcome == "accepted":
-            # Existing native transport acceptance does not prove pickup or completion.
-            result = {
-                "status": "accepted",
-                "request_id": request_id,
-                "picked_up": False,
-                "completed": False,
-            }
-            return finish("accepted", "sent", result, "transport accepted the prompt")
-        if outcome == "unknown":
-            result = {"status": "unknown", "request_id": request_id}
-            return finish(
-                "unknown",
-                "unknown",
-                result,
-                "delivery outcome is uncertain; automatic replay is blocked",
-            )
-        if outcome in {"deferred", "held"}:
-            result = {"status": "held", "reason": "target is busy or unavailable"}
-            return finish("held", "held", result, result["reason"])
-        # Existing adapters report a correlated rejection / pre-send failure as failed.
-        return finish(
-            "failed",
-            "failed",
-            {"status": "failed"},
-            "native adapter rejected the prompt before acceptance",
+                    if audit_outcome == "accepted":
+                        try:
+                            self.idempotency.set(
+                                key,
+                                state="unknown",
+                                result={"status": "unknown"},
+                                expires=TOMBSTONE_EXPIRES_AT,
+                            )
+                        except Exception:
+                            pass
+                        dispatch_result = self._result(
+                            "unknown",
+                            "audit outcome is uncertain; automatic replay is blocked",
+                        )
+        return dispatch_result or self._result(
+            "unavailable", "seat-control adapter unavailable"
         )
 
     def _held(
@@ -1054,15 +1135,13 @@ class SeatControlMCP:
             )
         receipt = prior.get("result") if prior else None
         if prior and (
-            prior.get("state") in {"held", "failed"}
+            prior.get("state") == "refused"
             or (isinstance(receipt, dict) and receipt.get("status") in {"held", "failed"})
         ):
-            status = receipt.get("status") if isinstance(receipt, dict) else prior["state"]
+            status = receipt.get("status") if isinstance(receipt, dict) else "held"
             return self._result(
                 status,
-                receipt.get("reason")
-                if isinstance(receipt, dict)
-                else "previous request was not dispatched",
+                _receipt_message(receipt, "previous request was not dispatched"),
                 data=receipt,
             )
         if prior and prior.get("state") == "sent":
@@ -1102,14 +1181,24 @@ class SeatControlMCP:
                     "unknown", "idempotency receipt is missing; dispatch is blocked"
                 )
             if state == "busy":
-                if raced and isinstance(raced.get("result"), dict):
-                    receipt = raced["result"]
-                    if receipt.get("status") in {"held", "failed"}:
-                        return self._result(
-                            receipt["status"],
-                            receipt.get("reason") or "previous request was not dispatched",
-                            data=receipt,
-                        )
+                if raced and (
+                    raced.get("state") == "refused"
+                    or (
+                        isinstance(raced.get("result"), dict)
+                        and raced["result"].get("status") in {"held", "failed"}
+                    )
+                ):
+                    receipt = raced.get("result")
+                    status = (
+                        receipt.get("status")
+                        if isinstance(receipt, dict)
+                        else "held"
+                    )
+                    return self._result(
+                        status,
+                        _receipt_message(receipt, "previous request was not dispatched"),
+                        data=receipt,
+                    )
                 self._audit(operation, target, "pending", prompt=prompt, request_id=request_id)
                 return self._result("pending", "request is already in progress")
             if state == "reconcile":
@@ -1125,21 +1214,16 @@ class SeatControlMCP:
                 return self._result(
                     "unknown", "idempotency state is unrecognized; dispatch is blocked"
                 )
-        result = {"status": "held", "reason": reason}
-        self._pin_receipt(key, result)
+        result = {"status": "held", "message": reason}
+        self._persist_refused(key, result)
         self._audit(operation, target, "held", prompt=prompt, request_id=request_id)
         return self._result("held", reason, data=result)
 
-    def _pin_receipt(self, key: str, result: dict[str, Any]) -> None:
-        """Persist a terminal non-dispatch receipt using IdemStore's sent duplicate path.
-
-        IdemStore.begin() overwrites non-sent rows. Pin held/failed receipts as sent
-        with the caller-visible status in result and a request-scoped expiry so a
-        retry returns the same receipt until TTL, then may dispatch again.
-        """
+    def _persist_refused(self, key: str, result: dict[str, Any]) -> None:
+        """Pin a refused receipt (held/failed) for the normal request TTL."""
         self.idempotency.set(
             key,
-            state="sent",
+            state="refused",
             result=result,
             expires=self.clock() + REQUEST_TTL_SECONDS,
         )
@@ -1183,7 +1267,7 @@ class SeatControlMCP:
             try:
                 sid = _catalog_session_id(row)
             except ValueError:
-                return None, "unavailable"
+                continue
             if (
                 row.get("host") == target.host
                 and row.get("platform") == target.platform
@@ -1200,7 +1284,7 @@ class SeatControlMCP:
                 try:
                     sid = _catalog_session_id(row)
                 except ValueError:
-                    return None, "unavailable"
+                    continue
                 if row.get("platform") == target.platform and sid == target.session_id:
                     same_session_elsewhere.append(row)
             if same_session_elsewhere:
@@ -1258,7 +1342,9 @@ class SeatControlMCP:
             "operation": operation,
             "outcome": outcome,
             "authenticated_seat": self.caller_id,
-            "acting_identity": target.owner if target is not None else None,
+            "acting_identity": _redacted_identity(
+                target.owner if target is not None else None, self.scan_known
+            ),
             "prompt_chars": len(prompt) if prompt is not None else None,
             "at": self.clock(),
         }

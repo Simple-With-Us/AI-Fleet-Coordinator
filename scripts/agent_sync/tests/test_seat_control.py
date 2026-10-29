@@ -559,14 +559,14 @@ class SeatControlTests(unittest.TestCase):
         self.assertEqual(result["status"], "unsupported")
         self.assertEqual(self.transport.sent, [])
 
-    def test_unavailable_audit_sink_prevents_prompt_dispatch(self):
+    def test_unavailable_audit_sink_after_dispatch_returns_unknown(self):
         def fail_audit(_record):
             raise OSError("fixture audit failure")
 
         self.service.audit = fail_audit
         result = self.prompt()
-        self.assertEqual(result["status"], "unavailable")
-        self.assertEqual(self.transport.sent, [])
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(len(self.transport.sent), 1)
 
     def test_existing_nudge_queue_holds_exact_target_and_unreadable_queue_fails_closed(self):
         item = {"status": "unknown", "binding": self.target()}
@@ -670,6 +670,25 @@ class SeatControlTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "invalid_request")
 
+    def test_transient_preflight_busy_releases_idempotency_for_retry(self):
+        self.transport.preflight_outcome = "busy"
+        first = self.prompt()
+        self.assertEqual(first["status"], "held")
+        key = hashlib.sha256(b"CODEX\0req-1").hexdigest()
+        self.assertIsNone(self.service.idempotency.row(key))
+        self.transport.preflight_outcome = "ready"
+        second = self.prompt()
+        self.assertEqual(second["status"], "accepted")
+        self.assertEqual(len(self.transport.sent), 1)
+
+    def test_output_rejects_padded_catalog_record_id(self):
+        self.catalog.rows = [row(id="  opaque-record-1  ")]
+        result = self.service.call_tool(
+            "seat_control_output", {"target": self.target(), "limit": 2}
+        )
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(self.catalog.excerpt_calls, [])
+
     def test_output_refuses_empty_catalog_record_id(self):
         self.catalog.rows = [row(id="")]
         result = self.service.call_tool(
@@ -687,7 +706,7 @@ class SeatControlTests(unittest.TestCase):
         stored = self.service.idempotency.row(key)
         self.assertIsNotNone(stored)
         now = time.time()
-        self.assertEqual(stored["state"], "sent")
+        self.assertEqual(stored["state"], "refused")
         self.assertEqual(stored["result"]["status"], "held")
         self.assertGreaterEqual(stored["expires"], now)
         self.assertLessEqual(stored["expires"], now + REQUEST_TTL_SECONDS + 5)
@@ -720,10 +739,13 @@ class SeatControlTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "invalid_request")
 
-    def test_malformed_catalog_session_id_fails_closed(self):
+    def test_malformed_catalog_session_id_is_skipped_in_list(self):
         self.catalog.rows = [row(session_id="  bad whitespace  ")]
-        result = self.service.call_tool("seat_control_list", {"host_scope": "mac", "host": "mac-fixture"})
-        self.assertEqual(result["status"], "unavailable")
+        result = self.service.call_tool(
+            "seat_control_list", {"host_scope": "mac", "host": "mac-fixture"}
+        )
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(len(result["data"]["sessions"]), 0)
 
     def test_accepted_replay_survives_later_mutation_gate_refusal(self):
         first = self.prompt()

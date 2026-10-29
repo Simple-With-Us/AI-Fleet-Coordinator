@@ -87,24 +87,29 @@ remain false until a provider offers a separately verified receipt.
 
 The idempotency key is scoped to authenticated caller plus request ID. A
 different target or prompt under the same key is a conflict. Accepted requests
-return the recorded result without a second send. Held and failed receipts
-preserve their caller-visible status for the normal request TTL by pinning them
-as duplicate `sent` rows whose `result.status` carries the held/failed outcome;
-when that TTL expires the row is pruned and the caller may retry. Definite
-authorization, validation, and catalog-resolution failures do not persist an
-idempotency row and never erase an existing no-replay receipt for the same
-request id. An uncertain result is recorded as unknown with a long-lived
-tombstone and is never replayed automatically. Removing tombstones or resetting
-the store can erase no-replay evidence for accepted or unknown sends, so
-integrations must preserve those rows as long as old request IDs can be retried.
+are stored as **ok** (`sent` rows whose `result.status` is `accepted`) and replay
+as duplicate without a second send. Held and failed outcomes are stored as
+**refused** (`refused` rows with request-scoped TTL) so the same receipt is
+returned until expiry, then the caller may retry. Transient adapter busy/deferred
+results before or after preflight release the idempotency row immediately so the
+caller can retry when the target becomes ready. Definite authorization,
+validation, and catalog-resolution failures do not persist an idempotency row and
+never erase an existing no-replay receipt for the same request id. An uncertain
+delivery outcome is stored as **unknown** with a long-lived tombstone and is never
+replayed automatically. Removing tombstones or resetting the store can erase
+no-replay evidence for ok or unknown sends, so integrations must preserve those
+rows as long as old request IDs can be retried. OAuth token minting and HTTP
+status handling (401, 403, 429, invalid_grant) stay in the existing native
+transports; this adapter does not release rows based on provider auth responses.
 If terminal persistence fails after dispatch, the result is unknown and the
 adapter makes a best-effort unknown-state write. Audit entries contain event,
-operation, outcome, authenticated seat, requested acting identity (the target
-owner when a session is named), optional mutation gate and delegation markers,
-prompt length, and timestamp; host, platform, native session, request ID, prompt
-content, and hashes of those identifiers are omitted. Integrators must inject
-`scan_known` when enabling mutations, and provide the existing durable store
-and audit sink before registering the tools.
+operation, outcome, authenticated seat, requested acting identity (redacted when
+secret-shaped; otherwise the target owner when a session is named), optional
+mutation gate and delegation markers, prompt length, and timestamp; host,
+platform, native session, request ID, prompt content, and hashes of those
+identifiers are omitted. Integrators must inject `scan_known` when enabling
+mutations, and provide the existing durable store and audit sink before
+registering the tools.
 
 ## MCP integration boundary
 
