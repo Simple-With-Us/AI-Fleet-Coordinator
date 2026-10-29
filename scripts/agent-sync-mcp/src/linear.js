@@ -190,12 +190,30 @@ export function linearClientFromPair(pair, seat, { gate, fetch: fetchImpl = glob
 // JET, ECHO, WISE and CLAUDE joined on 2026-10-16 (owner), each pair checked
 // first with `board whoami` against its own app.  JET-CHAT carries Jet's
 // normal access (owner, Oct 23 2026), so it is enabled with the Jet app.
-// Own-app seats whose Linear tools are switched on.  EMPTY on purpose:  the
-// names in OWN_APP_LINEAR_PREFIXES are prepared, but a seat is added here only
+// Own-app seats whose Linear tools are switched on.  A seat is added here only
 // in a change that also gives it a grounded SEAT_APP_NAMES entry from a
 // `board whoami` read of its own app (linear-parity.test.mjs enforces that),
-// because reads do not run the viewer check and a bare seat tag is a weak proof.
-export const LINEAR_OWN_APP_ENABLED = Object.freeze([]);
+// because an own-app seat accepts only its grounded app name (a bare seat tag is
+// refused) and runs the viewer check before its first read or write.
+export const LINEAR_OWN_APP_ENABLED = Object.freeze([
+  "AG",
+  "CLUTCH",
+  "FX",
+  "GROK",
+  "MC",
+  "MM",
+  "OPENCODE",
+  "BF-COMPILER",
+  "BF-DEPLOYER",
+  "BF-DESIGNER",
+  "BF-DIRECTOR",
+  "BF-FIXER",
+  "BF-HOUSEKEEPER",
+  "BF-MONITOR",
+  "BF-ORACLE",
+  "BF-PLUMBER",
+  "BF-PUBLISHER",
+]);
 export const LINEAR_SEATS = Object.freeze(["GROK-WEB", "CURSOR", "JET", "JET-CHAT", "ECHO", "WISE", "CLAUDE", "CODEX", ...LINEAR_OWN_APP_ENABLED]);
 
 // ---------------------------------------------------------------- ported board rules
@@ -291,6 +309,27 @@ export const SEAT_APP_NAMES = Object.freeze({
   CURSOR: "Cursor",
   CLAUDE: "Claude",
   CODEX: "Codex",
+  // Own-app seats: the viewer name Linear returned for each seat's existing cached
+  // app token in a read-only GraphQL viewer query (2026-10-29, app:true).  A name here
+  // is grounding for the viewer check, NOT enablement (LINEAR_OWN_APP_ENABLED).
+  // MA already has its entry above;  BF-ENGINEER and BF-TRADER had no token to read, so no entry.
+  "AG": "Antigravity (AG)",
+  "CLUTCH": "Clutch",
+  "FX": "FX.sh",
+  "GROK": "Grok (Build)",
+  "MC": "Muse Code (MC)",
+  "MM": "MiniMax (MM)",
+  "OPENCODE": "OpenCode",
+  "BF-COMPILER": "BF-Compiler",
+  "BF-DEPLOYER": "BF-Deployer",
+  "BF-DESIGNER": "BF-Designer",
+  "BF-DIRECTOR": "BF-Director",
+  "BF-FIXER": "BF-Fixer",
+  "BF-HOUSEKEEPER": "BF-Housekeeper",
+  "BF-MONITOR": "BF-Monitor",
+  "BF-ORACLE": "BF-Oracle",
+  "BF-PLUMBER": "BF-Plumber",
+  "BF-PUBLISHER": "BF-Publisher",
 });
 export const SEAT_APP_ALIASES = Object.freeze({
   JET: Object.freeze(["Jet (OpenAI dot)"]),
@@ -315,11 +354,19 @@ export function seatAppNames(seat) {
   return app ? Object.freeze([app, ...(SEAT_APP_ALIASES[canonical] ?? [])]) : Object.freeze([]);
 }
 
-/** Whether a viewer name is one of the accepted names or the seat tag, ignoring case. */
+/** Own-app seats (OWN_APP_LINEAR_PREFIXES):  the seats whose Linear identity is proven by a grounded app name alone. */
+export function isOwnAppSeat(seat) {
+  return Object.hasOwn(OWN_APP_LINEAR_PREFIXES, seatTagForSeat(seat));
+}
+
+/** Whether a viewer name is one of the accepted names or the seat tag, ignoring case.
+ * An own-app seat accepts only its grounded app names:  a bare seat tag ("fx", "mm")
+ * is a string anyone can register as an app name, and a seat with no grounded name
+ * accepts nothing.  The original eight seats keep the tag. */
 export function appNameOk(name, seat) {
   const canonical = seatTagForSeat(seat);
   const accepted = new Set(seatAppNames(canonical).map((n) => n.toLowerCase()));
-  accepted.add(canonical.toLowerCase());
+  if (!isOwnAppSeat(canonical)) accepted.add(canonical.toLowerCase());
   return typeof name === "string" && accepted.has(name.toLowerCase());
 }
 

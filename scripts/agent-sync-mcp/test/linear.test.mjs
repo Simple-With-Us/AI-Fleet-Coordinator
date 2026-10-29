@@ -803,3 +803,42 @@ test("a logger that throws during the early mint still leaves the cached token i
   gate.idemBegin = async () => { throw new TypeError("boom"); };
   assert.equal(await client.token(), first);
 });
+
+// ---------------------------------------------------------------- own-app seats: fail-closed viewer proof, reads included
+
+test("an own-app seat checks the viewer before its first READ, and a wrong app is refused before any data call", async () => {
+  for (const wrong of [{ id: "u1", name: "Codex", app: true }, { id: "u3", name: "Clutch", app: false }]) {
+    const { tools, fake } = harness({ seat: "CLUTCH", viewer: wrong });
+    toolError(await tools.call("linear_list", {}), "not_authorized");
+    const graphql = fake.requests.filter((r) => r.kind !== "mint");
+    assert.ok(graphql.length <= 1, `only the viewer query may have run for ${wrong.name}/${wrong.app}`);
+  }
+});
+
+test("an own-app seat's read works when Linear names its own grounded app, once per request", async () => {
+  const { tools, fake } = harness({ seat: "CLUTCH", viewer: { id: "u-clutch", name: "Clutch", app: true } });
+  ok(await tools.call("linear_list", {}), "linear_list");
+  const before = fake.requests.length;
+  ok(await tools.call("linear_list", {}), "linear_list");
+  const second = fake.requests.length - before;
+  assert.ok(second >= 1, "the second read still runs");
+});
+
+test("the viewer gate for reads is own-app only: the original seats read without a viewer query", async () => {
+  const { tools, fake } = harness({ seat: "GROK-WEB", viewer: { id: "u-other", name: "Someone Else", app: true } });
+  ok(await tools.call("linear_list", {}), "linear_list");
+  assert.ok(fake.requests.length >= 1);
+});
+
+test("appNameOk: an own-app seat accepts only its grounded app name, never the bare tag or another seat's app", async () => {
+  const L = await import("../src/linear.js");
+  assert.ok(L.isOwnAppSeat("CLUTCH") && L.isOwnAppSeat("BF-COMPILER") && !L.isOwnAppSeat("CODEX") && !L.isOwnAppSeat("JET-CHAT"));
+  assert.ok(L.appNameOk("Clutch", "CLUTCH") && !L.appNameOk("clutch ", "CLUTCH"));
+  assert.ok(L.appNameOk("clutch", "CLUTCH"), "case-insensitive match of the grounded name itself");
+  assert.ok(!L.appNameOk("CLUTCH-X", "CLUTCH"));
+  assert.ok(!L.appNameOk("FX", "FX"), "bare tag is not the grounded name FX.sh");
+  assert.ok(L.appNameOk("FX.sh", "FX"));
+  assert.ok(!L.appNameOk("Codex", "CLUTCH") && !L.appNameOk("Clutch", "CODEX"));
+  assert.ok(!L.appNameOk("BF-ENGINEER", "BF-ENGINEER") && !L.appNameOk("BF-TRADER", "BF-TRADER"), "a seat with no grounded name accepts nothing");
+  assert.ok(L.appNameOk("CODEX", "CODEX"), "an original seat keeps its tag");
+});

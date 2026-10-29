@@ -84,6 +84,7 @@ import {
   LINEAR_WRITE_TOOLS,
   LINEAR_SECRETS,
   LINEAR_SEATS,
+  isOwnAppSeat,
   LINEAR_MARKER_BEGIN,
   LINEAR_MARKER_END,
   TEAM_KEYS,
@@ -1529,9 +1530,11 @@ export class HostedTools {
   /** One Linear call, its failure as a ToolError.  Never leaks a response body. */
   async linearCall(fn, { write = false } = {}) {
     try {
-      if (this.delegatedLinear && !this.linearViewerConfirmed) {
+      if ((this.delegatedLinear || isOwnAppSeat(this.seat)) && !this.linearViewerConfirmed) {
         // Reads need attribution too:  a swapped app credential must never
-        // serve data under the selected GB identity.
+        // serve data under the selected GB identity or an own-app seat.  The
+        // check runs once per request (this client's lifetime), before the
+        // first read or write, and fails closed.
         await this.requireLinear().confirmViewer();
         this.linearViewerConfirmed = true;
       }

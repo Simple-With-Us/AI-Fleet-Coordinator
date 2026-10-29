@@ -202,18 +202,20 @@ test("the Infisical /linear names are the live LINEAR_<SEAT>_CLIENT_* names for 
   }
 });
 
-test("the 20 own-app seats have prepared names, are not enabled, and share no pair", async () => {
+// MA: its cached token was refused (401) at check time;  BF-ENGINEER and BF-TRADER had no token to read.
+const HELD_BACK = Object.freeze(["MA", "BF-ENGINEER", "BF-TRADER"]);
+test("the 20 own-app seats have prepared names, only the grounded 17 are enabled, and none share a pair", async () => {
   const L = await import("../src/linear.js");
   const own = Object.keys(L.OWN_APP_LINEAR_PREFIXES);
   assert.equal(own.length, 20);
   assert.ok(!own.includes("BF-BUILDER") && !Object.hasOwn(L.LINEAR_SECRETS, "BF-BUILDER") && !L.LINEAR_SEATS.includes("BF-BUILDER"));
   for (const seat of own) {
     assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat), seat);
-    assert.ok(!L.LINEAR_SEATS.includes(seat), `${seat} must not be enabled without a grounded app name`);
+    assert.equal(L.LINEAR_SEATS.includes(seat), !HELD_BACK.includes(seat), `${seat}: enabled unless held back`);
     assert.deepEqual({ ...L.LINEAR_SECRETS[seat] }, { ...L.LINEAR_INFISICAL[seat] }, `${seat}: Worker and Infisical names agree`);
     assert.deepEqual({ ...L.linearSecretNames(seat) }, { ...L.LINEAR_SECRETS[seat] });
   }
-  assert.deepEqual([...L.LINEAR_OWN_APP_ENABLED], [], "no own-app seat is switched on by this change");
+  assert.deepEqual([...L.LINEAR_OWN_APP_ENABLED].sort(), own.filter((x) => !HELD_BACK.includes(x)).sort(), "exactly the 17 verified seats are switched on");
   const ids = new Map();
   for (const [seat, names] of Object.entries(L.LINEAR_INFISICAL)) {
     if (seat === "JET-CHAT") continue; // the one deliberate JET/JET-CHAT share, unchanged
@@ -222,12 +224,12 @@ test("the 20 own-app seats have prepared names, are not enabled, and share no pa
   }
 });
 
-test("a prepared but disabled seat reads no credentials in any Infisical mode; an uninstalled enabled seat stays unconfigured", async () => {
+test("a prepared but held-back seat reads no credentials in any Infisical mode; an uninstalled enabled seat stays unconfigured", async () => {
   const L = await import("../src/linear.js");
   const { _resetInfisicalForTests } = await import("../src/infisical.js");
   _resetInfisicalForTests();
   const env = { LINEAR_CLUTCH_CLIENT_ID: "id-clutch", LINEAR_CLUTCH_CLIENT_SECRET: "sec-clutch", LINEAR_BF_COMPILER_CLIENT_ID: "id-bf", LINEAR_BF_COMPILER_CLIENT_SECRET: "sec-bf" };
-  for (const seat of ["CLUTCH", "BF-COMPILER", "MC", "BF-BUILDER"]) assert.equal(await L.resolveLinearPair(env, seat), null, `${seat} is not enabled`);
+  for (const seat of [...HELD_BACK, "BF-BUILDER"]) assert.equal(await L.resolveLinearPair(env, seat), null, `${seat} is not enabled`);
   assert.equal(await L.resolveLinearPair({ INFISICAL_MODE: "off" }, "CODEX").then((p) => p.clientId), "", "an enabled seat with nothing installed still yields no client");
 });
 
@@ -237,7 +239,26 @@ test("every enabled Linear seat has a grounded app name, so a bare seat tag is n
     assert.ok(L.seatAppNames(seat).length > 0, `${seat} is enabled but has no SEAT_APP_NAMES entry`);
     assert.ok(Object.hasOwn(L.LINEAR_SECRETS, seat) && Object.hasOwn(L.LINEAR_INFISICAL, seat), seat);
   }
-  for (const seat of Object.keys(L.OWN_APP_LINEAR_PREFIXES).filter((s) => s !== "MA")) {
-    assert.deepEqual([...L.seatAppNames(seat)], [], `${seat}: no guessed app names`);
+});
+
+test("own-app viewer names are the live Linear viewer names, accepted by their own seat only", async () => {
+  const L = await import("../src/linear.js");
+  const live = { AG: "Antigravity (AG)", CLUTCH: "Clutch", FX: "FX.sh", GROK: "Grok (Build)", MC: "Muse Code (MC)", MM: "MiniMax (MM)", OPENCODE: "OpenCode",
+    "BF-COMPILER": "BF-Compiler", "BF-DEPLOYER": "BF-Deployer", "BF-DESIGNER": "BF-Designer", "BF-DIRECTOR": "BF-Director", "BF-FIXER": "BF-Fixer",
+    "BF-HOUSEKEEPER": "BF-Housekeeper", "BF-MONITOR": "BF-Monitor", "BF-ORACLE": "BF-Oracle", "BF-PLUMBER": "BF-Plumber", "BF-PUBLISHER": "BF-Publisher" };
+  for (const [seat, name] of Object.entries(live)) {
+    assert.deepEqual([...L.seatAppNames(seat)], [name], seat);
+    assert.ok(L.appNameOk(name, seat) && L.appNameOk(name.toUpperCase(), seat), `${seat} accepts its own app`);
+    for (const other of Object.keys(L.LINEAR_SECRETS).filter((s) => s !== seat && !(seat === "JET" || s === "JET-CHAT"))) {
+      assert.ok(!L.appNameOk(name, other), `${other} must not accept ${seat}'s app name`);
+    }
+  }
+  // No grounded name yet (no readable token at check time): these stay name-less, and stay disabled.
+  for (const seat of ["BF-ENGINEER", "BF-TRADER"]) assert.deepEqual([...L.seatAppNames(seat)], [], `${seat}: no guessed app name`);
+  const all = new Map();
+  for (const seat of Object.keys(L.LINEAR_SECRETS)) for (const n of L.seatAppNames(seat)) {
+    const k = n.toLowerCase();
+    if (all.has(k) && !(["JET", "JET-CHAT"].includes(seat) && ["JET", "JET-CHAT"].includes(all.get(k)))) assert.fail(`${n} belongs to both ${all.get(k)} and ${seat}`);
+    all.set(k, seat);
   }
 });
