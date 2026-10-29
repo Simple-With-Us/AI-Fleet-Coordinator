@@ -33,6 +33,9 @@ class Base(unittest.TestCase):
         env.update(extra)
         return env
 
+    def server_env(self, **extra: str) -> dict[str, str]:
+        return self.env(CLAUDE_LETTER_LOCATION="server", CLAUDE_LETTER_REMOTE="mac", **extra)
+
     def registry(self, *argv: str, now: float | None = None) -> tuple[int, dict]:
         out = io.StringIO()
         code = CL.registry_main(list(argv), env=self.env(), stdout=out, now=now)
@@ -67,6 +70,13 @@ class TitleTests(unittest.TestCase):
         self.assertEqual(CL.title_from_prompt("```\nx = 1\n```\nfix the iOS build for AFC-564"), "Fix the iOS Build for AFC-564")
         self.assertEqual(CL.title_from_prompt("see https://example.com/a/b and the docs"), "See and the Docs")
         self.assertEqual(CL.title_from_prompt("   \n"), "")
+
+    def test_slash_commands_and_secrets_never_name_a_chat(self) -> None:
+        self.assertEqual(CL.title_from_prompt("/review"), "")
+        self.assertEqual(CL.title_from_prompt("/review fix the login page"), "Fix the Login Page")
+        key = "AbCdEfGhIjKlMnOpQrStUvWxYz012345"  # Zulip-shaped:  32 mixed-case letters and digits
+        self.assertEqual(CL.title_from_prompt("rotate %s today" % key), "Rotate Today")
+        self.assertEqual(CL.clean_title("Rotate %s Today" % key), "Rotate Today")
 
     def test_bare_and_clean(self) -> None:
         self.assertEqual(CL.bare("B: Fix Login"), "Fix Login")
@@ -114,6 +124,20 @@ class RegistrySideTests(Base):
         back = self.register("s-0001", title="Back Again")
         self.assertEqual((back["outcome"], back["label"], back["generation"], back["previous"]), ("reopened", "A", 2, "A"))
         self.assertEqual(self.lookup("s-0001")["title"], "Back Again")
+
+    def test_reopen_prefers_the_letter_it_held(self) -> None:
+        for sid in ("s-0001", "s-0002", "s-0003"):
+            self.register(sid)
+        for sid in ("s-0002", "s-0001"):
+            self.registry("close", "--location", "server", "--session-id", sid)
+        back = self.register("s-0002")  # A is free and lower, but B is still free and was this chat's
+        self.assertEqual((back["outcome"], back["label"], back["generation"]), ("reopened", "B", 2))
+
+    def test_one_bad_record_does_not_stop_the_others_closing(self) -> None:
+        self.register("s-0001")
+        rid = self.lookup("s-0001")["record_id"]
+        self.assertEqual(CL._close_records(OR, self.db, ["no-such-record", rid], "test"), 1)
+        self.assertEqual(self.lookup("s-0001")["state"], "closed")
 
     def test_reopen_takes_the_lowest_free_letter(self) -> None:
         self.register("s-0001")
@@ -176,9 +200,10 @@ class FakeSsh:
         self.calls.append(cmd)
         if self.fail is not None:
             raise self.fail
-        self.test.assertEqual(cmd[:6], ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"])
-        self.test.assertEqual(cmd[6], "mac")
-        words = shlex.split(cmd[7])
+        self.test.assertEqual(cmd[:7], ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=4", "--"])
+        self.test.assertEqual(cmd[7], "mac")
+        self.test.assertEqual(kwargs["timeout"], CL.REMOTE_TIMEOUT)
+        words = shlex.split(cmd[8])
         self.test.assertEqual(words[:3], ["$HOME/.local/bin/simple-chat", "letter", "registry"])
         out = io.StringIO()
         code = CL.registry_main(words[3:], env=self.test.env(), stdout=out)
@@ -189,7 +214,7 @@ class HookTests(Base):
     def hook(self, payload: dict, *, env: dict | None = None, runner=None, now: float | None = None,
              platform: str = "linux") -> dict | None:
         out = io.StringIO()
-        env = env if env is not None else self.env(CLAUDE_LETTER_LOCATION="server")
+        env = env if env is not None else self.server_env()
         code = CL.hook(env, io.StringIO(json.dumps(payload)), out, runner=runner or FakeSsh(self), now=now,
                        platform=platform)
         self.assertEqual(code, 0)
@@ -252,7 +277,8 @@ class HookTests(Base):
         self.start("s-0002")  # takes A, the letter /clear freed
         out = self.start("s-0001", source="resume", session_title="A: Old Name")
         self.assertEqual(out["sessionTitle"], "B: Old Name")
-        self.assertIn("earlier letter A was retired", out["additionalContext"])
+        self.assertIn("earlier letter A went to another chat", out["additionalContext"])
+        self.assertIn("  ", out["additionalContext"])  # rendered copy takes U+00A0 sentence gaps
 
     def test_exit_and_resume_keep_the_letter(self) -> None:
         self.start("s-0001")
@@ -266,7 +292,7 @@ class HookTests(Base):
         self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0001", "reason": "other"})
         self.assertEqual(self.lookup("s-0001")["state"], "closed")
         self.start("s-0002")
-        env = self.env(CLAUDE_LETTER_LOCATION="server", CLAUDE_LETTER_CLOSE_ON="clear")
+        env = self.server_env(CLAUDE_LETTER_CLOSE_ON="clear")
         self.hook({"hook_event_name": "SessionEnd", "session_id": "s-0002", "reason": "other"}, env=env)
         self.assertEqual(self.lookup("s-0002")["state"], "active")
 
@@ -290,6 +316,44 @@ class HookTests(Base):
                          "session_title": "A: First Task"}, now=later)
         self.assertEqual(out["sessionTitle"], "B: First Task")
         self.assertEqual(self.lookup("s-0001")["label"], "B")
+
+    def test_a_placeholder_is_never_taken_for_a_title(self) -> None:
+        self.start("s-0001")
+        out = self.start("s-0001", source="resume", session_title="A: New Chat")
+        self.assertNotIn("sessionTitle", out)
+        self.assertFalse(self.note("s-0001")["titled"])
+        out = self.prompt("s-0001", "fix the build", session_title="A: New Chat")
+        self.assertEqual(out["sessionTitle"], "A: Fix the Build")
+
+    def test_a_bare_slash_command_waits_for_the_next_prompt(self) -> None:
+        self.start("s-0001")
+        self.assertIsNone(self.prompt("s-0001", "/review", session_title="A: New Chat"))
+        self.assertFalse(self.note("s-0001")["titled"])
+        out = self.prompt("s-0001", "fix the login bug", session_title="A: New Chat")
+        self.assertEqual(out["sessionTitle"], "A: Fix the Login Bug")
+
+    def test_the_remote_must_be_named_and_plain(self) -> None:
+        payload = {"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}
+        ssh = FakeSsh(self)
+        for remote in ("", "-oProxyCommand=touch /tmp/x"):
+            out = self.hook(payload, env=self.env(CLAUDE_LETTER_LOCATION="server", CLAUDE_LETTER_REMOTE=remote),
+                            runner=ssh)
+            self.assertIn("CLAUDE_LETTER_REMOTE does not name an ssh destination", out["additionalContext"])
+        self.assertEqual(ssh.calls, [])
+
+    def test_a_malformed_answer_is_refused(self) -> None:
+        def bad(cmd, **kwargs):
+            return SimpleNamespace(stdout='{"outcome": "registered", "label": "AA", "generation": 1}\n', returncode=0)
+
+        out = self.hook({"hook_event_name": "SessionStart", "session_id": "s-0001", "source": "startup"}, runner=bad)
+        self.assertIn("malformed label", out["additionalContext"])
+        self.assertEqual(self.note("s-0001")["state"], "failed")
+
+    def test_a_seat_with_a_separator_stays_under_the_state_root(self) -> None:
+        self.assertEqual(
+            CL.note_path(self.env(), "../../tmp/x", "s-0001"),
+            os.path.join(self.state, "CLAUDE", "letters", "s-0001.json"),
+        )
 
     def test_compact_only_reminds(self) -> None:
         self.start("s-0001")
@@ -328,28 +392,44 @@ class HookTests(Base):
             out = io.StringIO()
             return CL.install(list(argv), {"HOME": self.home}, out), json.loads(out.getvalue())
 
-        code, out = run("--location", "server")
-        self.assertEqual(sorted(out["changed"]), ["SessionEnd", "SessionStart", "UserPromptSubmit", "env"])
-        self.assertTrue(os.path.exists(out["backup"]))
+        os.chmod(path, 0o640)
+        code, out = run("--location", "server", "--remote", "mac")
+        self.assertEqual(
+            sorted(out["changed"]),
+            ["CLAUDE_LETTER_LOCATION", "CLAUDE_LETTER_REMOTE", "SessionEnd", "SessionStart", "UserPromptSubmit"],
+        )
+        self.assertEqual(os.stat(out["backup"]).st_mode & 0o777, 0o600)  # a backup is private whatever the source
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o640)  # settings.json keeps its own mode
         with open(path) as fh:
             settings = json.load(fh)
-        self.assertEqual(settings["env"], {"AGENT_SEAT": "CLAUDE", "CLAUDE_LETTER_LOCATION": "server"})
+        self.assertEqual(
+            settings["env"],
+            {"AGENT_SEAT": "CLAUDE", "CLAUDE_LETTER_LOCATION": "server", "CLAUDE_LETTER_REMOTE": "mac"},
+        )
         self.assertEqual(settings["hooks"]["SessionStart"][0], other)
         ours = settings["hooks"]["SessionEnd"][0]["hooks"][0]
         self.assertEqual(ours["command"], os.path.join(self.home, ".local", "bin", "simple-chat") + " letter hook")
         self.assertEqual(ours["timeout"], 15)
-        self.assertEqual(run("--location", "server")[1]["changed"], [])
+        self.assertEqual(run("--location", "server", "--remote", "mac")[1]["changed"], [])
         self.assertEqual(run("--check")[0], 0)
+        self.assertEqual(run("--remote=-oProxyCommand=x")[0], 2)  # the form that gets past argparse
         run("--remove")
         with open(path) as fh:
             settings = json.load(fh)
         self.assertEqual(settings["hooks"], {"SessionStart": [other]})
+        self.assertEqual(settings["env"], {"AGENT_SEAT": "CLAUDE"})  # --remove takes its two settings out too
         self.assertEqual(run("--check")[0], 1)
+
+    def test_install_creates_a_private_claude_folder(self) -> None:
+        fresh = os.path.join(self.tmp.name, "fresh-home")
+        out = io.StringIO()
+        self.assertEqual(CL.install(["--location", "mac"], {"HOME": fresh}, out), 0)
+        self.assertEqual(os.stat(os.path.join(fresh, ".claude")).st_mode & 0o777, 0o700)
+        self.assertEqual(os.stat(os.path.join(fresh, ".claude", "settings.json")).st_mode & 0o777, 0o600)
 
     def test_main_never_fails_a_hook(self) -> None:
         out, err = io.StringIO(), io.StringIO()
-        code = CL.main(["hook"], env=self.env(CLAUDE_LETTER_LOCATION="server"), stdin=io.StringIO("not json"),
-                       stdout=out, stderr=err)
+        code = CL.main(["hook"], env=self.server_env(), stdin=io.StringIO("not json"), stdout=out, stderr=err)
         self.assertEqual((code, out.getvalue()), (0, ""))
 
 

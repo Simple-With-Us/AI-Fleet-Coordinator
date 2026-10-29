@@ -535,10 +535,11 @@ class SessionRegistry:
         """Give a closed session a letter again (AFC-564, owner Oct 28 2026:  a reopened chat checks with the
         Operator in case it needs a new letter).
 
-        The record keeps its record_id and identity.  closed_at is cleared and the letter is allocated by the same
-        rule as a first registration, the lowest free one, so a reopened session may come back under a different
-        letter than it held.  Returns (letter, generation, previous letter).  An open session comes back as it is,
-        with nothing written.  Raises LabelExhausted, with nothing written, when every letter is live.
+        The record keeps its record_id and identity, and closed_at is cleared.  It gets back the letter it held
+        while no other session holds that letter (a new generation of it, as any reuse is);  otherwise the letter
+        is allocated by the same rule as a first registration, the lowest free one.  Returns (letter, generation,
+        previous letter).  An open session comes back as it is, with nothing written.  Raises LabelExhausted, with
+        nothing written, when every letter is live.
         """
         with self._write_txn() as conn:
             now = at or _utcnow()
@@ -552,7 +553,30 @@ class SessionRegistry:
                 (record_id,),
             ).fetchone()
             previous = last["letter"] if last else ""
-            letter, generation = self._allocate(conn, row["platform"], record_id, now)
+            held = (
+                previous
+                and conn.execute(
+                    "SELECT 1 FROM alias_assignments"
+                    " WHERE platform = ? AND letter = ? AND retired_at IS NULL",
+                    (row["platform"], previous),
+                ).fetchone()
+            )
+            if previous and not held:
+                generation = (
+                    conn.execute(
+                        "SELECT MAX(generation) AS g FROM alias_assignments WHERE platform = ? AND letter = ?",
+                        (row["platform"], previous),
+                    ).fetchone()["g"]
+                    + 1
+                )
+                conn.execute(
+                    "INSERT INTO alias_assignments(platform, letter, generation, record_id, assigned_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (row["platform"], previous, generation, record_id, now),
+                )
+                letter = previous
+            else:
+                letter, generation = self._allocate(conn, row["platform"], record_id, now)
             conn.execute(
                 "UPDATE sessions SET closed_at = NULL, state = 'active', last_seen_at = ?"
                 " WHERE record_id = ?",

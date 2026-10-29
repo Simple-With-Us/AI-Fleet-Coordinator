@@ -8,7 +8,8 @@ on the Mac and on the server (AFC-564, owner request Oct 28, 2026).
 
 Where the letter comes from.  The Operator's session registry (`operator_registry`, AFC-412) is one SQLite file on the
 Mac, the one allocator for every host.  A chat on the Mac reaches it in process.  A chat on the server reaches it over
-`ssh mac` by running `simple-chat letter registry ...` there, so the Mac's own managed runtime makes the write.  The
+ssh to the Mac (the destination in CLAUDE_LETTER_REMOTE) by running `simple-chat letter registry ...` there, so the
+Mac's own managed runtime makes the write.  The
 registry side refuses a host that has no registry file and never creates one:  a second file would issue letters that
 collide with the Mac's, and the server has none.
 
@@ -33,7 +34,8 @@ lowest free letter by the same rule as a first registration, and the title moves
 The hook never blocks a chat:  every failure is a line of context, or nothing, and exit 0.  Only interactive chats
 take part (the `attach` rule:  CLAUDE_CODE_ENTRYPOINT cli or claude-desktop, and no launcher), and CLAUDE_LETTER=0
 turns it off.  The location is the fleet location, never a guess:  darwin is the Mac, and any other host must say
-CLAUDE_LETTER_LOCATION=server (the hook installer sets it on the server), so a cloud or unknown host takes no letter.
+CLAUDE_LETTER_LOCATION=server (the hook installer sets it on the server, with CLAUDE_LETTER_REMOTE), so a cloud or
+unknown host takes no letter.  Titles go through the fleet's secret scanner before they are stored or relayed.
 
 Python 3.11+, standard library only.
 """
@@ -55,6 +57,7 @@ from typing import Any, TextIO
 
 from . import identity as I
 from . import live as L
+from . import secretscan
 from . import session_ids as SI
 
 PLATFORM = "claude"
@@ -72,19 +75,25 @@ TITLE_SOURCES = (
     "resume",
     "fork",
 )  # the SessionStart sources whose sessionTitle Claude Code applies
-# SessionEnd reasons that close a chat's registration and free its letter.  Archiving a chat in the desktop app ends
-# its process, and `other` is the reason that end is expected to carry (the docs name no archive reason);  `/clear`
-# replaces the chat;  `logout` ends every chat.  An exit at the prompt and `/resume` keep the letter.  A host can name
-# its own list in CLAUDE_LETTER_CLOSE_ON (comma-separated).
+# SessionEnd reasons that close a chat's registration and free its letter (owner, Oct 28, 2026:  archiving closes).
+# Archiving a chat in the desktop app ends its process, and the docs name no archive reason, so it arrives as `other`,
+# Claude Code's reason for any end it does not name;  `/clear` replaces the chat;  `logout` ends every chat.  An exit
+# at the prompt and `/resume` keep the letter.  A chat that `other` closed by some other end gets its letter back when
+# it reopens, because reopen prefers the letter it held while that letter is free.  A host can name its own list in
+# CLAUDE_LETTER_CLOSE_ON (comma-separated).
 CLOSE_REASONS = ("clear", "logout", "other")
 ENV_CLOSE_ON = "CLAUDE_LETTER_CLOSE_ON"
 
 ENV_OFF = "CLAUDE_LETTER"
 ENV_LOCATION = "CLAUDE_LETTER_LOCATION"
-ENV_REMOTE = "CLAUDE_LETTER_REMOTE"  # the ssh destination that holds the registry;  default "mac"
-REMOTE_DEFAULT = "mac"
+# The ssh destination (a name from the host's own ssh config) that holds the registry, for a chat that is not on the
+# registry's host.  It is configuration, not source:  `letter install --remote` writes it into settings.json.
+ENV_REMOTE = "CLAUDE_LETTER_REMOTE"
 REMOTE_COMMAND = '"$HOME"/.local/bin/simple-chat letter registry'
-REMOTE_TIMEOUT = 12.0
+CONNECT_TIMEOUT = (
+    4  # seconds for ssh to connect;  an asleep or unreachable Mac costs this much, not more
+)
+REMOTE_TIMEOUT = 8.0  # the whole ssh round trip, inside every hook's own timeout (15 to 20 seconds)
 
 STALE_SECONDS = 36 * 3600
 TOUCH_SECONDS = 1800
@@ -153,6 +162,13 @@ def seat(env: Mapping[str, str]) -> str | None:
     return I.resolve_seat(env, default=SEAT_DEFAULT).seat
 
 
+def note_path(env: Mapping[str, str], who: str, sid: str) -> str:
+    """Where a chat's note lives:  under the state root, in a folder named by a plain seat token only, so a seat
+    value with a separator can never place the note anywhere else."""
+    safe = I.valid_seat(who) or SEAT_DEFAULT
+    return os.path.join(L.state_root(env), safe, "letters", sid + ".json")
+
+
 # --------------------------------------------------------------------------------------------
 # Titles
 # --------------------------------------------------------------------------------------------
@@ -163,8 +179,14 @@ def one_line(text: object) -> str:
 
 
 def clean_title(text: object) -> str:
-    """One line, at most TITLE_CHARS characters, cut at a word boundary."""
-    line = one_line(text)
+    """One line, at most TITLE_CHARS characters, cut at a word boundary, with any secret-shaped word dropped.
+
+    A title is relayed to the registry and from there to the Fleet Reference sheet, and a first prompt can carry a
+    pasted key, so every word goes through the fleet's secret scanner first;  it reports only that a word matched."""
+    words = [w for w in one_line(text).split(" ") if w and not secretscan.scan(w)]
+    line = " ".join(words)
+    if secretscan.scan(line):
+        return ""
     if len(line) <= TITLE_CHARS:
         return line
     cut = line[:TITLE_CHARS].rsplit(" ", 1)[0]
@@ -196,14 +218,16 @@ def title_case(words: list[str]) -> str:
 
 
 def title_from_prompt(prompt: object) -> str:
-    """A short title from a prompt's first line that has words, or "" when it has none.  Markup, code blocks and
-    links are dropped first, so a pasted block or a slash command does not become the title."""
+    """A short title from a prompt's first line that has words, or "" when it has none.  Markup, code blocks, links
+    and a leading slash command are dropped first, so a pasted block or "/review" does not become the title (the
+    words after a slash command still can)."""
     text = str(prompt or "")
     text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
     text = re.sub(r"<[^<>]{1,200}>", " ", text)
     text = re.sub(r"https?://\S+", " ", text)
     for line in text.splitlines():
-        words = WORD.findall(line)[:TITLE_WORDS]
+        line = re.sub(r"^\s*/\S*", " ", line)
+        words = [w for w in WORD.findall(line) if not secretscan.scan(w)][:TITLE_WORDS]
         while len(words) > 1 and words[-1].rstrip(".-").lower() in SMALL_WORDS:
             words.pop()  # "... Addressed From" reads cut off;  end on a word that carries meaning
         if words:
@@ -295,13 +319,23 @@ def _open_claude_rows(db: str) -> list[sqlite3.Row]:
 
 
 def _close_records(OR: Any, db: str, records: list[str], source: str) -> int:
+    """Close each record on its own, so one that cannot be closed never keeps the rest open;  a failure is named on
+    stderr by record id and exception type only."""
     if not records:
         return 0
     reg = OR.SessionRegistry(db)
+    closed = 0
     try:
-        return sum(1 for rid in records if reg.close(rid, actor="OPERATOR", source=source))
+        for rid in records:
+            try:
+                closed += bool(reg.close(rid, actor="OPERATOR", source=source))
+            except (sqlite3.Error, OR.UnknownRecord) as exc:
+                sys.stderr.write(
+                    "claude letter:  could not close %s (%s)\n" % (rid, type(exc).__name__)
+                )
     finally:
         reg.close_db()
+    return closed
 
 
 def sweep_stale(OR: Any, db: str, keep: tuple[str, str], now: float) -> int:
@@ -480,6 +514,33 @@ def _last_json(text: str) -> dict[str, Any] | None:
     return None
 
 
+_ANSWER_TYPES = {
+    "error": str,
+    "outcome": str,
+    "label": str,
+    "record_id": str,
+    "previous": str,
+    "title_display": str,
+}
+
+
+def _answer(value: dict[str, Any] | None) -> dict[str, Any]:
+    """A registry answer whose fields have the shapes the hook reads, or an error that says it did not:  every named
+    field has its type, a label is "" or one letter A-Z, and a generation is a positive whole number."""
+    if value is None:
+        return {"error": "the registry gave no answer"}
+    for key, kind in _ANSWER_TYPES.items():
+        if key in value and not isinstance(value[key], kind):
+            return {"error": "the registry answer has a malformed %s" % key}
+    label = value.get("label")
+    if label and not re.fullmatch(r"[A-Z]", label):
+        return {"error": "the registry answer has a malformed label"}
+    gen = value.get("generation")
+    if gen is not None and (isinstance(gen, bool) or not isinstance(gen, int) or gen < 1):
+        return {"error": "the registry answer has a malformed generation"}
+    return value
+
+
 class Chat:
     """One chat, as the hook sees it:  its seat, location and session id, its note, and the way to its registry."""
 
@@ -495,7 +556,7 @@ class Chat:
     ):
         self.env, self.seat, self.location, self.session_id = env, who, where, sid
         self.runner, self.now = runner, now
-        self.path = os.path.join(L.state_root(env), who, "letters", sid + ".json")
+        self.path = note_path(env, who, sid)
 
     # ---- the local note --------------------------------------------------------------------
 
@@ -511,10 +572,13 @@ class Chat:
         folder = os.path.dirname(self.path)
         os.makedirs(folder, mode=0o700, exist_ok=True)
         tmp = "%s.%d.tmp" % (self.path, os.getpid())
-        with open(tmp, "w", encoding="utf-8") as fh:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(
                 dict(note, session_id=self.session_id, updated_at=self.now), fh, sort_keys=True
             )
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp, self.path)
 
     # ---- the registry ----------------------------------------------------------------------
@@ -534,10 +598,14 @@ class Chat:
         if self.location == "mac":
             out = io.StringIO()
             registry_main(argv, env=self.env, stdout=out)
-            return _last_json(out.getvalue()) or {"error": "the registry gave no answer"}
-        dest = str(self.env.get(ENV_REMOTE) or REMOTE_DEFAULT).strip()
+            return _answer(_last_json(out.getvalue()))
+        dest = str(self.env.get(ENV_REMOTE) or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", dest):
+            # Empty, or something ssh could read as an option:  refuse it rather than run it.
+            return {"error": "%s does not name an ssh destination" % ENV_REMOTE}
         remote = REMOTE_COMMAND + " " + " ".join(shlex.quote(a) for a in argv)
-        cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5", dest, remote]
+        cmd = ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=%d" % CONNECT_TIMEOUT]
+        cmd += ["--", dest, remote]
         try:
             proc = self.runner(
                 cmd,
@@ -551,16 +619,17 @@ class Chat:
         answer = _last_json(str(proc.stdout or ""))
         if answer is None:
             return {"error": "the registry host answered exit %s with no result" % proc.returncode}
-        return answer
+        return _answer(answer)
 
 
 def reminder(note: Mapping[str, Any]) -> str:
     label = note.get("label") or ""
     gen = note.get("generation") or 1
     ref = "Claude %s%s" % (label, " (gen %d)" % gen if gen > 1 else "")
+    # Rendered copy:  a sentence gap is U+00A0 plus a space, and a colon or semicolon takes one space.
     return (
-        'Operator session letter:  %s, on the %s.  This chat is addressed as "@**Claude** %s", and its title '
-        'starts with "%s: ";  keep that prefix if the chat is renamed.'
+        'Operator session letter: %s, on the %s.  This chat is addressed as "@**Claude** %s", and its title '
+        'starts with "%s: "; keep that prefix if the chat is renamed.'
         % (ref, note.get("location"), label, label)
     )
 
@@ -610,7 +679,8 @@ def _reissued(answer: Mapping[str, Any]) -> str:
     previous, label = str(answer.get("previous") or ""), str(answer.get("label") or "")
     if answer.get("outcome") == "reopened" and previous and previous != label:
         return (
-            "This chat's earlier letter %s was retired while it was idle, so the Operator issued %s.  "
+            "This chat's earlier letter %s went to another chat while this one was closed, so the Operator "
+            "issued %s.  "
             % (
                 previous,
                 label,
@@ -630,6 +700,8 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
     # /clear starts a new chat that can carry the old chat's name;  that name is not this chat's title.
     inherited = current if source == "clear" else ""
     text = "" if inherited else bare(current)
+    if text == PLACEHOLDER:
+        text = ""  # "<letter>: New Chat" holds the place of a title;  it is not one
     if not text and source in ("resume", "fork"):
         text = title_from_transcript(data.get("transcript_path"), home)
     answer = chat.registry("register", title=text)
@@ -641,7 +713,7 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
         _hook_out(
             stdout,
             "SessionStart",
-            context="No Operator letter yet (%s).  The next prompt tries again." % note["error"],
+            context="No Operator letter yet (%s).  The next prompt tries again." % note["error"],
         )
         return 0
     if note["state"] == "mismatch":
@@ -674,7 +746,7 @@ def on_start(chat: Chat, data: Mapping[str, Any], stdout: TextIO, home: str) -> 
 
 def _first_title(note: Mapping[str, Any], current: str, prompt: object) -> str:
     """The words for a chat's first real title:  a name someone gave it, else the title its start found, else its
-    first prompt."""
+    first prompt, else "" (a prompt with no words, such as a bare slash command, waits for the next one)."""
     placeholder = note.get("placeholder") or ""
     if (
         current
@@ -682,7 +754,7 @@ def _first_title(note: Mapping[str, Any], current: str, prompt: object) -> str:
         and bare(current) != PLACEHOLDER
     ):
         return bare(current)  # someone named the chat:  keep their words under the letter
-    return str(note.get("title") or "") or title_from_prompt(prompt) or PLACEHOLDER
+    return str(note.get("title") or "") or title_from_prompt(prompt)
 
 
 def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
@@ -699,8 +771,8 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
             chat.write(note)
             return 0
     title = None
-    if not note.get("titled"):
-        text = _first_title(note, current, data.get("prompt"))
+    text = "" if note.get("titled") else _first_title(note, current, data.get("prompt"))
+    if text:
         title = "%s: %s" % (note["label"], text)
         note.update(
             titled=True,
@@ -732,9 +804,9 @@ def on_prompt(chat: Chat, data: Mapping[str, Any], stdout: TextIO) -> int:
 
 
 def on_end(chat: Chat, data: Mapping[str, Any]) -> int:
-    """Close the registration when the chat is replaced (CLOSE_REASONS), which frees its letter;  any other end keeps
-    it for a resume.  Every end reason is kept in the note, so the close rule can be checked against what the app
-    really sends."""
+    """Close the registration when the chat ends for good (CLOSE_REASONS:  an archive, `/clear` or logout), which frees
+    its letter;  any other end keeps it for a resume.  Every end reason is kept in the note, so the close rule can be
+    checked against what the app really sends."""
     note = chat.read()
     if not note:
         return 0
@@ -811,7 +883,7 @@ def show(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
         sid = SI.check(sid, "the session id")
     except ValueError as exc:
         return _emit(stdout, {"error": str(exc)}, 2)
-    path = os.path.join(L.state_root(env), who, "letters", sid + ".json")
+    path = note_path(env, who, sid)
     try:
         with open(path, encoding="utf-8") as fh:
             note = json.load(fh)
@@ -837,18 +909,35 @@ def _ours(entry: object) -> bool:
     )
 
 
+def _write_private(path: str, data: bytes, mode: int) -> None:
+    """Write a file that may hold secrets (settings.json can carry keys in its env block):  created 0600, flushed and
+    fsynced, then given `mode`;  nothing is ever readable by others while it is written."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(path, mode)
+
+
 def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
-    """`letter install [--location server|mac] [--check | --remove]`:  add the three hook entries (and, with
-    --location, CLAUDE_LETTER_LOCATION) to ~/.claude/settings.json, keeping a dated backup, or check or remove them.
-    Running it twice changes nothing.  The command names this host's own simple-chat wrapper by absolute path."""
+    """`letter install [--location server|mac] [--remote DEST] [--check | --remove]`:  add the three hook entries
+    (and, when named, CLAUDE_LETTER_LOCATION and CLAUDE_LETTER_REMOTE) to ~/.claude/settings.json, keeping a dated
+    0600 backup, or check or remove them;  --remove takes the two settings out as well.  Running it twice changes
+    nothing.  The command names this host's own simple-chat wrapper by absolute path."""
     import argparse
 
     parser = argparse.ArgumentParser(prog="simple-chat letter install")
     parser.add_argument("--location", choices=LOCATIONS)
+    parser.add_argument(
+        "--remote", help="the ssh destination that holds the registry (a host off the registry)"
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--remove", action="store_true")
     args = parser.parse_args(argv)
+    if args.remote is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._@-]*", args.remote):
+        return _emit(stdout, {"error": "--remote must name an ssh destination"}, 2)
     home = str(env.get("HOME") or os.path.expanduser("~"))
     path = os.path.join(home, ".claude", "settings.json")
     try:
@@ -861,9 +950,15 @@ def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
     hooks = settings.setdefault("hooks", {})
     have = {ev: any(_ours(e) for e in hooks.get(ev) or []) for ev in HOOK_TIMEOUTS}
     if args.check:
-        located = (settings.get("env") or {}).get(ENV_LOCATION)
+        envs = settings.get("env") or {}
         return _emit(
-            stdout, {"installed": have, "location_env": located}, 0 if all(have.values()) else 1
+            stdout,
+            {
+                "installed": have,
+                "location_env": envs.get(ENV_LOCATION),
+                "remote_env": envs.get(ENV_REMOTE),
+            },
+            0 if all(have.values()) else 1,
         )
     command = shlex.quote(os.path.join(home, ".local", "bin", "simple-chat")) + HOOK_MARK
     changed = []
@@ -877,26 +972,29 @@ def install(argv: list[str], env: Mapping[str, str], stdout: TextIO) -> int:
             hooks[event] = entries
         else:
             hooks.pop(event, None)
-    if args.location and not args.remove:
-        envs = settings.setdefault("env", {})
-        if envs.get(ENV_LOCATION) != args.location:
-            envs[ENV_LOCATION] = args.location
-            changed.append("env")
+    envs = settings.setdefault("env", {})
+    for key, want in ((ENV_LOCATION, args.location), (ENV_REMOTE, args.remote)):
+        if args.remove:
+            if envs.pop(key, None) is not None:
+                changed.append(key)
+        elif want and envs.get(key) != want:
+            envs[key] = want
+            changed.append(key)
+    if not envs:
+        settings.pop("env")
     if not changed:
         return _emit(stdout, {"changed": [], "settings": path}, 0)
     if os.path.exists(path):
+        file_mode = os.stat(path).st_mode & 0o777
         backup = "%s.bak-letter-%s" % (path, datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"))
-        with open(path, "rb") as src, open(backup, "wb") as dst:
-            dst.write(src.read())
+        with open(path, "rb") as src:
+            _write_private(backup, src.read(), 0o600)
     else:
-        backup = ""
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        file_mode, backup = 0o600, ""
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    body = (json.dumps(settings, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     tmp = path + ".letter.tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(settings, fh, indent=2, ensure_ascii=False)
-        fh.write("\n")
-    if os.path.exists(path):
-        os.chmod(tmp, os.stat(path).st_mode & 0o777)
+    _write_private(tmp, body, file_mode)
     os.replace(tmp, path)
     return _emit(stdout, {"changed": changed, "settings": path, "backup": backup}, 0)
 
